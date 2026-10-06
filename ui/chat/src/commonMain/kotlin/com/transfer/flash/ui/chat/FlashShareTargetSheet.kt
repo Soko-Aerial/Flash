@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -23,14 +25,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -42,10 +50,12 @@ import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.ui.theme.rememberFlashHaptics
 
 /**
  * One item in an inbound share payload (from Android ACTION_SEND / SEND_MULTIPLE or Desktop drop).
@@ -82,6 +92,26 @@ data class FlashShareRecipientUi(
 
 /** Pure helpers backing share target formatting and calculations (JVM-testable). */
 object FlashShareTargetMath {
+    const val MAX_FORWARD_TARGETS = 5
+
+    fun filterRecipients(recipients: List<FlashShareRecipientUi>, query: String): List<FlashShareRecipientUi> {
+        val q = query.trim()
+        if (q.isEmpty()) return recipients
+        return recipients.filter {
+            it.name.contains(q, ignoreCase = true) ||
+                it.subtitle?.contains(q, ignoreCase = true) == true
+        }
+    }
+
+    fun toggleSelection(current: Set<String>, id: String, maxLimit: Int = MAX_FORWARD_TARGETS): Set<String> {
+        return if (id in current) {
+            current - id
+        } else if (current.size < maxLimit) {
+            current + id
+        } else {
+            current
+        }
+    }
 
     fun formatItemSummary(payload: FlashSharePayloadUi): String {
         val count = payload.items.size
@@ -161,12 +191,43 @@ fun FlashShareTargetSheet(
     nearbyDevices: List<FlashShareRecipientUi>,
     recentChats: List<FlashShareRecipientUi> = emptyList(),
     isScanning: Boolean = true,
+    title: String = "Share with Flash",
     onSelectRecipient: (FlashShareRecipientUi) -> Unit,
+    onForward: ((List<FlashShareRecipientUi>) -> Unit)? = null,
+    maxSelectCount: Int = FlashShareTargetMath.MAX_FORWARD_TARGETS,
     onDismiss: () -> Unit,
     onManualConnect: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
+    val haptics = rememberFlashHaptics()
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedRecipientIds by remember { mutableStateOf(emptySet<String>()) }
+    val isMultiSelect = onForward != null
+
+    val filteredPaired = remember(pairedDevices, searchQuery) {
+        FlashShareTargetMath.filterRecipients(pairedDevices, searchQuery)
+    }
+    val filteredChats = remember(recentChats, searchQuery) {
+        FlashShareTargetMath.filterRecipients(recentChats, searchQuery)
+    }
+    val filteredNearby = remember(nearbyDevices, searchQuery) {
+        FlashShareTargetMath.filterRecipients(nearbyDevices, searchQuery)
+    }
+
+    fun handleRecipientClick(recipient: FlashShareRecipientUi) {
+        if (isMultiSelect) {
+            val updated = FlashShareTargetMath.toggleSelection(selectedRecipientIds, recipient.id, maxSelectCount)
+            if (updated == selectedRecipientIds && recipient.id !in selectedRecipientIds) {
+                haptics(FlashHaptic.Reject)
+            } else {
+                haptics(FlashHaptic.Tick)
+                selectedRecipientIds = updated
+            }
+        } else {
+            onSelectRecipient(recipient)
+        }
+    }
 
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -204,7 +265,7 @@ fun FlashShareTargetSheet(
                         )
                     }
                     FlashText(
-                        text = "Share with Flash",
+                        text = title,
                         style = FlashTheme.typography.headingMedium,
                     )
                 }
@@ -217,6 +278,59 @@ fun FlashShareTargetSheet(
                 }
             }
 
+            // Search Bar
+            Surface(
+                modifier = Modifier.fillMaxWidth().height(42.dp),
+                shape = RoundedCornerShape(FlashShapes.radius12),
+                color = colors.backgroundSurfaceSubtle,
+                border = BorderStroke(1.dp, colors.borderSubtle),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = FlashSpacing.space12),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Search,
+                        tint = colors.textSecondary,
+                        modifier = Modifier.size(FlashDimensions.iconSm),
+                    )
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                        cursorBrush = SolidColor(colors.accentPrimary),
+                        decorationBox = { innerTextField ->
+                            if (searchQuery.isEmpty()) {
+                                FlashText(
+                                    text = "Search chats and devices...",
+                                    style = FlashTheme.typography.bodyDefault,
+                                    color = colors.textTertiary,
+                                )
+                            }
+                            innerTextField()
+                        },
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .clickable { searchQuery = "" },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FlashIcon(
+                                icon = FlashIcons.Close,
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(FlashDimensions.iconSm),
+                            )
+                        }
+                    }
+                }
+            }
+
             // Shared Content Card Preview
             SharedContentPreviewCard(payload = payload)
 
@@ -224,59 +338,65 @@ fun FlashShareTargetSheet(
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 420.dp),
+                    .heightIn(max = 380.dp),
                 verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
                 // Section 1: Paired Devices
-                if (pairedDevices.isNotEmpty()) {
+                if (filteredPaired.isNotEmpty()) {
                     item {
                         SectionHeader(
                             title = "Paired Devices",
-                            count = pairedDevices.size,
+                            count = filteredPaired.size,
                         )
                     }
-                    items(pairedDevices, key = { "paired_${it.id}" }) { device ->
+                    items(filteredPaired, key = { "paired_${it.id}" }) { device ->
                         ShareRecipientRow(
                             recipient = device,
-                            onClick = { onSelectRecipient(device) },
+                            isSelected = device.id in selectedRecipientIds,
+                            isMultiSelect = isMultiSelect,
+                            onClick = { handleRecipientClick(device) },
                         )
                     }
                 }
 
                 // Section 2: Recent Chats
-                if (recentChats.isNotEmpty()) {
+                if (filteredChats.isNotEmpty()) {
                     item {
                         SectionHeader(
                             title = "Recent Chats",
-                            count = recentChats.size,
+                            count = filteredChats.size,
                         )
                     }
-                    items(recentChats, key = { "chat_${it.id}" }) { chat ->
+                    items(filteredChats, key = { "chat_${it.id}" }) { chat ->
                         ShareRecipientRow(
                             recipient = chat,
-                            onClick = { onSelectRecipient(chat) },
+                            isSelected = chat.id in selectedRecipientIds,
+                            isMultiSelect = isMultiSelect,
+                            onClick = { handleRecipientClick(chat) },
                         )
                     }
                 }
 
                 // Section 3: Nearby Discovered Devices
-                if (nearbyDevices.isNotEmpty()) {
+                if (filteredNearby.isNotEmpty()) {
                     item {
                         SectionHeader(
                             title = "Available Nearby",
-                            count = nearbyDevices.size,
+                            count = filteredNearby.size,
                         )
                     }
-                    items(nearbyDevices, key = { "nearby_${it.id}" }) { device ->
+                    items(filteredNearby, key = { "nearby_${it.id}" }) { device ->
                         ShareRecipientRow(
                             recipient = device,
-                            onClick = { onSelectRecipient(device) },
+                            isSelected = device.id in selectedRecipientIds,
+                            isMultiSelect = isMultiSelect,
+                            onClick = { handleRecipientClick(device) },
                         )
                     }
                 }
 
                 // Empty / Discovery State
-                if (pairedDevices.isEmpty() && nearbyDevices.isEmpty() && recentChats.isEmpty()) {
+                if (filteredPaired.isEmpty() && filteredNearby.isEmpty() && filteredChats.isEmpty()) {
                     item {
                         EmptyDiscoveryCard(isScanning = isScanning)
                     }
@@ -290,6 +410,71 @@ fun FlashShareTargetSheet(
                 if (onManualConnect != null) {
                     item {
                         ManualConnectRow(onClick = onManualConnect)
+                    }
+                }
+            }
+
+            // Multi-Forward Sticky Dock
+            if (isMultiSelect && selectedRecipientIds.isNotEmpty()) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(FlashShapes.radius12),
+                    color = colors.backgroundSurfaceStrong,
+                    border = BorderStroke(1.dp, colors.borderSubtle),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f).padding(end = FlashSpacing.space8),
+                        ) {
+                            FlashText(
+                                text = "${selectedRecipientIds.size}/$maxSelectCount selected",
+                                style = FlashTheme.typography.captionEmphasis,
+                                color = colors.accentPrimary,
+                            )
+                            val previewText = FlashShareTargetMath.formatItemSubtitle(payload)
+                            if (previewText.isNotBlank()) {
+                                FlashText(
+                                    text = previewText,
+                                    style = FlashTheme.typography.metadataDefault,
+                                    color = colors.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(FlashShapes.composerBar)
+                                .background(colors.accentPrimary)
+                                .clickable {
+                                    val all = (pairedDevices + recentChats + nearbyDevices)
+                                    val chosen = all.filter { it.id in selectedRecipientIds }.distinctBy { it.id }
+                                    onForward?.invoke(chosen)
+                                }
+                                .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+                            ) {
+                                FlashIcon(
+                                    icon = FlashIcons.Send,
+                                    tint = colors.textOnAccent,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                                FlashText(
+                                    text = "Forward",
+                                    style = FlashTheme.typography.captionEmphasis,
+                                    color = colors.textOnAccent,
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -394,6 +579,8 @@ private fun SectionHeader(title: String, count: Int) {
 @Composable
 private fun ShareRecipientRow(
     recipient: FlashShareRecipientUi,
+    isSelected: Boolean = false,
+    isMultiSelect: Boolean = false,
     onClick: () -> Unit,
 ) {
     val colors = FlashTheme.colors
@@ -475,26 +662,49 @@ private fun ShareRecipientRow(
             }
         }
 
-        // Action Chip
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = if (recipient.isOnline) colors.accentPrimary.copy(alpha = 0.15f) else colors.borderSubtle,
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+        if (isMultiSelect) {
+            Box(
+                modifier = Modifier
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(if (isSelected) colors.accentPrimary else Color.Transparent)
+                    .border(
+                        width = if (isSelected) 0.dp else 1.5.dp,
+                        color = if (isSelected) Color.Transparent else colors.borderSubtle,
+                        shape = CircleShape,
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                FlashIcon(
-                    icon = if (recipient.isPaired) FlashIcons.Send else FlashIcons.Share,
-                    tint = if (recipient.isOnline) colors.accentPrimary else colors.textSecondary,
-                    modifier = Modifier.size(14.dp),
-                )
-                FlashText(
-                    text = if (recipient.isPaired) "Send" else "Pair & Send",
-                    style = FlashTheme.typography.metadataEmphasis,
-                    color = if (recipient.isOnline) colors.accentPrimary else colors.textPrimary,
-                )
+                if (isSelected) {
+                    FlashIcon(
+                        icon = FlashIcons.Check,
+                        tint = colors.textOnAccent,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+            }
+        } else {
+            // Action Chip
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = if (recipient.isOnline) colors.accentPrimary.copy(alpha = 0.15f) else colors.borderSubtle,
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    FlashIcon(
+                        icon = if (recipient.isPaired) FlashIcons.Send else FlashIcons.Share,
+                        tint = if (recipient.isOnline) colors.accentPrimary else colors.textSecondary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    FlashText(
+                        text = if (recipient.isPaired) "Send" else "Pair & Send",
+                        style = FlashTheme.typography.metadataEmphasis,
+                        color = if (recipient.isOnline) colors.accentPrimary else colors.textPrimary,
+                    )
+                }
             }
         }
     }

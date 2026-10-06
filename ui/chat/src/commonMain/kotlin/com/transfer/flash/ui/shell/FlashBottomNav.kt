@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.runtime.Composable
@@ -26,8 +27,10 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -159,6 +162,45 @@ private const val IconPopStartScale = 0.82f
 private const val LabelWeightSelected = 600
 private const val LabelWeightIdle = 400
 
+/**
+ * Observes a [LazyListState] and derives whether navigation chrome should remain visible.
+ * Automatically hides on downward scroll to maximize content reading area on smaller screens,
+ * and restores immediately on upward scroll or list settle.
+ */
+@Composable
+fun rememberAutoNavVisible(
+    listState: LazyListState?,
+    scrollThresholdPx: Float = 20f,
+): State<Boolean> {
+    val isVisible = remember { mutableStateOf(true) }
+    if (listState == null) return isVisible
+
+    var previousIndex by remember(listState) { mutableIntStateOf(listState.firstVisibleItemIndex) }
+    var previousScrollOffset by remember(listState) { mutableIntStateOf(listState.firstVisibleItemScrollOffset) }
+
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            if (index > previousIndex) {
+                isVisible.value = false
+            } else if (index < previousIndex) {
+                isVisible.value = true
+            } else {
+                val delta = offset - previousScrollOffset
+                if (delta > scrollThresholdPx) {
+                    isVisible.value = false
+                } else if (delta < -scrollThresholdPx || offset <= 0) {
+                    isVisible.value = true
+                }
+            }
+            previousIndex = index
+            previousScrollOffset = offset
+        }
+    }
+    return isVisible
+}
+
 @Composable
 fun FlashBottomNav(
     items: List<FlashBottomNavItem>,
@@ -166,6 +208,7 @@ fun FlashBottomNav(
     onTabSelected: (FlashDestination) -> Unit,
     modifier: Modifier = Modifier,
     onTabReselected: (FlashDestination) -> Unit = {},
+    visible: Boolean = true,
 ) {
     if (items.isEmpty()) return
     val colors = FlashTheme.colors
@@ -185,9 +228,27 @@ fun FlashBottomNav(
     )
     val travel = rememberTravelPulse(selectedIndex, motion)
 
+    val navVisibleFraction = animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = if (motion.reduceMotion) androidx.compose.animation.core.snap() else motion.springSnappySpec(),
+        label = "flashBottomNavVisibility",
+    )
+
+    var previousIndex by remember { mutableIntStateOf(selectedIndex) }
+    val hopDirection = remember(selectedIndex) {
+        val delta = selectedIndex - previousIndex
+        previousIndex = selectedIndex
+        if (delta > 0) 1 else if (delta < 0) -1 else 0
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .graphicsLayer {
+                val hideDistance = (FlashBottomNavDefaults.barHeight + FlashBottomNavDefaults.bottomMargin + 32.dp).toPx()
+                translationY = (1f - navVisibleFraction.value) * hideDistance
+                alpha = navVisibleFraction.value.coerceIn(0f, 1f)
+            }
             .navigationBarsPadding()
             .padding(
                 start = FlashBottomNavDefaults.horizontalMargin,
@@ -237,6 +298,7 @@ fun FlashBottomNav(
                         FlashBottomNavItemCell(
                             item = item,
                             isSelected = index == selectedIndex,
+                            hopDirection = if (index == selectedIndex) hopDirection else 0,
                             onClick = {
                                 haptics(FlashHaptic.Tick)
                                 onTabSelected(item.destination)
@@ -289,6 +351,7 @@ private fun rememberTravelPulse(selectedIndex: Int, motion: FlashMotion): State<
 private fun FlashBottomNavItemCell(
     item: FlashBottomNavItem,
     isSelected: Boolean,
+    hopDirection: Int = 0,
     onClick: () -> Unit,
     onReselect: () -> Unit,
     modifier: Modifier = Modifier,
@@ -307,13 +370,20 @@ private fun FlashBottomNavItemCell(
     }
 
     val scale = remember { Animatable(1f) }
+    val tilt = remember { Animatable(0f) }
     LaunchedEffect(isSelected) {
         when {
             isSelected && !motion.reduceMotion -> {
+                val targetTilt = if (hopDirection > 0) -5f else if (hopDirection < 0) 5f else 0f
+                tilt.snapTo(targetTilt)
+                tilt.animateTo(0f, motion.springSnappySpec())
                 scale.snapTo(IconPopStartScale)
                 scale.animateTo(1f, motion.springSnappySpec())
             }
-            !isSelected -> scale.snapTo(1f)
+            !isSelected -> {
+                scale.snapTo(1f)
+                tilt.snapTo(0f)
+            }
         }
     }
 
@@ -359,6 +429,7 @@ private fun FlashBottomNavItemCell(
                     modifier = Modifier.graphicsLayer {
                         scaleX = scale.value
                         scaleY = scale.value
+                        rotationZ = tilt.value
                     },
                 )
                 Badge(

@@ -121,10 +121,11 @@ public class FlashGroupCallSession(
     private val nowMs: () -> Long = { SystemTimeSource.nowMs() },
 ) : FlashCallMedia {
 
-    private fun resolveName(peerId: String, fallback: String? = null): String =
-        peerNameResolver(peerId)?.ifBlank { null }
+    private fun resolveName(peerId: String, fallback: String? = null): String {
+        val resolved = peerNameResolver(peerId)?.ifBlank { null }
             ?: fallback?.takeIf { it.isNotBlank() && it != peerId }
-            ?: peerId
+        return resolved ?: if (peerId.length > 8) "Member (${peerId.take(4)})" else peerId
+    }
 
     private val _state = MutableStateFlow(
         FlashCallUiState(

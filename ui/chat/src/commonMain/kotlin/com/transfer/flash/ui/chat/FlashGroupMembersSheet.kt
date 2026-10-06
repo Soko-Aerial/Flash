@@ -136,6 +136,7 @@ fun FlashGroupMembersSheet(
     onPromoteAdmin: ((FlashGroupMemberUi) -> Unit)? = null,
     /** ADR-063: demote an admin to member (owner only). */
     onDemoteAdmin: ((FlashGroupMemberUi) -> Unit)? = null,
+    onOpenSharedContent: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val sorted = remember(members) { FlashGroupMembersMath.sortMembers(members) }
@@ -170,6 +171,61 @@ fun FlashGroupMembersSheet(
                     bottom = FlashSpacing.space32,
                 ),
         ) {
+            // Shared Media & Files action row
+            if (onOpenSharedContent != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable {
+                            onDismiss()
+                            onOpenSharedContent()
+                        }
+                        .padding(vertical = FlashSpacing.space8, horizontal = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Gallery,
+                            contentDescription = null,
+                            tint = colors.accentPrimary,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Shared Media & Files",
+                            style = FlashTheme.typography.bodyEmphasis,
+                            color = colors.textPrimary,
+                        )
+                        FlashText(
+                            text = "Photos, videos, files, and links",
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    FlashIcon(
+                        icon = FlashIcons.Forward,
+                        contentDescription = null,
+                        size = FlashDimensions.iconSm,
+                        tint = colors.textSecondary,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = FlashSpacing.space8)
+                        .height(FlashDimensions.borderHairline)
+                        .background(colors.borderSubtle),
+                )
+            }
+
             // UI-054: Invite People action row (shown only when this device may share it)
             if (canShareInvite && onInviteClick != null) {
                 Row(

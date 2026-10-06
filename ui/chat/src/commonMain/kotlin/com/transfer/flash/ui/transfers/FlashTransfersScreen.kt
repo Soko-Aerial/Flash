@@ -2,8 +2,14 @@ package com.transfer.flash.ui.transfers
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +45,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.Role
@@ -175,6 +185,21 @@ object FlashTransfersMath {
         else -> ""
     }
 
+    /**
+     * Duration in milliseconds for the velocity shimmer sweep across active progress bars.
+     * Higher throughput accelerates the sweep, giving responsive tactical speed feedback.
+     */
+    fun shimmerDurationMillis(bytesPerSec: Long): Int {
+        val speedMb = bytesPerSec / (1024f * 1024f)
+        return when {
+            speedMb >= 50f -> 600
+            speedMb >= 20f -> 800
+            speedMb >= 5f -> 1200
+            speedMb >= 1f -> 1600
+            else -> 2200
+        }
+    }
+
     fun formatEta(seconds: Long?): String = when {
         seconds == null || seconds <= 0L -> ""
         seconds < 60L -> "$seconds sec left"
@@ -259,6 +284,8 @@ fun FlashTransfersScreen(
     onDeclineOffer: (FlashTransferItemUi) -> Unit = {},
     /** Trailing share glyph on a completed transfer (ACTION_SEND). Defaults to open. */
     onHistoryShare: (FlashTransferItemUi) -> Unit = onHistoryOpen,
+    /** Optional action to clear completed transfer history from the view. */
+    onClearHistory: (() -> Unit)? = null,
 ) {
     // Every branch clears the status bar: this page is its own top-level surface and has no
     // top bar of its own to own that inset (Chats/Conversation do it in their headers).
@@ -295,6 +322,7 @@ fun FlashTransfersScreen(
                 onHistoryShare = onHistoryShare,
                 onAcceptOffer = onAcceptOffer,
                 onDeclineOffer = onDeclineOffer,
+                onClearHistory = onClearHistory,
                 modifier = surface,
                 listState = listState,
                 bottomInset = bottomInset,
@@ -413,14 +441,19 @@ private fun PopulatedSections(
     onHistoryShare: (FlashTransferItemUi) -> Unit,
     onAcceptOffer: (FlashTransferItemUi) -> Unit,
     onDeclineOffer: (FlashTransferItemUi) -> Unit,
+    onClearHistory: (() -> Unit)?,
     modifier: Modifier,
     listState: LazyListState,
     bottomInset: Dp,
 ) {
     val statusSwap = FlashTheme.motion.statusCrossfade()
     val motion = FlashTheme.motion
+    val (retryableFailed, cancelledOrDeclined) = remember(state.failed) {
+        state.failed.partition { it.retryable }
+    }
+
     // Rows are keyed by transfer id and hop between sections as state changes
-    // (Active → Failed → History), so placement is animated rather than snapping.
+    // (Active → Failed → Cancelled → History), so placement is animated rather than snapping.
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         state = listState,
@@ -456,7 +489,43 @@ private fun PopulatedSections(
             }
         }
         if (state.active.isNotEmpty()) {
-            item(key = "label-active") { SectionLabel("ACTIVE") }
+            item(key = "label-active") {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FlashText(
+                        text = "ACTIVE",
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = FlashTheme.colors.textTertiary,
+                    )
+                    if (state.active.size > 1) {
+                        val anyActiveRunning = state.active.any { it.state == FlashTransferState.Active }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(FlashShapes.radius8))
+                                .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                                .clickable {
+                                    state.active.forEach { item ->
+                                        if (anyActiveRunning && item.state == FlashTransferState.Active) {
+                                            onPauseResumeClick(item)
+                                        } else if (!anyActiveRunning && item.state == FlashTransferState.Paused) {
+                                            onPauseResumeClick(item)
+                                        }
+                                    }
+                                }
+                                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                        ) {
+                            FlashText(
+                                text = if (anyActiveRunning) "Pause all" else "Resume all",
+                                style = FlashTheme.typography.captionEmphasis,
+                                color = FlashTheme.colors.accentPrimary,
+                            )
+                        }
+                    }
+                }
+            }
             items(state.active, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
@@ -483,30 +552,61 @@ private fun PopulatedSections(
                 )
             }
         }
-        if (state.failed.isNotEmpty()) {
+        if (retryableFailed.isNotEmpty()) {
             item(key = "label-failed") { SectionLabel("FAILED") }
-            items(state.failed, key = { it.id }) { item ->
+            items(retryableFailed, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
                     trailing = {
-                        // Retry is offered only where it can actually do something. A cancelled or
-                        // declined transfer lands in this section too (the UI has no Cancelled
-                        // bucket) and cannot be resumed — the counterpart tore its session down —
-                        // so it shows its label with no button rather than a dead one.
-                        if (item.retryable) {
-                            RowIcon(
-                                icon = FlashIcons.Retry,
-                                description = "Retry",
-                                onClick = { onRetryClick(item) },
-                            )
-                        }
+                        RowIcon(
+                            icon = FlashIcons.Retry,
+                            description = "Retry",
+                            onClick = { onRetryClick(item) },
+                        )
                     },
                 )
             }
         }
+        if (cancelledOrDeclined.isNotEmpty()) {
+            item(key = "label-cancelled") { SectionLabel("CANCELLED / DECLINED") }
+            items(cancelledOrDeclined, key = { it.id }) { item ->
+                TransferRow(
+                    item = item,
+                    modifier = flashAnimateItem(motion),
+                    trailing = {},
+                )
+            }
+        }
         if (state.history.isNotEmpty()) {
-            item(key = "label-history") { SectionLabel("HISTORY") }
+            item(key = "label-history") {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FlashText(
+                        text = "HISTORY",
+                        style = FlashTheme.typography.captionEmphasis,
+                        color = FlashTheme.colors.textTertiary,
+                    )
+                    if (onClearHistory != null) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(FlashShapes.radius8))
+                                .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                                .clickable { onClearHistory() }
+                                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+                        ) {
+                            FlashText(
+                                text = "Clear history",
+                                style = FlashTheme.typography.captionEmphasis,
+                                color = FlashTheme.colors.textSecondary,
+                            )
+                        }
+                    }
+                }
+            }
             items(state.history, key = { it.id }) { item ->
                 TransferRow(
                     item = item,
@@ -562,19 +662,40 @@ private fun HeaderWithChips(state: TransfersUiState) {
                 color = FlashTheme.colors.textSecondary,
             )
         }
-        AnimatedVisibility(visible = state.failed.isNotEmpty()) {
-            Box(
-                Modifier
-                    .padding(top = FlashSpacing.space8)
-                    .clip(FlashShapes.chip)
-                    .background(FlashTheme.colors.textError.copy(alpha = 0.12f))
-                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2),
-            ) {
-                FlashText(
-                    text = "${state.failed.size} failed",
-                    style = FlashTheme.typography.captionDefault,
-                    color = FlashTheme.colors.textError,
-                )
+        val (retryableFailed, cancelledOrDeclined) = remember(state.failed) {
+            state.failed.partition { it.retryable }
+        }
+        Row(
+            modifier = Modifier.padding(top = FlashSpacing.space8),
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        ) {
+            if (retryableFailed.isNotEmpty()) {
+                Box(
+                    Modifier
+                        .clip(FlashShapes.chip)
+                        .background(FlashTheme.colors.textError.copy(alpha = 0.12f))
+                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2),
+                ) {
+                    FlashText(
+                        text = "${retryableFailed.size} failed",
+                        style = FlashTheme.typography.captionDefault,
+                        color = FlashTheme.colors.textError,
+                    )
+                }
+            }
+            if (cancelledOrDeclined.isNotEmpty()) {
+                Box(
+                    Modifier
+                        .clip(FlashShapes.chip)
+                        .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                        .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2),
+                ) {
+                    FlashText(
+                        text = "${cancelledOrDeclined.size} cancelled",
+                        style = FlashTheme.typography.captionDefault,
+                        color = FlashTheme.colors.textSecondary,
+                    )
+                }
             }
         }
     }
@@ -675,35 +796,14 @@ private fun TransferRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Box(
-                Modifier
-                    .padding(top = FlashSpacing.space4)
-                    .fillMaxWidth()
-                    .height(FlashDimensions.borderHairline * 4)
-                    .clip(FlashShapes.bubbleGrouped)
-                    .background(colors.backgroundSurfaceSubtle),
-            ) {
-                Box(
-                    Modifier
-                        // Mirrors `fillMaxWidth(fraction)` exactly — same `roundToInt`, same
-                        // `coerceIn(minWidth, maxWidth)` as Compose's own FillNode — but in the
-                        // layout phase, so the progress tween never touches composition.
-                        .layout { measurable, constraints ->
-                            val width = FlashTransfersMath.progressBarWidthPx(
-                                minWidthPx = constraints.minWidth,
-                                maxWidthPx = constraints.maxWidth,
-                                fraction = fraction.value,
-                            )
-                            val placeable = measurable.measure(
-                                constraints.copy(minWidth = width, maxWidth = width),
-                            )
-                            layout(placeable.width, placeable.height) { placeable.place(0, 0) }
-                        }
-                        .fillMaxSize()
-                        .clip(FlashShapes.bubbleGrouped)
-                        .background(fillTint),
-                )
-            }
+            TransferProgressBar(
+                fraction = fraction,
+                fillTint = fillTint,
+                isActive = item.state == FlashTransferState.Active,
+                speedBytesPerSec = item.speedBytesPerSec,
+                reduceMotion = FlashTheme.motion.reduceMotion,
+                modifier = Modifier.padding(top = FlashSpacing.space4),
+            )
             FlashText(
                 text = FlashTransfersMath.statusLine(item),
                 style = FlashTheme.typography.metadataDefault,
@@ -713,6 +813,85 @@ private fun TransferRow(
         }
         Spacer(Modifier.width(FlashSpacing.space8))
         Row(verticalAlignment = Alignment.CenterVertically) { trailing() }
+    }
+}
+
+@Composable
+private fun TransferProgressBar(
+    fraction: State<Float>,
+    fillTint: Color,
+    isActive: Boolean,
+    speedBytesPerSec: Long,
+    reduceMotion: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val durationMillis = remember(speedBytesPerSec) {
+        FlashTransfersMath.shimmerDurationMillis(speedBytesPerSec)
+    }
+    val transition = rememberInfiniteTransition(label = "transferShimmer")
+    val shimmerProgress = if (isActive && speedBytesPerSec > 0 && !reduceMotion) {
+        transition.animateFloat(
+            initialValue = -0.5f,
+            targetValue = 1.5f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "shimmerSweep",
+        )
+    } else {
+        null
+    }
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(FlashDimensions.borderHairline * 4)
+            .clip(FlashShapes.bubbleGrouped)
+            .background(FlashTheme.colors.backgroundSurfaceSubtle),
+    ) {
+        Box(
+            Modifier
+                // Mirrors `fillMaxWidth(fraction)` exactly — same `roundToInt`, same
+                // `coerceIn(minWidth, maxWidth)` as Compose's own FillNode — but in the
+                // layout phase, so the progress tween never touches composition (EXP-013).
+                .layout { measurable, constraints ->
+                    val width = FlashTransfersMath.progressBarWidthPx(
+                        minWidthPx = constraints.minWidth,
+                        maxWidthPx = constraints.maxWidth,
+                        fraction = fraction.value,
+                    )
+                    val placeable = measurable.measure(
+                        constraints.copy(minWidth = width, maxWidth = width),
+                    )
+                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                }
+                .fillMaxSize()
+                .clip(FlashShapes.bubbleGrouped)
+                .background(fillTint)
+                .drawWithContent {
+                    drawContent()
+                    val progress = shimmerProgress?.value
+                    if (progress != null) {
+                        val barWidth = size.width
+                        if (barWidth > 0f) {
+                            val sweepX = barWidth * progress
+                            val shimmerWidth = (barWidth * 0.45f).coerceAtLeast(40f)
+                            drawRect(
+                                brush = Brush.linearGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.35f),
+                                        Color.Transparent,
+                                    ),
+                                    start = Offset(sweepX - shimmerWidth, 0f),
+                                    end = Offset(sweepX + shimmerWidth, size.height),
+                                ),
+                            )
+                        }
+                    }
+                },
+        )
     }
 }
 

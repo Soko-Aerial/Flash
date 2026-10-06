@@ -254,6 +254,17 @@ fun FlashVoiceMessageCard(
         else -> ""
     }
 
+    val togglePlay = {
+        haptics(FlashHaptic.Tick)
+        if (isPlaying || elapsedMs < durationMs) hasStarted = true
+        if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
+            elapsedMs = 0L
+            audioPlayer?.seekTo(0L)
+        }
+        isPlaying = !isPlaying
+        onActionClick()
+    }
+
     Row(
         modifier = modifier
             .defaultMinSize(minWidth = 220.dp)
@@ -271,7 +282,10 @@ fun FlashVoiceMessageCard(
             .combinedClickable(
                 interactionSource = cardInteraction,
                 indication = null,
-                onClick = onCardClick,
+                onClick = {
+                    togglePlay()
+                    onCardClick()
+                },
                 onLongClick = {
                     haptics(FlashHaptic.Confirm)
                     onLongPress()
@@ -289,16 +303,7 @@ fun FlashVoiceMessageCard(
             FlashVoiceBadge(
                 transferStatus = attachment.transferStatus,
                 isPlaying = isPlaying,
-                onTogglePlay = {
-                    haptics(FlashHaptic.Tick)
-                    if (isPlaying || elapsedMs < durationMs) hasStarted = true
-                    if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
-                        elapsedMs = 0L
-                        audioPlayer?.seekTo(0L)
-                    }
-                    isPlaying = !isPlaying
-                    onActionClick()
-                },
+                onTogglePlay = togglePlay,
             )
             Spacer(modifier = Modifier.height(FlashSpacing.space4))
             FlashVoiceSpeedPill(

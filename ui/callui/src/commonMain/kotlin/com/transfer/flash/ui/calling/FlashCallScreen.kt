@@ -326,7 +326,7 @@ private fun FlashCallPictureInPicture(state: FlashCallUiState, session: FlashCal
  * created, no frame callback is scheduled. HIGH tier animates identically to before this change.
  */
 @Composable
-private fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
+internal fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
     if (pulsing && !FlashTheme.motion.reduceMotion) {
         val transition = rememberInfiniteTransition(label = "flashCallPulse")
         transition.animateFloat(
@@ -348,42 +348,36 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
     val colors = FlashTheme.colors
     val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
     val scale = rememberCallPulseScale(pulsing)
+    val isSpeaking = !state.peerMicMuted && state.state == FlashCallState.ACTIVE
+
+    val outerScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking, scale.value)
+    val middleScale = FlashCallRippleMath.computeMiddleGlowScale(isSpeaking, scale.value)
+    val outerAlpha = if (isSpeaking) FlashCallRippleMath.SPEAKING_ALPHA else if (state.state == FlashCallState.RINGING) FlashCallRippleMath.RESTING_ALPHA_RINGING else FlashCallRippleMath.RESTING_ALPHA_ACTIVE
+    val middleAlpha = if (isSpeaking) 0.26f else if (state.state == FlashCallState.RINGING) 0.16f else 0.10f
 
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         if (!state.isGroup || state.participants.isEmpty()) {
             Box(contentAlignment = Alignment.Center) {
-                // Multi-tier ambient glow waves
+                // Task 3.5: Multi-tier ambient glow waves modulated by real-time speaking energy
                 Box(
                     modifier = Modifier
                         .size(172.dp)
                         .graphicsLayer {
-                            scaleX = scale.value * 1.06f
-                            scaleY = scale.value * 1.06f
+                            scaleX = outerScale
+                            scaleY = outerScale
                         }
                         .clip(CircleShape)
-                        .background(
-                            if (state.state == FlashCallState.RINGING) {
-                                colors.accentPrimary.copy(alpha = 0.08f)
-                            } else {
-                                colors.accentPrimary.copy(alpha = 0.05f)
-                            }
-                        ),
+                        .background(colors.accentPrimary.copy(alpha = outerAlpha)),
                 )
                 Box(
                     modifier = Modifier
                         .size(144.dp)
                         .graphicsLayer {
-                            scaleX = scale.value
-                            scaleY = scale.value
+                            scaleX = middleScale
+                            scaleY = middleScale
                         }
                         .clip(CircleShape)
-                        .background(
-                            if (state.state == FlashCallState.RINGING) {
-                                colors.accentPrimary.copy(alpha = 0.16f)
-                            } else {
-                                colors.accentPrimary.copy(alpha = 0.10f)
-                            }
-                        ),
+                        .background(colors.accentPrimary.copy(alpha = middleAlpha)),
                 )
                 FlashAvatar(
                     initials = state.peerName.take(2),
@@ -447,15 +441,16 @@ private fun FlashGroupParticipantsGrid(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             if (participant.isSpeaking) {
+                                val ringScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking = true, pulseScale)
                                 Box(
                                     modifier = Modifier
                                         .size(FlashDimensions.avatarLg + 18.dp)
                                         .graphicsLayer {
-                                            scaleX = pulseScale
-                                            scaleY = pulseScale
+                                            scaleX = ringScale
+                                            scaleY = ringScale
                                         }
                                         .clip(CircleShape)
-                                        .background(colors.statusOnline.copy(alpha = 0.28f)),
+                                        .background(colors.statusOnline.copy(alpha = 0.32f)),
                                 )
                             }
                             FlashAvatar(

@@ -181,12 +181,18 @@ private fun FlashGroupVideoTile(
         if (status != null) append(", ").append(status)
         if (pinned) append(", pinned")
     }
+    val isSpeaking = participant.isSpeaking
+    val speakerPulse = rememberCallPulseScale(isSpeaking)
+    val speakerRingAlpha = FlashCallRippleMath.speakerBorderAlpha(isSpeaking, (speakerPulse.value - 1f) / 0.08f)
+
     val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
             .clip(shape)
             .then(
-                if (participant.isSpeaking) Modifier.border(2.dp, colors.statusOnline, shape) else Modifier,
+                if (isSpeaking) {
+                    Modifier.border(2.5.dp, colors.statusOnline.copy(alpha = speakerRingAlpha), shape)
+                } else Modifier,
             )
             .then(
                 if (onClick != null) {

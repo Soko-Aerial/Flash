@@ -1,14 +1,22 @@
 package com.transfer.flash.ui.settings
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,6 +57,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
@@ -356,272 +365,342 @@ fun FlashSettingsScreen(
                 )
             }
         }
-        item(key = "identity-label") { StaggerIn(1) { SectionLabel("IDENTITY") } }
         item(key = "identity") {
-            StaggerIn(2) { IdentityRow(model.displayName, onEditDisplayName) }
+            StaggerIn(1) { IdentityRow(model.displayName, onEditDisplayName) }
         }
 
-        item(key = "appearance-label") { StaggerIn(3) { SectionLabel("APPEARANCE") } }
-        item(key = "theme-mode") {
-            StaggerIn(4) {
-                SettingsCard {
-                    ThemeModeSegmented(
-                        selected = model.themeMode,
-                        onSelected = onThemeModeSelected,
-                    )
-                }
-            }
-        }
-        item(key = "dynamic-accent") {
-            StaggerIn(5) {
-                SwitchRow(
-                    title = "Dynamic accent",
-                    subtitle = "Tint Flash with your wallpaper colors where supported",
-                    checked = model.dynamicAccent,
-                    onCheckedChange = onDynamicAccentChanged,
-                )
-            }
-        }
-        item(key = "haptics") {
-            StaggerIn(6) {
-                SwitchRow(
-                    title = "Haptics",
-                    subtitle = "Subtle vibration feedback on actions",
-                    checked = model.hapticsEnabled,
-                    onCheckedChange = onHapticsChanged,
-                )
-            }
-        }
-        item(key = "launch-animation") {
-            StaggerIn(6) {
-                SwitchRow(
-                    title = "Launch animation",
-                    subtitle = FlashSettingsMath.launchAnimationSubtitle(model.launchAnimation),
-                    checked = model.launchAnimation,
-                    onCheckedChange = onLaunchAnimationChanged,
-                )
-            }
-        }
-
-        item(key = "performance-label") { StaggerIn(7) { SectionLabel("PERFORMANCE") } }
-        item(key = "performance-mode") {
-            StaggerIn(8) {
-                SettingsCard {
-                    PerformanceModeSegmented(
-                        selected = model.performanceMode,
-                        detected = model.detectedPerformanceMode,
-                        onSelected = onPerformanceModeSelected,
-                    )
-                }
-            }
-        }
-
-        item(key = "security-label") { StaggerIn(9) { SectionLabel("SECURITY") } }
-        item(key = "encryption") {
-            StaggerIn(10) {
-                ValueRow(
-                    iconSpec = FlashIcons.Encryption,
-                    title = "Encryption",
-                    subtitle = "How Flash protects your transfers",
-                    value = null,
-                    onClick = onOpenEncryption,
-                )
-            }
-        }
-        item(key = "trusted-peers") {
-            StaggerIn(11) {
-                ValueRow(
-                    iconSpec = FlashIcons.Verified,
-                    title = "Trusted peers",
-                    subtitle = FlashSettingsMath.trustedPeersSubtitle(model.trustedPeerCount),
-                    value = null,
-                    onClick = onOpenTrustedPeers,
-                )
-            }
-        }
-
-        item(key = "data-label") { StaggerIn(12) { SectionLabel("DATA") } }
-        item(key = "save-location") {
-            StaggerIn(13) {
-                ValueRow(
-                    iconSpec = FlashIcons.Download,
-                    title = "Save location",
-                    subtitle = model.saveLocationLabel ?: "Choose where received files go",
-                    value = null,
-                    onClick = onPickSaveLocation,
-                )
-            }
-        }
-        item(key = "background") {
-            StaggerIn(14) {
-                SwitchRow(
-                    title = "Background transfers",
-                    subtitle = "Keep sending when you leave the app",
-                    checked = model.backgroundTransfers,
-                    onCheckedChange = onBackgroundTransfersChanged,
-                )
-            }
-        }
-        if (model.showWindowsContextMenu) {
-            item(key = "windows-context-menu") {
-                StaggerIn(14) {
+        // 1. Appearance & Feedback
+        item(key = "section-appearance") {
+            StaggerIn(2) {
+                ExpandableSettingsSection(
+                    title = "Appearance & Feedback",
+                    subtitle = "Theme, dynamic accent, haptics, and animation",
+                    iconSpec = FlashIcons.Gallery,
+                    initiallyExpanded = true,
+                ) {
+                    SettingsCard {
+                        ThemeModeSegmented(
+                            selected = model.themeMode,
+                            onSelected = onThemeModeSelected,
+                        )
+                    }
                     SwitchRow(
-                        title = "File Explorer context menu",
-                        subtitle = "Right-click any file or folder to send with Flash",
-                        checked = model.windowsContextMenu,
-                        onCheckedChange = onWindowsContextMenuChanged,
+                        title = "Dynamic accent",
+                        subtitle = "Tint Flash with your wallpaper colors where supported",
+                        checked = model.dynamicAccent,
+                        onCheckedChange = onDynamicAccentChanged,
                     )
-                }
-            }
-        }
-        item(key = "battery-exemption") {
-            StaggerIn(15) {
-                ValueRow(
-                    iconSpec = FlashIcons.Bolt,
-                    title = "Unrestricted battery",
-                    subtitle = FlashSettingsMath.batteryExemptionSubtitle(model.ignoringBatteryOptimizations),
-                    value = FlashSettingsMath.batteryExemptionValue(model.ignoringBatteryOptimizations),
-                    onClick = onOpenBatterySettings,
-                )
-            }
-        }
-        item(key = "discovery-mode-label") { StaggerIn(16) { SectionLabel("DISCOVERY MODE") } }
-        item(key = "discovery-mode") {
-            StaggerIn(16) {
-                SettingsCard {
-                    DiscoveryModeSegmented(
-                        selected = model.discoveryMode,
-                        onSelected = onDiscoveryModeChanged,
+                    SwitchRow(
+                        title = "Haptics",
+                        subtitle = "Subtle vibration feedback on actions",
+                        checked = model.hapticsEnabled,
+                        onCheckedChange = onHapticsChanged,
+                    )
+                    SwitchRow(
+                        title = "Launch animation",
+                        subtitle = FlashSettingsMath.launchAnimationSubtitle(model.launchAnimation),
+                        checked = model.launchAnimation,
+                        onCheckedChange = onLaunchAnimationChanged,
                     )
                 }
             }
         }
 
-        item(key = "storage-label") { StaggerIn(17) { SectionLabel("STORAGE") } }
-        item(key = "storage-usage") {
-            StaggerIn(17) {
-                StorageUsageCard(
-                    model = model,
-                    onRefresh = onRefreshStorageUsage,
-                    onClear = { showClearStorageConfirmation = true },
-                )
-            }
-        }
-        item(key = "auto-download-voice") {
-            StaggerIn(18) {
-                SwitchRow(
-                    title = "Auto-download voice",
-                    subtitle = "Accept incoming voice messages automatically",
-                    checked = model.autoDownloadVoice,
-                    onCheckedChange = onAutoDownloadVoiceChanged,
-                )
-            }
-        }
-        item(key = "auto-download-image") {
-            StaggerIn(19) {
-                SwitchRow(
-                    title = "Auto-download images",
-                    subtitle = "Accept incoming images automatically",
-                    checked = model.autoDownloadImage,
-                    onCheckedChange = onAutoDownloadImageChanged,
-                )
-            }
-        }
-        item(key = "auto-download-video") {
-            StaggerIn(20) {
-                SwitchRow(
-                    title = "Auto-download videos",
-                    subtitle = "Accept incoming videos automatically",
-                    checked = model.autoDownloadVideo,
-                    onCheckedChange = onAutoDownloadVideoChanged,
-                )
-            }
-        }
-        item(key = "auto-download-file") {
-            StaggerIn(21) {
-                SwitchRow(
-                    title = "Auto-download files",
-                    subtitle = "Accept incoming files automatically",
-                    checked = model.autoDownloadFile,
-                    onCheckedChange = onAutoDownloadFileChanged,
-                )
-            }
-        }
-
-        item(key = "calls-label") { StaggerIn(22) { SectionLabel("CALLS") } }
-        item(key = "prioritise-voice") {
-            StaggerIn(23) {
-                SwitchRow(
-                    title = "Prioritise voice quality",
-                    subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
-                    checked = model.prioritiseVoiceQuality,
-                    onCheckedChange = onPrioritiseVoiceQualityChanged,
-                )
-            }
-        }
-        item(key = "smaller-video-for-many") {
-            StaggerIn(23) {
-                SwitchRow(
-                    title = "Send smaller video in groups",
-                    subtitle = FlashSettingsMath.smallerVideoForManySubtitle(model.smallerVideoForMany),
-                    checked = model.smallerVideoForMany,
-                    onCheckedChange = onSmallerVideoForManyChanged,
-                )
-            }
-        }
-
-        item(key = "swarm-label") { StaggerIn(24) { SectionLabel("GROUP FILE SHARING") } }
-        item(key = "swarm-help-share") {
-            StaggerIn(24) {
-                SwitchRow(
-                    title = "Help share group files",
-                    subtitle = "Share received file pieces with other group members on your local network",
-                    checked = model.swarmHelpShare,
-                    onCheckedChange = onSwarmHelpShareChanged,
-                )
-            }
-        }
-        item(key = "swarm-keep-finished") {
-            StaggerIn(25) {
-                SwitchRow(
-                    title = "Keep finished files available for others",
-                    subtitle = "Keep completed group files available to help members who come online later",
-                    checked = model.swarmKeepFinishedFiles,
-                    onCheckedChange = onSwarmKeepFinishedFilesChanged,
-                )
-            }
-        }
-        item(key = "swarm-enabled") {
-            StaggerIn(25) {
-                SwitchRow(
-                    title = "Group file sharing (swarm, experimental)",
-                    subtitle = "Enable multi-device cooperative transfers in groups. Applies after restart",
-                    checked = model.swarmEnabled,
-                    onCheckedChange = {
-                        onSwarmEnabledChanged(it)
-                        if (onRestartApp != null) showRestartPrompt = true
-                    },
-                )
-            }
-        }
-
-        if (onExportLogs != null) {
-            item(key = "diagnostics-label") { StaggerIn(26) { SectionLabel("DIAGNOSTICS") } }
-            item(key = "export-logs") {
-                StaggerIn(26) {
+        // 2. Storage & Downloads
+        item(key = "section-storage") {
+            StaggerIn(3) {
+                ExpandableSettingsSection(
+                    title = "Storage & Downloads",
+                    subtitle = "Save destination, cache breakdown, and auto-download rules",
+                    iconSpec = FlashIcons.Download,
+                    initiallyExpanded = true,
+                ) {
                     ValueRow(
-                        iconSpec = FlashIcons.Share,
-                        title = "Export logs",
-                        subtitle = "Share Flash's recent log to help find a problem. It holds no message text or keys",
+                        iconSpec = FlashIcons.Download,
+                        title = "Save location",
+                        subtitle = model.saveLocationLabel ?: "Choose where received files go",
                         value = null,
-                        onClick = onExportLogs,
+                        onClick = onPickSaveLocation,
+                    )
+                    StorageUsageCard(
+                        model = model,
+                        onRefresh = onRefreshStorageUsage,
+                        onClear = { showClearStorageConfirmation = true },
+                    )
+                    SwitchRow(
+                        title = "Auto-download voice",
+                        subtitle = "Accept incoming voice messages automatically",
+                        checked = model.autoDownloadVoice,
+                        onCheckedChange = onAutoDownloadVoiceChanged,
+                    )
+                    SwitchRow(
+                        title = "Auto-download images",
+                        subtitle = "Accept incoming images automatically",
+                        checked = model.autoDownloadImage,
+                        onCheckedChange = onAutoDownloadImageChanged,
+                    )
+                    SwitchRow(
+                        title = "Auto-download videos",
+                        subtitle = "Accept incoming videos automatically",
+                        checked = model.autoDownloadVideo,
+                        onCheckedChange = onAutoDownloadVideoChanged,
+                    )
+                    SwitchRow(
+                        title = "Auto-download files",
+                        subtitle = "Accept incoming files automatically",
+                        checked = model.autoDownloadFile,
+                        onCheckedChange = onAutoDownloadFileChanged,
                     )
                 }
             }
         }
 
-        item(key = "about-label") { StaggerIn(26) { SectionLabel("ABOUT") } }
-        item(key = "about") { StaggerIn(27) { AboutCard(model) } }
+        // 3. Network & Discovery
+        item(key = "section-network") {
+            StaggerIn(4) {
+                ExpandableSettingsSection(
+                    title = "Network & Discovery",
+                    subtitle = "Presence mode, background transfers, and battery settings",
+                    iconSpec = FlashIcons.Wifi,
+                    initiallyExpanded = true,
+                ) {
+                    SettingsCard {
+                        DiscoveryModeSegmented(
+                            selected = model.discoveryMode,
+                            onSelected = onDiscoveryModeChanged,
+                        )
+                    }
+                    SwitchRow(
+                        title = "Background transfers",
+                        subtitle = "Keep sending when you leave the app",
+                        checked = model.backgroundTransfers,
+                        onCheckedChange = onBackgroundTransfersChanged,
+                    )
+                    if (model.showWindowsContextMenu) {
+                        SwitchRow(
+                            title = "File Explorer context menu",
+                            subtitle = "Right-click any file or folder to send with Flash",
+                            checked = model.windowsContextMenu,
+                            onCheckedChange = onWindowsContextMenuChanged,
+                        )
+                    }
+                    ValueRow(
+                        iconSpec = FlashIcons.Bolt,
+                        title = "Unrestricted battery",
+                        subtitle = FlashSettingsMath.batteryExemptionSubtitle(model.ignoringBatteryOptimizations),
+                        value = FlashSettingsMath.batteryExemptionValue(model.ignoringBatteryOptimizations),
+                        onClick = onOpenBatterySettings,
+                    )
+                }
+            }
+        }
+
+        // 4. Calling & Video
+        item(key = "section-calling") {
+            StaggerIn(5) {
+                ExpandableSettingsSection(
+                    title = "Calling & Video",
+                    subtitle = "Bandwidth prioritization and group video resolution",
+                    iconSpec = FlashIcons.VideoCall,
+                    initiallyExpanded = true,
+                ) {
+                    SwitchRow(
+                        title = "Prioritise voice quality",
+                        subtitle = FlashSettingsMath.prioritiseVoiceSubtitle(model.prioritiseVoiceQuality),
+                        checked = model.prioritiseVoiceQuality,
+                        onCheckedChange = onPrioritiseVoiceQualityChanged,
+                    )
+                    SwitchRow(
+                        title = "Send smaller video in groups",
+                        subtitle = FlashSettingsMath.smallerVideoForManySubtitle(model.smallerVideoForMany),
+                        checked = model.smallerVideoForMany,
+                        onCheckedChange = onSmallerVideoForManyChanged,
+                    )
+                }
+            }
+        }
+
+        // 5. Security & Trusted Devices
+        item(key = "section-security") {
+            StaggerIn(6) {
+                ExpandableSettingsSection(
+                    title = "Security & Trusted Devices",
+                    subtitle = "Cryptographic protection and verified peers",
+                    iconSpec = FlashIcons.Verified,
+                    initiallyExpanded = true,
+                ) {
+                    ValueRow(
+                        iconSpec = FlashIcons.Encryption,
+                        title = "Encryption",
+                        subtitle = "How Flash protects your transfers",
+                        value = null,
+                        onClick = onOpenEncryption,
+                    )
+                    ValueRow(
+                        iconSpec = FlashIcons.Verified,
+                        title = "Trusted peers",
+                        subtitle = FlashSettingsMath.trustedPeersSubtitle(model.trustedPeerCount),
+                        value = null,
+                        onClick = onOpenTrustedPeers,
+                    )
+                }
+            }
+        }
+
+        // 6. Performance & Engine Tuning
+        item(key = "section-performance") {
+            StaggerIn(7) {
+                ExpandableSettingsSection(
+                    title = "Performance Tuning",
+                    subtitle = "Hardware capability tier and UI motion budget",
+                    iconSpec = FlashIcons.Connection,
+                    initiallyExpanded = false,
+                ) {
+                    SettingsCard {
+                        PerformanceModeSegmented(
+                            selected = model.performanceMode,
+                            detected = model.detectedPerformanceMode,
+                            onSelected = onPerformanceModeSelected,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 7. Group File Sharing (Swarm) & Diagnostics
+        item(key = "section-swarm") {
+            StaggerIn(8) {
+                ExpandableSettingsSection(
+                    title = "Group File Sharing & Diagnostics",
+                    subtitle = "Swarm transfer sharing and log export",
+                    iconSpec = FlashIcons.Group,
+                    initiallyExpanded = false,
+                ) {
+                    SwitchRow(
+                        title = "Help share group files",
+                        subtitle = "Share received file pieces with other group members on your local network",
+                        checked = model.swarmHelpShare,
+                        onCheckedChange = onSwarmHelpShareChanged,
+                    )
+                    SwitchRow(
+                        title = "Keep finished files available for others",
+                        subtitle = "Keep completed group files available to help members who come online later",
+                        checked = model.swarmKeepFinishedFiles,
+                        onCheckedChange = onSwarmKeepFinishedFilesChanged,
+                    )
+                    SwitchRow(
+                        title = "Group file sharing (swarm, experimental)",
+                        subtitle = "Enable multi-device cooperative transfers in groups. Applies after restart",
+                        checked = model.swarmEnabled,
+                        onCheckedChange = {
+                            onSwarmEnabledChanged(it)
+                            if (onRestartApp != null) showRestartPrompt = true
+                        },
+                    )
+                    if (onExportLogs != null) {
+                        ValueRow(
+                            iconSpec = FlashIcons.Share,
+                            title = "Export logs",
+                            subtitle = "Share Flash's recent log to help find a problem. It holds no message text or keys",
+                            value = null,
+                            onClick = onExportLogs,
+                        )
+                    }
+                }
+            }
+        }
+
+        item(key = "about") { StaggerIn(9) { AboutCard(model) } }
+    }
+}
+
+@Composable
+private fun ExpandableSettingsSection(
+    title: String,
+    iconSpec: FlashIconSpec,
+    subtitle: String? = null,
+    initiallyExpanded: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    var expanded by remember { mutableStateOf(initiallyExpanded) }
+    val colors = FlashTheme.colors
+    val motion = FlashTheme.motion
+    val haptics = rememberFlashHaptics()
+    val rotation by animateFloatAsState(
+        targetValue = if (expanded) 180f else 0f,
+        animationSpec = if (motion.reduceMotion) androidx.compose.animation.core.snap() else motion.tweenNormalSpec(),
+        label = "expandChevronRotation",
+    )
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(FlashShapes.radius12))
+                .background(colors.backgroundSurface)
+                .border(
+                    width = FlashDimensions.borderHairline,
+                    color = colors.borderSubtle.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(FlashShapes.radius12),
+                )
+                .clickable {
+                    haptics(FlashHaptic.Tick)
+                    expanded = !expanded
+                }
+                .padding(FlashSpacing.space12),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashIcon(
+                    icon = iconSpec,
+                    tint = colors.accentPrimary,
+                    size = FlashDimensions.iconSm,
+                )
+            }
+            Spacer(Modifier.width(FlashSpacing.space12))
+            Column(modifier = Modifier.weight(1f)) {
+                FlashText(
+                    text = title,
+                    style = FlashTheme.typography.bodyEmphasis,
+                    color = colors.textPrimary,
+                )
+                if (subtitle != null) {
+                    FlashText(
+                        text = subtitle,
+                        style = FlashTheme.typography.captionDefault,
+                        color = colors.textSecondary,
+                    )
+                }
+            }
+            FlashIcon(
+                icon = FlashIcons.ChevronDown,
+                tint = colors.textSecondary,
+                size = FlashDimensions.iconSm,
+                modifier = Modifier.graphicsLayer { rotationZ = rotation },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                content()
+            }
+        }
     }
 }
 

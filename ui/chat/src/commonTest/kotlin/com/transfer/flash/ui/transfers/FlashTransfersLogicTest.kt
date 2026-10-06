@@ -174,4 +174,23 @@ class FlashTransfersLogicTest {
     fun `a zero width track produces a zero width fill instead of dividing`() {
         assertEquals(0, FlashTransfersMath.progressBarWidthPx(0, 0, 0.6f))
     }
+
+    @Test
+    fun `shimmer duration scales inversely with transfer throughput`() {
+        // Zero or slow speeds get a calm sweep
+        assertEquals(2200, FlashTransfersMath.shimmerDurationMillis(0L))
+        assertEquals(2200, FlashTransfersMath.shimmerDurationMillis(500 * 1024L))
+
+        // Moderate speeds (1-5 MB/s)
+        assertEquals(1600, FlashTransfersMath.shimmerDurationMillis(2 * 1024 * 1024L))
+
+        // Good speeds (5-20 MB/s)
+        assertEquals(1200, FlashTransfersMath.shimmerDurationMillis(10 * 1024 * 1024L))
+
+        // Fast speeds (20-50 MB/s)
+        assertEquals(800, FlashTransfersMath.shimmerDurationMillis(30 * 1024 * 1024L))
+
+        // LAN / Wi-Fi direct saturation (50+ MB/s)
+        assertEquals(600, FlashTransfersMath.shimmerDurationMillis(60 * 1024 * 1024L))
+    }
 }

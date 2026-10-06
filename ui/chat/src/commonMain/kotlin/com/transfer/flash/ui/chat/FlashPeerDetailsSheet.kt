@@ -84,6 +84,7 @@ fun FlashPeerDetailsSheet(
     modifier: Modifier = Modifier,
     isTrusted: Boolean = false,
     onRevokeTrust: (() -> Unit)? = null,
+    onOpenSharedContent: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val presenceLabel = remember(header.presence) {
@@ -184,6 +185,44 @@ fun FlashPeerDetailsSheet(
                     label = "Trust",
                     value = if (isTrusted) "Paired device" else "Not paired",
                 )
+                if (onOpenSharedContent != null) {
+                    DetailDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(FlashShapes.bubbleGrouped)
+                            .clickable {
+                                onDismiss()
+                                onOpenSharedContent()
+                            }
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = "Shared media, files, and links"
+                            }
+                            .padding(vertical = FlashSpacing.space12),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Gallery,
+                            contentDescription = null,
+                            size = FlashDimensions.iconSm,
+                            tint = colors.textTertiary,
+                        )
+                        FlashText(
+                            text = "Shared Media & Files",
+                            modifier = Modifier.weight(1f),
+                            style = FlashTheme.typography.bodyDefault,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                        )
+                        FlashIcon(
+                            icon = FlashIcons.Forward,
+                            contentDescription = null,
+                            size = FlashDimensions.iconSm,
+                            tint = colors.textSecondary,
+                        )
+                    }
+                }
             }
 
             if (isTrusted && onRevokeTrust != null) {

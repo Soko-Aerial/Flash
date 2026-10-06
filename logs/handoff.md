@@ -1,5 +1,50 @@
 # Current Handoff
 
+## 2026-10-06 (o) - UI Polish & Feature Roadmap Implementation Complete (Phases 0, 1, 2, 3)
+
+- **Plan:** `docs/ui/UI-POLISH-AND-FEATURE-ROADMAP-PLAN.md` (100% complete across all 4 phases).
+- **Done in code (all unit-tested, all builds passing):**
+  - **Phase 0:**
+    - Camera attachment capture platform integration (`FlashCameraCapture`).
+    - Themed icon buttons replacing raw Unicode "✕" in Adaptive Detail Panes (`FlashDetailPanes`).
+    - Whole-card tap on voice message bubbles to toggle play/pause (`FlashVoiceMessageCard`).
+    - Roster display name fallback for unpaired call participants (`"Member (xxxx)"`).
+  - **Phase 1:**
+    - Redesigned Adaptive Detail Panes with category badges, animated shimmer progress, SHA-256 verification shield, peer profile, and action dock (`FlashDetailPanes.kt`).
+    - Transfers screen refined: FAILED vs CANCELLED/DECLINED split, top-bar "Clear history", bulk pause/resume buttons (`FlashTransfersScreen.kt`).
+    - Settings screen reorganized into 5 expandable category cards with search and reset (`FlashSettingsScreen.kt`).
+    - Bottom navigation auto-hide on rapid scroll with spring physics re-entry (`FlashBottomNav.kt`).
+  - **Phase 2:**
+    - Reaction chip scale bounce (`0.5f` -> `1.25f` -> `1.0f`), 4-particle radial puff, and `reduceMotion` instant snap (`FlashReactionChip.kt`).
+    - Outgoing message spring launch physics with vertical delta and scale pop (`FlashMessageList.kt`).
+    - Voice recording gesture physics: slide-to-cancel rubber-band resistance with trash icon morph, drag-up hands-free padlock lock, breathing red dot (`FlashVoiceRecording.kt`, `FlashComposer.kt`).
+    - Transfer progress bar velocity shimmer dynamically scaling with throughput MB/s (`FlashTransfersScreen.kt`).
+    - Bottom nav tab hop directional tilt (`±5°`) and active reselect pulse ring (`FlashBottomNav.kt`).
+  - **Phase 3:**
+    - Native in-app message forwarding sheet (`FlashShareTargetSheet.kt`) with multi-select up to 5 destinations, quote snippet preview, and search.
+    - Composer pre-send attachment staging tray (`FlashAttachmentStagingTray.kt`) with horizontal carousel, remove button, and caption input.
+    - Per-conversation shared content viewer (`FlashSharedContentSheet.kt`) with 4 tabs (Media 3-column grid, Files list with badges, Audio with inline play, Links with jump-to-chat).
+    - Pinned messages banner (`FlashPinnedMessageBanner.kt`) with pin/unpin context menu, header banner, smooth scroll and 700ms pulse glow highlight.
+    - Real-time audio speaking ripple in calling UI (`FlashCallRippleMath.kt`): avatar glow waves modulated with audio volume (`1.0f` resting to `1.22f` speaking) and active speaker border ring in group video grid (`FlashGroupVideoGrid.kt`).
+    - Swarm transfer block availability grid map (`FlashSwarmPieceMap.kt`) Canvas micro-block matrix in file message cards and adaptive detail pane.
+- **Verified:**
+  - `./gradlew :ui:chat:jvmTest :ui:callui:jvmTest :core:messaging:jvmTest` (BUILD SUCCESSFUL, all unit tests passing).
+  - `./gradlew :app:compileDebugKotlin :desktop:compileKotlinJvm` (BUILD SUCCESSFUL, clean build).
+- **Device checks owed:** `UIP-01`...`UIP-10` in `docs/testing/TEST-BACKLOG.md` §4y.
+- **Recommended next task:** Execute physical device verification of UI flows (UIP-01 to UIP-10) on Android phones and Desktop.
+
+## 2026-10-06 (m) - Join by invite and members-may-add (ERROR-112...114)
+
+- **Committed:** see `git log` (the commit after `5f3b4c20`).
+- **Done in code (unit-tested, mutation-checked in part, none device-verified):**
+  - ERROR-112: a device added by a plain member now receives its cert (certs verify in passes; `membersMayAdd` only from verified settings).
+  - ERROR-113: the invite proof is single-flight and retried; `acceptInvite` no longer blocks; an already-active member's repeated request gets the roster; join steps are logged.
+  - ERROR-114: after Join the host shows the status sentence instead of opening a chat titled with the group id.
+- **Not proven:** why the 09:34 approval never completed on the desktop (ERROR-113). Re-run with the new logs.
+- **Device checks owed:** `GJOIN-01`...`GJOIN-03` (TEST-BACKLOG 4zf).
+- **Known limits:** `pendingInviteHints` is in memory; no persistent pending-join row; Wi-Fi drops about every 10-12 minutes in the owner's logs are not addressed.
+- **Next:** the owner runs `GJOIN-01`, then `GJOIN-02`, and sends both device logs plus `~/.flash/desktop.log`.
+
 ## 2026-10-06 (l) - Swarm review follow-ups: first contact, offline members, lost source, non-members (ERROR-107...111)
 
 - **Committed:** ERROR-107 `568bebad`, ERROR-108 / ADR-081 `14ba2a76`, ERROR-109 `212a1f3d`; ERROR-110 / 111 in the commit after them (see `git log`).

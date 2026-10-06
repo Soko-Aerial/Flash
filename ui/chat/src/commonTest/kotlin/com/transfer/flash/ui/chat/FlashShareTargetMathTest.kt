@@ -86,4 +86,45 @@ class FlashShareTargetMathTest {
         assertEquals("GT", FlashShareTargetMath.initialsFor("Galaxy Tab S8"))
         assertEquals("?", FlashShareTargetMath.initialsFor(""))
     }
+
+    @Test
+    fun filter_recipients_matches_name_and_subtitle() {
+        val r1 = FlashShareRecipientUi("1", "Alice", "AL", subtitle = "Office Team")
+        val r2 = FlashShareRecipientUi("2", "Bob", "BO", subtitle = "Mobile")
+        val r3 = FlashShareRecipientUi("3", "Charlie", "CH", subtitle = "Alice friend")
+        val list = listOf(r1, r2, r3)
+
+        assertEquals(list, FlashShareTargetMath.filterRecipients(list, ""))
+        assertEquals(list, FlashShareTargetMath.filterRecipients(list, "   "))
+
+        val filteredName = FlashShareTargetMath.filterRecipients(list, "bob")
+        assertEquals(1, filteredName.size)
+        assertEquals("2", filteredName.first().id)
+
+        val filteredSub = FlashShareTargetMath.filterRecipients(list, "alice")
+        assertEquals(2, filteredSub.size)
+        assertEquals(setOf("1", "3"), filteredSub.map { it.id }.toSet())
+    }
+
+    @Test
+    fun toggle_selection_enforces_max_limit() {
+        var selected = emptySet<String>()
+
+        selected = FlashShareTargetMath.toggleSelection(selected, "1", maxLimit = 3)
+        assertEquals(setOf("1"), selected)
+
+        selected = FlashShareTargetMath.toggleSelection(selected, "2", maxLimit = 3)
+        assertEquals(setOf("1", "2"), selected)
+
+        selected = FlashShareTargetMath.toggleSelection(selected, "3", maxLimit = 3)
+        assertEquals(setOf("1", "2", "3"), selected)
+
+        // Attempting to add 4th should reject (remain unchanged)
+        selected = FlashShareTargetMath.toggleSelection(selected, "4", maxLimit = 3)
+        assertEquals(setOf("1", "2", "3"), selected)
+
+        // Deselecting existing item works
+        selected = FlashShareTargetMath.toggleSelection(selected, "2", maxLimit = 3)
+        assertEquals(setOf("1", "3"), selected)
+    }
 }
