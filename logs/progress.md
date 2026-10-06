@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-10-06 (b) - Group call phantom member ids (ERROR-103)
+
+### Worked on
+The owner's report that a group call showed ids of devices not in the group.
+
+### Changed
+`FlashGroupCallSession` has an `isGroupMember` roster check (wired in `CallCoordinator`); invite member lists, relayed joins, accepts and presence adoption no longer create legs for non-members. New `FlashGroupCallMembershipFilterTest` (4 tests, mutation-checked).
+
+### Verification
+`:core:calling:testAndroidHostTest` green. Not device-verified (GCALL-18). Root cause is from reading the code, not a captured reproduction.
+
+### Remaining
+Unpaired roster members still show a raw id (name resolver). Persistent Android file log and the swarm restart prompt are next.
+
+### Next AI
+Wire roster display names into the call's name resolver; then the file log sink.
+
 ## 2026-10-06 (a) - Swarm review fixes (ERROR-102)
 
 ### Worked on

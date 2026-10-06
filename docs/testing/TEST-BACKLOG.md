@@ -1220,6 +1220,15 @@ desktop launch (it is overwritten). Include the **caller's** log.
   leg; CPU and heat do not spike at the moment of the late accept.
 - **Source:** ERROR-096, ADR-065. **Status:** TODO
 
+## 4o. Group call participant list shows only group members (ERROR-103, 2026-10-06)
+
+### GCALL-18 - No tile for a device that is not in the group
+- **Setup:** a v2 group with 3 devices (A caller, B, C). Optionally remove C from the group on A while B is offline, then start a call on B.
+- **Steps:** place a group call; look at the participant list on every device; capture `adb logcat -v time -s GROUP_CALL:I`.
+- **Pass:** every tile is a current group member; no raw device id of a non-member appears; a log line "not an active member of group=" appears if a stale list was received. Members who are unpaired may still show an id (known naming gap).
+- **Source:** ERROR-103.
+- **Status:** TODO
+
 ## 4n. Group video audit (ERROR-097 / ADR-066, 2026-10-01)
 
 Nothing here was run on a device. Capture on every phone: `adb logcat -v time -s GROUP_CALL:I WS:I`; copy `~/.flash/desktop.log` before the

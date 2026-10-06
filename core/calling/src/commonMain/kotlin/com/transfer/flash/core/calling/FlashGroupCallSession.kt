@@ -97,6 +97,12 @@ public class FlashGroupCallSession(
     private val onEnded: (FlashGroupCallSession) -> Unit = {},
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
     private val peerNameResolver: (String) -> String? = { null },
+    /**
+     * Whether a device is an active member of this call's group (ERROR-103). A frame of a live call names devices
+     * (an invite's member list, a relayed join); none of them gets a leg or a tile unless the roster says it is a
+     * member, so a stale or forged list can no longer put a stranger's id on the participant list.
+     */
+    private val isGroupMember: suspend (peerId: String) -> Boolean = { true },
     /** This device's network band (G2), read for every announcement; cheap and non-blocking. */
     private val networkBand: () -> FlashNetworkBand = { FlashNetworkBand.UNKNOWN },
     /**
@@ -762,8 +768,16 @@ public class FlashGroupCallSession(
      * the join was not relayed, both devices were in the same call and never connected. The member gets a leg
      * and [reviveIfInCall] connects it; whichever side has the higher id offers, as always.
      */
+    private fun dropNonMember(peerId: String, what: String) {
+        FlashLog.w("GROUP_CALL", "Ignoring $what for call $callId from/about $peerId: not an active member of group=$groupId")
+    }
+
     private suspend fun adoptMemberInCall(peerId: String) {
         if (!isMediaAcquired || peerId == localDeviceId) return
+        if (legs[peerId] == null && !isGroupMember(peerId)) {
+            dropNonMember(peerId, "presence")
+            return
+        }
         val callState = _state.value.state
         if (callState != FlashCallState.ACTIVE && callState != FlashCallState.CONNECTING && callState != FlashCallState.DIALING) return
         // A full call turns the member away before it is given a tile (it would otherwise sit there as "invited").
@@ -899,11 +913,19 @@ public class FlashGroupCallSession(
         when (frame) {
             is CallWireFrame.GroupInvite -> {
                 // Peer invited us to this group call (inbound ringing)
+                if (!isGroupMember(effectivePeerId)) {
+                    dropNonMember(effectivePeerId, "invite")
+                    return
+                }
+                val knownMembers = frame.members.filter { it != localDeviceId && isGroupMember(it) }
+                if (knownMembers.size != frame.members.count { it != localDeviceId }) {
+                    FlashLog.w("GROUP_CALL", "Invite from $effectivePeerId for call $callId listed ${frame.members.count { it != localDeviceId } - knownMembers.size} device(s) that are not members of group=$groupId; ignoring them")
+                }
                 sessionMutex.withLock {
                     legs.getOrPut(effectivePeerId) {
                         GroupLeg(peerId = effectivePeerId, peerName = resolveName(effectivePeerId, frame.callerName), state = FlashCallParticipantState.INVITED)
                     }.recordBand(frame.band)
-                    frame.members.filter { it != localDeviceId }.forEach { memberId ->
+                    knownMembers.forEach { memberId ->
                         legs.getOrPut(memberId) {
                             GroupLeg(peerId = memberId, peerName = resolveName(memberId), state = FlashCallParticipantState.INVITED)
                         }
@@ -914,6 +936,10 @@ public class FlashGroupCallSession(
             }
 
             is CallWireFrame.GroupAccept, is CallWireFrame.GroupJoin -> {
+                if (legs[effectivePeerId] == null && !isGroupMember(effectivePeerId)) {
+                    dropNonMember(effectivePeerId, if (frame is CallWireFrame.GroupAccept) "accept" else "join")
+                    return
+                }
                 val peerName = resolveName(effectivePeerId, if (frame is CallWireFrame.GroupJoin) frame.participantName else null)
                 if (turnAwayIfFull(effectivePeerId)) return
                 sessionMutex.withLock {
