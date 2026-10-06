@@ -2242,6 +2242,15 @@ plan GM-11. Record results in the Results log.
   - A malformed link shows no action.
 - **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
 
+## 4zb. Swarm first contact (ERROR-107, 2026-10-06)
+
+### SWM-35 - A fresh swarm send starts without a reconnect
+- **Setup:** swarm switch on for the origin and two members, all connected, a v2 group, a file of 20 MB or more.
+- **Steps:** origin sends the file; do not touch anything on the members; watch the member rows.
+- **Pass:** each member row leaves 0 % within about 3 s and finishes; the log shows the member's `SWARM` request lines right after the announce line, with no reconnect and no second announce. Repeat once with the origin's Wi-Fi switched on a second after the send (a reconnect is not what starts it).
+- **Source:** ERROR-107.
+- **Status:** TODO
+
 ## 4za. Ink launch splash (UI-056, ADR-080, 2026-10-06)
 
 Built and unit-tested (`FlashLaunchSplashTest` 21/21). Desktop frames were rendered off-screen and checked by eye. Not device-verified.

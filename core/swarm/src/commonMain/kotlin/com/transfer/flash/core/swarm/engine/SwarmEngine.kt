@@ -224,7 +224,7 @@ public class SwarmEngine(
                 }
             }
             is SwarmEvent.SummaryArrived -> {
-                peerHandler.handleSummaryArrived(event, commands) { gid ->
+                peerHandler.handleSummaryArrived(event, localServingEnabled, systemSuspended, commands) { gid ->
                     for (content in contents.values.filter { it.groupId == gid }) {
                         if (content.state == SwarmLifecycleState.ACTIVE) {
                             updateWaitReason(content)

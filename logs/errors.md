@@ -7278,3 +7278,36 @@ When testing 1:1 video calling on Desktop:
 
 ### Status
 RESOLVED (ready for live user testing)
+
+
+## ERROR-107 - Swarm receiver never learns the origin's pieces when the origin's first Summary beats the announcement
+
+### Date
+2026-10-06
+
+### Area
+Group swarm / `:core:swarm` peer state
+
+### Symptoms
+Found by code reading (review the owner asked for: "how does swarm get a file ... start transfer"). Not yet seen on a device. A receiver would show the content ACTIVE but request nothing, until a reconnect (`PeerUp`) made the origin send its Summary again.
+
+### Root cause
+The origin sends its Summary when it registers the content, before the chat message that announces the content to members. The swarm frame is faster than the chat path, so the member receives it while the root is unknown and `PeerHandler.handleSummaryArrived` skips the entry. A receiver can only request from a peer whose piece map it holds, and that map comes only from Summary / Have / HaveAll. When the announcement arrives the member sends its own Summary to the origin, but nobody answered a Summary, so the origin's map never arrived.
+`SwarmInteropTest` hid it: it injects the receivers' `Announced` event locally right after `registerOrigin`, which beats the origin's Summary across loopback, so the production order never happened in a test.
+
+### Failed attempts
+None.
+
+### Working fix
+`handleSummaryArrived` answers with our own Summary once when the incoming Summary shows a root we hold pieces of (complete or `piecesDone > 0`) and we had no state for that peer on that root. The answer creates the peer's state, so a repeat does not answer again, and a holder of nothing never answers, so there is no Summary ping-pong. Reply only to a connected, `sw1`, allowed peer.
+
+### Verification
+`SwarmFirstContactTest` (2 tests, written first and seen failing with 0 replies): Summary-before-announce still ends with the receiver requesting pieces; a repeated Summary and the receiver's own answer start no loop. `:core:swarm:jvmTest` and `:core:engine:jvmTest --tests '*swarm*'` green. Device check `SWM-35`.
+
+### Related files
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/engine/PeerHandler.kt`
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/engine/SwarmEngine.kt`
+- `core/swarm/src/commonTest/kotlin/com/transfer/flash/core/swarm/engine/SwarmFirstContactTest.kt`
+
+### Status
+FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-35 passes)
