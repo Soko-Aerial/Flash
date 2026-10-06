@@ -107,6 +107,10 @@ internal object CallDockText {
     fun videoLabel(cameraOff: Boolean): String = if (cameraOff) "Video off" else "Video on"
     fun videoDescription(cameraOff: Boolean): String = if (cameraOff) "Turn camera on" else "Turn camera off"
 
+    /** ADR-078: the button on a voice call that adds this device's camera to it. */
+    const val UPGRADE_LABEL: String = "Camera"
+    const val UPGRADE_DESCRIPTION: String = "Turn camera on"
+
     const val FLIP_LABEL: String = "Flip"
     const val FLIP_DESCRIPTION: String = "Switch camera"
 
@@ -191,10 +195,13 @@ internal fun FlashCallControlDock(
     onOpenRoutes: () -> Unit = {},
     onOpenMore: (() -> Unit)? = null,
     moreActive: Boolean = false,
+    onUpgradeToVideo: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(FlashShapes.radius24)
-    val count = (if (state.video) 5 else 3) + (if (onOpenMore != null) 1 else 0)
+    // ADR-078: a call with no camera of ours on it (voice, or a video call joined without a camera) can add one.
+    val upgrade = if (state.canUpgradeToVideo) onUpgradeToVideo else null
+    val count = (if (state.video) 5 else 3) + (if (!state.video && upgrade != null) 1 else 0) + (if (onOpenMore != null) 1 else 0)
     // Six buttons must fit a 360 dp phone: shrink the buttons (never below 40 dp) rather than overflow.
     BoxWithConstraints(
         modifier = Modifier
@@ -236,6 +243,19 @@ internal fun FlashCallControlDock(
                 buttonSize = buttonSize,
                 modifier = Modifier.weight(1f),
             )
+            if (!state.video && upgrade != null) {
+                FlashCallDockButton(
+                    icon = FlashIcons.Video,
+                    label = CallDockText.UPGRADE_LABEL,
+                    description = CallDockText.UPGRADE_DESCRIPTION,
+                    emphasised = false,
+                    rippleOutward = true,
+                    gesture = DockGesture.Eyelid,
+                    onClick = upgrade,
+                    buttonSize = buttonSize,
+                    modifier = Modifier.weight(1f),
+                )
+            }
             if (state.video) {
                 FlashCallDockButton(
                     icon = if (state.cameraOff) FlashIcons.VideoOff else FlashIcons.Video,
@@ -244,7 +264,8 @@ internal fun FlashCallControlDock(
                     emphasised = state.cameraOff,
                     rippleOutward = !state.cameraOff,
                     gesture = DockGesture.Eyelid,
-                    onClick = onToggleCamera,
+                    // A video call joined without a camera has nothing to switch on: the button adds one.
+                    onClick = upgrade ?: onToggleCamera,
                     buttonSize = buttonSize,
                     modifier = Modifier.weight(1f),
                 )

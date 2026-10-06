@@ -3,6 +3,7 @@ package com.transfer.flash.core.calling
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.core.calling.model.FlashCameraProblem
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -46,6 +47,19 @@ class FlashCallSessionTest {
         },
     )
 
+    /**
+     * ERROR-105: which end reason a JVM without native WebRTC produces depends on how `getUserMedia` fails there: a
+     * missing library is an Error (generic ERROR), a refused device an Exception (MIC_UNAVAILABLE), and the same
+     * JVM can give either as classes fail to load the first time and differently after. Both mean "media could not
+     * start"; what matters is that the call ended and not as a normal one.
+     */
+    private fun assertMediaCouldNotStart(reason: FlashCallEndReason?) {
+        assertTrue(
+            "media could not start, so the call ends with a media failure, not $reason",
+            reason == FlashCallEndReason.ERROR || reason == FlashCallEndReason.MIC_UNAVAILABLE,
+        )
+    }
+
     // ------------------------------------------------------------------
     // The "stuck on Connecting…" regression
     // ------------------------------------------------------------------
@@ -73,7 +87,90 @@ class FlashCallSessionTest {
             sent.any { it is CallWireFrame.Decline },
         )
         assertEquals(FlashCallState.ENDED, session.state.value.state)
-        assertEquals(FlashCallEndReason.ERROR, session.state.value.endReason)
+        assertMediaCouldNotStart(session.state.value.endReason)
+    }
+
+    /** ERROR-105: a call joined without a camera must not let the camera button claim the camera is on. */
+    @Test
+    fun toggleCamera_withoutACamera_staysOff() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.setCameraOffForTesting(true)
+
+        assertTrue("there is no camera to switch on", session.toggleCamera())
+        assertTrue(session.state.value.cameraOff)
+        assertTrue("nothing to tell the peer: $sent", sent.none { it is CallWireFrame.Status })
+    }
+
+    /** ERROR-105: a camera that stopped mid-call is off for everyone, and the user is told. */
+    @Test
+    fun cameraStopped_turnsTheCameraOffAndTellsThePeer() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.setStateForTesting(FlashCallState.ACTIVE)
+
+        session.reportCameraProblem(FlashCameraProblem.FAILED)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(FlashCameraProblem.FAILED, session.state.value.cameraProblem)
+        assertTrue("a stopped camera is an off camera", session.state.value.cameraOff)
+        val status = sent.filterIsInstance<CallWireFrame.Status>().last()
+        assertEquals("the peer is told the camera is off", false, status.cameraOn)
+    }
+
+    /** ERROR-105: a failed flip keeps the working camera, and the message goes away by itself. */
+    @Test
+    fun failedSwitch_keepsTheCameraOnAndClearsItself() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.setStateForTesting(FlashCallState.ACTIVE)
+
+        session.reportCameraProblem(FlashCameraProblem.SWITCH_FAILED)
+
+        assertEquals(FlashCameraProblem.SWITCH_FAILED, session.state.value.cameraProblem)
+        assertFalse("the current camera still runs", session.state.value.cameraOff)
+        assertTrue("nothing to tell the peer: $sent", sent.none { it is CallWireFrame.Status })
+        testScheduler.advanceTimeBy(SWITCH_PROBLEM_CLEAR_MS + 1)
+        testScheduler.runCurrent()
+        assertNull(session.state.value.cameraProblem)
+    }
+
+    /** ERROR-105: once the camera stopped the button restarts it; it must not claim the camera is on meanwhile. */
+    @Test
+    fun cameraButton_afterAStop_staysOffUntilTheCameraReallyOpens() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.setStateForTesting(FlashCallState.ACTIVE)
+        session.reportCameraProblem(FlashCameraProblem.FAILED)
+        testScheduler.advanceUntilIdle()
+        sent.clear()
+
+        assertTrue("still off: the restart has not succeeded", session.toggleCamera())
+
+        assertTrue(session.state.value.cameraOff)
+        assertEquals(FlashCameraProblem.FAILED, session.state.value.cameraProblem)
+        assertTrue("no camera-on status before it works: $sent", sent.none { it is CallWireFrame.Status && it.cameraOn == true })
+    }
+
+    /** ERROR-105: an ordinary toggle clears a stale "couldn't switch" message. */
+    @Test
+    fun ordinaryToggle_clearsASwitchProblem() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.setStateForTesting(FlashCallState.ACTIVE)
+        session.reportCameraProblem(FlashCameraProblem.SWITCH_FAILED)
+
+        session.toggleCamera()
+
+        assertNull(session.state.value.cameraProblem)
+    }
+
+    /** ERROR-105: the end of the call stops the camera, and that must not look like a camera failure. */
+    @Test
+    fun cameraProblem_afterTheCallEnded_isIgnored() = runTest {
+        val session = newSession(FlashCallDirection.INCOMING, video = true)
+        session.decline()
+        sent.clear()
+
+        session.reportCameraProblem(FlashCameraProblem.FAILED)
+
+        assertNull(session.state.value.cameraProblem)
+        assertTrue(sent.isEmpty())
     }
 
     /** Same invariant on the caller side: no offer is ever sent without media. */
@@ -91,7 +188,7 @@ class FlashCallSessionTest {
         )
         assertTrue(sent.any { it is CallWireFrame.Hangup })
         assertEquals(FlashCallState.ENDED, session.state.value.state)
-        assertEquals(FlashCallEndReason.ERROR, session.state.value.endReason)
+        assertMediaCouldNotStart(session.state.value.endReason)
     }
 
     /** An offer that arrives before accept is buffered, not treated as a failure. */

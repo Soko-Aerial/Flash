@@ -1229,6 +1229,108 @@ desktop launch (it is overwritten). Include the **caller's** log.
 - **Source:** ERROR-103.
 - **Status:** TODO
 
+## 4y2. Group call leftovers and video feedback (ERROR-104, 2026-10-06)
+
+### GCALL-19 - The "join call" banner goes when the call really ends, and stays while it can be joined
+- **Setup:** a v2 group of 3 devices (A, B, C), all on this build. C stays out of the call (never taps Join).
+- **Steps:** A starts a call, B joins. Watch C's chat. B hangs up (A is still there), then A hangs up.
+- **Pass:** C shows the banner while A and B are in the call, stays while only A remains, and loses it within about 2 s of A's hangup (not 12-17 s later). C's log has `GroupHangup`-driven removal, no `Join` possible for the ended call. A device that left a call that others are still in keeps the banner and can rejoin.
+- **Source:** ERROR-104.
+- **Status:** TODO
+
+### GCALL-20 - A late invite does not ring after the caller hung up
+- **Setup:** a group where one member is slow to dial (screen off, or just out of Wi-Fi range for a moment).
+- **Steps:** A starts a call and hangs up within 2 s, before the slow member's session is up. Bring the member back.
+- **Pass:** the member's phone never rings, or stops ringing at once; log shows `Invite from ... ignored: that call has already ended`. A fresh call afterwards still rings.
+- **Source:** ERROR-104.
+- **Status:** TODO
+
+### GCALL-21 - No presence or invite is sent after the call ended
+- **Setup:** as GCALL-20, capture `adb logcat -v time -s GROUP_CALL:I` on A.
+- **Steps:** end a call while an invitee is still being dialed.
+- **Pass:** no `GroupInvite` or `GroupPresence` is sent by A after its `ending reason=` line.
+- **Source:** ERROR-104.
+- **Status:** TODO
+
+### GVID-08 - Tapping a tile whose video cannot come says why
+- **Setup:** a video group call of 4 devices.
+- **Steps:** (a) tap a tile whose owner turned the camera off; (b) tap someone while their device is at its send limit (3+ other watchers on a 2.4 GHz link); (c) mute that person as well; (d) with the sender's device hot (or `acceptNew=false` test hook), tap them; (e) block the link between you and them for 20 s (airplane mode on them) after tapping.
+- **Pass:** (a) "Camera off"; (b) "Video busy"; (c) "Video busy · Muted" (and "Camera off · Muted"); (d) "Too hot to send video"; (e) "Requesting video…" then, after about 12 s, "Video not responding", and the video appears by itself when the link returns. A granted video whose picture has not arrived yet reads "Starting video…". Their own camera-off does not hide "Muted".
+- **Source:** ERROR-104, ADR-066.
+- **Status:** TODO
+
+## 4y3. Call media failures, camera errors, data-saver words and voice-to-video (ERROR-105, ADR-078, ADR-079, 2026-10-06)
+
+### CALLMEDIA-01 - A busy microphone says so
+- **Setup:** two devices, a voice call. On the callee, start another app that holds the microphone (a voice recorder, or a call from the SIM).
+- **Steps:** place the call, answer it on the callee; capture `adb logcat -v time -s CALL:I`.
+- **Pass:** the callee's screen ends with "Microphone is busy or unavailable" (not "Call failed"); the caller gets a Decline; log has `accept: media start failed (MIC_UNAVAILABLE)`. With the microphone permission revoked in Settings the text is "Microphone permission needed".
+- **Source:** ERROR-105 item A, ADR-079.
+- **Status:** TODO
+
+### CALLMEDIA-02 - Denying the camera on an incoming video call joins audio-only
+- **Setup:** Android callee with CAMERA not granted (revoke it in Settings), microphone granted. Any caller.
+- **Steps:** the caller places a video call; the callee taps Accept and denies the camera prompt.
+- **Pass:** the callee toast reads "Joining without camera" and the call connects with audio; the call screen shows "Joined without camera: camera permission is off" (dismissible); the callee's camera button reads "Video off"; the caller's tile for the callee shows camera off; the callee can hear and be heard. Declining the microphone prompt still ends the attempt with the microphone message.
+- **Source:** ERROR-105 item B, ADR-079.
+- **Status:** TODO
+
+### CALLMEDIA-03 - A camera taken by another app mid-call shows a banner and can be retried
+- **Setup:** a 1:1 video call between two Android devices.
+- **Steps:** on one device open another camera app (or the system camera) so it takes the camera from Flash; watch the call screen; close the other app and tap **Try again**.
+- **Pass:** within a few seconds the banner "Camera stopped. Another app may be using it" appears with **Try again**, the dock shows "Video off", the other device shows camera off for that tile and the call audio continues. After Try again the camera is back, the banner goes and the other device sees video again (no renegotiation: log has no new offer). Run it on Windows by unplugging a USB webcam: nothing is shown (no hook there, documented); the toggle still works after replugging.
+- **Source:** ERROR-105 item C.
+- **Status:** TODO
+
+### CALLMEDIA-04 - A flip that cannot happen says so and does not stop the camera
+- **Setup:** a video call on a device with one camera (or a desktop with one webcam).
+- **Steps:** tap **Flip**.
+- **Pass:** "Couldn't switch camera" shows for about 5 s and clears itself; the camera keeps running; the peer keeps seeing video.
+- **Source:** ERROR-105 item C.
+- **Status:** TODO
+
+### CALLMEDIA-05 - A group call joined without a camera
+- **Setup:** a group video call of 3 devices; one Android device has CAMERA revoked.
+- **Steps:** that device accepts the invite and denies the camera prompt.
+- **Pass:** it joins with audio, shows "Joined without camera", and the other two show its tile as camera off (not "Requesting video...").
+- **Source:** ERROR-105 items A to C (group session), ADR-079.
+- **Status:** TODO
+
+### GVID-09 - Tapping a tile under data saver or Show fewer says why nothing appears
+- **Setup:** a video group call of 4 devices.
+- **Steps:** (a) turn data saver on (More panel) and tap a tile; (b) turn it off, turn on "Show fewer videos" and tap a tile that is not the main one; (c) tap the main one; (d) in compact (phone) mode tap a chip in the strip with TalkBack on.
+- **Pass:** (a) "Video is off to save data"; (b) "Showing fewer videos"; (c) no such message (it holds the one video); (d) TalkBack reads the name, shown / not shown and the same words. A muted person still reads "Muted", a camera-off one "Camera off".
+- **Source:** ERROR-105 item D.
+- **Status:** TODO
+
+### VUP-01 - A voice call becomes a video call (the first real check of the SDP risk)
+- **Setup:** two devices on this build, a connected voice call. Run Android to Android (caller adds, then callee adds) and Android to Desktop in both roles. Capture `adb logcat -v time -s CALL:I` on the Androids and the desktop log.
+- **Steps:** tap the **Camera** button on one device and allow the camera. Then on the other device tap **Camera** too.
+- **Pass:** the first device shows its own preview and the other shows the first's video within about 3 s without the audio dropping; the other device starts with its camera off and a **Camera** button; after it taps, both see both videos. Log shows `camera added to the call`, a `video upgrade offer delivered=true` on the caller, a `remote video track` on the receiver and no `ending`. Repeat once while both are on a hotspot and once with a 2 minute call afterwards (the call must stay up).
+- **Source:** ERROR-105 item E, ADR-078.
+- **Status:** TODO
+
+### VUP-02 - A peer without `cv1` is never offered the button
+- **Setup:** one device on this build, one on an older build (before this change), voice call.
+- **Steps:** look at the call screen on the new build.
+- **Pass:** no **Camera** button; no `vu` or `m=video` offer is sent (log); the call is unchanged. The HELLO of the new build shows `cv1` in `caps`.
+- **Source:** ADR-078.
+- **Status:** TODO
+
+### VUP-03 - Upgrading in the background-sensitive path keeps the microphone type
+- **Setup:** Android 14 or newer, a connected voice call, Flash in the foreground on device A.
+- **Steps:** (a) A taps **Camera**; (b) separately, put A in the background with the screen on and let B add a camera so A's call flips to video; check `adb shell dumpsys activity services com.transfer.flash` for the foreground service type.
+- **Pass:** (a) the service type gains `camera` and keeps `microphone`; (b) the type stays `microphone` (no `camera`), the call audio continues, there is no `startForeground(type=...) refused` line, and A's own camera stays off until the user opens the app and taps **Camera**.
+- **Source:** ADR-078 (foreground service consequence).
+- **Status:** TODO
+
+### VUP-04 - An upgrade during an ICE restart
+- **Setup:** a connected voice call on Wi-Fi; Android to Android.
+- **Steps:** switch the callee's Wi-Fi off and on to force an ICE restart, and tap **Camera** on either device within a second of the reconnect.
+- **Pass:** either the video arrives once the connection is back, or the camera preview shows with no remote video and the call stays up and audio continues (a known gap: the request is not retried); in no case does the call end because of the upgrade. Record which one happened.
+- **Source:** ADR-078 (known risk).
+- **Status:** TODO
+
 ## 4z. Persistent log, export and swarm restart prompt (ADR-077, 2026-10-06)
 
 ### LOG-01 - The log survives without adb

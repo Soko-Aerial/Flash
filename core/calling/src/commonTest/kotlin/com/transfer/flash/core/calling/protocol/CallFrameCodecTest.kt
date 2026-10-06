@@ -299,6 +299,18 @@ class CallFrameCodecTest {
     }
 
     @Test
+    fun `status carries the video upgrade request only when it is made, and an old frame has none`() {
+        val asked = CallFrameCodec.encode(CallWireFrame.Status(callId = callId, from = from, cameraOn = true, videoUpgrade = true))
+        assertTrue("vu=1" in asked, asked)
+        assertEquals(true, (CallFrameCodec.decode(asked) as CallWireFrame.Status).videoUpgrade)
+
+        val plain = CallFrameCodec.encode(CallWireFrame.Status(callId = callId, from = from, micOn = true))
+        assertTrue("vu=" !in plain, plain)
+        assertNull((CallFrameCodec.decode(plain) as CallWireFrame.Status).videoUpgrade)
+        assertNull((CallFrameCodec.decode("FLASH_CALL action=status callId=$callId from=$from vu=maybe") as CallWireFrame.Status).videoUpgrade)
+    }
+
+    @Test
     fun status_with_garbage_flags_reads_as_not_stated() {
         val back = CallFrameCodec.decode("FLASH_CALL action=status callId=$callId from=$from mic=maybe cam=2 hand=x react=confetti rseq=x") as CallWireFrame.Status
         assertNull(back.micOn)

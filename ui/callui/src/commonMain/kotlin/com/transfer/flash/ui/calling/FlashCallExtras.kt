@@ -641,6 +641,48 @@ internal fun FlashDataSaverPill(onTurnOff: () -> Unit, modifier: Modifier = Modi
 }
 
 /**
+ * ERROR-105: a one-line message about this device's own call media ("Joined without camera…", "Camera stopped"), with
+ * an optional text action ("Try again") and an optional dismiss. A polite live region, so a screen reader says it once.
+ */
+@Composable
+internal fun FlashCallMessagePill(
+    text: String,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+    onDismiss: (() -> Unit)? = null,
+) {
+    val colors = FlashTheme.colors
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(FlashShapes.radius24))
+            .background(colors.backgroundSurfaceStrong.copy(alpha = if (FlashTheme.minimalChrome) 1f else 0.9f))
+            .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = text, style = FlashTheme.typography.metadataDefault, color = colors.textPrimary)
+        if (actionLabel != null && onAction != null) {
+            Text(
+                text = actionLabel,
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.accentPrimary,
+                modifier = Modifier.clickable(role = Role.Button, onClick = onAction),
+            )
+        }
+        if (onDismiss != null) {
+            Text(
+                text = "Dismiss",
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+                modifier = Modifier.clickable(role = Role.Button, onClick = onDismiss),
+            )
+        }
+    }
+}
+
+/**
  * Where the call runs and whether the other device is the one that was paired: "Local network" with a dot graded from
  * the measured link, and a shield when [peerVerified]. Only the pairing check is claimed (see [CallExtrasText.VERIFIED_DESCRIPTION]).
  */

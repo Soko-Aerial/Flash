@@ -3829,3 +3829,73 @@ Bounded size, no caller ever blocks on storage (bounded queue, newest line dropp
 ### Revisit when
 A tester cannot reproduce with an export, or a crash happens in a native library (an uncaught-handler line is not written for
 native crashes).
+
+
+## ADR-078 - Mid-call video upgrade for 1:1 calls, by renegotiation, offered only to peers that advertise `cv1`
+
+### Decision
+A live 1:1 call that has no camera of ours on it (a voice call, or a video call joined without a camera) can add one. The
+host asks for CAMERA first; `upgradeToVideo()` opens a video-only capture, adds the track to the existing connection and
+the video section is negotiated again by the CALLER: the caller offers directly, the callee sends `Status` with `vu=1`
+(`videoUpgrade`) and the caller offers. A call turns into a video call on the side that did not add the camera when it
+sees `vu=1` (caller) or an offer with an `m=video` section on a call that had none (callee); that side starts with its own
+camera off and nothing is sent until the user turns it on. Offered only to a peer whose HELLO advertised `cv1`
+(`FEATURE_VIDEO_UPGRADE`), read by `CallCoordinator.peerFeatures`. The button is `FlashCallUiState.canUpgradeToVideo`.
+Group calls are not upgraded.
+
+### Context
+ERROR-105 item E. Before this, `video` was fixed at invite time, the only renegotiation was an ICE restart, and webrtc-kmp
+has `addTrack` and `replaceTrack` but no `addTransceiver`.
+
+### Alternatives considered
+- Always send a receive-only video section in voice calls: changes what new builds send to old peers on every call and
+  there is no `addTransceiver` to do it cleanly. Rejected.
+- Either side offers: two offerers on one connection is glare; the call already avoids it for setup and ICE restart (ADR-025).
+  Rejected; the callee asks instead.
+- No capability token, offer to everyone: an older build would be sent a video section it never answers. Rejected.
+- Group voice-to-video upgrade: ADR-049 rejected per-request renegotiation, the offerer tie-break (`localDeviceId > peerId`)
+  forbids a lower-id member from upgrading, and the 8-participant cap multiplies the cost. Deferred; needs its own design.
+
+### Consequences
+- Android foreground service type: `camera` is claimed only while `state.video && !state.cameraOff`. A peer turning our voice
+  call into a video call arrives with our camera off, so a background flip cannot request the camera type (which throws from
+  the background on Android 14+ and would drop the microphone type with it). A local tap happens in the foreground.
+- Speaker routing is kept as it is: a voice call that becomes video stays on the earpiece until the user changes it.
+- Known risks, measured only partly: the m-line is added after DTLS under MaxBundle through `CallSdp.tuneLocal` /
+  `tuneRemote` / `enforceVp8Only`. A native two-peer test on the desktop `webrtc-java` stack passes in both directions
+  (`DesktopMediaStackSmokeTest`); the Android libwebrtc stack is untested (`VUP-01`). A `vu` arriving during an ICE restart
+  is serialised by `signalMutex` but not retried (`VUP-04`). A failed upgrade offer is logged and the call carries on.
+
+### Revisit when
+`VUP-01`..`04` are run, or a group upgrade is asked for.
+
+## ADR-079 - Media failures: specific end reasons, an audio-only retry, and notices instead of silent degradation
+
+### Decision
+`startMedia` / `acquireMedia` return a reason, not a Boolean. `MIC_DENIED` and `MIC_UNAVAILABLE` join the end reasons
+(`ERROR` stays for SDP and transport failures). A video call whose capture fails is retried once with the microphone only
+(`acquireWithCameraFallback`): success joins audio-only with `cameraOff = true` and a `FlashCallNotice`
+(`CAMERA_DENIED_AUDIO_ONLY` when the host asked for audio-only after a refused grant, `CAMERA_UNAVAILABLE_AUDIO_ONLY` when
+the camera would not open); failure means the microphone is the problem. `accept(audioOnly)` carries the host's choice. A camera that stops or cannot flip
+is `FlashCallUiState.cameraProblem` (`FAILED`, `SWITCH_FAILED`, `UPGRADE_FAILED`), shown as a call-screen banner (owner choice:
+banner driven by a state field, not a toast). Tiles under data saver or Show fewer say so (`videoOffLabel`); no router change.
+
+### Context
+ERROR-105 items A to D. Owner decisions 2026-10-06: a refused camera answers audio-only automatically (not a prompt);
+camera errors are a banner.
+
+### Alternatives considered
+- Map the exception from the first failure: a missing camera and a missing microphone fail in the same `getUserMedia` call,
+  so the first exception cannot say which. The retry can. Kept.
+- Ask the user "join without camera?": adds a tap to a ringing call and the answer is nearly always yes. Rejected by the owner.
+- Toast for camera errors: gone before it is read and invisible on the desktop. Rejected by the owner.
+- Change the third_party capturer to report errors: a fork change for an event libwebrtc only reports as a stop. Rejected;
+  the track's end is the signal.
+
+### Consequences
+- A JVM unit test sees either `ERROR` or `MIC_UNAVAILABLE` for the same failed `getUserMedia` depending on class-loading
+  order, so tests assert "ended with a media failure" (`assertMediaCouldNotStart`).
+- Desktop cannot observe a capturer stop (no hook): only toggle and flip failures show there.
+
+### Revisit when
+`CALLMEDIA-01`..`05` are run.

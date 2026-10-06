@@ -119,7 +119,7 @@ class DefaultFlashEngineTest {
         val signaling: MutableList<String> = mutableListOf()
 
         override suspend fun startCall(peerId: String, peerName: String, video: Boolean): Boolean = false
-        override suspend fun accept(): Boolean = false
+        override suspend fun accept(audioOnly: Boolean): Boolean = false
         override suspend fun decline(): Boolean = false
         override suspend fun hangUp(): Boolean = false
         override fun toggleMute(): Boolean = false

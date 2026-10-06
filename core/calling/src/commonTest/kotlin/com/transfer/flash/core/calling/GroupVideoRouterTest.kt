@@ -376,7 +376,7 @@ class GroupVideoRouterTest {
         assertEquals(setOf("b"), a.sendingTo)
         val deny = mesh.wire.filterIsInstance<CallWireFrame.VideoDeny>().last()
         assertEquals(VideoDenyReason.THERMAL, deny.reason)
-        assertEquals(FlashParticipantVideo.BUSY, c.router.receiveState("a"))
+        assertEquals(FlashParticipantVideo.SENDER_HOT, c.router.receiveState("a"))
     }
 
     @Test
@@ -467,6 +467,50 @@ class GroupVideoRouterTest {
     }
 
     @Test
+    fun `a request that keeps going unanswered is reported as no response, and a late answer clears it`() {
+        val a = node("a", receive = 0, send = 5)
+        val b = node("b", receive = 1, send = 5)
+        val mesh = Mesh(a, b)
+        a.router.onAnnouncement("b", videoRequests = true, videoFree = 5)
+        b.router.onAnnouncement("a", videoRequests = true, videoFree = 5)
+        b.router.startReceiving() // the first request is lost
+        assertEquals(FlashParticipantVideo.REQUESTED, b.router.receiveState("a"))
+
+        now += 5_500
+        b.router.tick(now) // the retry is lost as well
+        now += 5_500
+        b.router.tick(now) // and the next one
+        assertEquals(FlashParticipantVideo.REQUESTED, b.router.receiveState("a"), "11 s is still within the window")
+
+        now += 2_000
+        assertEquals(
+            FlashParticipantVideo.NO_RESPONSE,
+            b.router.receiveState("a"),
+            "the retries kept the first-sent time, so the tile can say nobody answered",
+        )
+
+        // The link comes back: the next retry is answered and the video flows again.
+        now += 4_000
+        mesh.step(b) { tick(now) }
+        assertEquals(setOf("b"), a.sendingTo)
+        assertEquals(FlashParticipantVideo.RECEIVING, b.router.receiveState("a"))
+    }
+
+    @Test
+    fun `a sender that is too hot is told apart from one that is full`() {
+        val a = node("a", receive = 0, send = 5)
+        a.limits = a.limits.copy(acceptNew = false)
+        val b = node("b", receive = 1, send = 5)
+        Mesh(a, b).join()
+        assertEquals(FlashParticipantVideo.SENDER_HOT, b.router.receiveState("a"))
+
+        val full = node("full", receive = 0, send = 0)
+        val c = node("c", receive = 1, send = 5)
+        Mesh(full, c).join()
+        assertEquals(FlashParticipantVideo.BUSY, c.router.receiveState("full"))
+    }
+
+    @Test
     fun `a granted request is not asked again, however long the call runs`() {
         val a = node("a", receive = 0, send = 5)
         val b = node("b", receive = 1, send = 5)
@@ -516,6 +560,19 @@ class GroupVideoRouterTest {
         a.limits = a.limits.copy(receive = 1)
         mesh.step(a) { tick(now) }
         assertEquals(1, listOf(b, c).count { "a" in it.sendingTo })
+    }
+
+    @Test
+    fun `a device that receives no video, as under data saver, asks nobody even when a tile is pinned`() {
+        // ERROR-105: the screen explains this with "Video is off to save data"; the router stays silent on purpose.
+        val a = Node("a", GroupVideoLimits(receive = 0, send = 5, quality = 540))
+        val b = node("b", receive = 0, send = 5)
+        val mesh = Mesh(a, b).apply { join() }
+
+        mesh.step(a) { setFocus("b") }
+
+        assertTrue("a" !in b.sendingTo, "b is not asked to send to a")
+        assertEquals(FlashParticipantVideo.OFF, a.router.receiveState("b"))
     }
 
     private companion object {

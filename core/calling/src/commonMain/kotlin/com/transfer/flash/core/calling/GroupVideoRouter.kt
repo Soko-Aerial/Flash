@@ -149,6 +149,7 @@ internal class GroupVideoRouter(
     private val speakerHoldMs: Long = 2_000L,
     private val stepUpMs: Long = 5_000L,
     private val requestRetryMs: Long = REQUEST_RETRY_MS,
+    private val noResponseMs: Long = NO_RESPONSE_MS,
 ) {
     sealed interface Effect {
         data class Send(val frame: CallWireFrame, val peerId: String) : Effect
@@ -172,6 +173,8 @@ internal class GroupVideoRouter(
         val quality: Int,
         val focus: Boolean,
         val sentAt: Long,
+        /** When this ask first went out; a retry keeps it, so a request that never gets an answer can be recognised. */
+        val firstSentAt: Long = sentAt,
         var granted: Boolean = false,
     )
 
@@ -232,11 +235,18 @@ internal class GroupVideoRouter(
     /** What this device's view of [peerId]'s video is, for the participant list. */
     fun receiveState(peerId: String): FlashParticipantVideo {
         if (capability[peerId] == Capability.LEGACY) return FlashParticipantVideo.UNMANAGED
-        asked[peerId]?.let { return if (it.granted) FlashParticipantVideo.RECEIVING else FlashParticipantVideo.REQUESTED }
+        asked[peerId]?.let {
+            return when {
+                it.granted -> FlashParticipantVideo.RECEIVING
+                clock() - it.firstSentAt >= noResponseMs -> FlashParticipantVideo.NO_RESPONSE
+                else -> FlashParticipantVideo.REQUESTED
+            }
+        }
         return when (blocked[peerId]) {
             null -> FlashParticipantVideo.OFF
             VideoDenyReason.CAMERA_OFF -> FlashParticipantVideo.CAMERA_OFF
-            VideoDenyReason.SENDER_AT_CAPACITY, VideoDenyReason.THERMAL -> FlashParticipantVideo.BUSY
+            VideoDenyReason.SENDER_AT_CAPACITY -> FlashParticipantVideo.BUSY
+            VideoDenyReason.THERMAL -> FlashParticipantVideo.SENDER_HOT
         }
     }
 
@@ -448,7 +458,9 @@ internal class GroupVideoRouter(
             val stale = current != null && !current.granted && now - current.sentAt >= requestRetryMs
             if (current == null || current.focus != focus || current.quality != limit.quality || stale) {
                 val seq = nextSeq()
-                asked[peerId] = Asked(seq, limit.quality, focus, now)
+                // A plain retry of the same ask keeps its first-sent time (so "no response" can be told); a changed ask is new.
+                val firstSentAt = current?.takeIf { stale && it.focus == focus && it.quality == limit.quality }?.firstSentAt ?: now
+                asked[peerId] = Asked(seq, limit.quality, focus, now, firstSentAt = firstSentAt)
                 out += Effect.Send(CallWireFrame.VideoRequest(callId, localId, seq, limit.quality, focus), peerId)
             }
         }
@@ -518,5 +530,8 @@ internal class GroupVideoRouter(
 
         /** How long a request waits for its grant or deny before it is asked again. */
         const val REQUEST_RETRY_MS = 5_000L
+
+        /** How long a request may stay unanswered, through its retries, before the tile says so. */
+        const val NO_RESPONSE_MS = 12_000L
     }
 }

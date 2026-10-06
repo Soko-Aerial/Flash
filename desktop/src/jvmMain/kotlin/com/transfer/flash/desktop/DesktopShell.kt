@@ -2155,6 +2155,8 @@ public fun DesktopShell(
                 onSetHandRaised = { raised -> calls?.setHandRaised(raised) },
                 onSendReaction = { kind -> calls?.sendReaction(kind) ?: false },
                 onSetDataSaver = { on -> calls?.setDataSaver(on) },
+                // ADR-078: no permission gate on the desktop; a camera that will not open shows its own banner.
+                onUpgradeToVideo = { scope.launch { calls?.upgradeToVideo() } },
             )
         }
     }

@@ -1005,6 +1005,8 @@ private fun FlashShell(
     // Without this the user grants the mic and the ringing call just sits there until they
     // think to tap Accept a second time.
     var pendingCallAccept by remember { mutableStateOf(false) }
+    // ADR-078: "Turn on camera" waiting on the CAMERA grant; the grant callback adds the camera to the live call.
+    var pendingCameraUpgrade by remember { mutableStateOf(false) }
     // C7: platform audio mode/focus/routing for the duration of a call. Declared here — ahead of
     // the permission launchers — because a permission-resumed accept has to set the mode before
     // media starts, same as the direct accept path. Survives recomposition so the same instance
@@ -1016,8 +1018,23 @@ private fun FlashShell(
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
-        if (!granted) {
+        if (pendingCameraUpgrade) {
+            pendingCameraUpgrade = false
+            if (granted) {
+                scope.launch { engine.calls?.upgradeToVideo() }
+            } else {
+                Toast.makeText(callCtx, "Camera permission is needed to turn on video", Toast.LENGTH_SHORT).show()
+            }
+            return@rememberLauncherForActivityResult
+        }
+        if (!granted && pendingCallAccept) {
+            // ERROR-105: a refused camera used to leave the incoming call ringing with nothing to tap. Answer it
+            // with the microphone only (the call screen says "Joined without camera"); the mic grant is already held.
             pendingCallAccept = false
+            Toast.makeText(callCtx, "Joining without camera", Toast.LENGTH_SHORT).show()
+            audioRouter.attach(engine.calls?.activeCall?.value?.speakerOn == true)
+            scope.launch { engine.calls?.accept(audioOnly = true) }
+        } else if (!granted) {
             Toast.makeText(callCtx, "Camera permission is required for video calls", Toast.LENGTH_SHORT).show()
         } else if (pendingCallAccept) {
             pendingCallAccept = false
@@ -2810,6 +2827,18 @@ private fun FlashShell(
                 onSetHandRaised = { raised -> engine.calls?.setHandRaised(raised) },
                 onSendReaction = { kind -> engine.calls?.sendReaction(kind) ?: false },
                 onSetDataSaver = { on -> engine.calls?.setDataSaver(on) },
+                onUpgradeToVideo = {
+                    // ADR-078: the camera is opened in the foreground, on this tap, after the grant.
+                    val hasCamera = ContextCompat.checkSelfPermission(
+                        callCtx, Manifest.permission.CAMERA,
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasCamera) {
+                        scope.launch { engine.calls?.upgradeToVideo() }
+                    } else {
+                        pendingCameraUpgrade = true
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
+                },
             )
         }
     }

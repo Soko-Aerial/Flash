@@ -59,13 +59,55 @@ class FlashGroupVideoGridTest {
     fun `a tile shows video only while it arrives, and says why not`() {
         assertTrue(FlashParticipantVideo.RECEIVING.hasPicture())
         assertTrue(FlashParticipantVideo.UNMANAGED.hasPicture(), "an old client always sends")
-        listOf(FlashParticipantVideo.OFF, FlashParticipantVideo.REQUESTED, FlashParticipantVideo.BUSY, FlashParticipantVideo.CAMERA_OFF)
-            .forEach { assertFalse(it.hasPicture(), "$it") }
+        listOf(
+            FlashParticipantVideo.OFF, FlashParticipantVideo.REQUESTED, FlashParticipantVideo.BUSY, FlashParticipantVideo.CAMERA_OFF,
+            FlashParticipantVideo.SENDER_HOT, FlashParticipantVideo.NO_RESPONSE,
+        ).forEach { assertFalse(it.hasPicture(), "$it") }
         val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.CONNECTED)
         assertEquals("Video busy", participantStatusLabel(p.copy(video = FlashParticipantVideo.BUSY)))
         assertEquals("Camera off", participantStatusLabel(p.copy(video = FlashParticipantVideo.CAMERA_OFF)))
-        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.BUSY)))
+        assertEquals("Too hot to send video", participantStatusLabel(p.copy(video = FlashParticipantVideo.SENDER_HOT)))
+        assertEquals("Video not responding", participantStatusLabel(p.copy(video = FlashParticipantVideo.NO_RESPONSE)))
+        assertEquals("Requesting video…", participantStatusLabel(p.copy(video = FlashParticipantVideo.REQUESTED)))
         assertEquals(null, participantStatusLabel(p.copy(video = FlashParticipantVideo.RECEIVING)))
+    }
+
+    @Test
+    fun `muted does not hide why a video did not come`() {
+        val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.CONNECTED)
+        assertEquals("Video busy · Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.BUSY)))
+        assertEquals("Camera off · Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.CAMERA_OFF)))
+        assertEquals("Too hot to send video · Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.SENDER_HOT)))
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, cameraOff = true)), "their own camera-off is not a refused request: muted still outranks it")
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.REQUESTED)), "a request still pending does not hide muted")
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true, video = FlashParticipantVideo.RECEIVING)))
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true)))
+        assertEquals("Hand raised", participantStatusLabel(p.copy(handRaised = true)))
+        assertEquals("Camera off", participantStatusLabel(p.copy(cameraOff = true, video = FlashParticipantVideo.REQUESTED)), "a camera that is off is the reason, not the pending ask")
+    }
+
+    @Test
+    fun `data saver and show fewer say why a tile that was never asked for shows no video`() {
+        val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.CONNECTED, video = FlashParticipantVideo.OFF)
+        assertEquals(null, participantStatusLabel(p), "no setting holds it back: nothing to say")
+        assertEquals("Video is off to save data", participantStatusLabel(p, dataSaver = true))
+        assertEquals("Video is off to save data", participantStatusLabel(p, dataSaver = true, showingFewer = true, isMain = true))
+        assertEquals("Showing fewer videos", participantStatusLabel(p, showingFewer = true))
+        assertEquals(null, participantStatusLabel(p, showingFewer = true, isMain = true), "the main tile holds the one video Show fewer allows")
+    }
+
+    @Test
+    fun `the data saver and show fewer words never hide a more specific reason`() {
+        val p = FlashCallParticipantUi(peerId = "p", name = "P", state = FlashCallParticipantState.CONNECTED, video = FlashParticipantVideo.OFF)
+        assertEquals("Muted", participantStatusLabel(p.copy(isMuted = true), dataSaver = true))
+        assertEquals("Hand raised", participantStatusLabel(p.copy(handRaised = true), dataSaver = true))
+        assertEquals("Camera off", participantStatusLabel(p.copy(cameraOff = true), dataSaver = true))
+        // A video that is on its way, or arrived, is not blamed on the setting.
+        assertEquals("Requesting video…", participantStatusLabel(p.copy(video = FlashParticipantVideo.REQUESTED), showingFewer = true))
+        assertEquals(null, participantStatusLabel(p.copy(video = FlashParticipantVideo.RECEIVING), dataSaver = true, showingFewer = true))
+        // Only a connected participant has a video to talk about.
+        assertEquals("Reconnecting…", participantStatusLabel(p.copy(state = FlashCallParticipantState.DISCONNECTED), dataSaver = true))
+        assertEquals("Not paired with you", participantStatusLabel(p.copy(note = "Not paired with you"), dataSaver = true))
     }
 
     @Test

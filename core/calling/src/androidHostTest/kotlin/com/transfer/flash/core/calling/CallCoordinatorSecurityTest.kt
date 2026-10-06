@@ -165,6 +165,58 @@ class CallCoordinatorSecurityTest {
         assertEquals("group-1", coordinator.ongoingGroupCalls.value["group-1"]?.groupId)
     }
 
+    private fun presenceText(from: String, count: Int, call: String = callId) = CallFrameCodec.encode(
+        CallWireFrame.GroupPresence(callId = call, from = from, groupId = "group-1", callerName = "G", video = false, participantCount = count),
+    )
+
+    private fun hangupText(from: String, call: String = callId) =
+        CallFrameCodec.encode(CallWireFrame.GroupHangup(callId = call, from = from, groupId = "group-1"))
+
+    @Test
+    fun `the join banner goes when the last participant hangs up and stays while others remain`() = runTest {
+        val coordinator = newCoordinator(trustedPeers = setOf(peerB))
+
+        coordinator.onInboundText(peerId = peerB, text = presenceText(peerB, count = 2))
+        assertTrue(coordinator.onInboundText(peerId = peerB, text = hangupText(peerB)))
+        assertEquals("one participant fewer, the call is still joinable", 1, coordinator.ongoingGroupCalls.value["group-1"]?.participantCount)
+
+        coordinator.onInboundText(peerId = peerB, text = presenceText(peerB, count = 1))
+        assertTrue(coordinator.onInboundText(peerId = peerB, text = hangupText(peerB)))
+        assertTrue("the last one left: no banner for a call nobody is in", coordinator.ongoingGroupCalls.value.isEmpty())
+    }
+
+    @Test
+    fun `a hangup of another call or from an untrusted peer leaves the banner alone`() = runTest {
+        val coordinator = newCoordinator(trustedPeers = setOf(peerB))
+        coordinator.onInboundText(peerId = peerB, text = presenceText(peerB, count = 1))
+
+        coordinator.onInboundText(peerId = peerB, text = hangupText(peerB, call = "some-other-call"))
+        assertEquals("a different call id", 1, coordinator.ongoingGroupCalls.value.size)
+
+        assertFalse(coordinator.onInboundText(peerId = attackerC, text = hangupText(attackerC)))
+        assertEquals("an untrusted peer cannot take the banner down", 1, coordinator.ongoingGroupCalls.value.size)
+    }
+
+    @Test
+    fun `an invite that arrives after its call hung up does not ring`() = runTest {
+        val coordinator = newCoordinator(trustedPeers = setOf(peerB))
+        assertTrue(coordinator.onInboundText(peerId = peerB, text = hangupText(peerB)))
+
+        val lateInvite = CallFrameCodec.encode(
+            CallWireFrame.GroupInvite(callId = callId, from = peerB, groupId = "group-1", callerName = "B", video = false),
+        )
+        assertTrue(coordinator.onInboundText(peerId = peerB, text = lateInvite))
+        runCurrent()
+        assertNull("the retry that lost the race with the hangup must not ring a phone", coordinator.activeCall.value)
+
+        val freshInvite = CallFrameCodec.encode(
+            CallWireFrame.GroupInvite(callId = "call-new", from = peerB, groupId = "group-1", callerName = "B", video = false),
+        )
+        assertTrue(coordinator.onInboundText(peerId = peerB, text = freshInvite))
+        runCurrent()
+        assertEquals("a new call still rings", FlashCallState.RINGING, coordinator.activeCall.value?.state)
+    }
+
     @Test
     fun `a vouched member's GroupPresence and GroupQuery count in that group only`() = runTest {
         sent.clear()

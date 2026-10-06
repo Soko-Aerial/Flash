@@ -292,7 +292,7 @@ private class Wiring(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): keepalive and redial pacing follow the discovery mode (ECO / BOOST).
             transportProfile = { connectionPolicy(engine).transport },
-            localFeatures = { if (facade?.swarm != null) setOf("sw1", "gs1") else setOf("gs1") },
+            localFeatures = { if (facade?.swarm != null) setOf("sw1", "gs1", "cv1") else setOf("gs1", "cv1") }, // cv1 = FEATURE_VIDEO_UPGRADE (ADR-078)
             onUsableNetwork = {
                 networkRestartJob?.cancel()
                 networkRestartJob = scope.launch {

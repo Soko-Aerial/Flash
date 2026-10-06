@@ -91,6 +91,9 @@ internal fun FlashGroupVideoSurfaces(
                         pinned = pinned,
                         // Only unpins: a stray tap must not pin the current speaker by surprise.
                         onClick = if (pinned) ({ onVideoFocus(null) }) else null,
+                        dataSaver = state.dataSaver,
+                        showingFewer = state.showingFewerVideos,
+                        isMain = true,
                     )
                 } else {
                     tiles.forEach { participant ->
@@ -101,6 +104,9 @@ internal fun FlashGroupVideoSurfaces(
                                 rounded = rounded,
                                 pinned = participant.peerId == state.videoFocusPeerId,
                                 onClick = { onVideoFocus(nextVideoFocus(state, participant.peerId)) },
+                                dataSaver = state.dataSaver,
+                                showingFewer = state.showingFewerVideos,
+                                isMain = false,
                             )
                         }
                     }
@@ -158,12 +164,17 @@ private fun FlashGroupVideoTile(
     rounded: Boolean,
     pinned: Boolean,
     onClick: (() -> Unit)?,
+    dataSaver: Boolean,
+    showingFewer: Boolean,
+    isMain: Boolean,
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
-    val status = participantStatusLabel(participant)
     // G3: a negotiated track carries nothing until the participant grants this device's request.
     val showsVideo = track != null && participant.video.hasPicture()
+    // Granted, but the track has not arrived yet: say so instead of showing an unexplained avatar.
+    val status = participantStatusLabel(participant, dataSaver, showingFewer, isMain)
+        ?: "Starting video…".takeIf { participant.state == FlashCallParticipantState.CONNECTED && participant.video.hasPicture() && track == null }
     val description = buildString {
         append(participant.name)
         append(if (showsVideo) ", video" else ", no video")
@@ -255,19 +266,73 @@ private fun FlashGroupVideoTile(
     }
 }
 
-/** The status word under a participant's name, or null when there is nothing to say. */
-internal fun participantStatusLabel(participant: FlashCallParticipantUi): String? = participant.note ?: when (participant.state) {
+/**
+ * The status word under a participant's name, or null when there is nothing to say.
+ *
+ * [dataSaver] and [showingFewer] are this device's own settings (ERROR-105): under either, a tile that was never asked
+ * for video says why it shows none, instead of a bare avatar that looks like a tap that did nothing. [isMain] is the
+ * compact layout's one main tile (it has the single video "Show fewer" allows).
+ */
+internal fun participantStatusLabel(
+    participant: FlashCallParticipantUi,
+    dataSaver: Boolean = false,
+    showingFewer: Boolean = false,
+    isMain: Boolean = false,
+): String? = participant.note ?: when (participant.state) {
     FlashCallParticipantState.INVITED -> if (participant.reachable) "Invited" else "Not reachable yet"
     FlashCallParticipantState.CONNECTING -> "Connecting…"
-    FlashCallParticipantState.CONNECTED -> when {
-        participant.isMuted -> "Muted"
-        participant.video == FlashParticipantVideo.BUSY -> "Video busy"
-        participant.video == FlashParticipantVideo.CAMERA_OFF || participant.cameraOff -> "Camera off"
-        participant.handRaised -> "Hand raised"
-        else -> null
+    FlashCallParticipantState.CONNECTED -> {
+        // A request for this person's video that was refused or went unanswered is said first, and "Muted" no longer
+        // hides it: whoever tapped the tile to see that video needs to know why nothing came. Anything that is merely
+        // this person's own state (their camera is off, a request still pending) stays below "Muted", which is what
+        // blocks the conversation.
+        val video = videoStatusLabel(participant)
+        val failed = participant.video in VIDEO_REQUEST_FAILED
+        when {
+            video != null && failed && participant.isMuted -> "$video · Muted"
+            participant.isMuted -> "Muted"
+            video != null -> video
+            participant.handRaised -> "Hand raised"
+            else -> videoOffLabel(participant, dataSaver, showingFewer, isMain)
+        }
     }
     FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"
     FlashCallParticipantState.LEFT -> "Left"
+}
+
+/**
+ * ERROR-105: why a video that was never asked for is not showing, when this device's own setting is the reason.
+ * Data saver asks nobody for video; "Show fewer" asks for one. Null when the video is on its way, was refused (the
+ * labels of [videoStatusLabel] say that) or nothing on this device holds it back.
+ */
+internal fun videoOffLabel(
+    participant: FlashCallParticipantUi,
+    dataSaver: Boolean,
+    showingFewer: Boolean,
+    isMain: Boolean,
+): String? = when {
+    participant.video != FlashParticipantVideo.OFF -> null
+    dataSaver -> "Video is off to save data"
+    showingFewer && !isMain -> "Showing fewer videos"
+    else -> null
+}
+
+/** The answers to a video request that mean "you will not get it now". */
+private val VIDEO_REQUEST_FAILED = setOf(
+    FlashParticipantVideo.CAMERA_OFF,
+    FlashParticipantVideo.BUSY,
+    FlashParticipantVideo.SENDER_HOT,
+    FlashParticipantVideo.NO_RESPONSE,
+)
+
+/** Why this participant's video is not showing (or is on its way), or null when it is showing or was never asked for. */
+internal fun videoStatusLabel(participant: FlashCallParticipantUi): String? = when {
+    participant.video == FlashParticipantVideo.CAMERA_OFF || participant.cameraOff -> "Camera off"
+    participant.video == FlashParticipantVideo.BUSY -> "Video busy"
+    participant.video == FlashParticipantVideo.SENDER_HOT -> "Too hot to send video"
+    participant.video == FlashParticipantVideo.NO_RESPONSE -> "Video not responding"
+    participant.video == FlashParticipantVideo.REQUESTED -> "Requesting video…"
+    else -> null
 }
 
 /**

@@ -4,6 +4,7 @@ import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.core.calling.model.FlashCameraProblem
 import com.transfer.flash.core.calling.protocol.CallWireFrame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -111,6 +112,23 @@ class FlashGroupCallEndTest {
         assertEquals(FlashCallState.ENDED, s.state.value.state)
         assertEquals(1, endedStates.size)
         assertEquals(2, sent.count { it.first is CallWireFrame.GroupHangup })
+        settle()
+    }
+
+    @Test
+    fun aMemberTheCallWasOnlyAnnouncedToIsToldItEnded() = runTest {
+        // "other" never got a leg here (it is announce-only), but its "join" banner comes from this call's presence,
+        // so the goodbye must reach it too or the banner outlives the call.
+        val s = session(FlashCallDirection.INCOMING)
+        s.startIncomingRinging(peerId = "caller", callerName = "Caller", members = listOf("caller", "other", "me"))
+        s.hangUp()
+        runCurrent()
+
+        assertEquals(
+            setOf("caller", "other"),
+            sent.filter { it.first is CallWireFrame.GroupHangup }.map { it.second }.toSet(),
+        )
+        assertEquals("nobody is told twice", 2, sent.count { it.first is CallWireFrame.GroupHangup })
         settle()
     }
 
@@ -432,6 +450,55 @@ class FlashGroupCallEndTest {
             sent.any { it.first is CallWireFrame.GroupFull && it.second == "late2" },
         )
         assertFalse(s.isSessionEnded)
+    }
+
+    // ---------------------------------------------------------------- ERROR-105: camera problems
+
+    @Test
+    fun aStoppedCameraIsAnOffCameraAndSaysSo() = runTest {
+        val s = session()
+        s.addJoinedLegForTesting("peer", FlashCallParticipantState.CONNECTED)
+        s.markActiveForTesting()
+
+        s.reportCameraProblem(FlashCameraProblem.FAILED)
+        runCurrent()
+
+        assertEquals(FlashCameraProblem.FAILED, s.state.value.cameraProblem)
+        assertTrue(s.state.value.cameraOff)
+        // The camera button now means "start it again": it must not claim the camera is on before it opened.
+        assertTrue(s.toggleCamera())
+        assertTrue(s.state.value.cameraOff)
+        assertEquals(FlashCameraProblem.FAILED, s.state.value.cameraProblem)
+        settle()
+    }
+
+    @Test
+    fun aFailedSwitchKeepsTheCameraAndClearsItself() = runTest {
+        val s = session()
+        s.addJoinedLegForTesting("peer", FlashCallParticipantState.CONNECTED)
+        s.markActiveForTesting()
+
+        s.reportCameraProblem(FlashCameraProblem.SWITCH_FAILED)
+        assertEquals(FlashCameraProblem.SWITCH_FAILED, s.state.value.cameraProblem)
+        assertFalse(s.state.value.cameraOff)
+
+        advanceTimeBy(SWITCH_PROBLEM_CLEAR_MS + 1)
+        runCurrent()
+        assertEquals(null, s.state.value.cameraProblem)
+    }
+
+    @Test
+    fun aCameraProblemAfterTheCallEndedIsIgnored() = runTest {
+        val s = session()
+        s.addJoinedLegForTesting("peer", FlashCallParticipantState.CONNECTED)
+        s.markActiveForTesting()
+        s.hangUp()
+        settle()
+
+        s.reportCameraProblem(FlashCameraProblem.FAILED)
+
+        assertEquals(null, s.state.value.cameraProblem)
+        assertEquals(FlashCallState.ENDED, s.state.value.state)
     }
 
     private companion object {

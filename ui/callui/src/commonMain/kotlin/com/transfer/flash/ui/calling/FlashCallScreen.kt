@@ -57,6 +57,8 @@ import com.transfer.flash.core.calling.FlashCallMedia
 import com.transfer.flash.core.calling.model.FlashCallAudioRoute
 import com.transfer.flash.core.calling.model.FlashCallAudioRoutes
 import com.transfer.flash.core.calling.model.FlashCallEndReason
+import com.transfer.flash.core.calling.model.FlashCallNotice
+import com.transfer.flash.core.calling.model.FlashCameraProblem
 import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
@@ -119,6 +121,11 @@ public fun FlashCallScreen(
     onSetHandRaised: (Boolean) -> Unit = {},
     onSendReaction: (FlashCallReactionKind) -> Boolean = { false },
     onSetDataSaver: (Boolean) -> Unit = {},
+    /**
+     * ADR-078: adds this device's camera to a live 1:1 call that has none (the host asks for the camera permission
+     * first). Null on a host that cannot; the dock shows its button only while [FlashCallUiState.canUpgradeToVideo].
+     */
+    onUpgradeToVideo: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
@@ -198,6 +205,25 @@ public fun FlashCallScreen(
                 Spacer(Modifier.height(FlashSpacing.space16))
             }
 
+            val notice = state.notice
+            var noticeDismissed by remember(state.callId, notice) { mutableStateOf(false) }
+            if (notice != null && !noticeDismissed && !ended && state.state != FlashCallState.RINGING) {
+                // ERROR-105: a video call joined with the microphone only, and why.
+                FlashCallMessagePill(text = callNoticeText(notice), onDismiss = { noticeDismissed = true })
+                Spacer(Modifier.height(FlashSpacing.space12))
+            }
+
+            val cameraProblem = state.cameraProblem
+            if (cameraProblem != null && !ended) {
+                // ERROR-105: this device's own camera stopped or would not switch. "Try again" is the camera button.
+                FlashCallMessagePill(
+                    text = cameraProblemText(cameraProblem),
+                    actionLabel = cameraProblemAction(cameraProblem),
+                    onAction = { onToggleCamera() },
+                )
+                Spacer(Modifier.height(FlashSpacing.space12))
+            }
+
             if (state.dataSaver && state.video && !ended) {
                 // The way back from a call that stopped receiving video; the dock's More panel has the same switch.
                 FlashDataSaverPill(onTurnOff = { onSetDataSaver(false) })
@@ -218,6 +244,7 @@ public fun FlashCallScreen(
                 onOpenRoutes = { panel = CallPanel.ROUTES },
                 onOpenMore = { panel = CallPanel.MORE },
                 moreActive = state.handRaised || state.dataSaver,
+                onUpgradeToVideo = onUpgradeToVideo,
             )
             Spacer(Modifier.height(FlashSpacing.space40))
         }
@@ -605,6 +632,7 @@ private fun FlashCallControls(
     onOpenRoutes: () -> Unit,
     onOpenMore: () -> Unit,
     moreActive: Boolean,
+    onUpgradeToVideo: (() -> Unit)? = null,
 ) {
     when (state.state) {
         FlashCallState.RINGING -> {
@@ -671,6 +699,7 @@ private fun FlashCallControls(
                 onOpenRoutes = onOpenRoutes,
                 onOpenMore = onOpenMore,
                 moreActive = moreActive,
+                onUpgradeToVideo = onUpgradeToVideo,
             )
         }
         FlashCallState.ENDED -> {
@@ -765,16 +794,40 @@ private fun statusLine(state: FlashCallUiState): String {
         FlashCallState.RINGING -> "Incoming call"
         FlashCallState.CONNECTING -> "Connecting…"
         FlashCallState.ACTIVE -> activeDuration(state)
-        FlashCallState.ENDED -> when (state.endReason) {
-            FlashCallEndReason.NORMAL -> "Call ended"
-            FlashCallEndReason.DECLINED -> "Declined"
-            FlashCallEndReason.NO_ANSWER -> "No answer"
-            FlashCallEndReason.DISCONNECTED -> "Connection lost"
-            FlashCallEndReason.ERROR -> "Call failed"
-            FlashCallEndReason.FULL -> "Call is full"
-            null -> "Call ended"
-        }
+        FlashCallState.ENDED -> endReasonText(state.endReason)
     }
+}
+
+/** The final status line of an ended call. ERROR-105: a microphone failure says so instead of "Call failed". */
+internal fun endReasonText(reason: FlashCallEndReason?): String = when (reason) {
+    FlashCallEndReason.NORMAL -> "Call ended"
+    FlashCallEndReason.DECLINED -> "Declined"
+    FlashCallEndReason.NO_ANSWER -> "No answer"
+    FlashCallEndReason.DISCONNECTED -> "Connection lost"
+    FlashCallEndReason.ERROR -> "Call failed"
+    FlashCallEndReason.MIC_DENIED -> "Microphone permission needed"
+    FlashCallEndReason.MIC_UNAVAILABLE -> "Microphone is busy or unavailable"
+    FlashCallEndReason.FULL -> "Call is full"
+    null -> "Call ended"
+}
+
+/** ERROR-105: what to tell the user when this device's own camera stopped or would not switch. */
+internal fun cameraProblemText(problem: FlashCameraProblem): String = when (problem) {
+    FlashCameraProblem.FAILED -> "Camera stopped. Another app may be using it"
+    FlashCameraProblem.SWITCH_FAILED -> "Couldn't switch camera"
+    FlashCameraProblem.UPGRADE_FAILED -> "Couldn't turn on the camera"
+}
+
+/** ERROR-105: the action offered next to [cameraProblemText], or null when there is nothing to do about it. */
+internal fun cameraProblemAction(problem: FlashCameraProblem): String? = when (problem) {
+    FlashCameraProblem.FAILED -> "Try again"
+    FlashCameraProblem.SWITCH_FAILED, FlashCameraProblem.UPGRADE_FAILED -> null
+}
+
+/** ERROR-105: the one-line message for a video call this device joined without sending video. */
+internal fun callNoticeText(notice: FlashCallNotice): String = when (notice) {
+    FlashCallNotice.CAMERA_DENIED_AUDIO_ONLY -> "Joined without camera: camera permission is off"
+    FlashCallNotice.CAMERA_UNAVAILABLE_AUDIO_ONLY -> "Joined without camera: it could not be opened"
 }
 
 /** mm:ss duration counter while ACTIVE — one tick per second, confined to one text node by

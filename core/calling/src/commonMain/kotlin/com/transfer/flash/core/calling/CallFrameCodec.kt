@@ -184,6 +184,7 @@ public object CallFrameCodec {
                 flag("rv", frame.receiveVideo),
                 frame.reaction?.let { "react" to it.wire },
                 frame.reaction?.let { "rseq" to frame.reactionSeq.toString() },
+                flag("vu", frame.videoUpgrade),
             )
         }
         return FlashTextFraming.encodeFields(PREFIX, fields)
@@ -316,6 +317,7 @@ public object CallFrameCodec {
                 receiveVideo = fields["rv"].toFlag(),
                 reaction = FlashCallReactionKind.fromWire(fields["react"]),
                 reactionSeq = fields["rseq"]?.toLongOrNull() ?: 0L,
+                videoUpgrade = fields["vu"].toFlag(),
             )
             else -> null
         }
