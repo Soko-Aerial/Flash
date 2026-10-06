@@ -38,6 +38,8 @@ class FlashMigrationsChainTest {
                 FlashMigrations.MIGRATION_6_7,
                 FlashMigrations.MIGRATION_7_8,
                 FlashMigrations.MIGRATION_8_9,
+                FlashMigrations.MIGRATION_9_10,
+                FlashMigrations.MIGRATION_10_11,
             ).map { it.startVersion to it.endVersion },
             FlashSchemaSteps.ALL.map { it.from to it.to },
         )

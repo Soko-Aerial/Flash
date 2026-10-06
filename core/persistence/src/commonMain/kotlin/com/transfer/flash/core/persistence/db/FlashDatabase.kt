@@ -147,6 +147,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v8: group_secret, group_invite, group_join_request for group membership by secret (ADR-044, ADR-073, GM-2).
         // v9: group_rotation for group rotation notices (ADR-044, ADR-073, GM-6).
         // v10: group_settings and group_preferences for signed settings and local prefs (ADR-074, GM-9).
-        public const val DATABASE_VERSION: Int = 10
+        // v11: MessageEntity gained the swarm offer columns (swarmRoot/swarmPieceSize/swarmRootSig) so a catch-up can relay a file (ERROR-108).
+        public const val DATABASE_VERSION: Int = 11
     }
 }

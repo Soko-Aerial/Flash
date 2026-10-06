@@ -3960,3 +3960,23 @@ The launch splash on Android and on the Windows desktop app is the "Ink" design 
 
 ### Revisit when
 `SPLASH-01`..`08` are run (in particular `SPLASH-06` on the Belfone), or the owner asks for a skip gesture.
+
+
+## ADR-081 - A catch-up message can carry the swarm offer of a file; the offer is stored on the chat row (schema v11)
+
+### Decision
+A signed (v2) group file message that was announced to the swarm keeps `swarmRoot`, `swarmPieceSize` and `swarmRootSig` on its `messages` row (schema v10 -> v11, nullable). A catch-up `SyncPush` carries them, with the file name, type and size, as `GroupWireFrame.SwarmOffer`. The receiver verifies the author's announcement signature before it trusts any field, stores the file row (keyed by the message id) and announces to the swarm. The chat layer signs the announcement with the message's own `sentAt`; the origin's registration signature is only a fallback.
+
+### Context
+Any member that holds a message may relay it in catch-up, so the offer cannot live only on the author. The signature has to cover the same `sentAt` the receiver sees.
+
+### Alternatives considered
+- Keep the offer in `swarm_content`: needs the signature added there and the swarm record would then depend on chat; the swarm content row can also be cleaned up while the message stays.
+- Re-announce from the author when a member reconnects: fails when the author is offline, which is the case the swarm exists for.
+- Unsigned offer: lets a relaying member swap the file under the author's name.
+
+### Why
+Smallest change that works with the existing relay model; old builds ignore the new keys and behave as before (an empty bubble).
+
+### Revisit when
+The 7-day swarm retention and the catch-up TTL disagree in practice, or a second kind of attachment needs the same relay.

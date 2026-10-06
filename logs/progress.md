@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-10-06 (i) - Swarm file offers: signature, bubble link, catch-up for offline members (ERROR-108, ADR-081)
+
+### Worked on
+The owner's swarm review follow-up: "a member offline at send time ..." and the other listed gaps. Reading the chat side of the announcement found two more defects on the same path.
+
+### Changed
+- Announcement signed in the chat layer with the frame's `sentAt` (the host's signature used another clock, so receivers could not verify it).
+- Receiver rows keyed by the message id (the swarm row id); the bubble was never linked to its swarm row.
+- Schema v11 + `SwarmOffer` on catch-up `Message`; relays verify the author's signature, insert the file row and announce.
+- Tests: 4 in `SignedGroupsTest`, 3 in `GroupFrameCodecTest`, migration chain test list completed (it lacked 9_10).
+
+### Verification
+See ERROR-108. Not device-verified: `SWM-36`...`SWM-39`.
+
+### Remaining
+From the owner's list, still open: `SourceStatus` / reject when the origin's file is lost or changed (and persisting `originSourceLost`), non-member Summary / Have, transfer row `peerName`.
+
+### Next AI
+Do those three in that order, test first. `RealFlashChatRepositoryTest` "delete for everyone sends direct action only for the local author" failed once under full-suite load; passes alone.
+
 ## 2026-10-06 (h) - Swarm first-contact hole (ERROR-107)
 
 ### Worked on

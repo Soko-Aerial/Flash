@@ -7311,3 +7311,44 @@ None.
 
 ### Status
 FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-35 passes)
+
+
+## ERROR-108 - Swarm file offers: bad announcement signature, bubble not linked to its swarm row, offline members never offered the file
+
+### Date
+2026-10-06
+
+### Area
+Group swarm / chat announcement (`RealFlashChatRepository`), catch-up (ADR-059), schema v11
+
+### Symptoms
+Found by code reading during the owner's swarm walkthrough review (not yet seen on a device). Three defects on one path:
+1. A member would refuse the live swarm offer: `isSwarmOffer` was false, the frame fell into the legacy path, and no file ever came.
+2. A receiver's bubble showed no swarm progress and Accept / Pause / Cancel on it reached nothing.
+3. A member offline at send time got an empty bubble from catch-up and never joined the swarm (plan row 23 promised a late announcement is handled like a fresh one).
+
+### Root cause
+1. `SwarmHostBinding.registerOrigin` signs the announcement with its own clock (`sentAt = now`). The chat frame's `sentAt` comes from `beginGroupAttachment`, a moment later, and the receiver verifies the signature against the frame's `sentAt`. The two differ, so verification fails. `SwarmInteropTest` hides it because it injects the receivers' `Announced` event directly, with no chat frame.
+2. The receiver's row used the per-recipient `frame.transferId`; the swarm row's id (and `ExternalTransferControl.owns`) is the message id.
+3. The catch-up `Message` carried text only: no root, piece size, file name, size or signature. Any holder relays catch-up, and a receiver of the live offer did not keep root / piece size / signature anywhere.
+
+### Failed attempts
+None.
+
+### Working fix
+- `beginGroupAttachment` signs the announcement itself with `signSwarmAnnouncement(..., sentAt)` using the frame's own `sentAt`; the host's signature is only a fallback for a device that cannot sign.
+- The receiver row is keyed by the message id, and the listener is handed the message id as the transfer id.
+- Schema v10 -> v11 (`MessageEntity.swarmRoot / swarmPieceSize / swarmRootSig`, nullable). Sender and receiver rows keep the offer.
+- `GroupWireFrame.SwarmOffer` rides on the catch-up `Message` (`afn amime asize aroot apsize arsig`; all six or none; older builds ignore the keys). `handleSyncPush` verifies the author's announcement signature (a relay cannot swap the file or the root), inserts the file row, and announces to the swarm. With no swarm listener on the device the row is taken as before.
+
+### Verification
+`SignedGroupsTest` (4 new): offer accepted with a host signature made on another clock and bubble keyed by the message id; offline member gets the offer in catch-up; a non-author holder relays it with the author offline; a renamed file and a swapped root are dropped, the honest relay accepted. Mutation: using the host signature unchanged fails the first test. `GroupFrameCodecTest` (3 new). `:core:messaging` jvm and android host tests, `:core:engine:jvmTest`, `:core:swarm:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. One run of `RealFlashChatRepositoryTest` "delete for everyone ..." failed under full-suite load and passed twice alone (timing flake, not investigated). `:core:persistence:testAndroidHostTest` fails in the DataStore tests (Windows file rename in a temp dir); the migration and invariant tests pass; I did not run the DataStore tests on a clean tree. Device checks `SWM-36`...`SWM-39`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/protocol/GroupWireFrame.kt`, `GroupFrameCodec.kt`
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/FlashSchemaSteps.kt` (`STEP_10_11`), `FlashDatabase.kt`, `entity/MessageEntity.kt`, `schemas/.../11.json`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/SignedGroupsTest.kt`
+
+### Status
+FIXED IN CODE, unit-tested, NOT device-verified (stays OPEN until SWM-36...SWM-39 pass)

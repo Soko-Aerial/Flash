@@ -2242,6 +2242,35 @@ plan GM-11. Record results in the Results log.
   - A malformed link shows no action.
 - **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
 
+## 4zc. Swarm file offers and catch-up (ERROR-108, ADR-081, 2026-10-06)
+
+### SWM-36 - A live swarm offer is accepted and the bubble follows the transfer
+- **Setup:** swarm switch on for three phones in a v2 group, all connected, a 20 MB file.
+- **Steps:** phone A sends the file. On phone B watch the bubble and the Transfers row; tap Pause then Resume on the bubble.
+- **Pass:** B's bubble shows progress that matches the Transfers row; Pause / Resume on the bubble take effect on the row; the log has `SWARM announce root=... origin=false` on B and no `file offer dropped` line.
+- **Source:** ERROR-108.
+- **Status:** TODO
+
+### SWM-37 - A member that was offline gets the file offer
+- **Setup:** as SWM-36, phone C switched to airplane mode before A sends.
+- **Steps:** A sends; B downloads; C comes back online.
+- **Pass:** within about 10 s of C reconnecting, C shows a file bubble named like the file (not empty), and it downloads from A or B; the log shows the catch-up and `SWARM announce ... origin=false` on C.
+- **Source:** ERROR-108, plan row 23.
+- **Status:** TODO
+
+### SWM-38 - A member relays the offer while the author is offline
+- **Setup:** as SWM-37, but A leaves the network after B has finished; C returns.
+- **Pass:** C shows the file bubble and downloads it from B alone; the bubble names A as the sender.
+- **Source:** ERROR-108.
+- **Status:** TODO
+
+### SWM-39 - Upgrade keeps old rows
+- **Setup:** an install with group chat history from the previous build.
+- **Steps:** install this build over it and open a group.
+- **Pass:** the app opens, old messages are intact, a new file send works (migration v10 -> v11).
+- **Source:** ADR-081.
+- **Status:** TODO
+
 ## 4zb. Swarm first contact (ERROR-107, 2026-10-06)
 
 ### SWM-35 - A fresh swarm send starts without a reconnect

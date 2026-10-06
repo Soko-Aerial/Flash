@@ -114,6 +114,40 @@ class GroupFrameCodecTest {
         assertEquals(frame, GroupFrameCodec.decode(GroupFrameCodec.encode(frame)))
     }
 
+    private fun swarmPush(offer: GroupWireFrame.SwarmOffer?) = GroupWireFrame.SyncPush(
+        groupId = "g2-crew", syncId = "s-1", from = "peer-b",
+        message = GroupWireFrame.Message(
+            groupId = "g2-crew", messageId = "m-1", from = "peer-a", senderName = "Peer A", sentAt = 42L, text = "",
+            signature = "sig-abc", swarmOffer = offer,
+        ),
+    )
+
+    @Test
+    fun syncPushRoundTripsTheSwarmOfferOfAFileMessage() {
+        val offer = GroupWireFrame.SwarmOffer("my file (1).bin", "application/octet-stream", 20_000_000L, "ab".repeat(32), 1_048_576, "rsig-xyz")
+        val frame = swarmPush(offer)
+        assertEquals(frame, GroupFrameCodec.decode(GroupFrameCodec.encode(frame)))
+    }
+
+    @Test
+    fun syncPushWithoutAnOfferStaysAsItWas() {
+        val frame = swarmPush(null)
+        val encoded = GroupFrameCodec.encode(frame)
+        assertEquals(frame, GroupFrameCodec.decode(encoded))
+        assertFalse(encoded.contains("aroot="), "a plain push carries no file keys: $encoded")
+    }
+
+    @Test
+    fun aHalfDescribedOfferIsNotAnOffer() {
+        val encoded = GroupFrameCodec.encode(
+            swarmPush(GroupWireFrame.SwarmOffer("f.bin", "application/octet-stream", 10L, "ab".repeat(32), 65_536, "rsig")),
+        )
+        val withoutSig = encoded.split(' ').filterNot { it.startsWith("arsig=") }.joinToString(" ")
+        val decoded = GroupFrameCodec.decode(withoutSig) as GroupWireFrame.SyncPush
+        assertNull(decoded.message.swarmOffer)
+        assertEquals("m-1", decoded.message.messageId, "the message itself still arrives")
+    }
+
     @Test
     fun deleteForEveryoneRoundTripsAsDistinctGroupAction() {
         val frame = GroupWireFrame.DeleteForEveryone(
