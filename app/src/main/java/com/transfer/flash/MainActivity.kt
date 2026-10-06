@@ -473,11 +473,16 @@ class MainActivity : ComponentActivity() {
                     val dir = java.io.File(cacheDir, "log-export").apply { mkdirs() }
                     dir.listFiles()?.forEach { it.delete() }
                     val out = java.io.File(dir, "flash-log-" + System.currentTimeMillis() + ".txt")
+                    // Session header + live snapshot (docs/testing/PROBES.md): build, device, clock offset, switches, and every
+                    // connected peer / group member with its features and paired / vouched state, as they are right now.
+                    val versionName = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "?"
+                    val header = com.transfer.flash.debug.FlashLogContext.exportLines(appEngine, versionName, System.currentTimeMillis())
                     out.bufferedWriter().use { w ->
                         w.write(
                             "Flash log export; Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + "); " +
                                 Build.MANUFACTURER + " " + Build.MODEL + "\n",
                         )
+                        header.forEach { w.write(it + "\n") }
                         sink.files().forEach { f -> f.bufferedReader().use { it.copyTo(w) } }
                     }
                     androidx.core.content.FileProvider.getUriForFile(this@MainActivity, "$packageName.fileprovider", out)

@@ -651,6 +651,15 @@ public class DesktopEngine(
             if (started) return
             started = true
         }
+        // PROBE session.header: what a log reader needs to know about this process (docs/testing/PROBES.md).
+        com.transfer.flash.core.common.logging.FlashProbe.emit(
+            "session.header",
+            "app" to "desktop",
+            "os" to System.getProperty("os.name"),
+            "java" to System.getProperty("java.version"),
+            "local" to com.transfer.flash.core.common.logging.FlashProbe.short(localDeviceId),
+            "tzOffsetMin" to (java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000),
+        )
         scope.launch {
             val result = runCatching { assemble() }
             result

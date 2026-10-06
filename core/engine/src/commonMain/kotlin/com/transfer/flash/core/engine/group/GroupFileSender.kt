@@ -1,5 +1,8 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.engine.group
 
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.swarm.model.PieceMath
@@ -141,10 +144,17 @@ public class GroupFileSender(
             null
         }
 
+        // PROBE group.file.fanout: who got a swarm offer, who got the whole file, who got nothing and why (the owner's
+        // ERROR-117 test could not tell "peer did not advertise sw1" from "peer was not connected"; both read as noFeatures).
+        var swarmOffers = 0
+        var wholeFiles = 0
+        var notReached = 0
+        var noFeatures = 0
         for (member in members) {
             val recipientTransferId = idFactory()
             val features = peerFeatures?.invoke(member.id).orEmpty()
             val useSwarmForPeer = swarmOrigin != null && "sw1" in features
+            if (features.isEmpty()) noFeatures++
 
             val announced = if (useSwarmForPeer) {
                 val (manifest, rootSig) = swarmOrigin!!
@@ -178,7 +188,11 @@ public class GroupFileSender(
                     null,
                 )
             }
-            if (!announced) continue
+            if (!announced) {
+                notReached++
+                continue
+            }
+            if (useSwarmForPeer) swarmOffers++ else wholeFiles++
 
             // If peer is using swarm, they pull chunks themselves via FSW1 frames.
             // Only non-swarm peers receive the legacy direct push stream via sendFile.
@@ -194,6 +208,16 @@ public class GroupFileSender(
                 )
             }
         }
+        FlashProbe.emit(
+            "group.file.fanout",
+            "group" to FlashProbe.short(groupId),
+            "members" to members.size,
+            "swarmable" to (swarmOrigin != null),
+            "swarmOffers" to swarmOffers,
+            "wholeFiles" to wholeFiles,
+            "notReached" to notReached,
+            "noFeatures" to noFeatures,
+        )
         if (swarmOrigin != null) {
             val (manifest, rootSig) = swarmOrigin
             recordSwarmOffer?.invoke(sharedMessageId, manifest.root.hex, manifest.pieceSize, rootSig)

@@ -110,7 +110,8 @@ docs/
 ├── decisions.md
 ├── troubleshooting.md
 ├── testing/
-│   └── TEST-BACKLOG.md          # Every device test still owed (see §35)
+│   ├── TEST-BACKLOG.md          # Every device test still owed (see §35)
+│   └── PROBES.md                # Evidence probe vocabulary + log export header (ADR-087)
 └── ui/                          # Premium chat UI — research-first (see §34)
     ├── flash-premium-chat-ui-implementation.md
     ├── ui-research-index.md
@@ -779,6 +780,7 @@ STORAGE
 DATABASE
 SERVICE
 PERFORMANCE
+PROBE        (evidence probes, docs/testing/PROBES.md)
 ```
 
 Good:

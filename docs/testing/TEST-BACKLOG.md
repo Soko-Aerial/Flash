@@ -2615,3 +2615,35 @@ Newest first. One entry per test session: date, build, devices, tests run, resul
 - **Links:** `docs/calling/GROUP-VIDEO-PLAN.md` section 8, `logs/experiments.md` (owner observation).
 
 *(Backlog created 2026-09-29 at commit `4e71c5d`.)*
+
+## 4zi. Evidence probes and the log export header (ADR-087, 2026-10-06)
+
+These check the logging itself. Vocabulary and field meanings: `docs/testing/PROBES.md`.
+
+### LOGX-01 - The Android export starts with a header and a snapshot
+- **Setup:** two phones paired and connected, one group (v2) with both in it.
+- **Steps:** Settings, Export logs, open the file.
+- **Pass:** line 1 is `Flash log export; ...`; the next lines are `session.header` (with `build`, `device`, `local`, `tzOffsetMin`, `swarm`), `snapshot.sessions count=1`, `snapshot.session ... paired=true features=...`, `snapshot.group ... proto=v2`, `snapshot.member ... session=true`. No full device id longer than 8 characters.
+- **Source:** ADR-087. **Status:** TODO
+
+### LOGX-02 - Session and group message probes appear during normal chat
+- **Setup:** as LOGX-01.
+- **Steps:** A sends a group text; B replies; turn B's Wi-Fi off and on once.
+- **Pass:** on A `group.msg.out recipients=1`; on B `group.msg.in ... signed=true stored=true` with a small `skewMs`; both logs show `session.down` then `session.up` for the Wi-Fi toggle.
+- **Source:** ADR-087. **Status:** TODO
+
+### LOGX-03 - A file fan-out says who got a swarm offer
+- **Setup:** 3 phones, group with swarm on; A paired with B and C, B and C not paired.
+- **Steps:** B sends a 20 MB file.
+- **Pass:** B's log has `group.file.fanout members=2 swarmable=true` and `swarmOffers` plus `wholeFiles` plus `notReached` equals 2; C's log has `swarm.offer.in` or `group.sync.in kind=swarm_offer`. A snapshot taken right after shows each peer's `features`.
+- **Source:** ADR-087, ERROR-117 (`SWM-45`). **Status:** TODO
+
+### LOGX-04 - The desktop log opens with its header
+- **Steps:** start the Windows app, open `~/.flash/desktop.log`.
+- **Pass:** a `session.header app=desktop ...` line is near the top.
+- **Source:** ADR-087. **Status:** TODO
+
+### LOGX-05 - Probes contain no secrets or content
+- **Steps:** after LOGX-01...03 plus an invite link share, search both exports for `flash://g`, any run of 64+ base64 or hex characters, and the text of the messages sent.
+- **Pass:** nothing found in `PROBE` lines (or anywhere else, AGENTS.md section 24).
+- **Source:** ADR-087. **Status:** TODO
