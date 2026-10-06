@@ -48,6 +48,7 @@ public object GroupPolicy {
     /** Leave/removal certs a bundle may carry on top of the active members. */
     public const val MAX_BUNDLE_TOMBSTONES: Int = 64
     public const val MAX_BUNDLE_CERTS: Int = MAX_MEMBERS_V2 + MAX_BUNDLE_TOMBSTONES
+    public const val MAX_REMOVED_IDS_PER_ROTATION: Int = 64
     public const val MAX_LABEL_LENGTH: Int = 80
     public const val CHARTER_NONCE_BYTES: Int = 16
 
@@ -67,12 +68,13 @@ public object GroupPolicy {
         memberIds: Collection<String>,
         localDeviceId: String,
         maxMembers: Int = MAX_MEMBERS,
+        minMembers: Int = 2,
     ): Boolean {
         val members = memberIds.toSet()
         return members.size == memberIds.size &&
             members.none { it.isBlank() } &&
             localDeviceId in members &&
-            members.size in 2..maxMembers
+            members.size in minMembers..maxMembers
     }
 
     public fun syncLimits(tier: GroupSyncTier): Pair<Int, Int> = when (tier) {

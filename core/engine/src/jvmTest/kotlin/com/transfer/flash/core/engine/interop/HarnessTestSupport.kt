@@ -32,6 +32,7 @@ import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
 import com.transfer.flash.core.transfer.policy.RandomAccessSinkHandle
+import com.transfer.flash.core.engine.MagicFrameRouter
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
@@ -71,7 +72,7 @@ internal class DesktopEndpointFixture(
     val stateDir = File(System.getProperty("java.io.tmpdir"), "flash-interop-$name").apply { mkdirs() }
     val identity = DesktopIdentityStore(stateDir).getIdentity()
     val trustStore = DesktopTrustStore(stateDir)
-    private val crypto: FlashCrypto = PersistedFlashCrypto(stateDir, fixtureIdentityVault())
+    val crypto: FlashCrypto = PersistedFlashCrypto(stateDir, fixtureIdentityVault())
 
     /**
      * Real TLS, built exactly as `DesktopEngine` builds it (audit S3/S1, ADR-042). The fixture used to run
@@ -88,12 +89,17 @@ internal class DesktopEndpointFixture(
         ),
     )
 
+    val magicRouter = MagicFrameRouter()
+    var localFeaturesProvider: () -> Set<String> = { emptySet() }
+    var swarmBinding: com.transfer.flash.core.engine.swarm.SwarmHostBinding? = null
+
     val network = JvmWsFlashNetwork(
         localDeviceId = identity.deviceId.value,
         // "Harness $name" — see the sibling in DesktopInteropHarness.kt: the WS hello must not name
         // the harness as the product.
         localFriendlyName = "Harness $name",
         tlsOptions = tlsOptions,
+        localFeatures = { localFeaturesProvider() },
     )
     val discovery = CompositeDiscovery(
         transports = listOf(
@@ -203,6 +209,7 @@ internal class DesktopEndpointFixture(
 
     /** Inbound binary routing — the desktop port of `Flash.kt`'s `handleInboundBinary`. */
     private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
+        if (magicRouter.dispatch(peerDeviceId, data, reply)) return
         if (transfer.onInboundFrame(data)) return // sender-side ACK/COMPLETE consumed it
         for (event in receivePipeline.onFrame(data)) {
             when (event) {
@@ -278,52 +285,54 @@ internal class DesktopEndpointFixture(
 
     private var sessionJobs = ConcurrentHashMap<WsSession, Job>()
 
-    fun start(): Int {
+    fun start(enableDiscovery: Boolean = true): Int {
         val port = runBlocking { (network.start(0) as FlashResult.Success).value }
-        val identityFrame = FlashAdvertisedIdentity(
-            deviceId = identity.deviceId,
-            // NOT identity.friendlyName. `DesktopIdentityStore` defaults every fresh state
-            // directory to the hardcoded name "Flash Desktop" (DesktopIdentityStores.kt:55), and
-            // JmdnsTransport advertises as "Flash " + friendlyName. So a harness endpoint and the
-            // `:desktop` app both claim the mDNS instance name "Flash Flash Desktop" — two
-            // advertisers, one name, on one host.
-            //
-            // That is not cosmetic. JmDNS resolves the conflict by renaming and re-registering,
-            // and the collision corrupts the cache: the name then resolves with an SRV from one
-            // registration and a TXT from another, and the losing registration carries JmDNS's
-            // EMPTY_TXT (`new byte[]{0}`, ByteWrangler.java:43). The reader sees one byte, an
-            // empty property map, no device_id — and drops the peer. Observed exactly that:
-            // `name=Flash Flash Desktop ... txtKeys=[] txtBytes=1`, for the app's OWN name.
-            //
-            // It also outlives the app: `advertise` runs `while (true)` until Ctrl-C, so a
-            // forgotten harness keeps the name on the network and phones keep listing a desktop
-            // that is not running.
-            //
-            // A harness endpoint is a test artifact and must never be mistakable for the product,
-            // so it gets a name the app cannot produce.
-            friendlyName = "Harness $name",
-            deviceModel = "desktop",
-            protocolVersion = 2,
-            // Same kind the real desktop advertises — see DesktopInteropHarness.
-            capabilities = setOf(FlashDeviceKind.CAP_DESKTOP),
-        )
-        runBlocking { discovery.startAll(port, identityFrame) }
-        DiscoveryRouteBinder.observe(scope, discovery.discoveredEndpoints, network)
-        scope.launch {
-            while (isActive) {
-                discovery.discoveredEndpoints.value.forEach { endpoint ->
-                    val id = endpoint.device.id
-                    if (network.activeSessions.value[id] == null && !network.isReconnectInFlight(id.value)) {
-                        // Logged on attempt and outcome — see the sibling in DesktopInteropHarness.kt
-                        // for why a swallowed dial result is a diagnostic dead end.
-                        println("[dial] ${endpoint.friendlyName} ${endpoint.hostAddress}:${endpoint.port} ...")
-                        val result = runCatching {
-                            network.connectManual(endpoint.hostAddress, endpoint.port)
-                        }.getOrNull()
-                        println("[dial] ${endpoint.friendlyName} success=${result is FlashResult.Success}")
+        if (enableDiscovery) {
+            val identityFrame = FlashAdvertisedIdentity(
+                deviceId = identity.deviceId,
+                // NOT identity.friendlyName. `DesktopIdentityStore` defaults every fresh state
+                // directory to the hardcoded name "Flash Desktop" (DesktopIdentityStores.kt:55), and
+                // JmdnsTransport advertises as "Flash " + friendlyName. So a harness endpoint and the
+                // `:desktop` app both claim the mDNS instance name "Flash Flash Desktop" — two
+                // advertisers, one name, on one host.
+                //
+                // That is not cosmetic. JmDNS resolves the conflict by renaming and re-registering,
+                // and the collision corrupts the cache: the name then resolves with an SRV from one
+                // registration and a TXT from another, and the losing registration carries JmDNS's
+                // EMPTY_TXT (`new byte[]{0}`, ByteWrangler.java:43). The reader sees one byte, an
+                // empty property map, no device_id — and drops the peer. Observed exactly that:
+                // `name=Flash Flash Desktop ... txtKeys=[] txtBytes=1`, for the app's OWN name.
+                //
+                // It also outlives the app: `advertise` runs `while (true)` until Ctrl-C, so a
+                // forgotten harness keeps the name on the network and phones keep listing a desktop
+                // that is not running.
+                //
+                // A harness endpoint is a test artifact and must never be mistakable for the product,
+                // so it gets a name the app cannot produce.
+                friendlyName = "Harness $name",
+                deviceModel = "desktop",
+                protocolVersion = 2,
+                // Same kind the real desktop advertises — see DesktopInteropHarness.
+                capabilities = setOf(FlashDeviceKind.CAP_DESKTOP),
+            )
+            runBlocking { discovery.startAll(port, identityFrame) }
+            DiscoveryRouteBinder.observe(scope, discovery.discoveredEndpoints, network)
+            scope.launch {
+                while (isActive) {
+                    discovery.discoveredEndpoints.value.forEach { endpoint ->
+                        val id = endpoint.device.id
+                        if (network.activeSessions.value[id] == null && !network.isReconnectInFlight(id.value)) {
+                            // Logged on attempt and outcome — see the sibling in DesktopInteropHarness.kt
+                            // for why a swallowed dial result is a diagnostic dead end.
+                            println("[dial] ${endpoint.friendlyName} ${endpoint.hostAddress}:${endpoint.port} ...")
+                            val result = runCatching {
+                                network.connectManual(endpoint.hostAddress, endpoint.port)
+                            }.getOrNull()
+                            println("[dial] ${endpoint.friendlyName} success=${result is FlashResult.Success}")
+                        }
                     }
+                    delay(5_000)
                 }
-                delay(5_000)
             }
         }
         scope.launch {
@@ -372,6 +381,32 @@ internal class DesktopEndpointFixture(
             }
         }
         return port
+    }
+
+    fun attachSwarm(
+        groupContext: com.transfer.flash.core.swarm.driver.SwarmGroupContext,
+        storage: com.transfer.flash.core.swarm.model.PieceStorage = com.transfer.flash.core.engine.swarm.JvmPieceStorage(File(stateDir, "swarm/partial"), receivedRoot),
+        stateStore: com.transfer.flash.core.swarm.model.SwarmStateStore,
+        chatRepository: com.transfer.flash.core.messaging.FlashChatRepository? = null,
+        config: com.transfer.flash.core.swarm.api.FlashSwarmConfig = com.transfer.flash.core.swarm.api.FlashSwarmConfig(autoAccept = true, servingEnabled = true, profile = com.transfer.flash.core.swarm.api.FlashSwarmProfile.HIGH),
+        seed: Long = 42L,
+    ): com.transfer.flash.core.engine.swarm.SwarmHostBinding {
+        localFeaturesProvider = { setOf("sw1") }
+        val binding = com.transfer.flash.core.engine.swarm.SwarmHostBinding(
+            config = config,
+            localDeviceId = identity.deviceId.value,
+            scope = scope,
+            magicRouter = magicRouter,
+            network = network,
+            transferRepository = transfer,
+            groupContext = groupContext,
+            storage = storage,
+            stateStore = stateStore,
+            chatRepository = chatRepository,
+            seed = seed,
+        )
+        swarmBinding = binding
+        return binding
     }
 
     fun stop() {

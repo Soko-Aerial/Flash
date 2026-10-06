@@ -46,8 +46,10 @@ class FlashBackgroundService : Service() {
         super.onCreate()
         activeInstance = this
         scope.launch {
-            runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
-                .onFailure { Log.w(TAG, "engine start failed in background service", it) }
+            runCatching {
+                DiscoveryEngineHolder.ensureStarted(applicationContext)
+                DiscoveryEngineHolder.currentSwarm()?.reevaluate()
+            }.onFailure { Log.w(TAG, "engine start failed in background service", it) }
         }
         if (startAsForeground()) {
             promotionRefused.set(false)
@@ -111,11 +113,14 @@ class FlashBackgroundService : Service() {
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.w(TAG, "Foreground service timeout reached: startId=$startId, fgsType=$fgsType")
         val transfers = DiscoveryEngineHolder.currentTransfers()
-        transfers?.activeTransfers?.value?.forEach { transfer ->
-            if (transfer.state == FlashTransferState.Transferring) {
-                // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
-                timeoutCleanupScope.launch { runCatching { transfers.cancelTransfer(transfer.id) } }
-            }
+        val allTransfers = transfers?.activeTransfers?.value ?: emptyList()
+        val plan = TimeoutStopPlan.of(allTransfers, isSwarmRow = { id -> transfers?.isExternalRow(id.value) == true })
+        for (transfer in plan.toCancel) {
+            // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
+            timeoutCleanupScope.launch { runCatching { transfers?.cancelTransfer(transfer.id) } }
+        }
+        for (transfer in plan.toPause) {
+            timeoutCleanupScope.launch { runCatching { transfers?.pauseForSystem(transfer.id, "SERVICE_TIMEOUT") } }
         }
         stopSelf()
         super.onTimeout(startId, fgsType)
@@ -192,7 +197,13 @@ class FlashBackgroundService : Service() {
             val title = "$verb ${primary.fileName} — $percent%"
             val speedText = formatTransferSpeed(primary.speedBytesPerSec)
             val etaText = formatTransferEta(primary.etaSeconds)
+            val swarmDetail = if (primary.direction == FlashTransferDirection.Sending && primary.canGoOffline) {
+                "You can go offline now"
+            } else if (primary.direction == FlashTransferDirection.Receiving && primary.holdersOnline > 1) {
+                "Getting it from ${primary.holdersOnline} devices"
+            } else null
             val subtitle = listOfNotNull(
+                swarmDetail,
                 speedText.takeIf { it.isNotBlank() },
                 etaText.takeIf { it.isNotBlank() },
                 if (active.size > 1) "+${active.size - 1} more" else null,
@@ -208,9 +219,12 @@ class FlashBackgroundService : Service() {
                 cancelIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+            val isSwarmOrigin = primary.direction == FlashTransferDirection.Sending &&
+                DiscoveryEngineHolder.currentTransfers()?.isExternalRow(primary.id.value) == true
+            val cancelLabel = if (isSwarmOrigin) "Cancel for everyone" else "Cancel"
             val cancelAction = NotificationCompat.Action.Builder(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                "Cancel",
+                cancelLabel,
                 cancelPendingIntent,
             ).build()
 

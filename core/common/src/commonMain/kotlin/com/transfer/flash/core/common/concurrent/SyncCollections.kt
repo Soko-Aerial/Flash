@@ -105,4 +105,6 @@ public class SyncSet<E : Any> {
     public fun toList(): List<E> = monitor.withLock { backing.keys.toList() }
 
     public fun isEmpty(): Boolean = monitor.withLock { backing.isEmpty() }
+
+    public fun clear(): Unit = monitor.withLock { backing.clear() }
 }

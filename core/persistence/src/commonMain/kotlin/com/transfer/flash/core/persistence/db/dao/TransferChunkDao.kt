@@ -40,6 +40,10 @@ public interface TransferChunkDao {
 
     @Query("UPDATE transfer_chunks SET done = 0 WHERE transferId = :transferId")
     public suspend fun resetStuck(transferId: String)
+
+    /** Removes every chunk row of a transfer (ADR-068: the assembled file failed whole-file verification). */
+    @Query("DELETE FROM transfer_chunks WHERE transferId = :transferId")
+    public suspend fun deleteChunks(transferId: String)
 }
 
 /** Lightweight projection for [TransferChunkDao.allDoneChunks]. */

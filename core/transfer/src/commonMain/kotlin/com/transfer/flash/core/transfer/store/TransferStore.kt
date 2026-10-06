@@ -31,6 +31,13 @@ public interface TransferStore {
     /** All confirmed (done) chunk rows across every transfer, for warming the receiver done-set (#20). */
     public suspend fun allDoneChunks(): List<ChunkRef>
 
+    /**
+     * Forgets every confirmed chunk of [transferId]. Used when an assembled file failed whole-file verification
+     * (ADR-068): a retry must start from zero, not skip chunks that were written wrongly. Defaults to a no-op so an
+     * adapter written before this existed still compiles (it simply keeps the old behaviour).
+     */
+    public suspend fun clearDoneChunks(transferId: String) {}
+
     /** Lightweight `(transferId, chunkIndex)` projection returned by [allDoneChunks]. */
     public data class ChunkRef(public val transferId: String, public val chunkIndex: Int)
 }

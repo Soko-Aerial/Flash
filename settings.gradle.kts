@@ -49,6 +49,7 @@ include(":core:transfer")
 include(":core:messaging")
 include(":core:calling")
 include(":core:ptt")
+include(":core:swarm")
 include(":core:engine")
 include(":ui:theme")
 // Phase 19. Sits between `:ui:theme` and `:ui:chat` in the build graph: it owns the seven

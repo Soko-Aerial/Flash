@@ -86,6 +86,15 @@ class FlashSettingsLogicTest {
         assertNotEquals(on, FlashSettingsMath.smallerVideoForManySubtitle(enabled = false))
     }
 
+    /** SW-11 / UI-055: swarm defaults. */
+    @Test
+    fun `group swarm defaults match privacy and experimental expectations`() {
+        val model = FlashSettingsModel()
+        assertTrue(model.swarmHelpShare)
+        assertTrue(model.swarmKeepFinishedFiles)
+        assertFalse(model.swarmEnabled)
+    }
+
     /** ERROR-033. Auto is the absence of a pin, so it needs a label of its own alongside the tiers. */
     @Test
     fun `the performance picker labels auto separately from the three tiers`() {

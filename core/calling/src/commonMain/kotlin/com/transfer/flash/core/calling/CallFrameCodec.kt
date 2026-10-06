@@ -1,5 +1,6 @@
 package com.transfer.flash.core.calling.protocol
 
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashTextFraming
@@ -173,6 +174,17 @@ public object CallFrameCodec {
                 "groupId" to frame.groupId,
                 "from" to frame.from,
             )
+            is CallWireFrame.Status -> listOfNotNull(
+                "action" to "status",
+                "callId" to frame.callId,
+                "from" to frame.from,
+                flag("mic", frame.micOn),
+                flag("cam", frame.cameraOn),
+                flag("hand", frame.handRaised),
+                flag("rv", frame.receiveVideo),
+                frame.reaction?.let { "react" to it.wire },
+                frame.reaction?.let { "rseq" to frame.reactionSeq.toString() },
+            )
         }
         return FlashTextFraming.encodeFields(PREFIX, fields)
     }
@@ -295,8 +307,29 @@ public object CallFrameCodec {
                 from = from,
                 groupId = fields["groupId"] ?: return null,
             )
+            "status" -> CallWireFrame.Status(
+                callId = callId,
+                from = from,
+                micOn = fields["mic"].toFlag(),
+                cameraOn = fields["cam"].toFlag(),
+                handRaised = fields["hand"].toFlag(),
+                receiveVideo = fields["rv"].toFlag(),
+                reaction = FlashCallReactionKind.fromWire(fields["react"]),
+                reactionSeq = fields["rseq"]?.toLongOrNull() ?: 0L,
+            )
             else -> null
         }
+    }
+
+    /** A status flag on the wire: `1` / `0`, written only when stated. */
+    private fun flag(name: String, value: Boolean?): Pair<String, String>? =
+        value?.let { name to if (it) "1" else "0" }
+
+    /** The inverse of [flag]: anything but `1` or `0` reads as "not stated". */
+    private fun String?.toFlag(): Boolean? = when (this) {
+        "1" -> true
+        "0" -> false
+        else -> null
     }
 
     /** The G3 capability flag: written only when set, so an old client's frame reads as false. */

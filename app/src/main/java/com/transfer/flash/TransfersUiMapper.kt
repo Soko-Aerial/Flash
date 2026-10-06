@@ -46,6 +46,9 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     // tore the session down, and resumeTransfer returns without doing anything. Flagging it here
     // keeps the screen from rendering a Retry button that could only ever look broken.
     retryable = state != DomainState.Cancelled,
+    waitReason = waitReason,
+    canGoOffline = canGoOffline,
+    holdersOnline = holdersOnline,
 )
 
 /**

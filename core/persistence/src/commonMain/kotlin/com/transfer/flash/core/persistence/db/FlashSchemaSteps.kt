@@ -121,6 +121,103 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v6 → v7: group swarm content and tombstones (ADR-070, SW-6).
+     */
+    val STEP_6_7: FlashSchemaStep = FlashSchemaStep(
+        from = 6,
+        to = 7,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS swarm_content (" +
+                "root TEXT NOT NULL, groupId TEXT NOT NULL, messageId TEXT NOT NULL, role TEXT NOT NULL, " +
+                "originId TEXT NOT NULL, originKey TEXT NOT NULL, fileName TEXT NOT NULL, mime TEXT NOT NULL, " +
+                "totalSize INTEGER NOT NULL, pieceSize INTEGER NOT NULL, manifest BLOB, bits BLOB NOT NULL, " +
+                "bytesDone INTEGER NOT NULL, state TEXT NOT NULL, waitReason TEXT, failReason TEXT, " +
+                "localTransferId TEXT NOT NULL, sourceUri TEXT, sourcePersistent INTEGER NOT NULL, " +
+                "partialKey TEXT NOT NULL, finalPath TEXT, identitySize INTEGER NOT NULL, " +
+                "identityModifiedMs INTEGER NOT NULL, deliveredTo TEXT NOT NULL, createdAtMs INTEGER NOT NULL, " +
+                "lastProgressAtMs INTEGER NOT NULL, expiresAtMs INTEGER NOT NULL, " +
+                "PRIMARY KEY(root, groupId))",
+            "CREATE INDEX IF NOT EXISTS index_swarm_content_groupId ON swarm_content (groupId)",
+            "CREATE INDEX IF NOT EXISTS index_swarm_content_messageId ON swarm_content (messageId)",
+            "CREATE INDEX IF NOT EXISTS index_swarm_content_state ON swarm_content (state)",
+            "CREATE INDEX IF NOT EXISTS index_swarm_content_localTransferId ON swarm_content (localTransferId)",
+            "CREATE TABLE IF NOT EXISTS swarm_tombstone (" +
+                "groupId TEXT NOT NULL, messageId TEXT NOT NULL, root TEXT NOT NULL, originId TEXT NOT NULL, " +
+                "reason TEXT NOT NULL, cancelledAtMs INTEGER NOT NULL, signature BLOB NOT NULL, " +
+                "receivedAtMs INTEGER NOT NULL, expiresAtMs INTEGER NOT NULL, " +
+                "PRIMARY KEY(groupId, messageId))",
+            "CREATE INDEX IF NOT EXISTS index_swarm_tombstone_root ON swarm_tombstone (root)",
+            "CREATE INDEX IF NOT EXISTS index_swarm_tombstone_groupId ON swarm_tombstone (groupId)",
+        ),
+    )
+
+    /**
+     * v7 → v8: group membership by shared secret, invites, and join requests (ADR-044, ADR-073, GM-2).
+     */
+    val STEP_7_8: FlashSchemaStep = FlashSchemaStep(
+        from = 7,
+        to = 8,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS group_secret (" +
+                "groupId TEXT NOT NULL, epoch INTEGER NOT NULL, secretWrapped BLOB NOT NULL, " +
+                "`commit` TEXT NOT NULL, source TEXT NOT NULL, receivedAtMs INTEGER NOT NULL, " +
+                "PRIMARY KEY(groupId, epoch))",
+            "CREATE INDEX IF NOT EXISTS index_group_secret_groupId ON group_secret (groupId)",
+            "CREATE TABLE IF NOT EXISTS group_invite (" +
+                "groupId TEXT NOT NULL, inviterId TEXT NOT NULL, inviterFingerprint TEXT NOT NULL, " +
+                "acceptedAtMs INTEGER NOT NULL, state TEXT NOT NULL, " +
+                "PRIMARY KEY(groupId))",
+            "CREATE INDEX IF NOT EXISTS index_group_invite_state ON group_invite (state)",
+            "CREATE TABLE IF NOT EXISTS group_join_request (" +
+                "groupId TEXT NOT NULL, subjectId TEXT NOT NULL, subjectKey TEXT NOT NULL, " +
+                "label TEXT NOT NULL, requestSig TEXT NOT NULL, viaPeerId TEXT, " +
+                "requestedAtMs INTEGER NOT NULL, state TEXT NOT NULL, decidedBy TEXT, " +
+                "decidedAtMs INTEGER, " +
+                "PRIMARY KEY(groupId, subjectId, subjectKey))",
+            "CREATE INDEX IF NOT EXISTS index_group_join_request_groupId ON group_join_request (groupId)",
+            "CREATE INDEX IF NOT EXISTS index_group_join_request_state ON group_join_request (state)",
+        ),
+    )
+
+    /**
+     * v8 → v9: group rotation notices (ADR-044, ADR-073, GM-6).
+     */
+    val STEP_8_9: FlashSchemaStep = FlashSchemaStep(
+        from = 8,
+        to = 9,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS group_rotation (" +
+                "groupId TEXT NOT NULL, newEpoch INTEGER NOT NULL, prevEpoch INTEGER NOT NULL, " +
+                "`commit` TEXT NOT NULL, reason TEXT NOT NULL, adminId TEXT NOT NULL, " +
+                "rotationId TEXT NOT NULL, removedIds TEXT NOT NULL, sig TEXT NOT NULL, " +
+                "receivedAtMs INTEGER NOT NULL, " +
+                "PRIMARY KEY(groupId, newEpoch))",
+            "CREATE INDEX IF NOT EXISTS index_group_rotation_groupId ON group_rotation (groupId)",
+        ),
+    )
+
+    /**
+     * v9 → v10: group settings and device-local preferences (ADR-074, GM-9).
+     */
+    val STEP_9_10: FlashSchemaStep = FlashSchemaStep(
+        from = 9,
+        to = 10,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS group_settings (" +
+                "groupId TEXT NOT NULL, version INTEGER NOT NULL, joinPolicy TEXT NOT NULL, " +
+                "inviteSharers TEXT NOT NULL, maxMembers INTEGER NOT NULL, " +
+                "swarmServing INTEGER NOT NULL, membersMayAdd INTEGER NOT NULL, " +
+                "opId TEXT NOT NULL, signerId TEXT NOT NULL, sig TEXT NOT NULL, " +
+                "PRIMARY KEY(groupId))",
+            "CREATE TABLE IF NOT EXISTS group_preferences (" +
+                "groupId TEXT NOT NULL, serveToGroup INTEGER NOT NULL, serveWifiOnly INTEGER NOT NULL, " +
+                "batteryThresholdPercent INTEGER NOT NULL, keepAvailableDays INTEGER NOT NULL, " +
+                "autoAcceptSizeBytes INTEGER NOT NULL, " +
+                "PRIMARY KEY(groupId))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10)
 }

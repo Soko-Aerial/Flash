@@ -24,6 +24,7 @@ import com.shepeliev.webrtckmp.onTrack
 import com.shepeliev.webrtckmp.videoTracks
 import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
@@ -42,6 +43,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -212,7 +214,17 @@ public class FlashCallSession(
     private var videoSender: RtpSender? = null
 
     /** Decides when to trade video away for voice. Pure; see [CallQualityGovernor]. */
-    private val governor = CallQualityGovernor()
+    private val governor = CallQualityGovernor(
+        recoveryCooldownMs = 8_000L,
+        nowMs = { SystemTimeSource.nowMs() },
+    )
+
+    /** The governor's rung last applied, so a peer's data saver can re-apply it without waiting for the next verdict. */
+    @Volatile
+    private var concession: VideoConcession = VideoConcession.FULL
+
+    /** What the other end's controls say (ADR-067): mic, camera, hand, data saver, reactions. */
+    private val statusBook = CallStatusBook()
 
     /** Local microphone track once media is started; null before/after. Not public: an audio
      *  track is not renderable, so nothing outside this module has a use for it. */
@@ -367,7 +379,7 @@ public class FlashCallSession(
         if (_state.value.state != FlashCallState.RINGING) return@withLock false
         // CONNECTING before the slow media start: a second Accept tap becomes a no-op and
         // the UI stops advertising a call we have already answered.
-        _state.value = _state.value.copy(state = FlashCallState.CONNECTING)
+        updateState { it.copy(state = FlashCallState.CONNECTING) }
         armConnectTimeout()
         if (!startMedia()) {
             FlashLog.w("CALL", "accept: media start failed, declining call=$callId")
@@ -408,13 +420,14 @@ public class FlashCallSession(
      */
     public fun toggleMute(): Boolean {
         val muted = !_state.value.micMuted
-        _state.value = _state.value.copy(micMuted = muted)
+        updateState { it.copy(micMuted = muted) }
         val track = localAudioStreamTrack
         if (track != null) {
             scope.launch(callMediaDispatcher) {
                 runCatching { track.enabled = !muted }
             }
         }
+        sendStatus()
         return muted
     }
 
@@ -424,14 +437,47 @@ public class FlashCallSession(
      */
     public fun toggleCamera(): Boolean {
         val off = !_state.value.cameraOff
-        _state.value = _state.value.copy(cameraOff = off)
+        updateState { it.copy(cameraOff = off) }
         val track = _localVideoStreamTrack.value
         if (track != null) {
             scope.launch(callMediaDispatcher) {
                 runCatching { track.enabled = !off }
             }
         }
+        sendStatus()
         return off
+    }
+
+    /** ADR-067: raises or lowers this device's hand and tells the peer. */
+    public fun setHandRaised(raised: Boolean) {
+        if (_state.value.handRaised == raised) return
+        updateState { it.copy(handRaised = raised) }
+        sendStatus()
+    }
+
+    /**
+     * ADR-067: shows [kind] on both screens. False when the call is not live or the sender's own gap
+     * ([CallStatusBook.MIN_REACTION_GAP_MS]) has not passed.
+     */
+    public fun sendReaction(kind: FlashCallReactionKind): Boolean {
+        if (!statusFlows()) return false
+        val seq = statusBook.nextLocalSeq() ?: return false
+        statusBook.addLocal(localDeviceId, kind)
+        updateState { it.copy(reactions = statusBook.activeReactions()) }
+        scheduleReactionExpiry()
+        sendStatus(reaction = kind, reactionSeq = seq)
+        return true
+    }
+
+    /**
+     * ADR-067 data saver: this device stops receiving video. The peer is told (`rv=0`) and stops encoding for us,
+     * which is what saves the data; the picture is also hidden here at once by the state flag. A voice call has no
+     * video to save, so it is a no-op there.
+     */
+    public fun setDataSaver(on: Boolean) {
+        if (!video || _state.value.dataSaver == on) return
+        updateState { it.copy(dataSaver = on) }
+        sendStatus()
     }
 
     /** Switch front/back camera (video calls). No-op without a video track. */
@@ -441,7 +487,7 @@ public class FlashCallSession(
 
     /** Speakerphone toggle state (audio routing is host-owned; ADR-025). */
     public fun setSpeaker(on: Boolean) {
-        _state.value = _state.value.copy(speakerOn = on)
+        updateState { it.copy(speakerOn = on) }
     }
 
     // ------------------------------------------------------------------ inbound
@@ -496,6 +542,7 @@ public class FlashCallSession(
             is CallWireFrame.Answer -> onAnswer(frame)
             is CallWireFrame.IceCandidate -> onIce(frame)
             is CallWireFrame.Invite -> Unit // duplicate invite — host keys sessions by callId
+            is CallWireFrame.Status -> onStatus(frame)
             is CallWireFrame.GroupInvite,
             is CallWireFrame.GroupAccept,
             is CallWireFrame.GroupDecline,
@@ -532,7 +579,7 @@ public class FlashCallSession(
     private suspend fun onAccept() {
         if (_state.value.state != FlashCallState.DIALING) return
         dialTimeoutJob?.cancel()
-        _state.value = _state.value.copy(state = FlashCallState.CONNECTING)
+        updateState { it.copy(state = FlashCallState.CONNECTING) }
         armConnectTimeout()
         if (!startMedia()) {
             FlashLog.w("CALL", "onAccept: media start failed, ending call=$callId")
@@ -1049,14 +1096,18 @@ public class FlashCallSession(
                         // Media is flowing again, so whatever the signaling watcher thought it saw
                         // is moot — a session that can carry ICE can carry a Hangup.
                         signalingGraceJob?.cancel()
-                        _state.value = _state.value.copy(
-                            state = FlashCallState.ACTIVE,
-                            // First connect only. Now that a call can genuinely reconnect, stamping
-                            // this again would restart the duration the call log reports and turn a
-                            // ten-minute call that survived a roam into a ten-second one.
-                            connectedAt = _state.value.connectedAt ?: SystemTimeSource.nowMs(),
-                        )
+                        updateState {
+                            it.copy(
+                                state = FlashCallState.ACTIVE,
+                                // First connect only. Now that a call can genuinely reconnect, stamping
+                                // this again would restart the duration the call log reports and turn a
+                                // ten-minute call that survived a roam into a ten-second one.
+                                connectedAt = it.connectedAt ?: SystemTimeSource.nowMs(),
+                            )
+                        }
                         armStatsPolling(pc)
+                        // Tell the peer where our controls stand: a mute pressed while connecting went nowhere.
+                        sendStatus()
                     }
                     PeerConnectionState.Disconnected -> {
                         armIceRecovery(pc, FlashCallEndReason.DISCONNECTED)
@@ -1088,6 +1139,72 @@ public class FlashCallSession(
                 )
             }
         })
+    }
+
+    // ------------------------------------------------------------------ status (ADR-067)
+
+    /** Test hook: puts the session in [state] without media, so the status rules can run on a JVM unit test. */
+    internal fun setStateForTesting(state: FlashCallState) {
+        _state.update { it.copy(state = state) }
+    }
+
+    /** Every write to the UI state goes through here: ENDED is terminal and two writers must not lose each other's update. */
+    private fun updateState(block: (FlashCallUiState) -> FlashCallUiState) {
+        _state.update { if (it.state == FlashCallState.ENDED) it else block(it) }
+    }
+
+    /** Status frames mean something only while the call is being set up or live. */
+    private fun statusFlows(): Boolean =
+        _state.value.state == FlashCallState.CONNECTING || _state.value.state == FlashCallState.ACTIVE
+
+    /**
+     * Tells the peer what this device's controls say (ADR-067). Fire and forget: a lost status is repaired by the next
+     * change, by the connect, and by [onSignalingRestored]. [reaction] is the one-shot (see [CallStatusBook]).
+     */
+    private fun sendStatus(reaction: FlashCallReactionKind? = null, reactionSeq: Long = 0L) {
+        if (!statusFlows()) return
+        val st = _state.value
+        val frame = CallWireFrame.Status(
+            callId = callId,
+            from = localDeviceId,
+            micOn = !st.micMuted,
+            cameraOn = if (video) !st.cameraOff else null,
+            handRaised = st.handRaised,
+            receiveVideo = if (video) !st.dataSaver else null,
+            reaction = reaction,
+            reactionSeq = reactionSeq,
+        )
+        scope.launch { sendFrame(frame) }
+    }
+
+    /** Folds the peer's status into the state (caller holds [signalMutex]). */
+    private fun onStatus(frame: CallWireFrame.Status) {
+        if (!statusFlows()) return
+        val wantedVideo = statusBook.wantsVideo(peerId)
+        val shown = statusBook.apply(peerId, frame)
+        val peer = statusBook.peer(peerId)
+        updateState {
+            it.copy(
+                peerMicMuted = !peer.micOn,
+                peerCameraOff = video && !peer.cameraOn,
+                peerHandRaised = peer.handRaised,
+                peerDataSaver = video && !peer.receiveVideo,
+                reactions = statusBook.activeReactions(),
+            )
+        }
+        if (shown != null) scheduleReactionExpiry()
+        if (wantedVideo != peer.receiveVideo && video) {
+            FlashLog.i("CALL", "peer data saver=${!peer.receiveVideo} call=$callId")
+            scope.launch(callMediaDispatcher) { applyVideoConcession(concession) }
+        }
+    }
+
+    /** Removes reactions from the state once they have been on screen long enough. */
+    private fun scheduleReactionExpiry() {
+        scope.launch {
+            delay(CallStatusBook.REACTION_LIFETIME_MS + 100L)
+            updateState { it.copy(reactions = statusBook.activeReactions()) }
+        }
     }
 
     // --------------------------------------------------------------- ICE recovery
@@ -1276,7 +1393,10 @@ public class FlashCallSession(
      * preview running so the user can see the call is still theirs.
      */
     private fun applyVideoConcession(level: VideoConcession) {
-        _state.value = _state.value.copy(videoLimitReason = level.reason)
+        concession = level
+        // Atomic: this runs on the media thread while the signaling path writes the peer's status (a plain
+        // read-copy-write here lost the peer's data-saver flag in a test).
+        updateState { it.copy(videoLimitReason = level.reason) }
         val sender = videoSender ?: return
         // Scale the TIER's ceiling, not a constant: a concession is a fraction of what this device
         // was ever going to send, so on LOW the ladder walks down from 350 kbit/s, not 2.5 Mbit/s.
@@ -1289,13 +1409,14 @@ public class FlashCallSession(
                     maxBitrateBps = ceiling,
                     minBitrateBps = if (level.holdsBitrateFloor) floor else null,
                     scaleResolutionDownBy = level.scaleResolutionDownBy,
-                    active = level.videoActive,
+                    // A peer on data saver (ADR-067) wants no video from us whatever the governor says.
+                    active = level.videoActive && statusBook.wantsVideo(peerId),
                 ),
             )
             FlashLog.i(
                 "CALL",
                 "voice priority: video → $level applied=$applied max=${ceiling / 1000}kbps " +
-                    "scaleDown=${level.scaleResolutionDownBy} active=${level.videoActive}",
+                    "scaleDown=${level.scaleResolutionDownBy} active=${level.videoActive && statusBook.wantsVideo(peerId)}",
             )
         } catch (t: Throwable) {
             FlashLog.w("CALL", "video concession $level failed: ${t.message}")
@@ -1489,10 +1610,7 @@ public class FlashCallSession(
         disconnectGraceJob?.cancel()
         signalingGraceJob?.cancel()
         deferredFrames.clear()
-        _state.value = _state.value.copy(
-            state = FlashCallState.ENDED,
-            endReason = reason,
-        )
+        _state.update { it.copy(state = FlashCallState.ENDED, endReason = reason) }
         // Native teardown hops to the media thread: end() is routinely called from UI
         // callbacks and pool timer jobs. Async is safe — ended=true already guards every
         // path, and releaseMedia is idempotent (a racing startMedia unwinds itself).
@@ -1582,6 +1700,8 @@ public class FlashCallSession(
         FlashLog.i("CALL", "signaling restored, call held call=$callId")
         signalingGraceJob?.cancel()
         signalingGraceJob = null
+        // A status sent while signaling was down went nowhere; say it again.
+        sendStatus()
     }
 
     private companion object {

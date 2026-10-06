@@ -54,7 +54,10 @@ import androidx.compose.ui.unit.dp
 import com.shepeliev.webrtckmp.VideoStreamTrack
 import com.shepeliev.webrtckmp.WebRtc
 import com.transfer.flash.core.calling.FlashCallMedia
+import com.transfer.flash.core.calling.model.FlashCallAudioRoute
+import com.transfer.flash.core.calling.model.FlashCallAudioRoutes
 import com.transfer.flash.core.calling.model.FlashCallEndReason
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
@@ -62,6 +65,7 @@ import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
@@ -103,9 +107,25 @@ public fun FlashCallScreen(
     onShowFewerVideos: (Boolean) -> Unit = {},
     /** The CPU banner's **Send smaller** (ADR-053): the host turns the setting on and saves it. */
     onSendSmallerVideo: () -> Unit = {},
+    /** The outputs this phone can play the call through and the one in force (ADR-067); empty on a host with no routing. */
+    audioRoutes: FlashCallAudioRoutes = FlashCallAudioRoutes(),
+    onSelectRoute: (FlashCallAudioRoute) -> Unit = {},
+    /** Show the "Verified" shield: the other device is the one this device paired with (1:1 calls). */
+    peerVerified: Boolean = false,
+    /** The host window is a picture-in-picture window: show the picture only, no controls. */
+    inPictureInPicture: Boolean = false,
+    /** Set by a host that can enter picture-in-picture (Android); adds the row to the More panel. */
+    onEnterPictureInPicture: (() -> Unit)? = null,
+    onSetHandRaised: (Boolean) -> Unit = {},
+    onSendReaction: (FlashCallReactionKind) -> Boolean = { false },
+    onSetDataSaver: (Boolean) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
+    var panel by remember { mutableStateOf<CallPanel?>(null) }
+    var mirrorSelf by remember { mutableStateOf(false) }
+    // A panel left open over a call that just ended would sit on a dead screen.
+    LaunchedEffect(ended) { if (ended) panel = null }
 
     FlashBackHandler(enabled = true) {
         when {
@@ -116,6 +136,11 @@ public fun FlashCallScreen(
     }
 
     val isVideoActive = state.video && state.state == FlashCallState.ACTIVE
+
+    if (inPictureInPicture) {
+        FlashCallPictureInPicture(state = state, session = session, isVideoActive = isVideoActive)
+        return
+    }
 
     Box(
         modifier = Modifier
@@ -135,6 +160,8 @@ public fun FlashCallScreen(
                 FlashCallVideoSurfaces(
                     state = state,
                     session = session,
+                    mirrorSelf = mirrorSelf,
+                    peerVerified = peerVerified,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -150,7 +177,7 @@ public fun FlashCallScreen(
             Spacer(Modifier.weight(0.7f))
 
             if (!isVideoActive || ended) {
-                FlashCallIdentityBlock(state = state, session = session)
+                FlashCallIdentityBlock(state = state, session = session, peerVerified = peerVerified)
             }
 
             Spacer(Modifier.weight(1.3f))
@@ -171,6 +198,12 @@ public fun FlashCallScreen(
                 Spacer(Modifier.height(FlashSpacing.space16))
             }
 
+            if (state.dataSaver && state.video && !ended) {
+                // The way back from a call that stopped receiving video; the dock's More panel has the same switch.
+                FlashDataSaverPill(onTurnOff = { onSetDataSaver(false) })
+                Spacer(Modifier.height(FlashSpacing.space12))
+            }
+
             FlashCallControls(
                 state = state,
                 onAccept = onAccept,
@@ -181,8 +214,64 @@ public fun FlashCallScreen(
                 onToggleSpeaker = onToggleSpeaker,
                 onToggleCamera = onToggleCamera,
                 onSwitchCamera = onSwitchCamera,
+                audioRoutes = audioRoutes,
+                onOpenRoutes = { panel = CallPanel.ROUTES },
+                onOpenMore = { panel = CallPanel.MORE },
+                moreActive = state.handRaised || state.dataSaver,
             )
             Spacer(Modifier.height(FlashSpacing.space40))
+        }
+
+        if (!ended) {
+            FlashCallReactionLayer(
+                reactions = state.reactions,
+                nameOf = { id -> reactionSenderName(state, id) },
+                modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+            )
+        }
+
+        when (panel) {
+            CallPanel.ROUTES -> FlashAudioRoutePicker(
+                routes = audioRoutes,
+                onSelect = onSelectRoute,
+                onDismiss = { panel = null },
+            )
+            CallPanel.MORE -> FlashCallMorePanel(
+                state = state,
+                mirrorSelf = mirrorSelf,
+                onToggleMirror = { mirrorSelf = !mirrorSelf },
+                onSetHandRaised = onSetHandRaised,
+                onSendReaction = onSendReaction,
+                onSetDataSaver = onSetDataSaver,
+                onEnterPictureInPicture = onEnterPictureInPicture,
+                onDismiss = { panel = null },
+            )
+            null -> Unit
+        }
+    }
+}
+
+/** Which panel is open over the call. */
+private enum class CallPanel { ROUTES, MORE }
+
+/** Who sent a reaction, for its caption: the peer or a participant by name, anyone else is this device. */
+internal fun reactionSenderName(state: FlashCallUiState, senderId: String): String =
+    state.participants.firstOrNull { it.peerId == senderId }?.name
+        ?: if (!state.isGroup && senderId == state.peerId) state.peerName else "You"
+
+/** The window the system shrinks the call into (Android picture-in-picture): the picture, or the avatar, and nothing else. */
+@Composable
+private fun FlashCallPictureInPicture(state: FlashCallUiState, session: FlashCallMedia?, isVideoActive: Boolean) {
+    val colors = FlashTheme.colors
+    Box(
+        modifier = Modifier.fillMaxSize().background(if (isVideoActive) Color.Black else colors.backgroundApp),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (isVideoActive && !state.isGroup && !state.dataSaver && !state.peerCameraOff) {
+            val remoteTrack = rememberVideoStreamTrack(session?.remoteVideoStreamTrack)
+            FlashCallVideoSurface(track = remoteTrack, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+        } else {
+            FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 64.dp)
         }
     }
 }
@@ -228,7 +317,7 @@ private fun rememberCallPulseScale(pulsing: Boolean): State<Float> =
 
 /** Peer avatar + name + live-region status line (audio calls / ended video calls). */
 @Composable
-private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMedia?) {
+private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMedia?, peerVerified: Boolean) {
     val colors = FlashTheme.colors
     val pulsing = state.state == FlashCallState.RINGING || state.state == FlashCallState.ACTIVE
     val scale = rememberCallPulseScale(pulsing)
@@ -290,8 +379,17 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
         )
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatusLine(state = state, color = colors.textSecondary)
+        FlashPeerBadges(
+            micMuted = state.peerMicMuted,
+            cameraOff = state.peerCameraOff,
+            handRaised = state.peerHandRaised,
+            onDark = false,
+            modifier = Modifier.padding(top = FlashSpacing.space8),
+        )
         Spacer(Modifier.height(FlashSpacing.space8))
         FlashCallStatsBadge(session = session, state = state, onDark = false)
+        Spacer(Modifier.height(FlashSpacing.space8))
+        FlashCallLinkChip(session = session, state = state, peerVerified = peerVerified && !state.isGroup, onDark = false)
     }
 }
 
@@ -354,6 +452,13 @@ private fun FlashGroupParticipantsGrid(
                                 color = colors.textTertiary,
                             )
                         }
+                        FlashPeerBadges(
+                            micMuted = participant.isMuted,
+                            cameraOff = false,
+                            handRaised = participant.handRaised,
+                            onDark = false,
+                            modifier = Modifier.padding(top = FlashSpacing.space4),
+                        )
                     }
                 }
             }
@@ -366,27 +471,40 @@ private fun FlashGroupParticipantsGrid(
 private fun FlashCallVideoSurfaces(
     state: FlashCallUiState,
     session: FlashCallMedia?,
+    mirrorSelf: Boolean,
+    peerVerified: Boolean,
     modifier: Modifier = Modifier,
 ) {
     var pipIsLocal by remember { mutableStateOf(false) }
     val remoteTrack = rememberVideoStreamTrack(session?.remoteVideoStreamTrack)
     val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
+    // ADR-067: with data saver on, or the other camera off, there is no remote picture to show; the surface stays
+    // composed (its renderer must not be rebuilt) and a placeholder covers it, and the preview cannot be swapped to the
+    // main tile.
+    val remoteShown = !state.dataSaver && !state.peerCameraOff
+    val swapped = pipIsLocal && remoteShown
 
     Box(modifier = modifier) {
         FlashCallVideoSurface(
-            track = if (pipIsLocal) localTrack else remoteTrack,
+            track = if (swapped) localTrack else remoteTrack,
             fit = CallVideoFit.Balanced,
+            mirror = swapped && mirrorSelf,
             modifier = Modifier
                 .fillMaxSize()
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                ) { pipIsLocal = !pipIsLocal },
+                ) { if (remoteShown) pipIsLocal = !pipIsLocal },
         )
 
+        if (!remoteShown) {
+            FlashRemoteVideoPlaceholder(state = state, modifier = Modifier.fillMaxSize())
+        }
+
         FlashCallVideoSurface(
-            track = if (pipIsLocal) remoteTrack else localTrack,
+            track = if (swapped) remoteTrack else localTrack,
             fit = CallVideoFit.Fit,
+            mirror = !swapped && mirrorSelf,
             zOrderMediaOverlay = true,
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -402,7 +520,7 @@ private fun FlashCallVideoSurfaces(
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
-                ) { pipIsLocal = !pipIsLocal },
+                ) { if (remoteShown) pipIsLocal = !pipIsLocal },
         )
 
         // Identity + status overlay for video calls (small, top-start).
@@ -418,9 +536,46 @@ private fun FlashCallVideoSurfaces(
                 color = Color.White,
             )
             FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
+            FlashPeerBadges(
+                micMuted = state.peerMicMuted,
+                cameraOff = state.peerCameraOff,
+                handRaised = state.peerHandRaised,
+                onDark = true,
+                modifier = Modifier.padding(top = FlashSpacing.space4),
+            )
             Spacer(Modifier.height(FlashSpacing.space4))
             FlashCallStatsBadge(session = session, state = state, onDark = true)
+            Spacer(Modifier.height(FlashSpacing.space4))
+            FlashCallLinkChip(session = session, state = state, peerVerified = peerVerified, onDark = true)
+            if (state.peerDataSaver) {
+                Spacer(Modifier.height(FlashSpacing.space4))
+                Text(
+                    text = CallExtrasText.peerDataSaverNote(state.peerName),
+                    style = FlashTheme.typography.metadataDefault,
+                    color = Color.White.copy(alpha = 0.72f),
+                    modifier = Modifier.width(200.dp),
+                )
+            }
         }
+    }
+}
+
+/** What covers the remote picture when there is none to show: the peer's avatar and the reason. */
+@Composable
+private fun FlashRemoteVideoPlaceholder(state: FlashCallUiState, modifier: Modifier = Modifier) {
+    val colors = FlashTheme.colors
+    Column(
+        modifier = modifier.background(colors.backgroundApp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        FlashAvatar(initials = state.peerName.take(2), seed = state.peerId, size = 96.dp)
+        Spacer(Modifier.height(FlashSpacing.space16))
+        Text(
+            text = if (state.dataSaver) "Video paused" else "${state.peerName}'s camera is off",
+            style = FlashTheme.typography.bodyDefault,
+            color = colors.textSecondary,
+        )
     }
 }
 
@@ -446,6 +601,10 @@ private fun FlashCallControls(
     onToggleSpeaker: () -> Unit,
     onToggleCamera: () -> Unit,
     onSwitchCamera: () -> Unit,
+    audioRoutes: FlashCallAudioRoutes,
+    onOpenRoutes: () -> Unit,
+    onOpenMore: () -> Unit,
+    moreActive: Boolean,
 ) {
     when (state.state) {
         FlashCallState.RINGING -> {
@@ -459,14 +618,15 @@ private fun FlashCallControls(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    FlashLargeCallButton(
+                    FlashIncomingCallButton(
                         icon = FlashIcons.Hangup,
                         background = FlashTheme.colors.textError,
                         contentColor = FlashTheme.colors.textOnAccent,
-                        size = 72.dp,
-                        iconSize = 32.dp,
-                        onClick = onDecline,
                         description = "Decline call",
+                        haptic = FlashHaptic.Reject,
+                        ringing = false,
+                        tipsOnPress = true,
+                        onClick = onDecline,
                     )
                     Spacer(Modifier.height(FlashSpacing.space8))
                     Text(
@@ -479,14 +639,15 @@ private fun FlashCallControls(
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    FlashLargeCallButton(
+                    FlashIncomingCallButton(
                         icon = FlashIcons.CallAccept,
                         background = FlashTheme.colors.accentPrimary,
                         contentColor = FlashTheme.colors.textOnAccent,
-                        size = 72.dp,
-                        iconSize = 32.dp,
-                        onClick = onAccept,
                         description = "Accept call",
+                        haptic = FlashHaptic.Confirm,
+                        ringing = true,
+                        tipsOnPress = false,
+                        onClick = onAccept,
                     )
                     Spacer(Modifier.height(FlashSpacing.space8))
                     Text(
@@ -498,91 +659,19 @@ private fun FlashCallControls(
             }
         }
         FlashCallState.DIALING, FlashCallState.CONNECTING, FlashCallState.ACTIVE -> {
-            // Sleek in-call control dock
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(FlashShapes.radius24))
-                    .background(FlashTheme.colors.backgroundSurfaceStrong.copy(alpha = 0.85f))
-                    .border(
-                        width = FlashDimensions.borderHairline,
-                        color = FlashTheme.colors.borderSubtle,
-                        shape = RoundedCornerShape(FlashShapes.radius24),
-                    )
-                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12),
-            ) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    FlashCallControlButton(
-                        icon = FlashIcons.Mute,
-                        background = if (state.micMuted) {
-                            FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
-                        } else {
-                            FlashTheme.colors.backgroundSurfaceSubtle
-                        },
-                        contentColor = if (state.micMuted) {
-                            FlashTheme.colors.accentPrimary
-                        } else {
-                            FlashTheme.colors.textPrimary
-                        },
-                        onClick = onToggleMute,
-                        size = 54.dp,
-                        iconSize = 26.dp,
-                    )
-                    if (state.video) {
-                        FlashCallControlButton(
-                            icon = FlashIcons.CameraFlip,
-                            background = FlashTheme.colors.backgroundSurfaceSubtle,
-                            contentColor = FlashTheme.colors.textPrimary,
-                            onClick = onSwitchCamera,
-                            size = 54.dp,
-                            iconSize = 26.dp,
-                        )
-                        FlashCallControlButton(
-                            icon = FlashIcons.Camera,
-                            background = if (state.cameraOff) {
-                                FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
-                            } else {
-                                FlashTheme.colors.backgroundSurfaceSubtle
-                            },
-                            contentColor = if (state.cameraOff) {
-                                FlashTheme.colors.accentPrimary
-                            } else {
-                                FlashTheme.colors.textPrimary
-                            },
-                            onClick = onToggleCamera,
-                            size = 54.dp,
-                            iconSize = 26.dp,
-                        )
-                    } else {
-                        FlashCallControlButton(
-                            icon = FlashIcons.Speaker,
-                            background = if (state.speakerOn) {
-                                FlashTheme.colors.accentPrimary.copy(alpha = 0.20f)
-                            } else {
-                                FlashTheme.colors.backgroundSurfaceSubtle
-                            },
-                            contentColor = if (state.speakerOn) {
-                                FlashTheme.colors.accentPrimary
-                            } else {
-                                FlashTheme.colors.textPrimary
-                            },
-                            onClick = onToggleSpeaker,
-                            size = 54.dp,
-                            iconSize = 26.dp,
-                        )
-                    }
-                    FlashCallControlButton(
-                        icon = FlashIcons.Hangup,
-                        background = FlashTheme.colors.textError,
-                        contentColor = FlashTheme.colors.textOnAccent,
-                        onClick = onHangUp,
-                        size = 54.dp,
-                        iconSize = 26.dp,
-                    )
-                }
-            }
+            // UI-050e: labelled, state-aware dock (FlashCallControlDock.kt).
+            FlashCallControlDock(
+                state = state,
+                onToggleMute = onToggleMute,
+                onToggleSpeaker = onToggleSpeaker,
+                onToggleCamera = onToggleCamera,
+                onSwitchCamera = onSwitchCamera,
+                onHangUp = onHangUp,
+                audioRoutes = audioRoutes,
+                onOpenRoutes = onOpenRoutes,
+                onOpenMore = onOpenMore,
+                moreActive = moreActive,
+            )
         }
         FlashCallState.ENDED -> {
             Row {
@@ -596,43 +685,6 @@ private fun FlashCallControls(
                 )
             }
         }
-    }
-}
-
-/** Large circular button with smooth spring haptics for call acceptance & rejection. */
-@Composable
-private fun FlashLargeCallButton(
-    icon: com.transfer.flash.ui.icons.FlashIconSpec,
-    background: Color,
-    contentColor: Color,
-    size: androidx.compose.ui.unit.Dp,
-    iconSize: androidx.compose.ui.unit.Dp,
-    onClick: () -> Unit,
-    description: String,
-) {
-    val interaction = remember { MutableInteractionSource() }
-    Box(
-        modifier = Modifier
-            .size(size)
-            .flashPressScale(interaction)
-            .clip(CircleShape)
-            .background(background)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                onClick = onClick,
-            )
-            .semantics {
-                role = Role.Button
-                contentDescription = description
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        FlashIcon(
-            icon = icon,
-            tint = contentColor,
-            size = iconSize,
-        )
     }
 }
 
@@ -883,7 +935,7 @@ internal fun FlashCallStatsBadge(
  * composable call — same shape as [rememberVideoStreamTrack] and for the same reason.
  */
 @Composable
-private fun rememberCallStats(flow: StateFlow<FlashCallStats?>?): FlashCallStats? {
+internal fun rememberCallStats(flow: StateFlow<FlashCallStats?>?): FlashCallStats? {
     val source = remember(flow) { flow ?: MutableStateFlow<FlashCallStats?>(null) }
     return source.collectAsState().value
 }

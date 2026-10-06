@@ -9,6 +9,7 @@ import com.transfer.flash.core.messaging.model.FlashWaitingReason
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
+import com.transfer.flash.core.messaging.protocol.GroupSignatureRules
 import com.transfer.flash.core.messaging.protocol.GroupSigning
 import com.transfer.flash.core.messaging.protocol.GroupVouching
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
@@ -2056,6 +2057,100 @@ class SignedGroupsTest {
             proto = conversation.groupProto,
             sig = conversation.groupCharterSig!!,
         )
+    }
+
+    @Test
+    fun `swarm announcement statement and chat message signature domain separation`() = runBlocking {
+        val dir = parties("dev-a", "dev-b")
+        val ada = engine(dir, "dev-a")
+        val bo = engine(dir, "dev-b")
+
+        val created = ada.create("SepGroup", mapOf("dev-b" to keyOf(dir, "dev-b"))) { it }
+        val gid = created.groupId
+        val outcome = bo.onBundle("dev-a", created.bundle)
+        assertTrue("bo must accept ada's group bundle", outcome is SignedGroups.BundleOutcome.Applied)
+
+        val rootHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val swarmSig = ada.signSwarmAnnouncement(
+            groupId = gid,
+            messageId = "m1",
+            root = rootHex,
+            sizeBytes = 1024L,
+            fileName = "test.bin",
+            mimeType = "application/octet-stream",
+            sentAt = 1000L,
+        )
+        assertNotNull("swarm announcement signature should be generated", swarmSig)
+
+        val swarmValid = bo.verifySwarmAnnouncement(
+            groupId = gid,
+            authorId = "dev-a",
+            messageId = "m1",
+            root = rootHex,
+            sizeBytes = 1024L,
+            fileName = "test.bin",
+            mimeType = "application/octet-stream",
+            sentAt = 1000L,
+            rootSig = swarmSig!!,
+        )
+        assertTrue("valid swarm announcement must verify", swarmValid)
+
+        val boParty = dir.getValue("dev-b")
+        val boRules = GroupSignatureRules(
+            crypto = boParty.crypto,
+            localDeviceId = "dev-b",
+            isPaired = { _: String -> true },
+            pinnedFingerprint = { peer: String -> dir[peer]?.crypto?.publicKey?.let { fingerprintHex(it) } },
+        )
+
+        // Swarm announcement signature must NOT verify as a chat message
+        val asMsgValid = boRules.verifyMessage(
+            authorKey = GroupCanonical.encode(keyOf(dir, "dev-a")),
+            groupId = gid,
+            messageId = "m1",
+            from = "dev-a",
+            sentAt = 1000L,
+            replyToId = null,
+            replyPreview = null,
+            text = "test.bin",
+            signature = swarmSig,
+        )
+        assertFalse("swarm announcement signature must NEVER verify as a chat message", asMsgValid)
+
+        val msgSig = ada.signMessage(
+            groupId = gid,
+            messageId = "m2",
+            sentAt = 2000L,
+            replyToId = null,
+            replyPreview = null,
+            text = "hello world",
+        )
+
+        val msgValid = boRules.verifyMessage(
+            authorKey = GroupCanonical.encode(keyOf(dir, "dev-a")),
+            groupId = gid,
+            messageId = "m2",
+            from = "dev-a",
+            sentAt = 2000L,
+            replyToId = null,
+            replyPreview = null,
+            text = "hello world",
+            signature = msgSig,
+        )
+        assertTrue("valid message must verify", msgValid)
+
+        val asSwarmValid = bo.verifySwarmAnnouncement(
+            groupId = gid,
+            authorId = "dev-a",
+            messageId = "m2",
+            root = rootHex,
+            sizeBytes = 1024L,
+            fileName = "test.bin",
+            mimeType = "application/octet-stream",
+            sentAt = 2000L,
+            rootSig = msgSig,
+        )
+        assertFalse("chat message signature must NEVER verify as a swarm announcement", asSwarmValid)
     }
 
     // ------------------------------------------------------------------------------ harness: reading

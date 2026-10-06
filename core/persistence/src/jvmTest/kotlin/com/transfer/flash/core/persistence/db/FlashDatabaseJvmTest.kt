@@ -3,6 +3,8 @@ package com.transfer.flash.core.persistence.db
 import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
+import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -210,6 +212,156 @@ class FlashDatabaseJvmTest {
         } finally {
             collector.cancel()
         }
+    }
+
+    @Test
+    fun `swarmDao content round trip bit updates and queries`() = runBlocking {
+        val dao = openDatabase().swarmDao()
+        val content = SwarmContentEntity(
+            root = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            groupId = "g2-crew",
+            messageId = "m-123",
+            role = "ORIGIN",
+            originId = "alice",
+            originKey = "key-alice",
+            fileName = "movie.mp4",
+            mime = "video/mp4",
+            totalSize = 1048576L,
+            pieceSize = 65536,
+            manifest = byteArrayOf(1, 2, 3),
+            bits = byteArrayOf(0b00000000),
+            bytesDone = 0L,
+            state = "ACTIVE",
+            waitReason = null,
+            failReason = null,
+            localTransferId = "tx-local-1",
+            sourceUri = "content://media/1",
+            sourcePersistent = true,
+            partialKey = "partial-1",
+            finalPath = null,
+            identitySize = 1048576L,
+            identityModifiedMs = 1700000000000L,
+            deliveredTo = "bob,charlie",
+            createdAtMs = 1700000000000L,
+            lastProgressAtMs = 1700000000000L,
+            expiresAtMs = 1700000000000L + 86400000L,
+        )
+
+        dao.upsertContent(content)
+
+        val byKey = dao.getContent(content.root, content.groupId)
+        assertEquals(content, byKey)
+
+        val byTransferId = dao.getContentByTransferId("tx-local-1")
+        assertEquals(content, byTransferId)
+
+        val byMessageId = dao.getContentByMessageId("g2-crew", "m-123")
+        assertEquals(content, byMessageId)
+
+        val all = dao.loadAllContent()
+        assertEquals(1, all.size)
+        assertEquals(content, all.first())
+
+        val groupContent = dao.loadContentForGroup("g2-crew")
+        assertEquals(1, groupContent.size)
+
+        // Update bits
+        val newBits = byteArrayOf(0b11111111.toByte())
+        dao.updateBits(content.root, content.groupId, newBits, 65536L, 1700000005000L)
+        val afterBits = dao.getContent(content.root, content.groupId)!!
+        assertTrue(newBits.contentEquals(afterBits.bits))
+        assertEquals(65536L, afterBits.bytesDone)
+        assertEquals(1700000005000L, afterBits.lastProgressAtMs)
+
+        // Update state
+        dao.updateState(content.root, content.groupId, "PAUSED_BY_USER", "WAITING_FOR_USER", null, 1700000010000L)
+        val afterState = dao.getContent(content.root, content.groupId)!!
+        assertEquals("PAUSED_BY_USER", afterState.state)
+        assertEquals("WAITING_FOR_USER", afterState.waitReason)
+
+        // Finalize content
+        dao.finalizeContent(content.root, content.groupId, "/path/to/movie.mp4", 1048576L, 1700000020000L, "COMPLETE", 1700000020000L)
+        val afterFinal = dao.getContent(content.root, content.groupId)!!
+        assertEquals("COMPLETE", afterFinal.state)
+        assertEquals("/path/to/movie.mp4", afterFinal.finalPath)
+        assertNull(afterFinal.waitReason)
+
+        // Delete content
+        dao.deleteContent(content.root, content.groupId)
+        assertNull(dao.getContent(content.root, content.groupId))
+    }
+
+    @Test
+    fun `swarmDao tombstone round trip and purge expired`() = runBlocking {
+        val dao = openDatabase().swarmDao()
+        val tombstone = SwarmTombstoneEntity(
+            groupId = "g2-crew",
+            messageId = "m-123",
+            root = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            originId = "alice",
+            reason = "USER",
+            cancelledAtMs = 1700000000000L,
+            signature = byteArrayOf(9, 8, 7),
+            receivedAtMs = 1700000001000L,
+            expiresAtMs = 1700000050000L,
+        )
+
+        dao.upsertTombstone(tombstone)
+
+        val fetched = dao.getTombstone("g2-crew", "m-123")
+        assertEquals(tombstone, fetched)
+
+        val byGroup = dao.getTombstonesForGroup("g2-crew")
+        assertEquals(1, byGroup.size)
+
+        val byContent = dao.getTombstonesForContent(tombstone.root, "g2-crew")
+        assertEquals(1, byContent.size)
+
+        val all = dao.loadAllTombstones()
+        assertEquals(1, all.size)
+
+        // Insert expired content
+        val expiredContent = SwarmContentEntity(
+            root = "root-expired",
+            groupId = "g2-crew",
+            messageId = "m-expired",
+            role = "ORIGIN",
+            originId = "alice",
+            originKey = "key-alice",
+            fileName = "old.bin",
+            mime = "application/octet-stream",
+            totalSize = 100L,
+            pieceSize = 100,
+            manifest = null,
+            bits = byteArrayOf(0),
+            bytesDone = 0L,
+            state = "CANCELLED",
+            waitReason = null,
+            failReason = null,
+            localTransferId = "tx-old",
+            sourceUri = null,
+            sourcePersistent = false,
+            partialKey = "pk-old",
+            finalPath = null,
+            identitySize = 0L,
+            identityModifiedMs = 0L,
+            deliveredTo = "",
+            createdAtMs = 1000L,
+            lastProgressAtMs = 1000L,
+            expiresAtMs = 1700000010000L,
+        )
+        dao.upsertContent(expiredContent)
+
+        // Purge before expiry time: nothing purged
+        assertEquals(0, dao.purgeExpiredContent(1700000005000L))
+        assertEquals(0, dao.purgeExpiredTombstones(1700000005000L))
+
+        // Purge after expiry time
+        assertEquals(1, dao.purgeExpiredContent(1700000020000L))
+        assertNull(dao.getContent("root-expired", "g2-crew"))
+
+        assertEquals(1, dao.purgeExpiredTombstones(1700000060000L))
+        assertNull(dao.getTombstone("g2-crew", "m-123"))
     }
 
     private fun peer(deviceId: String) = TrustedPeerEntity(

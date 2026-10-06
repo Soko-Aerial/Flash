@@ -233,6 +233,14 @@ private fun FlashGroupVideoTile(
                     style = FlashTheme.typography.metadataDefault,
                     color = Color.White,
                     maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                FlashPeerBadges(
+                    micMuted = participant.isMuted,
+                    cameraOff = false,
+                    handRaised = participant.handRaised,
+                    onDark = true,
+                    modifier = Modifier.padding(start = FlashSpacing.space4),
                 )
             }
             if (status != null) {
@@ -254,7 +262,8 @@ internal fun participantStatusLabel(participant: FlashCallParticipantUi): String
     FlashCallParticipantState.CONNECTED -> when {
         participant.isMuted -> "Muted"
         participant.video == FlashParticipantVideo.BUSY -> "Video busy"
-        participant.video == FlashParticipantVideo.CAMERA_OFF -> "Camera off"
+        participant.video == FlashParticipantVideo.CAMERA_OFF || participant.cameraOff -> "Camera off"
+        participant.handRaised -> "Hand raised"
         else -> null
     }
     FlashCallParticipantState.DISCONNECTED -> "Reconnecting…"

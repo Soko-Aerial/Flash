@@ -111,35 +111,56 @@ fun FlashFileMessageCard(
         formatFileSize(attachment.sizeBytes)
     }
 
-    val statusSubtitle = remember(attachment.transferStatus, attachment.transferSpeedMbps, attachment.etaSeconds, attachment.transferProgress) {
+    val statusSubtitle = remember(
+        attachment.transferStatus,
+        attachment.transferSpeedMbps,
+        attachment.etaSeconds,
+        attachment.transferProgress,
+        attachment.detailLine,
+    ) {
+        val detail = attachment.detailLine
         when (attachment.transferStatus) {
             FlashFileTransferStatus.Transferring -> {
                 val pct = (attachment.transferProgress * 100).toInt().coerceIn(0, 100)
                 val speedStr = if (attachment.transferSpeedMbps > 0f) " • ${"%.1f".format(attachment.transferSpeedMbps)} MB/s" else ""
                 val etaStr = if (attachment.etaSeconds > 0) " • ${attachment.etaSeconds}s left" else ""
-                "$formattedSize • $pct%$speedStr$etaStr"
+                FlashSwarmUiMath.formatSubtitle(formattedSize, pct, speedStr, etaStr, detail)
             }
             FlashFileTransferStatus.Paused -> {
                 val pct = (attachment.transferProgress * 100).toInt().coerceIn(0, 100)
-                "$formattedSize • $pct% • Paused (Tap to resume)"
+                if (!detail.isNullOrBlank()) {
+                    "$detail • $pct% • Paused (Tap to resume)"
+                } else {
+                    "$formattedSize • $pct% • Paused (Tap to resume)"
+                }
             }
-            FlashFileTransferStatus.NotDownloaded -> "$formattedSize • Tap to download"
-            FlashFileTransferStatus.AwaitingAcceptance -> "$formattedSize • Awaiting your acceptance"
+            FlashFileTransferStatus.NotDownloaded -> {
+                if (!detail.isNullOrBlank()) "$formattedSize • $detail" else "$formattedSize • Tap to download"
+            }
+            FlashFileTransferStatus.AwaitingAcceptance -> {
+                if (!detail.isNullOrBlank()) "$formattedSize • $detail" else "$formattedSize • Awaiting your acceptance"
+            }
             FlashFileTransferStatus.Downloaded -> {
                 if (extension.isNotEmpty()) "$formattedSize • ${extension.uppercase()}" else formattedSize
             }
-            FlashFileTransferStatus.Failed -> "$formattedSize • Failed / Cancelled (Tap to retry)"
+            FlashFileTransferStatus.Failed -> {
+                if (!detail.isNullOrBlank()) {
+                    "$detail (Tap to retry)"
+                } else {
+                    "$formattedSize • Failed / Cancelled (Tap to retry)"
+                }
+            }
         }
     }
 
-    val a11yDesc = remember(attachment.name, formattedSize, attachment.transferStatus) {
+    val a11yDesc = remember(attachment.name, formattedSize, attachment.transferStatus, statusSubtitle) {
         when (attachment.transferStatus) {
-            FlashFileTransferStatus.Transferring -> "Transferring ${attachment.name}, $formattedSize"
-            FlashFileTransferStatus.Paused -> "Paused transfer of ${attachment.name}, $formattedSize. Double-tap to resume."
-            FlashFileTransferStatus.NotDownloaded -> "${attachment.name}, $formattedSize. Double-tap to download."
-            FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $formattedSize. Waiting for you to accept the transfer."
+            FlashFileTransferStatus.Transferring -> "Transferring ${attachment.name}, $statusSubtitle"
+            FlashFileTransferStatus.Paused -> "Paused transfer of ${attachment.name}, $statusSubtitle. Double-tap to resume."
+            FlashFileTransferStatus.NotDownloaded -> "${attachment.name}, $statusSubtitle. Double-tap to download."
+            FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $statusSubtitle. Waiting for you to accept the transfer."
             FlashFileTransferStatus.Downloaded -> "${attachment.name}, $formattedSize. Double-tap to open."
-            FlashFileTransferStatus.Failed -> "Failed to transfer ${attachment.name}. Double-tap to retry."
+            FlashFileTransferStatus.Failed -> "Failed: ${attachment.name}, $statusSubtitle. Double-tap to retry."
         }
     }
 
@@ -223,7 +244,7 @@ fun FlashFileMessageCard(
                 Text(
                     text = statusSubtitle,
                     style = typography.captionEmphasis.copy(fontSize = 11.sp),
-                    color = secondaryTextColor,
+                    color = if (attachment.canGoOffline) colors.accentPrimary else secondaryTextColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )

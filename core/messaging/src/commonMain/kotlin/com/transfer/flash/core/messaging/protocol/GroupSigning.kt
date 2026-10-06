@@ -66,5 +66,64 @@ internal class GroupSigning(private val crypto: GroupCrypto) {
         text: String,
     ): String = sign(GroupCanonical.messageBytes(groupId, messageId, from, sentAt, replyToId, replyPreview, text))
 
+    fun issueRotation(
+        groupId: String,
+        newEpoch: Long,
+        prevEpoch: Long,
+        commitHex: String,
+        reason: String,
+        adminId: String,
+        rotationId: String,
+        removedIds: List<String> = emptyList(),
+    ): GroupRotation {
+        val bytes = GroupCanonical.rotationBytes(
+            groupId = groupId,
+            newEpoch = newEpoch,
+            prevEpoch = prevEpoch,
+            commitHex = commitHex,
+            reason = reason,
+            adminId = adminId,
+            rotationId = rotationId,
+            removedIds = removedIds,
+        )
+        return GroupRotation(
+            groupId = groupId,
+            newEpoch = newEpoch,
+            prevEpoch = prevEpoch,
+            commit = commitHex,
+            reason = reason,
+            adminId = adminId,
+            rotationId = rotationId,
+            removedIds = removedIds,
+            sig = sign(bytes),
+        )
+    }
+
+    fun signSettings(
+        groupId: String,
+        version: Long,
+        joinPolicy: String,
+        inviteSharers: String,
+        maxMembers: Int,
+        swarmServing: Boolean,
+        membersMayAdd: Boolean,
+        opId: String,
+        signerId: String,
+    ): GroupSettings {
+        val unsigned = GroupSettings(
+            groupId = groupId,
+            version = version,
+            joinPolicy = joinPolicy,
+            inviteSharers = inviteSharers,
+            maxMembers = maxMembers,
+            swarmServing = swarmServing,
+            membersMayAdd = membersMayAdd,
+            opId = opId,
+            signerId = signerId,
+            sig = "",
+        )
+        return unsigned.copy(sig = sign(GroupCanonical.settingsBytes(unsigned)))
+    }
+
     private fun sign(bytes: ByteArray): String = GroupCanonical.encode(crypto.sign(bytes))
 }

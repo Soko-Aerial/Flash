@@ -12,14 +12,28 @@ import com.transfer.flash.core.messaging.protocol.GroupSignatureRules
 import com.transfer.flash.core.messaging.protocol.GroupSigning
 import com.transfer.flash.core.messaging.protocol.GroupVouchVerdict
 import com.transfer.flash.core.messaging.protocol.GroupVouching
+import com.transfer.flash.core.messaging.group.GroupSecretSource
+import com.transfer.flash.core.messaging.group.GroupSecretStore
+import com.transfer.flash.core.messaging.group.StoredGroupSecret
+import com.transfer.flash.core.messaging.group.toEntity
+import com.transfer.flash.core.messaging.group.toSettings
+import com.transfer.flash.core.messaging.protocol.GroupRotation
+import com.transfer.flash.core.messaging.protocol.GroupSettings
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MemberCert
 import com.transfer.flash.core.messaging.protocol.VerifyBudget
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
+import com.transfer.flash.core.messaging.protocol.settingsWins
+import com.transfer.flash.core.messaging.protocol.toEntity
+import com.transfer.flash.core.messaging.protocol.toRotation
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
+import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
+import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
+import com.transfer.flash.core.security.group.GroupSecret
+import com.transfer.flash.core.security.group.GroupSecretCommit
 
 /**
  * The v2 group engine (ADR-044 V1, `docs/group/v1-signed-membership-plan.md`): creates, changes and
@@ -50,6 +64,13 @@ internal class SignedGroups(
     private val newNonce: () -> ByteArray = {
         crypto.sha256(newId().encodeToByteArray()).copyOf(GroupPolicy.CHARTER_NONCE_BYTES)
     },
+    private val hasInvite: (String) -> Boolean = { false },
+    private val groupRotationDao: GroupRotationDao? = null,
+    private val groupSecretStore: GroupSecretStore? = null,
+    private val newRotationId: () -> String = {
+        GroupCanonical.hex(crypto.sha256(newId().encodeToByteArray()).copyOf(16))
+    },
+    private val groupSettingsDao: GroupSettingsDao? = null,
 ) {
     /**
      * The label this device's own cert carries in a group it creates from now on. A cert already issued keeps the
@@ -63,17 +84,36 @@ internal class SignedGroups(
         localDisplayName = newName
     }
 
-    private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint, vouching)
+    private val isPairedWith = isPaired
+    private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint, vouching, hasInvite)
     private val signing = GroupSigning(crypto)
     private val pinnedFingerprintOf = pinnedFingerprint
 
     /** What became of a received bundle. */
     sealed interface BundleOutcome {
         /** The bundle was verified and merged. [joined] is true when it created the group here. */
-        data class Applied(val groupId: String, val joined: Boolean) : BundleOutcome
+        data class Applied(
+            val groupId: String,
+            val joined: Boolean,
+            val rotation: GroupRotation? = null,
+            val needsSecret: Boolean = false,
+            val reRotated: GroupRotation? = null,
+            val winningRotation: GroupRotation? = null,
+        ) : BundleOutcome
 
         /** Nothing changed. [reason] is short and stable so it can be logged and asserted. */
         data class Ignored(val reason: String) : BundleOutcome
+    }
+
+    /** What became of a received or processed group rotation. */
+    sealed interface RotationOutcome {
+        data class Applied(
+            val rotation: GroupRotation,
+            val needsSecret: Boolean,
+            val reRotated: GroupRotation? = null,
+        ) : RotationOutcome
+        data class WonConcurrently(val winningRotation: GroupRotation) : RotationOutcome
+        data class Ignored(val reason: String) : RotationOutcome
     }
 
     /** A freshly created group: the id plus the bundle to hand to every invitee. */
@@ -85,7 +125,62 @@ internal class SignedGroups(
     /** The owner tombstone for a removed member; the removed device is told too, so it stops sending. */
     class RemovedMember(val bundle: GroupWireFrame.Bundle)
 
+    /**
+     * GM-9: Returns the current [GroupSettings] for [groupId], or defaults if none stored (ADR-074).
+     */
+    suspend fun currentSettings(groupId: String): GroupSettings {
+        return groupSettingsDao?.getByGroupId(groupId)?.toSettings() ?: GroupSettings.defaults(groupId)
+    }
+
+    /**
+     * GM-9: Signs and applies updated [GroupSettings] for [groupId].
+     * Can only be called by an active owner or admin.
+     * Returns the full updated roster bundle on success, or null on error.
+     */
+    suspend fun updateSettings(
+        groupId: String,
+        joinPolicy: String? = null,
+        inviteSharers: String? = null,
+        maxMembers: Int? = null,
+        swarmServing: Boolean? = null,
+        membersMayAdd: Boolean? = null,
+    ): GroupWireFrame.Bundle? {
+        val settingsDao = groupSettingsDao ?: return null
+        val charter = storedCharter(groupId) ?: return null
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
+        val isOwner = charter.ownerId == localDeviceId
+        val isAdmin = self.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) return null
+
+        val current = settingsDao.getByGroupId(groupId)?.toSettings() ?: GroupSettings.defaults(groupId)
+        val nextVersion = current.version + 1L
+        val nextJoinPolicy = joinPolicy ?: current.joinPolicy
+        val nextInviteSharers = inviteSharers ?: current.inviteSharers
+        val nextMaxMembers = (maxMembers ?: current.maxMembers).coerceIn(2, GroupPolicy.MAX_MEMBERS_V2)
+        val nextSwarmServing = swarmServing ?: current.swarmServing
+        val nextMembersMayAdd = membersMayAdd ?: current.membersMayAdd
+        val opId = newId()
+
+        val signed = signing.signSettings(
+            groupId = groupId,
+            version = nextVersion,
+            joinPolicy = nextJoinPolicy,
+            inviteSharers = nextInviteSharers,
+            maxMembers = nextMaxMembers,
+            swarmServing = nextSwarmServing,
+            membersMayAdd = nextMembersMayAdd,
+            opId = opId,
+            signerId = localDeviceId,
+        )
+
+        settingsDao.upsert(signed.toEntity())
+        FlashLog.i("CHAT", "GM-9: Updated settings for group=$groupId version=$nextVersion opId=$opId")
+        return bundleFor(groupId)
+    }
+
     suspend fun isV2(groupId: String): Boolean = conversationDao.get(groupId)?.groupProto == GroupPolicy.V2_PROTOCOL
+
+    fun checkCharter(charter: GroupCharter): String? = rules.checkCharter(charter)
 
     /**
      * True when [key] is [deviceId]'s key according to the trust store's pin, i.e. the pin is the
@@ -132,7 +227,22 @@ internal class SignedGroups(
             ),
         )
         certs.forEach { members.upsert(it.toRow(joinedAt = now)) }
-        return CreatedGroup(groupId, GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, certs))
+        val settings = groupSettingsDao?.let { dao ->
+            val initial = signing.signSettings(
+                groupId = groupId,
+                version = 1L,
+                joinPolicy = GroupSettings.POLICY_APPROVE,
+                inviteSharers = GroupSettings.SHARERS_ALL,
+                maxMembers = GroupPolicy.MAX_MEMBERS_V2,
+                swarmServing = true,
+                membersMayAdd = false,
+                opId = newId(),
+                signerId = localDeviceId,
+            )
+            dao.upsert(initial.toEntity())
+            initial
+        }
+        return CreatedGroup(groupId, GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, certs, settings = settings))
     }
 
     /**
@@ -147,7 +257,8 @@ internal class SignedGroups(
         val charter = storedCharter(groupId) ?: return null
         val rows = members.allMembers(groupId).associateBy { it.deviceId }
         val self = rows[localDeviceId]
-        val canAdd = charter.ownerId == localDeviceId || (self?.isActive == true && self.role == MemberCert.ROLE_ADMIN)
+        val settings = currentSettings(groupId)
+        val canAdd = charter.ownerId == localDeviceId || (self?.isActive == true && (self.role == MemberCert.ROLE_ADMIN || settings.membersMayAdd))
         check(canAdd) { "only the owner or an admin adds members" }
         val changed = ArrayList<MemberCert>()
         for ((subjectId, key) in invitees) {
@@ -270,6 +381,7 @@ internal class SignedGroups(
     /**
      * Owner or Admin removal (ADR-044 V2, ADR-063): an authorized tombstone with the next `seq`.
      * Admin cannot remove owner or other admins.
+     * Removal = tombstone + rotation in one transaction (GINV-4).
      */
     suspend fun removeMember(groupId: String, subjectId: String): RemovedMember? {
         val charter = storedCharter(groupId) ?: return null
@@ -294,7 +406,15 @@ internal class SignedGroups(
         )
         members.upsert(cert.toRow(joinedAt = current.joinedAt))
         vouching?.revoke(subjectId, groupId)
-        return RemovedMember(GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert)))
+
+        // GINV-4: Removal = tombstone + rotation in one transaction
+        val rotation = if (groupSecretStore != null && groupRotationDao != null) {
+            rotateGroupSecret(groupId, GroupRotation.REASON_REMOVAL, listOf(subjectId))
+        } else {
+            null
+        }
+
+        return RemovedMember(GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert), rotation = rotation))
     }
 
     /**
@@ -307,21 +427,262 @@ internal class SignedGroups(
         val (active, tombstones) = certs.partition { it.active }
         val capped = active + tombstones.sortedByDescending { it.seq }.take(GroupPolicy.MAX_BUNDLE_TOMBSTONES)
         if (capped.isEmpty()) return null
-        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, capped)
+        val rotation = groupRotationDao?.getLatestForGroup(groupId)?.toRotation()
+        val settings = groupSettingsDao?.getByGroupId(groupId)?.toSettings()
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, capped, rotation = rotation, settings = settings)
     }
 
     /**
-     * What a member hands a device it knows the owner removed, in case that device was offline for the removal: the
-     * charter and that device's owner-issued tombstone, nothing else. Null for a member still active, for one who left
-     * by their own choice (they know) and for an unknown subject. The removed device checks the owner's signature
-     * itself, so any member can relay it, and a device that already knows treats it as a free, stale replay.
+     * What a member hands a device it knows the owner or admin removed, in case that device was offline for the removal: the
+     * charter and that device's authorized tombstone.
      */
     suspend fun removalNoticeFor(groupId: String, subjectId: String): GroupWireFrame.Bundle? {
         val charter = storedCharter(groupId) ?: return null
         val row = members.member(groupId, subjectId)?.takeIf { !it.isActive } ?: return null
-        if (row.issuerId != charter.ownerId || row.issuerId == subjectId) return null
+        val issuerId = row.issuerId ?: return null
+        val isOwnerIssuer = issuerId == charter.ownerId
+        val isAdminIssuer = members.member(groupId, issuerId)?.let { it.isActive && it.role == MemberCert.ROLE_ADMIN } == true
+        if ((!isOwnerIssuer && !isAdminIssuer) || issuerId == subjectId) return null
         val cert = row.toCert() ?: return null
-        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert))
+        val rotation = groupRotationDao?.getLatestForGroup(groupId)?.toRotation()
+        return GroupWireFrame.Bundle(groupId, localDeviceId, newId(), charter, listOf(cert), rotation = rotation)
+    }
+
+    /**
+     * GM-6: Rotates the secret for [groupId] with the specified [reason] and [removedIds].
+     * Can only be called by an active owner or admin.
+     * Computes the new epoch, generates a fresh 32-byte secret, derives SHA-256 commit,
+     * signs canonical "flash-grot-v1" rotation statement, and persists both in a single step.
+     */
+    suspend fun rotateGroupSecret(
+        groupId: String,
+        reason: String,
+        removedIds: List<String> = emptyList(),
+    ): GroupRotation? {
+        val secretStore = groupSecretStore ?: return null
+        val rotationDao = groupRotationDao ?: return null
+        val charter = storedCharter(groupId) ?: return null
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
+        val isOwner = charter.ownerId == localDeviceId
+        val isAdmin = self.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) return null
+
+        val currentSecret = secretStore.current(groupId)
+        val latestRotation = rotationDao.getLatestForGroup(groupId)
+        val currentEpoch = maxOf(currentSecret?.epoch ?: 1L, latestRotation?.newEpoch ?: 1L)
+        val newEpoch = currentEpoch + 1L
+        val prevEpoch = currentSecret?.epoch ?: (newEpoch - 1L)
+
+        val newSecret = GroupSecret.generate()
+        val commit = GroupSecretCommit.ofHex(groupId, newEpoch, newSecret)
+        val rotId = newRotationId()
+
+        val rotation = signing.issueRotation(
+            groupId = groupId,
+            newEpoch = newEpoch,
+            prevEpoch = prevEpoch,
+            commitHex = commit,
+            reason = reason,
+            adminId = localDeviceId,
+            rotationId = rotId,
+            removedIds = removedIds,
+        )
+
+        val now = nowMs()
+        secretStore.put(
+            StoredGroupSecret(
+                groupId = groupId,
+                epoch = newEpoch,
+                secret = newSecret,
+                commit = commit,
+                source = GroupSecretSource.ROTATED,
+                receivedAtMs = now,
+            ),
+        )
+        rotationDao.upsert(rotation.toEntity(now))
+        FlashLog.i("CHAT", "Rotated secret for group=$groupId newEpoch=$newEpoch reason=$reason rotId=$rotId")
+        return rotation
+    }
+
+    /**
+     * GM-6: Validates and processes an inbound rotation notice from [senderId].
+     * Checks signature against admin/owner keys, executes tie-breaking for concurrent rotations,
+     * re-rotates if local rotation lost, and updates database.
+     */
+    suspend fun handleIncomingRotation(
+        groupId: String,
+        rotation: GroupRotation,
+        senderId: String,
+    ): RotationOutcome {
+        if (rotation.groupId != groupId) return RotationOutcome.Ignored("group-id-mismatch")
+        val charter = storedCharter(groupId) ?: return RotationOutcome.Ignored("unknown-group")
+        val adminRow = members.member(groupId, rotation.adminId)
+        val isOwner = rotation.adminId == charter.ownerId
+        val isAdmin = adminRow != null && adminRow.isActive && adminRow.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) return RotationOutcome.Ignored("issuer-not-admin")
+
+        val adminKey = if (isOwner) {
+            GroupCanonical.decode(charter.ownerKey)
+        } else {
+            adminRow?.subjectKey?.let { GroupCanonical.decode(it) }
+        } ?: return RotationOutcome.Ignored("no-admin-key")
+
+        val errorReason = rules.checkRotation(charter, rotation) { id ->
+            if (id == rotation.adminId) adminKey else null
+        }
+        if (errorReason != null) {
+            FlashLog.w("CHAT", "SECURITY: group rotation rejected: group=$groupId admin=${rotation.adminId} reason=$errorReason")
+            return RotationOutcome.Ignored(errorReason)
+        }
+
+        val rotationDao = groupRotationDao ?: return RotationOutcome.Ignored("no-dao")
+        val currentLatest = rotationDao.getLatestForGroup(groupId)
+
+        if (currentLatest != null) {
+            if (rotation.newEpoch < currentLatest.newEpoch) {
+                return RotationOutcome.Ignored("stale-epoch")
+            }
+            if (rotation.newEpoch == currentLatest.newEpoch) {
+                if (rotation.rotationId == currentLatest.rotationId) {
+                    return RotationOutcome.Ignored("duplicate")
+                }
+                // Concurrency rule: smaller rotationId wins
+                if (rotation.rotationId > currentLatest.rotationId) {
+                    return RotationOutcome.WonConcurrently(currentLatest.toRotation())
+                }
+            }
+        }
+
+        // Incoming rotation wins (or has higher epoch)
+        val lostOurRotation = currentLatest != null &&
+            currentLatest.adminId == localDeviceId &&
+            currentLatest.newEpoch == rotation.newEpoch &&
+            rotation.rotationId < currentLatest.rotationId
+
+        val now = nowMs()
+        rotationDao.upsert(rotation.toEntity(now))
+
+        val reRotated = if (lostOurRotation) {
+            FlashLog.w("CHAT", "Local rotation for group=$groupId epoch=${currentLatest.newEpoch} lost tie-breaker (rotId=${currentLatest.rotationId} > ${rotation.rotationId}); re-rotating at epoch ${rotation.newEpoch + 1}")
+            val ourRemovals = if (currentLatest.removedIds.isBlank()) emptyList() else currentLatest.removedIds.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            rotateGroupSecret(groupId, currentLatest.reason, ourRemovals)
+        } else {
+            null
+        }
+
+        val currentSecret = groupSecretStore?.current(groupId)
+        val needsSecret = currentSecret == null ||
+            currentSecret.epoch < rotation.newEpoch ||
+            (currentSecret.epoch == rotation.newEpoch && currentSecret.commit != rotation.commit)
+        return RotationOutcome.Applied(rotation, needsSecret, reRotated)
+    }
+
+    /**
+     * GM-7: Upgrades an existing v2 group that has no rotation notice (O-11).
+     * When an admin device holds a v2 group with no rotation notice, creates epoch 1
+     * with a notice (reason = UPGRADE, prevEpoch = 0).
+     *
+     * Returns the created [GroupRotation], or null if this device is not an active owner/admin,
+     * the group is not v2, or a rotation notice already exists.
+     */
+    suspend fun upgradeGroupSecret(groupId: String): GroupRotation? {
+        if (!GroupPolicy.isV2GroupId(groupId)) return null
+        val secretStore = groupSecretStore ?: return null
+        val rotationDao = groupRotationDao ?: return null
+        val charter = storedCharter(groupId) ?: return null
+        val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: return null
+        val isOwner = charter.ownerId == localDeviceId
+        val isAdmin = self.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) return null
+
+        if (rotationDao.getLatestForGroup(groupId) != null) return null
+
+        val currentSecret = secretStore.current(groupId)
+        val epoch = 1L
+        val prevEpoch = 0L
+        val secret = currentSecret?.secret ?: GroupSecret.generate()
+        val commit = GroupSecretCommit.ofHex(groupId, epoch, secret)
+        val rotId = newRotationId()
+
+        val rotation = signing.issueRotation(
+            groupId = groupId,
+            newEpoch = epoch,
+            prevEpoch = prevEpoch,
+            commitHex = commit,
+            reason = GroupRotation.REASON_UPGRADE,
+            adminId = localDeviceId,
+            rotationId = rotId,
+            removedIds = emptyList(),
+        )
+
+        val now = nowMs()
+        if (currentSecret == null) {
+            secretStore.put(
+                StoredGroupSecret(
+                    groupId = groupId,
+                    epoch = epoch,
+                    secret = secret,
+                    commit = commit,
+                    source = GroupSecretSource.ROTATED,
+                    receivedAtMs = now,
+                ),
+            )
+        }
+        rotationDao.upsert(rotation.toEntity(now))
+        FlashLog.i("CHAT", "GM-7: Upgraded v2 group=$groupId with epoch=1 secret rotId=$rotId")
+        return rotation
+    }
+
+    /**
+     * GM-7: On startup/event, upgrades all existing v2 groups where this device is active owner
+     * or admin and which have no rotation notice (O-11).
+     */
+    suspend fun upgradeExistingV2Groups(): List<GroupRotation> {
+        val groupIds = members.activeGroupIdsFor(localDeviceId)
+        val generated = ArrayList<GroupRotation>()
+        for (groupId in groupIds) {
+            upgradeGroupSecret(groupId)?.let { generated += it }
+        }
+        return generated
+    }
+
+    /**
+     * GM-6 Task 2: Crash recovery (GINV-4).
+     * On startup, inspects all groups where local device is active owner or admin.
+     * If any tombstone signed by local device is not covered by a rotation signed by local device,
+     * triggers rotation to ensure the removed device's secret access is revoked.
+     */
+    suspend fun recoverUnrotatedTombstones(): List<GroupRotation> {
+        val rotationDao = groupRotationDao ?: return emptyList()
+        val generated = ArrayList<GroupRotation>()
+        val groupIds = members.activeGroupIdsFor(localDeviceId)
+        for (groupId in groupIds) {
+            val charter = storedCharter(groupId) ?: continue
+            val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive } ?: continue
+            val isOwner = charter.ownerId == localDeviceId
+            val isAdmin = self.role == MemberCert.ROLE_ADMIN
+            if (!isOwner && !isAdmin) continue
+
+            val tombstonedByUs = members.allMembers(groupId)
+                .filter { !it.isActive && it.issuerId == localDeviceId && it.deviceId != localDeviceId }
+                .map { it.deviceId }
+                .toSet()
+            if (tombstonedByUs.isEmpty()) continue
+
+            val ourRotations = rotationDao.getAllForGroup(groupId).filter { it.adminId == localDeviceId }
+            val coveredRemovals = ourRotations.flatMap { rot ->
+                if (rot.removedIds.isBlank()) emptyList() else rot.removedIds.split(',').map { it.trim() }
+            }.toSet()
+
+            val unrotated = tombstonedByUs - coveredRemovals
+            if (unrotated.isNotEmpty()) {
+                FlashLog.w("CHAT", "Startup recovery: found ${unrotated.size} unrotated tombstones in group=$groupId; rotating secret")
+                rotateGroupSecret(groupId, GroupRotation.REASON_REMOVAL, unrotated.toList())?.let {
+                    generated += it
+                }
+            }
+        }
+        return generated
     }
 
     /** Base64 signature over the canonical bytes of a message this device authors in [groupId]. */
@@ -333,6 +694,67 @@ internal class SignedGroups(
         replyPreview: String?,
         text: String,
     ): String = signing.signMessage(groupId, messageId, localDeviceId, sentAt, replyToId, replyPreview, text)
+
+    /** Base64 signature over the canonical bytes of a swarm announcement authored by this device in [groupId]. */
+    fun signSwarmAnnouncement(
+        groupId: String,
+        messageId: String,
+        root: String,
+        sizeBytes: Long,
+        fileName: String,
+        mimeType: String,
+        sentAt: Long,
+    ): String? {
+        val statement = GroupCanonical.swarmAnnounceBytes(
+            groupId = groupId,
+            messageId = messageId,
+            originId = localDeviceId,
+            rootHex = root,
+            sizeBytes = sizeBytes,
+            fileName = fileName,
+            mimeType = mimeType,
+            sentAt = sentAt,
+        )
+        return try {
+            GroupCanonical.encode(crypto.sign(statement))
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /** Verifies a swarm announcement root signature against the signed roster member key. */
+    suspend fun verifySwarmAnnouncement(
+        groupId: String,
+        authorId: String,
+        messageId: String,
+        root: String,
+        sizeBytes: Long,
+        fileName: String,
+        mimeType: String,
+        sentAt: Long,
+        rootSig: String,
+    ): Boolean {
+        val member = members.member(groupId, authorId) ?: return false
+        if (!member.isActive) return false
+        val memberKey = member.subjectKey ?: return false
+        val subjectKey = GroupCanonical.decode(memberKey) ?: return false
+        val sig = GroupCanonical.decode(rootSig) ?: return false
+        val statement = GroupCanonical.swarmAnnounceBytes(
+            groupId = groupId,
+            messageId = messageId,
+            originId = authorId,
+            rootHex = root,
+            sizeBytes = sizeBytes,
+            fileName = fileName,
+            mimeType = mimeType,
+            sentAt = sentAt,
+        )
+        return try {
+            crypto.verify(sig, statement, subjectKey)
+        } catch (_: Throwable) {
+            false
+        }
+    }
 
     // -------------------------------------------------------------- receiving
 
@@ -372,11 +794,22 @@ internal class SignedGroups(
             .mapNotNull { row -> row.subjectKey?.let { k -> GroupCanonical.decode(k)?.let { row.deviceId to it } } }
             .toMap().toMutableMap()
 
+        val effectiveSettings = frame.settings ?: currentSettings(groupId)
+        val memberKeys = rows.values
+            .filter { it.isActive }
+            .mapNotNull { row -> row.subjectKey?.let { k -> GroupCanonical.decode(k)?.let { row.deviceId to it } } }
+            .toMap()
+
         val verified = ArrayList<MemberCert>()
         for (cert in candidates) {
-            val reason = rules.checkCert(charter, cert, rows[cert.subjectId]?.subjectKey) { adminId ->
-                adminKeys[adminId]
-            }
+            val reason = rules.checkCert(
+                charter = charter,
+                cert = cert,
+                knownKey = rows[cert.subjectId]?.subjectKey,
+                adminLookup = { adminId -> adminKeys[adminId] },
+                membersMayAdd = effectiveSettings.membersMayAdd,
+                memberLookup = { memberId -> memberKeys[memberId] },
+            )
             if (reason == null) {
                 verified += cert
                 if (cert.role == MemberCert.ROLE_ADMIN && cert.active) {
@@ -417,7 +850,20 @@ internal class SignedGroups(
         val accepted = installVouches(groupId, peerId, charter, verified)
         if (accepted.isEmpty() && known) {
             ensureVouches(groupId, charter)
-            return BundleOutcome.Applied(groupId, joined = false)
+            val rotOutcome = frame.rotation?.let { handleIncomingRotation(groupId, it, peerId) }
+            frame.settings?.let { handleIncomingSettings(charter, it, peerId) }
+            val rot = (rotOutcome as? RotationOutcome.Applied)?.rotation
+            val needsSecret = (rotOutcome as? RotationOutcome.Applied)?.needsSecret ?: false
+            val reRotated = (rotOutcome as? RotationOutcome.Applied)?.reRotated
+            val winningRot = (rotOutcome as? RotationOutcome.WonConcurrently)?.winningRotation
+            return BundleOutcome.Applied(
+                groupId = groupId,
+                joined = false,
+                rotation = rot,
+                needsSecret = needsSecret,
+                reRotated = reRotated,
+                winningRotation = winningRot,
+            )
         }
 
         val now = nowMs()
@@ -442,7 +888,59 @@ internal class SignedGroups(
         // This device was just told it is out: it no longer has a reason to keep the pins the group vouched (as on leave).
         if (accepted.any { it.subjectId == localDeviceId && !it.active }) revokeAll(groupId)
         ensureVouches(groupId, charter)
-        return BundleOutcome.Applied(groupId, joined = !known)
+
+        val rotOutcome = frame.rotation?.let { handleIncomingRotation(groupId, it, peerId) }
+        frame.settings?.let { handleIncomingSettings(charter, it, peerId) }
+        val rot = (rotOutcome as? RotationOutcome.Applied)?.rotation
+        val needsSecret = (rotOutcome as? RotationOutcome.Applied)?.needsSecret ?: false
+        val reRotated = (rotOutcome as? RotationOutcome.Applied)?.reRotated
+        val winningRot = (rotOutcome as? RotationOutcome.WonConcurrently)?.winningRotation
+        return BundleOutcome.Applied(
+            groupId = groupId,
+            joined = !known,
+            rotation = rot,
+            needsSecret = needsSecret,
+            reRotated = reRotated,
+            winningRotation = winningRot,
+        )
+    }
+
+    private suspend fun handleIncomingSettings(
+        charter: GroupCharter,
+        incoming: GroupSettings,
+        peerId: String,
+    ) {
+        val settingsDao = groupSettingsDao ?: return
+        val groupId = charter.groupId
+        if (incoming.groupId != groupId) return
+
+        val adminRow = members.member(groupId, incoming.signerId)
+        val isOwner = incoming.signerId == charter.ownerId
+        val isAdmin = adminRow != null && adminRow.isActive && adminRow.role == MemberCert.ROLE_ADMIN
+        if (!isOwner && !isAdmin) {
+            FlashLog.w("CHAT", "SECURITY: group settings rejected: group=$groupId signer=${incoming.signerId} from=$peerId reason=signer-not-admin")
+            return
+        }
+
+        val adminKey = if (isOwner) {
+            GroupCanonical.decode(charter.ownerKey)
+        } else {
+            adminRow?.subjectKey?.let { GroupCanonical.decode(it) }
+        } ?: return
+
+        val reason = rules.checkSettings(charter, incoming) { id ->
+            if (id == incoming.signerId) adminKey else null
+        }
+        if (reason != null) {
+            FlashLog.w("CHAT", "SECURITY: group settings rejected: group=$groupId signer=${incoming.signerId} from=$peerId reason=$reason")
+            return
+        }
+
+        val current = settingsDao.getByGroupId(groupId)?.toSettings()
+        if (settingsWins(incoming, current)) {
+            settingsDao.upsert(incoming.toEntity())
+            FlashLog.i("CHAT", "GM-9: Applied incoming settings for group=$groupId version=${incoming.version} opId=${incoming.opId} from=$peerId")
+        }
     }
 
     /**
@@ -505,7 +1003,8 @@ internal class SignedGroups(
         val port = vouching ?: return certs
         return certs.filter { cert ->
             when {
-                cert.subjectId == localDeviceId || cert.subjectId == charter.ownerId -> true
+                cert.subjectId == localDeviceId -> true
+                cert.subjectId == charter.ownerId && isPairedWith(charter.ownerId) -> true
                 !cert.active -> {
                     port.revoke(cert.subjectId, groupId)
                     true
@@ -535,7 +1034,8 @@ internal class SignedGroups(
         val port = vouching ?: return
         if (members.member(groupId, localDeviceId)?.isActive != true) return
         for (row in members.allMembers(groupId)) {
-            if (!row.isActive || row.deviceId == localDeviceId || row.deviceId == charter.ownerId) continue
+            if (!row.isActive || row.deviceId == localDeviceId) continue
+            if (row.deviceId == charter.ownerId && isPairedWith(charter.ownerId)) continue
             val key = row.subjectKey?.let { GroupCanonical.decode(it) } ?: continue
             val fingerprint = GroupCanonical.fingerprintHex(crypto, key)
             if (!port.isVouched(row.deviceId, fingerprint, groupId)) port.vouch(row.deviceId, fingerprint, groupId)

@@ -78,7 +78,7 @@ fun FlashChatListSelectionBar(
                 onClick = onMute,
                 modifier = Modifier.size(FlashDimensions.minTouchTarget),
             ) {
-                FlashIcon(icon = FlashIcons.Mute, contentDescription = "Mute conversations")
+                FlashIcon(icon = FlashIcons.NotificationOff, contentDescription = "Mute conversations")
             }
             IconButton(
                 onClick = onMarkRead,

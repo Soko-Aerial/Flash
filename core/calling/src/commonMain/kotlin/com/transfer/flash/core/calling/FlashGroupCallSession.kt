@@ -30,6 +30,7 @@ import com.transfer.flash.core.calling.model.FlashCallDirection
 import com.transfer.flash.core.calling.model.FlashCallEndReason
 import com.transfer.flash.core.calling.model.FlashCallParticipantState
 import com.transfer.flash.core.calling.model.FlashCallParticipantUi
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.calling.model.FlashCallStats
 import com.transfer.flash.core.calling.model.FlashCallUiState
@@ -205,6 +206,9 @@ public class FlashGroupCallSession(
     /** G6: heat, CPU and decoder health; used only under [videoMutex]. */
     private val health = CallHealthMonitor()
 
+    /** What the other participants' controls say (ADR-067): mic, camera, hand, reactions. */
+    private val statusBook = CallStatusBook()
+
     @Volatile
     private var healthNow: CallHealthMonitor.Verdict = CallHealthMonitor.Verdict()
     private var lastCpuNanos: Long? = null
@@ -267,7 +271,7 @@ public class FlashGroupCallSession(
     private var lastBytesSent = 0L
 
     /** Representation of a single peer leg in the mesh. */
-    private class GroupLeg(
+    private inner class GroupLeg(
         val peerId: String,
         var peerName: String,
         var state: FlashCallParticipantState = FlashCallParticipantState.INVITED,
@@ -309,7 +313,10 @@ public class FlashGroupCallSession(
         /** When the last such re-send went out. */
         var lastNudgeAtMs: Long = 0L,
         /** D8 for groups: decides how much of this leg's video is given up to keep voice intelligible. One per leg, one link each. */
-        val governor: CallQualityGovernor = CallQualityGovernor(),
+        val governor: CallQualityGovernor = CallQualityGovernor(
+            recoveryCooldownMs = VOICE_PRIORITY_RECOVERY_COOLDOWN_MS,
+            nowMs = nowMs,
+        ),
         /** The rung [governor] last chose; [tuneVideoSender] applies it, including to a rebuilt connection's new sender. */
         var concession: VideoConcession = VideoConcession.FULL,
         /** Inbound packet counters at the previous stats sample, for the per-interval loss the governor needs. */
@@ -324,6 +331,11 @@ public class FlashGroupCallSession(
     internal fun setLegStateForTesting(peerId: String, state: FlashCallParticipantState) {
         legs[peerId]?.state = state
         refreshUiState()
+    }
+
+    /** Test hook: puts the call itself in [state] without media (the status rules run on a JVM unit test). */
+    internal fun setCallStateForTesting(state: FlashCallState) {
+        _state.update { it.copy(state = state) }
     }
 
     /** Test hook: add a leg in [state] and treat this device as in the call (media acquired). */
@@ -992,6 +1004,11 @@ public class FlashGroupCallSession(
             is CallWireFrame.VideoGrant -> if (legs[effectivePeerId] != null) routeVideo { onGrant(effectivePeerId, frame) }
             is CallWireFrame.VideoDeny -> if (legs[effectivePeerId] != null) routeVideo { onDeny(effectivePeerId, frame) }
 
+            // ADR-067: a participant's controls. Only its own frame, and only from someone in the call.
+            is CallWireFrame.Status -> if (frame.from == peerId && legs[effectivePeerId]?.state.let { it != null && it != FlashCallParticipantState.LEFT }) {
+                onStatus(effectivePeerId, frame)
+            }
+
             is CallWireFrame.GroupDecline -> {
                 handlePeerLeft(effectivePeerId, reason = "declined")
             }
@@ -1160,6 +1177,8 @@ public class FlashGroupCallSession(
                             }
                             refreshUiState()
                         }
+                        // ADR-067: tell the newly connected participant where our controls stand.
+                        sendStatusTo(leg.peerId)
                         // G3: the encodings may not have existed when the sender was first
                         // tuned, so set this leg's on/off again now that it is connected.
                         routeVideo {
@@ -1333,6 +1352,7 @@ public class FlashGroupCallSession(
             checkSoloState()
             endReasonAfterDeparture()
         }
+        statusBook.forget(peerId)
         routeVideo { onPeerLeft(peerId) }
         if (endReason != null) {
             FlashLog.i("GROUP_CALL", "Group call $callId has nobody left to wait for; ending ($endReason)")
@@ -1841,6 +1861,7 @@ public class FlashGroupCallSession(
                 tracks.forEach { runCatching { it.enabled = !next } }
             }
         }
+        broadcastStatus()
         return next
     }
 
@@ -1855,7 +1876,92 @@ public class FlashGroupCallSession(
         }
         // G3: a camera that is off turns new requests down; turning it on tells those peers.
         scope.launch { routeVideo { setCameraOff(next) } }
+        broadcastStatus()
         return next
+    }
+
+    /** ADR-067: raises or lowers this device's hand and tells everyone in the call. */
+    public fun setHandRaised(raised: Boolean) {
+        if (_state.value.handRaised == raised) return
+        updateUi { it.copy(handRaised = raised) }
+        broadcastStatus()
+    }
+
+    /** ADR-067: shows [kind] on every screen. False when not in a live call or inside the sender's own gap. */
+    public fun sendReaction(kind: FlashCallReactionKind): Boolean {
+        if (_state.value.state != FlashCallState.ACTIVE && _state.value.state != FlashCallState.CONNECTING) return false
+        val seq = statusBook.nextLocalSeq() ?: return false
+        statusBook.addLocal(localDeviceId, kind)
+        updateUi { it.copy(reactions = statusBook.activeReactions()) }
+        scheduleReactionExpiry()
+        broadcastStatus(reaction = kind, reactionSeq = seq)
+        return true
+    }
+
+    /**
+     * ADR-067 data saver: this device asks nobody for video until turned off. Everyone else keeps sending to whoever still
+     * watches; audio is untouched. A voice call has no video, so it is a no-op there.
+     */
+    public fun setDataSaver(on: Boolean) {
+        if (!video) return
+        updateUi { it.copy(dataSaver = on) }
+        scope.launch {
+            routeVideo {
+                health.dataSaver = on
+                FlashLog.i("GROUP_CALL", "data saver=$on")
+                tick()
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ status (ADR-067)
+
+    /** Participants a status can be sent to: everyone who accepted (they all have a signaling session to us). */
+    private fun statusAudience(): List<String> =
+        legs.valuesSnapshot().filter {
+            it.state == FlashCallParticipantState.CONNECTING ||
+                it.state == FlashCallParticipantState.CONNECTED ||
+                it.state == FlashCallParticipantState.DISCONNECTED
+        }.map { it.peerId }
+
+    private fun statusFrame(reaction: FlashCallReactionKind? = null, reactionSeq: Long = 0L): CallWireFrame.Status {
+        val st = _state.value
+        return CallWireFrame.Status(
+            callId = callId,
+            from = localDeviceId,
+            micOn = !st.micMuted,
+            cameraOn = if (video) !st.cameraOff else null,
+            handRaised = st.handRaised,
+            reaction = reaction,
+            reactionSeq = reactionSeq,
+        )
+    }
+
+    /** Tells everyone in the call what this device's controls say. Fire and forget; the next change or connect repairs a loss. */
+    private fun broadcastStatus(reaction: FlashCallReactionKind? = null, reactionSeq: Long = 0L) {
+        if (isEnded || !isMediaAcquired) return
+        val frame = statusFrame(reaction, reactionSeq)
+        statusAudience().forEach { peerId -> scope.launch { sendFrame(frame, peerId) } }
+    }
+
+    private fun sendStatusTo(peerId: String) {
+        if (isEnded || !isMediaAcquired) return
+        val frame = statusFrame()
+        scope.launch { sendFrame(frame, peerId) }
+    }
+
+    private fun onStatus(peerId: String, frame: CallWireFrame.Status) {
+        val shown = statusBook.apply(peerId, frame)
+        updateUi { it.copy(reactions = statusBook.activeReactions()) }
+        refreshUiState()
+        if (shown != null) scheduleReactionExpiry()
+    }
+
+    private fun scheduleReactionExpiry() {
+        scope.launch {
+            delay(CallStatusBook.REACTION_LIFETIME_MS + 100L)
+            updateUi { it.copy(reactions = statusBook.activeReactions()) }
+        }
     }
 
     /** See [FlashCalling.setVideoFocus]. */
@@ -1888,7 +1994,9 @@ public class FlashGroupCallSession(
                 peerId = leg.peerId,
                 name = leg.peerName,
                 isSpeaking = leg.isSpeaking,
-                isMuted = leg.isMuted,
+                isMuted = leg.isMuted || !statusBook.peer(leg.peerId).micOn,
+                cameraOff = video && !statusBook.peer(leg.peerId).cameraOn,
+                handRaised = statusBook.peer(leg.peerId).handRaised,
                 state = leg.state,
                 video = videoStates[leg.peerId] ?: FlashParticipantVideo.OFF,
                 reachable = !(leg.inviteExpected && !leg.inviteDelivered && leg.state == FlashCallParticipantState.INVITED),
@@ -2301,6 +2409,9 @@ public class FlashGroupCallSession(
     }
 
     private companion object {
+        /** Minimum cooldown after a concession step before a gentler recovery rung can be applied to prevent MediaCodec thrashing. */
+        const val VOICE_PRIORITY_RECOVERY_COOLDOWN_MS = 8_000L
+
         /** How long a leg may stay Disconnected before the offerer rebuilds its connection (ERROR-033 for groups). */
         const val DISCONNECTED_REBUILD_AFTER_MS = 10_000L
 

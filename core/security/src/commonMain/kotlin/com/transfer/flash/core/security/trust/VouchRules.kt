@@ -5,7 +5,7 @@ public enum class PinSource {
     /** The user completed pairing with the device. The strongest source. */
     PAIRED,
 
-    /** A group owner the user paired with signed a certificate naming this key. Scoped to those groups. */
+    /** A group owner the user paired with signed a certificate naming this key, or named by an invite this device accepted for that group. Scoped to those groups. */
     VOUCHED,
 
     /** Recorded when the device first connected, never verified by a person or an owner. */

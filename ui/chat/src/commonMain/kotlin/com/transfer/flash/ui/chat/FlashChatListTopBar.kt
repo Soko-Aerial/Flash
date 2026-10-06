@@ -29,6 +29,8 @@ fun FlashChatListTopBar(
     onLanClick: (() -> Unit)? = null,
     /** Group Phase 1A: opens the create-group sheet; null hides the action. */
     onNewGroupClick: (() -> Unit)? = null,
+    /** GM-10: opens join-group-with-link dialog; null hides the action. */
+    onJoinWithLinkClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -54,6 +56,14 @@ fun FlashChatListTopBar(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
+            if (onJoinWithLinkClick != null) {
+                IconButton(
+                    onClick = onJoinWithLinkClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(icon = FlashIcons.Share, contentDescription = "Join group with link")
+                }
+            }
             if (onNewGroupClick != null) {
                 IconButton(
                     onClick = onNewGroupClick,

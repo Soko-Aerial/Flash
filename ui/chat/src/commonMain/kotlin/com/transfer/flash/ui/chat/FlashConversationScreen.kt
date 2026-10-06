@@ -23,6 +23,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -256,6 +258,20 @@ fun FlashConversationScreen(
     onClearConversation: (conversationId: String) -> Unit = {},
     /** Mark this conversation unread while keeping the thread open. */
     onMarkUnread: (conversationId: String) -> Unit = {},
+    /** GM-10: approve a pending join request. */
+    onApproveJoinRequest: ((groupId: String, subjectId: String) -> Unit)? = null,
+    /** GM-10: refuse a pending join request. */
+    onRefuseJoinRequest: ((groupId: String, subjectId: String) -> Unit)? = null,
+    /** GM-10: update signed group settings. */
+    onUpdateGroupSettings: ((groupId: String, joinPolicy: String?, inviteSharers: String?, maxMembers: Int?, swarmServing: Boolean?, membersMayAdd: Boolean?) -> Unit)? = null,
+    /** GM-10: update device-local preferences. */
+    onUpdateGroupPreferences: ((groupId: String, serveToGroup: Boolean?, serveWifiOnly: Boolean?, batteryThreshold: Int?, keepDays: Int?) -> Unit)? = null,
+    /** GM-10: rotate group code. */
+    onChangeGroupCode: ((groupId: String) -> Unit)? = null,
+    /** GM-10: request an invite link for sharing. */
+    onRequestInviteLink: (suspend (groupId: String) -> String?)? = null,
+    /** GM-10 (O-14): join a group from an inline invite link card. */
+    onJoinInviteGroup: ((inviteUri: String) -> Unit)? = null,
     /**
      * Group Phase D: the id of the conversation this screen renders. Required for the group menu
      * actions (add members / leave) to address the right group; null keeps previews inert.
@@ -366,13 +382,19 @@ fun FlashConversationScreen(
     var menuExpanded by remember { mutableStateOf(false) }
     var showAddMembers by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
+    var showGroupSettings by remember { mutableStateOf(false) }
+    var showGroupInvite by remember { mutableStateOf(false) }
+    var inviteUrl by remember { mutableStateOf<String?>(null) }
     var memberToRemove by remember { mutableStateOf<FlashGroupMemberUi?>(null) }
+    var pendingCancelFileId by remember { mutableStateOf<String?>(null) }
     val menuItems = if (state.header.isGroup) {
         FlashConversationMenuMath.groupItems(
             canLeave = state.header.memberCount > 1,
             isMember = state.selfMembership == FlashSelfMembership.Active,
             canAddMembers = state.canAddMembers,
             canContinueInNewGroup = state.canContinueInNewGroup && onContinueInNewGroup != null,
+            canShareInvite = state.canShareInvite,
+            isV2 = state.isGroupV2,
         )
     } else {
         FlashConversationMenuMath.directItems(canRevokeTrust = isPeerTrusted && onRevokePeerTrust != null)
@@ -574,6 +596,8 @@ fun FlashConversationScreen(
                                                 FlashConversationMenuItem.CLEAR_CONVERSATION ->
                                                     conversationId?.let { onClearConversation(it) }
                                                 FlashConversationMenuItem.GROUP_INFO -> showGroupMembers = true
+                                                FlashConversationMenuItem.GROUP_SETTINGS -> showGroupSettings = true
+                                                FlashConversationMenuItem.INVITE_LINK -> showGroupInvite = true
                                                 FlashConversationMenuItem.ADD_MEMBERS -> showAddMembers = true
                                                 FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP ->
                                                     conversationId?.let { onContinueInNewGroup?.invoke(it) }
@@ -737,6 +761,7 @@ fun FlashConversationScreen(
                 onOpenMessageActions = { msg -> focusedMessage = msg },
                 selectedMessageIds = selectedMessageIds,
                 inSelectionMode = inSelectionMode,
+                onJoinInvite = onJoinInviteGroup,
                 onSelectToggle = { id ->
                     selectedMessageIds = if (id in selectedMessageIds) {
                         selectedMessageIds - id
@@ -804,8 +829,12 @@ fun FlashConversationScreen(
                 onResumeTransfer = { _, file ->
                     onResumeTransfer(file.id)
                 },
-                onCancelTransfer = { _, file ->
-                    onCancelTransfer(file.id)
+                onCancelTransfer = { msg, file ->
+                    if (msg.isMine) {
+                        pendingCancelFileId = file.id
+                    } else {
+                        onCancelTransfer(file.id)
+                    }
                 },
                 onRetryMessage = onRetryMessage,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
@@ -942,6 +971,21 @@ fun FlashConversationScreen(
             members = groupMembers,
             onDismiss = { showGroupMembers = false },
             isOwner = state.isGroupOwner,
+            isAdmin = state.isGroupAdmin,
+            canShareInvite = state.canShareInvite,
+            onInviteClick = if (state.canShareInvite) {
+                {
+                    showGroupMembers = false
+                    showGroupInvite = true
+                }
+            } else null,
+            pendingJoinRequests = state.pendingJoinRequests,
+            onApproveJoinRequest = if (onApproveJoinRequest != null && conversationId != null) {
+                { req -> onApproveJoinRequest(conversationId, req.subjectId) }
+            } else null,
+            onRefuseJoinRequest = if (onRefuseJoinRequest != null && conversationId != null) {
+                { req -> onRefuseJoinRequest(conversationId, req.subjectId) }
+            } else null,
             onVerifyMember = onVerifyGroupMember?.let { verify -> { member -> verify(member.id, member.name) } },
             onRemoveMember = if (state.canRemoveMembers && conversationId != null && onRemoveGroupMember != null) {
                 { member -> memberToRemove = member }
@@ -998,6 +1042,86 @@ fun FlashConversationScreen(
                 }
             },
             onDismiss = { showLeaveConfirm = false },
+        )
+    }
+
+    // UI-053 Group settings sheet
+    if (showGroupSettings && conversationId != null) {
+        FlashGroupSettingsSheet(
+            settings = state.groupSettings,
+            preferences = state.groupLocalPreferences,
+            isOwner = state.isGroupOwner,
+            isAdmin = state.isGroupAdmin,
+            canShareInvite = state.canShareInvite,
+            onDismiss = { showGroupSettings = false },
+            onUpdateSettings = { joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd ->
+                onUpdateGroupSettings?.invoke(conversationId, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd)
+            },
+            onUpdatePreferences = { serveToGroup, serveWifiOnly, batteryThreshold, keepDays ->
+                onUpdateGroupPreferences?.invoke(conversationId, serveToGroup, serveWifiOnly, batteryThreshold, keepDays)
+            },
+            onShareInvite = if (state.canShareInvite) {
+                {
+                    showGroupSettings = false
+                    showGroupInvite = true
+                }
+            } else null,
+            onChangeGroupCode = if (state.isGroupOwner || state.isGroupAdmin) {
+                { onChangeGroupCode?.invoke(conversationId) }
+            } else null,
+        )
+    }
+
+    // UI-054 Group invite sheet
+    LaunchedEffect(showGroupInvite, conversationId) {
+        if (showGroupInvite && conversationId != null) {
+            inviteUrl = onRequestInviteLink?.invoke(conversationId)
+        }
+    }
+    if (showGroupInvite && inviteUrl != null) {
+        FlashGroupInviteSheet(
+            inviteUrl = inviteUrl!!,
+            groupName = state.header.title,
+            onDismiss = { showGroupInvite = false },
+            onShare = { url -> onShareText(url) },
+        )
+    }
+
+    if (pendingCancelFileId != null) {
+        val colors = FlashTheme.colors
+        FlashConfirmHost(
+            onDismiss = { pendingCancelFileId = null },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = "Cancel for everyone?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = "Members who already have the file keep it.",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val fid = pendingCancelFileId
+                    pendingCancelFileId = null
+                    if (fid != null) {
+                        onCancelTransfer(fid)
+                    }
+                }) {
+                    Text("Cancel for everyone", color = colors.textError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingCancelFileId = null }) {
+                    Text("Keep transfer", color = colors.textSecondary)
+                }
+            },
         )
     }
 

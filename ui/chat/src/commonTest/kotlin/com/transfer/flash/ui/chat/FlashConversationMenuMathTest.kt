@@ -81,4 +81,25 @@ class FlashConversationMenuMathTest {
         assertTrue(continueItems.contains(FlashConversationMenuItem.CONTINUE_IN_NEW_GROUP))
         assertFalse(continueItems.contains(FlashConversationMenuItem.ADD_MEMBERS))
     }
+
+    @Test
+    fun groupSettingsAndInviteLinkOfferedWhenPermitted() {
+        val v2Items = FlashConversationMenuMath.groupItems(
+            canLeave = true,
+            isMember = true,
+            canShareInvite = true,
+            isV2 = true,
+        )
+        assertTrue(v2Items.contains(FlashConversationMenuItem.GROUP_SETTINGS))
+        assertTrue(v2Items.contains(FlashConversationMenuItem.INVITE_LINK))
+
+        val legacyItems = FlashConversationMenuMath.groupItems(
+            canLeave = true,
+            isMember = true,
+            canShareInvite = false,
+            isV2 = false,
+        )
+        assertFalse(legacyItems.contains(FlashConversationMenuItem.GROUP_SETTINGS))
+        assertFalse(legacyItems.contains(FlashConversationMenuItem.INVITE_LINK))
+    }
 }

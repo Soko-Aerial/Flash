@@ -39,6 +39,12 @@ public data class DesktopSettings(
      * row: it is a workaround, not a preference.
      */
     val includeVirtualAdapters: Boolean = false,
+    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
+    val groupSwarmEnabled: Boolean = false,
+    /** Help share group files: share received file pieces with other group members. Default TRUE. */
+    val swarmHelpShare: Boolean = true,
+    /** Keep finished files available for others in the swarm. Default TRUE. */
+    val swarmKeepFinishedFiles: Boolean = true,
 )
 
 /**
@@ -96,6 +102,9 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             windowsContextMenu = props.getProperty(KEY_WINDOWS_CONTEXT_MENU, "true").toBoolean(),
             uiScale = props.getProperty(KEY_UI_SCALE)?.toFloatOrNull()?.coerceIn(0.75f, 1.5f) ?: 1.0f,
             includeVirtualAdapters = props.getProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, "false").toBoolean(),
+            groupSwarmEnabled = props.getProperty(KEY_GROUP_SWARM_ENABLED, "false").toBoolean(),
+            swarmHelpShare = props.getProperty(KEY_SWARM_HELP_SHARE, "true").toBoolean(),
+            swarmKeepFinishedFiles = props.getProperty(KEY_SWARM_KEEP_FINISHED_FILES, "true").toBoolean(),
         )
     }
 
@@ -118,6 +127,9 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         props.setProperty(KEY_WINDOWS_CONTEXT_MENU, settings.windowsContextMenu.toString())
         props.setProperty(KEY_UI_SCALE, settings.uiScale.coerceIn(0.75f, 1.5f).toString())
         props.setProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, settings.includeVirtualAdapters.toString())
+        props.setProperty(KEY_GROUP_SWARM_ENABLED, settings.groupSwarmEnabled.toString())
+        props.setProperty(KEY_SWARM_HELP_SHARE, settings.swarmHelpShare.toString())
+        props.setProperty(KEY_SWARM_KEEP_FINISHED_FILES, settings.swarmKeepFinishedFiles.toString())
         if (settings.performanceMode != null) {
             props.setProperty(KEY_PERFORMANCE_MODE, settings.performanceMode.name)
         } else {
@@ -168,6 +180,9 @@ internal class DesktopSettingsStore(private val stateDir: File) {
         const val KEY_WINDOWS_CONTEXT_MENU: String = "windows_context_menu"
         const val KEY_UI_SCALE: String = "ui_scale"
         const val KEY_INCLUDE_VIRTUAL_ADAPTERS: String = "include_virtual_adapters"
+        const val KEY_GROUP_SWARM_ENABLED: String = "group_swarm_enabled"
+        const val KEY_SWARM_HELP_SHARE: String = "swarm_help_share"
+        const val KEY_SWARM_KEEP_FINISHED_FILES: String = "swarm_keep_finished_files"
 
         /** Same three tokens `FlashSettingsDataStore.THEME_MODE_*` uses. */
         const val THEME_MODE_SYSTEM: String = "system"

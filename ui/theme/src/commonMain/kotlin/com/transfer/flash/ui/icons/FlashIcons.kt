@@ -60,7 +60,8 @@ object FlashIcons {
     val Edit = FlashIconSpec(Res.drawable.flash_ic_edit, "Edit")
     val Delete = FlashIconSpec(Res.drawable.flash_ic_delete, "Delete")
     val Pin = FlashIconSpec(Res.drawable.flash_ic_pin, "Pin")
-    val Mute = FlashIconSpec(Res.drawable.flash_ic_mute, "Mute")
+    /** A crossed-out bell: notifications for a conversation are off. Not a microphone; see [MicOff]. */
+    val NotificationOff = FlashIconSpec(Res.drawable.flash_ic_mute, "Mute")
     val Archive = FlashIconSpec(Res.drawable.flash_ic_archive, "Archive")
     val Group = FlashIconSpec(Res.drawable.flash_ic_group, "Group")
     val Device = FlashIconSpec(Res.drawable.flash_ic_device, "Device")
@@ -79,9 +80,20 @@ object FlashIcons {
 
     /** Calling icons (UI-050, docs/ui/calling-ui.md). */
     val Speaker = FlashIconSpec(Res.drawable.flash_ic_speaker, "Speakerphone")
+    val Earpiece = FlashIconSpec(Res.drawable.flash_ic_earpiece, "Earpiece")
+    val MicOff = FlashIconSpec(Res.drawable.flash_ic_mic_off, "Microphone off")
+    val Video = FlashIconSpec(Res.drawable.flash_ic_video_call, "Video")
+    val VideoOff = FlashIconSpec(Res.drawable.flash_ic_video_off, "Video off")
     val Hangup = FlashIconSpec(Res.drawable.flash_ic_hangup, "End call")
     val CallAccept = FlashIconSpec(Res.drawable.flash_ic_call_accept, "Accept call")
     val CameraFlip = FlashIconSpec(Res.drawable.flash_ic_camera_flip, "Switch camera")
+    // ADR-067 / UI-050f: audio output picker, raise hand, self-view mirror, minimize, data saver.
+    val Bluetooth = FlashIconSpec(Res.drawable.flash_ic_bluetooth, "Bluetooth")
+    val Headphones = FlashIconSpec(Res.drawable.flash_ic_headphones, "Wired headset")
+    val Hand = FlashIconSpec(Res.drawable.flash_ic_hand, "Raise hand")
+    val Mirror = FlashIconSpec(Res.drawable.flash_ic_mirror, "Mirror my video")
+    val ChevronDown = FlashIconSpec(Res.drawable.flash_ic_chevron_down, "Minimize")
+    val DataSaver = FlashIconSpec(Res.drawable.flash_ic_data_saver, "Data saver")
 
     /** UI-046 bottom-navigation tab glyphs (docs/ui/bottom-nav.md). */
     val Chat = FlashIconSpec(Res.drawable.flash_ic_chat, "Chats")
@@ -103,7 +115,7 @@ object FlashIcons {
     val mvpChatSet: List<FlashIconSpec> = listOf(
         Send, Attach, Camera, Gallery, Microphone, Stop, Play, Pause,
         Download, Upload, Share, Reply, Forward, React, Search, Call, VideoCall,
-        More, Back, Close, Edit, Delete, Pin, Mute, Archive, Group,
+        More, Back, Close, Edit, Delete, Pin, NotificationOff, Archive, Group,
         Device, Connection, Retry, Verified, Delivered, Read, Failed,
         Encryption, Relay, Wifi, WifiDirect,
     )

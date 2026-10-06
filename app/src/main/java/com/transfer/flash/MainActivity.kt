@@ -80,6 +80,7 @@ import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.di.AppEngine
+import com.transfer.flash.core.engine.group.GroupFileSender
 import com.transfer.flash.debug.DiscoveryEngineHolder
 import com.transfer.flash.debug.FlashBackgroundService
 import com.transfer.flash.debug.OemBatteryOptimizationHelper
@@ -101,6 +102,11 @@ import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.core.calling.model.FlashCallUiState
 import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.calling.FlashCallAudioRouter
+import com.transfer.flash.calling.FlashCallPictureInPicture
+import com.transfer.flash.calling.FlashCallProximity
+import com.transfer.flash.calling.findActivity
+import com.transfer.flash.core.calling.model.FlashCallAudioRoute
+import com.transfer.flash.core.calling.model.FlashCallAudioRouting
 import com.transfer.flash.calling.FlashCallService
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.ptt.PttSessionOverlay
@@ -192,6 +198,7 @@ class MainActivity : ComponentActivity() {
 
     private val pendingShare = MutableStateFlow<FlashSharePayloadUi?>(null)
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
+    private val pendingJoinLink = MutableStateFlow<String?>(null)
 
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
     private var receivedStorageJob: Job? = null
@@ -218,6 +225,12 @@ class MainActivity : ComponentActivity() {
         if (intent?.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false) == true) {
             pendingPttPress.value = true
         }
+        if (intent?.action == Intent.ACTION_VIEW && intent?.data != null) {
+            val data = intent.data
+            if (data?.scheme == "flash" && data?.host == "g") {
+                pendingJoinLink.value = data.toString()
+            }
+        }
         handleIncomingIntent(intent)
         // Boot the real WS mesh stack once, idempotently. The holder de-dupes against the Dev
         // Console / background service, so this never spins up a second server. Failures are
@@ -231,6 +244,7 @@ class MainActivity : ComponentActivity() {
                 pendingPttPress = pendingPttPress,
                 pendingShare = pendingShare,
                 pendingShortcutTab = pendingShortcutTab,
+                pendingJoinLink = pendingJoinLink,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -277,6 +291,12 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.getBooleanExtra(PttSessionEngine.EXTRA_PTT_PRESS, false)) {
             pendingPttPress.value = true
+        }
+        if (intent.action == Intent.ACTION_VIEW && intent.data != null) {
+            val data = intent.data
+            if (data?.scheme == "flash" && data?.host == "g") {
+                pendingJoinLink.value = data.toString()
+            }
         }
         handleIncomingIntent(intent)
     }
@@ -336,6 +356,12 @@ class MainActivity : ComponentActivity() {
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent == null) return
         when (intent.action) {
+            Intent.ACTION_VIEW -> {
+                val data = intent.data
+                if (data != null && data.scheme == "flash" && data.host == "g") {
+                    pendingJoinLink.value = data.toString()
+                }
+            }
             Intent.ACTION_SEND -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT)
                 val uris = extractUrisFromIntent(intent)
@@ -529,6 +555,7 @@ fun FlashApp(
     pendingShare: MutableStateFlow<PendingSharePayload?> = MutableStateFlow(null),
     /** Pending static app shortcut navigation target. */
     pendingShortcutTab: MutableStateFlow<FlashDestination?> = MutableStateFlow(null),
+    pendingJoinLink: MutableStateFlow<String?> = MutableStateFlow(null),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -570,6 +597,9 @@ fun FlashApp(
     val motionOverrideForcesReduce by store.reduceMotionOverrideForcesReduce.collectAsState(initial = null)
     val batteryExempt by ignoringBatteryOptimizations.collectAsState()
     val receivedStorage by receivedStorageState.collectAsState()
+    val swarmHelpShare by store.swarmHelpShare.collectAsState(initial = true)
+    val swarmKeepFinishedFiles by store.swarmKeepFinishedFiles.collectAsState(initial = true)
+    val swarmEnabled by store.groupSwarmEnabled.collectAsState(initial = false)
 
     val ready by engine.ready.collectAsState()
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
@@ -606,6 +636,9 @@ fun FlashApp(
         storageUsageLoading = receivedStorage.isLoading,
         storageUsageError = receivedStorage.hasError,
         clearingReceivedFiles = receivedStorage.isClearing,
+        swarmHelpShare = swarmHelpShare,
+        swarmKeepFinishedFiles = swarmKeepFinishedFiles,
+        swarmEnabled = swarmEnabled,
     )
     // Captured here (composable scope) so the non-composable lambda below can construct an
     // AndroidPreferencesIdentityStore when the display name changes.
@@ -646,6 +679,11 @@ fun FlashApp(
                 ).updateFriendlyName(updated.displayName)
                 DiscoveryEngineHolder.updateFriendlyName(updated.displayName)
             }
+            if (updated.swarmHelpShare != settings.swarmHelpShare) store.setSwarmHelpShare(updated.swarmHelpShare)
+            if (updated.swarmKeepFinishedFiles != settings.swarmKeepFinishedFiles) {
+                store.setSwarmKeepFinishedFiles(updated.swarmKeepFinishedFiles)
+            }
+            if (updated.swarmEnabled != settings.swarmEnabled) store.setGroupSwarmEnabled(updated.swarmEnabled)
         }
     }
 
@@ -694,6 +732,7 @@ fun FlashApp(
                     pendingCallAnswer = pendingCallAnswer,
                     pendingShare = pendingShare,
                     pendingShortcutTab = pendingShortcutTab,
+                    pendingJoinLink = pendingJoinLink,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
@@ -736,6 +775,7 @@ private fun FlashShell(
     pendingCallAnswer: MutableStateFlow<Boolean>,
     pendingShare: MutableStateFlow<PendingSharePayload?>,
     pendingShortcutTab: MutableStateFlow<FlashDestination?>,
+    pendingJoinLink: MutableStateFlow<String?>,
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
@@ -852,6 +892,17 @@ private fun FlashShell(
         }
     }
 
+    val initialJoinLink by pendingJoinLink.collectAsState()
+    var showJoinGroupDialog by remember { mutableStateOf(false) }
+    var activeJoinLink by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(initialJoinLink) {
+        val link = initialJoinLink
+        if (!link.isNullOrBlank()) {
+            activeJoinLink = link
+            showJoinGroupDialog = true
+            pendingJoinLink.value = null
+        }
+    }
 
     // #14: display-name edit sheet. The identity row's tap now opens a rename dialog whose result is
     // persisted through onSettingsChange (DataStore) instead of being a no-op.
@@ -1404,6 +1455,65 @@ private fun FlashShell(
 
     val conversationScreenContent: @Composable () -> Unit = {
         val conversationId = nav.current.conversationId
+        val groupFileSender = remember(engine, chatRepository, discoveredEndpoints) {
+            GroupFileSender(
+                localDeviceId = { engine.localDeviceId },
+                groupMembers = { groupId -> chatRepository.groupMembers(groupId) },
+                deviceFor = { memberId, memberName ->
+                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == memberId }
+                    FlashDevice(
+                        id = FlashDeviceId(memberId),
+                        friendlyName = memberName,
+                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
+                    )
+                },
+                announce = { groupId, recipientDeviceId, messageId, transferId, wireFileId, fileName, mimeType, sizeBytes, root, pieceSize, swarm, rootSig ->
+                    chatRepository.beginGroupAttachment(
+                        groupId = groupId,
+                        recipientDeviceId = recipientDeviceId,
+                        messageId = messageId,
+                        transferId = transferId,
+                        wireFileId = wireFileId,
+                        fileName = fileName,
+                        mimeType = mimeType,
+                        sizeBytes = sizeBytes,
+                        root = root,
+                        pieceSize = pieceSize,
+                        swarm = swarm,
+                        rootSig = rootSig,
+                    )
+                },
+                sendFile = { targetDevice, fileUri, fileName, sizeBytes, transferId, wireFileId ->
+                    engine.transfers?.sendFile(
+                        targetDevice,
+                        fileUri,
+                        fileName,
+                        sizeBytes,
+                        transferId = transferId,
+                        wireFileId = wireFileId,
+                    )
+                },
+                sendGroupAttachment = { groupId, messageId, transferId, fileName, mimeType, sizeBytes, localPath, dur, amps ->
+                    chatRepository.sendGroupAttachment(
+                        conversationId = groupId,
+                        messageId = messageId,
+                        transferId = transferId,
+                        fileName = fileName,
+                        mimeType = mimeType,
+                        sizeBytes = sizeBytes,
+                        localPath = localPath,
+                        voiceDurationMs = dur,
+                        voiceAmplitudes = amps,
+                    )
+                },
+                idFactory = { java.util.UUID.randomUUID().toString() },
+                isV2Group = { groupId -> chatRepository.isV2Group(groupId) },
+                peerFeatures = { peerId -> engine.peerFeatures(peerId) },
+                prepareSwarmOrigin = { groupId, messageId, fileName, mimeType, sizeBytes, uri ->
+                    engine.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+                },
+            )
+        }
         FlashConversationScreen(
             state = conversationState,
             onBack = {
@@ -1444,47 +1554,13 @@ private fun FlashShell(
                 if (peerId != null && transfers != null) {
                     val mime = guessMimeType(displayName, uri, toastContext)
                     if (conversationState.header.isGroup) {
-                        // F4: one shared chat identity/file identity, plus a distinct
-                        // recipient transfer identity carried by both intro and FILE_START.
-                        val sharedMessageId = java.util.UUID.randomUUID().toString()
-                        val sharedWireFileId = java.util.UUID.randomUUID().toString()
                         scope.launch(Dispatchers.IO) {
-                            chatRepository.groupMembers(peerId)
-                                .filter { it.id != engine.localDeviceId }
-                                .forEach { member ->
-                                    val recipientTransferId = java.util.UUID.randomUUID().toString()
-                                    val announced = chatRepository.beginGroupAttachment(
-                                        groupId = peerId,
-                                        recipientDeviceId = member.id,
-                                        messageId = sharedMessageId,
-                                        transferId = recipientTransferId,
-                                        wireFileId = sharedWireFileId,
-                                        fileName = displayName,
-                                        mimeType = mime,
-                                        sizeBytes = size,
-                                    )
-                                    if (!announced) return@forEach
-                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
-                                    val targetDevice = FlashDevice(
-                                        id = FlashDeviceId(member.id),
-                                        friendlyName = member.name,
-                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                    )
-                                    transfers.sendFile(
-                                        targetDevice, uri, displayName, size,
-                                        transferId = recipientTransferId,
-                                        wireFileId = sharedWireFileId,
-                                    )
-                                }
-                            // One sender bubble for the group, keyed by its shared message id.
-                            chatRepository.sendGroupAttachment(
-                                conversationId = peerId,
-                                messageId = sharedMessageId,
-                                transferId = sharedMessageId,
-                                fileName = displayName,
-                                mimeType = mime,
+                            groupFileSender.send(
+                                groupId = peerId,
+                                uri = uri,
+                                displayName = displayName,
                                 sizeBytes = size,
-                                localPath = uri,
+                                mimeType = mime,
                             )
                         }
                     } else {
@@ -1532,45 +1608,13 @@ private fun FlashShell(
                         android.net.Uri.parse(localPath).path?.let { java.io.File(it).length() } ?: 0L
                     }.getOrDefault(0L)
                     if (conversationState.header.isGroup) {
-                        // F4: identical fan-out to onSendFile's group path, with voice meta.
-                        val sharedMessageId = java.util.UUID.randomUUID().toString()
-                        val sharedWireFileId = java.util.UUID.randomUUID().toString()
                         scope.launch(Dispatchers.IO) {
-                            chatRepository.groupMembers(peerId)
-                                .filter { it.id != engine.localDeviceId }
-                                .forEach { member ->
-                                    val recipientTransferId = java.util.UUID.randomUUID().toString()
-                                    val announced = chatRepository.beginGroupAttachment(
-                                        groupId = peerId,
-                                        recipientDeviceId = member.id,
-                                        messageId = sharedMessageId,
-                                        transferId = recipientTransferId,
-                                        wireFileId = sharedWireFileId,
-                                        fileName = fileName,
-                                        mimeType = "audio/mp4",
-                                        sizeBytes = size,
-                                    )
-                                    if (!announced) return@forEach
-                                    val endpoint = discoveredEndpoints.firstOrNull { it.deviceId.value == member.id }
-                                    val targetDevice = FlashDevice(
-                                        id = FlashDeviceId(member.id),
-                                        friendlyName = member.name,
-                                        transportType = endpoint?.transportType ?: FlashTransportType.LAN,
-                                    )
-                                    transfers.sendFile(
-                                        targetDevice, localPath, fileName, size,
-                                        transferId = recipientTransferId,
-                                        wireFileId = sharedWireFileId,
-                                    )
-                                }
-                            chatRepository.sendGroupAttachment(
-                                conversationId = peerId,
-                                messageId = sharedMessageId,
-                                transferId = sharedMessageId,
-                                fileName = fileName,
-                                mimeType = "audio/mp4",
+                            groupFileSender.send(
+                                groupId = peerId,
+                                uri = localPath,
+                                displayName = fileName,
                                 sizeBytes = size,
-                                localPath = localPath,
+                                mimeType = "audio/mp4",
                                 voiceDurationMs = durationMs,
                                 voiceAmplitudes = amplitudes,
                             )
@@ -1911,6 +1955,66 @@ private fun FlashShell(
                     }
                 }
             },
+            onApproveJoinRequest = { gid, subjectId ->
+                scope.launch {
+                    val res = chatRepository.approveJoinRequest(gid, subjectId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't approve join request", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onRefuseJoinRequest = { gid, subjectId ->
+                scope.launch {
+                    val res = chatRepository.refuseJoinRequest(gid, subjectId)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't refuse join request", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onUpdateGroupSettings = { gid, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd ->
+                scope.launch {
+                    val res = chatRepository.updateGroupSettings(
+                        groupId = gid,
+                        joinPolicy = joinPolicy,
+                        inviteSharers = inviteSharers,
+                        maxMembers = maxMembers,
+                        swarmServing = swarmServing,
+                        membersMayAdd = membersMayAdd,
+                    )
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't update settings", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onUpdateGroupPreferences = { gid, serveToGroup, serveWifiOnly, batteryThreshold, keepDays ->
+                scope.launch {
+                    val res = chatRepository.updateGroupLocalPreferences(
+                        groupId = gid,
+                        serveToGroup = serveToGroup,
+                        serveWifiOnly = serveWifiOnly,
+                        batteryThresholdPercent = batteryThreshold,
+                        keepAvailableDays = keepDays,
+                    )
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't update preferences", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onChangeGroupCode = { gid ->
+                scope.launch {
+                    val res = chatRepository.changeGroupCode(gid)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't change group code", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onRequestInviteLink = { gid ->
+                (chatRepository.inviteFor(gid) as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+            },
+            onJoinInviteGroup = { inviteUrl ->
+                activeJoinLink = inviteUrl
+                showJoinGroupDialog = true
+            },
         )
     }
 
@@ -2089,6 +2193,15 @@ private fun FlashShell(
             onOpenBatterySettings = onEnableBackgroundTransfers,
             onRefreshStorageUsage = onRefreshStorageUsage,
             onClearReceivedFiles = onClearReceivedFiles,
+            onSwarmHelpShareChanged = {
+                onSettingsChange(settings.copy(swarmHelpShare = it))
+            },
+            onSwarmKeepFinishedFilesChanged = {
+                onSettingsChange(settings.copy(swarmKeepFinishedFiles = it))
+            },
+            onSwarmEnabledChanged = {
+                onSettingsChange(settings.copy(swarmEnabled = it))
+            },
             modifier = Modifier.fillMaxSize(),
             listState = settingsScroll,
             bottomInset = tabBottomInset,
@@ -2161,6 +2274,10 @@ private fun FlashShell(
             },
             onRetryLoad = { engine.start() },
             onNewGroupClick = { showCreateGroup = true },
+            onJoinWithLinkClick = {
+                activeJoinLink = null
+                showJoinGroupDialog = true
+            },
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
             bottomInset = tabBottomInset,
@@ -2368,6 +2485,35 @@ private fun FlashShell(
             )
         }
 
+        if (showJoinGroupDialog) {
+            com.transfer.flash.ui.chat.FlashJoinGroupDialog(
+                initialInviteUrl = activeJoinLink,
+                onDismiss = {
+                    showJoinGroupDialog = false
+                    activeJoinLink = null
+                },
+                onJoin = { inviteUrl ->
+                    scope.launch {
+                        val result = chatRepository.acceptInvite(inviteUrl)
+                        when (result) {
+                            is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                                showJoinGroupDialog = false
+                                activeJoinLink = null
+                                chatRepository.openConversation(result.value)
+                                selectedChatConversationId = result.value
+                                nav.navigate(FlashDestination.Conversation, conversationId = result.value)
+                            }
+                            is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                                val err = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                    ?: "Couldn't join group"
+                                Toast.makeText(toastContext, err, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                },
+            )
+        }
+
         if (!twoPane) {
             Box(Modifier.align(Alignment.BottomCenter)) {
                 AnimatedVisibility(
@@ -2482,6 +2628,42 @@ private fun FlashShell(
         val callMedia = engine.calls?.media
         val activeCall = callState
         val callContext = LocalContext.current
+        val audioRoutes by audioRouter.routes.collectAsState()
+
+        // ADR-067 / UI-050f: picture-in-picture, keep-screen-on for video, screen-off against the ear for voice.
+        val callActivity = remember(callContext) { callContext.findActivity() }
+        val pipSupported = remember(callContext) { FlashCallPictureInPicture.supported(callContext) }
+        var inPictureInPicture by remember { mutableStateOf(false) }
+        DisposableEffect(callActivity) {
+            val componentActivity = callActivity as? ComponentActivity
+            val listener = androidx.core.util.Consumer<androidx.core.app.PictureInPictureModeChangedInfo> {
+                inPictureInPicture = it.isInPictureInPictureMode
+            }
+            inPictureInPicture = callActivity?.isInPictureInPictureMode == true
+            componentActivity?.addOnPictureInPictureModeChangedListener(listener)
+            onDispose { componentActivity?.removeOnPictureInPictureModeChangedListener(listener) }
+        }
+        val callLive = activeCall != null &&
+            (activeCall.state == FlashCallState.CONNECTING || activeCall.state == FlashCallState.ACTIVE)
+        val videoLive = callLive && activeCall?.video == true
+        val view = androidx.compose.ui.platform.LocalView.current
+        DisposableEffect(view, videoLive) {
+            view.keepScreenOn = videoLive
+            onDispose { view.keepScreenOn = false }
+        }
+        LaunchedEffect(callActivity, videoLive, activeCall?.isGroup) {
+            val autoEnter = videoLive && activeCall?.isGroup == false
+            callActivity?.let { FlashCallPictureInPicture.setAutoEnter(it, autoEnter) }
+        }
+        val proximity = remember(callContext) { FlashCallProximity(callContext) }
+        val holdToEar = FlashCallAudioRouting.screenOffAgainstEar(
+            video = activeCall?.video == true,
+            live = callLive,
+            active = audioRoutes.active,
+            speakerOn = activeCall?.speakerOn == true,
+        )
+        LaunchedEffect(holdToEar) { proximity.hold(holdToEar) }
+        DisposableEffect(proximity) { onDispose { proximity.hold(false) } }
         LaunchedEffect(activeCall) {
             when (activeCall?.state) {
                 FlashCallState.DIALING, FlashCallState.RINGING -> {
@@ -2549,6 +2731,22 @@ private fun FlashShell(
                 onVideoFocus = { peerId -> engine.calls?.setVideoFocus(peerId) },
                 onShowFewerVideos = { on -> engine.calls?.setShowFewerVideos(on) },
                 onSendSmallerVideo = { scope.launch { engine.settingsStore.setSmallerVideoForMany(true) } },
+                audioRoutes = audioRoutes,
+                onSelectRoute = { route ->
+                    // The pick pins the platform output; the flag keeps the UI state and the ringback in step.
+                    audioRouter.setRoute(route)
+                    engine.calls?.setSpeaker(route == FlashCallAudioRoute.SPEAKER)
+                },
+                peerVerified = !activeCall.isGroup && trustedPeers.any { it.id == activeCall.peerId },
+                inPictureInPicture = inPictureInPicture,
+                onEnterPictureInPicture = if (pipSupported && callActivity != null) {
+                    { FlashCallPictureInPicture.enter(callActivity) }
+                } else {
+                    null
+                },
+                onSetHandRaised = { raised -> engine.calls?.setHandRaised(raised) },
+                onSendReaction = { kind -> engine.calls?.sendReaction(kind) ?: false },
+                onSetDataSaver = { on -> engine.calls?.setDataSaver(on) },
             )
         }
     }

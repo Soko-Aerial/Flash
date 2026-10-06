@@ -61,11 +61,10 @@ import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
-import com.transfer.flash.core.transfer.chunked.IncrementalSha256
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
-import com.transfer.flash.core.transfer.chunked.Sha256
+import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
@@ -202,6 +201,7 @@ private class Wiring(
      * session-up edges — a per-edge instance would never run out, which defeats the point.
      */
     private val reconnectResume = TransferReconnectResumePolicy()
+    private val magicRouter = MagicFrameRouter()
 
     @Volatile private var dataPort: Int = 0
     @Volatile private var transferRef: RealFlashTransferRepository? = null
@@ -292,6 +292,7 @@ private class Wiring(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): keepalive and redial pacing follow the discovery mode (ECO / BOOST).
             transportProfile = { connectionPolicy(engine).transport },
+            localFeatures = { if (facade?.swarm != null) setOf("sw1", "gs1") else setOf("gs1") },
             onUsableNetwork = {
                 networkRestartJob?.cancel()
                 networkRestartJob = scope.launch {
@@ -361,6 +362,7 @@ private class Wiring(
             repositoryScope = scope,
             requireReceiverAcceptance = true,
             isPeerEncrypted = { peerId -> trustStore.getSessionKey(FlashDeviceId(peerId)) != null },
+            freeSpaceBytes = { receivedDir.takeIf { it.exists() }?.usableSpace },
         )
         transferRef = transferImpl
         // PC4 (ADR-046): presence sharing, the same wiring as the app holder. Built before the
@@ -549,6 +551,34 @@ private class Wiring(
                 }
                 session.connection.sendText(GroupFrameCodec.encode(wireFrame))
             },
+            peerFeatures = { peerId -> networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty() },
+            groupInviteDao = db.groupInviteDao(),
+            groupJoinRequestDao = db.groupJoinRequestDao(),
+            groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
+            groupRotationDao = db.groupRotationDao(),
+            groupSettingsDao = db.groupSettingsDao(),
+            groupPreferencesDao = db.groupPreferencesDao(),
+            localAddressHints = {
+                val port = networkImpl.serverPort
+                if (port > 0) {
+                    com.transfer.flash.core.network.util.LocalNetworkAddresses(appContext)
+                        .ipv4Addresses()
+                        .map { "$it:$port" }
+                } else {
+                    emptyList()
+                }
+            },
+            onConnectPeerWithHints = { peerId, hints ->
+                for (hint in hints) {
+                    if (networkImpl.hasLiveSession(peerId)) break
+                    val parts = hint.split(":")
+                    val host = parts[0]
+                    val port = parts.getOrNull(1)?.toIntOrNull()
+                        ?: com.transfer.flash.core.network.ws.WsTransferServer.PREFERRED_PORT
+                    val res = networkImpl.connectManual(host, port, peerId)
+                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) break
+                }
+            },
         )
         presenceChat = chatImpl
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
@@ -576,7 +606,8 @@ private class Wiring(
 
         // Resolve the deferred sink FIRST, surface Transferring + attachment bubble, THEN RESUME the
         // parked sender. autoAcceptIncoming triggers this automatically on the offer (below).
-        val acceptOffer: (String) -> Unit = { transferId ->
+        val acceptOffer: (String) -> Unit = acceptOffer@{ transferId ->
+            if (!transferImpl.admitIncoming(transferId)) return@acceptOffer
             val meta = incomingMeta[transferId]
             val pid = transferImpl.activeTransfers.value.find { it.id.value == transferId }?.peerDeviceId
             if (meta != null && receivePipeline.acceptSession(transferId)) {
@@ -779,6 +810,35 @@ private class Wiring(
                     true
                 }
             },
+            swarmFactory = { swarmConfig ->
+                val groupGate = chatImpl.groupGate
+                val groupContext = com.transfer.flash.core.engine.swarm.MessagingSwarmGroupContext(
+                    localDeviceId = localId,
+                    groupGate = groupGate,
+                    groupMemberDao = { db.groupMemberDao() },
+                    groupCrypto = com.transfer.flash.core.engine.group.FlashGroupCrypto(crypto),
+                )
+                val storage = com.transfer.flash.core.engine.swarm.AndroidPieceStorage(
+                    context = appContext,
+                    destinationDir = receivedDir,
+                )
+                val stateStore = com.transfer.flash.core.engine.swarm.RoomSwarmStateStore(db.swarmDao())
+                val binding = com.transfer.flash.core.engine.swarm.SwarmHostBinding(
+                    config = swarmConfig,
+                    localDeviceId = localId,
+                    scope = scope,
+                    magicRouter = magicRouter,
+                    network = networkImpl,
+                    transferRepository = transferImpl,
+                    groupContext = groupContext,
+                    storage = storage,
+                    stateStore = stateStore,
+                    chatRepository = chatImpl,
+                    isCallActive = { (facade as? DefaultFlashEngine)?.busyCallPeerIds().orEmpty().isNotEmpty() },
+                    isServingEnabled = { engine.discoveryMode.value != FlashDiscoveryMode.ECO },
+                )
+                binding.swarm
+            },
             onClose = {
                 runCatching { dcServer.stop() }
                 kotlinx.coroutines.runBlocking {
@@ -923,6 +983,10 @@ private class Wiring(
             reply(toSend)
         }
 
+        if (magicRouter.dispatch(peerDeviceId, frameData, secureReply)) {
+            return
+        }
+
         // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
         val consumedBySender = try {
             transferImpl.onInboundFrame(frameData)
@@ -990,13 +1054,22 @@ private class Wiring(
                     incomingByPeer.values.forEach { it.remove(transferId) }
                     val path = receivedPaths.remove(transferId)
                     val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
-                    val verified = event.frame.verified && verifyWholeFile(path, expectedHex)
-                    transferImpl.onIncomingCompleted(transferId, verified, path)
-                    secureReply(ChunkFrame.serialize(event.frame))
+                    val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
+                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
+                        receivePipeline.cancelSession(transferId)
+                        ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
+                    } else {
+                        event.frame
+                    }
+                    secureReply(ChunkFrame.serialize(completeReply))
                 }
                 is ReceiveEvent.Rejected -> {
-                    if (event.reason != RejectReason.UNEXPECTED_DIRECTION) {
-                        Log.w(TAG, "Receiver rejected frame: reason=${event.reason} transferId=${event.transferId} index=${event.index}")
+                    val tid = event.transferId
+                    if (event.reason != RejectReason.UNEXPECTED_DIRECTION && event.reason != RejectReason.AWAITING_ACCEPTANCE) {
+                        Log.w(TAG, "Receiver rejected frame: reason=${event.reason} transferId=$tid index=${event.index}")
+                    }
+                    if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null && peerDeviceId != null) {
+                        sendXfer?.invoke(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, tid)
                     }
                 }
             }
@@ -1093,22 +1166,6 @@ private class Wiring(
         }
         return session.connection.sendText(wirePayload)
     }
-    private fun verifyWholeFile(path: String?, expectedHex: String?): Boolean {
-        if (path.isNullOrBlank() || expectedHex.isNullOrBlank() || !Sha256.isValidHex(expectedHex)) return false
-        return runCatching {
-            val acc = IncrementalSha256()
-            File(path).inputStream().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    acc.update(buffer, 0, read)
-                }
-            }
-            Sha256.hexEqualsConstantTime(acc.digestHex(), Sha256.normalizeHex(expectedHex))
-        }.getOrElse { false }
-    }
-
     private fun updateIncomingProgress(transferImpl: RealFlashTransferRepository, receivePipeline: ReceivePipeline, transferId: String) {
         val start = incomingMeta[transferId] ?: return
         val done = receivePipeline.doneIndexes(transferId) ?: return
@@ -1168,7 +1225,7 @@ private class Wiring(
     ) {
         delay(SETTLE_BEFORE_RESUME_MS)
         if (networkImpl.activeSessions.value[FlashDeviceId(peerDeviceId)] == null) return
-        val snapshot = transfers.activeTransfers.value
+        val snapshot = transfers.activeTransfers.value.filterNot { transfers.isExternalRow(it.id.value) }
         reconnectResume.retainOnly(snapshot.mapTo(HashSet(snapshot.size)) { it.id })
         val toResume = reconnectResume.onPeerSessionUp(peerDeviceId, snapshot)
         if (toResume.isEmpty()) return

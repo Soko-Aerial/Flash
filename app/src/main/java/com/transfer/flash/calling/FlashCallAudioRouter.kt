@@ -12,6 +12,12 @@ import android.media.AudioManager
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import com.transfer.flash.core.calling.model.FlashCallAudioRoute
+import com.transfer.flash.core.calling.model.FlashCallAudioRouting
+import com.transfer.flash.core.calling.model.FlashCallAudioRoutes
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Platform audio routing for the duration of a call (ADR-025, C7).
@@ -30,10 +36,16 @@ import androidx.annotation.RequiresApi
  * refused without it, and because they are all best-effort the symptom is not a crash — it is a
  * call that quietly runs on the media path with a dead speaker button.
  *
- * Routing policy, in priority order when the speaker is OFF: Bluetooth headset, then wired/USB
- * headset, then the earpiece. Speaker ON pins the built-in speaker and drops any SCO link. The
- * earpiece is never pinned explicitly — that would mute a connected headset — it is what the
- * platform falls back to once nothing else is selected.
+ * Routing policy, in priority order when the user has not picked anything: Bluetooth headset, then
+ * wired/USB headset, then the earpiece. Speaker ON pins the built-in speaker and drops any SCO link.
+ * The earpiece is not pinned unless the user picked it (ADR-067) — pinning it unasked would mute a
+ * connected headset — it is what the platform falls back to once nothing else is selected.
+ *
+ * **Picking an output (ADR-067).** [routes] lists what is available and what is in force, and
+ * [setRoute] is the user's explicit pick. The pick is honoured while the device exists; unplug the
+ * headset and it is forgotten and the automatic order takes over, rather than leaving the call
+ * silent on a device that is gone. The rule itself is [FlashCallAudioRouting.resolve], which is pure
+ * and unit-tested in `core:calling`.
  *
  * Bluetooth is version-split. From API 31 `setCommunicationDevice` covers it: selecting a
  * Bluetooth device brings up the SCO link as a side effect. Below 31 `MODE_IN_COMMUNICATION`
@@ -56,8 +68,16 @@ class FlashCallAudioRouter(context: Context) {
     private var previousMode: Int? = null
     private var attached = false
 
-    /** Last requested speaker state — re-applied whenever the set of devices changes. */
-    private var speakerPreferred = false
+    /**
+     * The user's explicit pick (the speaker button, or the picker), or null for the automatic order. Re-applied
+     * whenever the set of devices changes, and dropped when the device it names goes away.
+     */
+    private var chosen: FlashCallAudioRoute? = null
+
+    private val _routes = MutableStateFlow(FlashCallAudioRoutes())
+
+    /** What this phone can play the call through now, and the route in force. Empty before [attach]. */
+    val routes: StateFlow<FlashCallAudioRoutes> = _routes.asStateFlow()
     private var scoStarted = false
     private var deviceCallback: AudioDeviceCallback? = null
     private var scoReceiver: BroadcastReceiver? = null
@@ -72,11 +92,12 @@ class FlashCallAudioRouter(context: Context) {
      */
     fun attach(speakerOn: Boolean) {
         val am = audioManager ?: return
-        speakerPreferred = speakerOn
         if (attached) {
+            // Re-attached on every call state change by the host: the user's pick stays, only the route is re-applied.
             applyRoute(am)
             return
         }
+        chosen = if (speakerOn) FlashCallAudioRoute.SPEAKER else null
         attached = true
         runCatching {
             previousMode = am.mode
@@ -97,7 +118,8 @@ class FlashCallAudioRouter(context: Context) {
         val am = audioManager ?: return
         if (!attached) return
         attached = false
-        speakerPreferred = false
+        chosen = null
+        _routes.value = FlashCallAudioRoutes()
         runCatching {
             unregisterDeviceCallback(am)
             unregisterScoReceiver()
@@ -120,18 +142,57 @@ class FlashCallAudioRouter(context: Context) {
      * before [attach] (it simply has less effect) and safe to call repeatedly with the same value.
      */
     fun setSpeaker(on: Boolean) {
-        speakerPreferred = on
+        chosen = if (on) FlashCallAudioRoute.SPEAKER else null
+        applyRoute(audioManager ?: return)
+    }
+
+    /**
+     * The user's explicit pick from the output list (ADR-067). Null goes back to the automatic order. A route that is
+     * not available right now is ignored by [applyRoute] (and forgotten), so a stale tap cannot strand the call.
+     */
+    fun setRoute(route: FlashCallAudioRoute?) {
+        chosen = route
         applyRoute(audioManager ?: return)
     }
 
     private fun applyRoute(am: AudioManager) {
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                applyRouteApi31(am)
-            } else {
-                applyRouteLegacy(am)
+            val available = availableRoutes(am)
+            if (!FlashCallAudioRouting.stillValid(available, chosen)) {
+                Log.i(TAG, "route pick $chosen is gone, back to automatic")
+                chosen = null
             }
+            val route = FlashCallAudioRouting.resolve(available, chosen)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                applyRouteApi31(am, route)
+            } else {
+                applyRouteLegacy(am, route)
+            }
+            _routes.value = FlashCallAudioRoutes(FlashCallAudioRouting.pickerOrder(available), route)
         }.onFailure { Log.w(TAG, "route apply failed", it) }
+    }
+
+    /** The outputs this phone can route a call to right now, as [FlashCallAudioRoute]s. */
+    private fun availableRoutes(am: AudioManager): Set<FlashCallAudioRoute> {
+        val devices: List<AudioDeviceInfo> = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            am.availableCommunicationDevices
+        } else {
+            am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).toList()
+        }
+        val routes = devices.mapNotNullTo(mutableSetOf()) { routeOf(it.type) }
+        // Below API 31 a Bluetooth headset is only usable when SCO is available off-call.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && !hasLegacyBluetoothHeadset(am)) {
+            routes.remove(FlashCallAudioRoute.BLUETOOTH)
+        }
+        return routes
+    }
+
+    private fun routeOf(type: Int): FlashCallAudioRoute? = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> FlashCallAudioRoute.EARPIECE
+        AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> FlashCallAudioRoute.SPEAKER
+        in BLUETOOTH_TYPES -> FlashCallAudioRoute.BLUETOOTH
+        in WIRED_TYPES -> FlashCallAudioRoute.WIRED
+        else -> null
     }
 
     /**
@@ -140,18 +201,23 @@ class FlashCallAudioRouter(context: Context) {
      * pinning the earpiece keeps the platform's own preference intact.
      */
     @RequiresApi(Build.VERSION_CODES.S)
-    private fun applyRouteApi31(am: AudioManager) {
+    private fun applyRouteApi31(am: AudioManager, route: FlashCallAudioRoute?) {
         val devices = am.availableCommunicationDevices
-        val wanted = if (speakerPreferred) {
-            devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-        } else {
-            HEADSET_PRIORITY.firstNotNullOfOrNull { type ->
-                devices.firstOrNull { it.type == type }
-            }
+        val wanted = when (route) {
+            FlashCallAudioRoute.SPEAKER -> devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            FlashCallAudioRoute.BLUETOOTH -> firstOfTypes(devices, BLUETOOTH_PRIORITY)
+            FlashCallAudioRoute.WIRED -> firstOfTypes(devices, WIRED_PRIORITY)
+            // Pinned only on the user's explicit pick; otherwise the platform's own earpiece default stays.
+            FlashCallAudioRoute.EARPIECE ->
+                if (chosen == FlashCallAudioRoute.EARPIECE) devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE } else null
+            null -> null
         }
         if (wanted != null) am.setCommunicationDevice(wanted) else am.clearCommunicationDevice()
-        Log.i(TAG, "route speaker=$speakerPreferred device=${wanted?.type ?: "platform"}")
+        Log.i(TAG, "route=$route chosen=$chosen device=${wanted?.type ?: "platform"}")
     }
+
+    private fun firstOfTypes(devices: List<AudioDeviceInfo>, types: List<Int>): AudioDeviceInfo? =
+        types.firstNotNullOfOrNull { type -> devices.firstOrNull { it.type == type } }
 
     /**
      * Below API 31 the speakerphone flag and the SCO link are the only levers, and they are not
@@ -159,22 +225,23 @@ class FlashCallAudioRouter(context: Context) {
      * of both. Hence the explicit stop on the speaker branch.
      */
     @Suppress("DEPRECATION")
-    private fun applyRouteLegacy(am: AudioManager) {
-        when {
-            speakerPreferred -> {
+    private fun applyRouteLegacy(am: AudioManager, route: FlashCallAudioRoute?) {
+        when (route) {
+            FlashCallAudioRoute.SPEAKER -> {
                 stopSco(am)
                 am.isSpeakerphoneOn = true
             }
-            hasLegacyBluetoothHeadset(am) -> {
+            FlashCallAudioRoute.BLUETOOTH -> {
                 am.isSpeakerphoneOn = false
                 startSco(am)
             }
-            else -> {
+            // Wired headsets are taken by the platform itself once the speaker is off.
+            FlashCallAudioRoute.WIRED, FlashCallAudioRoute.EARPIECE, null -> {
                 stopSco(am)
                 am.isSpeakerphoneOn = false
             }
         }
-        Log.i(TAG, "route speaker=$speakerPreferred sco=$scoStarted")
+        Log.i(TAG, "route=$route chosen=$chosen sco=$scoStarted")
     }
 
     @Suppress("DEPRECATION")
@@ -312,13 +379,17 @@ class FlashCallAudioRouter(context: Context) {
          * What the earpiece loses to when the speaker is off. Hearing aids sit with the headsets
          * because a user wearing them wants call audio there, not on the earpiece they cannot use.
          */
-        val HEADSET_PRIORITY = listOf(
+        val BLUETOOTH_PRIORITY = listOf(
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
             AudioDeviceInfo.TYPE_BLE_HEADSET,
             AudioDeviceInfo.TYPE_HEARING_AID,
+        )
+        val WIRED_PRIORITY = listOf(
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_WIRED_HEADSET,
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
         )
+        val BLUETOOTH_TYPES = BLUETOOTH_PRIORITY.toSet()
+        val WIRED_TYPES = WIRED_PRIORITY.toSet()
     }
 }

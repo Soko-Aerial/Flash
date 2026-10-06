@@ -12,6 +12,7 @@ public data class FlashPickedFile(
     public val uri: String,
     public val name: String,
     public val size: Long,
+    public val isPersistable: Boolean = true,
 )
 
 /** Opens the platform file picker. Held across recomposition; safe to call from an event handler. */

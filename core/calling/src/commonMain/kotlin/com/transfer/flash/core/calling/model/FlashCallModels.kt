@@ -111,6 +111,26 @@ public data class FlashCallUiState(
      * banner no longer offers it.
      */
     public val smallerVideoForMany: Boolean = false,
+    /**
+     * ADR-067 (UI-050f): the other person's microphone is muted. 1:1 calls only; a group call carries it on
+     * [FlashCallParticipantUi.isMuted]. False until the peer says otherwise (an older client never does).
+     */
+    public val peerMicMuted: Boolean = false,
+    /** ADR-067: the other person turned their camera off. 1:1 video calls only (see [FlashCallParticipantUi.cameraOff]). */
+    public val peerCameraOff: Boolean = false,
+    /** ADR-067: the other person's hand is raised. 1:1 calls only (see [FlashCallParticipantUi.handRaised]). */
+    public val peerHandRaised: Boolean = false,
+    /** ADR-067: this device's own hand is raised. */
+    public val handRaised: Boolean = false,
+    /**
+     * ADR-067 data saver: this device receives no video (the call carries on as audio). In a 1:1 call the peer is told and
+     * stops encoding for us; in a group the router asks nobody for video.
+     */
+    public val dataSaver: Boolean = false,
+    /** ADR-067: the other person is on data saver, so this device is not sending video to them. 1:1 calls only. */
+    public val peerDataSaver: Boolean = false,
+    /** ADR-067: reactions sent in the last few seconds (ours and theirs), oldest first; expired ones are removed. */
+    public val reactions: List<FlashCallReaction> = emptyList(),
 ) {
     /**
      * The devices this call needs a session with right now; the connection-mode controller keeps
@@ -198,7 +218,56 @@ public data class FlashCallParticipantUi(
      * so a caller sees who is missing and why instead of a call that quietly leaves someone out.
      */
     public val note: String? = null,
+    /** ADR-067: the participant turned their camera off (they said so; false until they do). Video calls only. */
+    public val cameraOff: Boolean = false,
+    /** ADR-067: the participant's hand is raised. */
+    public val handRaised: Boolean = false,
 )
+
+/** An emoji reaction sent during a call (ADR-067). The wire names are part of `docs/protocol.md`. */
+public enum class FlashCallReactionKind(public val wire: String) {
+    LIKE("like"),
+    LOVE("love"),
+    WOW("wow"),
+    ;
+
+    public companion object {
+        /** An unknown name is not a reaction: a newer client's kind must not be shown as something else. */
+        public fun fromWire(value: String?): FlashCallReactionKind? = entries.firstOrNull { it.wire == value }
+    }
+}
+
+/**
+ * One reaction on screen. [id] is local and unique within the call, so a UI can key an animation by it;
+ * [peerId] is who sent it (this device's own id for ours); [atMs] is when it arrived.
+ */
+public data class FlashCallReaction(
+    public val id: Long,
+    public val peerId: String,
+    public val kind: FlashCallReactionKind,
+    public val atMs: Long,
+)
+
+/** How good the link to the other end looks, from [FlashCallStats] (ADR-067 connection chip). */
+public enum class FlashLinkQuality { UNKNOWN, GOOD, FAIR, POOR }
+
+/**
+ * Grades the link: RTT and packet loss, the two numbers a person can feel. Thresholds are a first guess for a LAN
+ * (GOOD under 60 ms and 2 % loss, POOR over 200 ms or 8 % loss) and are not measured yet; see MEAS in the test backlog.
+ */
+public fun FlashCallStats.linkQuality(): FlashLinkQuality {
+    val rtt = rttMs
+    val loss = packetLoss
+    if (rtt == null && loss == null) return FlashLinkQuality.UNKNOWN
+    if ((rtt != null && rtt > LINK_POOR_RTT_MS) || (loss != null && loss > LINK_POOR_LOSS)) return FlashLinkQuality.POOR
+    if ((rtt != null && rtt > LINK_GOOD_RTT_MS) || (loss != null && loss > LINK_GOOD_LOSS)) return FlashLinkQuality.FAIR
+    return FlashLinkQuality.GOOD
+}
+
+private const val LINK_GOOD_RTT_MS = 60
+private const val LINK_POOR_RTT_MS = 200
+private const val LINK_GOOD_LOSS = 0.02
+private const val LINK_POOR_LOSS = 0.08
 
 /** This device's view of one participant's video in a group call (G3 request protocol). */
 public enum class FlashParticipantVideo {

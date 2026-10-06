@@ -1,5 +1,6 @@
 package com.transfer.flash.core.calling.protocol
 
+import com.transfer.flash.core.calling.model.FlashCallReactionKind
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 import kotlin.test.Test
@@ -265,5 +266,51 @@ class CallFrameCodecTest {
         val text = CallFrameCodec.encode(frame)
         assertEquals(frame, CallFrameCodec.decode(text))
         assertEquals(null, CallFrameCodec.decode(text.replace(Regex(".max=8"), "")))
+    }
+
+    // ---- ADR-067 status frame
+
+    @Test
+    fun status_round_trip_with_every_field() {
+        val frame = CallWireFrame.Status(
+            callId = callId,
+            from = from,
+            micOn = false,
+            cameraOn = true,
+            handRaised = true,
+            receiveVideo = false,
+            reaction = FlashCallReactionKind.LOVE,
+            reactionSeq = 1_790_000_000_123L,
+        )
+        assertEquals(frame, CallFrameCodec.decode(CallFrameCodec.encode(frame)))
+    }
+
+    @Test
+    fun status_writes_only_the_fields_it_states() {
+        val text = CallFrameCodec.encode(CallWireFrame.Status(callId = callId, from = from, micOn = false))
+        assertTrue("mic=0" in text, text)
+        assertTrue("cam=" !in text && "hand=" !in text && "rv=" !in text && "react=" !in text && "rseq=" !in text, text)
+        val back = CallFrameCodec.decode(text) as CallWireFrame.Status
+        assertEquals(false, back.micOn)
+        assertNull(back.cameraOn)
+        assertNull(back.handRaised)
+        assertNull(back.receiveVideo)
+        assertNull(back.reaction)
+    }
+
+    @Test
+    fun status_with_garbage_flags_reads_as_not_stated() {
+        val back = CallFrameCodec.decode("FLASH_CALL action=status callId=$callId from=$from mic=maybe cam=2 hand=x react=confetti rseq=x") as CallWireFrame.Status
+        assertNull(back.micOn)
+        assertNull(back.cameraOn)
+        assertNull(back.handRaised)
+        assertNull(back.reaction, "a reaction kind this build does not know is not shown as another one")
+        assertEquals(0L, back.reactionSeq)
+    }
+
+    @Test
+    fun status_needs_the_common_fields_like_every_frame() {
+        assertNull(CallFrameCodec.decode("FLASH_CALL action=status from=$from mic=1"))
+        assertNull(CallFrameCodec.decode("FLASH_CALL action=status callId=$callId mic=1"))
     }
 }

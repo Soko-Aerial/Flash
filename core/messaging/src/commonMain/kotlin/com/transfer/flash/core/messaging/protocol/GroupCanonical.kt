@@ -18,6 +18,11 @@ internal object GroupCanonical {
     const val CERT_TAG: String = "flash-gcert-v1"
     const val MESSAGE_TAG: String = "flash-gmsg-v1"
     const val GROUP_ID_TAG: String = "flash-gid-v1"
+    const val SWARM_ANNOUNCE_TAG: String = "flash-swarm-v1/announce"
+    const val JOIN_REQUEST_TAG: String = "flash-gjoin-v1"
+    const val JOIN_DECISION_TAG: String = "flash-gdecision-v1"
+    const val ROTATION_TAG: String = "flash-grot-v1"
+    const val SETTINGS_TAG: String = "flash-gset-v1"
 
     /** Length of the hex part of a derived group id (128 bits). */
     private const val GROUP_ID_HEX_CHARS = 32
@@ -70,6 +75,100 @@ internal object GroupCanonical {
         .text(text)
         .build()
 
+    fun swarmAnnounceBytes(
+        groupId: String,
+        messageId: String,
+        originId: String,
+        rootHex: String,
+        sizeBytes: Long,
+        fileName: String,
+        mimeType: String,
+        sentAt: Long,
+    ): ByteArray = Writer(SWARM_ANNOUNCE_TAG)
+        .text(groupId)
+        .text(messageId)
+        .text(originId)
+        .text(rootHex)
+        .long(sizeBytes)
+        .text(fileName)
+        .text(mimeType)
+        .long(sentAt)
+        .build()
+
+    fun joinRequestBytes(
+        groupId: String,
+        epoch: Long,
+        subjectId: String,
+        subjectKeyBase64: String,
+        label: String,
+        requestedAtMs: Long,
+    ): ByteArray? {
+        val subjectKey = decode(subjectKeyBase64) ?: return null
+        return Writer(JOIN_REQUEST_TAG)
+            .text(groupId)
+            .long(epoch)
+            .text(subjectId)
+            .bytes(subjectKey)
+            .text(label)
+            .long(requestedAtMs)
+            .build()
+    }
+
+    fun joinDecisionBytes(
+        groupId: String,
+        subjectId: String,
+        approved: Boolean,
+        reason: String,
+        decidedBy: String,
+        decidedAtMs: Long,
+    ): ByteArray {
+        return Writer(JOIN_DECISION_TAG)
+            .text(groupId)
+            .text(subjectId)
+            .bool(approved)
+            .text(reason)
+            .text(decidedBy)
+            .long(decidedAtMs)
+            .build()
+    }
+
+    fun rotationBytes(
+        groupId: String,
+        newEpoch: Long,
+        prevEpoch: Long,
+        commitHex: String,
+        reason: String,
+        adminId: String,
+        rotationId: String,
+        removedIds: List<String>,
+    ): ByteArray {
+        val writer = Writer(ROTATION_TAG)
+            .text(groupId)
+            .long(newEpoch)
+            .long(prevEpoch)
+            .text(commitHex)
+            .text(reason)
+            .text(adminId)
+            .text(rotationId)
+            .long(removedIds.size.toLong())
+        for (id in removedIds) {
+            writer.text(id)
+        }
+        return writer.build()
+    }
+
+    fun settingsBytes(settings: GroupSettings): ByteArray = Writer(SETTINGS_TAG)
+        .text(settings.groupId)
+        .long(settings.version)
+        .text(settings.joinPolicy.uppercase())
+        .text(settings.inviteSharers.uppercase())
+        .long(settings.maxMembers.toLong())
+        .bool(settings.swarmServing)
+        .bool(settings.membersMayAdd)
+        .text(settings.opId)
+        .text(settings.signerId)
+        .build()
+
     /** The id a charter with this owner key and nonce must carry (plan D1). */
     fun deriveGroupId(crypto: GroupCrypto, ownerKey: ByteArray, nonce: ByteArray): String {
         val digest = crypto.sha256(Writer(GROUP_ID_TAG).bytes(ownerKey).bytes(nonce).build())
@@ -88,6 +187,9 @@ internal object GroupCanonical {
     /** Uppercase hex of SHA-256(key): the form the pin stores use for a fingerprint. */
     fun fingerprintHex(crypto: GroupCrypto, publicKey: ByteArray): String =
         crypto.sha256(publicKey).toLowerHex().uppercase()
+
+    /** Hex string of bytes. */
+    fun hex(bytes: ByteArray): String = bytes.toLowerHex()
 
     private fun ByteArray.toLowerHex(): String {
         val digits = "0123456789abcdef"

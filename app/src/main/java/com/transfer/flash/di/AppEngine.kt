@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -89,6 +90,24 @@ class AppEngine @Inject constructor(
 
     /** WebRTC voice/video calling contract (C7 / ADR-025), or null before [start]. */
     val calls: com.transfer.flash.core.calling.FlashCalling? get() = DiscoveryEngineHolder.currentCalling()
+
+    /** Group swarm file transfer facade (SW-8), or null when not attached. */
+    val swarm: com.transfer.flash.core.swarm.api.FlashSwarm? get() = DiscoveryEngineHolder.currentSwarm()
+
+    /** Prepares a local file for swarm streaming, or null if swarm is disabled or preparation fails. */
+    suspend fun prepareSwarmOrigin(
+        groupId: String,
+        messageId: String,
+        fileName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        uri: String,
+    ): Pair<com.transfer.flash.core.swarm.model.SwarmManifest, String>? =
+        DiscoveryEngineHolder.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
+
+    /** Peer features (such as "sw1") advertised by a connected session peer. */
+    fun peerFeatures(peerId: String): Set<String> =
+        network?.activeSessions?.value?.get(com.transfer.flash.core.common.model.FlashDeviceId(peerId))?.peer?.features.orEmpty()
 
     // Local identity is read from the same persisted store the holder advertises with, so the
     // Nearby "this device" card matches what peers actually see.
@@ -184,6 +203,8 @@ class AppEngine @Inject constructor(
                 // This is also what pays for the codec-list walk on a background thread rather
                 // than on the first composition.
                 DiscoveryEngineHolder.performanceMode = performanceMode.value
+                val isSwarmEnabled = runCatching { settingsStore.groupSwarmEnabled.first() }.getOrDefault(false)
+                DiscoveryEngineHolder.groupSwarmEnabled = isSwarmEnabled
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {

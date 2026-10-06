@@ -74,6 +74,9 @@ public class FlashSettingsDataStore(
         public val saveLocationUri: Preferences.Key<String> = stringPreferencesKey("save_location_uri")
         public val retentionDays: Preferences.Key<Int> = intPreferencesKey("retention_days")
         public val displayName: Preferences.Key<String> = stringPreferencesKey("display_name")
+        public val groupSwarmEnabled: Preferences.Key<Boolean> = booleanPreferencesKey("group_swarm_enabled")
+        public val swarmHelpShare: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_help_share")
+        public val swarmKeepFinishedFiles: Preferences.Key<Boolean> = booleanPreferencesKey("swarm_keep_finished_files")
     }
 
     public companion object {
@@ -198,6 +201,18 @@ public class FlashSettingsDataStore(
     public val displayName: Flow<String> =
         preferences.map { it[Keys.displayName].orEmpty() }
 
+    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. Takes effect after app restart. */
+    public val groupSwarmEnabled: Flow<Boolean> =
+        preferences.map { it[Keys.groupSwarmEnabled] ?: false }
+
+    /** Help share group files: share received file pieces with other group members. Default TRUE. */
+    public val swarmHelpShare: Flow<Boolean> =
+        preferences.map { it[Keys.swarmHelpShare] ?: true }
+
+    /** Keep finished files available for others in the swarm. Default TRUE. */
+    public val swarmKeepFinishedFiles: Flow<Boolean> =
+        preferences.map { it[Keys.swarmKeepFinishedFiles] ?: true }
+
     public suspend fun setThemeMode(value: String) {
         dataStore.edit { it[Keys.themeMode] = value }
     }
@@ -263,6 +278,18 @@ public class FlashSettingsDataStore(
 
     public suspend fun setRetentionDays(value: Int) {
         dataStore.edit { it[Keys.retentionDays] = value }
+    }
+
+    public suspend fun setGroupSwarmEnabled(value: Boolean) {
+        dataStore.edit { it[Keys.groupSwarmEnabled] = value }
+    }
+
+    public suspend fun setSwarmHelpShare(value: Boolean) {
+        dataStore.edit { it[Keys.swarmHelpShare] = value }
+    }
+
+    public suspend fun setSwarmKeepFinishedFiles(value: Boolean) {
+        dataStore.edit { it[Keys.swarmKeepFinishedFiles] = value }
     }
 
     public suspend fun setDisplayName(value: String) {

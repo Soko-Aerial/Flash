@@ -14,6 +14,7 @@ package com.transfer.flash.core.common.model
  *   session's handshake, or null when the session is not TLS (tests). The leaf is the identity key,
  *   so its SHA-256 is the fingerprint the trust store pins; a v2 group owner needs the key itself to
  *   write a member cert, and checks it against that pin before using it (ADR-044 V1, plan D10).
+ * @property features Tokens the peer advertised in HELLO `caps`; unknown tokens are ignored (SW-2).
  */
 public data class FlashDevice(
     val id: FlashDeviceId,
@@ -23,4 +24,5 @@ public data class FlashDevice(
     val protocolVersion: Int = 1,
     val groupProtocol: Int = 1,
     val identityKey: String? = null,
+    val features: Set<String> = emptySet(),
 )
