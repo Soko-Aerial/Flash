@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.result.runSuspendCatching
 import android.content.Context
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.protocol.FlashProtocol
@@ -441,8 +442,8 @@ public class WsFlashNetwork(
                 routeObserver?.onAuthenticated(peerDevice.id.value, host, actualPort)
             }
 
-            val session = WsSession(connection, peerDevice, isOutbound = true) { s, _ ->
-                onSessionDisconnected(s)
+            val session = WsSession(connection, peerDevice, isOutbound = true) { s, reason ->
+                onSessionDisconnected(s, reason)
             }
 
             if (!registerSession(session)) {
@@ -563,8 +564,8 @@ public class WsFlashNetwork(
             val helloReply = FlashTextFraming.encodeFields(HELLO_PREFIX, helloReplyFields)
             connection.sendText(helloReply)
 
-            val session = WsSession(connection, claimedPeer) { s, _ ->
-                onSessionDisconnected(s)
+            val session = WsSession(connection, claimedPeer) { s, reason ->
+                onSessionDisconnected(s, reason)
             }
             if (!registerSession(session)) {
                 handOffEarlyFrames(connection, session.peerDeviceId)
@@ -682,6 +683,14 @@ public class WsFlashNetwork(
                 else "Superseded by richer path",
             )
         }
+        // PROBE session.up: what the peer advertised (features decide e.g. whether it is offered a swarm).
+        FlashProbe.emit(
+            "session.up",
+            "peer" to FlashProbe.short(session.peerDeviceId.value),
+            "dir" to (if (session.isOutbound) "out" else "in"),
+            "features" to session.peer.features.sorted().joinToString(",").ifEmpty { null },
+            "adopted" to (superseded != null),
+        )
         refreshState()
         refreshHealthFromSessions()
         return true
@@ -852,7 +861,14 @@ public class WsFlashNetwork(
         reconnectJobs.remove(deviceId)?.cancel()
     }
 
-    private fun onSessionDisconnected(session: WsSession) {
+    private fun onSessionDisconnected(session: WsSession, reason: String = "") {
+        // PROBE session.down: a peer that flapped is visible against the session.up that preceded it.
+        FlashProbe.emit(
+            "session.down",
+            "peer" to FlashProbe.short(session.peerDeviceId.value),
+            "dir" to (if (session.isOutbound) "out" else "in"),
+            "reason" to reason,
+        )
         synchronized(registryLock) {
             // Identity-safe removal: a glare replacement already re-pointed sessionsById at the
             // new session — a late callback from the OLD session must not evict it.

@@ -1258,6 +1258,32 @@ class SignedGroupsTest {
         assertEquals(ahead, atC!!.sentAt)
     }
 
+    @OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+    @Test
+    fun `evidence probes say why a group message was kept or dropped, with the author's clock skew`() = runBlocking {
+        val probes = ConcurrentLinkedQueue<String>()
+        com.transfer.flash.core.common.logging.FlashLog.installSink(
+            com.transfer.flash.core.common.logging.FlashLogSink { _, tag, message, _ -> if (tag == "PROBE") probes += message },
+        )
+        try {
+            mesh("dev-a", "dev-b", "dev-c")
+            val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+            val ahead = System.currentTimeMillis() + 3_000L
+            val sig = GroupSigning(cryptos.getValue("dev-a")).signMessage(groupId, "msg-ok", "dev-a", ahead, null, null, "hi")
+
+            deliver("dev-a", "dev-b", GroupWireFrame.Message(groupId, "msg-ok", "dev-a", "Ada", ahead, "hi", null, null, 0L, sig))
+            deliver("dev-a", "dev-b", GroupWireFrame.Message(groupId, "msg-bad", "dev-a", "Ada", ahead, "hi", null, null, 0L, "not-a-signature"))
+
+            val kept = probes.single { it.startsWith("group.msg.in ") }
+            assertTrue(kept, "signed=true" in kept && "stored=true" in kept && Regex("skewMs=\\d+").containsMatchIn(kept))
+            val dropped = probes.single { it.startsWith("group.msg.drop ") }
+            assertTrue(dropped, "reason=bad_signature" in dropped && "from=dev-a" in dropped)
+            assertTrue("no probe carries message text: $probes", probes.none { "hi" == it.substringAfterLast(' ') })
+        } finally {
+            com.transfer.flash.core.common.logging.FlashLog.installSink { _, _, _, _ -> }
+        }
+    }
+
     @Test
     fun `a signed message dated far in the future is still clamped`() = runBlocking {
         mesh("dev-a", "dev-b", "dev-c")

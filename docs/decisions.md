@@ -4068,3 +4068,20 @@ ADR-075 already lets the swarm gate admit vouched members; the chat layer's pair
 
 ### Revisit when
 FO-04 (group attachment fan-out to vouched members) is taken up, or a device log shows a signed message dated more than 5 minutes ahead.
+
+## ADR-087 - Evidence probes and an export header make every log a test record
+
+### Decision
+Flash writes a small fixed vocabulary of structured `PROBE` lines (`FlashProbe`, `core:common`) at state changes in the session and group flows, and every Android log export starts with a `session.header` and a live `snapshot.*` block (build, device, clock offset, switches, each connected peer's features and paired state, each group's roles and member trust). The vocabulary is `docs/testing/PROBES.md`. A probe carries ids (shortened), counts, enums and reason codes only, never keys, secrets, invite links, file names or message text.
+
+### Context
+The owner tests late and by usage, and wants the logs to say which backlog tests passed. ERROR-117 could not be settled from four real logs: they lacked the peers' `sw1` features, who was paired with whom, the clock offset and the type of the dropped message.
+
+### Alternatives considered
+- Log more free text: not machine-readable, and it drifts per author.
+- A separate evidence database in Room: stronger retention but a schema step and a new privacy surface; deferred, the rotating log (5 x 1 MB) is enough for the first reading.
+- Probe on every frame/chunk: cost on the transfer path, and the volume would evict the lines that matter from the 5 MB log. Rejected: probes are state-change only.
+- Auto-writing test results from the log: a probe proves an event happened, not that the behaviour was right; the analyzer (not built) may only propose results.
+
+### Revisit when
+A real device log has been read against the vocabulary (gaps will show), or the rotating log evicts probes before the owner exports it (then give probes their own longer-lived stream).

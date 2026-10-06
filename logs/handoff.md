@@ -1,5 +1,11 @@
 # Current Handoff
 
+## 2026-10-06 (r) - Evidence probes and log export header built (ADR-087)
+
+- Done and unit-tested, NOT device-verified: `FlashProbe`, session and group probes, Android export header + snapshot, desktop header. Vocabulary: `docs/testing/PROBES.md`. Details: progress (r).
+- Device checks owed: `LOGX-01`...`LOGX-05` (TEST-BACKLOG 4zi), plus `SWM-40`...`SWM-45`, `UIP-01`...`UIP-20`, `MIG-12`. Ask the owner to export a log from both phones after a group file test: the header and `group.file.fanout` settle `SWM-45`.
+- Not built (offered): test-to-probe mapping file, analyzer script, "mark this moment" note, probes for calls / pairing / discovery / transfer, desktop export.
+
 ## 2026-10-06 (q) - Swarm star-topology fixed in code (ERROR-117, ADR-086)
 
 - Done and unit-tested, NOT device-verified: vouched members get swarm offers; the offer is recorded on the sender row for catch-up; voice-note and skewed-clock catch-up copies verify. Details: progress (q).

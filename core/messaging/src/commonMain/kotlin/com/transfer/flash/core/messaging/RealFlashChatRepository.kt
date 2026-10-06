@@ -4,6 +4,7 @@ package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.id.UuidIdGenerator
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
@@ -2209,7 +2210,10 @@ public class RealFlashChatRepository(
         }
         val recipients = members.activeMembers(conversation.id)
             .filter { it.deviceId != localDeviceId }
-        if (recipients.isEmpty()) return
+        if (recipients.isEmpty()) {
+            FlashProbe.emit("group.msg.not_sent", "group" to FlashProbe.short(conversation.id), "reason" to "no_other_active_member")
+            return
+        }
         // v2: the signature is made once, here, and stored on the row, because the row is later
         // relayed by offline sync and the receiver has to be able to verify it.
         val signature = if (conversation.groupProto == GroupPolicy.V2_PROTOCOL) {
@@ -2253,6 +2257,12 @@ public class RealFlashChatRepository(
             draftDao.clear(conversation.id)
             outboxDao.enqueue(OutboxEntity(localId, nextAttemptAt = now, payloadJson = text, createdAt = now))
         }
+        FlashProbe.emit(
+            "group.msg.out",
+            "group" to FlashProbe.short(conversation.id),
+            "recipients" to recipients.size,
+            "signed" to (signature != null),
+        )
         notifyOutboxDrain()
         drainOutboxOnce()
     }
@@ -2526,6 +2536,16 @@ public class RealFlashChatRepository(
                         (isTrustedPeer(it.deviceId) || (swarmOffer != null && isGroupPeerTrusted(conversationId, it.deviceId)))
                 }
                 .orEmpty()
+            val activeOthers = members?.activeMembers(conversationId).orEmpty().count { it.deviceId != localDeviceId }
+            FlashProbe.emit(
+                "group.media.out",
+                "group" to FlashProbe.short(conversationId),
+                "swarm" to (swarmOffer != null),
+                "recipients" to recipients.size,
+                "activeMembers" to activeOthers,
+                "notAnnounced" to (activeOthers - recipients.size),
+                "signed" to (signature != null),
+            )
             messageDao.insert(
                 MessageEntity(
                     localId = messageId,
@@ -2897,9 +2917,14 @@ public class RealFlashChatRepository(
                 requestGroupCatchUp(frame.groupId)
             }
             is GroupWireFrame.Message -> {
-                if (!isActiveGroupMember(members, frame.groupId, frame.from) ||
-                    frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH
-                ) return
+                if (!isActiveGroupMember(members, frame.groupId, frame.from)) {
+                    probeGroupMessageDrop("group.msg.drop", frame.groupId, frame.from, "not_active_member", frame.sentAt)
+                    return
+                }
+                if (frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+                    probeGroupMessageDrop("group.msg.drop", frame.groupId, frame.from, "too_long", frame.sentAt)
+                    return
+                }
                 // v2: the author must sign the message, and the name shown is the roster's signed label.
                 var senderName: String? = frame.senderName
                 var groupSig: String? = null
@@ -2909,6 +2934,7 @@ public class RealFlashChatRepository(
                         frame.replyToId, frame.replyToPreview, frame.text, frame.signature,
                     )
                     if (label == null) {
+                        probeGroupMessageDrop("group.msg.drop", frame.groupId, frame.from, "bad_signature", frame.sentAt)
                         FlashLog.w("CHAT", "SECURITY: group message dropped, no valid signature (group=${frame.groupId} msg=${frame.messageId} from=${frame.from})")
                         return
                     }
@@ -2930,6 +2956,14 @@ public class RealFlashChatRepository(
                         replyToPreview = frame.replyToPreview,
                         groupSig = groupSig,
                     ),
+                )
+                FlashProbe.emit(
+                    "group.msg.in",
+                    "group" to FlashProbe.short(frame.groupId),
+                    "from" to FlashProbe.short(frame.from),
+                    "signed" to (groupSig != null),
+                    "skewMs" to (frame.sentAt - now),
+                    "stored" to (inserted != -1L),
                 )
                 if (inserted != -1L) {
                     onInboundTextMessageWithGroupTitle(
@@ -3045,7 +3079,14 @@ public class RealFlashChatRepository(
                 } else {
                     isActiveTrustedMember(members, frame.groupId, frame.from)
                 }
-                if (isRemovedHere(members, frame.groupId) || !senderAllowed) return
+                if (isRemovedHere(members, frame.groupId) || !senderAllowed) {
+                    probeGroupMessageDrop(
+                        "group.media.drop", frame.groupId, frame.from,
+                        if (isRemovedHere(members, frame.groupId)) "removed_here" else "sender_not_allowed", frame.sentAt,
+                        "swarm" to frame.swarm,
+                    )
+                    return
+                }
                 var senderName = frame.senderName
                 var groupSig: String? = null
                 if (isV2Group(frame.groupId)) {
@@ -3054,6 +3095,7 @@ public class RealFlashChatRepository(
                         null, null, "", frame.signature,
                     )
                     if (label == null) {
+                        probeGroupMessageDrop("group.media.drop", frame.groupId, frame.from, "bad_signature", frame.sentAt, "swarm" to frame.swarm)
                         FlashLog.w("CHAT", "SECURITY: group media dropped, no valid signature (group=${frame.groupId} msg=${frame.messageId} from=${frame.from})")
                         return
                     }
@@ -3072,6 +3114,14 @@ public class RealFlashChatRepository(
 
                 if (isSwarmOffer) {
                     val now = timeSource.nowMs()
+                    FlashProbe.emit(
+                        "swarm.offer.in",
+                        "group" to FlashProbe.short(frame.groupId),
+                        "from" to FlashProbe.short(frame.from),
+                        "via" to "live",
+                        "paired" to isTrustedPeer(frame.from),
+                        "skewMs" to (frame.sentAt - now),
+                    )
                     groupTransportSink?.send(
                         frame.from,
                         GroupWireFrame.Receipt(
@@ -3139,11 +3189,30 @@ public class RealFlashChatRepository(
                 if (!isTrustedPeer(frame.from)) {
                     // A vouched sender's swarm offer this device cannot use (swarm off, or the offer did not verify): no
                     // whole-file push will ever follow from a device it is not paired with, so park nothing.
+                    FlashProbe.emit(
+                        "swarm.offer.ignored",
+                        "group" to FlashProbe.short(frame.groupId),
+                        "from" to FlashProbe.short(frame.from),
+                        "via" to "live",
+                        "reason" to when {
+                            frame.swarm != 1 -> "not_a_swarm_offer"
+                            frame.root == null || frame.pieceSize == null || frame.rootSig == null -> "incomplete_offer"
+                            swarmAnnouncementListener == null -> "swarm_off_here"
+                            else -> "bad_announcement_signature"
+                        },
+                    )
                     FlashLog.w("CHAT", "Group media from unpaired ${frame.from} ignored: not a usable swarm offer (group=${frame.groupId} msg=${frame.messageId})")
                     return
                 }
                 pendingGroupMedia[frame.transferId] = frame.copy(senderName = senderName)
                 val now = timeSource.nowMs()
+                FlashProbe.emit(
+                    "group.media.in",
+                    "group" to FlashProbe.short(frame.groupId),
+                    "from" to FlashProbe.short(frame.from),
+                    "kind" to (if (frame.swarm == 1) "swarm_offer_unusable_parked_as_file" else "whole_file"),
+                    "skewMs" to (frame.sentAt - now),
+                )
                 groupTransportSink?.send(
                     frame.from,
                     GroupWireFrame.Receipt(
@@ -3820,10 +3889,11 @@ public class RealFlashChatRepository(
     internal fun requestGroupCatchUp(groupId: String) {
         scope.launch(ioDispatcher) {
             val members = groupMemberDao ?: return@launch
-            members.activeMembers(groupId)
+            val others = members.activeMembers(groupId)
                 .map { it.deviceId }
                 .filter { it != localDeviceId }
-                .forEach { memberId -> sendSyncRequestFor(memberId, groupId) }
+            FlashProbe.emit("group.catchup.request", "group" to FlashProbe.short(groupId), "to" to others.size, "why" to "bootstrap")
+            others.forEach { memberId -> sendSyncRequestFor(memberId, groupId) }
         }
     }
 
@@ -4139,6 +4209,25 @@ public class RealFlashChatRepository(
     private fun storedSentAt(sentAt: Long, now: Long, signed: Boolean): Long =
         if (signed && sentAt <= now + SIGNED_SENT_AT_SKEW_TOLERANCE_MS) sentAt else minOf(sentAt, now)
 
+    /** A reason-coded evidence line for a group frame that was refused; `skewMs` is the author's clock minus this device's. */
+    private fun probeGroupMessageDrop(
+        name: String,
+        groupId: String,
+        from: String,
+        reason: String,
+        sentAt: Long,
+        vararg extra: Pair<String, Any?>,
+    ) {
+        FlashProbe.emit(
+            name,
+            "group" to FlashProbe.short(groupId),
+            "from" to FlashProbe.short(from),
+            "reason" to reason,
+            "skewMs" to (sentAt - timeSource.nowMs()),
+            *extra,
+        )
+    }
+
     /** Requester side: an elected holder pushed a message — ingest idempotently by msgId. */
     private suspend fun handleSyncPush(frame: GroupWireFrame.SyncPush) {
         // ADR-044 V1a (F-4): only an answer to a request this device sent, from the peer it asked,
@@ -4146,11 +4235,13 @@ public class RealFlashChatRepository(
         // (see F-9): the codec sets it to the pusher.
         val request = outgoingSyncRequests[frame.syncId]
         if (request == null || !request.acceptsPush(frame.groupId, frame.from, timeSource.nowMs())) {
+            probeGroupMessageDrop("group.sync.drop", frame.groupId, frame.from, "no_matching_request", frame.message.sentAt)
             FlashLog.w("CHAT", "Group SyncPush dropped: no matching request (syncId=${frame.syncId} from=${frame.from})")
             return
         }
         val message = frame.message
         if (message.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
+            probeGroupMessageDrop("group.sync.drop", frame.groupId, frame.from, "too_long", message.sentAt)
             FlashLog.w("CHAT", "Group SyncPush text exceeds length cap (${message.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
             return
         }
@@ -4164,6 +4255,10 @@ public class RealFlashChatRepository(
                 message.replyToId, message.replyToPreview, message.text, message.signature,
             )
             if (label == null) {
+                probeGroupMessageDrop(
+                    "group.sync.drop", frame.groupId, frame.from, "bad_signature", message.sentAt,
+                    "author" to FlashProbe.short(message.from), "hasOffer" to (message.swarmOffer != null),
+                )
                 FlashLog.w("CHAT", "SECURITY: group SyncPush message dropped, no valid signature (group=${frame.groupId} msg=${message.messageId} author=${message.from} relay=${frame.from})")
                 return
             }
@@ -4181,6 +4276,10 @@ public class RealFlashChatRepository(
                 offer.sizeBytes, offer.fileName, offer.mimeType, message.sentAt, offer.rootSig,
             ) == true
             if (!verified) {
+                probeGroupMessageDrop(
+                    "group.sync.drop", frame.groupId, frame.from, "bad_offer_signature", message.sentAt,
+                    "author" to FlashProbe.short(message.from),
+                )
                 FlashLog.w("CHAT", "SECURITY: group SyncPush file offer dropped, bad announcement signature (group=${frame.groupId} msg=${message.messageId} author=${message.from} relay=${frame.from})")
                 return
             }
@@ -4190,6 +4289,20 @@ public class RealFlashChatRepository(
         }
         val now = timeSource.nowMs()
         val boundedSentAt = storedSentAt(message.sentAt, now, signed = groupSig != null)
+        // PROBE: one line per pushed message; a file the swarm switch here could not use is told apart from a plain row.
+        FlashProbe.emit(
+            "group.sync.in",
+            "group" to FlashProbe.short(frame.groupId),
+            "relay" to FlashProbe.short(frame.from),
+            "author" to FlashProbe.short(message.from),
+            "kind" to when {
+                swarmFile != null -> "swarm_offer"
+                message.swarmOffer != null -> "offer_unused_" + (if (listener == null) "swarm_off_here" else "unsigned")
+                else -> "text"
+            },
+            "signed" to (groupSig != null),
+            "skewMs" to (message.sentAt - now),
+        )
         val inserted = messageDao.insert(
             MessageEntity(
                 localId = message.messageId,

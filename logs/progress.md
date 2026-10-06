@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-10-06 (r) - Evidence probes and the log export header (ADR-087)
+
+### Worked on
+The owner's request to bake the test backlog into the app and logs, so tests register with usage and an exported log can be read against `TEST-BACKLOG.md`. Steps 1 (header and snapshot) and the first probe set; steps 3 and 4 (test-to-probe mapping, analyzer) were not asked for yet.
+
+### Changed
+- `FlashProbe` (`core:common`, new): `emit`, `format`, `sanitize`, `short`, header fields, snapshot provider, `exportHeader`. Tag `PROBE`.
+- `session.up` / `session.down` in `WsFlashNetwork` and `JvmWsFlashNetwork` (the disconnect callback now passes its reason through).
+- Group probes in `RealFlashChatRepository` (`group.msg.out|in|drop|not_sent`, `group.media.out|in|drop`, `swarm.offer.in|ignored`, `group.sync.in|drop`, `group.catchup.request`) and `group.file.fanout` in `GroupFileSender`. Existing `SECURITY ...` log lines are kept.
+- Android export: `FlashLogContext` writes `session.header` and `snapshot.*` (sessions, groups, members) at the top of the exported file. Desktop: `session.header` at engine start.
+- Docs: `docs/testing/PROBES.md` (vocabulary, reason codes, how to read), ADR-087, `TEST-BACKLOG` section 4zi (`LOGX-01`...`LOGX-05`), AGENTS.md section 24 tag list.
+
+### Verification
+`FlashProbeTest` (8), a new `SignedGroupsTest` case that captures the probes and asserts reason codes, skew and absence of message text. `:core:common`, `:core:messaging`, `:core:engine`, `:core:network` host tests, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. Not read against a real device log yet.
+
+### Remaining
+Device checks `LOGX-01`...`LOGX-05`. Probes for calls, pairing, discovery and transfers. Steps 3 and 4. A desktop export and snapshot. A "mark this moment" note.
+
+### Next AI
+When adding a probe, add it to `docs/testing/PROBES.md` in the same change and test it. Do not emit per chunk or per frame. If the owner supplies a log, read the header first.
+
 ## 2026-10-06 (q) - Swarm star-topology investigation: claims checked, fixes made (ERROR-117, ADR-086)
 
 ### Worked on
