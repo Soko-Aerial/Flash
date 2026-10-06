@@ -1,0 +1,11 @@
+{
+  "uniqueId": "npm:hersheytext",
+  "licenses": [
+    "hershey-fonts",
+    "hersheytext-mit"
+  ],
+  "name": "Hershey Script 1-stroke (from hersheytext)",
+  "artifactVersion": "2.0.0",
+  "description": "Letter shapes of the word written by the launch splash (UI-056, ADR-080), taken from svg_fonts/HersheyScript1.svg. Not a dependency: the coordinates are compiled into :ui:theme (FlashInkSplashGlyphs).",
+  "website": "https://github.com/techninja/hersheytextjs"
+}

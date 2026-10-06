@@ -3,6 +3,8 @@
 package com.transfer.flash.desktop
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -11,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -21,6 +24,8 @@ import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
+import com.transfer.flash.ui.theme.FlashLaunchSplashGate
+import com.transfer.flash.ui.theme.FlashLaunchSplashOverlay
 import com.transfer.flash.ui.theme.FlashMaterialTheme
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
@@ -78,6 +83,16 @@ public fun main(args: Array<String> = emptyArray()) {
     application {
         val engine = remember { DesktopEngine() }
         engine.start()
+
+        // UI-056 / ADR-080: the launch animation plays once per process, at start-up. The gate lives
+        // here, above `if (isWindowVisible)`, because hiding to the tray disposes the window's
+        // composition and reopening it must not replay the splash. The settings file is read
+        // synchronously when the engine is built, so the decision is made before the first frame.
+        val launchSplash = remember {
+            FlashLaunchSplashGate(nowMillis = { System.nanoTime() / 1_000_000L }).apply {
+                decide(enabled = engine.settings.value.launchAnimation)
+            }
+        }
 
     var isWindowVisible by remember { mutableStateOf(true) }
     var isWindowFocused by remember { mutableStateOf(true) }
@@ -307,17 +322,25 @@ public fun main(args: Array<String> = emptyArray()) {
                 ) {
                     // Baseline text colour for the whole desktop window.
                     CompositionLocalProvider(LocalContentColor provides FlashTheme.colors.textPrimary) {
-                        DesktopShell(
-                            engine = engine,
-                            themeMode = desktopSettings.themeMode,
-                            onThemeModeSelected = { mode ->
-                                engine.storeThemeMode(mode)
-                            },
-                            window = window,
-                            nav = nav,
-                            externalShareFiles = pendingFilesToShare,
-                            onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
-                        )
+                        val ready by engine.ready.collectAsState()
+                        val startError by engine.startError.collectAsState()
+                        Box(Modifier.fillMaxSize()) {
+                            DesktopShell(
+                                engine = engine,
+                                themeMode = desktopSettings.themeMode,
+                                onThemeModeSelected = { mode ->
+                                    engine.storeThemeMode(mode)
+                                },
+                                window = window,
+                                nav = nav,
+                                externalShareFiles = pendingFilesToShare,
+                                onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
+                            )
+                            FlashLaunchSplashOverlay(
+                                gate = launchSplash,
+                                engineSettled = ready || startError != null,
+                            )
+                        }
                     }
                 }
             }

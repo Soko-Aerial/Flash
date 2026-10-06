@@ -138,6 +138,8 @@ data class FlashSettingsModel(
     val swarmKeepFinishedFiles: Boolean = true,
     /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
     val swarmEnabled: Boolean = false,
+    /** UI-056 / ADR-080: the handwritten launch animation on a cold start. Default TRUE. */
+    val launchAnimation: Boolean = true,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -159,6 +161,17 @@ object FlashSettingsMath {
         FlashThemeMode.Light -> false
         FlashThemeMode.Dark -> true
     }
+
+    /**
+     * The launch animation row (UI-056). Says when it plays, because "launch" alone does not tell a
+     * user that switching back to Flash will not replay it, and says what turning it off gives them.
+     */
+    fun launchAnimationSubtitle(enabled: Boolean): String =
+        if (enabled) {
+            "Writes the Flash name when the app starts, not when you switch back to it"
+        } else {
+            "Flash opens straight away"
+        }
 
     fun trustedPeersSubtitle(count: Int): String = when {
         count <= 0 -> "No verified devices yet"
@@ -258,6 +271,8 @@ fun FlashSettingsScreen(
     // nothing and removes the pressure to write one.
     onDynamicAccentChanged: (Boolean) -> Unit = {},
     onHapticsChanged: (Boolean) -> Unit = {},
+    /** UI-056: takes effect on the next cold start; the splash of this one has already played. */
+    onLaunchAnimationChanged: (Boolean) -> Unit = {},
     onBackgroundTransfersChanged: (Boolean) -> Unit = {},
     onAutoDownloadVoiceChanged: (Boolean) -> Unit = {},
     onAutoDownloadImageChanged: (Boolean) -> Unit = {},
@@ -374,6 +389,16 @@ fun FlashSettingsScreen(
                     subtitle = "Subtle vibration feedback on actions",
                     checked = model.hapticsEnabled,
                     onCheckedChange = onHapticsChanged,
+                )
+            }
+        }
+        item(key = "launch-animation") {
+            StaggerIn(6) {
+                SwitchRow(
+                    title = "Launch animation",
+                    subtitle = FlashSettingsMath.launchAnimationSubtitle(model.launchAnimation),
+                    checked = model.launchAnimation,
+                    onCheckedChange = onLaunchAnimationChanged,
                 )
             }
         }

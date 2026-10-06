@@ -7,6 +7,10 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <!-- Flash splash tile (graphite900); matches the app icon background. -->
-    <color name="flash_splash_bg">#FF171A22</color>
+    <!--
+      System splash ground (UI-056). Light here, dark in values-night: it is the centre colour of the
+      Ink launch splash ground for each theme, so the system splash fades into the Compose splash
+      without a jump. It follows the system's dark mode, not Flash's own theme choice.
+    -->
+    <color name="flash_splash_bg">#FFFFFFFF</color>
 </resources>

@@ -6,6 +6,16 @@ This repository includes third_party/webrtc-kmp, a modified copy of WebRTC KMP
 licensed under the Apache License 2.0. Its changes are listed in
 third_party/webrtc-kmp/MODIFICATIONS.md.
 
+The launch splash writes the word "Flash" with letter shapes from the Hershey Script 1-stroke
+font (ui/theme/.../FlashInkSplashGlyphs.kt), taken from the MIT-licensed hersheytext package
+(https://github.com/techninja/hersheytextjs; SVG conversion by Windell H. Oskay,
+www.evilmadscientist.com). The Hershey Fonts licence requires these acknowledgements:
+  - The Hershey Fonts were originally created by Dr. A. V. Hershey while working at the
+    U. S. National Bureau of Standards.
+  - The format of the Font data in this distribution was originally created by
+    James Hurt, Cognition, Inc., 900 Technology Park Drive, Billerica, MA 01821
+    (mit-eddie!ci-dandelion!hurt).
+
 Binary distributions (the Android app and the desktop installers) also bundle the
 third-party components listed in THIRD_PARTY_NOTICES.txt. That file is generated at build
 time from the shipped dependencies and holds their licence texts and NOTICE contents.

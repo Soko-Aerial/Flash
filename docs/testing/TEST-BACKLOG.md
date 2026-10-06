@@ -2242,6 +2242,50 @@ plan GM-11. Record results in the Results log.
   - A malformed link shows no action.
 - **Source:** plan O-14, GM-10. **Status:** TODO (built in GM-10 via FlashInlineInviteCard; ready for physical device test in GM-11)
 
+## 4za. Ink launch splash (UI-056, ADR-080, 2026-10-06)
+
+Built and unit-tested (`FlashLaunchSplashTest` 21/21). Desktop frames were rendered off-screen and checked by eye. Not device-verified.
+
+### SPLASH-01 - Android cold start, light and dark
+- **Steps:** Force-stop Flash, then open it with the system in light mode. Repeat in dark mode.
+- **Pass:** The system splash colour matches the system theme. It fades into the Ink ground with no white or black flash. "Flash" is written stroke by stroke, then the bolt draws, fills and ripples, and the app fades in after about 3.5 s.
+- **Source:** UI-056. **Status:** TODO
+
+### SPLASH-02 - No replay on a warm return
+- **Steps:** Open Flash, press Home, and reopen it. Also reopen it while the foreground service keeps the process alive after the task is swiped away.
+- **Pass:** The splash does not play either time.
+- **Source:** UI-056 (the gate is per process). **Status:** TODO
+
+### SPLASH-03 - Rotation mid-splash
+- **Steps:** Rotate the phone at about 1 s into the splash.
+- **Pass:** The animation continues from the same moment. It does not restart and does not end early.
+- **Source:** UI-056. **Status:** TODO
+
+### SPLASH-04 - Setting off (Android and desktop)
+- **Steps:** Turn off Settings > Launch animation, then cold start.
+- **Pass:** No Ink splash appears. Android shows only the system splash until the engine is ready.
+- **Source:** UI-056. **Status:** TODO
+
+### SPLASH-05 - Answering a call or pressing PTT skips the splash
+- **Steps:** With Flash not running, answer an incoming call from the notification. Then do the same with a PTT press.
+- **Pass:** The call or PTT screen appears with no splash.
+- **Source:** UI-056. **Status:** TODO
+
+### SPLASH-06 - Slow device ceiling (Belfone)
+- **Steps:** Cold start on the Belfone SCP810.
+- **Pass:** The splash ends within 6 s even if the engine is still booting (ERROR-034 ceiling).
+- **Source:** UI-056, ERROR-034. **Status:** TODO
+
+### SPLASH-07 - Reduced motion
+- **Steps:** Turn on Remove animations (or the LOW tier), then cold start.
+- **Pass:** The finished frame shows still for about 0.8 s.
+- **Source:** UI-056. **Status:** TODO
+
+### SPLASH-08 - Desktop start, tray reopen, dynamic accent
+- **Steps:** Start the Windows app. Hide it to the tray and reopen it. Switch the accent and cold start again.
+- **Pass:** The splash plays once at start and not on the tray reopen. Clicks during it do nothing. The ink and bolt take the accent colour while the ground stays the same.
+- **Source:** UI-056. **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

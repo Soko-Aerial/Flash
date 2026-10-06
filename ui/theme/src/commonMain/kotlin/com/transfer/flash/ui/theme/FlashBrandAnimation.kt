@@ -28,9 +28,9 @@ import kotlin.math.min
  * The Flash brand animation — a reusable Composables port of `logo-claude/svg/flash-splash-loop.svg`.
  *
  * The bolt "breathes" and three discovery-pulse rings radiate outward on an **infinite,
- * un-timed loop**. It is the animated identity shared by the launch splash and branded
- * loading/empty state surfaces (Bug 4 fix: the animation used to live inside
- * `FlashSplashScreen` and could not be reused).
+ * un-timed loop**. It is the animated identity of branded loading/empty state surfaces (Bug 4
+ * fix: the animation used to live inside `FlashSplashScreen` and could not be reused). It was
+ * also the launch splash until UI-056 (ADR-080) replaced that with [FlashInkSplash].
  *
  * The caller decides when to stop by removing this composable — nothing here enforces a
  * minimum duration. `background = true` fills the canvas with the dark launch gradient
@@ -215,8 +215,8 @@ private val SplashBgBottom = FlashBrandPalette.splashBgBottom
 private val BoltStops = FlashBrandPalette.boltStops
 private val RingColor = FlashBrandPalette.ring
 
-// Bolt authored in a 24x24 box (path from the logo masters).
-private val BOLT_POINTS = listOf(
+// Bolt authored in a 24x24 box (path from the logo masters). Also drawn by the Ink launch splash.
+internal val BOLT_POINTS = listOf(
     13.6f to 2.2f, 4.2f to 13.9f, 10.8f to 13.9f, 9.4f to 21.8f, 19.8f to 9.7f, 13.2f to 9.7f,
 )
 
