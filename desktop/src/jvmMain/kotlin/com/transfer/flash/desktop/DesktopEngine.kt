@@ -417,6 +417,9 @@ public class DesktopEngine(
     /** Inbound group join request notification hook (for DesktopNotificationManager / shell). */
     public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
 
+    /** A member added this device to a group it cannot accept (not paired with the owner): the sentence to show (M-23). */
+    public var onGroupOfferRefused: ((groupId: String, groupName: String, message: String) -> Unit)? = null
+
     /**
      * Chat history. The real repository once [assemble] has built it; the honest empty
      * repository before that (and if the database ever fails to open) — the shell renders
@@ -1031,6 +1034,10 @@ public class DesktopEngine(
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
                 FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")
                 onJoinRequestNotification?.invoke(groupId, groupTitle, requesterName)
+            }
+            chatImpl?.onGroupOfferRefused = { groupId, groupName, message ->
+                FlashLog.i(TAG_WS, "Group offer refused: $groupId ($groupName)")
+                onGroupOfferRefused?.invoke(groupId, groupName, message)
             }
             boot("chat repository opened (${File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME).absolutePath})")
         }.onFailure { e ->

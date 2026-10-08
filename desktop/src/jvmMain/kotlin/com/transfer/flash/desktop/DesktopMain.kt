@@ -31,6 +31,7 @@ import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashMotion
 import com.shepeliev.webrtckmp.WebRtc
 import dev.onvoid.webrtc.logging.Logging
+import androidx.compose.ui.window.Notification
 import androidx.compose.ui.window.Tray
 import androidx.compose.ui.window.rememberTrayState
 import com.transfer.flash.ui.navigation.FlashDestination
@@ -115,12 +116,28 @@ public fun main(args: Array<String> = emptyArray()) {
         onDispose {}
     }
 
+    val linuxNotifier = remember {
+        if (System.getProperty("os.name", "").startsWith("Linux", ignoreCase = true)) {
+            com.transfer.flash.desktop.linux.LinuxNotifier()
+        } else {
+            null
+        }
+    }
+
     // Desktop notification manager
     val notificationManager = remember {
         DesktopNotificationManager(
             engine = engine,
             scope = engine.scope,
-            sendNotification = { trayState.sendNotification(it) },
+            sendNotification = { notification ->
+                // Linux: the desktop's own notification service (ADR-093); the tray popup only when it is absent.
+                val sentNatively = linuxNotifier?.send(
+                    notification.title,
+                    notification.message,
+                    critical = notification.type == Notification.Type.Error,
+                ) == true
+                if (!sentNatively) trayState.sendNotification(notification)
+            },
             isWindowVisible = { isWindowVisible },
             activeConversationId = { nav.current.conversationId },
             isNotificationsEnabled = { engine.settings.value.showNotifications },

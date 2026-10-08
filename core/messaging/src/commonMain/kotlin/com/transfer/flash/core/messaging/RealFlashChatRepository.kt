@@ -347,6 +347,13 @@ public class RealFlashChatRepository(
     /** GM-10: Triggered when an inbound join request arrives requiring admin approval. */
     public var onJoinRequestNotification: ((groupId: String, groupTitle: String, requesterName: String) -> Unit)? = null
 
+    /**
+     * A member added this device to a signed group that it cannot accept because it is not paired with the owner
+     * (M-23). Called at most once per group per [OFFER_REFUSED_NOTICE_INTERVAL_MS]; [message] is ready to show.
+     */
+    public var onGroupOfferRefused: ((groupId: String, groupName: String, message: String) -> Unit)? = null
+    private val offerRefusedNoticeAt = SyncMap<String, Long>()
+
     /** GM-10: Refresh trigger for open conversation state (settings, join requests, etc.). */
     private val conversationRefreshTrigger = MutableStateFlow(0L)
 
@@ -1776,6 +1783,30 @@ public class RealFlashChatRepository(
     override suspend fun addGroupMembers(groupId: String, memberIds: Set<String>): FlashResult<Unit> =
         withContext(ioDispatcher) { addGroupMembersLocked(groupId, memberIds) }
 
+    override suspend fun addGroupMembersAdvice(groupId: String, memberIds: Set<String>): String? =
+        withContext(ioDispatcher) {
+            if (!isV2Group(groupId)) return@withContext null
+            val conversation = conversationDao.get(groupId) ?: return@withContext null
+            if (conversation.groupCreatedBy == localDeviceId) return@withContext null
+            val newcomers = memberIds.filter { id -> groupMemberDao?.member(groupId, id)?.isActive != true }
+            if (newcomers.isEmpty()) return@withContext null
+            GroupMembershipStatusText.newcomersNeedOwnerPairing(
+                newcomers.map { peerNameResolver(it)?.ifBlank { null } ?: it.take(8) },
+                ownerDisplayName(groupId, conversation),
+            )
+        }
+
+    /** M-23, at most once per group per interval: tells the person why a group they were added to never appears. */
+    private fun noticeOfferRefused(groupId: String, groupName: String, fromPeerId: String) {
+        val callback = onGroupOfferRefused ?: return
+        val now = timeSource.nowMs()
+        val last = offerRefusedNoticeAt[groupId]
+        if (last != null && now - last < OFFER_REFUSED_NOTICE_INTERVAL_MS) return
+        offerRefusedNoticeAt[groupId] = now
+        val title = groupName.trim().ifEmpty { "a group" }
+        callback(groupId, title, GroupMembershipStatusText.addedButOwnerNotPaired(peerNameResolver(fromPeerId), title))
+    }
+
     private suspend fun addGroupMembersLocked(
         groupId: String,
         memberIds: Set<String>,
@@ -3041,6 +3072,9 @@ public class RealFlashChatRepository(
                     return
                 }
                 val outcome = signed.onBundle(peerDeviceId, frame)
+                if (outcome is SignedGroups.BundleOutcome.Ignored && outcome.reason == "charter:owner-not-paired") {
+                    noticeOfferRefused(frame.groupId, frame.charter.name, peerDeviceId)
+                }
                 if (outcome is SignedGroups.BundleOutcome.Applied) {
                     val selfActive = groupMemberDao?.member(frame.groupId, localDeviceId)?.isActive == true
                     if (outcome.joined || selfActive) {
@@ -5745,6 +5779,9 @@ public class RealFlashChatRepository(
         /** GM-8: Default timeout for address hint dialing before falling back to discovery (M-03). */
         const val HINT_DIAL_TIMEOUT_MS: Long = 30_000L
         const val INVITE_PROOF_MAX_RETRIES: Int = 3
+
+        /** One "you were added but cannot join" notice per group per ten minutes, however often the bundle is resent. */
+        const val OFFER_REFUSED_NOTICE_INTERVAL_MS: Long = 10 * 60_000L
         const val INVITE_PROOF_RETRY_DELAY_MS: Long = 3_000L
 
         /** Why a v2 group could not be created or extended: the invitee's key is not verifiably available. */

@@ -45,6 +45,10 @@ public class DesktopNotificationManager(
     // Track transfer states by ID to fire transitions only once
     private val previousTransferStates = ConcurrentHashMap<FlashTransferId, FlashTransferState>()
 
+    // File names of inbound attachments that already raised a message notification, with the time. The same file
+    // then completes as a transfer; announcing that too is a second banner for one event.
+    private val recentAttachmentNotices = ConcurrentHashMap<String, Long>()
+
     // Track pairing phase to fire notification only on transition into RequestReceived
     private var previousPairingPhase: PairingPhase? = null
 
@@ -66,6 +70,7 @@ public class DesktopNotificationManager(
         engine.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             handleJoinRequest(groupId, groupTitle, requesterName)
         }
+        engine.onGroupOfferRefused = { _, groupName, message -> handleGroupOfferRefused(groupName, message) }
 
         // Observe transfers when ready
         transferJob = scope.launch {
@@ -104,6 +109,7 @@ public class DesktopNotificationManager(
         engine.onInboundMessageNotification = null
         engine.onInboundAttachmentNotification = null
         engine.onJoinRequestNotification = null
+        engine.onGroupOfferRefused = null
         transferJob?.cancel()
         transferJob = null
         callsJob?.cancel()
@@ -111,6 +117,7 @@ public class DesktopNotificationManager(
         pairingJob?.cancel()
         pairingJob = null
         previousTransferStates.clear()
+        recentAttachmentNotices.clear()
         previousPairingPhase = null
         previousCallPhase = null
     }
@@ -154,6 +161,7 @@ public class DesktopNotificationManager(
         val shouldSuppress = inForeground && activeConversationId() == conversationId
 
         if (!shouldSuppress && isNotificationsEnabled()) {
+            recentAttachmentNotices[fileName] = System.currentTimeMillis()
             val title = groupTitle ?: (senderName?.ifBlank { null } ?: "Flash Message")
             val body = if (groupTitle != null) {
                 "${senderName?.ifBlank { null } ?: "Member"} sent $fileName"
@@ -187,6 +195,13 @@ public class DesktopNotificationManager(
         }
     }
 
+    /** M-23: always shown, even with the window in front: the group never appears, so this is the only sign. */
+    public fun handleGroupOfferRefused(groupName: String, message: String) {
+        if (isNotificationsEnabled()) {
+            dispatchNotification(groupName.ifBlank { "Group" }, message, Notification.Type.Warning)
+        }
+    }
+
     public fun handleTransfersUpdate(transfers: List<com.transfer.flash.core.transfer.model.FlashTransfer>) {
         transfers.forEach { transfer ->
             val prev = previousTransferStates[transfer.id]
@@ -196,7 +211,7 @@ public class DesktopNotificationManager(
                 // Fire notification only if this is a state transition (not initial discovery)
                 if (prev != null) {
                     if (transfer.state == FlashTransferState.Completed) {
-                        if (isNotificationsEnabled()) {
+                        if (isNotificationsEnabled() && !alreadyAnnounced(transfer)) {
                             dispatchNotification(
                                 title = "Transfer Complete",
                                 message = "${transfer.fileName} transferred successfully",
@@ -215,6 +230,14 @@ public class DesktopNotificationManager(
                 }
             }
         }
+    }
+
+    /** A received file whose arrival already raised the attachment notification (within [ANNOUNCED_WINDOW_MS]). */
+    private fun alreadyAnnounced(transfer: com.transfer.flash.core.transfer.model.FlashTransfer): Boolean {
+        val now = System.currentTimeMillis()
+        recentAttachmentNotices.entries.removeIf { now - it.value > ANNOUNCED_WINDOW_MS }
+        return transfer.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Receiving &&
+            recentAttachmentNotices.remove(transfer.fileName) != null
     }
 
     public fun handleCallUpdate(callUi: com.transfer.flash.core.calling.model.FlashCallUiState?) {
@@ -264,5 +287,6 @@ public class DesktopNotificationManager(
 
     public companion object {
         private const val TAG: String = "DesktopNotify"
+        private const val ANNOUNCED_WINDOW_MS: Long = 60_000L
     }
 }

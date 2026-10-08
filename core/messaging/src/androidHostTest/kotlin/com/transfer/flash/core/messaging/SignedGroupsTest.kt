@@ -682,6 +682,42 @@ class SignedGroupsTest {
         assertNotNull("b did join, e is paired with b", nodes.getValue("dev-b").conversationDao.conversations[groupId])
     }
 
+    @Test
+    fun `a device added to a group whose owner it has not paired with is told why, once`() = runBlocking {
+        mesh("dev-b", "dev-d", "dev-e")
+        distrust("dev-d", "dev-e")
+        val told = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String, String>>()
+        nodes.getValue("dev-d").repo.onGroupOfferRefused = { id, name, message -> told += Triple(id, name, message) }
+        val groupId = createGroup("dev-e", "Eve's group", "dev-b", "dev-d")
+        // b (paired with d and a member) hands d the owner's bundle under its own name, as a real relay does.
+        val bundle = outbound.map { it.frame }.filterIsInstance<GroupWireFrame.Bundle>().first { it.groupId == groupId }
+            .copy(from = "dev-b")
+
+        deliver("dev-b", "dev-d", bundle)
+        deliver("dev-b", "dev-d", bundle)
+
+        assertEquals("one notice however often the bundle is resent: $told", 1, told.size)
+        assertEquals(groupId, told[0].first)
+        assertEquals("Eve's group", told[0].second)
+        assertTrue(told[0].third, told[0].third.startsWith("${names.getValue("dev-b")} added you to Eve's group"))
+        assertTrue(told[0].third, told[0].third.contains("not paired with its owner"))
+    }
+
+    @Test
+    fun `a member who is not the owner is warned that a newcomer must also be paired with the owner`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b")
+
+        val ownerAdvice = nodes.getValue("dev-a").repo.addGroupMembersAdvice(groupId, setOf("dev-c"))
+        val memberAdvice = nodes.getValue("dev-b").repo.addGroupMembersAdvice(groupId, setOf("dev-c"))
+        val alreadyIn = nodes.getValue("dev-b").repo.addGroupMembersAdvice(groupId, setOf("dev-a"))
+
+        assertNull("the owner's own pairings decide, nothing to add", ownerAdvice)
+        assertNull("an existing member is not a newcomer", alreadyIn)
+        assertNotNull(memberAdvice)
+        assertTrue(memberAdvice!!, memberAdvice.contains("can only join if also paired with ${names.getValue("dev-a")}"))
+    }
+
     // ------------------------------------------------------------------------------ SignedGroups alone
 
     @Test

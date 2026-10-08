@@ -13,6 +13,11 @@ internal class RemoteVideoStreamTrack(
         Logging.error("switchCamera is not supported for remote tracks")
     }
 
+    // Flash (ERROR-123): stop() runs before the connection closes and its native objects are disposed.
+    override fun onStop() {
+        detachSinks()
+    }
+
     override fun onSetEnabled(enabled: Boolean) {
         if (enabled) {
             native.addTrackMuteListener(this)

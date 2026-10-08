@@ -13861,3 +13861,27 @@ Investigated and resolved four critical live-network issues identified from mult
 - Live multi-device session verification of the fixes.
 - Track GM Phase GM-11 device verification.
 
+
+## 2026-10-08 (b) - Linux crash after a group call, native notifications, refused group offers
+
+### Worked on
+Three things from the owner's second Linux log and report: a JVM crash when a group-call peer hung up, the Linux notification "looking bad", and a device added to a group by a member (not the owner) never seeing the group.
+
+### Changed
+- ERROR-123: jvm `RenderedVideoStreamTrack` tracks its sinks and `RemoteVideoStreamTrack.onStop()` detaches them before the connection closes (vendored fork, `MODIFICATIONS.md`).
+- Linux notifications (plan L2, ADR-093 direction): `desktop/.../linux/LinuxNotifier.kt` posts through `org.freedesktop.Notifications` over dbus-java, falls back to `notify-send`, then to the old tray popup; body markup is escaped. `DesktopMain` uses it on Linux only. `DesktopNotificationManager` no longer raises "Transfer Complete" for a received file that already raised its attachment notification (60 s window).
+- ERROR-124: `onGroupOfferRefused` (receiver notice M-23, once per group per 10 min) on Android and desktop; both hosts now show the result of `addGroupMembers`, and a non-owner adder gets advice M-24 (`addGroupMembersAdvice`).
+
+### Verification
+`:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`, `:core:messaging:testAndroidHostTest` (SignedGroupsTest 100 tests incl. 2 new, GroupMembershipStatusTextTest incl. 2 new), `LinuxNotifierTest` (5), `DesktopNotificationManagerTest` (+1). `:desktop:jvmTest`: 141 tests, 1 failure = known ERROR-106 (`DesktopEngineGroupSessionUpTest`). Nothing run on Linux.
+
+### Problems
+- The crash cause is inferred from the log and the code, not proven: the `hs_err_pid77108.log` on the laptop was not read.
+- "A group message typed on Quince shows in the 1:1 chat" is NOT explained; the send code stores group messages under the group's id. Needs Quince's log.
+- A hard stop on a non-owner's "Add members" was not built: the adder cannot know whether the newcomer is paired with the owner, and blocking would also block adds that work.
+
+### Remaining
+`LNX-06`, `LNX-07`, `GNOT-01`, `GNOT-02` (TEST-BACKLOG 4zm). Owner decision: refusal frame back to the adder, or adder hands the newcomer an invite.
+
+### Next AI
+Read `hs_err_pid*.log` if LNX-07 fails. Do not push or commit without the owner; the tree also holds the earlier uncommitted ERROR-122 follow-ups.

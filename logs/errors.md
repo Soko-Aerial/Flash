@@ -7875,3 +7875,67 @@ None. Investigated from the log; no code was changed before the evidence was rea
 
 ### Status
 OPEN (fixed in code, awaiting `LNX-05`)
+
+## ERROR-123 - Linux desktop: JVM crash (SIGSEGV in `VideoTrack.removeSinkInternal`) right after a group-call peer left
+
+### Date
+2026-10-08
+
+### Area
+Calling / desktop video / vendored webrtc-kmp (`third_party/webrtc-kmp`, jvm `RenderedVideoStreamTrack`, `PeerConnection.close`), found on the Linux laptop.
+
+### Symptoms
+Three devices in a group video call (Linux, `Flash Raspberry`, `Flash Quince`). `Flash Raspberry` hung up. In the same moment the log shows `Leg ... pc#1 closed (state=LEFT)`, then `video sender tuning failed: Object handle is null`, then the JVM died: `SIGSEGV (0xb)`, problematic frame `libwebrtc-java-linux-x86_64.so+0x564092 Java_dev_onvoid_webrtc_media_video_VideoTrack_removeSinkInternal+0x22`, exit 134. Not a Java exception: nothing could catch it.
+
+### Environment
+Ubuntu 22.04, Temurin 25.0.4.1, webrtc-java 0.19.0, Flash dev at `a7c29bdc` + working tree. Evidence: owner's `desktop.log` (777 lines, 14:37-14:54). The `hs_err_pid77108.log` the JVM wrote is on the Linux machine and was not read.
+
+### Root cause (inferred, not proven)
+The leg-close path (`FlashGroupCallSession.closeLegLocked`) closes the peer connection first. The jvm `PeerConnection.close()` then stops the remote tracks and disposes every sender/receiver/transceiver it owns (ADR-054). The UI's `DesktopVideoSink` is still attached to that remote `VideoTrack`; Compose unbinds it some time later (`bind(null)` / `release()` -> `track.removeSink`), and that native call runs on a track whose native owner is already gone. The call goes straight into native code with no Java-side guard, so it kills the process. The comment in `PeerConnection.kt` that a late call "cannot crash natively" is wrong for this call.
+
+### Failed attempts
+None yet. The `hs_err` file would confirm which thread freed the object; it was not available.
+
+### Working fix (in code, not device-verified)
+`RenderedVideoStreamTrack` (jvm) now keeps its own set of attached sinks behind a lock and routes `addSink`/`removeSink` through it. `RemoteVideoStreamTrack.onStop()` calls `detachSinks()`, which removes every sink natively **while the track is still alive** and then turns every later add/remove into a Java no-op. `PeerConnection.close()` already calls `stop()` on every remote track before it closes the connection, so the detach always happens first. Recorded in `third_party/webrtc-kmp/MODIFICATIONS.md`.
+
+### Verification
+`:desktop:compileKotlinJvm` green. No unit test: the fix needs the native library. Device test `LNX-07`.
+
+### Related files
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/kotlin/com/shepeliev/webrtckmp/RenderedVideoStreamTrack.kt`
+- `third_party/webrtc-kmp/webrtc-kmp/src/jvmMain/kotlin/com/shepeliev/webrtckmp/RemoteVideoStreamTrack.kt`
+- `ui/callui/src/jvmMain/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSurface.jvm.kt` (the sink that unbinds late)
+
+### Status
+OPEN (fixed in code, awaiting `LNX-07`). If it crashes again, read `hs_err_pid*.log` first.
+
+## ERROR-124 - A device added to a signed group by a member it is paired with, but not paired with the owner, saw nothing; the adder was told nothing
+
+### Date
+2026-10-08
+
+### Area
+Signed groups (`SignedGroups.onBundle` / `GroupSignatureRules.checkCharter`), hosts' add-members handlers.
+
+### Symptoms
+The owner's Linux laptop (paired only with `Flash Quince`) was added to a group made by another phone. On Linux the group never appeared; `desktop.log` had one `Group bundle ignored: ... reason=charter:owner-not-paired`, then every group message was dropped as `group.msg.drop ... not_active_member` (33 of them) with no receipt and no notice. The adding phone showed no error either: both hosts threw away the result of `addGroupMembers`. Adding from the group owner's own device worked (owner paired with Linux).
+
+### Root cause
+By design (ADR-044 V1/V2): a device accepts a signed group's charter only if it is paired with the owner or holds an invite. Two gaps around that rule: the refusal was only a log line, and the adding member cannot see whether a newcomer is paired with the owner, and the add button gave no feedback. The symptom "a message typed in the group shows in the 1:1 chat" was NOT reproduced or explained: `sendGroupText` stores the row under the group's own conversation id. Needs Quince's log.
+
+### Working fix (in code, not device-verified)
+- Receiver: `RealFlashChatRepository.onGroupOfferRefused` fires once per group per 10 minutes when a bundle is ignored for `charter:owner-not-paired`. Android posts a notification (`FlashNotificationManager.showGroupOfferRefused`), desktop a native notification. Sentence M-23: "X added you to G, but you are not paired with its owner. Pair with the owner, or ask for an invite link, to join."
+- Adder: both hosts now show the failure text of `addGroupMembers` (it was dropped before) and, for a non-owner of a signed group, the new `addGroupMembersAdvice` sentence M-24 ("Added. Linux can only join if also paired with <owner>. Otherwise share an invite link.").
+- **Not done, owner decision needed:** a hard stop. The adding device cannot know the newcomer's pairing with the owner, so blocking would also block adds that work today. Options: a refusal frame back to the adder, or the adder handing the newcomer an invite as the trust root.
+
+### Verification
+`SignedGroupsTest` (2 new tests: one notice however often the bundle is resent; the advice is only for a non-owner and only for a newcomer), `GroupMembershipStatusTextTest`; `:core:messaging:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green 2026-10-08. Device tests `GNOT-01`, `GNOT-02`.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`onGroupOfferRefused`, `noticeOfferRefused`, `addGroupMembersAdvice`)
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/group/GroupMembershipStatusText.kt` (M-23, M-24)
+- `desktop/.../DesktopEngine.kt`, `DesktopNotificationManager.kt`, `DesktopShell.kt`; `app/.../MainActivity.kt`, `DiscoveryEngineHolder.kt`, `FlashNotificationManager.kt`
+
+### Status
+OPEN (fixed in code, awaiting `GNOT-01` / `GNOT-02`)

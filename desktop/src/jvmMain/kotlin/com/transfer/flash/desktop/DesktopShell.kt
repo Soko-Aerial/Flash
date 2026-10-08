@@ -1279,7 +1279,17 @@ public fun DesktopShell(
             },
             onAddGroupMembers = { groupId, memberIds ->
                 scope.launch {
-                    chatRepository.addGroupMembers(groupId, memberIds)
+                    // The result used to be dropped, so a refused add looked like success.
+                    val note = when (val added = chatRepository.addGroupMembers(groupId, memberIds)) {
+                        is com.transfer.flash.core.common.result.FlashResult.Success ->
+                            chatRepository.addGroupMembersAdvice(groupId, memberIds)
+                        is com.transfer.flash.core.common.result.FlashResult.Failure ->
+                            (added.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                ?: "Couldn't add members"
+                    }
+                    if (note != null) {
+                        snackbarHostState.showSnackbar(message = note, duration = SnackbarDuration.Long)
+                    }
                 }
             },
             onLeaveGroup = { groupId ->
