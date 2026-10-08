@@ -4,9 +4,11 @@
 
 package com.transfer.flash.core.discovery.jmdns
 
+import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.protocol.FlashProtocol
 import com.transfer.flash.core.discovery.core.DiscoveryModePolicy
 import com.transfer.flash.core.discovery.core.EndpointDirectory
+import com.transfer.flash.core.discovery.core.FlashAdvertisedIdentity
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.core.discovery.core.StandardEndpointDirectory
 import kotlinx.coroutines.Dispatchers
@@ -45,14 +47,20 @@ public class JmdnsResolveStormTest {
 
     private class CountingBridge : JmdnsBridge {
         val resolveRequests = mutableListOf<String>()
+        val registered = mutableListOf<JmdnsAdvertiseRequest>()
         var events: JmdnsBrowseEvents? = null
         var opened = false
+
+        /** Runs inside `close()`, standing for the seconds JmDNS spends closing while resolve requests keep arriving. */
+        var duringClose: () -> Unit = { }
 
         override fun open() {
             opened = true
         }
 
-        override fun register(request: JmdnsAdvertiseRequest) = Unit
+        override fun register(request: JmdnsAdvertiseRequest) {
+            registered += request
+        }
 
         override fun unregisterAll() = Unit
 
@@ -69,6 +77,7 @@ public class JmdnsResolveStormTest {
         }
 
         override fun close() {
+            duringClose()
             events = null
             opened = false
         }
@@ -282,6 +291,93 @@ public class JmdnsResolveStormTest {
             assertTrue(
                 "the workload must stay bounded (got ${bridge.resolveRequests.size})",
                 bridge.resolveRequests.size <= 4,
+            )
+        }
+    }
+
+    private val self = FlashAdvertisedIdentity(
+        deviceId = FlashDeviceId("own-device"),
+        friendlyName = "Flash Bunny",
+        deviceModel = "linux-x64",
+        protocolVersion = FlashProtocol.VERSION,
+    )
+
+    /**
+     * ERROR-122, the Linux laptop of 2026-10-08. The app's OWN service name resolved with alternating real and hollow
+     * TXT. A self-resolution returns before the name is vouched, so the vouched guard never covered it, and every real
+     * delivery reset the retry budget: forced resolves for ever, thousands of stacked JmDNS listeners, OutOfMemoryError.
+     */
+    @Test
+    public fun ownServiceNameAlternatingRealAndHollowNeverTriggersResolves() {
+        withTransport { transport, bridge ->
+            transport.startBrowsing()
+            transport.startAdvertising(8080, self)
+            val ownName = bridge.registered.single().serviceName
+            bridge.resolveRequests.clear()
+
+            repeat(500) {
+                bridge.events!!.onServiceAdded(TYPE, ownName)
+                bridge.events!!.onServiceResolved(hollow(ownName))
+                bridge.events!!.onServiceResolved(real(ownName, deviceId = "own-device"))
+            }
+
+            assertEquals("our own advertisement must cost no resolve at all", 0, bridge.resolveRequests.size)
+        }
+    }
+
+    /** A collision-renamed copy of our own service (`Name (2)`) is learned from its device id, then left alone. */
+    @Test
+    public fun renamedOwnServiceStopsBeingRetriedAfterItsFirstRealResolve() {
+        withTransport { transport, bridge ->
+            transport.startBrowsing()
+            transport.startAdvertising(8080, self)
+            bridge.resolveRequests.clear()
+            val renamed = "Flash Flash Bunny (2)"
+
+            bridge.events!!.onServiceResolved(real(renamed, deviceId = "own-device"))
+            repeat(200) {
+                bridge.events!!.onServiceResolved(hollow(renamed))
+                bridge.events!!.onServiceResolved(real(renamed, deviceId = "own-device"))
+            }
+
+            assertEquals(0, bridge.resolveRequests.size)
+        }
+    }
+
+    /** Whatever the cause, the cost of resolving is capped per minute and the window then re-opens. */
+    @Test
+    public fun resolveRequestsAreCappedPerWindowAndRecover() {
+        var now = 1_000L
+        withTransport(nowMs = { now }) { transport, bridge ->
+            transport.startBrowsing()
+            bridge.resolveRequests.clear()
+
+            repeat(2_000) { bridge.events!!.onServiceAdded(TYPE, "Flash Peer $it") }
+            assertEquals(JmdnsTransport.MAX_RESOLVES_PER_WINDOW, bridge.resolveRequests.size)
+
+            now += JmdnsTransport.RESOLVE_WINDOW_MS + 1
+            bridge.events!!.onServiceAdded(TYPE, "Flash Peer later")
+            assertEquals(JmdnsTransport.MAX_RESOLVES_PER_WINDOW + 1, bridge.resolveRequests.size)
+        }
+    }
+
+    /**
+     * `restartBrowsing()` closes JmDNS, which takes seconds. A resolve request that arrives meanwhile must stand down
+     * (the bridge is closing) instead of hitting an executor that is shutting down: 4,270 such rejections in 3 s.
+     */
+    @Test
+    public fun resolveRequestsDuringARestartCloseStandDown() {
+        withTransport { transport, bridge ->
+            transport.startBrowsing()
+            val events = bridge.events!!
+            bridge.resolveRequests.clear()
+            bridge.duringClose = { events.onServiceAdded(TYPE, "Flash Late") }
+
+            transport.restartBrowsing()
+
+            assertTrue(
+                "no resolve may be issued while the bridge is closing (got ${bridge.resolveRequests})",
+                "Flash Late" !in bridge.resolveRequests,
             )
         }
     }
