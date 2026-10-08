@@ -22,6 +22,23 @@ public data class ContentSnapshot(
     public val deliveredTo: Set<String>,
     /** Real piece map, at most 64 blocks (0 missing, 1 on peers, 2 in flight, 3 verified); see [PieceBlocks]. */
     public val pieceBlocks: List<Int> = emptyList(),
+    /** Origin only: how far each connected member (and each member known to have it) has got; empty for a receiver. */
+    public val recipients: List<RecipientSnapshot> = emptyList(),
+)
+
+/**
+ * What the origin knows about one member's copy of a file it is sending, from that member's own HAVE / HAVE_ALL
+ * announcements, so it is the member's real holding, whichever device it came from.
+ */
+public data class RecipientSnapshot(
+    public val peerId: String,
+    public val bytesHeld: Long,
+    public val totalBytes: Long,
+    /** The member announced the whole file. Stays true when it is offline later. */
+    public val hasAll: Boolean,
+    public val online: Boolean,
+    /** Growth of the member's holding, bytes per second; 0 when it has stopped growing, is complete or is offline. */
+    public val rateBytesPerSec: Long,
 )
 
 /**

@@ -117,6 +117,28 @@ public data class FlashAttachmentProgress(
     val bytesTotal: Long = 0L,
     /** Real swarm piece map (0 missing, 1 on peers, 2 in flight, 3 verified); empty when this is not a swarm transfer. */
     val pieceBlocks: List<Int> = emptyList(),
+    /** Sender of a group swarm file: each member's progress, by device id; empty for everything else. */
+    val recipients: List<FlashRecipientProgress> = emptyList(),
+)
+
+/** One member's progress on a file this device is sending to a group (by device id; the repository adds the name). */
+public data class FlashRecipientProgress(
+    val peerId: String,
+    /** 0f..1f share of the file this member holds. */
+    val progress: Float,
+    val hasAll: Boolean,
+    val online: Boolean,
+    val bytesPerSec: Long = 0L,
+)
+
+/** One row of the sender's "who has the file" list in a bubble. */
+public data class FlashFileRecipientUi(
+    val id: String,
+    val name: String,
+    val progress: Float,
+    val hasAll: Boolean,
+    val online: Boolean,
+    val speedMbps: Float = 0f,
 )
 
 /**
@@ -138,6 +160,10 @@ public data class FlashFileAttachmentUi(
     val detailLine: String? = null,
     /** Real swarm piece map; empty for a 1:1 transfer, in which case no map is drawn. */
     val pieceBlocks: List<Int> = emptyList(),
+    /** Sender only: who already has the file and how fast the others are getting it; empty when not a group send. */
+    val recipients: List<FlashFileRecipientUi> = emptyList(),
+    /** How many members the sender is waiting on in total (>= recipients seen); 0 when unknown. */
+    val recipientsTotal: Int = 0,
 )
 
 /**

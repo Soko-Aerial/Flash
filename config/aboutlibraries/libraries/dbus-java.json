@@ -1,0 +1,6 @@
+{
+  "uniqueId": "^com\\.github\\.hypfvieh:dbus\\-java\\-.*$::regex",
+  "licenses": [
+    "dbus-java-mit"
+  ]
+}

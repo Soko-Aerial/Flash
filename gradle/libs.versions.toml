@@ -31,6 +31,7 @@ ksp = "2.3.11"
 # Phase 14 (desktop mDNS). Pinned to the version PHASE-14 names; 3.6.3 exists on
 # Maven Central but R10 authorises only what the phase specifies.
 jmdns = "3.5.12"
+dbusJava = "5.2.2"
 # Desktop voice-note playback (ERROR-063, human-authorized 2026-09-16). Pure-Java MP4
 # demux + AAC decoder for `.m4a` voice notes, which `javax.sound.sampled` cannot open.
 # Alternatives ruled out in the decision: JAAD (GPL — incompatible with this repo's
@@ -153,6 +154,12 @@ webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11
 # maven-metadata.xml). `javax.jmdns:jmdns` also exists but is abandoned at 3.4.1.
 # Brings one transitive compile dependency: org.slf4j:slf4j-api:2.0.7.
 jmdns = { group = "org.jmdns", name = "jmdns", version.ref = "jmdns" }
+# Linux plan L1 / D-L2 (owner decision 2026-10-08): D-Bus client for the Secret Service keyring on the Linux desktop,
+# and later notifications / FileManager1. MIT licence, needs JDK 17+ at run time (5.x), depends on slf4j-api only.
+# `implementation` in `:desktop` jvmMain only; the unixsocket transport uses the JDK itself (no jnr / native libs).
+# Version 5.2.2 is the newest 5.x on Maven Central (2026-09-26); 6.x needs JDK 21 and is not on Central yet.
+dbus-java-core = { group = "com.github.hypfvieh", name = "dbus-java-core", version.ref = "dbusJava" }
+dbus-java-transport-native-unixsocket = { group = "com.github.hypfvieh", name = "dbus-java-transport-native-unixsocket", version.ref = "dbusJava" }
 # Phase 13B-2 (D10 = A). The ROOT multiplatform module, never `okio-jvm`: Gradle's
 # variant-aware resolution hands the `jvm` variant to both the android and the jvm() target,
 # and would hand a klib to a future native target. `okio-jvm` would pin JVM-only and break

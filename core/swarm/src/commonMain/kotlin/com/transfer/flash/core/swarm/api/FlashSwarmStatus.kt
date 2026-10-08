@@ -19,4 +19,6 @@ public data class FlashSwarmStatus(
     val totalBytes: Long,
     val isComplete: Boolean,
     val pieceBlocks: List<Int> = emptyList(),
+    /** Sender only: each member's progress on this file (empty on a receiver). */
+    val recipients: List<com.transfer.flash.core.swarm.engine.RecipientSnapshot> = emptyList(),
 )

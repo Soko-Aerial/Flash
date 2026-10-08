@@ -4085,3 +4085,226 @@ The owner tests late and by usage, and wants the logs to say which backlog tests
 
 ### Revisit when
 A real device log has been read against the vocabulary (gaps will show), or the rotating log evicts probes before the owner exports it (then give probes their own longer-lived stream).
+
+## ADR-088 - Group creation allows up to 20 devices; a host with no share sheet gets no Share button
+
+### Decision
+1. The create-group sheet lets the user choose up to 19 peers (20 devices with this one), `GroupPolicy.MAX_MEMBERS_V2`, instead of 5 (6 devices).
+2. `FlashConversationScreen.onShareText` is nullable. A null value hides the invite sheet's Share button (desktop has no system share sheet); Copy link stays.
+
+### Context
+ADR-044 V2 raised signed groups to 20, but the creation sheet still used the legacy 6, forcing a small group followed by "Add members". The repository already decides: a group above 6 is created only when every invitee reports signed-group support on a live session, otherwise it fails with "Groups of more than 6 need every member on the latest Flash version" (or names the offline invitees, ERROR-095). A default `{}` for the share callback made desktop show a button that did nothing.
+
+### Alternatives considered
+- Keep 6 in the sheet and rely on "Add members": rejected, it is the workaround the review complained about and the repository already protects the legacy path.
+- Query each peer's group protocol in the sheet to cap at 6 when one is old: rejected for now, the host would have to pass per-peer protocol levels; the failure message is specific. Revisit if owners report confusion.
+- Implement a desktop share (clipboard toast): rejected, Copy link already does that.
+
+### Revisit when
+A device test (`GSUI-04`) shows the refusal message is not visible enough on Android or desktop when an old-build peer is selected, or when group size 32 (ADR-056, postponed) is taken up.
+
+## ADR-089 - Swarm rows carry the file path and the sender's per-member view; an offer prepares itself while it waits for a person
+
+### Decision
+1. A swarm `FlashTransfer` row carries `localPath` (the finished file on a receiver, the source on the sender) and `sourceUri` (sender).
+2. The origin reports, per member, how much of the file that member holds, how fast that is growing and whether it has all of it (`FlashTransfer.recipients`); the file bubble shows "N of M have it" and an expandable list.
+3. An OFFERED receiver fetches the manifest and sends its Summary as soon as the offer arrives; nothing that moves file data happens before Accept.
+
+### Context
+Owner report 2026-10-07 (ERROR-119): received files would not open, the sender could not tell who had the file, and the start was slow. The engine already knew each member's holding from HAVE frames; the rows did not carry it.
+
+### Alternatives considered
+- Per-member rate from what the origin itself serves: rejected, it misses pieces a member gets from other members, which is the point of the swarm.
+- Auto-accept in groups: rejected, consent stays (default off).
+- Pushing pieces to the first member before it asks: rejected, the pull protocol already serves a first requester at once; the delay was the pre-request handshake.
+- A new wire frame for progress reports: rejected, HAVE frames already say it.
+
+### Why
+No wire change and no consent bypass (the manifest holds hashes, no file data; the Summary says "I hold nothing"). The sender's view comes from the members' own announcements, so it is true whichever device the pieces came from. Granularity is bounded by HAVE batching (about 1 s or 4 pieces).
+
+### Revisit when
+Device logs (`swarm.first_byte`, `swarm.member.*`) show the start delay is still dominated by the app and not the person's tap, or the HAVE batching makes the sender's rate too coarse on a slow link.
+
+
+## ADR-090 - A signed swarm offer is kept when swarm is off here, and a catch-up carries file offers for 7 days
+
+### Decision
+1. A verified swarm offer arriving by catch-up becomes a visible file row even if this device has swarm switched off; the row says file sharing is off and nothing is fetched.
+2. Catch-up rows that carry a swarm offer live `GroupPolicy.SWARM_OFFER_SYNC_TTL_MS` (7 days, equal to the swarm retention); text keeps 24 h.
+
+### Context
+Owner question 2026-10-07 (ERROR-120): swarm-off members got a blank message; members offline over a day never heard of a file still fetchable.
+
+### Alternatives considered
+- Drop the offer silently when swarm is off: rejected, a blank or missing message hides that a file exists.
+- Push the whole file to swarm-off members: only works for paired peers and is already what `GroupFileSender` does for them live; not extended to catch-up.
+- Raise the TTL for all messages: rejected, more catch-up traffic and storage for text with no benefit.
+
+### Why
+No wire change; the offer is signed over the row's `sentAt`, so a longer window gives no replay beyond the swarm's own 7-day expiry.
+
+### Revisit when
+Device logs show catch-up cost from the longer window, or the owner wants "adopt a kept offer when swarm is turned on".
+
+
+## ADR-091 - A holder answers the first Summary listing of a root, and a catch-up reads inside its window
+
+### Decision
+1. A device that holds pieces of a root sends its Summary back the first time a peer lists that root in a Summary during a session (tracked per peer in `summaryListedRoots`), instead of when no per-peer state exists.
+2. A catch-up request reads history from the start of the widest window (7 days, or the cursor if newer), in pages, and applies each row's own window while reading.
+
+### Context
+ERROR-121: late offers waited up to 98 s for a reconnect, and a new member of a group with more than 100 older messages received no catch-up.
+
+### Alternatives considered
+- Receiver-side periodic re-sending of its Summary: rejected, does not help when the holder withholds its answer, and adds traffic.
+- Assume the origin holds every piece from the offer: rejected for now, it changes who the engine trusts before any frame says so; revisit if device logs still show a wait.
+- Raise the 100-row limit in the DAO: rejected, the limit protects slow phones; paging with a bound keeps it.
+
+### Why
+No wire change. The reply is one frame per root per session; ordering between the swarm channel and the chat channel is not controllable, so the receiver cannot be required to announce before a peer's Summary arrives.
+
+### Revisit when
+Device logs show `swarm.first_byte sinceAcceptMs` still above a few seconds on a stable LAN, or catch-up cost on very large groups.
+
+
+
+## ADR-095 - An organisation's server holds a delegated, scoped, expiring key; the root key stays offline
+
+### Status
+ACCEPTED as a direction by the owner on 2026-10-08 (D-E8). Nothing is built. The open items below must be answered before code. Numbers 092 to 094 are reserved for the Linux port ADRs proposed in `docs/LINUX-PORT-PLAN.md`.
+
+### Decision
+1. An organisation has one **root key** (ECDSA P-256, offline, custody per D-E2). It signs **delegation certificates** and nothing else in daily use.
+2. A delegation binds `(delegate public key, scope, validFrom/To, maxDevices, serial)`. Scopes are inclusive and narrowing only (for example `enrol:member@dept=X`, `revoke:member`, `admit:group=G`, `admin:group=G`). A delegate can never grant more than it holds and can never sign a delegation unless its scope says so.
+3. The organisation's **server holds a delegation, never the root**. It may enrol and revoke members and sign group membership certs inside its scope. It may **not** create or revoke an admin, sign a delegation, or change the root. Every node checks the chain root -> delegation -> device cert and refuses a cert whose scope was exceeded.
+4. Adding or revoking an **admin**, issuing a delegation, or rotating the root needs the root key, or **2 of N admin signatures** (threshold). Device certs are short lived (D-E9) and renew from the server or from any node holding a fresh renewal; a revoked device fails to renew.
+5. Enrolment is by a **link or QR** `flash://enroll?server=<url>&token=<single-use>&root=<root fingerprint>`; the phone pins the root fingerprint from the link and proves possession of its own identity key. **Flash ships no default server, key, token or trust anchor** (the repository is public).
+6. The server never gates local chat: devices keep working on the LAN from cached certs and roster when the server is down.
+
+### Context
+An offline root key alone makes the admin a single point of failure: nobody can join or be removed while the key holder is away, the same weakness as the v2 group owner (`docs/audit/2026-10-01-chat-edge-case-audit.md`). An organisation must remove a user at any hour. The owner chose option (a) of three on 2026-10-08. This **amends H7** of `docs/ENTERPRISE-HYBRID-PLAN.md`: the hub may issue limited trust, never admin-level trust.
+
+### Alternatives considered
+- Server holds nothing and only forwards: keeps the old plan, leaves the admin-offline problem.
+- Server holds the root key: simplest, but a compromised server owns the whole fleet; rejected for a military deployment.
+- Shared realm secret only (E1): cannot revoke one device.
+
+### Why
+A compromise of the server is bounded by the delegation's scope, quota and expiry, and the root revokes the delegation. Public source is acceptable because authority comes from certificates, not from secrecy of the code or the app (anyone can build a client).
+
+### Consequences
+- A stolen device that never meets another node stays usable locally until it does; short cert life bounds this at the cost of locking out a unit that is out of contact longer than the lifetime.
+- Needs an independent cryptographic review of the certificate chain format before code, and a threat review of the enrolment endpoint (the only unauthenticated one: token, rate limit).
+- Amends ADR-044 decision 4 only if D-E1 (`REALM` trust) is accepted separately.
+
+### Revisit when
+D-E9 (cert lifetime) is answered, or the first deployment shows the lock-out window is unacceptable.
+
+
+## ADR-096 - The organisation directory, departments and a web-login dashboard live on the server
+
+### Status
+ACCEPTED as a direction by the owner on 2026-10-08 (D-E10..D-E13). Nothing is built.
+
+### Decision
+1. The server stores the organisation graph: **Organisation -> Departments -> Groups**, employees, and each group's admins. Roles (org admin, department admin, group admin, member) are scopes inside delegation certificates (ADR-095).
+2. **Visibility is enforced by the server on every directory query.** A group is `listed` or `hidden`; join mode is `open within scope`, `request (a group admin approves)`, or `admin adds only`. A **hidden group is admin-add only and never listed** to anyone outside it (D-E11).
+3. An invite sets the employee's **scope** (departments and groups they may see, optional auto-join groups, expiry). The link carries only the server address, a single-use token and the root fingerprint; **the group list is never in the link**.
+4. The organisation admin creates departments; **department admins create groups inside theirs** (D-E13).
+5. Joining a group yields a **membership cert signed by a group admin or by the server's scoped key** (`admit:group=G`). The **group secret is not stored on the server**; whether org-managed groups drop the secret in favour of the signed chain is for the group-membership ADR that follows this one.
+6. The **dashboard has a web login** (D-E12): password (Argon2id) plus a required second factor (TOTP), HttpOnly SameSite session cookies, rate limit with lock-out, a separate listener that is LAN/VPN only by default, **no default credentials** (a one-time setup token printed on the server console creates the first admin, then dies). **Step-up:** creating or revoking an admin, issuing a delegation or changing the root requires a signature from the admin's own enrolled device; a stolen web session cannot do these. All admin actions go to a signed, append-only audit log.
+7. Devices cache a signed roster slice and keep working when the server is down (E3).
+
+### Context
+The owner wants employees to discover groups and colleagues through the server, with the organisation deciding who sees what, and a dashboard to run it. The first draft used device-key sign-in only; the owner asked for a normal web login as part of the server plan.
+
+### Alternatives considered
+- Group list inside the invite link: leaks structure to anyone holding the link; rejected.
+- Open directory to every enrolled device: leaks hidden groups and the organisation graph; rejected.
+- Dashboard sign-in by device challenge only: strongest, but not what the owner asked for; kept as an optional QR convenience.
+- Passwords without a second factor or step-up: a phished password would let an attacker mint admins; rejected.
+
+### Why
+The server operator is the organisation, so it may know the graph; message confidentiality is separate (sealed envelopes, E4). Server-side filtering plus short-lived, scoped certs bound the damage of a stolen account; step-up keeps admin creation off the web path.
+
+### Consequences
+- A compromised server leaks the directory and can enrol within its quota; it cannot create admins or read sealed messages.
+- A large new surface (web app, sessions, MFA, audit log) needs its own threat review and dependency list (AGENTS.md section 3: every dependency documented with a reason).
+- The dashboard is code in the public repository; its security cannot depend on source secrecy.
+
+### Revisit when
+Hidden-group lookups or the dashboard need delegation to non-technical admins, or a single sign-on provider is wanted.
+
+
+## ADR-097 - A signed history ceiling bounds what a new member can catch up, and the new member chooses inside it
+
+### Status
+ACCEPTED as a direction by the owner on 2026-10-08 (`docs/group/GROUP-SYNC-REVAMP-PLAN.md`). Nothing is built; open items O1 to O4 of that plan remain.
+
+### Decision
+1. A signed group setting `historyCeiling` (GM-9 / ADR-074 mechanism) takes `NONE | H24 | D7 | D30 | ALL`, default **D30**, changeable by **any admin** (owner decision 2026-10-08). `NONE` means no earlier messages **and no files** (history includes files).
+2. A new member sees a one-time card choosing how much to catch up, clamped to the ceiling: messages (none, 24 h, 7 days, 30 days, everything allowed) and files (none or the last 7 days, each file still needs Accept).
+3. `SyncRequest` carries the chosen window; **the holder serves the smaller of the request and the ceiling** and applies its own retention. Holders enforce; a member who already holds data can always leak it, and `docs/security.md` must say so.
+4. A **returning** member is guaranteed the full **7 days** it missed (instead of the fixed 24 h), up to the ceiling; whether to fill the whole gap up to the ceiling is O2.
+5. Catch-up uses a **contiguous watermark** instead of the newest-row cursor, and is **paged and resumable** with progress.
+
+### Context
+Today a new member silently receives text of the last 24 h and swarm file offers of the last 7 days, with no choice and no admin limit (ADR-090, ADR-091, FO-10). Suspected defects S1 (the cursor can skip older missed rows), S2 (24 h text versus 7 day offers) and S3 (one round of at most 500 rows) are to be proven by unit tests before they are fixed.
+
+### Alternatives considered
+- Keep automatic sync, no prompt: rejected by the owner (FO-10).
+- Per-member-only choice with no ceiling: rejected, an admin must be able to keep older content from newcomers.
+- Raise the 24 h TTL for everyone: rejected earlier (ADR-090), more traffic for no benefit.
+
+### Why
+The ceiling gives the group a privacy rule, the card gives the person control, and the holder-side clamp keeps the rule in one place. The setting is an additive signed field, so an older build ignores it and behaves as today; a mixed fleet is safe but not equal.
+
+### Consequences
+- "Any admin" needs co-admins in plain groups (owner-loss path A, undecided); inside an organisation the admin comes from ADR-095/096.
+- Files only reach back as far as the swarm retention (7 days) unless that is raised (O1).
+- Holders must keep 30 days of text rows (O4); cleanup must not prune earlier than the ceiling.
+
+### Revisit when
+O1 to O4 are answered, or device logs show the paged catch-up cost on large groups.
+
+
+## ADR-092 - Desktop identity vault: DPAPI on Windows, a key-file vault elsewhere until a keyring provider exists
+
+### Status
+ACCEPTED for the fallback tier (Linux plan phase L0, built and unit-tested 2026-10-08, not run on a Linux host). The Secret Service provider and the passphrase option remain PROPOSED in `docs/LINUX-PORT-PLAN.md` (L1, D-L2: which D-Bus library).
+
+### Decision
+1. `IdentityKeyVault.defaultForCurrentOs(stateDir)` returns Windows DPAPI on Windows and `IdentityKeyVault.forKeyFile(<stateDir>/identity/vault.key)` on every other OS. DPAPI is never touched off Windows.
+2. The key-file vault seals with AES-256-GCM under a random 256-bit master key stored in its own file, created owner-only (`0600`) on a POSIX file system, written complete to a temp file and moved into place. Tampered or foreign blobs throw; a missing key file throws and is never recreated by `unprotect`.
+3. The tier is stated plainly: **same-user code can read both files**, so this is stronger than a lone copy of the blob and weaker than a keyring or a passphrase. It is not described as secure storage anywhere.
+4. `jdk.crypto.mscapi` is added to the jpackage runtime modules only when the build host is Windows.
+
+### Context
+First run on Linux crashed: `PersistedFlashCrypto.persist` called `vault.protect` and `Crypt32Util` could not load (Linux plan C4, audit `TASK-CORE-SEC-1`). Owner made Linux a committed target on 2026-10-08 (D-L1). `PassThrough` would have fixed the crash by writing the key unprotected, which AGENTS.md section 19 forbids as a default.
+
+### Alternatives considered
+- `PassThrough` off Windows: rejected, plaintext key at rest.
+- Master key derived from `/etc/machine-id`: rejected (world-readable, Linux plan C7).
+- Wait for the Secret Service: rejected, the app would stay unusable on Linux until L1.
+
+### Why
+It removes the crash with no new dependency (JCE only) and keeps the vault seam, so the Secret Service and a passphrase vault replace it later without a format change (`PersistedFlashCrypto` version byte unchanged).
+
+### Revisit when
+L1 lands the Secret Service or passphrase vault; then the key-file vault becomes the last-resort tier and a migration reads the old blob once.
+
+
+### Update 2026-10-08 (Linux plan L1): the keyring tier is built; D-L2 answered (dbus-java)
+
+**Status of this update:** ACCEPTED for the code, unit-tested on Windows with a fake Secret Service, not run on a Linux host (`LNX-02`).
+
+1. `IdentityKeyVault.defaultForCurrentOs` is unchanged for callers. The desktop builds the Linux vault itself (`DesktopVaults.forCurrentOs`) because the D-Bus client lives in `:desktop`, not in `:core:security`: Windows gets DPAPI, Linux gets `IdentityKeyVault.withKeyring(<Secret Service>, <stateDir>/identity/vault.key)`, anything else gets the key file.
+2. **Master key sources are tiered and tagged.** Every sealed blob is `tag(1) || nonce(12) || AES-256-GCM(ciphertext+tag)`. Tag `0x01` = owner-only key file, `0x02` = Secret Service keyring. `protect` uses the first source that works; `unprotect` opens the blob from the source its tag names, and never creates a key. So a machine that gains or loses a keyring still opens what it sealed, and a blob sealed for an absent source fails with a clear message instead of a bad-key error.
+3. **Library (D-L2): dbus-java 5.2.2** (`com.github.hypfvieh:dbus-java-core` + `dbus-java-transport-native-unixsocket`), MIT, needs JDK 17+ (the app runs on 21), brings `slf4j-api` (already in the build). Alternatives: JNA to libsecret (the C library may be absent, and JNA cannot do the D-Bus protocol itself), `secret-tool` child process (it needs the tool installed and puts the secret on a pipe), a hand-written D-Bus client (too much to own). Its licence text is in `config/aboutlibraries/` so `generateThirdPartyNotices` stays green (ADR-043). It is used on Linux only and is not loaded on Windows.
+4. **The session algorithm is `plain`.** The 32 key bytes cross the per-user session bus unencrypted. That bus is private to the login session, and anything that can read it can also ask the keyring directly, so the encrypted `dh-ietf1024-sha256-aes128-cbc-pkcs7` mode would add code, not protection against the same-user threat. Revisit if a threat review asks for it.
+5. **Every keyring failure throws** (no session bus, no service, locked and the prompt dismissed or timed out after 60 s, wrong shape). The throw moves the vault to the key file, so a headless or minimal desktop still starts. The write is read back, so a keyring that silently keeps an old value cannot make the next start unable to find the key.
+6. **Security tier, stated plainly:** the keyring keeps the key out of the data folder; code running as the same user in the same login session can still ask for it. The key file is obfuscation plus `0600`. Neither is described as hardware-backed storage. A passphrase (Argon2id) vault was not built (new dependency and a UI prompt) and stays an option.
+7. **Paths:** `DesktopPaths` (Linux plan C8/L1) puts the state folder at `$XDG_DATA_HOME/flash` (default `~/.local/share/flash`) on Linux only, keeps a non-empty `~/.flash` when the XDG folder is empty, and sends received files to the XDG download folder + `/Flash`. Windows and macOS keep `~/.flash` and `~/FlashReceived`. Single folder; the config/data/cache split is deferred.
+
+**Revisit when:** `LNX-02` shows the real Secret Service flow differs (GNOME Keyring, KDE/KWallet, KeePassXC), or a threat review wants the encrypted session or a passphrase tier.

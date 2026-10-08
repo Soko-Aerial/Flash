@@ -213,7 +213,8 @@ fun FlashConversationScreen(
      * Forward message text out of the app via the system chooser (ACTION_SEND). In-app forwarding
      * falls back to this when [forwardRecipients] is empty. Default no-op keeps previews inert.
      */
-    onShareText: (String) -> Unit = {},
+    /** Null on hosts with no system share sheet (desktop): the invite sheet then hides its Share button. */
+    onShareText: ((String) -> Unit)? = null,
     /**
      * In-app forwarding candidate recipients (recent chats, groups, paired devices).
      */
@@ -580,7 +581,7 @@ fun FlashConversationScreen(
                                     if (forwardRecipients.isNotEmpty()) {
                                         pendingForwardPayload = payload
                                     } else {
-                                        onShareText(text)
+                                        onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
                                     }
                                 }
                                 selectedMessageIds = emptySet()
@@ -1013,7 +1014,7 @@ fun FlashConversationScreen(
                     pendingForwardPayload = payload
                 } else {
                     when {
-                        msg.text.isNotBlank() -> onShareText(msg.text)
+                        msg.text.isNotBlank() -> onShareText?.invoke(msg.text) ?: showMessage("Sharing isn't available here")
                         imgUri != null -> onShareImage(imgUri, image.mimeType)
                         voiceUri != null -> onShareImage(voiceUri, voice.mimeType)
                         fileLocalUri != null -> onShareImage(fileLocalUri, file.mimeType)
@@ -1140,6 +1141,13 @@ fun FlashConversationScreen(
                 null
             },
             onOpenSharedContent = { showSharedContent = true },
+            onOpenGroupSettings = if (
+                state.isGroupV2 && state.selfMembership == FlashSelfMembership.Active && conversationId != null
+            ) {
+                { showGroupSettings = true }
+            } else {
+                null
+            },
         )
     }
 
@@ -1213,7 +1221,15 @@ fun FlashConversationScreen(
     // UI-054 Group invite sheet
     LaunchedEffect(showGroupInvite, conversationId) {
         if (showGroupInvite && conversationId != null) {
-            inviteUrl = onRequestInviteLink?.invoke(conversationId)
+            // Drop the previous link first: after "Change group code" the old one must never flash on screen.
+            inviteUrl = null
+            val url = onRequestInviteLink?.invoke(conversationId)
+            if (url == null) {
+                showGroupInvite = false
+                showMessage("Couldn't create an invite link")
+            } else {
+                inviteUrl = url
+            }
         }
     }
     if (showGroupInvite && inviteUrl != null) {
@@ -1221,7 +1237,7 @@ fun FlashConversationScreen(
             inviteUrl = inviteUrl!!,
             groupName = state.header.title,
             onDismiss = { showGroupInvite = false },
-            onShare = { url -> onShareText(url) },
+            onShare = onShareText,
         )
     }
 

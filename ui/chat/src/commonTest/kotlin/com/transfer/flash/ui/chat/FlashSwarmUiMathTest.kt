@@ -162,4 +162,14 @@ class FlashSwarmUiMathTest {
         )
         assertEquals("100 MB · 48% · 5.0 MB/s · 10s left", formatted)
     }
+
+    @Test
+    fun recipientStatusLine_coversEveryState() {
+        assertEquals("Has the file", FlashSwarmUiMath.recipientStatusLine(hasAll = true, online = false, progress = 1f, speedMbps = 0f))
+        assertEquals("Offline", FlashSwarmUiMath.recipientStatusLine(hasAll = false, online = false, progress = 0f, speedMbps = 0f))
+        assertEquals("Offline · 40%", FlashSwarmUiMath.recipientStatusLine(hasAll = false, online = false, progress = 0.4f, speedMbps = 0f))
+        assertEquals("Waiting to start", FlashSwarmUiMath.recipientStatusLine(hasAll = false, online = true, progress = 0f, speedMbps = 0f))
+        assertEquals("40% · 2.5 MB/s", FlashSwarmUiMath.recipientStatusLine(hasAll = false, online = true, progress = 0.4f, speedMbps = 2.5f))
+        assertEquals("40%", FlashSwarmUiMath.recipientStatusLine(hasAll = false, online = true, progress = 0.4f, speedMbps = 0f))
+    }
 }

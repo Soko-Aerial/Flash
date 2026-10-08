@@ -62,6 +62,9 @@ internal class ContentState(
 
     val deliveredTo = LinkedHashSet<String>()
 
+    /** Last time the origin republished its row only to refresh the per-member view (rates age without an event). */
+    var lastRecipientPublishMs: Long = 0L
+
     // pieceIndex -> set of peerIds currently requested from
     val inFlightByPiece = LinkedHashMap<Int, LinkedHashSet<String>>()
 

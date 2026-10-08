@@ -22,17 +22,18 @@ class FlashCreateGroupMathTest {
     }
 
     @Test
-    fun localDeviceCountsTowardTheSixDeviceCap() {
-        // Five remote peers fill every slot; a sixth remote peer is not selectable.
-        assertTrue(FlashCreateGroupMath.canCreate("Team", (1..5).map { "p$it" }.toSet()))
-        assertFalse(FlashCreateGroupMath.canCreate("Team", (1..6).map { "p$it" }.toSet()))
-        assertFalse(FlashCreateGroupMath.selectionAllowed(selectedCount = 5))
-        assertTrue(FlashCreateGroupMath.selectionAllowed(selectedCount = 4))
+    fun localDeviceCountsTowardTheSignedGroupCap() {
+        // Nineteen remote peers fill every slot of a 20-device signed group; a twentieth is not selectable.
+        assertEquals(20, FlashCreateGroupMath.MAX_MEMBERS)
+        assertTrue(FlashCreateGroupMath.canCreate("Team", (1..19).map { "p$it" }.toSet()))
+        assertFalse(FlashCreateGroupMath.canCreate("Team", (1..20).map { "p$it" }.toSet()))
+        assertFalse(FlashCreateGroupMath.selectionAllowed(selectedCount = 19))
+        assertTrue(FlashCreateGroupMath.selectionAllowed(selectedCount = 18))
     }
 
     @Test
     fun countLabelIncludesTheLocalDevice() {
-        assertEquals("1 of 6 members chosen", FlashCreateGroupMath.countLabel(0))
-        assertEquals("6 of 6 members chosen", FlashCreateGroupMath.countLabel(5))
+        assertEquals("1 of 20 members chosen", FlashCreateGroupMath.countLabel(0))
+        assertEquals("20 of 20 members chosen", FlashCreateGroupMath.countLabel(19))
     }
 }

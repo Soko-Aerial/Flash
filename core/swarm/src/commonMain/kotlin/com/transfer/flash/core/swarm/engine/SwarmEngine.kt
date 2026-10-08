@@ -42,7 +42,11 @@ public class SwarmEngine(
     private val contentLifecycleHandler = ContentLifecycleHandler(localDeviceId, config, strikeBook)
     private val peerHandler = PeerHandler(peers, contents, tombstones) { tb, cmds -> applyTombstone(tb, cmds) }
 
+    /** Time of the newest event; lets [snapshot] age a rate without a clock of its own. */
+    private var lastEventMs: Long = 0L
+
     public fun handle(event: SwarmEvent): List<SwarmCommand> {
+        if (event.nowMs > lastEventMs) lastEventMs = event.nowMs
         val commands = ArrayList<SwarmCommand>()
         when (event) {
             is SwarmEvent.Announced -> {
@@ -57,6 +61,18 @@ public class SwarmEngine(
                                 content, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
                             )
                         }
+                        for ((peerId, peer) in peers) {
+                            if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
+                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands)
+                            }
+                        }
+                    } else if (content.state == SwarmLifecycleState.OFFERED && content.role == SwarmRole.RECEIVER) {
+                        // ERROR-119: an offer waits for a person, and everything that does not need the person's consent
+                        // is done in that time so Accept starts the first piece at once: fetch the manifest (hashes
+                        // only, no file data) and tell the group what this device holds (nothing), which makes the
+                        // origin answer with its piece map. Without this the first request waited three round trips
+                        // after Accept, and the sender saw nobody until then.
+                        manifestHandler.maybeFetchManifest(content, peers, ::isPeerAllowed, commands, event.nowMs)
                         for ((peerId, peer) in peers) {
                             if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
                                 peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands)
@@ -118,7 +134,7 @@ public class SwarmEngine(
             is SwarmEvent.ManifestPartArrived -> {
                 contents[event.part.groupId to event.part.root]?.let { content ->
                     manifestHandler.handleManifestPart(event, content, commands) {
-                        updateWaitReason(it)
+                        if (it.state == SwarmLifecycleState.ACTIVE) updateWaitReason(it)
                         publishRow(it, commands)
                         transferScheduler.scheduleRequests(
                             it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
@@ -133,7 +149,7 @@ public class SwarmEngine(
                         content = content,
                         commands = commands,
                         onManifestReady = {
-                            updateWaitReason(it)
+                            if (it.state == SwarmLifecycleState.ACTIVE) updateWaitReason(it)
                             publishRow(it, commands)
                             transferScheduler.scheduleRequests(
                                 it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
@@ -439,8 +455,25 @@ public class SwarmEngine(
                         commands.add(SwarmCommand.DeletePartial(content.groupId, content.root))
                         publishRow(content, commands)
                         commands.add(SwarmCommand.PersistRecord(content.toRecord(event.nowMs)))
+                    } else if (content.state == SwarmLifecycleState.OFFERED &&
+                        content.role == SwarmRole.RECEIVER && content.manifest == null
+                    ) {
+                        // The offer's manifest prefetch (see Announced) must survive a lost reply like the active one does.
+                        if (content.manifestPeerInFlight != null && event.nowMs - content.manifestRequestSentAtMs > 5_000L) {
+                            content.manifestPeerInFlight = null
+                            content.manifestAssembler = null
+                        }
+                        manifestHandler.maybeFetchManifest(content, peers, ::isPeerAllowed, commands, event.nowMs)
                     } else if (content.state == SwarmLifecycleState.ACTIVE) {
                         updateWaitReason(content)
+                        if (content.role == SwarmRole.ORIGIN &&
+                            event.nowMs - content.lastRecipientPublishMs >= RECIPIENT_REPUBLISH_MS &&
+                            peers.values.any { it.isConnected && it.contentStates[content.root]?.bitfield?.isComplete() != true }
+                        ) {
+                            // The sender's per-member rates move between events and decay when a member stalls.
+                            content.lastRecipientPublishMs = event.nowMs
+                            publishRow(content, commands)
+                        }
                         if (content.role == SwarmRole.RECEIVER && content.manifest == null) {
                             if (content.manifestPeerInFlight != null && event.nowMs - content.manifestRequestSentAtMs > 5_000L) {
                                 content.manifestPeerInFlight = null
@@ -476,6 +509,7 @@ public class SwarmEngine(
                 canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
                 deliveredTo = c.deliveredTo.toSet(),
                 pieceBlocks = computePieceBlocks(c),
+                recipients = computeRecipients(c),
             )
         }
         return SwarmSnapshot(map)
@@ -623,6 +657,34 @@ public class SwarmEngine(
         )
     }
 
+    /**
+     * Origin only. Lists every group member this device has seen that is connected, plus every member known to have the
+     * whole file even if it has since gone offline. A connected member that has announced nothing yet is listed with
+     * 0 bytes: it has not accepted (or has just accepted) and the sender should see that it is there.
+     */
+    private fun computeRecipients(content: ContentState): List<RecipientSnapshot> {
+        if (content.role != SwarmRole.ORIGIN) return emptyList()
+        val result = ArrayList<RecipientSnapshot>()
+        for (p in peers.values) {
+            if (p.peerId == localDeviceId || !isPeerAllowed(content.groupId, p.peerId)) continue
+            val pcs = p.contentStates[content.root]
+            val hasAll = p.peerId in content.deliveredTo || (pcs != null && pcs.bitfield.isComplete())
+            if (!p.isConnected && !hasAll) continue
+            val growing = pcs != null && !hasAll && p.isConnected && lastEventMs - pcs.lastGrowthAtMs <= RECIPIENT_RATE_STALE_MS
+            result.add(
+                RecipientSnapshot(
+                    peerId = p.peerId,
+                    bytesHeld = if (hasAll) content.totalSize else pcs?.heldBytes ?: 0L,
+                    totalBytes = content.totalSize,
+                    hasAll = hasAll,
+                    online = p.isConnected,
+                    rateBytesPerSec = if (growing) pcs.holdRateBps.toLong() else 0L,
+                )
+            )
+        }
+        return result.sortedBy { it.peerId }
+    }
+
     private fun computeHolderStats(content: ContentState): Pair<Int, Int> {
         val candidatePeers = peers.values.filter {
             it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
@@ -676,3 +738,6 @@ public class SwarmEngine(
         return content?.pendingServesByPiece?.get(index) ?: 0
     }
 }
+
+private const val RECIPIENT_RATE_STALE_MS = 4_000L
+private const val RECIPIENT_REPUBLISH_MS = 1_000L

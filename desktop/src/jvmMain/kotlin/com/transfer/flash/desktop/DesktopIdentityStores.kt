@@ -121,7 +121,7 @@ internal class DesktopTrustStore(
      * Seals session keys at rest (audit S4): Windows DPAPI in production, the same vault that protects
      * the desktop identity key (ADR-035). Keys used to sit in `trust.properties` as plain Base64.
      */
-    private val vault: IdentityKeyVault = IdentityKeyVault.Dpapi,
+    private val vault: IdentityKeyVault = DesktopVaults.forCurrentOs(stateDir),
 ) : FlashTrustStore {
 
     private val file = File(stateDir, "trust.properties")

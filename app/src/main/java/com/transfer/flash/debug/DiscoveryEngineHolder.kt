@@ -1189,6 +1189,15 @@ object DiscoveryEngineHolder {
                         bytesDone = t.bytesDone,
                         bytesTotal = t.bytesTotal,
                         pieceBlocks = t.pieceBlocks,
+                        recipients = t.recipients.map {
+                            com.transfer.flash.core.messaging.model.FlashRecipientProgress(
+                                peerId = it.peerId,
+                                progress = if (it.bytesTotal > 0L) (it.bytesHeld.toFloat() / it.bytesTotal.toFloat()).coerceIn(0f, 1f) else 0f,
+                                hasAll = it.hasAll,
+                                online = it.online,
+                                bytesPerSec = it.rateBytesPerSec,
+                            )
+                        },
                     )
                 }
             },

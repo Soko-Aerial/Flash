@@ -18,6 +18,26 @@ public object FlashSwarmUiMath {
         "You can go offline now"
 
     /**
+     * One member's line in the sender's "who has the file" list: done, still receiving (share and speed), connected
+     * but not started, or offline.
+     */
+    public fun recipientStatusLine(
+        hasAll: Boolean,
+        online: Boolean,
+        progress: Float,
+        speedMbps: Float,
+    ): String {
+        val pct = (progress * 100).toInt().coerceIn(0, 100)
+        return when {
+            hasAll -> "Has the file"
+            !online -> if (pct > 0) "Offline · $pct%" else "Offline"
+            pct == 0 -> "Waiting to start"
+            speedMbps >= 0.05f -> "$pct% · ${"%.1f".format(speedMbps)} MB/s"
+            else -> "$pct%"
+        }
+    }
+
+    /**
      * Formats the detail status line for a file receiver (§5.5, UI-055).
      */
     public fun receiverStatusLine(

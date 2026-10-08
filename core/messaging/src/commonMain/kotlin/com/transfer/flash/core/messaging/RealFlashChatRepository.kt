@@ -480,6 +480,9 @@ public class RealFlashChatRepository(
     // the whole process. Observed on device 2026-08-31 10:22 (AndroidRuntime FATAL).
     private val drainMutex = Mutex()
 
+    /** Serialises [updateGroupLocalPreferences], which reads the stored row before replacing it. */
+    private val groupPreferencesLock = Mutex()
+
     /**
      * Wake signal for [drainOutboxLoop], fed by the `outboxDao.observeCount()` collector launched
      * from the init block below. That is a Room `Flow`, so it fires on any write to the `outbox`
@@ -629,6 +632,9 @@ public class RealFlashChatRepository(
      * the animation, not from how often a new target arrives. Nothing about the HIGH-tier look
      * changes here, so there is nothing to gate.
      */
+    /** Device id -> display name for the members of the open group; read when a sent file's recipient list is drawn. */
+    private var openGroupMemberNames: Map<String, String> = emptyMap()
+
     private val pacedAttachmentProgress: Flow<Map<String, FlashAttachmentProgress>> =
         attachmentProgress.throttleLatest(ATTACHMENT_PROGRESS_THROTTLE_MS)
 
@@ -884,6 +890,15 @@ public class RealFlashChatRepository(
             }
             val isGroupConversation = conversationDao.get(conversationId)?.isGroup == true
             readState.isGroup = isGroupConversation
+            if (isGroupConversation) {
+                // Names for the sender's "who has the file" list. A separate collector: the list is repainted every
+                // second while a file moves, so a name that arrives a moment late shows up on the next repaint.
+                launch {
+                    groupMemberDao?.observeMembers(conversationId)?.collect { roster ->
+                        openGroupMemberNames = roster.associate { it.deviceId to it.displayName }
+                    }
+                }
+            }
             val deliveryCountsFlow = if (isGroupConversation) {
                 groupDeliveryDao?.observeDeliveryCounts(conversationId, localDeviceId) ?: flowOf(emptyList())
             } else {
@@ -2133,15 +2148,19 @@ public class RealFlashChatRepository(
         autoAcceptSizeBytes: Long?,
     ): FlashResult<Unit> =
         withContext(ioDispatcher) {
-            val current = getGroupLocalPreferences(groupId)
-            val updated = current.copy(
-                serveToGroup = serveToGroup ?: current.serveToGroup,
-                serveWifiOnly = serveWifiOnly ?: current.serveWifiOnly,
-                batteryThresholdPercent = batteryThresholdPercent ?: current.batteryThresholdPercent,
-                keepAvailableDays = keepAvailableDays ?: current.keepAvailableDays,
-                autoAcceptSizeBytes = autoAcceptSizeBytes ?: current.autoAcceptSizeBytes,
-            )
-            groupPreferencesDao?.upsert(updated.toEntity())
+            // Read-modify-write of one row: without the lock two quick toggles of different fields both start from
+            // the same stored row and the second upsert erases the first field's change.
+            groupPreferencesLock.withLock {
+                val current = getGroupLocalPreferences(groupId)
+                val updated = current.copy(
+                    serveToGroup = serveToGroup ?: current.serveToGroup,
+                    serveWifiOnly = serveWifiOnly ?: current.serveWifiOnly,
+                    batteryThresholdPercent = batteryThresholdPercent ?: current.batteryThresholdPercent,
+                    keepAvailableDays = keepAvailableDays ?: current.keepAvailableDays,
+                    autoAcceptSizeBytes = autoAcceptSizeBytes ?: current.autoAcceptSizeBytes,
+                )
+                groupPreferencesDao?.upsert(updated.toEntity())
+            }
             conversationRefreshTrigger.value = timeSource.nowMs()
             FlashResult.Success(Unit)
         }
@@ -4039,6 +4058,43 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * ERROR-121: the rows a catch-up may carry. The query returns the OLDEST rows after the cursor, 100 at a time, and the
+     * time window used to be applied afterwards, so a member with an empty cursor (a new member) of a group with more than
+     * 100 older rows received nothing: the first page held only expired rows. The read now starts at the widest window
+     * (a swarm offer's 7 days) and keeps paging until it has [wanted] rows inside their own window or the history ends.
+     */
+    private suspend fun catchUpCandidates(
+        frame: GroupWireFrame.SyncRequest,
+        v2Group: Boolean,
+        nowMs: Long,
+        wanted: Int,
+    ): List<MessageEntity> {
+        val floor = nowMs - GroupPolicy.SWARM_OFFER_SYNC_TTL_MS
+        var sinceAt = frame.sinceSentAt
+        var sinceId = frame.sinceMessageId
+        if (sinceAt < floor) {
+            sinceAt = floor
+            sinceId = ""
+        }
+        val page = GroupPolicy.MAX_PENDING_SYNC_MESSAGES
+        val usable = ArrayList<MessageEntity>()
+        var pages = 0
+        while (pages < GroupPolicy.MAX_CATCH_UP_PAGES) {
+            val rows = messageDao.historyAfter(frame.groupId, sinceAt, sinceId, page)
+            for (row in rows) {
+                val ttl = if (row.swarmRoot != null) GroupPolicy.SWARM_OFFER_SYNC_TTL_MS else GroupPolicy.SYNC_TTL_MS
+                if (row.sentAt >= nowMs - ttl && (!v2Group || row.groupSig != null)) usable.add(row)
+            }
+            if (usable.size >= wanted || rows.size < page) break
+            val last = rows.last()
+            sinceAt = last.sentAt
+            sinceId = last.localId
+            pages++
+        }
+        return usable
+    }
+
+    /**
      * Holder side of a SyncRequest: compute the messages this device owns that are newer than
      * the requester's cursor (capped, TTL-bounded), record the round, and broadcast a claim so
      * the co-holders can elect a single pusher deterministically. Rank 0 pushes after the
@@ -4049,17 +4105,16 @@ public class RealFlashChatRepository(
         // A v2 group only relays rows that carry their author's signature; an unsigned row (an
         // attachment) could not be verified by the receiver.
         val v2Group = isV2Group(frame.groupId)
+        val nowMs = timeSource.nowMs()
         val owned = GroupSyncPolicy.ownedMessages(
-            messages = messageDao.historyAfter(
-                frame.groupId, frame.sinceSentAt, frame.sinceMessageId,
-                maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES),
-            ).filter { !v2Group || it.groupSig != null },
+            messages = catchUpCandidates(frame, v2Group, nowMs, maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES)),
             cursor = GroupSyncCursor(frame.sinceSentAt, frame.sinceMessageId),
             maxTotal = maxTotal,
-            nowMs = timeSource.nowMs(),
+            nowMs = nowMs,
             sentAt = { it.sentAt },
             messageId = { it.localId },
             deletedAt = { it.deletedAt },
+            ttlMs = { if (it.swarmRoot != null) GroupPolicy.SWARM_OFFER_SYNC_TTL_MS else GroupPolicy.SYNC_TTL_MS },
         )
         if (owned.isEmpty()) return
         // The requester is who the pushes and the ack go back to.
@@ -4270,7 +4325,9 @@ public class RealFlashChatRepository(
         // (swarm switched off here) the row is taken as plain text, as before.
         val offer = message.swarmOffer
         val listener = swarmAnnouncementListener
-        val swarmFile = if (offer != null && groupSig != null && listener != null) {
+        // ERROR-120: the offer is verified and kept even when swarm is off HERE. Dropping it left an empty message with
+        // no file name, and this device could not relay the file's offer to a member that has swarm on.
+        val swarmFile = if (offer != null && groupSig != null) {
             val verified = signedGroups?.verifySwarmAnnouncement(
                 frame.groupId, message.from, message.messageId, offer.root,
                 offer.sizeBytes, offer.fileName, offer.mimeType, message.sentAt, offer.rootSig,
@@ -4296,8 +4353,9 @@ public class RealFlashChatRepository(
             "relay" to FlashProbe.short(frame.from),
             "author" to FlashProbe.short(message.from),
             "kind" to when {
-                swarmFile != null -> "swarm_offer"
-                message.swarmOffer != null -> "offer_unused_" + (if (listener == null) "swarm_off_here" else "unsigned")
+                swarmFile != null && listener != null -> "swarm_offer"
+                swarmFile != null -> "offer_kept_swarm_off_here"
+                message.swarmOffer != null -> "offer_unused_unsigned"
                 else -> "text"
             },
             "signed" to (groupSig != null),
@@ -4327,8 +4385,10 @@ public class RealFlashChatRepository(
         if (inserted != -1L) {
             recordCatchUpArrival(frame.groupId)
             val groupTitle = conversationDao.get(frame.groupId)?.title?.ifBlank { null }
-            if (swarmFile != null && listener != null) {
+            if (swarmFile != null) {
                 onInboundAttachmentWithGroupTitle(frame.groupId, senderName, swarmFile.fileName, swarmFile.mimeType, groupTitle)
+            }
+            if (swarmFile != null && listener != null) {
                 listener.onSwarmAnnouncement(
                     groupId = frame.groupId,
                     messageId = message.messageId,
@@ -4342,7 +4402,7 @@ public class RealFlashChatRepository(
                     sentAt = message.sentAt,
                     rootSig = swarmFile.rootSig,
                 )
-            } else {
+            } else if (swarmFile == null) {
                 onInboundTextMessageWithGroupTitle(frame.groupId, senderName, message.text, groupTitle)
             }
         }
@@ -5496,7 +5556,18 @@ public class RealFlashChatRepository(
                 )
             }
             else -> {
-                val detailLine = if (base.isMine) {
+                val recipientView = if (base.isMine && live != null && live.recipients.isNotEmpty() &&
+                    status != FlashFileTransferStatus.Downloaded
+                ) {
+                    buildFileRecipientView(
+                        recipients = live.recipients,
+                        knownRecipientCount = base.deliveredTotal ?: 0,
+                        nameOf = { id -> openGroupMemberNames[id] ?: peerNameResolver(id) },
+                    )
+                } else null
+                val detailLine = if (recipientView != null) {
+                    recipientView.summaryLine(live?.canGoOffline == true)
+                } else if (base.isMine) {
                     if (live?.canGoOffline == true && status != FlashFileTransferStatus.Downloaded) {
                         if (base.deliveredTo != null && base.deliveredTotal != null && base.deliveredTotal > 0) {
                             "Delivered to ${base.deliveredTo} of ${base.deliveredTotal} · You can go offline now"
@@ -5528,6 +5599,9 @@ public class RealFlashChatRepository(
                             "WaitingForSession" -> TransferFailureText.CONNECTING_MEMBERS
                             else -> null
                         }
+                    } else if (live == null && path == null && entity.swarmRoot != null && swarmAnnouncementListener == null) {
+                        // ERROR-120: the offer is kept but nothing here can fetch it; say so instead of a dead "Tap to download".
+                        SWARM_OFF_DETAIL
                     } else if ((live?.holdersOnline ?: 0) > 1 && status == FlashFileTransferStatus.Transferring) {
                         "Getting it from ${live?.holdersOnline} devices"
                     } else if (!live?.errorMessage.isNullOrBlank()) {
@@ -5542,7 +5616,8 @@ public class RealFlashChatRepository(
                             sizeBytes = entity.attachmentSize,
                             mimeType = mime,
                             transferStatus = status,
-                            transferProgress = progress,
+                            // A sender's own bytes are always complete; what it is waiting on is the members' copies.
+                            transferProgress = recipientView?.meanProgress ?: progress,
                             transferSpeedMbps = live?.speedMbps ?: 0f,
                             etaSeconds = live?.etaSeconds ?: 0,
                             localUri = path,
@@ -5551,6 +5626,8 @@ public class RealFlashChatRepository(
                             holdersOnline = live?.holdersOnline ?: 0,
                             detailLine = detailLine,
                             pieceBlocks = live?.pieceBlocks.orEmpty(),
+                            recipients = recipientView?.rows.orEmpty(),
+                            recipientsTotal = recipientView?.total ?: 0,
                         ),
                     ),
                 )
@@ -5695,6 +5772,9 @@ public class RealFlashChatRepository(
         const val VOICE_META_PREFIX = "vmsg:"
         /** Longest file name a catch-up label carries. */
         const val SYNC_LABEL_NAME_MAX = 80
+
+        /** Detail line of a group file whose offer is kept but cannot be fetched because swarm is off on this device. */
+        const val SWARM_OFF_DETAIL = "Group file sharing is off on this device"
 
         /** How far into this device's future a signed message's own `sentAt` may be and still be stored as signed. */
         const val SIGNED_SENT_AT_SKEW_TOLERANCE_MS = 5 * 60_000L

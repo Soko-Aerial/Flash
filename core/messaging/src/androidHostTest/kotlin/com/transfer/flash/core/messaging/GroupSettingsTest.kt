@@ -21,7 +21,9 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -225,6 +227,53 @@ class GroupSettingsTest {
         val v1 = GroupSettings.defaults(groupId).copy(version = 1L)
         assertFalse(settingsWins(v1, settingsA))
         assertTrue(settingsWins(settingsA, v1))
+    }
+
+    @Test
+    fun testConcurrentSettingsUpdatesAreNotLost() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val groupId = (repoA.createGroup("Gamma", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        val before = repoA.getGroupSettings(groupId)
+
+        // Four quick taps in the settings sheet: each one reads the stored row, so without a lock two of them start
+        // from the same version and the later write replaces the earlier one.
+        val results = listOf(
+            async { repoA.updateGroupSettings(groupId, joinPolicy = GroupSettings.POLICY_OPEN) },
+            async { repoA.updateGroupSettings(groupId, inviteSharers = GroupSettings.SHARERS_ADMINS) },
+            async { repoA.updateGroupSettings(groupId, membersMayAdd = true) },
+            async { repoA.updateGroupSettings(groupId, maxMembers = 12) },
+        ).awaitAll()
+        assertTrue(results.all { it is FlashResult.Success })
+
+        val after = repoA.getGroupSettings(groupId)
+        assertEquals(before.version + 4, after.version)
+        assertEquals(GroupSettings.POLICY_OPEN, after.joinPolicy)
+        assertEquals(GroupSettings.SHARERS_ADMINS, after.inviteSharers)
+        assertTrue(after.membersMayAdd)
+        assertEquals(12, after.maxMembers)
+    }
+
+    @Test
+    fun testConcurrentPreferenceUpdatesAreNotLost() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val groupId = (repoA.createGroup("Delta", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+
+        listOf(
+            async { repoA.updateGroupLocalPreferences(groupId, serveToGroup = false) },
+            async { repoA.updateGroupLocalPreferences(groupId, serveWifiOnly = true) },
+            async { repoA.updateGroupLocalPreferences(groupId, batteryThresholdPercent = 20) },
+            async { repoA.updateGroupLocalPreferences(groupId, keepAvailableDays = 7) },
+        ).awaitAll()
+
+        val prefs = repoA.getGroupLocalPreferences(groupId)
+        assertFalse(prefs.serveToGroup)
+        assertTrue(prefs.serveWifiOnly)
+        assertEquals(20, prefs.batteryThresholdPercent)
+        assertEquals(7, prefs.keepAvailableDays)
     }
 
     @Test

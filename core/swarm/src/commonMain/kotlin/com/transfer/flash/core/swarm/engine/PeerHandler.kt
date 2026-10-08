@@ -27,6 +27,7 @@ internal class PeerHandler(
         val peer = peers.getOrPut(e.peerId) { PeerConnectionState(e.peerId, e.features) }
         peer.isConnected = true
         peer.features = e.features
+        peer.summaryListedRoots.clear()
 
         val sharedGroups = (contents.values.map { it.groupId } + tombstones.values.map { it.groupId }).distinct()
         for (gid in sharedGroups) peer.allowedGroups[gid] = gid !in e.deniedGroups
@@ -71,6 +72,7 @@ internal class PeerHandler(
     ) {
         val peer = peers[e.peerId] ?: return
         peer.isConnected = false
+        peer.summaryListedRoots.clear()
 
         for (content in contents.values) {
             cancelPeerInFlight(content, e.peerId)
@@ -97,19 +99,24 @@ internal class PeerHandler(
         // 2. Entries
         val peer = peers.getOrPut(e.peerId) { PeerConnectionState(e.peerId, emptySet()) }
         // ERROR-104: the peer's first Summary can arrive before the chat message that announces its content here, and is then
-        // skipped as an unknown root. The peer announces to us when the message does arrive; if that shows content we hold
-        // pieces of and we had no state for the peer on it, the peer never saw our map, so answer once. It ends there: the
-        // peer's state for the root exists after the answer, and a holder of nothing has nothing the peer is waiting for.
+        // skipped as an unknown root. The peer announces to us when the message does arrive; the first time it lists a root we
+        // hold pieces of, it has not seen our map (ours went out before it knew the root and was dropped there), so answer once.
+        // ERROR-121: "first time" is tracked by `summaryListedRoots`, not by whether a per-peer state exists: the Tick creates
+        // that state for every peer, so the answer used to be withheld and the late device never learned who held the file
+        // (a 98 s wait after Accept until the next reconnect). It ends there: a second listing of the same root gets no answer,
+        // and a holder of nothing has nothing the peer is waiting for.
         var peerNeedsOurState = false
         for (entry in e.frame.entries) {
             val content = contents[e.frame.groupId to entry.root] ?: continue
-            val known = entry.root in peer.contentStates
-            if (!known && (content.isComplete || content.piecesDone > 0)) peerNeedsOurState = true
+            val firstListing = peer.summaryListedRoots.add(entry.root)
+            if (firstListing && (content.isComplete || content.piecesDone > 0)) peerNeedsOurState = true
             val pcs = peer.getOrCreateContent(entry.root, content.totalPieces)
             pcs.servingEnabled = entry.servingEnabled
             when (entry.state) {
                 SwarmContentState.ALL -> {
                     for (i in 0 until content.totalPieces) pcs.bitfield.set(i, true)
+                    pcs.noteHolding(content.totalSize, e.nowMs)
+                    if (content.role == SwarmRole.ORIGIN) content.deliveredTo.add(e.peerId)
                 }
                 SwarmContentState.NONE -> {
                     for (i in 0 until content.totalPieces) pcs.bitfield.set(i, false)
@@ -138,6 +145,7 @@ internal class PeerHandler(
                 }
             }
         }
+        pcs.noteHolding(heldBytesOf(pcs.bitfield, content), e.nowMs)
         onHaveApplied(content)
     }
 
@@ -153,6 +161,7 @@ internal class PeerHandler(
             pcs.bitfield.set(i, true)
         }
 
+        pcs.noteHolding(content.totalSize, e.nowMs)
         if (content.role == SwarmRole.ORIGIN) {
             content.deliveredTo.add(e.peerId)
         }
@@ -241,5 +250,13 @@ internal class PeerHandler(
                 ),
             )
         )
+    }
+
+    private fun heldBytesOf(bits: com.transfer.flash.core.swarm.model.Bitfield, content: ContentState): Long {
+        var total = 0L
+        for (i in 0 until content.totalPieces) {
+            if (bits.get(i)) total += content.pieceLength(i)
+        }
+        return total
     }
 }

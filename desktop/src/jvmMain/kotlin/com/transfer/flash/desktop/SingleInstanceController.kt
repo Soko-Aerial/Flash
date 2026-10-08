@@ -87,7 +87,7 @@ public object SingleInstanceController {
      *         message has been sent to the existing instance and this process must exit.
      */
     public fun acquireOrActivate(
-        baseDir: File = File(System.getProperty("user.home", "."), ".flash"),
+        baseDir: File = DesktopPaths.stateDir(),
         args: Array<String> = emptyArray(),
     ): Boolean {
         baseDir.mkdirs()

@@ -62,4 +62,22 @@ public data class FlashTransfer(
      * shows a piece map only when there is real piece state to show.
      */
     val pieceBlocks: List<Int> = emptyList(),
+    /**
+     * Sender side of a group swarm transfer: how far each member has got, so the sender can see who already has the
+     * whole file and may leave. Empty for a receiver and for every 1:1 transfer.
+     */
+    val recipients: List<FlashTransferRecipient> = emptyList(),
+)
+
+/** One member's copy of a file being sent to a group (see [FlashTransfer.recipients]). */
+public data class FlashTransferRecipient(
+    /** The member's device id; the UI resolves the name. */
+    val peerId: String,
+    val bytesHeld: Long,
+    val bytesTotal: Long,
+    /** The member has the whole file (it stays true if the member goes offline afterwards). */
+    val hasAll: Boolean,
+    val online: Boolean,
+    /** How fast the member's copy is growing right now, bytes per second; 0 when idle, complete or offline. */
+    val rateBytesPerSec: Long = 0L,
 )

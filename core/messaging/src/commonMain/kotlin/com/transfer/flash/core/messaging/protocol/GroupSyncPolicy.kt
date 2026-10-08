@@ -68,8 +68,9 @@ public object GroupSyncPolicy {
         sentAt: (M) -> Long,
         messageId: (M) -> String,
         deletedAt: (M) -> Long?,
+        ttlMs: (M) -> Long = { GroupPolicy.SYNC_TTL_MS },
     ): List<M> = messages
-        .filter { deletedAt(it) == null && sentAt(it) >= nowMs - GroupPolicy.SYNC_TTL_MS }
+        .filter { deletedAt(it) == null && sentAt(it) >= nowMs - ttlMs(it) }
         .filter { GroupSyncCursor(sentAt(it), messageId(it)) > cursor }
         .sortedBy { GroupSyncCursor(sentAt(it), messageId(it)) }
         .take(maxTotal.coerceAtLeast(0))

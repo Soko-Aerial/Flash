@@ -390,6 +390,86 @@ fun FlashFileMessageCard(
             }
         }
 
+        // Sender of a group file: who has it, who is still getting it and how fast, so the sender can see when it is
+        // safe to leave. Only a group send has rows; the one-line summary is already in the bubble's detail line.
+        if (attachment.recipients.isNotEmpty() && attachment.transferStatus != FlashFileTransferStatus.Downloaded) {
+            var recipientsExpanded by remember { mutableStateOf(false) }
+            val haveAll = attachment.recipients.count { it.hasAll }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space4),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { recipientsExpanded = !recipientsExpanded }
+                        .padding(vertical = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    FlashText(
+                        text = (if (recipientsExpanded) "Hide members" else "Who has it") +
+                            " · $haveAll of ${maxOf(attachment.recipientsTotal, attachment.recipients.size)}",
+                        style = typography.captionEmphasis.copy(fontSize = 11.sp),
+                        color = colors.accentPrimary,
+                    )
+                    FlashIcon(
+                        icon = if (recipientsExpanded) FlashIcons.ChevronDown else FlashIcons.Forward,
+                        contentDescription = null,
+                        size = 12.dp,
+                        tint = colors.accentPrimary,
+                    )
+                }
+                if (recipientsExpanded) {
+                    attachment.recipients.forEach { member ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = FlashSpacing.space4)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                FlashText(
+                                    text = member.name,
+                                    style = typography.captionEmphasis.copy(fontSize = 12.sp),
+                                    color = primaryTextColor,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                FlashText(
+                                    text = FlashSwarmUiMath.recipientStatusLine(
+                                        hasAll = member.hasAll,
+                                        online = member.online,
+                                        progress = member.progress,
+                                        speedMbps = member.speedMbps,
+                                    ),
+                                    style = typography.captionDefault.copy(fontSize = 11.sp),
+                                    color = if (member.hasAll) colors.accentPrimary else secondaryTextColor,
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(CircleShape)
+                                    .background(secondaryTextColor.copy(alpha = 0.25f)),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(member.progress.coerceIn(0f, 1f))
+                                        .height(3.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.accentPrimary),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Accept/Decline buttons for inbound offers
         if (isAwaiting) {
             FlashFileOfferActions(

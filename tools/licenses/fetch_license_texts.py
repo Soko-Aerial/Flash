@@ -67,6 +67,7 @@ SINGLE = [
     ("73252b46f36df25ef51a7994de439aea", "Bouncy Castle Licence", GH + "bcgit/bc-java/main/LICENSE.md"),
     ("9dc0f4a991981fff819381cac34478fb", "FreeBSD License (JCodec)", GH + "jcodec/jcodec/master/LICENSE"),
     ("slf4j-mit", "MIT License (SLF4J)", GH + "qos-ch/slf4j/master/LICENSE.txt"),
+    ("dbus-java-mit", "MIT License (dbus-java)", GH + "hypfvieh/dbus-java/master/LICENSE"),
     ("protobuf-bsd", "BSD 3-Clause License (Protocol Buffers)", GH + "protocolbuffers/protobuf/main/LICENSE"),
     ("sqlite-blessing", "SQLite (public domain)", GH + "sqlite/sqlite/master/LICENSE.md"),
     ("libtomcrypt", "LibTomCrypt (public domain / Unlicense)", GH + "libtom/libtomcrypt/develop/LICENSE"),
@@ -163,6 +164,7 @@ def main() -> None:
                    ["sqlite-jdbc-zentus", "sqlite3mc-mit", "sqlite-blessing"])
     write_override("jna", "^net\\.java\\.dev\\.jna:jna(-platform)?$::regex", ["jna-election", "Apache-2.0"])
     write_override("slf4j", exact("org.slf4j:slf4j-api"), ["slf4j-mit"])
+    write_override("dbus-java", "^com\\.github\\.hypfvieh:dbus-java-.*$::regex", ["dbus-java-mit"])
     write_override("jakarta-inject", exact("jakarta.inject:jakarta.inject-api"), ["jakarta-inject-notice"])
     write_override("datastore-protobuf", exact("androidx.datastore:datastore-preferences-external-protobuf"),
                    ["protobuf-bsd"])
