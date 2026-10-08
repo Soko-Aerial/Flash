@@ -453,7 +453,7 @@ private val LOG_TIME: java.time.format.DateTimeFormatter = java.time.format.Date
 
 private fun installDesktopLogSink() {
     val file = try {
-        File(System.getProperty("user.home", "."), ".flash").apply { mkdirs() }
+        DesktopPaths.stateDir().apply { mkdirs() }
             .resolve("desktop.log")
     } catch (_: Throwable) {
         return

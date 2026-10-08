@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -40,10 +41,12 @@ public data class FlashCreateGroupPeerUi(
 
 /**
  * Pure creation rules for the group sheet. The local device always counts as one member, so at
- * most [MAX_REMOTE_MEMBERS] peers may be selected — Flash groups cap at six devices total.
+ * most [MAX_REMOTE_MEMBERS] peers may be selected. The cap is the signed (v2) group limit, 20 devices (ADR-044 V2);
+ * the repository refuses a group above six whose invitees are not all on a build that supports signed groups, and
+ * names the reason, so the sheet does not need to know which peers are on which build.
  */
 public object FlashCreateGroupMath {
-    public const val MAX_MEMBERS: Int = 6
+    public const val MAX_MEMBERS: Int = GroupPolicy.MAX_MEMBERS_V2
     public const val MAX_REMOTE_MEMBERS: Int = MAX_MEMBERS - 1
 
     public fun normalizedTitle(name: String): String? =

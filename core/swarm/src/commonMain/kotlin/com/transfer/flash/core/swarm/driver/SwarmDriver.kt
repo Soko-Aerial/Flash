@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.concurrent.SyncSet
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.swarm.api.FlashSwarm
@@ -35,6 +36,7 @@ import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
+import com.transfer.flash.core.transfer.model.FlashTransferRecipient
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import com.transfer.flash.core.transfer.model.FlashTransferWaitReason
 import kotlinx.coroutines.CompletableDeferred
@@ -636,8 +638,15 @@ public class SwarmDriver(
         val canGoOffline = snapshot?.canGoOffline ?: false
         val holdersOnline = snapshot?.holdersOnline ?: 0
 
+        val speedBps = rowSpeed(transferId, direction, transferState, cmd.bytesDone, snapshot?.recipients.orEmpty())
+        val etaSeconds = if (direction == FlashTransferDirection.Receiving && speedBps > 0L && cmd.totalSize > cmd.bytesDone) {
+            (cmd.totalSize - cmd.bytesDone) / speedBps
+        } else 0L
+
         val transfer = FlashTransfer(
             id = FlashTransferId(transferId),
+            speedBytesPerSec = speedBps,
+            etaSeconds = etaSeconds,
             // ERROR-111: a person reads the group's name, not its id.
             peerName = groupTitles[cmd.groupId] ?: "Group",
             fileName = record?.fileName ?: "file.bin",
@@ -650,7 +659,28 @@ public class SwarmDriver(
             canGoOffline = canGoOffline,
             holdersOnline = holdersOnline,
             pieceBlocks = snapshot?.pieceBlocks.orEmpty(),
+            // ERROR-119: a row without a path made every received group file answer "File not available yet" when
+            // opened. The finished file's path is the receiver's; the origin's own is the file it is sending from.
+            localPath = when {
+                record == null -> null
+                record.role == SwarmRole.ORIGIN -> record.sourceUri
+                transferState == FlashTransferState.Completed -> record.finalPath
+                else -> null
+            },
+            sourceUri = if (record?.role == SwarmRole.ORIGIN) record.sourceUri else null,
+            recipients = snapshot?.recipients.orEmpty().map {
+                FlashTransferRecipient(
+                    peerId = it.peerId,
+                    bytesHeld = it.bytesHeld,
+                    bytesTotal = it.totalBytes,
+                    hasAll = it.hasAll,
+                    online = it.online,
+                    rateBytesPerSec = it.rateBytesPerSec,
+                )
+            },
         )
+
+        rowProbes.onRow(transferId, direction, transferState, cmd.bytesDone, cmd.totalSize, transfer.recipients, now())
 
         val currentList = _rows.value.toMutableList()
         val existingIndex = currentList.indexOfFirst { it.id.value == transferId }
@@ -677,8 +707,45 @@ public class SwarmDriver(
                 totalBytes = snapshot.totalBytes,
                 isComplete = snapshot.state == SwarmLifecycleState.COMPLETE,
                 pieceBlocks = snapshot.pieceBlocks,
+                recipients = snapshot.recipients,
             )
         }
+    }
+
+    private val rowProbes = SwarmRowProbes { name, fields -> FlashProbe.emit(name, *fields.toTypedArray()) }
+
+    /** Per-row throughput samples: transferId -> (time, bytes, smoothed bytes/s). Only touched from the driver's actor. */
+    private val speedSamples = HashMap<String, Triple<Long, Long, Double>>()
+
+    /**
+     * What the row shows as its speed. A receiver: growth of its own bytes, smoothed. A sender: the sum of its members'
+     * current rates (what is being delivered right now, wherever the pieces come from). Zero whenever it is not moving.
+     */
+    private fun rowSpeed(
+        transferId: String,
+        direction: FlashTransferDirection,
+        state: FlashTransferState,
+        bytesDone: Long,
+        recipients: List<com.transfer.flash.core.swarm.engine.RecipientSnapshot>,
+    ): Long {
+        if (direction == FlashTransferDirection.Sending) return recipients.sumOf { it.rateBytesPerSec }
+        if (state != FlashTransferState.Transferring) {
+            speedSamples.remove(transferId)
+            return 0L
+        }
+        val nowMs = now()
+        val previous = speedSamples[transferId]
+        if (previous == null) {
+            speedSamples[transferId] = Triple(nowMs, bytesDone, 0.0)
+            return 0L
+        }
+        val (atMs, bytes, rate) = previous
+        val elapsed = nowMs - atMs
+        if (elapsed < SPEED_SAMPLE_MIN_MS) return rate.toLong()
+        val instant = (bytesDone - bytes).coerceAtLeast(0L) * 1000.0 / elapsed
+        val smoothed = if (rate == 0.0) instant else (0.6 * rate) + (0.4 * instant)
+        speedSamples[transferId] = Triple(nowMs, bytesDone, smoothed)
+        return smoothed.toLong()
     }
 
     private fun findKey(transferId: String): Pair<String, ContentRoot>? {
@@ -785,3 +852,5 @@ public class SwarmDriver(
 
     public fun debugDump(): String = engine.debugDump()
 }
+
+private const val SPEED_SAMPLE_MIN_MS = 700L

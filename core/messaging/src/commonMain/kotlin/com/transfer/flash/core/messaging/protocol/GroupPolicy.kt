@@ -22,7 +22,17 @@ public object GroupPolicy {
     public const val DEFAULT_MAX_TOTAL: Int = 500
     public const val MAX_COPIES_PER_MESSAGE: Int = 2
     public const val SYNC_TTL_MS: Long = 24L * 60L * 60L * 1000L
+
+    /**
+     * How long a catch-up still carries a swarm FILE offer: as long as the swarm keeps the content (7 days,
+     * `SwarmConfig.retentionMs`). With the 24 h text window a member that was offline for two days never heard of a file
+     * that was still fetchable (ERROR-120).
+     */
+    public const val SWARM_OFFER_SYNC_TTL_MS: Long = 7L * 24L * 60L * 60L * 1000L
     public const val MAX_PENDING_SYNC_MESSAGES: Int = 100
+
+    /** Pages of [MAX_PENDING_SYNC_MESSAGES] rows one catch-up request may read (ERROR-121): bounds the work for a huge history. */
+    public const val MAX_CATCH_UP_PAGES: Int = 20
 
     /**
      * How long a catch-up request this device sent stays answerable. A round finishes in seconds

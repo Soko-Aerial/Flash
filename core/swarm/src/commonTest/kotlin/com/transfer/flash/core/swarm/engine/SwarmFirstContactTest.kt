@@ -99,4 +99,47 @@ class SwarmFirstContactTest {
         val rxBack = sentTo(rx.handle(SwarmEvent.SummaryArrived("origin", reply, 1_300L)), "origin")
         assertTrue(rxBack.none { it is SwarmFrame.Summary })
     }
+
+    @Test
+    fun `a holder still answers a late member after a Tick has made its state for that peer`() {
+        // ERROR-121: flushPendingHaves creates per-peer state for every content on every Tick, so by the time the late
+        // member's Summary arrived the holder believed the member already knew its state and stayed silent.
+        val m = manifest()
+        val origin = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "origin", seed = 1L)
+        val rx = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "rx", seed = 2L)
+        origin.handle(SwarmEvent.PeerUp("rx", setOf("sw1"), 900L))
+        rx.handle(SwarmEvent.PeerUp("origin", setOf("sw1"), 900L))
+        val originSummary = sentTo(origin.handle(announce(m, origin = true, withManifest = true)), "rx")
+            .filterIsInstance<SwarmFrame.Summary>().single()
+        rx.handle(SwarmEvent.SummaryArrived("origin", originSummary, 1_000L)) // dropped: root unknown here
+        origin.handle(SwarmEvent.Tick(2_000L))
+        origin.handle(SwarmEvent.Tick(3_000L))
+
+        val rxSummary = sentTo(rx.handle(announce(m, origin = false, withManifest = true)), "origin")
+            .filterIsInstance<SwarmFrame.Summary>().single()
+        val reply = sentTo(origin.handle(SwarmEvent.SummaryArrived("rx", rxSummary, 4_000L)), "rx")
+            .filterIsInstance<SwarmFrame.Summary>()
+        assertEquals(1, reply.size, "the holder must tell the late member what it holds")
+
+        val rxCmds = rx.handle(SwarmEvent.SummaryArrived("origin", reply.single(), 4_100L))
+        assertTrue(sentTo(rxCmds, "origin").any { it is SwarmFrame.Request })
+    }
+
+    @Test
+    fun `a reconnect lets a holder answer again`() {
+        val m = manifest()
+        val origin = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "origin", seed = 1L)
+        val rx = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "rx", seed = 2L)
+        origin.handle(SwarmEvent.PeerUp("rx", setOf("sw1"), 900L))
+        origin.handle(announce(m, origin = true, withManifest = true))
+        rx.handle(SwarmEvent.PeerUp("origin", setOf("sw1"), 900L))
+        val rxSummary = sentTo(rx.handle(announce(m, origin = false, withManifest = true)), "origin")
+            .filterIsInstance<SwarmFrame.Summary>().single()
+        assertEquals(1, sentTo(origin.handle(SwarmEvent.SummaryArrived("rx", rxSummary, 1_100L)), "rx").size)
+
+        origin.handle(SwarmEvent.PeerDown("rx", 2_000L))
+        origin.handle(SwarmEvent.PeerUp("rx", setOf("sw1"), 2_100L))
+        val again = sentTo(origin.handle(SwarmEvent.SummaryArrived("rx", rxSummary, 2_200L)), "rx")
+        assertEquals(1, again.filterIsInstance<SwarmFrame.Summary>().size, "a new session starts the exchange afresh")
+    }
 }

@@ -7643,3 +7643,182 @@ A whole-file push to a vouched member (FO-04, postponed); a message dated more t
 
 ### Status
 OPEN - fixed in code, unit-tested, NOT device-verified (until SWM-40...SWM-45 pass)
+
+## ERROR-118 - Group settings review: Group Info had no settings row, desktop Share was dead, an invite failure was silent, quick taps lost updates
+
+### Date
+2026-10-07
+
+### Area
+Group settings (UI-053 / UI-054, ADR-074), group creation sheet, `FlashConversationScreen`, `SignedGroups`, `RealFlashChatRepository`
+
+### Symptoms
+A pasted architecture and UI review (no code run) made twelve claims. Each was checked against the code first. **Real and fixed:**
+1. Group Info (the members sheet) had no "Group settings" row; the sheet was reachable only from the three-dot menu (`group-settings.md` says Group Info).
+2. On desktop the invite sheet's "Share" button did nothing: `FlashConversationScreen.onShareText` defaulted to `{}` and `DesktopShell` never passes it, yet the sheet showed the button because the value was never null.
+3. "Share invite link" closed the settings sheet and, when `onRequestInviteLink` returned null, showed nothing at all; after "Change group code" the previous link also stayed in `inviteUrl` until the new one arrived.
+4. `SignedGroups.updateSettings` and `updateGroupLocalPreferences` read the stored row, changed one field and wrote it back with no lock. Four quick taps could start from the same version; the later write replaced the earlier one. The three steppers also computed the next value from the value on screen, so two quick taps sent the same number.
+5. The create-group sheet capped selection at 5 peers (6 devices) although the repository accepts 20 for signed groups and refuses by name when an invitee is on an old build.
+
+### Checked and NOT a defect (no change)
+- **"Reset to defaults on Android overwrites 14 of 15 settings"** - false. `onSettingsChange` in `MainActivity.kt` (around line 754) diffs `updated` against the same snapshot and persists only the fields that differ, so 15 calls each persist their own field. Desktop is the same in effect.
+- **"Shared content sheet only sees 50-100 loaded messages"** - false (already noted in ERROR-116). `messageDao.observeConversation` has no `LIMIT`; `state.messages` is the whole conversation.
+- **"Disabled switches give no explanation"** - the sheet already shows a standing notice "Only group admins can change group rules." for a non-admin. A per-tap tooltip was not added.
+- **"Bottom nav leaves a blank inset when hidden"** - true but only as the end-of-list padding; making the inset follow the animation would resize the list while scrolling (jump risk). Left as is.
+
+### Not done (decision or device needed)
+- **Group rename / avatar:** a feature, not a defect. The name is part of the signed charter, so a rename is a wire and protocol change. Owner decision.
+- **Stale selection after a resize crosses 840 dp, and TalkBack focus jumping on the radar:** "occasionally" with no repro; not verifiable without a device. Added as `GSUI-06`/`GSUI-07`.
+
+### Root cause
+Each of 1-5 is a plain omission: the entry point was never added, a default hid "not supported", a null result had no branch, a read-modify-write had no serialisation, and a UI constant was never updated when ADR-044 V2 raised the group limit.
+
+### Working fix
+- `FlashGroupMembersSheet`: new `onOpenGroupSettings` row, passed from `FlashConversationScreen` for active members of a v2 group.
+- `FlashConversationScreen.onShareText` is now nullable; the invite sheet's Share button shows only when the host supplies it. Message forward with no recipients says "Sharing isn't available here" instead of doing nothing.
+- Invite link: the stored link is cleared when the sheet opens; a null result closes the request and says "Couldn't create an invite link".
+- `SignedGroups.settingsUpdateLock` and `RealFlashChatRepository.groupPreferencesLock` serialise the two read-modify-write paths. The settings sheet keeps a local value per stepper that follows the stored value again once it changes.
+- `FlashCreateGroupMath.MAX_MEMBERS` is `GroupPolicy.MAX_MEMBERS_V2` (20).
+
+### Verification
+New tests: `GroupSettingsTest.testConcurrentSettingsUpdatesAreNotLost` and `testConcurrentPreferenceUpdatesAreNotLost` (mutation-checked: with both locks replaced by `run { }` both fail, with the locks they pass); `FlashCreateGroupMathTest` updated to 20. Green: `:ui:chat:jvmTest`, `:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest` (`GroupSettingsTest`, `SignedGroupsTest`), `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. The Compose changes (members-sheet row, invite feedback, stepper local state, Share visibility) have no unit test; they are covered by `GSUI-01`...`GSUI-05`. Not device-verified.
+
+### Related files
+`ui/chat/.../FlashGroupMembersSheet.kt`, `FlashGroupSettingsSheet.kt`, `FlashConversationScreen.kt`, `FlashCreateGroupSheet.kt`, `core/messaging/.../SignedGroups.kt`, `RealFlashChatRepository.kt`, `GroupSettingsTest.kt`, `FlashCreateGroupMathTest.kt`
+
+### Status
+OPEN - fixed in code, NOT device-verified (until GSUI-01...GSUI-05 pass)
+
+## ERROR-119 - A finished received group file could not be opened; the sender could not see who had the file; the start waited on three round trips after Accept
+
+Not a crash: three owner reports from one four-device run (2026-10-07, three Android logs and the desktop log), fixed together.
+
+### Date
+2026-10-07
+
+### Area
+Group swarm transfer (`:core:swarm` driver and engine), transfer rows, chat file bubble
+
+### Symptoms
+1. After a group file finished on a receiver, tapping it said "File not available yet", on every receiver (Android and desktop).
+2. The sender saw one bubble that stayed at "Transferring" at 100 % (its own bytes are always complete) with no view of who had the file, so it could not tell when it was safe to leave. The row carried no speed or ETA on either side.
+3. "It took long to start the download", and a member that accepted first got nothing different from the others.
+
+### Root cause
+1. `SwarmDriver.updateTransferRow` built a `FlashTransfer` without `localPath` (and without `sourceUri` for the sender). The chat bubble takes the path from `live?.localPath ?: entity.attachmentPath`; a received row never has a stored path, so a completed swarm file had no path to open. The data existed: `SwarmContentRecord.finalPath` is set by Finalize before the row is published.
+2. The origin knew each member's holding (its HAVE / HAVE_ALL) but only used it for the "safe to go offline" boolean; nothing computed a per-member rate or exposed the members, and `deliveredTo` was only shown as the chat's message-delivery count. The driver never set `speedBytesPerSec` / `etaSeconds`.
+3. An offer (autoAccept is false by default) did nothing until Accept: no manifest fetch and no Summary. After the tap came the Summary to the origin, the origin's Summary back, and the manifest fetch (about three round trips) before the first `Request`. The logs hold no accept / first-piece / rate line, so the human part of the delay (a member has to see the offer and tap) and the app part could not be separated; probes now do.
+
+### What the logs showed (and did not)
+- The three phone logs and the desktop log carry no swarm accept, first-piece or rate line, so the exact start latency of the run is **not measurable** from them. The new probes (`swarm.*`, PROBES.md) answer it next time.
+- The slow second transfer (about 5.5 min) coincides with the sender phone going silent for 41.6 s and 24 s, a mass connection abort at 09:16:21 and a Wi-Fi outage until about 09:16:50. The origin serves the pieces nobody else holds, so the swarm waits on a stalled sender. That is the Transsion freezer / Wi-Fi behaviour already recorded (EXP-002), not new.
+- Noted, not changed: a Summary from a not-yet-known member dropped at reconnect, the 15 s gateway probe lines (intentional, DR5), link-change probing that reaps unanswered sessions during an outage, and noisy `Broken pipe` stack traces.
+
+### Working fix
+- `SwarmDriver.updateTransferRow`: `localPath` is the sender's source or, for a completed receiver, `record.finalPath`; `sourceUri` for the sender.
+- Engine: `PeerContentState.noteHolding` keeps each member's held bytes and a smoothed growth rate from its HAVE / HAVE_ALL / Summary ALL; `ContentSnapshot.recipients` (`RecipientSnapshot`) lists connected members and every member known to have the whole file; the origin republishes its row about once a second while someone is incomplete so rates move and decay (a rate older than 4 s is 0).
+- `FlashTransfer.recipients` / `FlashTransferRecipient`, `FlashSwarmStatus.recipients`; the driver also sets `speedBytesPerSec` (a receiver: smoothed own growth; a sender: the sum of its members' rates) and the receiver's ETA.
+- Chat: `FlashAttachmentProgress.recipients` -> `buildFileRecipientView` -> `FlashFileAttachmentUi.recipients`. The sender's bubble says "N of M have it" (plus "You can go offline now", or "Everyone has the file"), its progress bar is the members' mean, and an expandable "Who has it" list shows each member's progress, speed, offline state and "Has the file".
+- Start: an OFFERED receiver now fetches the manifest and sends its Summary on announce (no file data is requested before consent); the Tick retries the manifest fetch for an offer. After Accept the first `Request` goes out in the same step, and the origin serves the first member that accepts at once, whether or not the others ever accept.
+- Probes: `swarm.offer.shown`, `swarm.accepted`, `swarm.first_byte`, `swarm.recv.done`, `swarm.member.first`, `swarm.member.done`.
+
+### Failed attempts
+None. Not changed on purpose: the origin's "serve only unseeded pieces" policy and slot counts (they let later members be served by earlier ones; no measurement says they slow the first member); auto-accept stays off by default (consent). A receiver's speed is only refreshed when its row is published, so a stalled receiver can show its last speed until the next piece or event (known limit).
+
+### Verification
+Unit tests: `SwarmRecipientViewTest` (holding, rate, stale rate, HaveAll stays listed offline), `SwarmOfferReadinessTest` (offer prefetches; the first accepter is requested and served while two others have not accepted), `SwarmRowProbesTest`, `FileRecipientRowsTest`, `FlashSwarmUiMathTest`, and `SwarmInteropTest` (real sockets: both receivers' rows carry a localPath equal to the received file; the sender's equals its source). Suite results are in progress 2026-10-07 (b). **Not device-verified.**
+
+### Related files
+`core/swarm/.../driver/SwarmDriver.kt`, `driver/SwarmRowProbes.kt`, `engine/SwarmEngine.kt`, `engine/PeerState.kt`, `engine/PeerHandler.kt`, `engine/SwarmSnapshot.kt`, `api/FlashSwarmStatus.kt`, `core/transfer/.../model/FlashTransfer.kt`, `core/messaging/.../FileRecipientRows.kt`, `RealFlashChatRepository.kt`, `FlashMessagingModels.kt`, `ui/chat/.../FlashFileMessageCard.kt`, `FlashSwarmUiMath.kt`, `app/.../DiscoveryEngineHolder.kt`, `desktop/.../DesktopEngine.kt`
+
+### Status
+OPEN - fixed in code, NOT device-verified (until `SWO-01`...`SWO-06` pass)
+
+
+## ERROR-120 - A group member with swarm off, or offline for more than a day, got an empty message or never heard of a file
+
+### Date
+2026-10-07
+
+### Area
+Group swarm file transfer / catch-up (`RealFlashChatRepository.handleSyncPush`, `GroupSyncPolicy`)
+
+### Symptoms
+Found by the owner's question "what if someone hasn't enabled swarm, and what if someone was offline and came online". Audit of the code paths:
+1. A member whose swarm switch is off (no `sw1` advertised) reconnects and receives the catch-up of a group file. The verified offer was dropped and the message stored as a **text row with an empty body**: the member saw a blank bubble and no hint that a file existed.
+2. A catch-up only carries messages younger than `GroupPolicy.SYNC_TTL_MS` (24 h), but the swarm keeps the content for 7 days. A member offline for 25 h to 7 d never heard of a file that could still be fetched.
+
+### Environment
+Unit tests only (JVM + Android host). Not reproduced on devices.
+
+### Root cause
+1. `handleSyncPush` treated "swarm listener is null" as "offer unusable" and fell back to the text path, which stores `message.text` (empty for a file).
+2. One TTL for every catch-up row, chosen for text.
+
+### Failed attempts
+None. Test `audit - a swarm-off member that was offline is told there is a file, not given an empty message` failed first (`text=''`), then passed after the fix.
+
+### Working fix
+1. A verified, signed offer is kept as an attachment row even when swarm is off here; the row's detail says "Group file sharing is off on this device" (`SWARM_OFF_DETAIL`); no transfer starts. Probe `group.sync.in kind=offer_kept_swarm_off_here`.
+2. `GroupPolicy.SWARM_OFFER_SYNC_TTL_MS` (7 days); `GroupSyncPolicy.ownedMessages(ttlMs = ...)`; `handleSyncRequest` uses it for rows with `swarmRoot != null`.
+
+### Verification
+`:core:messaging:jvmTest :core:messaging:testAndroidHostTest` green, incl. `ownedMessagesKeepsAFileOfferLongerThanText` and the swarm-off audit test. Not device-verified.
+
+### Known limits (not fixed, recorded)
+- A kept offer is NOT adopted into a swarm download when the member turns swarm on later (the member needs a new offer from the sender).
+- Voice notes and non-swarmable (tiny / legacy-group) files are whole-file pushes with no outbox row: an offline member only gets them if the sender retries on session-up; after the catch-up window they are lost for that member.
+- A peer's cached features can be stale after it toggles swarm until the session is re-established.
+- The offer is usable only while the origin or another holder is online and the content is under 7 days old.
+
+### Related files
+`core/messaging/.../RealFlashChatRepository.kt`, `protocol/GroupPolicy.kt`, `protocol/GroupSyncPolicy.kt`, `SignedGroupsTest.kt`, `GroupSyncPolicyTest.kt`
+
+### Status
+OPEN - fixed in code, NOT device-verified (until `SWO-07`...`SWO-10` pass)
+
+
+## ERROR-121 - A device that got a file offer late never learned who held the file (98 s wait after Accept, a slow desktop that sped up only when the sender returned); a new member of a busy group got no catch-up
+
+### Date
+2026-10-07
+
+### Area
+Group swarm (`PeerHandler.handleSummaryArrived`, `PeerConnectionState`), group catch-up (`RealFlashChatRepository.handleSyncRequest`)
+
+### Symptoms
+Owner's test with five Androids and a desktop, logs `flash-log-1791370446814.txt` (origin, V760), `flash-log-1791370437564.txt` (Infinix) and `~/.flash/desktop.log`:
+1. Infinix accepted a 13.4 MB offer at 10:45:04; its first byte came at 10:46:42 (`swarm.first_byte sinceAcceptMs=98792`), 0.2 s after a reconnect to the origin. Sessions to four peers were up the whole time (the 10:45:28 link probe reaped none). Once moving, the file finished in 6 s.
+2. The desktop, started after three phones had finished, accepted at 10:49:15 and finished at 10:53:18 (`sinceAcceptMs=243443 avgKBps=53`). The origin phone was off the network 10:49:25 to 10:52:07; the desktop got almost nothing from the four holders until the origin came back, then finished in about 67 s.
+3. Probes: the desktop reported `swarm.accepted/first_byte/recv.done` with 0 ms for two files received long before (restored rows).
+
+### Environment
+Android 13 (V760) and 14 (Infinix X6882B), three more phones, Windows desktop, one Wi-Fi router. The network itself was also unstable (many "Connection reset", "Link change: unanswered probe", "Session_not_admitted" glare); that is a separate, real factor but it does not explain 1 and 2.
+
+### Error
+No exception. Evidence is the timing above plus the engine code path below.
+
+### Root cause
+`PeerHandler.handleSummaryArrived` answers a peer's Summary with the local Summary only when no per-peer state for that root exists (`known = root in peer.contentStates`). The Tick's `flushPendingHaves` creates that state for **every connected peer and every content on every tick**, so within a second of a peer connecting the state exists and the answer is withheld. Sequence: the holder sends its Summary at session-up, before the late device knows the offer (dropped as an unknown root, ERROR-104); the late device then announces and sends its own Summary; the holder believes the peer "is known" and stays silent. The late device never learns who holds the file, sends no request, and waits for the next reconnect (a fresh Summary exchange). ERROR-104's unit test passed because it never ran a Tick.
+
+### Failed attempts
+None; the cause was found by reading the engine after the timings pointed at an app-level stall (probes answered, no piece requested).
+
+### Working fix
+1. `PeerConnectionState.summaryListedRoots`: the roots a peer has listed in a Summary this session. A holder answers the **first** listing of a root (when it holds pieces of it), once; cleared on peer up and peer down. No ping-pong: a second listing gets no reply, and a device that holds nothing never replies.
+2. Catch-up read (`catchUpCandidates`): the DAO returns the oldest 100 rows after the cursor and the time window was applied afterwards, so an empty cursor in a group with more than 100 older rows produced nothing. The read now starts at the widest window (7 days), pages up to 20 x 100 rows and keeps only rows inside their own window (24 h text, 7 d file offers).
+3. `SwarmRowProbes`: a row first seen already finished, or with members already holding, is marked seen without a probe line.
+
+### Verification
+`SwarmFirstContactTest` (two new tests: a Tick between the sessions; a reconnect restarts the exchange) failed before the fix and pass after. `SignedGroupsTest` "audit - a new member of a busy group ..." (150 old rows per device) failed with the old read (mutation-checked) and passes. `SwarmRowProbesTest` restore case. `:core:swarm:jvmTest :core:messaging:jvmTest :core:messaging:testAndroidHostTest :core:engine:jvmTest` green. Not device-verified; every holder must run the new build for the reply to happen (an old holder stays silent).
+
+### Not proven / not changed
+- The slow average of 53 KB/s cannot be split between "learned of holders late" and "Wi-Fi was unstable" from these logs (no swarm piece or reject lines). `swarm.*` probes cover start and finish only.
+- The same offer arrived 8 to 14 times at the desktop (every session-up asks every member, each answers); the copies are deduplicated, only the traffic is wasted.
+- Dials to `192.168.1.1:45822` (the router) repeat every 15 s on the Infinix; harmless but noisy.
+
+### Related files
+`core/swarm/.../engine/PeerHandler.kt`, `PeerState.kt`, `driver/SwarmRowProbes.kt`, `core/messaging/.../RealFlashChatRepository.kt`, `protocol/GroupPolicy.kt`, `SwarmFirstContactTest.kt`, `SignedGroupsTest.kt`, `SwarmRowProbesTest.kt`
+
+### Status
+OPEN - fixed in code, NOT device-verified (until `SWO-11`...`SWO-14` pass)

@@ -1,5 +1,50 @@
 # Current Handoff
 
+## 2026-10-08 - Server trust decided; group sync revamp being designed (docs only, nothing built)
+
+- Decided by owner: **D-E8 = delegated limited key on the server** (`docs/ENTERPRISE-HYBRID-PLAN.md` E2b). Root key offline; admin add/revoke needs root or 2-of-N admins; no default server/key/token in the public repo; enrolment by link. Open: D-E9 (cert lifetime). Tests `ENT-09`...`ENT-12`. An ADR is needed before code.
+- Owner asked for a **group sync revamp + a join-time history choice** (extends FO-10). Findings about today's code: new member gets text of the last 24 h only (`SYNC_TTL_MS`), swarm offers 7 days; cap 500 per round (100 for LOW tier), 20/s; request cursor is the newest local message; no prompt, no admin limit; attachments arrive as catch-up labels. Plan written: `docs/group/GROUP-SYNC-REVAMP-PLAN.md`. Owner decisions: new member default 30 days; admin sets the ceiling (NONE/24h/7d/30d/ALL); no history = no files; returning member gets the full 7 days; any admin can change the ceiling.
+- Open from that plan: O1 files only reach 7 days (swarm retention), O2 returning window vs 30 days, O3 "any admin" needs co-admins (owner-loss path A, not yet chosen), O4 holders must retain 30 days of text.
+- Owner also asked for a server **directory + dashboard** (employees, departments, groups, per-invite visibility): `docs/ENTERPRISE-HYBRID-PLAN.md` E2c, decisions D-E10...D-E13, tests `ENT-13`...`ENT-18`. Tests `GSY-01`...`GSY-09` are in the sync plan and TEST-BACKLOG 4zl.
+- **Linux port: L0 and L1 coded 2026-10-08 (D-L1 committed target, D-L2 dbus-java).** Identity vault is tiered (Secret Service keyring `0x02`, else owner-only key file `0x01`; Windows DPAPI), state folder follows XDG on Linux (`~/.local/share/flash`, keeps a non-empty `~/.flash`), received files go to the XDG download folder (ADR-092 update, `DesktopPaths`, `DesktopVaults`, `linux/DbusSecretKeyStore.kt`). Unit-tested on Windows with a fake keyring only. **Next Linux step:** on the owner's Linux laptop run `LNX-01`, `LNX-02`, `LNX-03a`, `LNX-04a` (`TEST-BACKLOG.md` 4zl), record results, then L2 (notifications, autostart, network band, reveal in file manager). `:desktop:jvmTest` has one known failure, ERROR-106 (`DesktopEngineGroupSessionUpTest`), unrelated. Nothing committed.
+- Owner answered D-E11 (hidden = admin-add only), D-E12 (web login + device step-up), D-E13; ADR-095/096/097 written (directions, nothing built).
+- Next (server/sync): owner answers sync plan O1-O3 and D-E9; then the S1/S2 unit tests on `GroupSyncPolicy` (no behaviour change). Uncommitted: all of the above plus the earlier work.
+
+## 2026-10-07 (e) - Three plans corrected, hybrid + FO-09 merged (docs only, nothing built)
+
+- Done: fact-checked and fixed `docs/LINUX-PORT-PLAN.md`, `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`, `docs/HYBRID-ENTERPRISE-SERVER-RELAY-PLAN.md`; wrote the merged `docs/ENTERPRISE-HYBRID-PLAN.md` (stages E0-E5). Details: progress 2026-10-07 (e).
+- Key corrections: identity is ECDSA P-256 (not Ed25519); ADR-089..091 were already taken (Linux ADRs now 092..094 PROPOSED); AX.25 PID 0xCC is IP; the APRS "hybrid frame" cannot work; the hybrid draft's auto-trust contradicts ADR-044 decision 4 until the owner decides.
+- Owner context recorded: target is the Ghana military; radio plan now has Profile M (encrypted, no plaintext beacons).
+- Open owner decisions: `docs/ENTERPRISE-HYBRID-PLAN.md` section 10 (D-E1...D-E7), Linux D-L1/D-L2. No code before they are answered.
+- Tests owed: `BT-00` (hardware spike, first), `ENT-01`...`ENT-08` (TEST-BACKLOG 4zl). Uncommitted: these docs plus the earlier ERROR-118...121 work.
+
+## 2026-10-07 (d) - Late offers and new-member catch-up (ERROR-121, ADR-091)
+
+- Done and unit-tested, NOT device-verified: holders answer the first Summary listing of a root (fixes the 98 s start and the slow desktop); catch-up pages from a 7-day floor (new member of a busy group); restored rows no longer log fake probes.
+- Needs the new build on every device (an old holder stays silent).
+- Device checks owed: `SWO-11`...`SWO-14` (TEST-BACKLOG 4zk). Idea recorded, not built: FO-10 (ask before syncing history). Uncommitted: ERROR-118...121 work.
+
+## 2026-10-07 (c) - Audit: swarm off / member comes online later (ERROR-120, ADR-090)
+
+- Done and unit-tested, NOT device-verified: a swarm-off member sees a file row saying sharing is off (was a blank message); catch-up carries file offers for 7 days (was 24 h).
+- Known limits are in ERROR-120 (kept offer not adopted when swarm is turned on later; voice/legacy files not recoverable after the window).
+- Device checks owed: `SWO-07`...`SWO-10` (TEST-BACKLOG 4zk). Uncommitted: ERROR-118, 119, 120 work; no commit was asked for.
+
+## 2026-10-07 (b) - Group file: opens after download, sender's member view, offer prepares itself (ERROR-119, ADR-089)
+
+- Done and unit-tested, NOT device-verified: received swarm files carry `localPath` (the "File not available yet" bug); the sender's bubble shows who has the file with per-member progress and speed; an offer prefetches the manifest and tells the origin before Accept; row speed/ETA; `swarm.*` probes. Details: progress 2026-10-07 (b).
+- The owner's four logs held no swarm accept/piece/rate lines, so the start delay of that run is unmeasured; export logs after the next test and read the `swarm.*` probes (PROBES.md).
+- Device checks owed: `SWO-01`...`SWO-06` (TEST-BACKLOG 4zk), plus `GSUI-01`...`07`, `LOGX-*`, `SWM-40`...`45`, `UIP-*`.
+- Uncommitted: everything from ERROR-118 and ERROR-119 (see `git status`); no commit was asked for.
+
+## 2026-10-07 - Group settings review: five fixes, four claims refuted (ERROR-118, ADR-088)
+
+- Done and unit-tested, NOT device-verified: Group Info row for settings, no dead desktop Share, visible invite-link failure, locked settings/preferences updates plus stepper local state, create-group cap 20. Details: progress 2026-10-07.
+- Refuted by reading the code (do not "fix"): Android reset-to-defaults overwrite, shared-content window limit. Both are in ERROR-118.
+- Not built: group rename / avatar (owner decision, signed wire change).
+- Device checks owed: `GSUI-01`...`GSUI-07` (TEST-BACKLOG 4zj), plus the earlier `LOGX-*`, `SWM-40`...`45`, `UIP-*`.
+- Uncommitted at the time of writing: the eight files in `git status` plus the three log files; `problems.txt` is the owner's input.
+
 ## 2026-10-06 (r) - Evidence probes and log export header built (ADR-087)
 
 - Done and unit-tested, NOT device-verified: `FlashProbe`, session and group probes, Android export header + snapshot, desktop header. Vocabulary: `docs/testing/PROBES.md`. Details: progress (r).

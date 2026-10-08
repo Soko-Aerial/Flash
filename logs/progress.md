@@ -1,5 +1,176 @@
 # Progress Log
 
+## 2026-10-08 - Linux port L1: Secret Service keyring vault (dbus-java) and XDG paths
+
+### Worked on
+Linux plan phase L1 (owner: use dbus-java, implement now, the Linux laptop will test it).
+
+### Changed
+- `core:security` `KeyFileVault.kt` rewritten as a tiered `SealedVault`: master key from the first usable source (keyring `0x02`, else owner-only file `0x01`), blob `tag||nonce||AES-GCM`. New public `SecretKeyStore` seam (`@FlashInternalApi`). `IdentityKeyVault` gained `forKeyFile`, `withKeyring`, `defaultForCurrentOs`.
+- `:desktop`: `DesktopPaths` (XDG state dir, legacy `~/.flash` kept while it holds data, XDG download folder), `DesktopVaults` (Windows DPAPI, Linux keyring-then-file, else file), `linux/SecretServiceApi.kt` + `linux/DbusSecretKeyStore.kt` (dbus-java interfaces, the open-session/search/unlock/prompt/read/create flow, 60 s prompt timeout, every failure throws). Wired into `DesktopEngine`, `DesktopIdentityStores`, `DesktopMain`, `SingleInstanceController`, `DesktopSettingsStore`.
+- Dependency: dbus-java 5.2.2 (MIT) in `gradle/libs.versions.toml` and `desktop/build.gradle.kts`; licence text and library override added under `config/aboutlibraries/`, `tools/licenses/fetch_license_texts.py` updated (an invalid `\.` escape in it was also fixed).
+- ADR-092 updated (keyring tier, tagged blob, plain session, library choice D-L2). `docs/LINUX-PORT-PLAN.md` L1 items ticked.
+
+### Verification (Windows 11 only)
+`:core:security:jvmTest` green (`KeyFileVaultTest` 10 with 1 skipped for POSIX modes, `KeyringVaultTest` 9, `IdentityKeyVaultTest`). `:desktop:jvmTest`: 134 of 135 pass; `DesktopPathsTest` 9, `DesktopVaultsTest` 4, `DbusSecretKeyStoreTest` 7 (fake Secret Service). The one failure is `DesktopEngineGroupSessionUpTest`, the known **ERROR-106** (found 2026-10-06, not caused by this work). `generateThirdPartyNotices` passes. **Not verified:** the Secret Service wire encoding, any real keyring, POSIX `0600`, `jpackage` on Linux, the `ubuntu-latest` CI.
+
+### Problems
+- `DesktopPathsTest` first assumed `/data/dl` is absolute; on Windows it is not. Test now uses a temp-folder path.
+- `@Volatile` on a local, a wrong `FlashLog` package and a missing `@FlashInternalApi` opt-in each broke compilation once; fixed.
+- No WSL or Docker on this machine, so nothing Linux-specific ran.
+
+### Remaining
+Argon2id passphrase vault (deferred, needs a dependency and a prompt); config/data/cache split (deferred); L2 (notifications, autostart, network band, reveal in file manager, context menu); L3 (packaging). Nothing is committed.
+
+### Next AI
+Owner is getting a Linux laptop: run `LNX-01`, `LNX-02`, `LNX-03a`, `LNX-04a` from `docs/testing/TEST-BACKLOG.md` section 4zl first and record results before starting L2. If the Secret Service call fails on the wire, fix `SecretServiceApi.kt` (struct field order, `a{sv}` variants) and keep `DbusSecretKeyStoreTest` as the flow check.
+
+## 2026-10-08 - Delegated server key decided (D-E8); group sync revamp raised (docs only)
+
+### Worked on
+Owner discussed the server: an organisation must be able to remove users and revoke admins without the offline admin being present, and the repository is public. Owner chose **option (a): a delegated, limited key on the server** (root stays offline). Owner then asked to revamp group syncing and to ask a new member, when added, how much history to sync (all messages or media of the last seven days, etc.).
+
+### Changed (docs only)
+- `docs/ENTERPRISE-HYBRID-PLAN.md`: new stage **E2b** (delegation certs, enrolment link `flash://enroll?server&token&root`, 2-of-N for admin changes, short cert life, no default server or key in the public repo), amended H7 (hub may issue limited, never admin-level, trust), section 5 item 1, decisions **D-E8 ANSWERED**, **D-E9 open** (cert lifetime), tests `ENT-09`...`ENT-12`.
+- `docs/testing/TEST-BACKLOG.md` 4zl: `ENT-09`...`ENT-12`.
+
+### Verification
+Nothing built or run. Read `GroupPolicy`, `GroupSyncPolicy`, `OutgoingSyncRequest`, `RealFlashChatRepository.sendSyncRequestFor`/`handleSyncRequest` for the sync discussion (FO-10 is the earlier version of the history idea).
+
+### Later the same day (docs only)
+- Owner answers: history default 30 days, admin sets the ceiling, no history = no files, returning member gets 7 days, any admin changes the ceiling; D-E11 hidden groups admin-add only; D-E12 dashboard has a **web login** (password + second factor, device-signature step-up for admin actions); D-E13 org admin creates departments, department admins create groups.
+- New: `docs/group/GROUP-SYNC-REVAMP-PLAN.md`; `docs/ENTERPRISE-HYBRID-PLAN.md` stage E2c (directory, departments, dashboard); tests `ENT-13`...`ENT-18`, `GSY-01`...`GSY-09`.
+- **ADR-095** (delegated key), **ADR-096** (directory + web-login dashboard), **ADR-097** (history ceiling) in `docs/decisions.md`, ACCEPTED as directions, nothing built. ADR-092...094 stay reserved for the Linux ADRs proposed in `docs/LINUX-PORT-PLAN.md`.
+- Owner then said the Linux port starts next (answers D-L1: Linux desktop is a committed target).
+
+### Linux port started: Phase L0 (code, unit-tested on Windows, NOT run on Linux)
+- **Changed:** new `core/security/.../identity/KeyFileVault.kt` (AES-256-GCM, random master key in an owner-only file, atomic create); `IdentityKeyVault.forKeyFile()` and `defaultForCurrentOs(stateDir)` (DPAPI only on Windows); defaults switched in `PersistedFlashCrypto`, `DesktopTrustStore` (`DesktopIdentityStores.kt`) and `DesktopEngine`; `desktop/build.gradle.kts` adds `jdk.crypto.mscapi` only on a Windows host.
+- **Why:** first run off Windows crashed in `PersistedFlashCrypto.persist` (Linux plan C4, audit `TASK-CORE-SEC-1`). `PassThrough` would have stored the key in the clear, so a weaker but real vault was used (tier stated in ADR-092 and the class doc).
+- **Verified:** `:core:security:jvmTest` (`KeyFileVaultTest` 10 tests, 1 skipped because it needs POSIX modes; `IdentityKeyVaultTest`, `PersistedFlashCryptoTest`) green; `:desktop:compileKotlinJvm` and `DesktopTrustStoreTest`/`TestIdentityVaultTest` green, 2026-10-08, Windows 11. Not verified: any Linux host, `jpackage` on Linux, the `ubuntu-latest` CI run.
+- **Docs:** ADR-092 added; Linux plan D-L1 answered and L0 ticked; TEST-BACKLOG `LNX-01` (partly covered) and `LNX-03a`.
+- **Not done in L0:** the CI check on `ubuntu-latest`; everything in L1 to L3.
+
+### Remaining
+Open: O1-O4 of the sync plan, D-E9, D-E1. Crypto review of the cert chain before E2b code; threat review of the enrolment endpoint and the dashboard.
+
+### Next AI
+Do not write sync or enrolment code until the owner answers the open questions in `logs/handoff.md` (2026-10-08).
+
+## 2026-10-07 (e) - Three plans fact-checked and corrected; hybrid + FO-09 merged into one enterprise plan (docs only)
+
+### Worked on
+Owner supplied three independent design docs (Linux port, Bluetooth + radio TNC, hybrid enterprise relay) and asked to verify them, find relations, and critique. Then: "fix the docs first then merge the plans".
+
+### Changed (docs only; no code touched)
+- `docs/LINUX-PORT-PLAN.md`: new section 0 with corrections C1-C11 (ADR-089..091 were taken -> renumbered ADR-092..094 PROPOSED; `.deb` already configured; gap #1 = audit `TASK-CORE-SEC-1`; first-run crash confirmed in `PersistedFlashCrypto.persist`; JNA cannot do D-Bus; machine-id fallback is obfuscation; BLAKE3 -> SHA-256; versions verified) and decisions D-L1/D-L2.
+- `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`: section 0 (E1-E16) and inline fixes: Ed25519 -> ECDSA P-256; `fp8` = 4 bytes; AX.25 PID 0xCC is ARPA IP; the APRS "hybrid frame" marked SUPERSEDED (67-char limit); BLE adv 31-byte limit; Codec2 voice not feasible at 1200 baud; missing symbols (`PeerTransport`, `OutboxScheduler`, `FlashPttPlayout`); section 6 rewritten as Profile M (military, encrypted by default, no plaintext beacons) and Profile A (amateur); new hardware spike `BT-00`/phase BT-H; unverified radio claims flagged.
+- `docs/HYBRID-ENTERPRISE-SERVER-RELAY-PLAN.md`: section 0 (H1-H15) and inline fixes (service type, ports, FLASH_HELLO, androidMain-only classes, nginx port, static token, version pins); marked superseded by the merged plan.
+- **New** `docs/ENTERPRISE-HYBRID-PLAN.md`: merged plan, stages E0-E5, shared signed envelope and transport capability model, military security checklist, owner decisions D-E1...D-E7.
+- `docs/FUTURE-OPTIMIZATION.md`: FO-09 pointer, rows FO-09..FO-12. `docs/testing/TEST-BACKLOG.md`: section 4zl (`BT-00`, `ENT-01`...`ENT-08`).
+
+### Verification
+Code read: `IdentityKeyVault`, `PersistedFlashCrypto`, `FlashTransportType`, `SessionHardeningPolicy`, `TxtCodec`, discovery/WS constants, `libs.versions.toml`, `desktop/build.gradle.kts`, ADR numbering, ADR-044, `security.md` 4/6/10. Web (2026-10-07): UV-Pro/VR-N76/GA-5WB KISS over Bluetooth, AX.25 PID table, APRS 67-character limit, BLE 31-byte advertising, Android 15 `dataSync` 6 h limit, 47 CFR 97.113. Nothing was built or run; no tests were affected.
+
+### Problems
+The first web-search attempts failed with a transient classifier error; they worked later. Claims still unverified are marked UNVERIFIED in the radio plan: 9600 baud, Bluetooth type, LCD behaviour in KISS mode, HFP/SCO and PTT commands, transmit power, Ghana military spectrum rules (not public).
+
+### Remaining / Next AI
+Owner decisions are listed in `docs/ENTERPRISE-HYBRID-PLAN.md` section 10 and `docs/LINUX-PORT-PLAN.md` section 0. Do not write enterprise, radio or Linux product code before they are answered. The only no-code step with value now is the `BT-00` hardware spike. A needed follow-up is an ADR for the `REALM` trust level (amends ADR-044 decision 4 and AGENTS.md section 19).
+
+## 2026-10-07 (d) - Late offers never learned who held the file; new member of a busy group got no catch-up (ERROR-121, ADR-091)
+
+### Worked on
+Owner question (is new-member sync robust?) and logs of the latest test: slow start (98 s after Accept on the Infinix), desktop slow until the original sender returned.
+
+### Changed
+- `PeerHandler`/`PeerState`: a holder answers the first Summary listing of a root once per session (`summaryListedRoots`); the old test "peer has no state" was defeated by the Tick creating state for every peer.
+- `RealFlashChatRepository.catchUpCandidates`: catch-up reads from the 7-day floor in pages instead of the oldest 100 rows; per-row windows applied while reading. `GroupPolicy.MAX_CATCH_UP_PAGES`.
+- `SwarmRowProbes`: restored rows say nothing.
+- Tests: `SwarmFirstContactTest` (2), `SignedGroupsTest` busy-group audit (mutation-checked), `SwarmRowProbesTest`.
+
+### Findings
+Both slow starts are explained by the holder's silence (see ERROR-121); the desktop's 53 KB/s average also includes ~2.5 min with the origin off the network. The Wi-Fi was flapping in every log. New-member sync exists (text 24 h, files 7 d) but is automatic and had the paging bug. FO-10 records the "ask first" idea.
+
+### Verification
+`:core:swarm:jvmTest :core:messaging:jvmTest :core:messaging:testAndroidHostTest :core:engine:jvmTest` green. Not device-verified.
+
+### Remaining
+`SWO-11`...`SWO-14`. All devices must run the new build. Unexplained: the share of the slow rate due to the network.
+
+### Next AI
+Do not commit unasked. After the next device run read `swarm.first_byte sinceAcceptMs` on every receiver.
+
+## 2026-10-07 (c) - Audit: swarm switched off, and a member who comes online later (ERROR-120, ADR-090)
+
+### Worked on
+Owner question: what happens to a member without swarm, and to one who was offline when a group file was sent.
+
+### Changed
+- `RealFlashChatRepository.handleSyncPush` keeps a verified offer when swarm is off here (row detail "Group file sharing is off on this device", probe kind `offer_kept_swarm_off_here`); it no longer stores an empty text row.
+- `GroupPolicy.SWARM_OFFER_SYNC_TTL_MS` (7 d) + `GroupSyncPolicy.ownedMessages(ttlMs)`; `handleSyncRequest` serves file offers for 7 days instead of 24 h.
+- Tests: `SignedGroupsTest` swarm-off audit, `GroupSyncPolicyTest.ownedMessagesKeepsAFileOfferLongerThanText`.
+
+### Findings
+Live: a swarm-on member gets an offer; a paired swarm-off member gets the whole file; a vouched/unpaired swarm-off member gets nothing live. Late: on session-up the member sends a sync request, the offer is relayed (signed), shown as an offer, and the file downloads once the origin or a holder is online.
+
+### Verification
+`:core:messaging:jvmTest :core:messaging:testAndroidHostTest` green. Not device-verified.
+
+### Remaining
+Limits listed in ERROR-120 (no adoption of a kept offer when swarm is enabled later; voice/legacy files lost after the window; stale features after a toggle). Device checks `SWO-07`...`SWO-10`.
+
+### Next AI
+Do not commit unasked. Decide with the owner whether to build "adopt kept offers when swarm turns on".
+
+## 2026-10-07 (b) - Group file: opens after download, sender sees who has it, offers prepare while waiting (ERROR-119, ADR-089)
+
+### Worked on
+The owner's report after a four-device group file run (three Android logs plus the desktop log): the log analysis, a slow start, no per-member view for the sender, "first to accept is served at once", and "File not available yet" on every receiver after a finished download. Done step by step.
+
+### Changed
+- **Open bug (root cause):** swarm rows never carried `localPath`; `SwarmDriver.updateTransferRow` now sets it (receiver: `finalPath` once completed; sender: its source) plus `sourceUri`.
+- **Sender view:** engine tracks each member's held bytes and smoothed growth rate (`PeerContentState.noteHolding`); `ContentSnapshot.recipients`; the origin republishes about once a second while someone is incomplete; `FlashTransfer.recipients`; bubble line "N of M have it / Everyone has the file / You can go offline now" and an expandable "Who has it" list with names, percent, MB/s, offline, "Has the file". Rows also carry speed and (receiver) ETA now.
+- **Start:** an offered receiver fetches the manifest and sends its Summary on announce (no file data before Accept); the Tick retries a lost manifest reply for an offer; Accept's first `Request` goes out in the same step. Test shows the first accepter is requested and served while two others have not accepted.
+- **Probes:** `swarm.offer.shown`, `swarm.accepted`, `swarm.first_byte`, `swarm.recv.done`, `swarm.member.first`, `swarm.member.done` (PROBES.md).
+
+### Log analysis (what could and could not be found)
+No accept / piece / rate line exists in the four logs, so the start latency of that run cannot be measured; the probes fix that. The 5.5 min second transfer coincides with the sender phone's silent gaps (41.6 s, 24 s), a mass connection abort at 09:16:21 and a Wi-Fi outage to about 09:16:50: the origin serves the pieces nobody else holds, so the swarm waits on a stalled sender (known Transsion / Wi-Fi behaviour). Other noted, unchanged: a Summary dropped from a not-yet-known member at reconnect, gateway probe noise, link-change probing reaping sessions in an outage, noisy `Broken pipe` traces.
+
+### Verification
+Green: `:core:swarm:jvmTest`, `:core:engine:jvmTest` (incl. `SwarmInteropTest` over real sockets, now asserting each receiver's `localPath` equals the received file), `:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest`, `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. New tests: `SwarmRecipientViewTest` (5), `SwarmOfferReadinessTest` (2), `SwarmRowProbesTest` (2), `FileRecipientRowsTest` (5), `FlashSwarmUiMathTest` recipient lines. Not mutation-checked; not device-verified.
+
+### Remaining
+- Device checks `SWO-01`...`SWO-06` (TEST-BACKLOG 4zk). ERROR-119 stays OPEN.
+- Known limits: the sender's per-member rate is as coarse as HAVE batching (about 1 s); a receiver's speed only refreshes when its row publishes; `Flash.kt` (library host) does not map `recipients` (the app and desktop hosts do).
+- Not changed on purpose: origin "serve only unseeded pieces" policy and slot counts, auto-accept default.
+
+### Next AI
+Ask the owner for a log export from the sender and two receivers after a 3-device group file test (they now contain the `swarm.*` probes) and settle `SWO-04` from `swarm.first_byte sinceAcceptMs`. If it is still slow, look at the origin's SAF read latency for the first piece before touching the serve policy.
+
+## 2026-10-07 - Group settings and UI review: claims checked, five fixed (ERROR-118, ADR-088)
+
+### Worked on
+A pasted architecture and UI review (twelve claims, no code run by its author). Each claim was checked against the code before anything changed.
+
+### Changed
+- Group Info (`FlashGroupMembersSheet`) has a "Group settings" row for active members of a v2 group.
+- `FlashConversationScreen.onShareText` is nullable: desktop no longer shows an inert Share button on the invite sheet.
+- Invite link: stale link cleared on open; a null result says "Couldn't create an invite link".
+- `SignedGroups.updateSettings` and `updateGroupLocalPreferences` are serialised with a `Mutex`; the three steppers keep a local value so two quick taps are two steps.
+- Create-group sheet allows 20 devices (`GroupPolicy.MAX_MEMBERS_V2`).
+
+### Checked and not changed
+Reset-to-defaults overwrite on Android (false: `onSettingsChange` diffs against one snapshot, each call persists its own field); shared-content sheet window (false: the conversation flow has no LIMIT); disabled-switch feedback (a standing notice already exists); nav inset void (cosmetic, end-of-list padding only); group rename/avatar (feature, needs a signed wire change, owner decision); resize stale selection and TalkBack radar focus (no repro, device checks `GSUI-06`/`GSUI-07`).
+
+### Verification
+`:ui:chat:jvmTest`, `:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest` (`GroupSettingsTest`, `SignedGroupsTest`), `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. New concurrency tests fail with the locks removed and pass with them. Not device-verified.
+
+### Remaining
+Device checks `GSUI-01`...`GSUI-07` (TEST-BACKLOG 4zj). Owner decision: group rename (and avatar) needs a new signed frame.
+
+### Next AI
+A failed settings write leaves a stepper's local value ahead of the stored one until the sheet is reopened (toast shown). Two quick taps on different steppers are ordered by coroutine launch, not guaranteed FIFO across threads; values are absolute, so the worst case is the older value winning.
+
 ## 2026-10-06 (r) - Evidence probes and the log export header (ADR-087)
 
 ### Worked on

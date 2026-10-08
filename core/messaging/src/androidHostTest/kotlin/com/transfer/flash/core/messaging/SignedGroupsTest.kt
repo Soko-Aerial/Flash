@@ -1326,6 +1326,56 @@ class SignedGroupsTest {
         assertNull("no bubble waits for bytes that cannot come", nodes.getValue("dev-c").messageDao.getByLocalId("att-sw"))
     }
 
+    // ERROR-120 audit: a member whose swarm is off (no listener) that connects later and is handed a swarm file by catch-up.
+    @Test
+    fun `audit - a swarm-off member that was offline is told there is a file, not given an empty message`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        // dev-c has no swarm listener (swarm switched off) and is offline when the file is sent.
+        goOffline("dev-c")
+        val repo = nodes.getValue("dev-a").repo
+        repo.recordSwarmOffer("att-sw", swarmRoot, swarmPiece, hostRootSig("dev-a", groupId, "att-sw", System.currentTimeMillis() - 9))
+        repo.sendGroupAttachment(groupId, "att-sw", "att-sw", swarmName, swarmMime, swarmSize, "content://big")
+        settle()
+
+        connect("dev-a", "dev-c")
+        settleLong()
+
+        val row = nodes.getValue("dev-c").messageDao.getByLocalId("att-sw")
+        assertNotNull("the member hears that a file was sent", row)
+        assertTrue("and the row says what it is instead of being empty: text='${row!!.text}'", row.text.isNotBlank() || row.attachmentName != null)
+    }
+
+    // ERROR-121 audit: the catch-up read took the 100 OLDEST rows and only then applied the 24 h window.
+    @Test
+    fun `audit - a new member of a busy group still gets the recent messages and the file offer`() = runBlocking {
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        val twoDaysAgo = System.currentTimeMillis() - 2L * 24L * 60L * 60L * 1000L
+        for (id in listOf("dev-a", "dev-b", "dev-c")) {
+            repeat(150) { i ->
+                nodes.getValue(id).messageDao.insert(
+                    MessageEntity(
+                        localId = "old-$id-$i", conversationId = groupId, senderId = "dev-a", senderName = "Ada",
+                        text = "old $i", sentAt = twoDaysAgo + i, status = "DELIVERED", groupSig = "stale",
+                    ),
+                )
+            }
+        }
+        say("dev-b", groupId, "recent hello")
+        val repo = nodes.getValue("dev-a").repo
+        repo.recordSwarmOffer("att-busy", swarmRoot, swarmPiece, hostRootSig("dev-a", groupId, "att-busy", System.currentTimeMillis() - 9))
+        repo.sendGroupAttachment(groupId, "att-busy", "att-busy", swarmName, swarmMime, swarmSize, "content://big")
+        settle()
+
+        val added = repo.addGroupMembers(groupId, setOf("dev-d"))
+        assertTrue("add must succeed: $added", added is FlashResult.Success)
+        settleLong()
+
+        assertNotNull("the recent text reached the new member", stored("dev-d", groupId, "recent hello"))
+        assertNotNull("and so did the file offer", nodes.getValue("dev-d").messageDao.getByLocalId("att-busy"))
+    }
+
     @Test
     fun `a voice note in a signed group reaches a member that was offline, the signature covers the empty text`() = runBlocking {
         mesh("dev-a", "dev-b", "dev-c")

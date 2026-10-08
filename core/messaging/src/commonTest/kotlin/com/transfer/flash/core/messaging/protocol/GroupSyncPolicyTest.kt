@@ -31,6 +31,27 @@ class GroupSyncPolicyTest {
     }
 
     @Test
+    fun ownedMessagesKeepsAFileOfferLongerThanText() {
+        val now = 10L * GroupPolicy.SWARM_OFFER_SYNC_TTL_MS
+        val messages = listOf(
+            Msg("text-2d", now - 2 * GroupPolicy.SYNC_TTL_MS),
+            Msg("file-2d", now - 2 * GroupPolicy.SYNC_TTL_MS),
+            Msg("file-8d", now - GroupPolicy.SWARM_OFFER_SYNC_TTL_MS - 1L),
+        )
+        val owned = GroupSyncPolicy.ownedMessages(
+            messages = messages,
+            cursor = GroupSyncCursor(0L, ""),
+            maxTotal = 10,
+            nowMs = now,
+            sentAt = { it.at },
+            messageId = { it.id },
+            deletedAt = { it.deleted },
+            ttlMs = { if (it.id.startsWith("file")) GroupPolicy.SWARM_OFFER_SYNC_TTL_MS else GroupPolicy.SYNC_TTL_MS },
+        )
+        assertEquals(listOf("file-2d"), owned.map { it.id })
+    }
+
+    @Test
     fun ownedMessagesFiltersCursorDeletedTtlAndBudget() {
         val now = 1_000_000_000L
         val messages = listOf(

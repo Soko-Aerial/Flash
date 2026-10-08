@@ -159,14 +159,14 @@ import okio.Path.Companion.toPath
 public class DesktopEngine(
     /** Root for received files. Default: null (resolves to settings store or ~/FlashReceived). */
     receivedRoot: File? = null,
-    /** Root for identity/trust/settings-free state. Default: `~/.flash`. */
-    private val stateDir: File = File(System.getProperty("user.home", "."), ".flash"),
+    /** Root for identity/trust/settings-free state. Default: `DesktopPaths.stateDir()` (`~/.flash`; XDG data folder on Linux). */
+    private val stateDir: File = DesktopPaths.stateDir(),
     /**
-     * At-rest protection for the identity key (ADR-035). Production leaves the default, Windows DPAPI. Tests on a
-     * machine without DPAPI pass `IdentityKeyVault.PassThrough`; nothing else should.
+     * At-rest protection for the identity key (ADR-035). Production leaves the default: Windows DPAPI on Windows, the
+     * Secret Service keyring then an owner-only key file on Linux (Linux plan L0/L1, `DesktopVaults`). Tests pass `IdentityKeyVault.PassThrough`; nothing else should.
      */
     identityVault: com.transfer.flash.core.security.identity.IdentityKeyVault =
-        com.transfer.flash.core.security.identity.IdentityKeyVault.Dpapi,
+        DesktopVaults.forCurrentOs(stateDir),
     /**
      * Microphone and speaker for push-to-talk (ADR-058). Production leaves the default, `javax.sound`. Tests pass a
      * fake, because the default opens the real microphone.
@@ -954,6 +954,15 @@ public class DesktopEngine(
                             bytesDone = t.bytesDone,
                             bytesTotal = t.bytesTotal,
                             pieceBlocks = t.pieceBlocks,
+                            recipients = t.recipients.map {
+                                com.transfer.flash.core.messaging.model.FlashRecipientProgress(
+                                    peerId = it.peerId,
+                                    progress = if (it.bytesTotal > 0L) (it.bytesHeld.toFloat() / it.bytesTotal.toFloat()).coerceIn(0f, 1f) else 0f,
+                                    hasAll = it.hasAll,
+                                    online = it.online,
+                                    bytesPerSec = it.rateBytesPerSec,
+                                )
+                            },
                         )
                     }
                 },

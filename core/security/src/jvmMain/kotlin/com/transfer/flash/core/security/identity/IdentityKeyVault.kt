@@ -2,6 +2,7 @@ package com.transfer.flash.core.security.identity
 
 import com.sun.jna.platform.win32.Crypt32Util
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import java.io.File
 
 /**
  * The at-rest protection seam for a persisted software identity key — Phase 26 / ADR-035.
@@ -44,6 +45,42 @@ public class IdentityKeyVault(
             protectFn = { plain -> Crypt32Util.cryptProtectData(plain) },
             unprotectFn = { blob -> Crypt32Util.cryptUnprotectData(blob) },
         )
+
+        /**
+         * A vault sealed under a random master key kept in [keyFile] (owner-only on POSIX). The Linux and macOS
+         * fallback until their keyring providers exist; a weaker tier than DPAPI, see [KeyFileVault].
+         */
+        @FlashInternalApi
+        public fun forKeyFile(keyFile: File): IdentityKeyVault = sealedBy(listOf(FileMasterKey(keyFile)))
+
+        /**
+         * Prefers the OS [keyring] for the master key and falls back to the owner-only [keyFile] when the keyring
+         * cannot be reached (no session bus, locked and dismissed, headless). Each blob remembers which one sealed it.
+         */
+        @FlashInternalApi
+        public fun withKeyring(keyring: SecretKeyStore, keyFile: File): IdentityKeyVault =
+            sealedBy(listOf(KeyringMasterKey(keyring), FileMasterKey(keyFile)))
+
+        private fun sealedBy(sources: List<MasterKeySource>): IdentityKeyVault {
+            val vault = SealedVault(sources)
+            return IdentityKeyVault(protectFn = vault::protect, unprotectFn = vault::unprotect)
+        }
+
+        /**
+         * The vault for the machine this is running on: Windows DPAPI on Windows, otherwise the key-file vault under
+         * `<stateDir>/identity/vault.key`. DPAPI is never touched off Windows, because `Crypt32Util` cannot load
+         * there and the first-run identity write used to crash the app (Linux plan C4).
+         */
+        @FlashInternalApi
+        public fun defaultForCurrentOs(
+            stateDir: File,
+            osName: String = System.getProperty("os.name", ""),
+        ): IdentityKeyVault =
+            if (osName.startsWith("Windows", ignoreCase = true)) {
+                Dpapi
+            } else {
+                forKeyFile(File(File(stateDir, "identity"), "vault.key"))
+            }
 
         /**
          * Test vault: identity transform. Tests use it to exercise `PersistedFlashCrypto`'s

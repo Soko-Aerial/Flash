@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,6 +72,17 @@ public fun FlashGroupSettingsSheet(
     val effectivePrefs = preferences ?: GroupLocalPreferences.defaults("preview")
 
     var showRotateConfirm by remember { mutableStateOf(false) }
+
+    // Steppers compute the next value from the one on screen. Two quick taps would both read the stored value and
+    // send the same number, losing a step, so each stepper keeps a local value that follows the stored one again
+    // as soon as the stored one changes.
+    var capacityLocal by remember(effectiveSettings.maxMembers) { mutableIntStateOf(effectiveSettings.maxMembers) }
+    var batteryLocal by remember(effectivePrefs.batteryThresholdPercent) {
+        mutableIntStateOf(effectivePrefs.batteryThresholdPercent)
+    }
+    var keepDaysLocal by remember(effectivePrefs.keepAvailableDays) {
+        mutableIntStateOf(effectivePrefs.keepAvailableDays)
+    }
 
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -206,11 +218,12 @@ public fun FlashGroupSettingsSheet(
 
             // Capacity Stepper
             CapacityStepperRow(
-                maxMembers = effectiveSettings.maxMembers,
+                maxMembers = capacityLocal,
                 enabled = canEdit,
                 onDelta = { delta ->
-                    val updated = FlashGroupSettingsMath.clampMaxMembers(effectiveSettings.maxMembers, delta)
-                    if (updated != effectiveSettings.maxMembers) {
+                    val updated = FlashGroupSettingsMath.clampMaxMembers(capacityLocal, delta)
+                    if (updated != capacityLocal) {
+                        capacityLocal = updated
                         onUpdateSettings(null, null, updated, null, null)
                     }
                 },
@@ -253,15 +266,21 @@ public fun FlashGroupSettingsSheet(
             // Battery threshold
             ValueStepperRow(
                 title = "Battery pause threshold",
-                valueLabel = FlashGroupSettingsMath.batteryThresholdLabel(effectivePrefs.batteryThresholdPercent),
-                description = FlashGroupSettingsMath.batteryThresholdDescription(effectivePrefs.batteryThresholdPercent),
+                valueLabel = FlashGroupSettingsMath.batteryThresholdLabel(batteryLocal),
+                description = FlashGroupSettingsMath.batteryThresholdDescription(batteryLocal),
                 onDecrement = {
-                    val newVal = (effectivePrefs.batteryThresholdPercent - 5).coerceIn(5, 50)
-                    onUpdatePreferences(null, null, newVal, null)
+                    val newVal = (batteryLocal - 5).coerceIn(5, 50)
+                    if (newVal != batteryLocal) {
+                        batteryLocal = newVal
+                        onUpdatePreferences(null, null, newVal, null)
+                    }
                 },
                 onIncrement = {
-                    val newVal = (effectivePrefs.batteryThresholdPercent + 5).coerceIn(5, 50)
-                    onUpdatePreferences(null, null, newVal, null)
+                    val newVal = (batteryLocal + 5).coerceIn(5, 50)
+                    if (newVal != batteryLocal) {
+                        batteryLocal = newVal
+                        onUpdatePreferences(null, null, newVal, null)
+                    }
                 },
             )
 
@@ -270,15 +289,21 @@ public fun FlashGroupSettingsSheet(
             // Keep available days
             ValueStepperRow(
                 title = "Keep files available",
-                valueLabel = FlashGroupSettingsMath.keepAvailableDaysLabel(effectivePrefs.keepAvailableDays),
-                description = FlashGroupSettingsMath.keepAvailableDaysDescription(effectivePrefs.keepAvailableDays),
+                valueLabel = FlashGroupSettingsMath.keepAvailableDaysLabel(keepDaysLocal),
+                description = FlashGroupSettingsMath.keepAvailableDaysDescription(keepDaysLocal),
                 onDecrement = {
-                    val newVal = (effectivePrefs.keepAvailableDays - 1).coerceIn(1, 30)
-                    onUpdatePreferences(null, null, null, newVal)
+                    val newVal = (keepDaysLocal - 1).coerceIn(1, 30)
+                    if (newVal != keepDaysLocal) {
+                        keepDaysLocal = newVal
+                        onUpdatePreferences(null, null, null, newVal)
+                    }
                 },
                 onIncrement = {
-                    val newVal = (effectivePrefs.keepAvailableDays + 1).coerceIn(1, 30)
-                    onUpdatePreferences(null, null, null, newVal)
+                    val newVal = (keepDaysLocal + 1).coerceIn(1, 30)
+                    if (newVal != keepDaysLocal) {
+                        keepDaysLocal = newVal
+                        onUpdatePreferences(null, null, null, newVal)
+                    }
                 },
             )
 

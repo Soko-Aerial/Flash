@@ -74,6 +74,9 @@ kotlin {
                 implementation(libs.kotlinx.coroutines.core)
                 // Okio: FileSourceOpener opens sources over okio's FileSystem (13B-2 seam).
                 implementation(libs.okio)
+                // Linux plan L1 (D-L2): D-Bus client for the Secret Service keyring (ADR-092). Used only on Linux at run time.
+                implementation(libs.dbus.java.core)
+                implementation(libs.dbus.java.transport.native.unixsocket)
                 // Phase 33a: the NATIVE libwebrtc for THIS host at product runtime.
                 // `webrtc-java`'s main jar (arriving transitively via `:core:calling`) is the
                 // Java API only; the native library is a per-OS/arch classified artifact that
@@ -175,8 +178,12 @@ compose.desktop {
                 "java.management",
                 "java.instrument",
                 "jdk.crypto.cryptoki",
-                "jdk.crypto.mscapi",
             )
+            // jdk.crypto.mscapi exists only in a Windows JDK; jlink on Linux fails with "Module not found" if it is
+            // listed (Linux plan L0). A package is built on its own OS, so the host decides.
+            if (System.getProperty("os.name", "").startsWith("Windows", ignoreCase = true)) {
+                modules("jdk.crypto.mscapi")
+            }
             windows {
                 menuGroup = "Flash"
                 upgradeUuid = "6d9b4b0e-3c58-45b7-8df1-e3e9d8f8e021"

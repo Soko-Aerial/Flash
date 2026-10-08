@@ -45,7 +45,7 @@ import java.io.File
 @FlashInternalApi
 public class PersistedFlashCrypto(
     private val stateDir: File,
-    private val vault: IdentityKeyVault = IdentityKeyVault.Dpapi,
+    private val vault: IdentityKeyVault = IdentityKeyVault.defaultForCurrentOs(stateDir),
     private val log: (String) -> Unit = { FlashLog.w(TAG, it) },
 ) : FlashCrypto {
 

@@ -2647,3 +2647,196 @@ These check the logging itself. Vocabulary and field meanings: `docs/testing/PRO
 - **Steps:** after LOGX-01...03 plus an invite link share, search both exports for `flash://g`, any run of 64+ base64 or hex characters, and the text of the messages sent.
 - **Pass:** nothing found in `PROBE` lines (or anywhere else, AGENTS.md section 24).
 - **Source:** ADR-087. **Status:** TODO
+
+## 4zj. Group settings review fixes (ERROR-118, ADR-088, 2026-10-07)
+
+### GSUI-01 - Group settings opens from Group Info
+- **Setup:** a v2 group, this device an active member (once as owner, once as plain member).
+- **Steps:** open the group, tap the header to open Group Info (members sheet), tap "Group settings". Repeat in a legacy (`g-`) group.
+- **Pass:** the settings sheet opens in the v2 group (editable for the owner or an admin, with the "Only group admins can change group rules." notice for a member); the row is absent in the legacy group and for a device that left.
+- **Source:** ERROR-118. **Status:** TODO
+
+### GSUI-02 - Invite link failure is visible, and a stale link never shows
+- **Steps:** turn the group code over with "Change group code", then open "Share invite link" at once. (The failure branch needs a build whose `inviteFor` fails; it is not reachable on a healthy device, so only the stale-link half is a device check.)
+- **Pass:** the sheet shows only the new link, never the old one first.
+- **Source:** ERROR-118. **Status:** TODO
+
+### GSUI-03 - Desktop has no dead Share button
+- **Steps:** on the Windows app open Share invite link in a v2 group; forward a message with no forward targets available.
+- **Pass:** only "Copy link" is shown; the clipboard holds a `flash://g/...` link. Android still shows both buttons and opens the system share sheet.
+- **Source:** ERROR-118, ADR-088. **Status:** TODO
+
+### GSUI-04 - Creating a group above six devices
+- **Setup:** one owner device and 7 or more paired devices on the latest build, then one paired device on an old build.
+- **Steps:** create a group selecting 7 peers; then select the old-build peer too.
+- **Pass:** the first group is created as signed (v2) with 8 members; the second is refused with a sentence naming the reason ("Groups of more than 6 need every member on the latest Flash version" or the offline names). The count label reads "n of 20 members chosen".
+- **Source:** ERROR-118, ADR-088. **Status:** TODO
+
+### GSUI-05 - Quick taps on group settings are not lost
+- **Steps:** as owner, tap the capacity "−" three times quickly (each tap is 5); flip three switches in under a second; in "This device" tap Battery "+" three times and "Keep files" "+" three times quickly.
+- **Pass:** capacity ends 15 lower (or at its floor) after the sheet is reopened; all three switches hold their new value on the other member's device; Battery rose by 15 points and Keep files by 3 days; the log has one `GM-9: Updated settings` line per change with consecutive versions.
+- **Source:** ERROR-118. **Status:** TODO
+
+### GSUI-06 - Resize across 840 dp keeps a sensible detail pane (review claim, not reproduced)
+- **Steps:** on a tablet or the desktop window select a transfer, shrink below 840 dp, switch to Nearby, widen again.
+- **Pass:** the detail pane shows the placeholder or the item of the tab you are on, never the previous tab's item.
+- **Source:** ERROR-118 (unverified claim). **Status:** TODO
+
+### GSUI-07 - TalkBack on the Nearby radar during a scan (review claim, not reproduced)
+- **Steps:** TalkBack on, open Nearby, let devices appear and disappear for 30 s while moving focus down the list.
+- **Pass:** focus stays on the item the user chose; the radar canvas is not focusable.
+- **Source:** ERROR-118 (unverified claim). **Status:** TODO
+
+## 4zk. Group file: open, sender's member view, start (ERROR-119, ADR-089, 2026-10-07)
+
+### SWO-01 - A finished received group file opens on every receiver
+- **Setup:** group of at least 3 devices (Android and desktop), swarm switch on, any file 5-50 MB.
+- **Steps:** send the file; every receiver accepts; when each shows done, tap the file bubble (and Open from the Transfers tab).
+- **Pass:** the file opens in its viewer on every receiver; no "File not available yet". The sender can also open its own source from its bubble.
+- **Source:** ERROR-119. **Status:** TODO
+
+### SWO-02 - The sender sees who has the file
+- **Steps:** as above with 3 receivers; before any accepts, while they download, and when all are done, look at the sender's bubble and expand "Who has it".
+- **Pass:** before accepting each member shows "Waiting to start"; during the download each shows a percentage and MB/s that move about once a second; a member that finished shows "Has the file"; the bubble line reads "N of M have it", then "Everyone has the file"; once every piece is distributed it adds "You can go offline now". Names, not ids, are shown.
+- **Source:** ERROR-119. **Status:** TODO
+
+### SWO-03 - Leaving once everyone has it
+- **Steps:** when SWO-02 shows everyone done, close the app on the sender.
+- **Pass:** nothing on the receivers changes; files still open (SWO-01).
+- **Source:** ERROR-119. **Status:** TODO
+
+### SWO-04 - The first member to accept starts at once
+- **Steps:** three receivers; accept on one only, wait 20 s, then accept on the second, then the third. Export logs from the sender and the first receiver.
+- **Pass:** the first receiver starts moving within about a second of the tap on a LAN (`swarm.accepted` then `swarm.first_byte sinceAcceptMs` in the hundreds of ms); its percentage rises while the others have not accepted; the others join when they accept without restarting the first.
+- **Source:** ERROR-119, ADR-089. **Status:** TODO
+
+### SWO-05 - Offer prefetch does not move file data or leak into the offer card
+- **Steps:** receive an offer and leave it unaccepted for a minute.
+- **Pass:** the receiver's row stays an offer (Accept / Decline), shows no wait-reason line, and no bytes are downloaded (the row's bytes stay 0); the sender's list shows the member as "Waiting to start".
+- **Source:** ERROR-119. **Status:** TODO
+
+### SWO-06 - Speed and ETA on the receiver, probes in the export
+- **Steps:** download a file of 50 MB or more; export the log afterwards on a receiver and on the sender.
+- **Pass:** the receiver's bubble shows a speed and a falling ETA; the export has `swarm.offer.shown`, `swarm.accepted`, `swarm.first_byte`, `swarm.recv.done` (receiver) and `swarm.member.first`, `swarm.member.done` (sender), each once per file.
+- **Source:** ERROR-119, PROBES.md. **Status:** TODO
+
+### SWO-07 - A swarm-off member is told there is a file
+- **Setup:** group of 3 on swarm v2; member C has the swarm switch OFF and is paired with the sender.
+- **Steps:** send a 20 MB file; look at C.
+- **Pass:** C receives the whole file (paired push). Repeat with C only vouched (not paired): C shows nothing live; after reconnect/catch-up C shows a file row "Group file sharing is off on this device", not a blank message (`group.sync.in kind=offer_kept_swarm_off_here`).
+- **Source:** ERROR-120, ADR-090. **Status:** TODO
+
+### SWO-08 - A member offline for hours gets the offer on reconnect
+- **Steps:** switch member C off Wi-Fi; send a file from A; wait 10 min; reconnect C; accept.
+- **Pass:** C shows the offer within about 30 s of the session coming up (`group.sync.in kind=swarm_offer`) and downloads it from A or B.
+- **Source:** ERROR-120. **Status:** TODO
+
+### SWO-09 - Offline more than 24 hours
+- **Steps:** as SWO-08 but keep C offline for 25 h or more (under 7 days) with A or B online when C returns.
+- **Pass:** C still gets the offer (`group.sync.in kind=swarm_offer`) while A or a holder is online; after 7 days it does not.
+- **Source:** ERROR-120, ADR-090. **Status:** TODO
+
+### SWO-10 - Voice note or tiny file to a member that was offline (documents a limit)
+- **Steps:** while C is offline, A sends a voice note and a 10 KB file; reconnect C.
+- **Pass:** record what C sees; expected limit: it may not arrive after the window (ERROR-120 limits). Any other result is information.
+- **Source:** ERROR-120. **Status:** TODO
+
+### SWO-11 - A late offer starts at once
+- **Setup:** group of 4 or more on the new build; one member has the file and is NOT the sender; the sender then leaves the Wi-Fi.
+- **Steps:** a device that joined the group late (or was off) comes online; accept the file offer. Export logs from it and from one holder.
+- **Pass:** `swarm.first_byte sinceAcceptMs` below about 3000 ms on a LAN with the sender absent; no wait for a reconnect. The log has no gap between `swarm.accepted` and `swarm.first_byte`.
+- **Source:** ERROR-121, ADR-091. **Status:** TODO
+
+### SWO-12 - Desktop started after others finished
+- **Steps:** three phones finish a file; start the desktop app afterwards; accept; keep the sender off.
+- **Pass:** the desktop downloads from the finished phones at a normal LAN speed (compare the phones' `swarm.recv.done avgKBps`), and finishes without the sender returning.
+- **Source:** ERROR-121. **Status:** TODO
+
+### SWO-13 - New member of a busy group
+- **Setup:** a group with more than 100 messages older than 2 days, plus one text and one file sent today.
+- **Steps:** add a new member.
+- **Pass:** the new member shows today's text and the file offer (`group.sync.in kind=text` and `kind=swarm_offer`); older text (over 24 h) is not shown.
+- **Source:** ERROR-121. **Status:** TODO
+
+### SWO-14 - No probe noise on restart
+- **Steps:** receive a file, restart the desktop app, export/read `desktop.log`.
+- **Pass:** no `swarm.accepted`, `swarm.first_byte` or `swarm.recv.done` for the old file after the restart.
+- **Source:** ERROR-121. **Status:** TODO
+
+## 4zl. Enterprise realm, radio/Bluetooth and Linux plans (docs only, 2026-10-07)
+
+Nothing below is runnable yet: the plans are design only (`docs/ENTERPRISE-HYBRID-PLAN.md`, `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`,
+`docs/LINUX-PORT-PLAN.md`). Each test becomes runnable when its stage is built. Statuses stay `TODO`; `BT-00` is the only one that needs no Flash code.
+
+### BT-00 - Radio hardware spike (do FIRST, no Flash code)
+- **Setup:** one VR-N76 / UV-Pro / GA-5WB, one Android phone, one Windows PC; a serial/KISS logger (APRSDroid, WINTNC or a throwaway script).
+- **Steps:** (1) pair and note whether the link is Bluetooth Classic SPP, BLE, or both; (2) try 9600 baud on UHF; (3) with KISS on, send an APRS text message to the radio and look at its LCD, with "Digital Mode" both on and off; (4) try two apps at once; (5) send 220-byte frames and time them at 1200 baud.
+- **Pass:** results written to `logs/experiments.md` as an EXP entry with firmware versions; each UNVERIFIED marker in the radio plan (sections 0.2, 4.1, 4.5, 5.2) updated to measured fact or struck.
+- **Source:** radio plan sections 0.2 and 8 (BT-H). **Status:** TODO
+
+### ENT-01 - Realm gate refuses a stranger (stage E1)
+- **Pass:** a strict-mode device ignores a Flash device without the realm secret on the same LAN, including inbound dials; a device with it connects. **Source:** ENTERPRISE-HYBRID-PLAN E1. **Status:** TODO
+
+### ENT-02 - Enrol a device (stage E2)
+- **Pass:** an admin-signed device cert is accepted by a second enrolled device; an uncertified device is refused. **Source:** E2. **Status:** TODO
+
+### ENT-03 - Revoke a device and refuse it on reconnect (stage E2)
+- **Pass:** after the signed revocation list reaches a node, the revoked device is refused at the handshake and its live session is dropped; the offline window is documented. **Source:** E2. **Status:** TODO
+
+### ENT-04 - Cross-subnet connection from a roster hint (stage E3)
+- **Pass:** a device on another subnet with only the signed roster and an address hint connects; session cap (24) unchanged. **Source:** E3. **Status:** TODO
+
+### ENT-05 - Hub authenticates by identity-key challenge (stage E4)
+- **Pass:** a device with a valid cert connects; a bearer string alone, or a revoked cert, is refused. **Source:** E4, H12. **Status:** TODO
+
+### ENT-06 - Sealed 1:1 message through the hub (stage E4)
+- **Pass:** two enrolled devices on different networks exchange a message; a capture of the hub's database and wire shows ciphertext only. **Source:** E4, H8. **Status:** TODO
+
+### ENT-07 - LAN-first duplicate shows once (stage E4)
+- **Pass:** a message received over the LAN and later again from the hub produces one bubble. **Source:** E4. **Status:** TODO
+
+### ENT-08 - Mailbox TTL and quotas (stage E4)
+- **Pass:** messages older than the TTL are purged; a device over its quota is refused with a clear reason. **Source:** E4. **Status:** TODO
+
+### ENT-09 - Enrol by link with the root offline (stage E2b)
+- **Pass:** a new device opens `flash://enroll?...&root=<fingerprint>` while the root key is unreachable and receives a device cert chained root -> delegation -> device; a link whose server presents another root fingerprint is refused; a used or expired token is refused. **Source:** E2b, D-E8. **Status:** TODO
+
+### ENT-10 - Server revokes a member (stage E2b)
+- **Pass:** the server's delegated key revokes a member and that device is refused on reconnect; the same key trying to revoke an admin is refused by every node. **Source:** E2b. **Status:** TODO
+
+### ENT-11 - Server-issued admin cert is refused (stage E2b)
+- **Pass:** a cert with role admin signed by a delegated key is rejected by all devices; the delegation scope is enforced from the chain, not from the server's say-so. **Source:** E2b. **Status:** TODO
+
+### ENT-12 - Expired delegation and lapsed cert (stage E2b, D-E9)
+- **Pass:** after the delegation expires the server cannot enrol; a device whose cert lapsed without renewal is refused until it renews. **Source:** E2b. **Status:** TODO
+
+### ENT-13 - Restricted invite lists only allowed groups (stage E2c)
+- **Pass:** an invite scoped to department A and group G1 enrols a device whose directory shows exactly those; the link text contains no group names. **Source:** E2c. **Status:** TODO
+
+### ENT-14 - Hidden group is never listed (stage E2c)
+- **Pass:** a hidden group does not appear in any directory response for a device outside its scope (server response captured). **Source:** E2c, D-E11. **Status:** TODO
+
+### ENT-15 - Open join (stage E2c)
+- **Pass:** an employee joins an open in-scope group in one tap and receives a membership cert. **Source:** E2c. **Status:** TODO
+
+### ENT-16 - Request join waits for a group admin (stage E2c)
+- **Pass:** the request shows as pending to the employee and as Approve/Decline to a group admin; decline leaves no cert. **Source:** E2c. **Status:** TODO
+
+### ENT-17 - Department admin scope (stage E2c)
+- **Pass:** a department admin can admit and create groups in its department and is refused in another. **Source:** E2c, D-E13. **Status:** TODO
+
+### ENT-18 - Dashboard web login, step-up and signed audit log (stage E2c)
+- **Pass:** a fresh server has no default credentials and the first admin is created only with the one-time console token (dead after use); login needs password and second factor and locks out after repeated failures; creating or revoking an admin from a stolen web session is refused without the admin device's signature; each admin action appears in a signed append-only log. **Source:** E2c, D-E12. **Status:** TODO
+
+### GSY-01...GSY-09 - Group sync revamp
+- Listed with their pass conditions in `docs/group/GROUP-SYNC-REVAMP-PLAN.md` section 4. All `TODO`; none runnable until built.
+
+### LNX-01...LNX-10 - Linux desktop port (owner confirmed Linux as a target 2026-10-08, D-L1)
+Pass conditions are in `docs/LINUX-PORT-PLAN.md` section 5 (build and CI, Secret Service key, file fallback, notifications, autostart, context menu, network band, WebRTC call, 10 GB transfer, `.deb`/`.rpm` install). All `TODO`; each needs a real Linux machine.
+
+- **LNX-01 (partly covered):** `KeyFileVaultTest` (10 tests, 1 skipped on Windows) passes on Windows 2026-10-08; the POSIX owner-only check (`0600`) and a clean `./gradlew :desktop:compileKotlinJvm :desktop:jvmTest` still need an Ubuntu run (push to CI or a Linux box). **Status:** TODO
+- **LNX-03a (new, L0 fallback):** start `DesktopEngine` on Linux with no keyring: the identity is generated on first run (no crash), the key file (`~/.local/share/flash/identity/vault.key` on a fresh Linux install, or `~/.flash/...` if an old folder with data exists) is `-rw-------`, a restart keeps the same device id. **Source:** Linux plan C4, L0. **Status:** TODO
+- **LNX-02 (new, L1 Secret Service):** on a Linux desktop session with GNOME Keyring (Ubuntu/Fedora), then again with KDE/KWallet (or KeePassXC as the Secret Service provider). Steps: start Flash from a terminal with no prior state; quit; start again. **Pass:** first start creates no `identity/vault.key`; `seahorse` (or `secret-tool search application flash`) shows one item `Flash identity key` with `application=flash`, `account=identity-master-key`; the second start keeps the same device id; log has no `keyring` failure line. Then lock the keyring and start: the unlock prompt appears; dismissing it must not crash the start (an existing keyring-sealed identity cannot be opened without the keyring, so record exactly what the app shows). Then run with no session bus (`env -u DBUS_SESSION_BUS_ADDRESS`): it falls back to the key file. **Note to record:** a blob sealed with the key file stays tagged `0x01` and is opened from the file, so switching tiers later does not lose the identity. **Source:** ADR-092 update (L1). **Status:** TODO
+- **LNX-04a (new, L1 paths):** fresh Linux install: state is in `~/.local/share/flash` and received files in `~/Downloads/Flash` (or the folder `xdg-user-dir DOWNLOAD` prints, after changing it in `~/.config/user-dirs.dirs`). With `XDG_DATA_HOME=/tmp/xdg` set, state moves there. With an existing non-empty `~/.flash` and an empty XDG folder, `~/.flash` keeps being used and nothing is copied. Windows is unchanged (`%USERPROFILE%\.flash`, `FlashReceived`). **Source:** Linux plan C8, L1. **Status:** TODO
+
+The radio plan's `BT-01`...`BT-08` remain listed in that plan (section 9); copy them here when the owner confirms the radio link (D-E6). Source of record: `docs/ENTERPRISE-HYBRID-PLAN.md` section 8.

@@ -137,6 +137,8 @@ fun FlashGroupMembersSheet(
     /** ADR-063: demote an admin to member (owner only). */
     onDemoteAdmin: ((FlashGroupMemberUi) -> Unit)? = null,
     onOpenSharedContent: (() -> Unit)? = null,
+    /** UI-053: opens the group settings sheet from Group Info. Null hides the row (legacy groups, previews). */
+    onOpenGroupSettings: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val sorted = remember(members) { FlashGroupMembersMath.sortMembers(members) }
@@ -206,6 +208,61 @@ fun FlashGroupMembersSheet(
                         )
                         FlashText(
                             text = "Photos, videos, files, and links",
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    FlashIcon(
+                        icon = FlashIcons.Forward,
+                        contentDescription = null,
+                        size = FlashDimensions.iconSm,
+                        tint = colors.textSecondary,
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = FlashSpacing.space8)
+                        .height(FlashDimensions.borderHairline)
+                        .background(colors.borderSubtle),
+                )
+            }
+
+            // UI-053: Group settings action row (v2 groups, active members)
+            if (onOpenGroupSettings != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable {
+                            onDismiss()
+                            onOpenGroupSettings()
+                        }
+                        .padding(vertical = FlashSpacing.space8, horizontal = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(colors.accentPrimary.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Settings,
+                            contentDescription = null,
+                            tint = colors.accentPrimary,
+                        )
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Group settings",
+                            style = FlashTheme.typography.bodyEmphasis,
+                            color = colors.textPrimary,
+                        )
+                        FlashText(
+                            text = "Join rules, file sharing, group code",
                             style = FlashTheme.typography.metadataDefault,
                             color = colors.textSecondary,
                         )

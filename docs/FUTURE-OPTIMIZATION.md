@@ -23,6 +23,10 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-06 | Hotspot client isolation (joined phones cannot reach each other) | 2026-10-02 | IDEA (not prioritised) |
 | FO-07 | Group invite link lifetime: expiry or single use | 2026-10-06 | OPEN DECISION (owner) |
 | FO-08 | Joining by invite: pending-join row, saved address hints, approval timeout | 2026-10-06 | OPEN DECISION (owner) |
+| FO-09 | Organisation realms (private protocol identity, enrolment, revocation) | 2026-10-07 | PLANNED, design only: `docs/ENTERPRISE-HYBRID-PLAN.md` (merged with the hybrid server draft, stages E0-E5) |
+| FO-10 | New-member history: ask before syncing, admin rule | 2026-10-07 | DESIGNED 2026-10-08, owner decisions taken (30 days default, no history = no files, returning member 7 days, any admin changes the ceiling): `docs/group/GROUP-SYNC-REVAMP-PLAN.md`. Not built |
+| FO-11 | Linux desktop as a committed target | 2026-10-07 | OPEN DECISION (owner, D-L1): `docs/LINUX-PORT-PLAN.md`; only Phase L0 (unbreak build/CI, audit `TASK-CORE-SEC-1`) is justified before it is answered |
+| FO-12 | Bluetooth direct transport and VHF/UHF radio (KISS TNC) bridge | 2026-10-07 | POSTPONED until the owner confirms it and hardware spike `BT-00` passes: `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`. Overlaps FO-02 (BLE discovery) and FO-03 (ADR-056 postponements) |
 
 ---
 
@@ -239,3 +243,41 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 **Bring it back when.** A joiner reports "I pressed Join and lost track of it", or the owner picks a timeout.
 
 **Read first.** ERROR-113, ERROR-114, ERROR-115; `docs/testing/TEST-BACKLOG.md` section 4zf; `FlashJoinGroupDialog` (`pendingStatusSentence`, `onCancelPendingJoin`).
+
+---
+
+## FO-09 — Organisation realms: a private protocol identity so only an organisation's devices find and talk to each other
+
+**What.** An organisation would set its own "realm" so that only devices holding the same realm discover and talk to each other (discussion 2026-10-07, nothing built, no ADR yet). Today every Flash install shares one network identity: the mDNS service type `_flash-transfer._tcp` (`JmdnsTransport.DEFAULT_SERVICE_TYPE`, a constructor parameter), the UDP multicast group `224.0.0.168`, the TXT record keys (`TxtCodec`) and `PROTOCOL_VERSION = 1` in the HELLO.
+
+**Three meanings of "change the protocol" (the discussion's conclusion).**
+1. **Partition discovery only**: a different service type / multicast group / port per organisation. Cheap, stops accidental mixing, but it is obscurity: anyone with the APK can read the constants. Not a security boundary.
+2. **Realm secret (recommended shape)**: an organisation secret set at runtime (managed app config, Windows policy, QR or join code). Discovery advertises only a hashed, rotating realm tag. Before pairing or any chat frame both sides prove they hold the secret, reusing the group-secret proof machinery (`GroupSecret`, `GroupProof`, bound to the TLS session). A strict-mode device refuses everyone else, including inbound dials. A `rm1` feature token in the HELLO lets old builds be refused cleanly.
+3. **True wire fork** (different framing or magic bytes): rejected. It adds no isolation beyond option 2, breaks interop with future Windows/Linux/Rust clients and doubles maintenance.
+
+**Staging idea.** R0 make the discovery identifiers configurable. R1 handshake gate with the realm proof plus `rm1`. R2 admin-signed device enrolment and revocation (a shared secret cannot revoke one lost phone; a realm admin key signing device certs, like `MemberCert`, can). R3 scale beyond 24 sessions and across subnets (mDNS does not cross VLANs; needs unicast hints or a directory), which conflicts with ADR-056 / FO-05.
+
+**Open questions that change the design.** Is the threat accidental mixing or a hostile device on the LAN (hostile makes R2 mandatory)? How many devices and are they on one subnet? Must one lost device be removable without rotating everything? Are realm members auto-trusted or do they still pair (auto-trust is a trust-model change needing an ADR)? Who administers a realm (admin phone, desktop tool, MDM)? Can a device be in a realm and also pair personally?
+
+**Update 2026-10-07 (same day, later):** the staged design now lives in `docs/ENTERPRISE-HYBRID-PLAN.md` (E0 = R0, E1 = R1, E2 = R2, E3 = R3), merged with the hybrid server draft, which makes the hub an *optional* stage (E4) and adds bridges (E5). Owner context stated that day: the target is the **Ghana military** (closed administered fleet, possibly no internet). The open questions below are carried as decisions D-E1...D-E7 there. Still nothing built and no ADR accepted.
+
+**Why parked.** The owner asked for it to be recorded here (2026-10-07), not built.
+
+**What the project assumes meanwhile.** One public Flash network; trust comes from pairing (ADR-042) and signed groups (ADR-044, ADR-073/074).
+
+**Bring it back when.** An organisation wants private deployment, or the owner decides to target managed fleets.
+
+**Read first.** ADR-042, ADR-044, ADR-056, ADR-057, ADR-073/074; `docs/security.md` section 10; `JmdnsTransport.kt`, `TxtCodec.kt`, `MulticastTransport.kt`, `WsTransferMessages.kt`; `docs/developer-guide/scenarios/scenario-2-custom-extensions.md` (`FlashCrypto`).
+
+
+## FO-10 — New-member history: ask before syncing, and an admin rule for how much history a new member gets
+
+**Owner idea 2026-10-07:** when a member is added, offer to sync past messages and the files of the last seven days.
+
+**What exists.** A new member automatically receives what the others still hold: text of the last 24 h (up to 100 rows per request) and swarm file offers of the last 7 days (ERROR-120/121). There is no prompt and no admin rule; the new member cannot decline and the group cannot restrict it.
+
+**Idea.** A signed group setting "history for new members: none / 24 h / 7 days" (the GM-9 signed settings carry it) and, on the new member's side, a one-time card "Catch up on recent messages and files?" with the window. Files still need Accept; text could be hidden until chosen. Privacy gain: an admin can keep older content from newcomers.
+
+**Why not now.** Needs a decision on what "none" means for files already fetchable, and a wire-compatible setting. Built only when the owner asks.
+
+**Read first.** ADR-074 (signed group settings), ADR-090, ADR-091, `RealFlashChatRepository.handleSyncRequest`, `GroupPolicy.SYNC_TTL_MS`.

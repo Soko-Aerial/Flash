@@ -15,9 +15,7 @@ import java.util.Properties
 public data class DesktopSettings(
     val themeMode: FlashThemeMode = FlashThemeMode.System,
     val discoveryMode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD,
-    val saveLocation: String = runCatching {
-        File(System.getProperty("user.home", "."), "FlashReceived").canonicalPath
-    }.getOrDefault("FlashReceived"),
+    val saveLocation: String = runCatching { DesktopPaths.receivedRoot().canonicalPath }.getOrDefault("FlashReceived"),
     val autoDownloadVoice: Boolean = true,
     val autoDownloadImage: Boolean = true,
     val autoDownloadVideo: Boolean = false,
@@ -83,9 +81,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
     /** Loads all persisted desktop settings with sensible defaults. */
     fun loadSettings(): DesktopSettings = synchronized(lock) {
         val props = load()
-        val defaultSaveLocation = runCatching {
-            File(System.getProperty("user.home", "."), "FlashReceived").canonicalPath
-        }.getOrDefault("FlashReceived")
+        val defaultSaveLocation = runCatching { DesktopPaths.receivedRoot().canonicalPath }.getOrDefault("FlashReceived")
         DesktopSettings(
             themeMode = themeModeFromKey(props.getProperty(KEY_THEME_MODE)),
             discoveryMode = discoveryModeFromKey(props.getProperty(KEY_DISCOVERY_MODE)),

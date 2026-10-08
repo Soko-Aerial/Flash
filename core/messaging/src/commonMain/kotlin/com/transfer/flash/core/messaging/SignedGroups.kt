@@ -3,6 +3,7 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.logging.FlashLog
+import kotlinx.coroutines.sync.withLock
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
@@ -87,6 +88,12 @@ internal class SignedGroups(
     private val isPairedWith = isPaired
     private val rules = GroupSignatureRules(crypto, localDeviceId, isPaired, pinnedFingerprint, vouching, hasInvite)
     private val signing = GroupSigning(crypto)
+
+    /**
+     * Serialises [updateSettings]: it reads the stored version, adds one and writes. Two overlapping calls (a fast
+     * double tap in the settings sheet) used to read the same version and the second silently replaced the first.
+     */
+    private val settingsUpdateLock = kotlinx.coroutines.sync.Mutex()
     private val pinnedFingerprintOf = pinnedFingerprint
 
     /** What became of a received bundle. */
@@ -144,6 +151,17 @@ internal class SignedGroups(
         maxMembers: Int? = null,
         swarmServing: Boolean? = null,
         membersMayAdd: Boolean? = null,
+    ): GroupWireFrame.Bundle? = settingsUpdateLock.withLock {
+        updateSettingsLocked(groupId, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd)
+    }
+
+    private suspend fun updateSettingsLocked(
+        groupId: String,
+        joinPolicy: String?,
+        inviteSharers: String?,
+        maxMembers: Int?,
+        swarmServing: Boolean?,
+        membersMayAdd: Boolean?,
     ): GroupWireFrame.Bundle? {
         val settingsDao = groupSettingsDao ?: return null
         val charter = storedCharter(groupId) ?: return null

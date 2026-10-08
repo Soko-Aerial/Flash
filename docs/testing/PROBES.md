@@ -62,9 +62,17 @@ Rules (AGENTS.md section 24 applies in full):
 | `swarm.offer.in` | GroupMedia | a verified swarm offer was accepted | `group`, `from`, `via=live`, `paired`, `skewMs` |
 | `swarm.offer.ignored` | GroupMedia | an unpaired sender's offer could not be used | `group`, `from`, `via=live`, `reason` |
 | `group.file.fanout` | `GroupFileSender.send` | once per file sent to a group | `group`, `members`, `swarmable`, `swarmOffers`, `wholeFiles`, `notReached`, `noFeatures` |
-| `group.sync.in` | `handleSyncPush` | a catch-up message was accepted | `group`, `relay`, `author`, `kind` (`text`, `swarm_offer`, `offer_unused_swarm_off_here`, `offer_unused_unsigned`), `signed`, `skewMs` |
+| `group.sync.in` | `handleSyncPush` | a catch-up message was accepted | `group`, `relay`, `author`, `kind` (`text`, `swarm_offer`, `offer_kept_swarm_off_here`, `offer_unused_unsigned`), `signed`, `skewMs` |
 | `group.sync.drop` | `handleSyncPush` | a catch-up message was refused | `group`, `from` (the relay), `reason`, `skewMs`, optional `author`, `hasOffer` |
 | `group.catchup.request` | `requestGroupCatchUp` | a bootstrap catch-up request went out | `group`, `to` (members asked), `why` |
+| `swarm.offer.shown` | `SwarmRowProbes` (swarm driver) | a group file offer became a row on a receiver | `transfer`, `bytes` |
+| `swarm.accepted` | same | the receiver's row left the offer state (a person tapped Accept, or auto-accept) | `transfer`, `afterOfferMs` (how long the offer waited for a person) |
+| `swarm.first_byte` | same | the first byte of an accepted file arrived | `transfer`, `sinceAcceptMs` (the start delay the app itself adds) |
+| `swarm.recv.done` | same | a receiver finished and verified the file | `transfer`, `bytes`, `sinceAcceptMs`, `avgKBps` |
+| `swarm.member.first` | same | sender side: a member's holding first grew | `transfer`, `member`, `sinceSendMs` |
+| `swarm.member.done` | same | sender side: a member announced the whole file | `transfer`, `member`, `sinceSendMs`, `done` (members done so far), `seen` (members listed) |
+
+A row first seen already finished (receiver) or with members already holding (sender) was restored after a restart; it produces no `swarm.*` line (ERROR-121), so every `swarm.*` line describes the current run.
 
 ### Reason codes
 
@@ -82,6 +90,9 @@ Rules (AGENTS.md section 24 applies in full):
 
 ## Reading a log (what the probes settle)
 
+- "Why did the download take long to start?" On the receiver: `swarm.accepted afterOfferMs` is the time the offer waited for a
+  person; `swarm.first_byte sinceAcceptMs` is what the app added after the tap (ERROR-119 aims at a few hundred ms on a LAN, not
+  yet measured). On the sender: `swarm.member.first sinceSendMs` per member and `swarm.member.done` when each has the whole file.
 - "Did the admin get a swarm offer or a whole file?" `group.file.fanout` on the sender: `swarmOffers` vs `wholeFiles`, and
   `noFeatures` > 0 means that peer's features were not known at send time (not connected, or no `caps` advertised);
   `snapshot.session ... features=` shows what it advertises now.

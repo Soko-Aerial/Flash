@@ -295,6 +295,17 @@ class SwarmInteropTest {
             assertNotNull("rx2 must have completed file of size $payloadSize", rx2File)
             assertEquals("rx2 file sha256 must match source", sourceDigest, sha256(rx2File!!))
 
+            // ERROR-119: a finished row carries the finished file's path. Without it every received group file
+            // answered "File not available yet" when it was opened.
+            val rx1Row = rx1Binding.driver.rows.value.first { it.id.value == messageId || it.id.value == manifest.root.hex }
+            val rx2Row = rx2Binding.driver.rows.value.first { it.id.value == messageId || it.id.value == manifest.root.hex }
+            assertNotNull("rx1 completed row must carry the received file's path", rx1Row.localPath)
+            assertNotNull("rx2 completed row must carry the received file's path", rx2Row.localPath)
+            assertEquals(rx1File.canonicalFile, File(rx1Row.localPath!!).canonicalFile)
+            assertEquals(rx2File.canonicalFile, File(rx2Row.localPath!!).canonicalFile)
+            val originRow = originBinding.driver.rows.value.first { it.id.value == messageId || it.id.value == manifest.root.hex }
+            assertEquals("the origin's row points at the file it sends from", payloadFile.absolutePath, originRow.localPath)
+
         } finally {
             origin.stop()
             rx1.stop()
