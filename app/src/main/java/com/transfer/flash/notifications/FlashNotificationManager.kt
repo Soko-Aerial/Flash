@@ -96,6 +96,11 @@ object FlashNotificationManager {
         post(context, groupId, title, body)
     }
 
+    /** M-23: this device was added to a signed group it cannot accept; [message] says why and what to do. */
+    fun showGroupOfferRefused(context: Context, groupId: String, groupName: String, message: String) {
+        post(context, groupId, groupName.ifBlank { "Group" }, message)
+    }
+
     /** Clears the notification for a conversation (e.g. the user just opened it). */
     fun clearConversation(context: Context, conversationId: String) {
         runCatching {

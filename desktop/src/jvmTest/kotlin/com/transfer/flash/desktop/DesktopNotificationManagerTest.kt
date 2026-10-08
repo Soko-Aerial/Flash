@@ -210,6 +210,40 @@ class DesktopNotificationManagerTest {
     }
 
     @Test
+    fun receivedAttachmentRaisesOneNotificationNotTwo() {
+        val engine = testDesktopEngine(stateDir = tempFolder.newFolder("desktop_state"))
+        val notifications = mutableListOf<Notification>()
+        val manager = DesktopNotificationManager(
+            engine = engine,
+            scope = testScope,
+            sendNotification = { notifications.add(it) },
+            isWindowVisible = { false },
+            activeConversationId = { null },
+            isNotificationsEnabled = { true },
+        )
+        val running = FlashTransfer(
+            id = FlashTransferId("tx-2"),
+            peerName = "Phone",
+            direction = FlashTransferDirection.Receiving,
+            fileName = "Voice message.m4a",
+            bytesTotal = 1000L,
+            bytesDone = 500L,
+            state = FlashTransferState.Transferring,
+        )
+        manager.handleTransfersUpdate(listOf(running))
+        manager.handleInboundAttachment("conv-1", "Raspberry", "Voice message.m4a", "audio/mp4", "test 1")
+        manager.handleTransfersUpdate(listOf(running.copy(state = FlashTransferState.Completed, bytesDone = 1000L)))
+
+        assertEquals(listOf("test 1"), notifications.map { it.title })
+
+        // A different file that nobody announced still reports its completion.
+        val other = running.copy(id = FlashTransferId("tx-3"), fileName = "movie.mp4")
+        manager.handleTransfersUpdate(listOf(other))
+        manager.handleTransfersUpdate(listOf(other.copy(state = FlashTransferState.Completed, bytesDone = 1000L)))
+        assertEquals(listOf("test 1", "Transfer Complete"), notifications.map { it.title })
+    }
+
+    @Test
     fun incomingCallNotificationSent() {
         val stateDir = tempFolder.newFolder("desktop_state")
         val engine = testDesktopEngine(stateDir = stateDir)

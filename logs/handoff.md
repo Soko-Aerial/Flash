@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-08 (b) - Linux crash fix, native notifications, refused group offers (not committed)
+
+- **ERROR-123** (JVM SIGSEGV in `VideoTrack.removeSinkInternal` after a group-call peer hung up): sinks are now detached before the connection closes (vendored `RenderedVideoStreamTrack`). Cause inferred, not proven; read `hs_err_pid*.log` on the laptop if it recurs. Test `LNX-07`.
+- **Linux notifications**: native `org.freedesktop.Notifications` via dbus-java with `notify-send` fallback (`LinuxNotifier`), duplicate "Transfer Complete" removed. Test `LNX-06`.
+- **ERROR-124**: a device added to a signed group but not paired with the owner now gets a notification (M-23); adders see the result of Add members (M-24 advice for non-owners). Tests `GNOT-01`, `GNOT-02`. Not explained: a group message typed on Quince showing in the 1:1 chat (needs Quince's log). Open owner decision: hard stop via refusal frame or adder-issued invite.
+- Commit `a7c29bdc` (ERROR-122 fix) is local only; nothing from this entry is committed.
+
 ## 2026-10-08 - Server trust decided; group sync revamp being designed (docs only, nothing built)
 
 - Decided by owner: **D-E8 = delegated limited key on the server** (`docs/ENTERPRISE-HYBRID-PLAN.md` E2b). Root key offline; admin add/revoke needs root or 2-of-N admins; no default server/key/token in the public repo; enrolment by link. Open: D-E9 (cert lifetime). Tests `ENT-09`...`ENT-12`. An ADR is needed before code.

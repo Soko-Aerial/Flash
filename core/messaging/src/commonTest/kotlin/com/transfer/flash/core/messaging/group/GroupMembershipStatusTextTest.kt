@@ -23,4 +23,26 @@ class GroupMembershipStatusTextTest {
         assertEquals("Getting the group code…", GroupMembershipStatusText.GETTING_GROUP_CODE)
         assertEquals("No admin of Ada's Group is available, so nobody can approve new members.", GroupMembershipStatusText.noAdminAvailable("Ada's Group"))
     }
+
+    @Test
+    fun addedButOwnerNotPairedNamesTheAdderTheGroupAndTheWayIn() {
+        assertEquals(
+            "Quince added you to Trip, but you are not paired with its owner. Pair with the owner, or ask for an invite link, to join.",
+            GroupMembershipStatusText.addedButOwnerNotPaired("Quince", "Trip"),
+        )
+        assertTrue(GroupMembershipStatusText.addedButOwnerNotPaired(null, "Trip").startsWith("A group member added you"))
+        assertTrue(GroupMembershipStatusText.addedButOwnerNotPaired("  ", "Trip").startsWith("A group member added you"))
+    }
+
+    @Test
+    fun newcomersNeedOwnerPairingJoinsNamesAndFallsBackWithoutAnOwnerName() {
+        assertEquals(
+            "Added. Linux can only join if also paired with Raspberry. Otherwise share an invite link.",
+            GroupMembershipStatusText.newcomersNeedOwnerPairing(listOf("Linux"), "Raspberry"),
+        )
+        assertEquals(
+            "Added. A, B and C can only join if also paired with the group's owner. Otherwise share an invite link.",
+            GroupMembershipStatusText.newcomersNeedOwnerPairing(listOf("A", "B", "C"), null),
+        )
+    }
 }

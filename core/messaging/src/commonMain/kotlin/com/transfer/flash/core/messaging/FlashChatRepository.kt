@@ -91,6 +91,13 @@ public interface FlashChatRepository {
     public suspend fun addGroupMembers(groupId: String, memberIds: Set<String>): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
+    /**
+     * A sentence to show after a successful [addGroupMembers], or null when there is nothing to add. Only a device that
+     * is not the owner of a signed group has one: whether a newcomer can accept the group depends on its pairing with
+     * the owner, which the adding device cannot see (M-24).
+     */
+    public suspend fun addGroupMembersAdvice(groupId: String, memberIds: Set<String>): String? = null
+
     /** Leaves a group and persists a tombstone so stale add frames cannot silently rejoin it. */
     public suspend fun leaveGroup(groupId: String): FlashResult<Unit> = leaveGroup(groupId, null)
 

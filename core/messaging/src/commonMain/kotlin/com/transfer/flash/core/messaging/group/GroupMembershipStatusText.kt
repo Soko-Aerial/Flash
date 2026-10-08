@@ -63,4 +63,27 @@ public object GroupMembershipStatusText {
     /** M-22: All admins left or unavailable. */
     public fun noAdminAvailable(groupName: String): String =
         "No admin of $groupName is available, so nobody can approve new members."
+
+    /**
+     * M-23: A member added this device to a signed group, but this device is not paired with the group's owner and
+     * holds no invite, so it cannot accept the group (the charter check, `owner-not-paired`).
+     */
+    public fun addedButOwnerNotPaired(adderName: String?, groupName: String): String {
+        val who = adderName?.trim()?.takeIf { it.isNotEmpty() } ?: "A group member"
+        return "$who added you to $groupName, but you are not paired with its owner. Pair with the owner, or ask for an invite link, to join."
+    }
+
+    /**
+     * M-24: Shown to a member who is not the owner right after adding people. Whether a newcomer can accept the group
+     * depends on a pairing this device cannot see, so the sentence says so instead of promising it.
+     */
+    public fun newcomersNeedOwnerPairing(newcomerNames: List<String>, ownerName: String?): String {
+        val who = when (newcomerNames.size) {
+            0 -> "They"
+            1 -> newcomerNames[0]
+            else -> newcomerNames.dropLast(1).joinToString(", ") + " and " + newcomerNames.last()
+        }
+        val owner = ownerName?.trim()?.takeIf { it.isNotEmpty() } ?: "the group's owner"
+        return "Added. $who can only join if also paired with $owner. Otherwise share an invite link."
+    }
 }

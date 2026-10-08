@@ -2019,7 +2019,17 @@ private fun FlashShell(
             },
             onAddGroupMembers = { groupId, memberIds ->
                 scope.launch {
-                    chatRepository.addGroupMembers(groupId, memberIds)
+                    // The result used to be dropped, so a refused add looked like success.
+                    val note = when (val added = chatRepository.addGroupMembers(groupId, memberIds)) {
+                        is com.transfer.flash.core.common.result.FlashResult.Success ->
+                            chatRepository.addGroupMembersAdvice(groupId, memberIds)
+                        is com.transfer.flash.core.common.result.FlashResult.Failure ->
+                            (added.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                ?: "Couldn't add members"
+                    }
+                    if (note != null) {
+                        Toast.makeText(toastContext, note, Toast.LENGTH_LONG).show()
+                    }
                 }
             },
             onLeaveGroup = { groupId ->

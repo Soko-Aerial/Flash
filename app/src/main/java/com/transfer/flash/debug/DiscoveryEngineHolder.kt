@@ -1307,6 +1307,9 @@ object DiscoveryEngineHolder {
                 requesterName,
             )
         }
+        chatImpl.onGroupOfferRefused = { groupId, groupName, message ->
+            FlashNotificationManager.showGroupOfferRefused(appContext, groupId, groupName, message)
+        }
         presenceChat = chatImpl
 
         // Sync peer friendly name across paired devices when peer connects with an updated name
