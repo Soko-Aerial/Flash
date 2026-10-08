@@ -123,8 +123,11 @@ public class RealJmdnsBridge(
     private val logWarn: (String, Throwable?) -> Unit = { _, _ -> },
 ) : JmdnsBridge {
 
-    private val responders = mutableListOf<JmDNS>()
-    private val listeners = mutableMapOf<String, ServiceListener>()
+    // Copy-on-write: callbacks and resolve coroutines iterate this while close() clears it. A plain list threw a
+    // ConcurrentModificationException (the "resolve request failed ...: null" lines of ERROR-122) or handed out a
+    // responder whose executor was already shut down.
+    private val responders = java.util.concurrent.CopyOnWriteArrayList<JmDNS>()
+    private val listeners = java.util.concurrent.ConcurrentHashMap<String, ServiceListener>()
 
     override fun open() {
         if (responders.isNotEmpty()) return

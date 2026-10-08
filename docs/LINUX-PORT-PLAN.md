@@ -274,3 +274,11 @@ New Linux test cases to be added to [`docs/testing/TEST-BACKLOG.md`](file:///C:/
 3. **ADR-094 (PROPOSED): Linux Media Dependencies & WebRTC Packaging**
    - *Context:* Native libraries require ALSA, PulseAudio/PipeWire, and X11/Wayland dependencies.
    - *Decision:* Rely on `dev.onvoid.webrtc` classified Linux artifacts and document/declare runtime dependencies in Debian/RPM control files.
+
+## Running on Linux (first run, 2026-10-08)
+
+- Needs a full JDK 21 to start the Gradle wrapper and a JDK 25 for the daemon (`gradle/gradle-daemon-jvm.properties`). Gradle normally downloads 25 through foojay; on the owner's laptop that returned `400 Bad Request` for the Linux x64 id. **Workaround that worked:** unpack Temurin 25 (`https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse`) to `~/jdks/jdk-25` and add `org.gradle.java.installations.paths=/home/<user>/jdks/jdk-25` to `~/.gradle/gradle.properties`. Ubuntu 22.04 has no `openjdk-25` package.
+- Run: `./gradlew :desktop:run --console=plain`. A runnable app folder: `./gradlew :desktop:createDistributable` then `desktop/build/compose/binaries/main/app/Flash/bin/Flash`. `.deb`: `./gradlew :desktop:packageDeb` (needs `fakeroot`; untested).
+- The first build downloads for 10-30 minutes and prints nothing with `--console=plain`; watch `du -sh ~/.gradle/caches` to see it is alive.
+- The app log is `desktop.log` in the state folder (`~/.local/share/flash/` on a fresh Linux install), rewritten at each launch: copy it before relaunching.
+- Found by this first run: ERROR-122 (mDNS resolve storm with two network interfaces). Fixed in code, device test `LNX-05`.

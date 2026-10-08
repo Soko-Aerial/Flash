@@ -7822,3 +7822,56 @@ None; the cause was found by reading the engine after the timings pointed at an 
 
 ### Status
 OPEN - fixed in code, NOT device-verified (until `SWO-11`...`SWO-14` pass)
+
+
+## ERROR-122 - Linux desktop: mDNS resolve storm on the app's own service name, then `OutOfMemoryError` within 90 s of a network change
+
+### Date
+2026-10-08
+
+### Area
+Discovery / JmDNS transport (`core:discovery`, `JmdnsTransport`, `RealJmdnsBridge`), found on the first run on Linux.
+
+### Symptoms
+Owner ran the desktop app on a Linux laptop (ThinkPad E16, Ubuntu 22.04, Java 25.0.4) and changed network while it ran (a USB-tether Ethernet `enx...` at 10.47.96.23 was joined by Wi-Fi `wlp0s20f3` at 192.168.1.134, then the tether was dropped). Thirty seconds after the second forced browse restart the console filled with `requestServiceInfo(Flash Flash Bunny) failed: ... rejected from ThreadPoolExecutor[Terminated ... completed tasks = 2185707]`, then `OutOfMemoryError: Java heap space` (a 1.7 GB heap dump) and the UI froze. "Flash Flash Bunny" is this laptop's own service name.
+
+### Environment
+Linux 6.2, Ubuntu 22.04 base, OpenJDK 21 launcher with a Temurin 25 daemon/runtime, JmDNS 3.5.12, Flash dev at `4dde3595`. Evidence: the owner's `desktop.log` (4,535 lines) from that run.
+
+### Error
+```text
+14:21:24 Forcing mDNS browse restart            (network change; responders=2: 10.47.96.23 and 192.168.1.134)
+14:21:54 Forcing mDNS browse restart            (30 s later, the watchdog)
+14:22:04.946 requestServiceInfo(Flash Flash Bunny) failed: ... rejected from ThreadPoolExecutor@15490393[Shutting down ...]
+...4,270 such lines in 3.3 s, until 14:22:08.2 when responders=1 re-opened
+14:22:08 - 14:23:45 the same request for the same name every ~0.7 s ... failed: Java heap space
+```
+No `Dropping mDNS endpoint without device_id` line appears anywhere in the log, which means the empty-TXT retry never reached its Drop and its budget was being reset.
+
+### Root cause
+Two defects that together produced the storm, both in `JmdnsTransport`:
+1. **The app's own service was the one name the retry guards did not cover.** The empty-TXT retry (`handleServiceResolved`) is bounded per cycle and is skipped for `vouchedServices`. A self-resolution returns at the identity check (`deviceId == ownDeviceId`) before the name is vouched, and the success path just above it resets the budget (`emptyTxtRetries.remove`). With two responders (one per interface) the app's own service is delivered alternately with real and empty TXT (the "hollow" record already documented in the file), so every real delivery re-armed the budget and every hollow one issued a forced `requestServiceInfo`. Each request stacks another JmDNS listener that re-delivers the cached records, so the work grows by itself: 2.18 million tasks on one executor, then the heap. This is the BUG-001 mechanism (2026-09-14) reached through a path that fix did not cover.
+2. **`restartBrowsing()` set `opened = false` after `bridge.close()`**, the ordering mistake `stop()` already documents. `JmDNS.close()` blocks for seconds, and during it every queued resolve request passed the `opened` check and was rejected by a terminated executor (4,270 rejections in 3 s). The bridge also iterated a plain list that `close()` clears, which gave the `resolve request failed ...: null` lines (a `ConcurrentModificationException`).
+
+Not proven: why the own name alternated between real and hollow only after the restart to two responders (the single-responder first 4 minutes were clean). The fix does not depend on that.
+
+### Failed attempts
+None. Investigated from the log; no code was changed before the evidence was read.
+
+### Working fix
+- `JmdnsTransport`: `ownServiceNames` (the name we register, plus any name that resolved to our own device id). Own names are never resolved (`requestResolveOffLane`) and never retried (empty-TXT branch).
+- `JmdnsTransport`: a hard ceiling of 120 resolve requests per 60 s window across all names (`withinResolveBudget`, one warn line per window), so any future loop of this kind costs a log line and not the process.
+- `JmdnsTransport.restartBrowsing`: `opened = false` before `bridge.close()`.
+- `RealJmdnsBridge`: `responders` is a `CopyOnWriteArrayList` and `listeners` a `ConcurrentHashMap`.
+- Tests in `JmdnsResolveStormTest`: own name with alternating TXT costs 0 resolves; a renamed own service is learned and left alone; the ceiling holds and re-opens; a resolve during a restart's close stands down. Mutation-checked: removing the own-name guards fails the first two, restoring the old ordering fails the fourth.
+
+### Verification
+`:core:discovery:jvmTest` and `:desktop:compileKotlinJvm` green on Windows 2026-10-08. **Not run on the Linux laptop**: device test `LNX-05` in `docs/testing/TEST-BACKLOG.md` section 4zl.
+
+### Related files
+- `core/discovery/src/jvmMain/kotlin/com/transfer/flash/core/discovery/jmdns/JmdnsTransport.kt`
+- `core/discovery/src/jvmMain/kotlin/com/transfer/flash/core/discovery/jmdns/JmdnsBridge.kt`
+- `core/discovery/src/jvmTest/kotlin/com/transfer/flash/core/discovery/jmdns/JmdnsResolveStormTest.kt`
+
+### Status
+OPEN (fixed in code, awaiting `LNX-05`)

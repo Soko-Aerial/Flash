@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-10-08 - First Linux run: mDNS resolve storm on the app's own name fixed (ERROR-122)
+
+### Worked on
+The owner ran the desktop app on the Linux laptop (Gradle needed a local JDK 25: the foojay download returned 400) and it ran out of memory 90 s after a network change. Investigated from the owner's `desktop.log`.
+
+### Changed
+- `JmdnsTransport`: own service names are never resolved or retried (`ownServiceNames`); a hard cap of 120 resolve requests per 60 s; `restartBrowsing` sets `opened = false` before `bridge.close()`.
+- `RealJmdnsBridge`: copy-on-write responder list and concurrent listener map.
+- 4 tests in `JmdnsResolveStormTest`, mutation-checked.
+
+### Verification
+`:core:discovery:jvmTest` (11 storm tests + the rest) and `:desktop:compileKotlinJvm` green on Windows. Not run on Linux (`LNX-05`).
+
+### Problems
+Root cause of why the own name alternated real/hollow TXT only after the restart to two responders is not proven; the fix does not depend on it. ERROR-122 stays OPEN until `LNX-05`.
+
+### Next AI
+Read ERROR-122 in `logs/errors.md`. Ask the owner for the `LNX-05` result and `LNX-01`/`02`/`03a`/`04a` before starting Linux L2.
+
 ## 2026-10-08 - Linux port L1: Secret Service keyring vault (dbus-java) and XDG paths
 
 ### Worked on

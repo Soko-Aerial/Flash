@@ -192,6 +192,21 @@ public class JmdnsTransport(
 
     @Volatile private var ownDeviceId: FlashDeviceId? = null
 
+    /**
+     * Instance names that are THIS device: the name we register, plus any name that resolved to our own device id (a
+     * collision rename such as `Name (2)`). Resolving them is pointless, because their attributes are known, and
+     * retrying them is harmful: they were the one name the "vouched" guard of the empty-TXT budget never covered, since
+     * a self-resolution returns before it is vouched. On the Linux laptop of 2026-10-08 (two interfaces, so two
+     * responders registering and browsing the same name) that let the app's own hollow TXT re-arm a forced resolve on
+     * every delivery: thousands of stacked JmDNS listeners, then `OutOfMemoryError` within 90 s (ERROR-122).
+     */
+    private val ownServiceNames: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Start of the current [resolveWindowCount] window, and how many bridge resolve requests it has seen. */
+    private val resolveWindowLock = Any()
+    private var resolveWindowStartMs = 0L
+    private var resolveWindowCount = 0
+
     /** Per-service re-resolve budget for JmDNS's empty-TXT resolution; lane-confined. */
     private val emptyTxtRetries = mutableMapOf<String, EmptyTxtRetryState>()
 
@@ -315,6 +330,7 @@ public class JmdnsTransport(
             port = port,
             attributes = JmdnsTxtCodec.encode(identity),
         )
+        ownServiceNames += request.serviceName
         return runCatching { bridge.register(request) }.fold(
             onSuccess = {
                 advertising = true
@@ -385,9 +401,12 @@ public class JmdnsTransport(
         browsing = false
         heartbeatJob?.cancel()
         heartbeatJob = null
+        // BEFORE the close, as in stop(): JmDNS.close() blocks for seconds, and while `opened` is still true every
+        // queued resolve request passes the check and hits an executor that is shutting down. 4,270 such rejections in
+        // 3 s were the log of the 2026-10-08 Linux crash (ERROR-122).
+        opened = false
         runCatching { bridge.stopBrowse(serviceType) }
         runCatching { bridge.close() }
-        opened = false
         advertising = false
         val result = startBrowsing()
         // close() dropped the advertisement along with the responders that held it.
@@ -477,7 +496,7 @@ public class JmdnsTransport(
                 // real attributes, so the `persistent = true` subscription is registered and every
                 // later announcement arrives on its own. A hollow re-delivery after that is a cache
                 // artefact, not a failure to resolve, and re-asking fixes nothing.
-                if (data.serviceName in vouchedServices) return
+                if (data.serviceName in vouchedServices || data.serviceName in ownServiceNames) return
                 when (emptyTxtDecision(data.serviceName, timeSourceMs())) {
                     EmptyTxtDecision.Retry -> {
                         // `force`: this name is already in `resolveRequested` (the first ask came
@@ -517,7 +536,12 @@ public class JmdnsTransport(
             logWarn("Invalid device_id '$deviceIdString' from ${data.serviceName}")
             return
         }
-        if (deviceId == ownDeviceId) return // self-advertisement filtered by IDENTITY (C3.2)
+        if (deviceId == ownDeviceId) {
+            // Self-advertisement filtered by IDENTITY (C3.2). Remember the NAME too, so a hollow re-delivery of it
+            // never re-arms the empty-TXT retry (ERROR-122).
+            ownServiceNames += data.serviceName
+            return
+        }
 
         // Pre-directory protocol gate (P3.5-A4). Tolerance matches Android exactly: a MISSING
         // proto falls back to our version (legacy advertisers stay visible), an EXPLICIT
@@ -780,7 +804,14 @@ public class JmdnsTransport(
         // is already subscribed. Recovery paths that genuinely need a re-ask pass `force = true`:
         // the bounded empty-TXT budget, and a service that was removed and announced again (which
         // clears its entry below).
+        // Our own advertisement: its attributes are known, and asking JmDNS about it only stacks a listener whose
+        // every delivery can come back as another request (ERROR-122).
+        if (serviceName in ownServiceNames) return
         if (!force && !resolveRequested.add(serviceName)) return
+        // Backstop for every path above and for any not found yet: this method has been the root of three resolve
+        // storms (BUG-001, ERROR-122), each an unbounded loop that ended in an `OutOfMemoryError`. Whatever the cause,
+        // the cost is capped, and the cap says so in the log instead of the process dying.
+        if (!withinResolveBudget()) return
         // A retry queued by the empty-TXT budget can outlive the browse session that scheduled it.
         // `bridge.close()` shuts JmDNS's own executor down, so a request that lands after it is
         // rejected with "Task ... rejected from ThreadPoolExecutor[Terminated]" — noise in the middle
@@ -795,6 +826,24 @@ public class JmdnsTransport(
             runCatching { bridge.requestServiceInfo(serviceType, serviceName) }
                 .onFailure { logWarn("resolve request failed for $serviceName: ${it.message}") }
         }
+    }
+
+    /**
+     * `true` while fewer than [MAX_RESOLVES_PER_WINDOW] resolve requests have been issued in the current
+     * [RESOLVE_WINDOW_MS]; logs once per window when the cap is hit. Called from JmDNS callback threads and the lane,
+     * so it takes its own lock.
+     */
+    private fun withinResolveBudget(): Boolean = synchronized(resolveWindowLock) {
+        val now = timeSourceMs()
+        if (now - resolveWindowStartMs >= RESOLVE_WINDOW_MS || now < resolveWindowStartMs) {
+            resolveWindowStartMs = now
+            resolveWindowCount = 0
+        }
+        resolveWindowCount += 1
+        if (resolveWindowCount == MAX_RESOLVES_PER_WINDOW + 1) {
+            logWarn("mDNS resolve ceiling reached ($MAX_RESOLVES_PER_WINDOW in ${RESOLVE_WINDOW_MS / 1000}s); further requests are dropped until the window ends")
+        }
+        resolveWindowCount <= MAX_RESOLVES_PER_WINDOW
     }
 
     /**
@@ -920,6 +969,14 @@ public class JmdnsTransport(
 
         /** Bound on [loggedCapabilities]; see [pruneLoggedCapabilities]. */
         internal const val MAX_LOGGED_CAPABILITY_NAMES: Int = 256
+
+        /**
+         * Hard ceiling on resolve requests per window, across all names (ERROR-122 backstop). A 24-peer swarm needs
+         * about 24 first requests plus a few retries at start-up; 120 a minute is several times that and far below
+         * the thousands a loop produces.
+         */
+        internal const val MAX_RESOLVES_PER_WINDOW: Int = 120
+        internal const val RESOLVE_WINDOW_MS: Long = 60_000L
 
         /** Bound on [resolveRequested]; see [pruneResolveRequested]. */
         internal const val MAX_RESOLVE_REQUESTED_NAMES: Int = 256
