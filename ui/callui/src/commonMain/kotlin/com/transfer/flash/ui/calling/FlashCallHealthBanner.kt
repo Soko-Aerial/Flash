@@ -69,7 +69,7 @@ internal fun FlashCallHealthBanner(
                     if (healthWarningOffersShowFewer(warning)) {
                         BannerAction(text = "Show fewer", label = "Show fewer videos") { onShowFewerVideos(true) }
                     }
-                    BannerAction(text = "Send smaller", label = "Send my video smaller in group calls") {
+                    BannerAction(text = "Send 360p", label = "Send my video at 360p in group calls") {
                         smallerTapped = true
                         onSendSmallerVideo()
                     }
@@ -182,7 +182,7 @@ internal fun healthWarningText(warning: FlashCallHealthWarning, offersSmallerVid
     FlashCallHealthWarning.WARM -> "Your phone is warming up. Showing fewer videos saves battery."
     FlashCallHealthWarning.HOT -> "Your phone is hot. Showing one video until it cools down."
     FlashCallHealthWarning.CPU -> if (offersSmallerVideo) {
-        "This call is keeping the processor busy. Showing fewer videos, or sending yours smaller, helps."
+        "This call is keeping the processor busy. Showing fewer videos, or sending yours at 360p, helps."
     } else {
         "This call is keeping the processor busy. Showing fewer videos helps."
     }

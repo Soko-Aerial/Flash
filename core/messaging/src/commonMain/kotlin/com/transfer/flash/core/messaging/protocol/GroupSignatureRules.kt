@@ -82,6 +82,11 @@ internal class GroupSignatureRules(
         // An admin cannot promote anyone to admin, cannot remove the founder, and cannot remove other admins
         if (adminIssued) {
             if (cert.role == MemberCert.ROLE_ADMIN) return "issuer-privilege"
+            // R-13 (sweep 2026-10-09): an admin's cert is never about the founder or another admin, whatever it says. The
+            // checks above and below only covered promotion and removal, so a `member` cert for an admin (a demotion) and
+            // an active `owner` cert for the founder (a relabel) both passed. An admin changes plain members only.
+            if (cert.subjectId == charter.ownerId) return "issuer-privilege"
+            if (cert.subjectId != cert.issuerId && adminLookup != null && adminLookup(cert.subjectId) != null) return "issuer-privilege"
             if (!cert.active) {
                 if (cert.subjectId == charter.ownerId) return "issuer-privilege"
                 if (adminLookup != null && adminLookup(cert.subjectId) != null) return "issuer-privilege"
@@ -182,7 +187,14 @@ internal class GroupSignatureRules(
 
         val signature = GroupCanonical.decode(settings.sig)?.takeIf { it.isNotEmpty() } ?: return "signature"
         val bytes = GroupCanonical.settingsBytes(settings)
-        return if (crypto.verify(signature, bytes, issuerKey)) null else "signature"
+        if (!crypto.verify(signature, bytes, issuerKey)) return "signature"
+        // ADR-105: a non-default ceiling needs the signer's own signature over it, bound to this very object. A ceiling that
+        // is stated without one (or whose signature is not the signer's) refuses the object: it is tampering, not a default.
+        if (settings.historyCeiling != GroupHistoryCeiling.DEFAULT) {
+            val ceilingSig = GroupCanonical.decode(settings.historyCeilingSig)?.takeIf { it.isNotEmpty() } ?: return "ceiling-signature"
+            if (!crypto.verify(ceilingSig, GroupCanonical.historyCeilingBytes(settings), issuerKey)) return "ceiling-signature"
+        }
+        return null
     }
 
     /** True when [signature] is [authorKey]'s signature over the message's canonical bytes. */

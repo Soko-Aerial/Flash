@@ -80,6 +80,59 @@ class GroupFrameCodecTest {
     }
 
     @Test
+    fun syncRequestWithoutTheAdr100KeysIsByteIdenticalToTheOldWireShape() {
+        val legacy = GroupWireFrame.SyncRequest(
+            groupId = "g-1", syncId = "s-1", from = "peer-a",
+            sinceSentAt = 1234L, sinceMessageId = "m-9",
+            tier = GroupSyncTier.LOW, maxPerSecond = 5, maxTotal = 100,
+        )
+        val encoded = GroupFrameCodec.encode(legacy)
+        assertFalse(encoded.contains("windowMs"))
+        assertFalse(encoded.contains("files="))
+        assertFalse(encoded.contains("cont="))
+        val decoded = GroupFrameCodec.decode(encoded) as GroupWireFrame.SyncRequest
+        assertNull(decoded.windowMs)
+        assertNull(decoded.includeFiles)
+        assertFalse(decoded.continuation)
+    }
+
+    @Test
+    fun syncRequestRoundTripsTheWindowFilesAndContinuation() {
+        val frame = GroupWireFrame.SyncRequest(
+            groupId = "g-1", syncId = "s-1", from = "peer-a",
+            sinceSentAt = 1234L, sinceMessageId = "m-9",
+            tier = GroupSyncTier.HIGH, maxPerSecond = 20, maxTotal = 500,
+            windowMs = 30L * 24L * 60L * 60L * 1000L, includeFiles = false, continuation = true,
+        )
+        assertEquals(frame, GroupFrameCodec.decode(GroupFrameCodec.encode(frame)))
+        val all = frame.copy(windowMs = Long.MAX_VALUE)
+        assertEquals(all, GroupFrameCodec.decode(GroupFrameCodec.encode(all)))
+    }
+
+    @Test
+    fun anOldBuildStyleRequestWithUnknownKeysStillDecodes_andANegativeWindowIsIgnored() {
+        val frame = GroupWireFrame.SyncRequest(
+            groupId = "g-1", syncId = "s-1", from = "peer-a", sinceSentAt = 1L, sinceMessageId = "m",
+            tier = GroupSyncTier.LOW, maxPerSecond = 5, maxTotal = 100, windowMs = 5L,
+        )
+        val negative = GroupFrameCodec.encode(frame).replace("windowMs=5", "windowMs=-5")
+        assertNull((GroupFrameCodec.decode(negative) as GroupWireFrame.SyncRequest).windowMs)
+    }
+
+    @Test
+    fun syncPageRoundTripsAndRefusesNegativeCounts() {
+        val frame = GroupWireFrame.SyncPage(
+            groupId = "g-1", syncId = "s-1", from = "peer-a", count = 100, remaining = 1850, more = true,
+            lastSentAt = 1_700_000_000_000L, lastMessageId = "m-100", keyEpoch = 0L,
+        )
+        val encoded = GroupFrameCodec.encode(frame)
+        assertEquals(frame, GroupFrameCodec.decode(encoded))
+        assertNull(GroupFrameCodec.decode(encoded.replace("count=100", "count=-1")))
+        assertNull(GroupFrameCodec.decode(encoded.replace("remaining=1850", "remaining=-3")))
+        assertNull(GroupFrameCodec.decode(encoded.replace("more=true", "more=maybe")))
+    }
+
+    @Test
     fun groupMediaFrameRoundTripsAllIdentityFields() {
         val frame = GroupWireFrame.GroupMedia(
             groupId = "g-1",
@@ -135,6 +188,31 @@ class GroupFrameCodecTest {
         val encoded = GroupFrameCodec.encode(frame)
         assertEquals(frame, GroupFrameCodec.decode(encoded))
         assertFalse(encoded.contains("aroot="), "a plain push carries no file keys: $encoded")
+    }
+
+    @Test
+    fun anOfferWhoseRootIsNotSixtyFourLowercaseHexIsNotAnOffer() {
+        for (badRoot in listOf("zz", "ab".repeat(31), "AB".repeat(32), "../../etc/passwd")) {
+            val encoded = GroupFrameCodec.encode(
+                swarmPush(GroupWireFrame.SwarmOffer("f.bin", "application/octet-stream", 10L, badRoot, 65_536, "rsig")),
+            )
+            val decoded = GroupFrameCodec.decode(encoded) as GroupWireFrame.SyncPush
+            assertNull(decoded.message.swarmOffer, "root '$badRoot'")
+            assertEquals("m-1", decoded.message.messageId)
+        }
+    }
+
+    @Test
+    fun aMediaFrameWithAMalformedSwarmRootCarriesNoRoot() {
+        val media = GroupWireFrame.GroupMedia(
+            groupId = "g2-crew", messageId = "m-9", transferId = "t-9", wireFileId = "w-9", from = "peer-a",
+            senderName = "Peer A", fileName = "f.bin", mimeType = "application/octet-stream", sizeBytes = 10L, sentAt = 42L,
+            signature = "sig", root = "zz", pieceSize = 65_536, swarm = 1, rootSig = "rsig",
+        )
+        val decoded = GroupFrameCodec.decode(GroupFrameCodec.encode(media)) as GroupWireFrame.GroupMedia
+        assertNull(decoded.root)
+        val ok = media.copy(root = "ab".repeat(32))
+        assertEquals("ab".repeat(32), (GroupFrameCodec.decode(GroupFrameCodec.encode(ok)) as GroupWireFrame.GroupMedia).root)
     }
 
     @Test

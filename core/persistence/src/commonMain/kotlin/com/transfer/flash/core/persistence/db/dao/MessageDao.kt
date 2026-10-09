@@ -89,9 +89,21 @@ public interface MessageDao {
     )
     public suspend fun updateAttachmentPath(transferId: String, path: String): Int
 
+    /**
+     * Moves the provisional 1-to-1 row of a group attachment into its group (FILE_START beat the group intro).
+     *
+     * R-08 (sweep 2026-10-09): it used to match on `attachmentTransferId` alone, so a group intro that named a transfer
+     * id belonging to ANOTHER peer's file re-attributed that peer's message to the intro's sender and group, and an
+     * intro whose `messageId` was already another row's primary key made the UPDATE throw a UNIQUE violation in a
+     * fire-and-forget coroutine. Now the row must already be the sender's own (`senderId = :senderId`: the provisional
+     * row is threaded under the peer that sent the file), and `localId` is only rewritten when no other row holds it.
+     * @return rows changed (0 when the guards refuse).
+     */
     @Query(
         "UPDATE messages SET conversationId = :groupId, localId = :messageId, " +
-            "senderId = :senderId, senderName = :senderName WHERE attachmentTransferId = :transferId",
+            "senderId = :senderId, senderName = :senderName WHERE attachmentTransferId = :transferId " +
+            "AND senderId = :senderId " +
+            "AND (localId = :messageId OR NOT EXISTS (SELECT 1 FROM messages AS other WHERE other.localId = :messageId))",
     )
     public suspend fun updateGroupContext(
         transferId: String,

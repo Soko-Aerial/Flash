@@ -36,7 +36,7 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 
 /**
  * UI-052: the words of the catch-up banner. Pure so the copy is unit-tested ([FlashGroupSyncMathTest]); the banner only
- * lays them out. There is deliberately no total or percentage: the requester cannot know how many messages will come.
+ * lays them out. A total is shown only as "of about N" once a holder has reported how many it still has (ADR-100); before that there is none.
  */
 object FlashGroupSyncMath {
     const val TITLE = "Catching up on earlier messages"
@@ -44,15 +44,27 @@ object FlashGroupSyncMath {
     /** Segment width of the sweeping line, as a fraction of the track. */
     const val SEGMENT_FRACTION = 0.35f
 
-    /** The number to show beside the title, or null before anything has been counted (a count of zero is not shown). */
-    fun countLabel(receivedCount: Int): String? = receivedCount.takeIf { it > 0 }?.toString()
+    /**
+     * The number to show beside the title, or null before anything has been counted (a count of zero is not shown).
+     * ADR-100: once a holder has said how many more it has, [expectedCount] makes it "12 of about 40"; the estimate is
+     * shown only when it is above what has arrived, so the line never reads "40 of about 38".
+     */
+    fun countLabel(receivedCount: Int, expectedCount: Int? = null): String? {
+        val expected = expectedCount?.takeIf { it > receivedCount && it > 0 }
+        return when {
+            expected != null -> "${receivedCount.coerceAtLeast(0)} of about $expected"
+            receivedCount > 0 -> receivedCount.toString()
+            else -> null
+        }
+    }
 
     /** "Catching up on earlier messages · 12", or just the title while there is nothing to count. */
-    fun label(receivedCount: Int): String = countLabel(receivedCount)?.let { "$TITLE · $it" } ?: TITLE
+    fun label(receivedCount: Int, expectedCount: Int? = null): String =
+        countLabel(receivedCount, expectedCount)?.let { "$TITLE · $it" } ?: TITLE
 
     /** The spoken form: the line under the title is decorative, the count is the news. */
-    fun description(receivedCount: Int): String =
-        countLabel(receivedCount)?.let { "$TITLE, $it received" } ?: TITLE
+    fun description(receivedCount: Int, expectedCount: Int? = null): String =
+        countLabel(receivedCount, expectedCount)?.let { "$TITLE, $it received" } ?: TITLE
 
     /** Left edge of the sweeping segment for a loop position in 0..1: enters from the left, leaves to the right. */
     fun segmentStart(trackWidth: Float, progress: Float): Float {
@@ -72,14 +84,14 @@ fun FlashGroupSyncBanner(
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
-    val countLabel = FlashGroupSyncMath.countLabel(sync.receivedCount)
+    val countLabel = FlashGroupSyncMath.countLabel(sync.receivedCount, sync.expectedCount)
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundSurfaceSubtle)
             .semantics(mergeDescendants = true) {
                 liveRegion = LiveRegionMode.Polite
-                contentDescription = FlashGroupSyncMath.description(sync.receivedCount)
+                contentDescription = FlashGroupSyncMath.description(sync.receivedCount, sync.expectedCount)
             },
     ) {
         Row(

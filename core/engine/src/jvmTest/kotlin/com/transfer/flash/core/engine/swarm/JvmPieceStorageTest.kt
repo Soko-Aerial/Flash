@@ -1,5 +1,7 @@
 package com.transfer.flash.core.engine.swarm
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -227,6 +229,98 @@ class JvmPieceStorageTest {
         assertEquals(-1, n)
 
         handle.close()
+    }
+
+    private suspend fun stagePartial(key: String, content: ByteArray) {
+        val h = requireNotNull(storage.openPartial(key, content.size.toLong()))
+        h.writeAt(0L, content, content.size)
+        h.sync()
+        h.close()
+    }
+
+    @Test
+    fun `concurrent finalizes of the same name never overwrite each other`() = runBlocking {
+        val n = 16
+        val contents = (0 until n).map { "payload number $it".toByteArray() }
+        contents.forEachIndexed { i, c -> stagePartial("race-$i", c) }
+
+        val results = (0 until n).map { i ->
+            async(Dispatchers.Default) {
+                storage.finalize("race-$i", "photo.jpg", "image/jpeg", sha256(contents[i]))
+            }
+        }.map { it.await() }
+
+        assertTrue(results.all { it.ok })
+        val paths = results.map { it.finalPath!! }
+        assertEquals("every finalize must get its own file", n, paths.toSet().size)
+        // Each file holds exactly the bytes of the transfer that reported it.
+        results.forEachIndexed { i, r -> assertArrayEquals("file for transfer $i", contents[i], File(r.finalPath!!).readBytes()) }
+        assertEquals(n, destDir.listFiles()!!.size)
+    }
+
+    @Test
+    fun `finalize never replaces a file the user already has, and leaves no placeholder behind on failure`() = runBlocking {
+        val userFile = File(destDir, "doc.txt").apply { writeText("MY OWN DOCUMENT") }
+        val content = "incoming".toByteArray()
+        stagePartial("incoming", content)
+
+        val ok = storage.finalize("incoming", "doc.txt", "text/plain", sha256(content))
+        assertTrue(ok.ok)
+        assertEquals("doc (1).txt", File(ok.finalPath!!).name)
+        assertEquals("MY OWN DOCUMENT", userFile.readText())
+
+        // A failed finalize (hash mismatch) creates nothing in the destination.
+        stagePartial("bad", "x".toByteArray())
+        val before = destDir.listFiles()!!.map { it.name }.toSet()
+        assertFalse(storage.finalize("bad", "doc.txt", "text/plain", sha256("y".toByteArray())).ok)
+        assertEquals(before, destDir.listFiles()!!.map { it.name }.toSet())
+    }
+
+    @Test
+    fun `a long CJK name is cut by bytes, keeps its extension and finalizes`() = runBlocking {
+        val name = "文".repeat(100) + ".docx"
+        val sanitized = JvmPieceStorage.sanitizeFileName(name)
+        assertTrue(sanitized.toByteArray(Charsets.UTF_8).size <= 200)
+        assertTrue(sanitized.endsWith(".docx"))
+
+        val content = "cjk".toByteArray()
+        stagePartial("cjk", content)
+        val res = storage.finalize("cjk", name, "application/octet-stream", sha256(content))
+        assertTrue(res.errorMessage, res.ok)
+        assertEquals(sanitized, File(res.finalPath!!).name)
+    }
+
+    @Test
+    fun `the partial directory is created before it is canonicalized`() = runBlocking {
+        val missing = File(tempFolder.root, "not/yet/created/partial")
+        assertFalse(missing.exists())
+        val s = JvmPieceStorage(missing, destDir)
+        val h = s.openPartial("fresh", 10L)
+        assertNotNull(h)
+        h!!.close()
+        assertTrue(File(missing.canonicalFile, "fresh.part").exists())
+        assertTrue(s.freeBytesFor("fresh") > 0)
+    }
+
+    @Test
+    fun `on Windows containment ignores case and accepts a differently spelled partial directory`() = runBlocking {
+        org.junit.Assume.assumeTrue(System.getProperty("os.name").lowercase().contains("windows"))
+        val odd = File(partialDir.path.uppercase())
+        // Same directory, different spelling (NTFS is case-insensitive); canonicalization must agree with the prefix check.
+        val s = JvmPieceStorage(odd, destDir)
+        val h = s.openPartial("case-test", 10L)
+        assertNotNull(h)
+        h!!.close()
+        assertTrue(File(partialDir, "case-test.part").exists())
+
+        // 8.3 short-name spelling of the temp folder, if the volume has short names enabled.
+        val short = runCatching { ProcessBuilder("cmd", "/c", "for %I in (\"${partialDir.path}\") do @echo %~sI").start().inputStream.bufferedReader().readText().trim() }.getOrNull()
+        if (!short.isNullOrBlank() && File(short).isDirectory && short != partialDir.path) {
+            val s2 = JvmPieceStorage(File(short), destDir)
+            val h2 = s2.openPartial("short-test", 10L)
+            assertNotNull("8.3 spelled partial dir must still pass containment", h2)
+            h2!!.close()
+        }
     }
 
     @Test

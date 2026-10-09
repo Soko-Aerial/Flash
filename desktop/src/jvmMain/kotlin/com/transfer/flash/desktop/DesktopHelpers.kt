@@ -1,12 +1,16 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
 import java.awt.Desktop
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.net.URLConnection
 import java.nio.file.Files
-import java.nio.file.StandardCopyOption
+import java.nio.file.FileAlreadyExistsException
 
 /**
  * Desktop stubs for the 6 Android-only helpers in `:app`'s `MainActivity.kt` (Phase 21,
@@ -133,11 +137,27 @@ internal object DesktopHelpers {
             "webp" -> "webp"
             else -> "jpg"
         }
-        val target = File(downloadsDir, "flash_${System.currentTimeMillis()}.$ext")
+        // R-20: a millisecond name with REPLACE_EXISTING let two saves in one millisecond overwrite each other. Take the
+        // first free name instead (CREATE_NEW never overwrites) and say in the log when the copy fails.
+        val stamp = System.currentTimeMillis()
         runCatching {
-            Files.copy(source.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            var attempt = 0
+            while (true) {
+                val name = if (attempt == 0) "flash_$stamp.$ext" else "flash_${stamp}_$attempt.$ext"
+                val target = File(downloadsDir, name)
+                try {
+                    Files.copy(source.toPath(), target.toPath())
+                    return
+                } catch (_: FileAlreadyExistsException) {
+                    if (++attempt > MAX_SAVE_NAME_ATTEMPTS) throw IOException("no free name for $name")
+                }
+            }
+        }.onFailure { error ->
+            FlashLog.w("STORAGE", "save image to ${downloadsDir.path} failed (${error.message ?: error::class.java.simpleName})")
         }
     }
+
+    private const val MAX_SAVE_NAME_ATTEMPTS = 1_000
 
     /**
      * Desktop attachment opener — replaces `Intent.ACTION_VIEW` + FileProvider: opens the

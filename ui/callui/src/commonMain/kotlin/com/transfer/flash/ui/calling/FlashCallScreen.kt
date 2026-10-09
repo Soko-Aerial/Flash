@@ -126,6 +126,8 @@ public fun FlashCallScreen(
      * first). Null on a host that cannot; the dock shows its button only while [FlashCallUiState.canUpgradeToVideo].
      */
     onUpgradeToVideo: (() -> Unit)? = null,
+    /** ADR-102: what a person needs to present their screen. Null on a host that cannot (Android today). */
+    share: FlashCallShareHost? = null,
 ) {
     val colors = FlashTheme.colors
     val ended = state.state == FlashCallState.ENDED
@@ -133,6 +135,8 @@ public fun FlashCallScreen(
     var mirrorSelf by remember { mutableStateOf(false) }
     // A panel left open over a call that just ended would sit on a dead screen.
     LaunchedEffect(ended) { if (ended) panel = null }
+    // The picker closes by itself once the share has started (a second tap would take over from ourselves).
+    LaunchedEffect(state.sharing) { if (state.sharing && panel == CallPanel.SHARE) panel = null }
 
     FlashBackHandler(enabled = true) {
         when {
@@ -213,6 +217,16 @@ public fun FlashCallScreen(
                 Spacer(Modifier.height(FlashSpacing.space12))
             }
 
+            val shareNotice = state.shareNotice
+            if (shareNotice != null && !ended) {
+                // ADR-102: why a share stopped or did not start, once.
+                FlashCallMessagePill(
+                    text = CallShareText.notice(shareNotice, sharePresenterName(state), SHARE_NOTICE_DEFAULT_CAP),
+                    onDismiss = { share?.onDismissNotice?.invoke() },
+                )
+                Spacer(Modifier.height(FlashSpacing.space12))
+            }
+
             val cameraProblem = state.cameraProblem
             if (cameraProblem != null && !ended) {
                 // ERROR-105: this device's own camera stopped or would not switch. "Try again" is the camera button.
@@ -243,7 +257,7 @@ public fun FlashCallScreen(
                 audioRoutes = audioRoutes,
                 onOpenRoutes = { panel = CallPanel.ROUTES },
                 onOpenMore = { panel = CallPanel.MORE },
-                moreActive = state.handRaised || state.dataSaver,
+                moreActive = state.handRaised || state.dataSaver || state.sharing,
                 onUpgradeToVideo = onUpgradeToVideo,
             )
             Spacer(Modifier.height(FlashSpacing.space40))
@@ -271,15 +285,29 @@ public fun FlashCallScreen(
                 onSendReaction = onSendReaction,
                 onSetDataSaver = onSetDataSaver,
                 onEnterPictureInPicture = onEnterPictureInPicture,
+                onShareScreen = if (shareStartAvailable(state, share) && !state.sharing) ({ panel = CallPanel.SHARE }) else null,
+                onStopShare = { share?.onStop?.invoke() },
                 onDismiss = { panel = null },
             )
+            CallPanel.SHARE -> if (share != null) {
+                FlashSharePicker(state = state, host = share, onDismiss = { panel = null })
+            }
             null -> Unit
+        }
+
+        // ADR-102: drawn last, so it is above the video, the dock and every panel; a person who shares always sees it.
+        if (state.sharing && !ended) {
+            FlashShareIndicator(
+                state = state,
+                onStop = { share?.onStop?.invoke() },
+                modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding(),
+            )
         }
     }
 }
 
 /** Which panel is open over the call. */
-private enum class CallPanel { ROUTES, MORE }
+private enum class CallPanel { ROUTES, MORE, SHARE }
 
 /** Who sent a reaction, for its caption: the peer or a participant by name, anyone else is this device. */
 internal fun reactionSenderName(state: FlashCallUiState, senderId: String): String =
@@ -514,7 +542,8 @@ private fun FlashCallVideoSurfaces(
     Box(modifier = modifier) {
         FlashCallVideoSurface(
             track = if (swapped) localTrack else remoteTrack,
-            fit = CallVideoFit.Balanced,
+            // ADR-102: a presentation is letterboxed, never cropped (text at the edges must stay readable).
+            fit = if (swapped) CallVideoFit.Balanced else videoFitFor(state.presenterId != null && remoteShown),
             mirror = swapped && mirrorSelf,
             modifier = Modifier
                 .fillMaxSize()
@@ -563,6 +592,9 @@ private fun FlashCallVideoSurfaces(
                 color = Color.White,
             )
             FlashCallStatusLine(state = state, color = Color.White.copy(alpha = 0.8f))
+            if (state.presenterId != null && remoteShown) {
+                FlashPresenterLabel(name = state.peerName, modifier = Modifier.padding(top = FlashSpacing.space4))
+            }
             FlashPeerBadges(
                 micMuted = state.peerMicMuted,
                 cameraOff = state.peerCameraOff,

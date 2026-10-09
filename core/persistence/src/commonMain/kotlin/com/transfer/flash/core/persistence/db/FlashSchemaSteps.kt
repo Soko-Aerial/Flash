@@ -245,6 +245,26 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v12 → v13: group history sync (ADR-100). The signed ceiling is one defaulted column (every existing row reads
+     * as `D30`, the default, whose canonical bytes are unchanged); the join decision and the per-holder watermark are
+     * new device-local tables, so nothing existing is rewritten.
+     */
+    val STEP_12_13: FlashSchemaStep = FlashSchemaStep(
+        from = 12,
+        to = 13,
+        statements = listOf(
+            "ALTER TABLE group_settings ADD COLUMN historyCeiling TEXT NOT NULL DEFAULT 'D30'",
+            "CREATE TABLE IF NOT EXISTS group_history_state (" +
+                "groupId TEXT NOT NULL, cardState TEXT NOT NULL, windowMs INTEGER NOT NULL, " +
+                "includeFiles INTEGER NOT NULL, decidedAtMs INTEGER NOT NULL, lastContactAtMs INTEGER NOT NULL, " +
+                "createdAtMs INTEGER NOT NULL, PRIMARY KEY(groupId))",
+            "CREATE TABLE IF NOT EXISTS group_sync_watermark (" +
+                "groupId TEXT NOT NULL, holderId TEXT NOT NULL, sentAt INTEGER NOT NULL, " +
+                "messageId TEXT NOT NULL, updatedAtMs INTEGER NOT NULL, PRIMARY KEY(groupId, holderId))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12)
+    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13)
 }

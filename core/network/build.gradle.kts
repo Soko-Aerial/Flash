@@ -90,6 +90,8 @@ kotlin {
         }
         jvmMain.dependencies {
             implementation(libs.bouncycastle.pkix)
+            // ADR-101: serial port access for the KISS TNC radio link (Windows COM / Linux rfcomm). Apache-2.0 OR LGPL-3.0.
+            implementation(libs.jserialcomm)
         }
 
 

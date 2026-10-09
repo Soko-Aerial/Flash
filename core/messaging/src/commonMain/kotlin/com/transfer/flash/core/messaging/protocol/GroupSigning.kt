@@ -109,6 +109,7 @@ internal class GroupSigning(private val crypto: GroupCrypto) {
         membersMayAdd: Boolean,
         opId: String,
         signerId: String,
+        historyCeiling: GroupHistoryCeiling = GroupHistoryCeiling.DEFAULT,
     ): GroupSettings {
         val unsigned = GroupSettings(
             groupId = groupId,
@@ -121,8 +122,15 @@ internal class GroupSigning(private val crypto: GroupCrypto) {
             opId = opId,
             signerId = signerId,
             sig = "",
+            historyCeiling = historyCeiling,
         )
-        return unsigned.copy(sig = sign(GroupCanonical.settingsBytes(unsigned)))
+        // ADR-105: `sig` is the v1 statement whatever the ceiling is; a non-default ceiling adds its own signature.
+        val signed = unsigned.copy(sig = sign(GroupCanonical.settingsBytes(unsigned)))
+        return if (historyCeiling == GroupHistoryCeiling.DEFAULT) {
+            signed
+        } else {
+            signed.copy(historyCeilingSig = sign(GroupCanonical.historyCeilingBytes(signed)))
+        }
     }
 
     private fun sign(bytes: ByteArray): String = GroupCanonical.encode(crypto.sign(bytes))

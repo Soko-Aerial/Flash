@@ -452,6 +452,10 @@ public data class FlashConversationUiState(
     val groupSettings: GroupSettings? = null,
     /** GM-10: local preferences for this device in this group. */
     val groupLocalPreferences: GroupLocalPreferences? = null,
+    /** ADR-100 / UI-057: non-null while the join card ("How much history?") is up for this member. */
+    val groupHistory: FlashGroupHistoryUi? = null,
+    /** ADR-100: whether this device may change the group's history limit (the admin seam says so). */
+    val canChangeHistoryCeiling: Boolean = false,
 )
 
 /**
@@ -474,7 +478,13 @@ public data class FlashGroupJoinRequestUi(
  * Earlier messages of this group are arriving (catch-up, UI-052). [receivedCount] is how many new ones have landed since
  * the banner appeared. There is deliberately no total: the requester cannot know how many holders will push.
  */
-public data class FlashGroupSyncUi(val receivedCount: Int)
+public data class FlashGroupSyncUi(val receivedCount: Int, val expectedCount: Int? = null)
+
+/**
+ * ADR-100 / UI-057: this member has not yet chosen how much earlier history to load, so the screen shows the join card.
+ * [ceiling] is the group's signed limit; every choice the card offers is inside it.
+ */
+public data class FlashGroupHistoryUi(val ceiling: com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling)
 
 public data class FlashConversation(
     val id: FlashConversationId,

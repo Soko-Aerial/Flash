@@ -1,11 +1,13 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
-// Single source of truth for the published library version.
-// A release = bump this, commit, then `git tag vX.Y.Z` (tag must match).
+// Single source of truth for the published library version: `flashLibraryVersion` in the root
+// gradle.properties (it moved there on 2026-10-09 so the vendored webrtc-kmp fork, a separate included
+// build, can read the same value, ADR-103).
+// A release = bump it there, commit, then `git tag vX.Y.Z` (tag must match).
 // A module's own `publishing { }` block must NOT set `version` or `groupId`: the three
 // ui/* modules did, so they silently published 1.0.0 for the whole 1.1.0 cycle while
 // every core module tracked this constant. Set artifactId there and nothing else.
-val flashLibraryVersion = "2.0.0-beta"
+val flashLibraryVersion: String = providers.gradleProperty("flashLibraryVersion").get()
 
 allprojects {
     version = flashLibraryVersion

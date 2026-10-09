@@ -112,45 +112,13 @@ kotlin {
             api(project(":core:messaging"))
             api(project(":core:persistence"))
             api(project(":core:swarm"))
+            // ADR-058 / ENG-1: :core:ptt is KMP and provides FlashPtt for the unified engine facade.
+            api(project(":core:ptt"))
+            // compileOnly keeps FlashCalling on the facade compile classpath without transitively
+            // pulling webrtc-kmp into consumers that never place a call (ADR-033).
+            compileOnly(project(":core:calling"))
         }
         androidMain.dependencies {
-            // `api` for the same reason as `core:persistence`: `FlashPtt` appears in the
-            // PUBLIC `FlashEngine.attachPtt(...)` / `FlashEngine.ptt` signatures, so a consumer
-            // cannot call them without it on its compile classpath.
-            //
-            // And androidMain rather than commonMain, unlike the six above. History (ERROR-049): `:core:ptt`
-            // was a plain AGP Android library exposing Android variants only, and declaring it in
-            // commonMain made `jvmMainCompileClasspath` fail variant selection — which broke
-            // `:core:engine:compileKotlinJvm`, its `jvmTest`, and `publishToMavenLocal` (hence the whole
-            // JitPack install list) while `compileAndroidMain` stayed green. Since ADR-058 `:core:ptt` has
-            // a JVM target, so that failure no longer applies; the placement stays until the engine
-            // facade is refactored. Nothing in commonMain or jvmMain names PTT.
-            api(project(":core:ptt"))
-
-            // `compileOnly`, NOT `api` — the module registers this in the OTHER direction.
-            //
-            // `FlashCalling` appears in the PUBLIC calling seam (`FlashEngine.calls`,
-            // `attachCalling(engine)`, `onInboundCallText`), so this module must compile against
-            // it. It is NOT propagated to consumers: `:core:calling` re-exports webrtc-kmp with
-            // `api(libs.webrtc.kmp)`, and the README's dependency-shape promise is that
-            // `core-engine` does not pull native WebRTC (~30 MB per ABI) into an app that never
-            // places a call. `compileOnly` keeps the type on this module's compile classpath
-            // while the published `core-engine` metadata declares neither `core-calling` nor
-            // `webrtc-kmp` — a consumer that actually calls adds `core-calling` itself, which the
-            // README already instructs.
-            //
-            // Consequence to respect in code, not just in the build file: nothing on a path a
-            // NON-calling consumer executes may name a `:core:calling` type, or the JVM resolves
-            // a class that is legitimately absent and throws NoClassDefFoundError. That is why
-            // Flash.kt gates on a plain `FLASH_CALL` prefix constant rather than
-            // `CallFrameCodec.decode`, and why the facade's routing entry points are typed
-            // without `FlashCalling`. See docs/decisions.md (ADR-033).
-            //
-            // androidMain rather than commonMain for the same reason as `:core:ptt` above:
-            // `:core:calling` is a plain AGP Android library with no JVM variant, so a commonMain
-            // entry breaks `:core:engine`'s `jvm()` target at variant selection (ERROR-049).
-            // Nothing in commonMain or jvmMain names calling.
-            compileOnly(project(":core:calling"))
 
             // Not dead: Flash.kt spreads `*FlashMigrations.ALL` into
             // FlashDatabaseOpener.openEncrypted and closes the RoomDatabase on teardown, so

@@ -94,6 +94,8 @@ object FlashIcons {
     val Mirror = FlashIconSpec(Res.drawable.flash_ic_mirror, "Mirror my video")
     val ChevronDown = FlashIconSpec(Res.drawable.flash_ic_chevron_down, "Minimize")
     val DataSaver = FlashIconSpec(Res.drawable.flash_ic_data_saver, "Data saver")
+    /** ADR-102: share a screen or window into the call. */
+    val ScreenShare = FlashIconSpec(Res.drawable.flash_ic_screen_share, "Share screen")
 
     /** UI-046 bottom-navigation tab glyphs (docs/ui/bottom-nav.md). */
     val Chat = FlashIconSpec(Res.drawable.flash_ic_chat, "Chats")

@@ -95,6 +95,13 @@ import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.PersistedFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
+import com.transfer.flash.core.engine.FlashEngine
+import com.transfer.flash.core.engine.FlashDesktop
+import com.transfer.flash.core.engine.FlashInboundRouter
+import com.transfer.flash.core.engine.FlashPathSanitizer
+import com.transfer.flash.core.engine.FlashSessionCoordinator
+import com.transfer.flash.core.engine.FlashConfig
+import com.transfer.flash.core.engine.FlashReadiness
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
 import java.security.SecureRandom
@@ -172,17 +179,47 @@ public class DesktopEngine(
      * fake, because the default opens the real microphone.
      */
     private val pttAudio: PttAudioPlatform = platformPttAudio(),
-) {
+    /**
+     * Display name override (from FlashConfig). **In memory only**: it is what this run advertises, and it is never
+     * written to the persisted identity, so a config default cannot overwrite the name the owner chose in Settings.
+     * When null/blank the persisted name is used. A rename through [renameLocalDevice] / [updateFriendlyName]
+     * persists the new name and ends the override.
+     */
+    displayName: String? = null,
+    /**
+     * Inbound offer auto-accept override (from FlashConfig). Applies to **paired peers only** (AGENTS.md section 19):
+     * an offer from a peer that is not trusted always waits for the user, whatever this says.
+     */
+    private val autoAcceptIncoming: Boolean = false,
+) : FlashEngine, FlashReadiness {
     public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _ready = MutableStateFlow(false)
-    public val ready: StateFlow<Boolean> = _ready.asStateFlow()
+
+    /** True once the stack is assembled and the transport is bound; false before that and again after [close]. */
+    override val ready: StateFlow<Boolean> = _ready.asStateFlow()
 
     private val _startError = MutableStateFlow<Throwable?>(null)
-    public val startError: StateFlow<Throwable?> = _startError.asStateFlow()
+
+    /** Why the boot failed, or that the engine was closed before it finished; null while booting or healthy. */
+    override val startError: StateFlow<Throwable?> = _startError.asStateFlow()
+
+    /** Set once by [close] / [stop]; a closed engine never becomes ready and cannot be started again. */
+    @Volatile
+    private var closed = false
+
+    /** Serialises [releaseSubsystems], which both [shutdown] and the boot coroutine's tail may run. */
+    private val teardownLock = Any()
+
+    /** The in-memory display-name override (see the constructor's `displayName`); null once the owner renames. */
+    @Volatile
+    private var nameOverride: String? = displayName?.trim()?.takeIf { it.isNotEmpty() }
 
     // --- Identity (file-backed; see DesktopIdentityStores.kt) ---
     private val identityStore = DesktopIdentityStore(stateDir)
+
+    /** The name this run presents to peers: the override when there is one, else the persisted name. */
+    private fun effectiveFriendlyName(): String = nameOverride ?: identityStore.getIdentity().friendlyName
     private val settingsStore = DesktopSettingsStore(stateDir)
     private val _settings = MutableStateFlow(settingsStore.loadSettings())
     public val settings: StateFlow<DesktopSettings> = _settings.asStateFlow()
@@ -199,11 +236,11 @@ public class DesktopEngine(
         }
     }
 
-    private val trustStore = DesktopTrustStore(stateDir)
+    private val trustStoreImpl = DesktopTrustStore(stateDir)
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
-    private val _localFriendlyName = MutableStateFlow(identityStore.getIdentity().friendlyName)
+    private val _localFriendlyName = MutableStateFlow(effectiveFriendlyName())
 
     /**
      * This device's display name as something the UI can observe. [localFriendlyName] was a plain read of the
@@ -239,11 +276,11 @@ public class DesktopEngine(
             com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
         ),
         localDeviceId = identity.deviceId.value,
-        localName = identity.friendlyName,
+        localName = effectiveFriendlyName(),
         localModel = "desktop",
         // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
         ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
-        trustStore = trustStore,
+        trustStore = trustStoreImpl,
         scope = scope,
         sendToPeer = { peerId, text ->
             val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
@@ -271,27 +308,85 @@ public class DesktopEngine(
     )
 
     // --- Subsystems; non-null once [ready] flips true ---
+    //
+    // Forwarding proxies handed out by [network] / [discovery] / [transfers] while the real object does not exist
+    // yet (or no longer does), so a reference captured before boot starts working after it. Assigning the matching
+    // `*Impl` below installs the real object into its proxy (and null puts the Empty stand-in back).
+    private val networkProxy = SwitchingNetwork()
+    private val discoveryProxy = SwitchingDiscovery()
+    private val transferProxy = SwitchingTransferRepository()
+
+    // The newest transport/discovery the boot built, kept after a release nulls the `*Impl` fields: `assemble()` holds
+    // them in locals and may still bind them after a close, so the boot's tail must be able to stop them again.
+    @Volatile
+    private var builtNetwork: JvmWsFlashNetwork? = null
+
+    @Volatile
+    private var builtDiscovery: CompositeDiscovery? = null
+
+    @Volatile
     private var networkImpl: JvmWsFlashNetwork? = null
+        set(value) {
+            field = value
+            if (value != null) builtNetwork = value
+            networkProxy.install(value)
+        }
+
+    @Volatile
     private var discoveryImpl: CompositeDiscovery? = null
+        set(value) {
+            field = value
+            if (value != null) builtDiscovery = value
+            discoveryProxy.install(value)
+        }
+
+    @Volatile
     private var transferImpl: RealFlashTransferRepository? = null
+        set(value) {
+            field = value
+            transferProxy.install(value)
+        }
+
+    @Volatile
     private var chatImpl: RealFlashChatRepository? = null
+
+    @Volatile
     private var chatDb: FlashDatabase? = null
-    private var callsImpl: CallCoordinator? = null
+    @Volatile
+    private var callsImpl: FlashCalling? = null
 
     /** Push-to-talk voice sessions (ADR-032, ADR-058); built in [assemble], routed from the inbound text/binary paths. */
     @Volatile
-    private var pttImpl: PttSessionEngine? = null
+    private var pttImpl: FlashPtt? = null
     private val magicRouter = MagicFrameRouter()
 
     @Volatile
     private var swarmBinding: SwarmHostBinding? = null
 
-    /** Attached group swarm file transfer facade (SW-8), or null when not attached. */
-    public val swarm: FlashSwarm? get() = swarmBinding?.swarm
+    @Volatile
+    private var hostSwarm: FlashSwarm? = null
 
-    public fun attachSwarm(config: FlashSwarmConfig = FlashSwarmConfig()): FlashSwarm? {
+    /** Attached group swarm file transfer facade (SW-8), or null when not attached. */
+    override val swarm: FlashSwarm? get() = swarmBinding?.swarm ?: hostSwarm
+
+    /**
+     * Builds and attaches the engine's own swarm: a [SwarmHostBinding] wired to the magic-frame router, the group
+     * gate, the piece storage and the Room state store, so it receives the `sw1` frames. Idempotent: a second call
+     * returns the swarm already built.
+     *
+     * Returns null when the engine cannot build one yet (the transport, transfer repository or chat database does
+     * not exist before the boot has got far enough) or has been closed.
+     *
+     * @throws IllegalStateException when a swarm was attached with [attachSwarm] (host-provided): the two are mutually
+     * exclusive, because a second binding would answer the same frames as the first. Call [detachSwarm] first.
+     */
+    override fun attachSwarm(config: FlashSwarmConfig): FlashSwarm? {
         synchronized(this) {
+            if (closed) return null
             swarmBinding?.let { return it.swarm }
+            check(hostSwarm == null) {
+                "A host-provided swarm is already attached; detachSwarm() before asking the engine to build its own."
+            }
             val net = networkImpl ?: return null
             val xfer = transferImpl ?: return null
             val chat = chatImpl ?: return null
@@ -335,10 +430,38 @@ public class DesktopEngine(
         }
     }
 
-    public fun detachSwarm() {
+    /**
+     * Registers a host-constructed [FlashSwarm] on this facade **only**. It is *not* wired to the magic-frame router,
+     * the group gate or the drivers (the engine cannot reach into a swarm it did not build), so it receives no
+     * inbound `sw1` frames from this engine; the host that built it is responsible for feeding it. Use
+     * [attachSwarm] with a [FlashSwarmConfig] for a fully wired swarm.
+     *
+     * Attaching the same instance again is a no-op.
+     *
+     * @throws IllegalStateException when a different swarm (host-provided or engine-built) is already attached, or the
+     * engine is closed. Call [detachSwarm] first.
+     */
+    override fun attachSwarm(swarm: FlashSwarm) {
+        synchronized(this) {
+            check(!closed) { "DesktopEngine is closed; cannot attach a swarm." }
+            val current = swarmBinding?.swarm ?: hostSwarm
+            if (current === swarm) return
+            check(current == null) {
+                "A swarm is already attached; detachSwarm() before attaching another."
+            }
+            hostSwarm = swarm
+        }
+    }
+
+    /**
+     * Detaches the swarm. An engine-built binding is detached from the router and stopped; a host-provided swarm is
+     * only forgotten (the host built it, the host shuts it down). Idempotent.
+     */
+    override fun detachSwarm() {
         synchronized(this) {
             swarmBinding?.detach()
             swarmBinding = null
+            hostSwarm = null
         }
     }
 
@@ -424,25 +547,182 @@ public class DesktopEngine(
      * Chat history. The real repository once [assemble] has built it; the honest empty
      * repository before that (and if the database ever fails to open) — the shell renders
      * both, per ERROR-034.
+     *
+     * KNOWN LIMIT: unlike [transfers], [network] and [discovery] this is not a forwarding proxy (the chat
+     * repository's surface is far larger), so a reference captured before [ready] stays the empty repository.
+     * Read it after [ready] (or `FlashEngine.awaitReady()`).
      */
-    public val chats: FlashChatRepository get() = chatImpl ?: EmptyFlashChatRepository
+    override val chats: FlashChatRepository get() = chatImpl ?: EmptyFlashChatRepository
 
     /**
      * Voice/video calling. The shared coordinator once [assemble] has built it; null before
-     * that (and the shell renders no call UI until it exists). Nullable like [transfers]
-     * rather than an empty stand-in: there is no honest "empty call", only absence.
+     * that (and the shell renders no call UI until it exists).
      */
-    public val calls: FlashCalling? get() = callsImpl
+    override val calls: FlashCalling? get() = callsImpl
 
     /**
-     * Push-to-talk. The shared [PttSessionEngine] once [assemble] has built it; null before that, so the shell
-     * renders no PTT control until it exists (nullable like [calls]: there is no honest "empty" session).
+     * Push-to-talk. The shared [PttSessionEngine] once [assemble] has built it; null before that.
      */
-    public val ptt: FlashPtt? get() = pttImpl
-    public val transfers: FlashTransferRepository? get() = transferImpl
-    public val network: FlashNetwork? get() = networkImpl
-    public val discovery: FlashDiscovery? get() = discoveryImpl
-    public val trust: com.transfer.flash.core.security.trust.FlashTrustStore get() = trustStore
+    override val ptt: FlashPtt? get() = pttImpl
+
+    /**
+     * Transfers. The real repository once it exists; before that (and after [close]) a forwarding proxy over the
+     * [EmptyFlashTransferRepository] stand-in, so a reference captured early starts working at boot (its flows
+     * re-emit from the real source) instead of staying empty for ever. Operations that cannot run yet return
+     * `Failure`.
+     */
+    override val transfers: FlashTransferRepository get() = transferImpl ?: transferProxy
+
+    /** Network transport. The real transport once it exists, else a forwarding proxy (see [transfers]). */
+    override val network: FlashNetwork get() = networkImpl ?: networkProxy
+
+    /** Discovery. The real discovery once it exists, else a forwarding proxy (see [transfers]). */
+    override val discovery: FlashDiscovery get() = discoveryImpl ?: discoveryProxy
+    override val trustStore: com.transfer.flash.core.security.trust.FlashTrustStore get() = trustStoreImpl
+    public val trust: com.transfer.flash.core.security.trust.FlashTrustStore get() = trustStoreImpl
+
+    override fun attachPtt(
+        hasMicPermission: () -> Boolean,
+        isCallActive: () -> Boolean,
+        audioRateHz: () -> Int,
+    ): FlashPtt? {
+        synchronized(this) {
+            pttImpl?.let { return it }
+            val net = networkImpl ?: return null
+            val localId = identity.deviceId.value
+            val friendlyName = effectiveFriendlyName()
+            val ptt = PttSessionEngine(
+                localId = { localId },
+                localName = { friendlyName },
+                isTrustedPeer = { peerId -> trustStoreImpl.isTrusted(FlashDeviceId(peerId)) },
+                snapshotMembers = {
+                    net.activeSessions.value.keys.mapNotNull { deviceId ->
+                        deviceId.value.takeIf { it != localId && trustStoreImpl.isTrusted(deviceId) }
+                    }
+                },
+                sendControl = { peerId, text ->
+                    val session = net.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                    if (session != null) {
+                        runCatching { session.connection.sendText(text) }
+                            .onFailure { FlashLog.w(TAG_WS, "PTT control send failed peer=$peerId", it) }
+                            .getOrDefault(false)
+                    } else {
+                        FlashLog.w(TAG_WS, "PTT control dropped: no session for $peerId", null)
+                        false
+                    }
+                },
+                sendAudio = { peerId, bytes ->
+                    val session = net.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                    if (session == null) {
+                        FlashLog.w(TAG_WS, "PTT audio dropped: no session for $peerId", null)
+                    } else {
+                        runCatching { session.connection.sendBinary(bytes) }
+                            .onFailure { FlashLog.w(TAG_WS, "PTT audio send failed peer=$peerId", it) }
+                    }
+                },
+                hasMicPermission = hasMicPermission,
+                isCallActive = isCallActive,
+                audioRateHz = audioRateHz,
+                audio = pttAudio,
+            )
+            pttImpl = ptt
+            scope.launch { ptt.notices.collect { FlashLog.i(TAG_WS, "PTT notice: $it") } }
+            return ptt
+        }
+    }
+
+    override fun attachPtt(engine: FlashPtt) {
+        synchronized(this) {
+            if (pttImpl == null) {
+                pttImpl = engine
+            }
+        }
+    }
+
+    override fun detachPtt() {
+        synchronized(this) {
+            runCatching { pttImpl?.shutdown() }
+            pttImpl = null
+        }
+    }
+
+    /**
+     * Registers a host-constructed [FlashCalling] as this engine's calling engine, **instead of** the
+     * `CallCoordinator` the boot would build: [assemble] keeps an engine attached before it ran. The host owns what it
+     * attached (its sender, trust gate and scope); the engine only routes inbound call text and signaling edges to it.
+     *
+     * Attaching the same instance again is a no-op.
+     *
+     * @throws IllegalStateException when a different calling engine is already attached (including the one the boot
+     * built), or the engine is closed. Call [detachCalling] first.
+     */
+    override fun attachCalling(engine: FlashCalling) {
+        synchronized(this) {
+            check(!closed) { "DesktopEngine is closed; cannot attach a calling engine." }
+            val current = callsImpl
+            if (current === engine) return
+            check(current == null) { "A calling engine is already attached; detachCalling() before attaching another." }
+            callsImpl = engine
+        }
+    }
+
+    /**
+     * Detaches the calling engine and **ends its active call** (hang up, bounded to a few seconds), the same
+     * teardown [stop] performs; it is then forgotten. Idempotent. A built-in `CallCoordinator` also keeps helper
+     * jobs on [scope] that only [stop] / [close] cancel.
+     */
+    override fun detachCalling() {
+        val detached = synchronized(this) {
+            val held = callsImpl
+            callsImpl = null
+            held
+        }
+        endActiveCall(detached)
+    }
+
+    /** Hangs up a call in progress on [calls] so detaching or closing never leaves a live call or an open microphone. */
+    private fun endActiveCall(calls: FlashCalling?) {
+        if (calls == null) return
+        runCatching {
+            runBlocking {
+                withTimeoutOrNull(CALL_END_TIMEOUT_MS) {
+                    if (calls.activeCall.value?.let { it.state != FlashCallState.ENDED } == true) calls.hangUp()
+                }
+            }
+        }.onFailure { FlashLog.w(TAG_WS, "Ending the active call on detach failed: ${it.message}") }
+    }
+
+    override suspend fun onInboundCallText(peerDeviceId: String, text: String): Boolean =
+        callsImpl?.onInboundText(peerDeviceId, text) ?: false
+
+    override fun onCallSignalingLost(peerDeviceId: String) {
+        callsImpl?.onSignalingLost(peerDeviceId)
+    }
+
+    override fun onCallSignalingRestored(peerDeviceId: String) {
+        callsImpl?.onSignalingRestored(peerDeviceId)
+    }
+
+    override fun busyCallPeerIds(): Set<String> =
+        callsImpl?.activeCall?.value?.busyPeerIds.orEmpty()
+
+    /**
+     * Renames the device without blocking the caller (this is a non-suspend `FlashEngine` member, usually called on
+     * the UI thread). The store write (a tiny properties file), the observable name, the transport hello and the
+     * pairing name are applied before it returns; the chat repository's copy and the re-advertisement run on [scope]
+     * afterwards. Use the suspend [renameLocalDevice] to await all of it.
+     */
+    override fun updateFriendlyName(name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || closed || !applyLocalName(trimmed)) return false
+        scope.launch { propagateLocalName(trimmed) }
+        return true
+    }
+
+    /** Closes the engine: same as [stop], and idempotent. A closed engine cannot be started again. */
+    override fun close() {
+        shutdown()
+    }
 
     public val localDeviceId: String get() = identity.deviceId.value
     public val localFriendlyName: String get() = _localFriendlyName.value
@@ -480,7 +760,7 @@ public class DesktopEngine(
      */
     private fun buildAdvertisedIdentity(): FlashAdvertisedIdentity = FlashAdvertisedIdentity(
         deviceId = identity.deviceId,
-        friendlyName = identity.friendlyName,
+        friendlyName = effectiveFriendlyName(),
         deviceModel = "Desktop",
         protocolVersion = FlashProtocol.VERSION,
         // Declares this endpoint's kind so the other side's Nearby row can say "PC" rather than
@@ -503,14 +783,32 @@ public class DesktopEngine(
     public suspend fun renameLocalDevice(name: String): Boolean {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return false
+        if (!applyLocalName(trimmed)) return false
+        propagateLocalName(trimmed)
+        return true
+    }
+
+    /**
+     * The synchronous half of a rename: persists [trimmed], ends the config override, and updates every in-memory
+     * copy that does not need a suspend call (the observable name, the WebSocket hello, pairing requests).
+     */
+    private fun applyLocalName(trimmed: String): Boolean {
         val renamed = runCatching { identityStore.updateFriendlyName(trimmed) }.getOrNull()
         if (renamed !is FlashResult.Success) return false
+
+        // The owner's explicit choice wins over a config-supplied display name from now on.
+        nameOverride = null
 
         // Every place that holds a copy of the name. Before, only the store changed and discovery was nudged,
         // so the UI, the WebSocket hello, pairing requests and group messages all kept the old name.
         _localFriendlyName.value = trimmed
         networkImpl?.localFriendlyName = trimmed
         pairing.updateLocalName(trimmed)
+        return true
+    }
+
+    /** The asynchronous half of a rename: the chat repository's copy, then the discovery re-advertisement. */
+    private suspend fun propagateLocalName(trimmed: String) {
         runCatching { chatImpl?.updateLocalDisplayName(trimmed) }
             .onFailure { FlashLog.w(TAG_DISCOVERY, "Chat display name update failed after rename", it) }
 
@@ -527,8 +825,8 @@ public class DesktopEngine(
                 if (advertisedPort > 0) discovery.startAdvertising(advertisedPort)
             }
         }
-        return true
     }
+
     public val appVersionName: String = "1.0.0-desktop"
 
     /**
@@ -587,6 +885,9 @@ public class DesktopEngine(
 
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
+
+    /** transferId to the peer that offered it (FlashInboundRouter binds transfer control and chunks to it). */
+    private val incomingOwners = ConcurrentHashMap<String, String>()
     private val receivedPaths = ConcurrentHashMap<String, String>()
     private val rejectedLogCache = ConcurrentHashMap.newKeySet<String>()
     private val rejectedCancelSent = ConcurrentHashMap.newKeySet<String>()
@@ -648,9 +949,37 @@ public class DesktopEngine(
     /** A no-arg view for the shell when nothing is booted. */
     private val fallbackTransfers = MutableStateFlow(emptyList<com.transfer.flash.core.transfer.model.FlashTransfer>())
 
-    /** Assembles and boots the desktop stack. Idempotent; failures land in [startError]. */
+    /** The boot coroutine, for tests that must wait for the boot's tail (including its teardown after a close). */
+    @Volatile
+    internal var bootJob: Job? = null
+        private set
+
+    /** Test seam: called with each bring-up stage's name on the boot thread. Production never sets it. */
+    @Volatile
+    internal var bootStageHook: ((stage: String) -> Unit)? = null
+
+    /** Throws a CancellationException once the engine is closed, to abort [assemble]. */
+    private fun ensureOpen() {
+        if (closed) throw kotlin.coroutines.cancellation.CancellationException("DesktopEngine closed during bring-up")
+    }
+
+    /**
+     * Assembles and boots the desktop stack. Idempotent while the engine is running; failures land in [startError].
+     *
+     * @throws IllegalStateException after [close] / [stop]: a closed engine cannot be restarted (its scope is
+     * cancelled and its database closed), so starting it again is a programming error. [startError] carries the same
+     * exception. Build a new engine (on the same state directory if you like) instead.
+     */
     public fun start() {
         synchronized(startMutex) {
+            if (closed) {
+                val failure = IllegalStateException(
+                    "DesktopEngine was closed and cannot be started again; create a new engine.",
+                )
+                _startError.value = failure
+                FlashLog.e(TAG_WS, "start() called on a closed engine", failure)
+                throw failure
+            }
             if (started) return
             started = true
         }
@@ -663,51 +992,125 @@ public class DesktopEngine(
             "local" to com.transfer.flash.core.common.logging.FlashProbe.short(localDeviceId),
             "tzOffsetMin" to (java.util.TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 60_000),
         )
-        scope.launch {
+        bootJob = scope.launch {
             val result = runCatching { assemble() }
-            result
-                .onSuccess {
-                    _startError.value = null
-                    _ready.value = true
-                    networkWatcher.start()
+            // `assemble()` is blocking code (`runBlocking { network.start(0) }` ...), so `scope.cancel()` in [shutdown]
+            // cannot interrupt it. `closed` is therefore the authority: a boot that finishes on a closed engine never
+            // flips [ready], and releases what it built after the shutdown's own release had already run.
+            val live = synchronized(startMutex) {
+                if (closed) {
+                    false
+                } else {
+                    result.onSuccess {
+                        _startError.value = null
+                        _ready.value = true
+                        networkWatcher.start()
+                    }
+                    true
                 }
-                .onFailure { failure ->
-                    // Logged, not just parked in a StateFlow. The shell renders `startError` in the
-                    // transfers list's error surface, but a bring-up failure that aborts `assemble()`
-                    // is exactly the case where the console is what a human reads — and the run that
-                    // motivated this line showed a working roster with no sessions and NO trace of
-                    // why, because the throwable only ever reached the UI.
-                    FlashLog.e(TAG_WS, "desktop stack bring-up FAILED", failure)
-                    _startError.value = failure
-                }
+            }
+            if (!live) {
+                FlashLog.i(TAG_WS, "bring-up ended on a closed engine; releasing what it started")
+                releaseSubsystems()
+                return@launch
+            }
+            result.onFailure { failure ->
+                // Logged, not just parked in a StateFlow. The shell renders `startError` in the
+                // transfers list's error surface, but a bring-up failure that aborts `assemble()`
+                // is exactly the case where the console is what a human reads — and the run that
+                // motivated this line showed a working roster with no sessions and NO trace of
+                // why, because the throwable only ever reached the UI.
+                FlashLog.e(TAG_WS, "desktop stack bring-up FAILED", failure)
+                _startError.value = failure
+            }
         }
     }
 
+    /**
+     * Stops the engine for good: identical to [close]. The engine cannot be started again afterwards (its scope is
+     * cancelled), but a new [DesktopEngine] can be built on the same state directory straight away.
+     */
     public fun stop() {
-        synchronized(startMutex) {
-            if (!started) return
-            started = false
+        shutdown()
+    }
+
+    /**
+     * The one teardown behind [stop] and [close]. Idempotent, safe to call before [start], during the boot and from
+     * any thread.
+     */
+    private fun shutdown() {
+        val first = synchronized(startMutex) {
+            if (closed) {
+                false
+            } else {
+                closed = true
+                started = false
+                true
+            }
         }
+        if (!first) return
         // Logged first, and unconditionally: `stop()` cancels the scope, so anything still in
         // flight — including a bring-up that has not finished — dies here silently. A premature
         // call is indistinguishable from a stalled engine in every other observable (the transports
         // keep running, the roster still fills), and that ambiguity cost a session: the desktop's
         // `application { }` body called this straight after composing the window. `ready` is the
         // tell — it is set true by a completed assembly and false here.
-        FlashLog.i(TAG_WS, "engine stop() — cancelling scope (ready=${_ready.value})")
-        networkWatcher.stop()
-        // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
-        runCatching { pttImpl?.shutdown() }
-        pttImpl = null
-        detachSwarm()
-        runCatching {
-            runBlocking {
-                discoveryImpl?.stopAll()
-                networkImpl?.stop()
-            }
-        }
-        scope.cancel()
+        val wasReady = _ready.value
+        FlashLog.i(TAG_WS, "engine stop() — cancelling scope (ready=$wasReady)")
         _ready.value = false
+        // An engine closed before it finished booting never becomes ready; say why for anyone awaiting it.
+        if (!wasReady && _startError.value == null) {
+            _startError.value = IllegalStateException("DesktopEngine was closed before it finished starting.")
+        }
+        releaseSubsystems()
+        liveStateDirs.entries.removeIf { it.value === this }
+    }
+
+    /**
+     * Stops and releases everything the engine owns, in dependency order, and puts the facade back to its empty
+     * stand-ins. Idempotent and serialised: [shutdown] runs it, and a boot that was still in flight runs it again once
+     * it notices the engine is closed, so whatever it installed after the first pass is not leaked (a bound port, the
+     * discovery sockets, the open encrypted database).
+     */
+    private fun releaseSubsystems() {
+        synchronized(teardownLock) {
+            runCatching { networkWatcher.stop() }
+            // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
+            detachPtt()
+            detachSwarm()
+            // An active call is hung up (it holds the camera/microphone); the coordinator is then forgotten.
+            detachCalling()
+            val discovery = discoveryImpl ?: builtDiscovery
+            val network = networkImpl ?: builtNetwork
+            runCatching {
+                runBlocking {
+                    // Separate bounds: a discovery transport that hangs in close must not keep the port bound.
+                    withTimeoutOrNull(SUBSYSTEM_STOP_TIMEOUT_MS) { discovery?.stopAll() }
+                    withTimeoutOrNull(SUBSYSTEM_STOP_TIMEOUT_MS) { network?.stop() }
+                }
+            }.onFailure { FlashLog.w(TAG_WS, "Stopping discovery/network on shutdown failed: ${it.message}") }
+            scope.cancel()
+            // Receive sinks still open for a parked or half-received file.
+            openHandles.values.forEach { handle -> runCatching { handle.close() } }
+            openHandles.clear()
+            incomingMeta.clear()
+            receivedPaths.clear()
+            // The database closes after the scope is cancelled, so no coroutine of this engine writes to it any more.
+            val db = chatDb
+            chatImpl = null
+            chatDb = null
+            runCatching { db?.close() }
+                .onFailure { FlashLog.w(TAG_WS, "Closing the chat database failed: ${it.message}") }
+            discoveryImpl = null
+            networkImpl = null
+            transferImpl = null
+            receivePipeline = null
+            autoConnector = null
+            presenceExchange = null
+            modeController = null
+            sweepController = null
+            rememberedRoutes = null
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -715,7 +1118,7 @@ public class DesktopEngine(
     // -------------------------------------------------------------------------
     private fun assemble() {
         val localId = identity.deviceId.value
-        val friendlyName = identity.friendlyName
+        val friendlyName = effectiveFriendlyName()
 
         // Bring-up breadcrumbs, with elapsed time.
         //
@@ -727,8 +1130,12 @@ public class DesktopEngine(
         // the log could not say where. Each stage below prints as it completes, so the last line
         // before the silence names the step that never returned.
         val bootStartedAt = System.currentTimeMillis()
+        // Every stage is also a close checkpoint: a stop()/close() that lands mid-boot cannot interrupt this blocking
+        // method, so it aborts here (the boot coroutine's tail then releases whatever was already built).
         fun boot(stage: String) {
             FlashLog.i(TAG_WS, "[bring-up] $stage (+${System.currentTimeMillis() - bootStartedAt}ms)")
+            bootStageHook?.invoke(stage)
+            ensureOpen()
         }
         boot("assemble entered")
 
@@ -993,6 +1400,7 @@ public class DesktopEngine(
                 groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
                 groupRotationDao = db.groupRotationDao(),
                 groupSettingsDao = db.groupSettingsDao(),
+                groupHistoryDao = db.groupHistoryDao(),
                 groupPreferencesDao = db.groupPreferencesDao(),
                 localAddressHints = {
                     val port = network.serverPort
@@ -1055,7 +1463,10 @@ public class DesktopEngine(
         // already constructs a working PeerConnection with zero configuration, so the honest
         // outcome is no engine object. If desktop capture misbehaves live, suspect the
         // `preferIPv4Stack` flag's effect on ICE first (phase doc Do-NOT), not a missing shim.
-        callsImpl = CallCoordinator(
+        // A calling engine the host attached before the boot is kept (never overwritten, never orphaned): the host owns it.
+        if (callsImpl != null) {
+            FlashLog.i(TAG_WS, "Keeping the host-attached calling engine; not building a CallCoordinator")
+        } else callsImpl = CallCoordinator(
             localDeviceId = localId,
             localName = friendlyName,
             scope = scope,
@@ -1110,56 +1521,22 @@ public class DesktopEngine(
         )
         boot("call coordinator built")
 
-        // PTT (ADR-032, ADR-058): the same engine the Android host runs, over this host's transport. Every
+        // PTT (ADR-032, ADR-058): built via attachPtt over this host's transport. Every
         // transport access is a lazy lambda, so it does not matter that sessions come and go after this point.
-        val ptt = PttSessionEngine(
-            localId = { localId },
-            localName = { friendlyName },
-            isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
-            snapshotMembers = {
-                network.activeSessions.value.keys.mapNotNull { deviceId ->
-                    deviceId.value.takeIf { it != localId && trustStore.isTrusted(deviceId) }
-                }
-            },
-            sendControl = { peerId, text ->
-                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
-                if (session != null) {
-                    runCatching { session.connection.sendText(text) }
-                        .onFailure { FlashLog.w(TAG_WS, "PTT control send failed peer=$peerId", it) }
-                        .getOrDefault(false)
-                } else {
-                    FlashLog.w(TAG_WS, "PTT control dropped: no session for $peerId", null)
-                    false
-                }
-            },
-            // Blocking socket write by contract: the engine calls this only from its sender loop on Dispatchers.IO.
-            sendAudio = { peerId, bytes ->
-                val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
-                if (session == null) {
-                    FlashLog.w(TAG_WS, "PTT audio dropped: no session for $peerId", null)
-                } else {
-                    runCatching { session.connection.sendBinary(bytes) }
-                        .onFailure { FlashLog.w(TAG_WS, "PTT audio send failed peer=$peerId", it) }
-                }
-            },
-            // No per-app microphone permission to ask for on a desktop: the OS gates access (Windows privacy
-            // switch) and, unlike Android, does not always say so. That case is a documented limitation (PTTD-03).
+        val ptt = attachPtt(
             hasMicPermission = { true },
             isCallActive = { callsImpl?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true },
             audioRateHz = {
                 if ((_settings.value.performanceMode ?: FlashPerformanceMode.HIGH) == FlashPerformanceMode.LOW) 8_000 else 16_000
             },
-            audio = pttAudio,
         )
-        pttImpl = ptt
-        scope.launch { ptt.notices.collect { FlashLog.i(TAG_WS, "PTT notice: $it") } }
         // Mic exclusivity (ADR-032): a call becoming active tears any PTT session down; the press path refuses
         // while a call is active, so the floor can never fight the call for the microphone.
         scope.launch {
             callsImpl?.activeCall
                 ?.map { call -> call != null && call.state != FlashCallState.ENDED }
                 ?.distinctUntilChanged()
-                ?.collect { active -> if (active) ptt.onCallStarted() }
+                ?.collect { active -> if (active) ptt?.onCallStarted() }
         }
         boot("ptt engine built")
 
@@ -1185,11 +1562,14 @@ public class DesktopEngine(
         )
 
         // ---- swarm integration (SW-8) ----
-        if (_settings.value.groupSwarmEnabled) {
+        if (_settings.value.groupSwarmEnabled && swarm == null) {
             attachSwarm()
         }
 
         // ---- bring-up: bind WS server, start discovery, route endpoints, auto-dial ----
+        // No checkpoint between this hook and the bind on purpose: it is the window a close can slip into, and the
+        // next boot() stage aborts the assembly (the boot tail then releases the late bind).
+        bootStageHook?.invoke("before ws bind")
         val netStart = runBlocking { network.start(0) }
         val serverPort = (netStart as? FlashResult.Success)?.value
             ?: error("network server failed to start: ${(netStart as FlashResult.Failure).error}")
@@ -1362,10 +1742,10 @@ public class DesktopEngine(
                     // tiebreak, or a re-dial after a peer's address changes — so this accumulated
                     // steadily rather than only in a rare path.
                     sessionJobs.remove(stale)?.cancel()
-                    // Signaling death opens the call recovery window (ERROR-033) rather than
-                    // dropping the call: a Wi-Fi roam takes the session down and redials it
-                    // within seconds. Without this every roam would read as a hang-up.
-                    callsImpl?.onSignalingLost(stale.peerDeviceId.value)
+                    FlashSessionCoordinator.onSessionDown(
+                        peerDeviceId = stale.peerDeviceId.value,
+                        onSignalingLost = { callsImpl?.onSignalingLost(it) },
+                    )
                     FlashLog.i(
                         TAG_WS,
                         "Session gone peer='${stale.peer.friendlyName}' id=${stale.peerDeviceId.value}",
@@ -1379,25 +1759,12 @@ public class DesktopEngine(
                                 "id=${session.peerDeviceId.value} outbound=${session.isOutbound} " +
                                 "— sending pairing hello",
                         )
-                        // Pairing hello on every session-up, exactly like the app host: it is what
-                        // lets the peer derive the shared 6-digit code the moment either side taps
-                        // Pair (FLASH_PAIR hello carries the identity fingerprint).
-                        pairing.onSessionUp(session.peerDeviceId.value)
-                        // The three chat edges the app host fires on every session-up (chat/group audit,
-                        // step 1). Their absence meant a desktop never re-sent a membership frame a peer
-                        // missed, never asked a returning peer for group history, and never made that
-                        // peer's group deliveries due, so a group message sent while a member was away
-                        // kept its single tick until the slow backoff timer happened to retry it.
-                        // Bug 5: flush the durable outbox; the peer id also makes that member's group
-                        // deliveries retryable.
-                        chatImpl?.notifyPeerSessionUp(session.peerDeviceId.value)
-                        // F3: holder-coordinated group catch-up (FLASH_GSYNC) with the returning peer.
-                        chatImpl?.sendGroupSyncRequests(session.peerDeviceId.value)
-                        // F7: heal a membership frame this peer may have missed while it was offline.
-                        chatImpl?.reconcileGroupMembership(session.peerDeviceId.value)
-                        // A live session again: close any recovery window so a renegotiation that
-                        // needs this channel (ICE restart after a roam) can travel on it.
-                        callsImpl?.onSignalingRestored(session.peerDeviceId.value)
+                        FlashSessionCoordinator.onSessionUp(
+                            peerDeviceId = session.peerDeviceId.value,
+                            chatRepository = chatImpl,
+                            onSignalingRestored = { callsImpl?.onSignalingRestored(it) },
+                            onPairingHello = { pairing.onSessionUp(it) },
+                        )
                         sessionJobs[session] = scope.launch {
                             launch {
                                 session.incomingBinary.collect { data ->
@@ -1503,99 +1870,57 @@ public class DesktopEngine(
      * Phase 16 harness's version: sender-side ACK/COMPLETE first, then the receive pipeline's
      * events, including the already-completed short-circuit and the resumable-retry auto-accept.
      */
+    /**
+     * Inbound binary routing — delegated to [FlashInboundRouter] for sender-side ACK/COMPLETE,
+     * receive pipeline events, PTT audio, and E2E decryption.
+     */
     private fun handleInboundBinary(peerDeviceId: String, data: ByteArray, reply: (ByteArray) -> Boolean) {
-        // PTT voice audio first (ADR-032): the PTT1 magic is disjoint from the transfer pipeline's FLSH, so this
-        // costs one 4-byte compare, and it returns unconditionally so PTT audio can never reach the transfer parser.
-        if (PttAudioFrame.isPttAudio(data)) {
-            pttImpl?.onInboundBinary(peerDeviceId, data)
-            return
-        }
-        val transfer = transferImpl ?: return
-        val sessionKey = trustStore.getSessionKey(FlashDeviceId(peerDeviceId))
-        val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
-            if (sessionKey == null) {
-                FlashLog.w(TAG_WS, "Received encrypted binary frame from $peerDeviceId but no session key exists")
-                return
-            }
-            val decrypted = SecureBinaryFrameCodec.decryptOrNull(data, sessionKey)
-            if (decrypted == null) {
-                FlashLog.w(TAG_WS, "Failed to decrypt binary frame from $peerDeviceId (tampered or wrong key)")
-                return
-            }
-            decrypted
-        } else {
-            data
-        }
-
-        val secureReply: (ByteArray) -> Boolean = { replyBytes ->
-            val toSend = if (sessionKey != null) {
-                SecureBinaryFrameCodec.encrypt(replyBytes, sessionKey)
-            } else {
-                replyBytes
-            }
-            reply(toSend)
-        }
-
-        if (magicRouter.dispatch(peerDeviceId, frameData, secureReply)) {
-            return
-        }
-
-        val consumedBySender = try {
-            transfer.onInboundFrame(frameData)
-        } catch (t: Throwable) {
-            FlashLog.w(TAG_WS, "Failed to route inbound frame to sender: ${t.message}")
-            false
-        }
-        if (consumedBySender) return
-        val receivePipeline = this.receivePipeline ?: return
-        val events = try {
-            receivePipeline.onFrame(frameData)
-        } catch (e: Throwable) {
-            FlashLog.w(TAG_WS, "Failed to process inbound binary frame: ${e.message}")
-            return
-        }
-        for (event in events) {
-            when (event) {
-                is ReceiveEvent.SessionStarted -> {
-                    val frame = event.frame
-                    // Offer arrival is otherwise invisible: no log line fires between the WS frame
-                    // and the Transfers-tab row, which makes "nothing in desktop logs" indistinguishable
-                    // from "nothing arrived". Log the offer; acceptance still needs the user (consent gate).
-                    FlashLog.i(
-                        TAG_WS,
-                        "Inbound file offer tid=${frame.transferId} name='${frame.fileName}' " +
-                            "bytes=${frame.totalBytes} from peer=$peerDeviceId (encrypted=${sessionKey != null})",
-                    )
-                    incomingMeta[frame.transferId] = frame
-                    val existing = transfer.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
-                    val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
-                    val alreadyCompleted =
-                        (existing != null && existing.state == FlashTransferState.Completed) ||
-                            (existingPath != null && File(existingPath).let { it.isFile && it.length() == frame.totalBytes })
-                    if (alreadyCompleted) {
-                        secureReply(ChunkFrame.serialize(ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
-                        sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
-                        continue
-                    }
-                    if (transfer.isResumableInboundRetry(frame.transferId)) {
-                        acceptOffer(frame.transferId, peerDeviceId)
-                        continue
-                    }
-                    transfer.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, "peer", peerDeviceId)
-                    // Offer chat bubble, parity with the app host (`onAttachmentStarted`): the
-                    // offer must be visible (and acceptable) in the conversation, not only in the
-                    // Transfers tab. ERROR-062: the owner expected accept-in-chat and it was absent.
-                    val offerMime = guessOfferMime(frame.fileName)
+        FlashInboundRouter.routeInboundBinary(
+            peerDeviceId = peerDeviceId,
+            data = data,
+            reply = reply,
+            peerLabel = "peer",
+            pttProvider = { pttImpl },
+            sessionKeyLookup = { pid -> trustStoreImpl.getSessionKey(FlashDeviceId(pid)) },
+            magicRouter = magicRouter,
+            transferRepository = transferImpl,
+            receivePipeline = receivePipeline,
+            incomingMeta = incomingMeta,
+            receivedPaths = receivedPaths,
+            openHandles = openHandles,
+            fileExistsAndSizeMatches = { path, expectedBytes ->
+                File(path).let { it.isFile && it.length() == expectedBytes }
+            },
+            sendXferResume = { pid, tid ->
+                sendXfer(pid, RealFlashTransferRepository.ACTION_RESUME, tid)
+            },
+            sendXferCancel = { pid, tid ->
+                sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
+            },
+            incomingOwners = incomingOwners,
+            // A re-offer of an already-accepted transfer takes the full accept path (ADR-069 / FA-2
+            // storage gate, sink, progress seed, then RESUME), as it did before the shared router.
+            onResumableRetry = { frame, pid, _ ->
+                pid?.let { acceptOffer(frame.transferId, it) }
+            },
+            onOfferReceived = { frame, pid, secureReply ->
+                val sessionKey = pid?.let { trustStoreImpl.getSessionKey(FlashDeviceId(it)) }
+                FlashLog.i(
+                    TAG_WS,
+                    "Inbound file offer tid=${frame.transferId} name='${frame.fileName}' " +
+                        "bytes=${frame.totalBytes} from peer=$pid (encrypted=${sessionKey != null})",
+                )
+                transferImpl?.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, "peer", pid)
+                val offerMime = guessOfferMime(frame.fileName)
+                pid?.let { pId ->
                     chatImpl?.onInboundAttachment(
-                        peerDeviceId = peerDeviceId,
+                        peerDeviceId = pId,
                         transferId = frame.transferId,
                         fileName = frame.fileName,
                         mimeType = offerMime,
                         sizeBytes = frame.totalBytes,
                     )
-                    // Auto-download parity with the app host (Bug 3): voice/image/video/file auto-accept
-                    // driven by desktop settings, and ONLY from trusted peers.
-                    val offerTrusted = trustStore.isTrusted(FlashDeviceId(peerDeviceId))
+                    val offerTrusted = trustStoreImpl.isTrusted(FlashDeviceId(pId))
                     val currentSettings = _settings.value
                     val offerAuto = when {
                         offerMime.startsWith("audio/") -> currentSettings.autoDownloadVoice
@@ -1603,67 +1928,32 @@ public class DesktopEngine(
                         offerMime.startsWith("video/") -> currentSettings.autoDownloadVideo
                         else -> currentSettings.autoDownloadFile
                     }
-                    if (offerTrusted && offerAuto) {
+                    if (shouldAutoAcceptOffer(offerTrusted, offerAuto, autoAcceptIncoming)) {
                         FlashLog.i(
                             TAG_WS,
                             "Auto-accepting '${frame.fileName}' (mime=$offerMime) tid=${frame.transferId}",
                         )
-                        acceptOffer(frame.transferId, peerDeviceId)
+                        acceptOffer(frame.transferId, pId)
                     }
-                    // CONSENT GATE — deliberately NOT auto-accepted.
-                    //
-                    // This used to call `acceptOffer` here, with the comment "no consent UI on
-                    // desktop yet". That was wrong twice over: the consent UI *does* exist (the
-                    // Transfers tab renders Accept/Decline, and `FlashTransferRepository` has had
-                    // `acceptIncoming`/`declineIncoming` all along), and auto-accepting meant any
-                    // paired device on the LAN could write files into `~/FlashReceived` with the
-                    // user never asked — while the Accept button beside it was decorative.
-                    //
-                    // The offer now parks. `ReceivePipeline.requireAcceptance = true` holds the
-                    // session with no destination sink resolved, so nothing is created on disk until
-                    // the user accepts; accepting emits `ACTION_ACCEPT`, which the collector below
-                    // turns into `acceptOffer` (sink, then RESUME — the load-bearing order).
                 }
-                is ReceiveEvent.AckBatchReady -> {
-                    transfer.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
-                    updateIncomingProgress(transfer, receivePipeline, incomingMeta, event.frame.transferId)
-                    secureReply(ChunkFrame.serialize(event.frame))
-                }
-                is ReceiveEvent.Completed -> {
-                    val transferId = event.frame.transferId
-                    openHandles.remove(transferId)?.let { it.flush(); it.close() }
-                    val path = receivedPaths.remove(transferId)
-                    val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
-                    // ADR-068 / ERROR-098: this host never checked the assembled file; it now uses the shared path.
-                    val wholeFile = transfer.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
-                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
-                        receivePipeline.cancelSession(transferId)
-                        ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
-                    } else {
-                        event.frame
+            },
+            onRejected = { event, pid ->
+                if (event.reason != RejectReason.AWAITING_ACCEPTANCE) {
+                    val tid = event.transferId
+                    val key = "$tid:${event.reason}"
+                    if (rejectedLogCache.size > 256) rejectedLogCache.clear()
+                    if (rejectedLogCache.add(key)) {
+                        println("[flash-desktop] receiver rejected: ${event.reason} tid=$tid")
                     }
-                    secureReply(ChunkFrame.serialize(completeReply))
-                }
-                is ReceiveEvent.Rejected -> {
-                    if (event.reason != RejectReason.AWAITING_ACCEPTANCE) {
-                        val tid = event.transferId
-                        // Rate-limit console logging per transferId & reason: terminal/cancelled transfers
-                        // would otherwise flood stdout with thousands of identical chunk rejection lines.
-                        val key = "$tid:${event.reason}"
-                        if (rejectedLogCache.size > 256) rejectedLogCache.clear()
-                        if (rejectedLogCache.add(key)) {
-                            println("[flash-desktop] receiver rejected: ${event.reason} tid=$tid")
-                        }
-                        if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null) {
-                            if (rejectedCancelSent.size > 256) rejectedCancelSent.clear()
-                            if (rejectedCancelSent.add(tid)) {
-                                sendXfer(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, tid)
-                            }
+                    if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null && pid != null) {
+                        if (rejectedCancelSent.size > 256) rejectedCancelSent.clear()
+                        if (rejectedCancelSent.add(tid)) {
+                            sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
                         }
                     }
                 }
-            }
-        }
+            },
+        )
     }
 
     /** Recomputes verified bytes for an inbound transfer from the pipeline's done-set. */
@@ -1684,85 +1974,19 @@ public class DesktopEngine(
 
     /** FLASH_XFER control frames — route into the repository (both directions). */
     private suspend fun handleInboundText(peerDeviceId: String, text: String) {
-        // Calling signaling first — the most latency-sensitive frame class, mirroring the app
-        // host. `onInboundText` answers true for every FLASH_CALL frame it consumed and false
-        // when the text is not a call frame at all, so chat/pairing/transfer never see call
-        // traffic either way.
-        if (callsImpl?.onInboundText(peerDeviceId, text) == true) return
-        // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
-        if (presenceExchange?.onInboundText(peerDeviceId, text) == true) return
-        // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
-        if (modeController?.onInboundText(peerDeviceId, text) == true) return
-        // PTT (ADR-032): ping and session control share one entry point. The engine owns decode, dedup, the
-        // fail-closed transport-binding/trust check and the floor reduction, and answers true for a
-        // recognized-but-rejected frame too, so a PTT frame can never fall through into the families below.
-        val ptt = pttImpl
-        if (ptt != null) {
-            if (ptt.onInboundText(peerDeviceId, text)) return
-        } else if (PttFrameCodec.decode(text) != null || PttSessionCodec.decode(text) != null) {
-            FlashLog.w(TAG_WS, "PTT frame dropped (engine not started)", null)
-            return
-        }
-        // Phase 26-3: pairing traffic shares the FLASH_XFER routing point but its own prefix —
-        // check it FIRST so a pairing line is never handed to the transfer repository.
-        if (FlashTextFraming.parseFields(text, "FLASH_PAIR") != null) {
-            pairing.onInbound(peerDeviceId, text)
-            return
-        }
-        val plainText = if (E2eFrameCodec.isSecuredFrame(text)) {
-            val sessionKey = peerDeviceId?.let { trustStore.getSessionKey(FlashDeviceId(it)) }
-            if (sessionKey != null) {
-                E2eFrameCodec.decryptWireFrame(text, sessionKey) ?: run {
-                    FlashLog.w(TAG_WS, "Failed to decrypt FLASH_SEC frame from $peerDeviceId", null)
-                    return
-                }
-            } else {
-                FlashLog.w(TAG_WS, "Received FLASH_SEC from $peerDeviceId with no stored session key; dropping", null)
-                return
-            }
-        } else {
-            // Audit S1b: the direct-chat family is ALWAYS encrypted by the sender once a session key
-            // exists, so a plaintext one from a keyed peer is a downgrade — drop it.
-            if (DirectChatFamily.matches(text) && peerDeviceId?.let { trustStore.getSessionKey(FlashDeviceId(it)) } != null) {
-                FlashLog.w(TAG_WS, "Dropped plaintext direct-chat frame from keyed peer $peerDeviceId (downgrade)", null)
-                return
-            }
-            text
-        }
-
-        DirectMessageActionCodec.decode(plainText)?.let { frame ->
-            chatImpl?.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
-            return
-        }
-        GroupFrameCodec.decode(plainText)?.let { frame ->
-            chatImpl?.onInboundGroupWireFrame(peerDeviceId, frame)
-            return
-        }
-        when (val decoded = ChatTextFrameCodec.decode(plainText, System.currentTimeMillis(), peerDeviceId)) {
-            is ChatTextFrameCodec.DecodeResult.Frame -> {
-                val frame = decoded.frame
-                // transportPeerId for ALL direct families, not just typing: the codec decodes the
-                // direct-chat family only (group frames travel a separate path), so the frame
-                // author IS the transport peer — and the repository's fail-closed spoof guards
-                // (PR #11) only fire when it is non-null. Same fix as both Android call sites.
-                chatImpl?.onInboundWireFrame(
-                    frame,
-                    transportPeerId = peerDeviceId,
-                )
-                return
-            }
-            ChatTextFrameCodec.DecodeResult.RecognizedButInvalid -> return
-            null -> Unit
-        }
-        val transfer = transferImpl ?: return
-        val fields = FlashTextFraming.parseFields(text, "FLASH_XFER")
-        if (fields != null) {
-            val action = fields["action"]
-            val tid = fields["transferId"]
-            if (action != null && tid != null) {
-                transfer.onRemoteTransferControl(tid, action)
-            }
-        }
+        FlashInboundRouter.routeInboundText(
+            peerDeviceId = peerDeviceId,
+            text = text,
+            callHandler = { pid, t -> callsImpl?.onInboundText(pid, t) == true },
+            presenceHandler = { pid, t -> presenceExchange?.onInboundText(pid, t) == true },
+            modeHandler = { pid, t -> modeController?.onInboundText(pid, t) == true },
+            pttProvider = { pttImpl },
+            pairingHandler = { pid, t -> pairing.onInbound(pid, t) },
+            sessionKeyLookup = { pid -> trustStoreImpl.getSessionKey(FlashDeviceId(pid)) },
+            chatRepository = chatImpl,
+            transferRepository = transferImpl,
+            incomingOwners = incomingOwners,
+        )
     }
 
     /**
@@ -1872,58 +2096,97 @@ public class DesktopEngine(
     }
 
     internal companion object {
-        private val ILLEGAL_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]")
-        private val WINDOWS_RESERVED_NAMES = setOf(
-            "CON", "PRN", "AUX", "NUL",
-            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        init {
+            registerFactory()
+        }
+
+        /** How long a shutdown waits for discovery, and separately for the network, to stop. */
+        const val SUBSYSTEM_STOP_TIMEOUT_MS: Long = 10_000L
+
+        /** How long detaching the calling engine waits for the hang-up of a call in progress. */
+        const val CALL_END_TIMEOUT_MS: Long = 3_000L
+
+        /** State directories owned by an engine built through [FlashDesktop.create], released by close(). */
+        private val liveStateDirs = ConcurrentHashMap<String, DesktopEngine>()
+
+        /**
+         * Test-only overrides for the engine [FlashDesktop.create] builds, so a test can use a temporary state
+         * directory, the pass-through identity vault and a fake microphone instead of the developer's real
+         * `~/.flash`, DPAPI and sound card. Production never sets it.
+         */
+        internal class FactoryOptions(
+            val stateDir: File? = null,
+            val identityVault: com.transfer.flash.core.security.identity.IdentityKeyVault? = null,
+            val pttAudio: PttAudioPlatform? = null,
         )
+
+        @Volatile
+        internal var factoryOptions: FactoryOptions? = null
+
+        /**
+         * Registers [FlashDesktop]'s engine factory. Runs when this class loads (that is how `FlashDesktop.create`
+         * finds it by reflection) and can be called again after `FlashDesktop.resetForTesting()`, since a class
+         * initialiser runs only once per class loader.
+         */
+        internal fun registerFactory() {
+            FlashDesktop.registerFactory { config -> createFromConfig(config) }
+        }
+
+        /**
+         * Builds and starts the engine for [FlashDesktop.create]. Refuses a second live engine on the same state
+         * directory (shared identity, encrypted chat database and port) with an [IllegalStateException]; the
+         * directory is released when that engine is closed.
+         */
+        private fun createFromConfig(config: FlashConfig): DesktopEngine {
+            val options = factoryOptions
+            val stateDir = options?.stateDir ?: DesktopPaths.stateDir()
+            val key = runCatching { stateDir.canonicalPath }.getOrElse { stateDir.absolutePath }
+            if (config.enableResume) {
+                // The factory's `store = null` (D5 = C): there is no persistent transfer store on desktop yet.
+                FlashLog.w(
+                    TAG_WS,
+                    "FlashConfig.enableResume=true is not supported on desktop yet (no persistent transfer store, " +
+                        "D5 = C): transfers resume within a session only. Set enableResume = false to silence this.",
+                )
+            }
+            val engine = synchronized(liveStateDirs) {
+                val owner = liveStateDirs[key]
+                check(owner == null || owner.closed) {
+                    "Another DesktopEngine already owns the state directory $key; close it (FlashEngine.close()) " +
+                        "before FlashDesktop.create() builds a second one on the same identity, database and port."
+                }
+                DesktopEngine(
+                    receivedRoot = config.receivedFilesPath?.let { File(it) },
+                    stateDir = stateDir,
+                    identityVault = options?.identityVault ?: DesktopVaults.forCurrentOs(stateDir),
+                    pttAudio = options?.pttAudio ?: platformPttAudio(),
+                    displayName = config.displayName,
+                    autoAcceptIncoming = config.autoAcceptIncoming,
+                ).also { liveStateDirs[key] = it }
+            }
+            try {
+                engine.start()
+            } catch (failure: Throwable) {
+                engine.close()
+                throw failure
+            }
+            return engine
+        }
 
         /**
          * Strips anything that could escape the intended directory (AGENTS.md §19) or cause NTFS/filesystem errors.
          * Preserves Unicode (ERROR-093 / TXT-09), spaces, file extensions on truncation (TXT-10), and guards Windows
          * reserved device names (TXT-11).
          */
-        internal fun sanitize(component: String): String {
-            val replaced = component.replace(ILLEGAL_CHARS_REGEX, "_").trimEnd('.', ' ')
-            if (replaced.isBlank() || replaced == "." || replaced == "..") return "unnamed"
-
-            val dotIdx = replaced.indexOf('.')
-            val baseName = if (dotIdx != -1) replaced.substring(0, dotIdx) else replaced
-            val safeBase = if (baseName.uppercase() in WINDOWS_RESERVED_NAMES) "_$replaced" else replaced
-
-            return truncatePreservingExtension(safeBase, 120)
-        }
-
-        private fun truncatePreservingExtension(name: String, maxLen: Int): String {
-            if (name.length <= maxLen) return name
-            val lastDot = name.lastIndexOf('.')
-            if (lastDot > 0 && lastDot < name.length - 1 && (name.length - lastDot) <= 16) {
-                val ext = name.substring(lastDot)
-                val maxBaseLen = maxOf(1, maxLen - ext.length)
-                return name.substring(0, maxBaseLen) + ext
-            }
-            return name.take(maxLen)
-        }
+        internal fun sanitize(component: String): String =
+            FlashPathSanitizer.sanitize(component)
 
         /**
          * Sanitizes a relative file path (potentially with subdirectories from a folder transfer)
          * while strictly guarding against path traversal (AGENTS.md §19).
          */
-        internal fun sanitizeRelativePath(raw: String): String {
-            val normalized = raw.replace('\\', '/').trim().trimStart('/')
-            val segments = normalized.split('/').filter { it.isNotEmpty() }
-            if (segments.isEmpty()) return "unnamed"
-            val safeSegments = mutableListOf<String>()
-            for (seg in segments) {
-                if (seg == "." || seg == "..") continue
-                val sanitized = sanitize(seg)
-                if (sanitized.isNotBlank() && sanitized != "." && sanitized != "..") {
-                    safeSegments.add(sanitized)
-                }
-            }
-            return if (safeSegments.isEmpty()) "unnamed" else safeSegments.joinToString(File.separator)
-        }
+        internal fun sanitizeRelativePath(raw: String): String =
+            FlashPathSanitizer.sanitizeRelativePath(raw, File.separator)
 
         /** AGENTS.md §24 tag for the WS mesh; matches the app host's `TAG_WS`. */
         const val TAG_WS = "WS"
@@ -1934,8 +2197,13 @@ public class DesktopEngine(
 
     // The receive pipeline is assembled inside [assemble] but stored here so the private
     // routing helpers above can reach it without threading it through every call.
+    @Volatile
     private var receivePipeline: ReceivePipeline? = null
 
     /** The bound WS port, kept so a rename can re-advertise without a restart. */
+    @Volatile
     private var advertisedPort: Int = 0
+
+    /** The WebSocket port the boot bound (0 until it has), for tests that check a close released it. */
+    internal val boundPort: Int get() = advertisedPort
 }

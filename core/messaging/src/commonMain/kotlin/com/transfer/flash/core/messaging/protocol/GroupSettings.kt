@@ -16,6 +16,11 @@ package com.transfer.flash.core.messaging.protocol
  * @property opId Operation ID (16 hex chars or UUID) for tie-breaking.
  * @property signerId Device ID of the admin who signed this settings object.
  * @property sig Base64 signature by [signerId] over canonical settings bytes.
+ * @property historyCeiling How far back a new member may catch up (ADR-100). The default [GroupHistoryCeiling.D30] is
+ *   not signed or sent at all, so settings that never set it keep their signature and golden vectors.
+ * @property historyCeilingSig ADR-105: the signer's separate signature over `flash-gsethc-v1` (this object's group, version,
+ *   opId, signer and the ceiling name). Empty for the default ceiling. [sig] never covers the ceiling, so a build that does
+ *   not know the ceiling still verifies the rest of the object.
  */
 public data class GroupSettings(
     val groupId: String,
@@ -28,6 +33,8 @@ public data class GroupSettings(
     val opId: String,
     val signerId: String,
     val sig: String,
+    val historyCeiling: GroupHistoryCeiling = GroupHistoryCeiling.DEFAULT,
+    val historyCeilingSig: String = "",
 ) {
     public companion object {
         public const val POLICY_APPROVE: String = "APPROVE"
@@ -57,6 +64,10 @@ public data class GroupSettings(
  * Returns true if [candidate] settings object should overwrite [existing] settings (ADR-074, GM-9).
  *
  * The highest valid version wins; on a tie, the smaller [GroupSettings.opId] (lexicographically).
+ *
+ * ADR-105: the same operation (equal version and opId) can reach a device twice, once complete and once with the ceiling
+ * left off (an older build re-encodes the stored object without the field it does not know). The copy that carries the
+ * signed ceiling wins, so a stripped copy that arrived first never hides it. Callers hand in only verified objects.
  */
 public fun settingsWins(
     candidate: GroupSettings,
@@ -65,6 +76,9 @@ public fun settingsWins(
     if (existing == null) return true
     if (candidate.version > existing.version) return true
     if (candidate.version < existing.version) return false
+    if (candidate.opId == existing.opId) {
+        return candidate.historyCeiling != GroupHistoryCeiling.DEFAULT && existing.historyCeiling == GroupHistoryCeiling.DEFAULT
+    }
     return candidate.opId < existing.opId
 }
 

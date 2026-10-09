@@ -168,7 +168,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe, TargetFormat.Deb)
             packageName = "Flash"
-            packageVersion = "2.0.0"
+            packageVersion = "2.1.0"
             description = "Offline LAN peer-to-peer file transfer & messaging"
             vendor = "Flash"
             modules(
@@ -243,3 +243,33 @@ val installerNotices = tasks.register<Sync>("syncInstallerThirdPartyNotices") {
 }
 compose.desktop.application.nativeDistributions.appResourcesRootDir.set(layout.buildDirectory.dir("generated/installerResources"))
 tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(installerNotices) }
+
+// BT-00 radio hardware-spike tools (docs/ui/radio-link-test.md). Not part of the shipped app.
+//   ./gradlew :desktop:radioLinkTest                                   -> "Experimental: Radio link test" window
+//   ./gradlew :desktop:radioLinkTestCli -PradioArgs="--list"           -> headless; see RadioLinkTestCli.kt for options
+// Both run the desktop JVM classpath (jSerialComm comes in through :core:network).
+run {
+    val radioMain = kotlin.targets.getByName("jvm").compilations.getByName("main")
+    fun registerRadioTool(taskName: String, entryPoint: String, text: String) = tasks.register<JavaExec>(taskName) {
+        group = "flash tools"
+        description = text
+        dependsOn("jvmMainClasses")
+        classpath = files(radioMain.output.allOutputs, radioMain.runtimeDependencyFiles)
+        mainClass.set(entryPoint)
+        // jSerialComm loads its native library; this silences the JDK 24+ restricted-method warning.
+        jvmArgs("-Djava.net.preferIPv4Stack=true", "--enable-native-access=ALL-UNNAMED")
+        args = (findProperty("radioArgs") as String?)?.split(" ")?.filter { it.isNotBlank() } ?: emptyList()
+        standardInput = System.`in`
+    }
+    registerRadioTool("radioLinkTest", "com.transfer.flash.desktop.RadioLinkTestApp", "Opens the experimental radio link test window (BT-00).")
+    registerRadioTool("radioLinkTestCli", "com.transfer.flash.core.network.radio.diag.RadioLinkTestCliKt", "Headless radio link test; pass options with -PradioArgs=\"--list\" (BT-00).")
+}
+
+// The BT-00 window is a hardware-spike tool (ADR-101), not a feature: keep its classes out of the desktop jar, and so out of the
+// MSI/EXE and the uber jar, without moving or renaming the source. The two tasks above run from the compiled classes directory
+// (radioMain.output.allOutputs), not from this jar, so they are unaffected. `RadioLinkTest*` covers RadioLinkTestApp and the
+// file class RadioLinkTestMainKt (+ its lambdas); the Compose compiler also emits ComposableSingletons$RadioLinkTestMainKt.
+// The headless CLI lives in :core:network (core/network/.../radio/diag), outside this module.
+tasks.named<Jar>("jvmJar") {
+    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*")
+}

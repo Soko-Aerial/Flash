@@ -223,9 +223,9 @@ object FlashSettingsMath {
     /** Explains the "Send smaller video in groups" row (ADR-053): what shrinks, and when. */
     fun smallerVideoForManySubtitle(enabled: Boolean): String =
         if (enabled) {
-            "Your video goes at 540p to 2 people and 360p to 3 or more. Uses less processor"
+            "Your video goes at 360p to everyone. Uses less processor"
         } else {
-            "Your video goes at full size to everyone in a group call"
+            "Your video goes at 540p (360p on lower-end devices) to everyone in a group call"
         }
 
     /** Segment labels for the performance picker. Null is the Auto segment (ERROR-033). */

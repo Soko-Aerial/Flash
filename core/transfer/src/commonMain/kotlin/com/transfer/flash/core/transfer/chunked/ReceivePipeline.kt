@@ -1,6 +1,11 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.core.transfer.chunked
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.transfer.concurrent.PlatformLock
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Receive-side orchestration for chunked transfers (C5.5/C5.6). Pure logic — all I/O sits behind
@@ -73,10 +78,17 @@ public class ReceivePipeline(
      * digest recheck is the integrity backstop.
      */
     private val resumeIndexesProvider: ((ChunkFrame.FileStart) -> List<Int>)? = null,
+    /**
+     * How many FINISHED sessions are kept (oldest evicted first) so a late duplicate CHUNK for a completed transfer is
+     * still answered with idempotent silence instead of UNKNOWN_TRANSFER. Finished sessions do not count toward
+     * [maxConcurrentSessions]: before this, 32 completed receives in one process made every later offer SESSION_FULL.
+     */
+    private val maxFinishedSessionsRetained: Int = DEFAULT_FINISHED_RETAINED,
 ) {
     init {
         require(ackEvery > 0) { "ackEvery must be > 0" }
         require(maxConcurrentSessions > 0) { "maxConcurrentSessions must be > 0" }
+        require(maxFinishedSessionsRetained >= 0) { "maxFinishedSessionsRetained must be >= 0" }
         if (recheckWholeFileDigest) {
             requireNotNull(wholeFileDigest) {
                 "recheckWholeFileDigest=true requires a WholeFileDigestProvider"
@@ -138,6 +150,15 @@ public class ReceivePipeline(
         sessions[transferId]?.vector?.doneIndexes()
     }
 
+    /**
+     * Verified bytes held for [transferId] (resume-seeded chunks included), maintained incrementally so a host can
+     * report progress in O(1) per ACK batch instead of summing every done index (quadratic over a big file).
+     * Null for an unknown id.
+     */
+    public fun doneBytes(transferId: String): Long? = lock.withLock {
+        sessions[transferId]?.doneBytes
+    }
+
     /** Serialized bit-vector for persistence (C5.6 `TransferChunkEntity`); null if unknown id. */
     public fun serializedProgress(transferId: String): ByteArray? = lock.withLock {
         sessions[transferId]?.vector?.toSerialized()
@@ -192,15 +213,17 @@ public class ReceivePipeline(
                 listOf(reject(RejectReason.SESSION_CONFLICT, frame.transferId))
             }
         }
-        if (sessions.size >= maxConcurrentSessions) {
+        evictFinishedSessions()
+        if (sessions.values.count { !it.finished } >= maxConcurrentSessions) {
             return listOf(reject(RejectReason.SESSION_FULL, frame.transferId))
         }
         val vector = ResumeBitVector(frame.totalChunks)
+        var seededBytes = 0L
         // #20: pre-mark chunks the receiver already persisted before a restart, so the vector can
         // reach completion even though the resuming sender skips re-sending them.
         resumeIndexesProvider?.invoke(frame)?.forEach { index ->
-            if (index in 0 until frame.totalChunks) {
-                vector.markReceived(index)
+            if (index in 0 until frame.totalChunks && vector.markReceived(index)) {
+                seededBytes += chunkLength(frame, index)
             }
         }
         val fullySeeded = vector.isComplete()
@@ -213,6 +236,7 @@ public class ReceivePipeline(
             resolvedSink = if (awaiting) null else (sinkFactory?.invoke(frame) ?: sink),
             awaitingAcceptance = awaiting,
         )
+        session.doneBytes = seededBytes
         sessions[frame.transferId] = session
         val events = ArrayList<ReceiveEvent>(2)
         if (emitSessionStarted) {
@@ -268,17 +292,30 @@ public class ReceivePipeline(
         }
 
         if (!alreadyReceived) {
-            val written = try {
+            // R-06 (sweep 2026-10-09): a failed write used to return no event at all, so a full disk, a revoked storage grant or
+            // an I/O error left the chunk un-ACKed, the sender retrying or stalled and the receiver showing no cause. It is now a
+            // typed rejection the host turns into a Failed transfer. Cancellation passes through; an Error (out of memory) is
+            // not an I/O failure and is not caught.
+            val failure = try {
                 session.resolvedSink?.write(frame.index, frame.data)
-                true
-            } catch (_: Throwable) {
-                false
+                null
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                e
             }
-            if (!written) {
-                return emptyList()
+            if (failure != null) {
+                // The session is dropped: nothing more is written for it, a later chunk answers UNKNOWN_TRANSFER (which makes the
+                // sender stop), and an identical re-offer opens a fresh session instead of being swallowed as a resume restart.
+                sessions.remove(frame.transferId)
+                runCatching {
+                    FlashLog.w("STORAGE", "chunk write failed transferId=${frame.transferId} index=${frame.index} error=${failure::class.simpleName}")
+                }
+                return listOf(ReceiveEvent.Rejected(RejectReason.WRITE_FAILED, frame.transferId, frame.index))
             }
         }
         val newlyMarked = session.vector.markReceived(frame.index)
+        if (newlyMarked) session.doneBytes += frame.data.size
         session.pending.add(frame.index)
 
         if (session.vector.isComplete()) {
@@ -334,11 +371,28 @@ public class ReceivePipeline(
         }
         val expectedChunks = (frame.totalBytes + frame.chunkSize - 1) / frame.chunkSize
         if (expectedChunks != frame.totalChunks.toLong()) return RejectReason.INVALID_FILE_START
+        // R-07: the resume vector is allocated here, before anyone has accepted the offer. Without a cap a frame claiming
+        // totalChunks near Int.MAX_VALUE cost about 268 MB, times 32 sessions.
+        if (frame.totalChunks > MAX_TOTAL_CHUNKS) return RejectReason.INVALID_FILE_START
         return null
     }
 
-    private fun expectedChunkLength(session: Session, index: Int): Int {
-        val start = session.start
+    /** Drops the oldest finished sessions beyond [maxFinishedSessionsRetained]; live sessions are never touched. */
+    private fun evictFinishedSessions() {
+        var finished = sessions.values.count { it.finished }
+        if (finished <= maxFinishedSessionsRetained) return
+        val it = sessions.entries.iterator()
+        while (it.hasNext() && finished > maxFinishedSessionsRetained) {
+            if (it.next().value.finished) {
+                it.remove()
+                finished--
+            }
+        }
+    }
+
+    private fun expectedChunkLength(session: Session, index: Int): Int = chunkLength(session.start, index)
+
+    private fun chunkLength(start: ChunkFrame.FileStart, index: Int): Int {
         val fullEnd = (index + 1).toLong() * start.chunkSize
         return if (fullEnd <= start.totalBytes) start.chunkSize
         else (start.totalBytes - index.toLong() * start.chunkSize).toInt()
@@ -360,6 +414,9 @@ public class ReceivePipeline(
          */
         val pending = HashSet<Int>()
         var finished = false
+
+        /** Verified bytes held so far (see [ReceivePipeline.doneBytes]). */
+        var doneBytes: Long = 0L
     }
 
     public companion object {
@@ -368,6 +425,15 @@ public class ReceivePipeline(
         public const val DEFAULT_ACK_EVERY: Int = 32
 
         private const val DEFAULT_MAX_SESSIONS: Int = 32
+
+        /**
+         * Most chunks one offer may declare (R-07). The resume bit-vector costs one bit per chunk, so this bounds an
+         * unaccepted offer at 2 MiB (32 sessions: 64 MiB). 16 777 216 chunks is 1 TiB at the default 64 KiB chunk and
+         * 256 GiB at the 16 KiB minimum; a larger file is refused as an invalid offer.
+         */
+        public const val MAX_TOTAL_CHUNKS: Int = 16_777_216
+
+        private const val DEFAULT_FINISHED_RETAINED: Int = 64
     }
 }
 
@@ -448,4 +514,10 @@ public enum class RejectReason {
 
     /** #5: a chunk arrived for a session whose offer the user has not yet accepted. */
     AWAITING_ACCEPTANCE,
+
+    /**
+     * R-06: the destination sink threw while writing a verified chunk (full disk, revoked storage grant, I/O error). The session
+     * is dropped and the host fails the transfer with a sentence a person can act on.
+     */
+    WRITE_FAILED,
 }

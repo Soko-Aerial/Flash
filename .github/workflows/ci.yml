@@ -20,6 +20,12 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Native audio library for the desktop WebRTC tests
+        # webrtc-java loads PulseAudio's client library when :desktop:jvmTest enumerates media devices; the Ubuntu
+        # runner image does not ship it ("PulseAudio: Library not found on system", DesktopMediaDevicesTest, CI
+        # 2026-10-08). The test fails under CI=true if the library is missing, so this step is what keeps it honest.
+        run: sudo apt-get update && sudo apt-get install -y libpulse0
+
       - name: Unit tests + assemble debug
         # allTests exists only in the KMP modules (:core:common ... :ui:theme); testDebugUnitTest
         # exists only in the plain AGP modules (:app, :sample:*; :core:ptt joined the KMP modules

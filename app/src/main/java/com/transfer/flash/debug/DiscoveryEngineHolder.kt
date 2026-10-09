@@ -1276,6 +1276,7 @@ object DiscoveryEngineHolder {
             groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
             groupRotationDao = db.groupRotationDao(),
             groupSettingsDao = db.groupSettingsDao(),
+            groupHistoryDao = db.groupHistoryDao(),
             groupPreferencesDao = db.groupPreferencesDao(),
             localAddressHints = {
                 val port = networkImpl.serverPort

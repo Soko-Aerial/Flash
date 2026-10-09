@@ -569,4 +569,64 @@ class GroupProofSessionsTest {
         assertTrue(alice.hasProved(bobId, testGroupId))
         assertTrue(bob.hasProved(aliceId, testGroupId))
     }
+    /** R-03: a result frame with no proof of ours behind it proves nothing. */
+    @Test
+    fun r03_a_bare_ok_result_with_no_outstanding_proof_does_not_mark_the_peer_proved() = runBlocking {
+        val alice = GroupProofSessions(
+            localDeviceId = aliceId,
+            groupCrypto = aliceCrypto,
+            peerIdentityKey = { bobKey },
+            peerFeatures = { setOf("gs1") },
+            groupSecretStore = InMemoryGroupSecretStore().apply { set(testGroupId, 1L, sharedSecret) },
+            sendFrame = { _, _ -> true },
+        )
+        alice.onResult(bobId, GroupWireFrame.GsResult(testGroupId, bobId, ok = true, reason = "ok"))
+        assertFalse("no proof was started, so an ok result is unsolicited", alice.hasProved(bobId, testGroupId))
+    }
+
+    /** R-03: even with a hello out, an ok before the responder's challenge checked out is not a proof. */
+    @Test
+    fun r03_an_ok_result_before_the_challenge_was_verified_is_ignored_and_the_proof_still_times_out() = runBlocking {
+        val alice = GroupProofSessions(
+            localDeviceId = aliceId,
+            groupCrypto = aliceCrypto,
+            peerIdentityKey = { bobKey },
+            peerFeatures = { setOf("gs1") },
+            groupSecretStore = InMemoryGroupSecretStore().apply { set(testGroupId, 1L, sharedSecret) },
+            sendFrame = { _, _ -> true }, // the hello goes nowhere; Bob never challenges
+            timeoutMs = 400L,
+        )
+        val pending = async { alice.initiateProof(bobId, testGroupId, 1L) }
+        delay(100)
+        alice.onResult(bobId, GroupWireFrame.GsResult(testGroupId, bobId, ok = true, reason = "ok"))
+        assertFalse("a forged ok must not mark the peer proved", alice.hasProved(bobId, testGroupId))
+        assertEquals("the live proof was not aborted or completed by the forged frame", GroupProofResult.TIMEOUT, pending.await())
+        assertFalse(alice.hasProved(bobId, testGroupId))
+    }
+
+    /** R-12: a peer cannot pile up hellos forever, and expired ones are swept. */
+    @Test
+    fun r12_open_hellos_per_peer_are_bounded_and_expired_ones_are_swept() = runBlocking {
+        val time = MutableTimeSource(1_000_000L)
+        var challenges = 0
+        val bob = GroupProofSessions(
+            localDeviceId = bobId,
+            groupCrypto = bobCrypto,
+            peerIdentityKey = { aliceKey },
+            peerFeatures = { setOf("gs1") },
+            groupSecretStore = InMemoryGroupSecretStore().apply { for (i in 0 until 40) set("g2-many-$i", 1L, sharedSecret) },
+            sendFrame = { _, frame -> if (frame is GroupWireFrame.GsChallenge) challenges++; true },
+            timeSource = time,
+        )
+        val nonce = ByteArray(16) { 3 }
+        // The literal 8 is deliberate: deriving it from the constant made the test pass for any cap (mutation M11).
+        val cap = 8
+        assertEquals(8, GroupProofSessions.MAX_OPEN_HELLOS_PER_PEER)
+        for (i in 0 until cap + 3) bob.onHello(aliceId, GroupWireFrame.GsHello("g2-many-$i", aliceId, 1L, nonce))
+        assertEquals("only $cap hellos are answered while they stay open", cap, challenges)
+
+        time.timeMs += GroupProofSessions.PROOF_TIMEOUT_MS + 1
+        bob.onHello(aliceId, GroupWireFrame.GsHello("g2-many-20", aliceId, 1L, nonce))
+        assertEquals("expired hellos were swept, so a new one is answered again", cap + 1, challenges)
+    }
 }

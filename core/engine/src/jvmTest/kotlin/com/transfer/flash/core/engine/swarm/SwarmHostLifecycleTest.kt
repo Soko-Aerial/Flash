@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -40,7 +41,7 @@ import java.io.File
 class SwarmHostLifecycleTest {
 
     private class RecordingPieceStorage : PieceStorage {
-        val purgedKeySets = mutableListOf<Set<String>>()
+        val purgedKeySets = java.util.concurrent.CopyOnWriteArrayList<Set<String>>()
 
         override suspend fun openPartial(key: String, size: Long): PartialHandle? = null
         override suspend fun openSource(uri: String): SourceHandle? = null
@@ -84,7 +85,7 @@ class SwarmHostLifecycleTest {
     }
 
     @Test
-    fun `runRetentionCleanup purges expired records from stateStore and purges orphaned partials`() = runBlocking {
+    fun `runRetentionCleanup purges expired records from stateStore and purges orphaned partials`() = runBlocking<Unit> {
         val dao = SwarmInteropTest.FakeSwarmDao()
         val stateStore = RoomSwarmStateStore(dao)
         val storage = RecordingPieceStorage()
@@ -207,6 +208,7 @@ class SwarmHostLifecycleTest {
         val row = driver.rows.value.first { it.id.value == "m_act" }
         assertEquals(65_536L, row.bytesDone)
         assertEquals(262_144L, row.bytesTotal)
+        scope.cancel()
     }
 
     private fun transferRowNamedBy(title: String?): String = runBlocking {

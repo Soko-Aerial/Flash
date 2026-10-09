@@ -74,6 +74,68 @@ class GroupCanonicalTest {
     }
 
     @Test
+    fun settingsBytesWithTheDefaultCeilingAreTheUnchangedV1Layout() {
+        // Hex from an independent reference (4-byte big-endian length before every field, tag first). Changing the
+        // expectation is a wire break: settings signed before ADR-100 would stop verifying.
+        val settings = GroupSettings(
+            groupId = gid, version = 3L, joinPolicy = "APPROVE", inviteSharers = "ALL", maxMembers = 20,
+            swarmServing = true, membersMayAdd = false, opId = "op-1", signerId = "owner-1", sig = "",
+        )
+        assertEquals(
+            "0000000d666c6173682d677365742d76310000002367322d366630313132396632386366663834663865663637" +
+                "636239643139373034393900000008000000000000000300000007415050524f564500000003414c4c00000008" +
+                "000000000000001400000001010000000100000000046f702d31000000076f776e65722d31",
+            GroupCanonical.settingsBytes(settings).toHex(),
+        )
+        assertEquals(
+            GroupCanonical.settingsBytes(settings).toHex(),
+            GroupCanonical.settingsBytes(settings.copy(historyCeiling = GroupHistoryCeiling.D30)).toHex(),
+        )
+    }
+
+    @Test
+    fun theSettingsStatementNeverCoversTheCeiling_soEveryBuildVerifiesIt() {
+        // ADR-105: whatever the ceiling is, the settings statement is the v1 layout of the test above. An older build
+        // rebuilds exactly these bytes, so it still verifies (and applies) every other setting of the object.
+        val d30 = GroupSettings(
+            groupId = gid, version = 3L, joinPolicy = "APPROVE", inviteSharers = "ALL", maxMembers = 20,
+            swarmServing = true, membersMayAdd = false, opId = "op-1", signerId = "owner-1", sig = "",
+        )
+        val v1 = GroupCanonical.settingsBytes(d30).toHex()
+        GroupHistoryCeiling.entries.forEach {
+            assertEquals(v1, GroupCanonical.settingsBytes(d30.copy(historyCeiling = it)).toHex(), "ceiling $it must not change the v1 statement")
+        }
+        assertEquals(false, v1.contains("flash-gset-v2".encodeToByteArray().toHex()))
+    }
+
+    @Test
+    fun theCeilingStatementMatchesTheReferenceAndBindsItToOneSettingsObject() {
+        val settings = GroupSettings(
+            groupId = gid, version = 3L, joinPolicy = "APPROVE", inviteSharers = "ALL", maxMembers = 20,
+            swarmServing = true, membersMayAdd = false, opId = "op-1", signerId = "owner-1", sig = "",
+            historyCeiling = GroupHistoryCeiling.D7,
+        )
+        // Hex from the same independent reference as the vectors above (tag, group, version, opId, signer, ceiling name).
+        assertEquals(
+            "0000000f666c6173682d6773657468632d76310000002367322d3666303131323966323863666638346638656636" +
+                "376362396431393730343939000000080000000000000003000000046f702d31000000076f776e65722d31" +
+                "000000024437",
+            GroupCanonical.historyCeilingBytes(settings).toHex(),
+        )
+        // Every ceiling signs differently.
+        val all = GroupHistoryCeiling.entries.map { GroupCanonical.historyCeilingBytes(settings.copy(historyCeiling = it)).toHex() }
+        assertEquals(GroupHistoryCeiling.entries.size, all.toSet().size)
+        // Moving it onto another object (version, opId, signer or group) changes the bytes, so the signature cannot be moved.
+        val base = GroupCanonical.historyCeilingBytes(settings).toHex()
+        assertEquals(false, base == GroupCanonical.historyCeilingBytes(settings.copy(version = 4L)).toHex())
+        assertEquals(false, base == GroupCanonical.historyCeilingBytes(settings.copy(opId = "op-2")).toHex())
+        assertEquals(false, base == GroupCanonical.historyCeilingBytes(settings.copy(signerId = "owner-2")).toHex())
+        assertEquals(false, base == GroupCanonical.historyCeilingBytes(settings.copy(groupId = "g2-other")).toHex())
+        // It can never be mistaken for the settings statement.
+        assertEquals(false, base == GroupCanonical.settingsBytes(settings).toHex())
+    }
+
+    @Test
     fun malformedBase64MakesTheObjectUnsignable() {
         val bad = GroupCharter(gid, "n", "o", "***", 1L, nonce, 2, sig = "")
         assertNull(GroupCanonical.charterBytes(bad))

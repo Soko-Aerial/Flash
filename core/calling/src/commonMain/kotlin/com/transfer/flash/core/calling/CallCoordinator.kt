@@ -140,6 +140,8 @@ public class CallCoordinator(
      * answer. The default (nothing advertised) offers it to nobody.
      */
     private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
+    /** ADR-102: what a session presents the screen with. The default is the platform's capturer (desktop only today). */
+    private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
 ) : FlashCalling {
     /** When each refusal line (see [logRefusal]) was last written. */
     private val refusalLoggedAt = SyncMap<String, Long>()
@@ -274,6 +276,7 @@ public class CallCoordinator(
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
+            screenCapture = screenCapture,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -316,6 +319,7 @@ public class CallCoordinator(
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
+            screenCapture = screenCapture,
         )
         currentGroupSession = session
         observeGroupSession(session)
@@ -522,6 +526,33 @@ public class CallCoordinator(
 
     override suspend fun upgradeToVideo(): Boolean = currentSession?.upgradeToVideo() ?: false
 
+    override suspend fun listShareSources(): List<ShareSource> {
+        currentGroupSession?.let { return it.listShareSources() }
+        return currentSession?.listShareSources() ?: emptyList()
+    }
+
+    override val shareUsesSystemPicker: Boolean get() = screenCapture.usesSystemPicker
+
+    override suspend fun startScreenShare(source: ShareSource, quality: ShareQuality, takeOver: Boolean): Boolean {
+        currentGroupSession?.let { return it.startScreenShare(source, quality, takeOver) }
+        return currentSession?.startScreenShare(source, quality, takeOver) ?: false
+    }
+
+    override suspend fun stopScreenShare() {
+        currentGroupSession?.stopScreenShare()
+        currentSession?.stopScreenShare()
+    }
+
+    override fun setShareQuality(quality: ShareQuality) {
+        currentGroupSession?.setShareQuality(quality)
+        currentSession?.setShareQuality(quality)
+    }
+
+    override fun dismissShareNotice() {
+        currentGroupSession?.dismissShareNotice()
+        currentSession?.dismissShareNotice()
+    }
+
     override fun setSpeaker(on: Boolean) {
         currentGroupSession?.setSpeaker(on)
         currentSession?.setSpeaker(on)
@@ -591,6 +622,7 @@ public class CallCoordinator(
             prioritiseVoice = prioritiseVoice,
             performanceMode = performanceMode,
             peerCanUpgrade = { FEATURE_VIDEO_UPGRADE in peerFeatures(peerId) },
+            screenCapture = screenCapture,
             onEnded = { ended ->
                 publishCallLog(ended)
                 if (currentSession === ended) {
@@ -835,6 +867,7 @@ public class CallCoordinator(
             networkBand = networkBand,
             smallerVideoForMany = smallerVideoForMany,
             prioritiseVoice = prioritiseVoice,
+            screenCapture = screenCapture,
         )
         currentGroupSession = session
         observeGroupSession(session)

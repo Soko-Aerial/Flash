@@ -1,0 +1,6 @@
+{
+  "hash": "jserialcomm-election",
+  "name": "jSerialComm licence election",
+  "url": "https://github.com/Fazecast/jSerialComm",
+  "content": "SPDX-License-Identifier: Apache-2.0 OR LGPL-3.0-or-later\n\njSerialComm is dual licensed by its authors: you may use it under the Apache License, version 2.0, or under the GNU Lesser General Public License, version 3 or later.\n\nFlash uses jSerialComm under the Apache License 2.0 (the full text is listed under Apache License 2.0). It does not rely on the LGPL terms. jSerialComm is used only by the desktop app, to talk to a serial or Bluetooth virtual COM port for the experimental radio link (ADR-101); its native libraries are inside the jar and are extracted to a temporary folder at run time. It is not part of the Android app."
+}

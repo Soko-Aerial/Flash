@@ -756,6 +756,42 @@ class SignedGroupsTest {
         assertTrue(directory.getValue("recv").conversations.conversations.isEmpty())
     }
 
+    /** Counts every signature check a [SignedGroups] engine makes. */
+    private class CountingCrypto(private val inner: TestGroupCrypto) : com.transfer.flash.core.messaging.protocol.GroupCrypto by inner {
+        val verifies = AtomicInteger()
+        override fun verify(signature: ByteArray, data: ByteArray, publicKey: ByteArray): Boolean {
+            verifies.incrementAndGet()
+            return inner.verify(signature, data, publicKey)
+        }
+    }
+
+    @Test
+    fun `R-14 the members-may-add answer is verified once per bundle, not once per certificate`() = runBlocking {
+        val others = (1..12).map { "m$it" }
+        val directory = parties("owner", "recv", *others.toTypedArray())
+        val invitees = (others + "recv").associateWith { keyOf(directory, it) }
+        val created = engine(directory, "owner").create("Big", invitees) { it }
+        val settings = GroupSigning(directory.getValue("owner").crypto).signSettings(
+            groupId = created.groupId,
+            version = 2L,
+            joinPolicy = GroupSettings.POLICY_APPROVE,
+            inviteSharers = GroupSettings.SHARERS_ALL,
+            maxMembers = GroupPolicy.MAX_MEMBERS_V2,
+            swarmServing = true,
+            membersMayAdd = true,
+            opId = "owner-settings",
+            signerId = "owner",
+        )
+        val counting = CountingCrypto(directory.getValue("recv").crypto)
+
+        val outcome = engine(directory, "recv", crypto = counting).onBundle("owner", created.bundle.copy(settings = settings))
+
+        assertTrue("applied: $outcome", outcome is SignedGroups.BundleOutcome.Applied)
+        val certs = others.size + 2
+        // charter + one per certificate + the settings: a handful over, never certificates times passes.
+        assertTrue("${counting.verifies.get()} signature checks for $certs certificates", counting.verifies.get() <= certs + 6)
+    }
+
     @Test
     fun `verification is budgeted per peer and replays of a known bundle are free`() = runBlocking {
         val directory = parties("owner", "recv", "other")
@@ -2505,6 +2541,24 @@ class SignedGroupsTest {
         )
         assertTrue("valid swarm announcement must verify", swarmValid)
 
+        // A member can sign any string; a root that is not 64 lowercase hex must still never verify (it would reach the
+        // swarm host, where building a ContentRoot from it threw and took the host down).
+        for (badRoot in listOf("zz", "ab".repeat(31), "AB".repeat(32), "")) {
+            val badSig = ada.signSwarmAnnouncement(
+                groupId = gid, messageId = "m1", root = badRoot, sizeBytes = 1024L,
+                fileName = "test.bin", mimeType = "application/octet-stream", sentAt = 1000L,
+            )
+            if (badSig != null) {
+                assertFalse(
+                    "a correctly signed but malformed root '$badRoot' must be rejected",
+                    bo.verifySwarmAnnouncement(
+                        groupId = gid, authorId = "dev-a", messageId = "m1", root = badRoot, sizeBytes = 1024L,
+                        fileName = "test.bin", mimeType = "application/octet-stream", sentAt = 1000L, rootSig = badSig,
+                    ),
+                )
+            }
+        }
+
         val boParty = dir.getValue("dev-b")
         val boRules = GroupSignatureRules(
             crypto = boParty.crypto,
@@ -2603,12 +2657,13 @@ class SignedGroupsTest {
         budget: VerifyBudget = VerifyBudget(),
         vouching: GroupVouching? = null,
         paired: (String) -> Boolean = { peer -> peer in directory && peer != id },
+        crypto: com.transfer.flash.core.messaging.protocol.GroupCrypto? = null,
     ): SignedGroups {
         val party = directory.getValue(id)
         return SignedGroups(
             localDeviceId = id,
             localDisplayName = id,
-            crypto = party.crypto,
+            crypto = crypto ?: party.crypto,
             conversationDao = party.conversations,
             members = party.members,
             isPaired = paired,

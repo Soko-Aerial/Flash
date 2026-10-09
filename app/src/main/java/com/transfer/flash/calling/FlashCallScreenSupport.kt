@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.Log
 import android.util.Rational
+import androidx.annotation.RequiresApi
 
 /**
  * Android-only call-screen support (ADR-067, UI-050f): picture-in-picture and the proximity screen-off.
@@ -23,6 +24,7 @@ internal object FlashCallPictureInPicture {
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             context.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
 
+    @RequiresApi(Build.VERSION_CODES.O)
     private fun params(autoEnter: Boolean): PictureInPictureParams {
         val builder = PictureInPictureParams.Builder().setAspectRatio(Rational(3, 4))
         // setAutoEnterEnabled is API 31: below it the user enters from the More panel.
@@ -32,7 +34,8 @@ internal object FlashCallPictureInPicture {
 
     /** Enters the PiP window now. Fire and forget: the system refuses while the app is not resumed. */
     fun enter(activity: Activity) {
-        if (!supported(activity)) return
+        // The explicit SDK check is what lint reads (minSdk is 24, PiP is API 26); supported() repeats it plus the feature check.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !supported(activity)) return
         runCatching { activity.enterPictureInPictureMode(params(autoEnter = false)) }
             .onFailure { Log.w(TAG, "enter PiP failed: ${it.message}") }
     }

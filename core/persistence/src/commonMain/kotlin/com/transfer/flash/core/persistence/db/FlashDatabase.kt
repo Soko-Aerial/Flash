@@ -13,6 +13,7 @@ import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReadCursorDao
 import com.transfer.flash.core.persistence.db.dao.RememberedEndpointDao
 import com.transfer.flash.core.persistence.db.dao.SwarmDao
+import com.transfer.flash.core.persistence.db.dao.GroupHistoryDao
 import com.transfer.flash.core.persistence.db.dao.GroupInviteDao
 import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
 import com.transfer.flash.core.persistence.db.dao.GroupPreferencesDao
@@ -29,6 +30,7 @@ import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
 import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.GroupHistoryStateEntity
 import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
 import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
 import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
@@ -36,6 +38,7 @@ import com.transfer.flash.core.persistence.db.entity.GroupPreferencesEntity
 import com.transfer.flash.core.persistence.db.entity.GroupRotationEntity
 import com.transfer.flash.core.persistence.db.entity.GroupSecretEntity
 import com.transfer.flash.core.persistence.db.entity.GroupSettingsEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSyncWatermarkEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReadCursorEntity
@@ -90,6 +93,8 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         GroupSettingsEntity::class,
         GroupPreferencesEntity::class,
         MessagePinEntity::class,
+        GroupHistoryStateEntity::class,
+        GroupSyncWatermarkEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -141,6 +146,8 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun messagePinDao(): MessagePinDao
 
+    public abstract fun groupHistoryDao(): GroupHistoryDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -154,6 +161,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v10: group_settings and group_preferences for signed settings and local prefs (ADR-074, GM-9).
         // v11: MessageEntity gained the swarm offer columns (swarmRoot/swarmPieceSize/swarmRootSig) so a catch-up can relay a file (ERROR-108).
         // v12: message_pins, the device-local pinned messages of a conversation (UI roadmap 3.4).
-        public const val DATABASE_VERSION: Int = 12
+        // v13: group_settings.historyCeiling, group_history_state and group_sync_watermark (ADR-100, group history sync).
+        public const val DATABASE_VERSION: Int = 13
     }
 }

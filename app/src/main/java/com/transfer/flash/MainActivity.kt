@@ -367,9 +367,10 @@ class MainActivity : ComponentActivity() {
             }
             streamUris?.let { result.addAll(it) }
         }
-        // 4. Intent data fallback
-        intent.data?.let { result.add(it) }
-        return result.toList()
+        // R-05: this activity is an exported share target, so every URI below was chosen by the calling app. Only plain
+        // content: URIs of OTHER apps are opened; file: URIs and Flash's own providers would make Flash read its own
+        // private storage on a stranger's behalf. `intent.data` is deliberately NOT folded in (it is not a share payload).
+        return result.filter { ShareUriPolicy.accepts(it.scheme, it.authority, packageName) }
     }
 
     private fun resolvePendingShare(uris: List<Uri>, text: String?) {
@@ -2224,6 +2225,38 @@ private fun FlashShell(
                     val res = chatRepository.changeGroupCode(gid)
                     if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
                         Toast.makeText(toastContext, "Couldn't change group code", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onChooseGroupHistory = { gid, windowMs, includeFiles ->
+                scope.launch {
+                    val res = chatRepository.chooseGroupHistory(gid, windowMs, includeFiles)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't load earlier history", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onSkipGroupHistory = { gid ->
+                scope.launch {
+                    val res = chatRepository.skipGroupHistory(gid)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't save your choice", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onLoadOlderGroupHistory = { gid, windowMs ->
+                scope.launch {
+                    val res = chatRepository.loadOlderGroupHistory(gid, windowMs)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't load older messages", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onSetGroupHistoryCeiling = { gid, ceiling ->
+                scope.launch {
+                    val res = chatRepository.updateGroupSettings(groupId = gid, historyCeiling = ceiling)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        Toast.makeText(toastContext, "Couldn't update the history limit", Toast.LENGTH_SHORT).show()
                     }
                 }
             },

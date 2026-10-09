@@ -154,4 +154,45 @@ class GroupInviteTest {
         assertNull(GroupInviteCodec.decode("flash://g/1/invalid!characters*"))
         assertNull(GroupInviteCodec.decode("flash://g/1/SGVsbG8")) // length mod 4 == 1
     }
+    /** Index of the first occurrence of [needle] in [haystack], or -1. */
+    private fun indexOf(haystack: ByteArray, needle: ByteArray): Int {
+        outer@ for (i in 0..haystack.size - needle.size) {
+            for (j in needle.indices) if (haystack[i + j] != needle[j]) continue@outer
+            return i
+        }
+        return -1
+    }
+
+    private fun withInvalidUtf8At(text: String, offsetInText: Int): ByteArray {
+        val bytes = GroupInviteCodec.encodeToBinary(createValidInvite())
+        val at = indexOf(bytes, text.encodeToByteArray())
+        assertTrue(at >= 0, "$text is in the payload")
+        bytes[at + offsetInText] = 0xFF.toByte() // 0xFF never occurs in valid UTF-8
+        return bytes
+    }
+
+    @Test
+    fun r16_the_valid_payload_still_decodes() {
+        assertNotNull(GroupInviteCodec.decodeFromBinary(GroupInviteCodec.encodeToBinary(createValidInvite())))
+    }
+
+    @Test
+    fun r16_invalid_utf8_in_the_group_name_is_refused() {
+        assertNull(GroupInviteCodec.decodeFromBinary(withInvalidUtf8At("Flash Dev Crew", 3)))
+    }
+
+    @Test
+    fun r16_invalid_utf8_in_the_inviter_id_is_refused() {
+        assertNull(GroupInviteCodec.decodeFromBinary(withInvalidUtf8At("dev-device-alpha", 4)))
+    }
+
+    @Test
+    fun r16_invalid_utf8_in_the_group_id_is_refused() {
+        assertNull(GroupInviteCodec.decodeFromBinary(withInvalidUtf8At("g2-6f01129f28cff84f8ef67cb9d1970499", 10)))
+    }
+
+    @Test
+    fun r16_invalid_utf8_in_an_address_hint_is_refused() {
+        assertNull(GroupInviteCodec.decodeFromBinary(withInvalidUtf8At("192.168.1.50:8765", 5)))
+    }
 }

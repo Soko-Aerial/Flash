@@ -1,5 +1,7 @@
 package com.transfer.flash.core.engine.swarm
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.persistence.db.dao.SwarmDao
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
@@ -18,12 +20,24 @@ import com.transfer.flash.core.swarm.model.SwarmWaitReason
  *
  * Implements [SwarmStateStore] backed by [SwarmDao] in `:core:persistence`.
  */
+@OptIn(FlashInternalApi::class)
 public class RoomSwarmStateStore(
     private val swarmDao: SwarmDao,
 ) : SwarmStateStore {
 
+    /**
+     * One row this build cannot read (an enum value from a newer or older build, a corrupt root) is skipped with a
+     * warning; it used to throw out of `valueOf` and abort the restore of every other transfer.
+     */
     override suspend fun loadAll(): List<SwarmContentRecord> =
-        swarmDao.loadAllContent().map { it.toRecord() }
+        swarmDao.loadAllContent().mapNotNull { entity ->
+            try {
+                entity.toRecord()
+            } catch (e: IllegalArgumentException) {
+                FlashLog.w("SWARM", "swarm restore skipped an unreadable row group=${entity.groupId} msg=${entity.messageId}: ${e.message}")
+                null
+            }
+        }
 
     override suspend fun upsert(record: SwarmContentRecord) {
         swarmDao.upsertContent(record.toEntity())
@@ -44,7 +58,14 @@ public class RoomSwarmStateStore(
     }
 
     override suspend fun tombstones(): List<SwarmTombstone> =
-        swarmDao.loadAllTombstones().map { it.toModel() }
+        swarmDao.loadAllTombstones().mapNotNull { entity ->
+            try {
+                entity.toModel()
+            } catch (e: IllegalArgumentException) {
+                FlashLog.w("SWARM", "swarm restore skipped an unreadable tombstone group=${entity.groupId} msg=${entity.messageId}: ${e.message}")
+                null
+            }
+        }
 
     override suspend fun delete(root: ContentRoot, groupId: String) {
         swarmDao.deleteContent(root.hex, groupId)

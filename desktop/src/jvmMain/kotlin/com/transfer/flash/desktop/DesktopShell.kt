@@ -66,6 +66,7 @@ import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
 import com.transfer.flash.core.messaging.ptt.PttFloorState
 import com.transfer.flash.ui.calling.FlashCallScreen
+import com.transfer.flash.ui.calling.FlashCallShareHost
 import com.transfer.flash.ui.calling.PttSessionOverlayContent
 import com.transfer.flash.ui.calling.pttPressOutcomeMessage
 import com.transfer.flash.ui.chat.FlashChatListScreen
@@ -1479,6 +1480,38 @@ public fun DesktopShell(
                     }
                 }
             },
+            onChooseGroupHistory = { gid, windowMs, includeFiles ->
+                scope.launch {
+                    val res = chatRepository.chooseGroupHistory(gid, windowMs, includeFiles)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't load earlier history", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onSkipGroupHistory = { gid ->
+                scope.launch {
+                    val res = chatRepository.skipGroupHistory(gid)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't save your choice", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onLoadOlderGroupHistory = { gid, windowMs ->
+                scope.launch {
+                    val res = chatRepository.loadOlderGroupHistory(gid, windowMs)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't load older messages", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
+            onSetGroupHistoryCeiling = { gid, ceiling ->
+                scope.launch {
+                    val res = chatRepository.updateGroupSettings(groupId = gid, historyCeiling = ceiling)
+                    if (res !is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        snackbarHostState.showSnackbar("Couldn't update the history limit", duration = SnackbarDuration.Short)
+                    }
+                }
+            },
             onRequestInviteLink = { gid ->
                 (chatRepository.inviteFor(gid) as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
             },
@@ -2227,6 +2260,17 @@ public fun DesktopShell(
                 onSetDataSaver = { on -> calls?.setDataSaver(on) },
                 // ADR-078: no permission gate on the desktop; a camera that will not open shows its own banner.
                 onUpgradeToVideo = { scope.launch { calls?.upgradeToVideo() } },
+                // ADR-102: the desktop can present a screen or a window; the phones can only watch.
+                share = calls?.let { c ->
+                    FlashCallShareHost(
+                        listSources = { c.listShareSources() },
+                        usesSystemPicker = c.shareUsesSystemPicker,
+                        onStart = { source, quality, takeOver -> scope.launch { c.startScreenShare(source, quality, takeOver) } },
+                        onStop = { scope.launch { c.stopScreenShare() } },
+                        onSetQuality = { quality -> c.setShareQuality(quality) },
+                        onDismissNotice = { c.dismissShareNotice() },
+                    )
+                },
             )
         }
     }

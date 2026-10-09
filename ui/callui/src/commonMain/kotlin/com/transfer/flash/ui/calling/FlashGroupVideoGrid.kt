@@ -74,8 +74,12 @@ internal fun FlashGroupVideoSurfaces(
     val present = state.participants.filter { it.state != FlashCallParticipantState.LEFT }
     // Compact (G5): one main tile. It is one composable instance, so a new main person only re-binds its renderer.
     val main = if (state.compactVideo) groupVideoMainPeer(state) else null
-    val tiles = if (main != null) present.filter { it.peerId == main } else present
+    // ADR-102: a presentation is the stage of the full layout (first tile, large) and the main tile of the compact one.
+    val presenter = groupPresenterPeer(state)
+    val ordered = if (main == null && presenter != null) present.sortedByDescending { it.peerId == presenter } else present
+    val tiles = if (main != null) present.filter { it.peerId == main } else ordered
     val rounded = tiles.size > 1
+    val stage = main == null && presenter != null && tiles.size > 1
 
     Box(modifier = modifier) {
         Layout(
@@ -94,6 +98,7 @@ internal fun FlashGroupVideoSurfaces(
                         dataSaver = state.dataSaver,
                         showingFewer = state.showingFewerVideos,
                         isMain = true,
+                        presenting = participant.peerId == presenter,
                     )
                 } else {
                     tiles.forEach { participant ->
@@ -107,6 +112,7 @@ internal fun FlashGroupVideoSurfaces(
                                 dataSaver = state.dataSaver,
                                 showingFewer = state.showingFewerVideos,
                                 isMain = false,
+                                presenting = participant.peerId == presenter,
                             )
                         }
                     }
@@ -116,7 +122,11 @@ internal fun FlashGroupVideoSurfaces(
             val width = constraints.maxWidth
             val height = constraints.maxHeight
             val gap = if (measurables.size > 1) TILE_GAP.roundToPx() else 0
-            val rects = groupVideoTileRects(measurables.size, width, height, gap)
+            val rects = if (stage) {
+                groupVideoShareRects(measurables.size, width, height, gap)
+            } else {
+                groupVideoTileRects(measurables.size, width, height, gap)
+            }
             val placeables = measurables.mapIndexed { i, m ->
                 val r = rects[i]
                 m.measure(Constraints.fixed(r.width.coerceAtLeast(0), r.height.coerceAtLeast(0)))
@@ -167,6 +177,7 @@ private fun FlashGroupVideoTile(
     dataSaver: Boolean,
     showingFewer: Boolean,
     isMain: Boolean,
+    presenting: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
@@ -180,6 +191,7 @@ private fun FlashGroupVideoTile(
         append(if (showsVideo) ", video" else ", no video")
         if (status != null) append(", ").append(status)
         if (pinned) append(", pinned")
+        if (presenting) append(", ").append(CallShareText.PRESENTING_CHIP)
     }
     val isSpeaking = participant.isSpeaking
     val speakerPulse = rememberCallPulseScale(isSpeaking)
@@ -214,7 +226,7 @@ private fun FlashGroupVideoTile(
         // Keyed on the grant, not on the track: the renderer is released only when the view is discarded (a track
         // change must never release it), and a grant that is lost really does discard it.
         if (participant.video.hasPicture()) {
-            FlashCallVideoSurface(track = track, fit = CallVideoFit.Balanced, modifier = Modifier.fillMaxSize())
+            FlashCallVideoSurface(track = track, fit = videoFitFor(presenting), modifier = Modifier.fillMaxSize())
         }
         if (!showsVideo) {
             Box(
@@ -245,8 +257,17 @@ private fun FlashGroupVideoTile(
                     )
                     Box(Modifier.size(FlashSpacing.space4))
                 }
+                if (presenting) {
+                    FlashIcon(
+                        icon = FlashIcons.ScreenShare,
+                        contentDescription = null,
+                        tint = Color.White,
+                        size = FlashDimensions.iconSm,
+                    )
+                    Box(Modifier.size(FlashSpacing.space4))
+                }
                 Text(
-                    text = participant.name,
+                    text = if (presenting) CallShareText.presenterLabel(participant.name) else participant.name,
                     style = FlashTheme.typography.metadataDefault,
                     color = Color.White,
                     maxLines = 1,

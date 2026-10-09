@@ -24,6 +24,13 @@ internal object GroupCanonical {
     const val ROTATION_TAG: String = "flash-grot-v1"
     const val SETTINGS_TAG: String = "flash-gset-v1"
 
+    /**
+     * ADR-105 (supersedes the signing part of ADR-100): a non-default history ceiling is signed by its OWN statement under
+     * this tag, bound to the settings object it belongs to (group, version, opId, signer). The settings statement itself
+     * stays `flash-gset-v1` whatever the ceiling is, so a build that does not know the ceiling still verifies it.
+     */
+    const val HISTORY_CEILING_TAG: String = "flash-gsethc-v1"
+
     /** Length of the hex part of a derived group id (128 bits). */
     private const val GROUP_ID_HEX_CHARS = 32
 
@@ -157,17 +164,33 @@ internal object GroupCanonical {
         return writer.build()
     }
 
-    fun settingsBytes(settings: GroupSettings): ByteArray = Writer(SETTINGS_TAG)
-        .text(settings.groupId)
-        .long(settings.version)
-        .text(settings.joinPolicy.uppercase())
-        .text(settings.inviteSharers.uppercase())
-        .long(settings.maxMembers.toLong())
-        .bool(settings.swarmServing)
-        .bool(settings.membersMayAdd)
-        .text(settings.opId)
-        .text(settings.signerId)
-        .build()
+    /** The v1 settings statement. ADR-105: it never covers the history ceiling, so every build verifies it (see [historyCeilingBytes]). */
+    fun settingsBytes(settings: GroupSettings): ByteArray =
+        Writer(SETTINGS_TAG)
+            .text(settings.groupId)
+            .long(settings.version)
+            .text(settings.joinPolicy.uppercase())
+            .text(settings.inviteSharers.uppercase())
+            .long(settings.maxMembers.toLong())
+            .bool(settings.swarmServing)
+            .bool(settings.membersMayAdd)
+            .text(settings.opId)
+            .text(settings.signerId)
+            .build()
+
+    /**
+     * ADR-105: the separate statement that binds a non-default history ceiling to ONE settings object. It names the group,
+     * version, opId and signer of that object, so a ceiling signature cannot be moved onto another settings object, and
+     * it uses its own tag, so it can never be mistaken for (or replayed as) a settings statement.
+     */
+    fun historyCeilingBytes(settings: GroupSettings): ByteArray =
+        Writer(HISTORY_CEILING_TAG)
+            .text(settings.groupId)
+            .long(settings.version)
+            .text(settings.opId)
+            .text(settings.signerId)
+            .text(settings.historyCeiling.name)
+            .build()
 
     /** The id a charter with this owner key and nonce must carry (plan D1). */
     fun deriveGroupId(crypto: GroupCrypto, ownerKey: ByteArray, nonce: ByteArray): String {

@@ -126,9 +126,26 @@ public class RotatingFileLogSink(
 
     private fun appendLines(lines: List<String>) = synchronized(lock) {
         val current = File(dir, "flash-0.log")
-        if (current.length() >= maxFileBytes) rotate()
-        FileOutputStream(current, true).use { out ->
-            for (l in lines) out.write((l + "\n").toByteArray(Charsets.UTF_8))
+        // Rotate per LINE, not per batch: the writer appends up to 256 queued lines at once (and flush() drains the whole
+        // queue), so checking the size only before the batch let one file grow by a whole batch past maxFileBytes and broke
+        // the documented bound of keep * maxFileBytes. A file now overshoots by at most one line.
+        var out: FileOutputStream? = null
+        try {
+            var size = current.length()
+            for (l in lines) {
+                if (size >= maxFileBytes) {
+                    out?.close()
+                    out = null
+                    rotate()
+                    size = 0L
+                }
+                val bytes = (l + '\n').toByteArray(Charsets.UTF_8)
+                val stream = out ?: FileOutputStream(current, true).also { out = it }
+                stream.write(bytes)
+                size += bytes.size
+            }
+        } finally {
+            out?.close()
         }
     }
 

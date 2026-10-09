@@ -52,6 +52,8 @@ public class RoomTransferStore(
         transferChunkDao.deleteChunks(transferId)
     }
 
+    override suspend fun purgeFinishedChunks(): Int = transferChunkDao.purgeFinishedChunks()
+
     override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> =
         transferChunkDao.allDoneChunks().map { TransferStore.ChunkRef(it.transferId, it.chunkIndex) }
 }

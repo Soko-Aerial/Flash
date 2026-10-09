@@ -2,8 +2,10 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -54,6 +56,7 @@ import androidx.compose.ui.Modifier
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
+import com.transfer.flash.core.messaging.model.FlashGroupHistoryUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
@@ -283,6 +286,14 @@ fun FlashConversationScreen(
     onUpdateGroupPreferences: ((groupId: String, serveToGroup: Boolean?, serveWifiOnly: Boolean?, batteryThreshold: Int?, keepDays: Int?) -> Unit)? = null,
     /** GM-10: rotate group code. */
     onChangeGroupCode: ((groupId: String) -> Unit)? = null,
+    /** ADR-100 / UI-057: the join card's "Catch up" (window in ms, whether file offers come too). */
+    onChooseGroupHistory: ((groupId: String, windowMs: Long, includeFiles: Boolean) -> Unit)? = null,
+    /** ADR-100 / UI-057: the join card's "Not now" / "OK". */
+    onSkipGroupHistory: ((groupId: String) -> Unit)? = null,
+    /** ADR-100 / UI-057: "Load older messages" in the group settings sheet. */
+    onLoadOlderGroupHistory: ((groupId: String, windowMs: Long) -> Unit)? = null,
+    /** ADR-100 / UI-057: an admin changes the signed history ceiling (a `GroupHistoryCeiling` name). */
+    onSetGroupHistoryCeiling: ((groupId: String, ceiling: String) -> Unit)? = null,
     /** GM-10: request an invite link for sharing. */
     onRequestInviteLink: (suspend (groupId: String) -> String?)? = null,
     /** GM-10 (O-14): join a group from an inline invite link card. */
@@ -724,6 +735,28 @@ fun FlashConversationScreen(
                                 exit = fadeOut(motion.tweenFastSpec()),
                             ) {
                                 (state.groupSync ?: lastGroupSync)?.let { sync -> FlashGroupSyncBanner(sync = sync) }
+                            }
+
+                            // UI-057 (ADR-100): the one-time "how much earlier history?" card of a newly joined member.
+                            var lastGroupHistory by remember { mutableStateOf<FlashGroupHistoryUi?>(null) }
+                            if (state.groupHistory != null) {
+                                lastGroupHistory = state.groupHistory
+                            }
+                            AnimatedVisibility(
+                                visible = state.groupHistory != null && conversationId != null,
+                                enter = fadeIn(motion.tweenNormalSpec()) + expandVertically(motion.tweenNormalSpec()),
+                                exit = fadeOut(motion.tweenFastSpec()) + shrinkVertically(motion.tweenFastSpec()),
+                            ) {
+                                val history = state.groupHistory ?: lastGroupHistory
+                                if (history != null && conversationId != null) {
+                                    FlashGroupHistoryCard(
+                                        history = history,
+                                        onChoose = { windowMs, includeFiles ->
+                                            onChooseGroupHistory?.invoke(conversationId, windowMs, includeFiles)
+                                        },
+                                        onSkip = { onSkipGroupHistory?.invoke(conversationId) },
+                                    )
+                                }
                             }
 
                             // Task 3.4: Pinned message banner.
@@ -1214,6 +1247,11 @@ fun FlashConversationScreen(
             } else null,
             onChangeGroupCode = if (state.isGroupOwner || state.isGroupAdmin) {
                 { onChangeGroupCode?.invoke(conversationId) }
+            } else null,
+            canChangeHistoryCeiling = state.canChangeHistoryCeiling,
+            onUpdateHistoryCeiling = { ceiling -> onSetGroupHistoryCeiling?.invoke(conversationId, ceiling.name) },
+            onLoadOlderHistory = if (onLoadOlderGroupHistory != null && state.isGroupV2) {
+                { windowMs -> onLoadOlderGroupHistory.invoke(conversationId, windowMs) }
             } else null,
         )
     }

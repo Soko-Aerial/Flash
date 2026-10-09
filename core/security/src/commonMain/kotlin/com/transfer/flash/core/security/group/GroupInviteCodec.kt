@@ -148,7 +148,8 @@ public object GroupInviteCodec {
         val groupIdBytes = readLp(bytes, offset) ?: return null
         offset += 2 + groupIdBytes.size
         if (groupIdBytes.isEmpty() || groupIdBytes.size > MAX_GROUP_ID_BYTES) return null
-        val groupId = runCatching { groupIdBytes.decodeToString() }.getOrNull() ?: return null
+        // R-16: malformed UTF-8 is refused, not silently replaced with U+FFFD (a lookalike of what was signed or compared).
+        val groupId = runCatching { groupIdBytes.decodeToString(throwOnInvalidSequence = true) }.getOrNull() ?: return null
         if (!groupId.startsWith("g2-")) return null
 
         // epoch u32
@@ -167,14 +168,14 @@ public object GroupInviteCodec {
         val groupNameBytes = readLp(bytes, offset) ?: return null
         offset += 2 + groupNameBytes.size
         if (groupNameBytes.isEmpty() || groupNameBytes.size > MAX_GROUP_NAME_BYTES) return null
-        val groupName = runCatching { groupNameBytes.decodeToString() }.getOrNull() ?: return null
+        val groupName = runCatching { groupNameBytes.decodeToString(throwOnInvalidSequence = true) }.getOrNull() ?: return null
         if (groupName.isEmpty() || groupName.length > MAX_GROUP_NAME_CHARS) return null
 
         // inviterId lp
         val inviterIdBytes = readLp(bytes, offset) ?: return null
         offset += 2 + inviterIdBytes.size
         if (inviterIdBytes.isEmpty() || inviterIdBytes.size > MAX_INVITER_ID_BYTES) return null
-        val inviterId = runCatching { inviterIdBytes.decodeToString() }.getOrNull() ?: return null
+        val inviterId = runCatching { inviterIdBytes.decodeToString(throwOnInvalidSequence = true) }.getOrNull() ?: return null
 
         // inviterFp 32B
         if (offset + FINGERPRINT_BYTES > bytes.size) return null
@@ -191,7 +192,7 @@ public object GroupInviteCodec {
             val hintBytes = readLp(bytes, offset) ?: return null
             offset += 2 + hintBytes.size
             if (hintBytes.isEmpty() || hintBytes.size > MAX_HINT_BYTES) return null
-            val hint = runCatching { hintBytes.decodeToString() }.getOrNull() ?: return null
+            val hint = runCatching { hintBytes.decodeToString(throwOnInvalidSequence = true) }.getOrNull() ?: return null
             hints.add(hint)
         }
 

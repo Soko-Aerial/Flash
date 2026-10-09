@@ -207,9 +207,11 @@ public object PeerFarm {
         private fun write(farmPeer: String, peerId: String, peerName: String, event: String, direction: String) {
             val now = System.currentTimeMillis()
             val safeName = peerName.replace(",", " ").replace("\"", "'")
-            csv?.apply {
-                write("$now,${"%.1f".format((now - t0) / 1000.0)},$farmPeer,$peerId,$safeName,$event,$direction\n")
-                flush()
+            runCatching {
+                csv?.apply {
+                    write("$now,${"%.1f".format((now - t0) / 1000.0)},$farmPeer,$peerId,$safeName,$event,$direction\n")
+                    flush()
+                }
             }
         }
 

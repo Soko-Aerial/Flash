@@ -43,6 +43,8 @@ internal class VideoSendTuning(
     val active: Boolean = true,
     val demoteForVoice: Boolean = false,
     val maintainFramerate: Boolean = false,
+    /** ADR-102: a screen share sheds frame rate before resolution (text). Android only; desktop logs the gap. */
+    val maintainResolution: Boolean = false,
 )
 
 /** Applies [tuning] to the sender's encodings. Returns whether the backend accepted it. */

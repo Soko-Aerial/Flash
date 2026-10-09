@@ -3,10 +3,12 @@ package com.transfer.flash.core.security.crypto
 import android.content.Context
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
 import java.math.BigInteger
+import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.KeyStore
@@ -86,18 +88,13 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
     private fun loadOrGenerateIdentityKey(): KeyPair {
         val keyStore = openKeyStore()
         if (keyStore.containsAlias(FlashCrypto.IDENTITY_KEY_ALIAS)) {
-            // Verify that the existing key supports NONEwithECDSA required by Conscrypt TLS handshake
-            val canSignNone = runCatching {
-                val privateKey = keyStore.getKey(FlashCrypto.IDENTITY_KEY_ALIAS, null) as? PrivateKey
-                if (privateKey != null) {
-                    val signature = Signature.getInstance("NONEwithECDSA")
-                    signature.initSign(privateKey)
-                    true
-                } else false
-            }.getOrDefault(false)
-
-            if (!canSignNone) {
-                Log.w(TAG, "Existing identity key lacks DIGEST_NONE (required for TLS Conscrypt handshake); regenerating.")
+            // Verify that the existing key supports NONEwithECDSA required by Conscrypt TLS handshake. R-09: only a DEFINITE
+            // verdict regenerates (the key's parameters were read and lack DIGEST_NONE, or the alias holds no private key).
+            // A probe that merely failed (a transient KeyStoreException / ProviderException, a daemon restart) is retried and
+            // then throws with the key untouched: deleting it would change the device identity and break every pairing.
+            val action = IdentityKeyCheck.decide { IdentityKeyCheck.inspect(AndroidIdentityKeyInspector(keyStore)) }
+            if (action == IdentityKeyAction.REGENERATE) {
+                Log.w(TAG, "Existing identity key lacks DIGEST_NONE (required for TLS Conscrypt handshake) or has no private key; regenerating.")
                 keyStore.deleteEntry(FlashCrypto.IDENTITY_KEY_ALIAS)
                 generateIdentityKey()
             }
@@ -108,6 +105,20 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
             ?: error("Flash identity key missing after generation")
         val privateKey = keyStore.getKey(FlashCrypto.IDENTITY_KEY_ALIAS, null) as PrivateKey
         return KeyPair(certificate.publicKey, privateKey)
+    }
+
+    /** The real probe: [KeyInfo] for the parameters, a `NONEwithECDSA` signing operation as the fallback. */
+    private class AndroidIdentityKeyInspector(private val keyStore: KeyStore) : IdentityKeyInspector {
+        override fun privateKey(): PrivateKey? = keyStore.getKey(FlashCrypto.IDENTITY_KEY_ALIAS, null) as? PrivateKey
+
+        override fun digests(key: PrivateKey): Set<String> {
+            val info = KeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE).getKeySpec(key, KeyInfo::class.java)
+            return info.digests.toSet()
+        }
+
+        override fun initNoneSigning(key: PrivateKey) {
+            Signature.getInstance("NONEwithECDSA").initSign(key)
+        }
     }
 
     private fun generateIdentityKey() {

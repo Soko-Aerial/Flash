@@ -33,9 +33,13 @@ public object EncryptedDatabaseRecovery {
         provider: KeystorePassphraseProvider = KeystorePassphraseProvider(context),
         nowMs: () -> Long = System::currentTimeMillis,
     ): FlashDatabase {
-        val passphrase = provider.passphrase()
+        // The passphrase is only held back here: if it was minted, the OLD wrapper stays on disk until the old database
+        // is out of the way and the new one exists. A transient keystore failure throws (PassphraseUnavailableException)
+        // and touches nothing.
+        val passphrase = provider.passphraseDeferringCommit()
+        val minted = provider.mintedNewPassphrase
         val dbFile = context.applicationContext.getDatabasePath(FlashDatabase.DATABASE_NAME)
-        val moved = quarantineIfUnreadable(dbFile, provider.mintedNewPassphrase, nowMs())
+        val moved = quarantineIfUnreadable(dbFile, minted, nowMs())
         if (moved.isNotEmpty()) {
             FlashLog.e(
                 TAG,
@@ -43,8 +47,17 @@ public object EncryptedDatabaseRecovery {
                     "Moved ${moved.size} file(s) aside: ${moved.joinToString { it.name }}",
             )
         }
+        check(!minted || !dbFile.exists()) {
+            "The unreadable database could not be moved aside; the stored passphrase was left untouched"
+        }
         // A fresh copy per call: SQLCipher may clear the array it is handed.
-        return FlashDatabaseOpener.openEncrypted(context, { passphrase.copyOf() }, *FlashMigrations.ALL)
+        val db = FlashDatabaseOpener.openEncrypted(context, { passphrase.copyOf() }, *FlashMigrations.ALL)
+        if (minted) {
+            // Room opens lazily; force the new file into existence before the wrapper that can open it replaces the old one.
+            db.openHelper.writableDatabase
+            provider.commitMintedPassphrase()
+        }
+        return db
     }
 
     /**

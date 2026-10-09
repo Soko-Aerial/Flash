@@ -1,8 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider roots (R-15, sweep 2026-10-09). The provider is not exported and only grants per-call URI permissions, but
+  every root widens what ONE bad caller could leak, so the roots are the directories Flash actually shares from, not the
+  whole private tree. Removed: root-path "." (the entire filesystem), files-path "." (identity, settings, logs, swarm
+  partials) and external-files-path "." (everything under the app's external dir).
+
+  Who needs what:
+    FlashReceived/  received files (external-files dir, or the internal fallback when there is no external storage):
+                    "share" / "open" a received file, and the swarm completion directory.
+    ws-received/    older received-file location, kept so rows written before FlashReceived/ still open.
+    cache root      voice notes (flash-voice-*.m4a) and camera captures (camera_captures/) written by :ui:platform-shims,
+                    and the log export (log-export/). The cache holds nothing else of value and is cleared by the system.
+  A new FileProvider caller must add its directory here on purpose.
+-->
 <paths>
+    <external-files-path name="received" path="FlashReceived/" />
+    <files-path name="received_internal" path="FlashReceived/" />
     <files-path name="ws_received" path="ws-received/" />
-    <files-path name="internal_files" path="." />
     <cache-path name="cache_files" path="." />
-    <external-files-path name="external_files" path="." />
-    <root-path name="root" path="." />
 </paths>

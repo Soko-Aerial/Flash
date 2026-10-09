@@ -325,6 +325,27 @@ public class JvmWsFlashNetwork(
                 else -> handshakeOutcome.getOrThrow()
             }
 
+            // R-02 (sweep 2026-10-09): a dial that NAMED a peer must be answered by that peer. TLS pinned the named id's
+            // key, but HELLO is an unauthenticated text field; without this comparison a paired peer X that answers our
+            // dial to Y could send deviceId=Y and be registered as Y (its chat, call and transfer frames attributed to Y,
+            // Y's session displaced by the glare tiebreak). The inbound side already enforces the same binding
+            // (inboundIdentityFailure). The unnamed dial (resolvedPeerDeviceId == null) is the ADR-040 TOFU path and
+            // is bound by the deferred-leaf check below, unchanged.
+            if (resolvedPeerDeviceId != null && resolvedPeerDeviceId != peerDevice.id.value) {
+                FlashLog.w(
+                    TAG,
+                    "[hello] dial rejected: dialed=${shortId(resolvedPeerDeviceId)} but HELLO named " +
+                        "peer=${shortId(peerDevice.id.value)}",
+                )
+                routeObserver?.onIdentityMismatch(resolvedPeerDeviceId, host, actualPort)
+                connection.close("HELLO device id does not match the dialed id")
+                return@withContext FlashResult.Failure(
+                    FlashError.PeerUnavailable(
+                        host,
+                        "The device that answered is not the one that was dialed.",
+                    ),
+                )
+            }
 
             // ADR-040: the dial could not name the peer, so the TLS handshake accepted its leaf
             // without evaluating a pin. HELLO has now named it — run the SAME check here, before

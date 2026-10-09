@@ -30,6 +30,14 @@ internal actual fun RtpSender.applyVideoTuning(tuning: VideoSendTuning): Boolean
     if (tuning.maintainFramerate) {
         params.degradationPreference = DegradationPreference.MAINTAIN_FRAMERATE
     }
+    if (tuning.maintainResolution) {
+        // ADR-102: a screen share keeps the text sharp and gives up frames.
+        params.degradationPreference = DegradationPreference.MAINTAIN_RESOLUTION
+    } else if (!tuning.maintainFramerate && params.degradationPreference == DegradationPreference.MAINTAIN_RESOLUTION) {
+        // S6: the camera comes back after a share on the same sender; MAINTAIN_RESOLUTION would otherwise stay and a
+        // camera under load would drop frames instead of resolution. BALANCED is libwebrtc's own default.
+        params.degradationPreference = DegradationPreference.BALANCED
+    }
     params.encodings.forEach { encoding ->
         encoding.active = tuning.active
         encoding.maxBitrateBps = tuning.maxBitrateBps

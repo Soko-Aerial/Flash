@@ -94,6 +94,29 @@ class RetentionPolicyTest {
         assertEquals(listOf("b", "a", "c"), RetentionPolicy.eligibleForDeletion(now, 1, listOf(a, b, c)))
     }
 
+    // ADR-100 / O4 (2026-10-09): group history sync promises a new member up to 30 days of text. Nothing is
+    // wired to prune messages today (this policy has no scheduler), and the product default is 365 days; this
+    // test pins the arithmetic so a future pruner with a short window cannot silently undercut the promise.
+    @Test
+    fun `the default 365 day retention never prunes text a 30 day group history window still serves`() {
+        val now = 1_800_000_000_000L
+        val thirtyDays = 30 * day
+        val youngestServed = entry(id = "edge", createdAt = now - thirtyDays)
+        val justInside = entry(id = "inside", createdAt = now - thirtyDays + 1)
+        assertEquals(
+            emptyList(),
+            RetentionPolicy.eligibleForDeletion(now, 365, listOf(youngestServed, justInside)),
+            "text inside the 30 day window is far younger than the 365 day cutoff",
+        )
+        // A window shorter than the history promise WOULD prune it: the guard a future pruner must respect.
+        assertEquals(
+            listOf("edge", "inside"),
+            RetentionPolicy.eligibleForDeletion(now, 29, listOf(youngestServed, justInside)),
+            "a 29 day retention would remove a row the 30 day history window serves",
+        )
+        assertEquals(emptyList(), RetentionPolicy.eligibleForDeletion(now, 30, listOf(justInside)))
+    }
+
     private fun entry(id: String = "id-${Random.nextInt()}", createdAt: Long) =
         PrunableEntry(localId = id, createdAt = createdAt, protected = false)
 }

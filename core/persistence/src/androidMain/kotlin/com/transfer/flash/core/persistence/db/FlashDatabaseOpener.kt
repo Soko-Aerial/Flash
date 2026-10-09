@@ -51,6 +51,7 @@ public object FlashDatabaseOpener {
         val openHelperFactory = SupportOpenHelperFactory(passphraseProvider.passphrase())
         val mode = FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context.applicationContext)).mode
         val cacheSizeKb = mode.transfer.sqliteCacheSizeKb
+        val trim = DatabaseTrimRegistration()
         return Room.databaseBuilder(
             context.applicationContext,
             FlashDatabase::class.java,
@@ -68,22 +69,9 @@ public object FlashDatabaseOpener {
                         FlashLog.w("DATABASE", "Failed to set PRAGMA cache_size: ${e.message}")
                     }
 
-                    MemoryGovernor.registerListener(object : MemoryTrimListener {
-                        override fun onTrimMemory(level: MemoryTrimLevel) {
-                            if (level == MemoryTrimLevel.RUNNING_LOW ||
-                                level == MemoryTrimLevel.RUNNING_CRITICAL ||
-                                level == MemoryTrimLevel.COMPLETE
-                            ) {
-                                try {
-                                    if (db.isOpen) {
-                                        db.execSQL("PRAGMA shrink_memory;")
-                                        FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory on $level")
-                                    }
-                                } catch (e: Throwable) {
-                                    FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory: ${e.message}")
-                                }
-                            }
-                        }
+                    trim.attach(isOpen = { db.isOpen }, shrink = {
+                        db.execSQL("PRAGMA shrink_memory;")
+                        FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory")
                     })
                 }
             })
@@ -97,6 +85,7 @@ public object FlashDatabaseOpener {
     public fun openInMemory(context: Context): FlashDatabase {
         val mode = FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context.applicationContext)).mode
         val cacheSizeKb = mode.transfer.sqliteCacheSizeKb
+        val trim = DatabaseTrimRegistration()
         return Room.inMemoryDatabaseBuilder(context.applicationContext, FlashDatabase::class.java)
             // !!! TEST-ONLY: destructive fallback exists here ONLY so ad-hoc test schemas never
             // wedge the JVM suite. PRODUCTION FORBIDS destructive migration from v2 onward
@@ -108,22 +97,43 @@ public object FlashDatabaseOpener {
                     try {
                         db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
                     } catch (_: Throwable) {}
-                    MemoryGovernor.registerListener(object : MemoryTrimListener {
-                        override fun onTrimMemory(level: MemoryTrimLevel) {
-                            if (level == MemoryTrimLevel.RUNNING_LOW ||
-                                level == MemoryTrimLevel.RUNNING_CRITICAL ||
-                                level == MemoryTrimLevel.COMPLETE
-                            ) {
-                                try {
-                                    if (db.isOpen) {
-                                        db.execSQL("PRAGMA shrink_memory;")
-                                    }
-                                } catch (_: Throwable) {}
-                            }
-                        }
-                    })
+                    trim.attach(isOpen = { db.isOpen }, shrink = { db.execSQL("PRAGMA shrink_memory;") })
                 }
             })
             .build()
+    }
+}
+
+/**
+ * The memory-trim listener of ONE database instance (R-18, sweep 2026-10-09).
+ *
+ * `RoomDatabase.Callback.onOpen` can run more than once per process (a close and reopen, recovery), and every run used to
+ * register a NEW listener in the process-wide [MemoryGovernor] that captured its own handle and was never removed, so
+ * listeners and the closed handles they held accumulated. Now each built database owns one registration: [attach] drops
+ * the previous listener before registering the one for the handle that was just opened, so at most one stays registered.
+ */
+internal class DatabaseTrimRegistration(
+    private val register: (MemoryTrimListener) -> Unit = MemoryGovernor::registerListener,
+    private val unregister: (MemoryTrimListener) -> Unit = MemoryGovernor::unregisterListener,
+) {
+    private var current: MemoryTrimListener? = null
+
+    @Synchronized
+    fun attach(isOpen: () -> Boolean, shrink: () -> Unit) {
+        current?.let(unregister)
+        val listener = MemoryTrimListener { level ->
+            if (level == MemoryTrimLevel.RUNNING_LOW ||
+                level == MemoryTrimLevel.RUNNING_CRITICAL ||
+                level == MemoryTrimLevel.COMPLETE
+            ) {
+                try {
+                    if (isOpen()) shrink()
+                } catch (e: Throwable) {
+                    FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory: ${e.message}")
+                }
+            }
+        }
+        current = listener
+        register(listener)
     }
 }

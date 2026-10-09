@@ -94,6 +94,9 @@ public class GroupProofSessions(
     public companion object {
         public const val FEATURE_GS1: String = "gs1"
         public const val PROOF_TIMEOUT_MS: Long = 20_000L
+
+        /** R-12: hellos a peer may leave unanswered at once. A real peer proves a handful of groups; the map used to be unbounded. */
+        public const val MAX_OPEN_HELLOS_PER_PEER: Int = 8
     }
 
     private val rateLimiter = ProofRateLimiter()
@@ -231,6 +234,20 @@ public class GroupProofSessions(
         }
         if (!peerFeatures(peerDeviceId).contains(FEATURE_GS1)) {
             FlashLog.i("GROUP", "Proof hello ignored: peer=$peerDeviceId does not advertise gs1")
+            return
+        }
+
+        // R-12 (sweep 2026-10-09): expired half-open proofs are dropped here (nothing else ever removed a hello that was never
+        // followed by a proof), and one peer cannot hold more than MAX_OPEN_HELLOS_PER_PEER of them.
+        val openKeys = activeResponders.keysSnapshot().filter { it.first == peerDeviceId }
+        var open = 0
+        for (k in openKeys) {
+            val r = activeResponders[k] ?: continue
+            if (nowMs - r.startedAtMs >= timeoutMs) activeResponders.remove(k) else open++
+        }
+        if (open >= MAX_OPEN_HELLOS_PER_PEER && activeResponders[peerDeviceId to frame.groupId] == null) {
+            FlashLog.w("GROUP", "Proof hello refused: peer=$peerDeviceId already has $open open hellos")
+            rateLimiter.recordFailure(peerDeviceId, nowMs)
             return
         }
 
@@ -400,7 +417,16 @@ public class GroupProofSessions(
     public fun onResult(peerDeviceId: String, frame: GroupWireFrame.GsResult) {
         if (peerDeviceId != frame.from) return
         val key = peerDeviceId to frame.groupId
-        val inFlight = activeInitiators.remove(key) ?: return
+        // R-03 (sweep 2026-10-09): a result counts only for a proof WE started and carried through. The initiator is VERIFIED
+        // once the responder's challenge MAC checked out and our proof was sent; before that (no hello sent, or still waiting
+        // for the challenge) a result is unsolicited. Honouring a bare GsResult(ok) would mark the peer as proved with no
+        // secret exchanged. The frame is ignored and the live proof, if any, is left to finish or time out.
+        val inFlight = activeInitiators[key]
+        if (inFlight == null || inFlight.initiator.state != GroupProofInitiator.State.VERIFIED) {
+            FlashLog.w("GROUP", "Unsolicited proof result ignored: peer=$peerDeviceId group=${frame.groupId} ok=${frame.ok}")
+            return
+        }
+        activeInitiators.remove(key)
 
         when (frame.reason) {
             "ok" -> {

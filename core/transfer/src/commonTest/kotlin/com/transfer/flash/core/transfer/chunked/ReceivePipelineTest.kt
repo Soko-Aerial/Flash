@@ -4,6 +4,7 @@ import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import okio.Buffer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -384,5 +385,156 @@ class ReceivePipelineTest {
         // No new destination is created for an already-complete resume, and accept is a no-op.
         assertEquals(0, sink.writes)
         assertFalse(pipeline.acceptSession(meta.transferId))
+    }
+
+    // ---- finished sessions must not use up the session cap (audit 2026-10-08) ----
+
+    private class OneChunkTransfer(val id: String) {
+        private val data = ByteArray(100) { (it % 11).toByte() }
+        private val meta = FileMeta(id, "f-$id", "small.bin", data.size.toLong())
+        private val chunker = Chunker()
+        private val plan = chunker.plan(meta, 16_384)
+        val start: ChunkFrame.FileStart = chunker.fileStart(meta, plan, Sha256.digestHex(data))
+        val chunk: ChunkFrame.Chunk = chunker.openChunkStream(ChunkSource { Buffer().write(data) }, meta, plan).use { it.next() }
+    }
+
+    @Test
+    fun `forty sequential completed receives are all accepted, finished sessions do not fill the cap`() {
+        val pipeline = ReceivePipeline(RecordingSink(), maxConcurrentSessions = 32)
+        repeat(40) { n ->
+            val t = OneChunkTransfer("seq-$n")
+            val started = pipeline.onFrame(ChunkFrame.serialize(t.start))
+            assertTrue(started.none { it is ReceiveEvent.Rejected }, "offer $n must be accepted: $started")
+            val events = pipeline.onFrame(ChunkFrame.serialize(t.chunk))
+            assertTrue(events.any { it is ReceiveEvent.Completed }, "transfer $n must complete: $events")
+        }
+    }
+
+    @Test
+    fun `a duplicate chunk after completion is still silently ignored while the session is retained`() {
+        val pipeline = ReceivePipeline(RecordingSink(), maxConcurrentSessions = 2)
+        val t = OneChunkTransfer("dup")
+        pipeline.onFrame(ChunkFrame.serialize(t.start))
+        assertTrue(pipeline.onFrame(ChunkFrame.serialize(t.chunk)).any { it is ReceiveEvent.Completed })
+        // Churn well past the live cap, but within the finished-retention bound.
+        repeat(10) { n ->
+            val other = OneChunkTransfer("churn-$n")
+            pipeline.onFrame(ChunkFrame.serialize(other.start))
+            pipeline.onFrame(ChunkFrame.serialize(other.chunk))
+        }
+        assertEquals(emptyList(), pipeline.onFrame(ChunkFrame.serialize(t.chunk)))
+    }
+
+    @Test
+    fun `live sessions still hit the cap and finished sessions are bounded`() {
+        val pipeline = ReceivePipeline(RecordingSink(), maxConcurrentSessions = 2, maxFinishedSessionsRetained = 3)
+        // Two sessions that never complete (a FILE_START only).
+        pipeline.onFrame(ChunkFrame.serialize(OneChunkTransfer("live-1").start))
+        pipeline.onFrame(ChunkFrame.serialize(OneChunkTransfer("live-2").start))
+        val full = pipeline.onFrame(ChunkFrame.serialize(OneChunkTransfer("live-3").start))
+        assertEquals(listOf(RejectReason.SESSION_FULL), full.filterIsInstance<ReceiveEvent.Rejected>().map { it.reason })
+
+        val bounded = ReceivePipeline(RecordingSink(), maxConcurrentSessions = 2, maxFinishedSessionsRetained = 3)
+        repeat(20) { n ->
+            val t = OneChunkTransfer("done-$n")
+            bounded.onFrame(ChunkFrame.serialize(t.start))
+            bounded.onFrame(ChunkFrame.serialize(t.chunk))
+        }
+        assertTrue(bounded.activeTransferIds().size <= 4, "finished sessions are evicted oldest first: ${bounded.activeTransferIds()}")
+        assertTrue("done-19" in bounded.activeTransferIds())
+    }
+
+    @Test
+    fun `doneBytes is maintained incrementally and counts resume-seeded chunks`() {
+        val pipeline = ReceivePipeline(RecordingSink(), ackEvery = 1000, resumeIndexesProvider = { listOf(0, 1) })
+        val start = startFrame()
+        pipeline.onFrame(ChunkFrame.serialize(start))
+        assertEquals(2L * chunkSize, pipeline.doneBytes(start.transferId))
+        val frames = chunkFrames()
+        pipeline.onFrame(ChunkFrame.serialize(frames[5]))
+        assertEquals(3L * chunkSize, pipeline.doneBytes(start.transferId))
+        // A duplicate adds nothing.
+        pipeline.onFrame(ChunkFrame.serialize(frames[5]))
+        assertEquals(3L * chunkSize, pipeline.doneBytes(start.transferId))
+        assertNull(pipeline.doneBytes("unknown"))
+        assertEquals(pipeline.doneIndexes(start.transferId)!!.size * chunkSize.toLong(), pipeline.doneBytes(start.transferId))
+    }
+
+    // ---- sweep 2026-10-09: R-06 (a failed write is surfaced) and R-07 (bounded offers) ----
+
+    private class FailingSink(private val failure: Throwable) : ChunkSink {
+        var attempts = 0
+        override fun write(index: Int, data: ByteArray) {
+            attempts++
+            throw failure
+        }
+    }
+
+    @Test
+    fun `R-06 a sink that throws produces a typed WRITE_FAILED rejection and drops the session`() {
+        val sink = FailingSink(RuntimeException("No space left on device"))
+        val pipeline = ReceivePipeline(sink, ackEvery = 1)
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        val frames = chunkFrames()
+
+        val events = pipeline.onFrame(ChunkFrame.serialize(frames[0]))
+        val rejected = events.filterIsInstance<ReceiveEvent.Rejected>().single()
+        assertEquals(RejectReason.WRITE_FAILED, rejected.reason)
+        assertEquals(meta.transferId, rejected.transferId)
+        assertEquals(0, rejected.index)
+        assertTrue(events.none { it is ReceiveEvent.AckBatchReady }, "a chunk that was not written is never ACKed")
+        assertNull(pipeline.doneIndexes(meta.transferId), "the session is gone")
+
+        // The sender's next chunk answers UNKNOWN_TRANSFER (which stops it) and nothing is written again.
+        val later = pipeline.onFrame(ChunkFrame.serialize(frames[1]))
+        assertEquals(listOf(RejectReason.UNKNOWN_TRANSFER), later.filterIsInstance<ReceiveEvent.Rejected>().map { it.reason })
+        assertEquals(1, sink.attempts)
+    }
+
+    @Test
+    fun `R-06 an identical re-offer after a write failure opens a fresh session`() {
+        val pipeline = ReceivePipeline(FailingSink(okio.IOException("disk")), emitSessionStarted = true)
+        pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        pipeline.onFrame(ChunkFrame.serialize(chunkFrames()[0]))
+        val again = pipeline.onFrame(ChunkFrame.serialize(startFrame()))
+        assertTrue(again.any { it is ReceiveEvent.SessionStarted }, "not swallowed as a resume restart: $again")
+    }
+
+    @Test
+    fun `R-06 cancellation and errors are not swallowed as write failures`() {
+        val cancelled = ReceivePipeline(FailingSink(kotlin.coroutines.cancellation.CancellationException("stop")))
+        cancelled.onFrame(ChunkFrame.serialize(startFrame()))
+        assertFailsWith<kotlin.coroutines.cancellation.CancellationException> {
+            cancelled.onFrame(ChunkFrame.serialize(chunkFrames()[0]))
+        }
+        val fatal = ReceivePipeline(FailingSink(Error("out of memory stand-in")))
+        fatal.onFrame(ChunkFrame.serialize(startFrame()))
+        assertFailsWith<Error> { fatal.onFrame(ChunkFrame.serialize(chunkFrames()[0])) }
+    }
+
+    @Test
+    fun `R-07 an offer above the chunk cap is refused before anything is allocated`() {
+        val pipeline = ReceivePipeline(RecordingSink())
+        val chunks = ReceivePipeline.MAX_TOTAL_CHUNKS + 1
+        val huge = startFrame().copy(totalChunks = chunks, totalBytes = chunks.toLong() * chunkSize)
+        val events = pipeline.onFrame(ChunkFrame.serialize(huge))
+        assertEquals(listOf(RejectReason.INVALID_FILE_START), events.filterIsInstance<ReceiveEvent.Rejected>().map { it.reason })
+        assertNull(pipeline.doneIndexes(huge.transferId))
+        // Int.MAX_VALUE chunks (the 268 MB case) is refused the same way.
+        val max = startFrame().copy(totalChunks = Int.MAX_VALUE, totalBytes = Int.MAX_VALUE.toLong() * chunkSize)
+        assertEquals(
+            listOf(RejectReason.INVALID_FILE_START),
+            pipeline.onFrame(ChunkFrame.serialize(max)).filterIsInstance<ReceiveEvent.Rejected>().map { it.reason },
+        )
+    }
+
+    @Test
+    fun `R-07 an offer exactly at the cap is still accepted`() {
+        val pipeline = ReceivePipeline(RecordingSink())
+        val chunks = ReceivePipeline.MAX_TOTAL_CHUNKS
+        val edge = startFrame().copy(totalChunks = chunks, totalBytes = chunks.toLong() * chunkSize)
+        val events = pipeline.onFrame(ChunkFrame.serialize(edge))
+        assertTrue(events.none { it is ReceiveEvent.Rejected }, "$events")
+        assertNotNull(pipeline.doneIndexes(edge.transferId))
     }
 }

@@ -171,6 +171,15 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         val maxPerSecond: Int,
         val maxTotal: Int,
         override val keyEpoch: Long = 0L,
+        /**
+         * ADR-100: how far back the requester wants messages, in milliseconds. Null (an older build, or none sent) asks
+         * for today's fixed 24 hours. The holder serves the smaller of this and its signed history ceiling.
+         */
+        val windowMs: Long? = null,
+        /** ADR-100: whether file offers (last 7 days at most) come too. Null counts as yes, as before. */
+        val includeFiles: Boolean? = null,
+        /** ADR-100: true on the second and later page of one catch-up, so the holder skips the election delay. */
+        val continuation: Boolean = false,
     ) : Sync
 
     public data class SyncClaim(
@@ -196,6 +205,25 @@ public sealed interface GroupWireFrame : ChatWireFrame {
         override val from: String,
         val messageIds: List<String>,
         val hasMore: Boolean,
+        override val keyEpoch: Long = 0L,
+    ) : Sync
+
+    /**
+     * ADR-100: the holder's end-of-page marker, sent after the last push of a round. [count] is how many rows it pushed
+     * for this request, [lastSentAt]/[lastMessageId] the position of the last of them (the next page continues after
+     * it), [remaining] how many more it sees after that inside the window (capped, see
+     * `GroupHistoryPolicy.MAX_REMAINING_COUNT`) and [more] whether any exist. An older build never sends this and
+     * ignores it, which is how a requester tells a holder that cannot page.
+     */
+    public data class SyncPage(
+        override val groupId: String,
+        override val syncId: String,
+        override val from: String,
+        val count: Int,
+        val remaining: Int,
+        val more: Boolean,
+        val lastSentAt: Long,
+        val lastMessageId: String,
         override val keyEpoch: Long = 0L,
     ) : Sync
 

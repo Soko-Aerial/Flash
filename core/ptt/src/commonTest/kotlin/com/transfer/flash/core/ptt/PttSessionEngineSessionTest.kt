@@ -148,11 +148,17 @@ class PttSessionEngineSessionTest {
             engine.onPttButton()
             awaitUntil("talking") { engine.state.value is PttFloorState.Talking }
             val sessionId = (engine.state.value as PttFloorState.Talking).sessionId
+            // The engine publishes Talking BEFORE it runs the StartCapture effect, so on a slow runner the state is visible
+            // while the capture device does not exist yet (CI 2026-10-08, NoSuchElementException on a Linux runner).
+            awaitUntil("capture opened and announced") { audio.captures.snapshot().firstOrNull()?.packetsEnabled == true }
 
             engine.stopLocal()
             awaitUntil("idle again") { engine.state.value is PttFloorState.Idle }
+            // Likewise Idle is published before the StopCapture / SendStop effects run: wait for the effects, not the state.
+            awaitUntil("capture stopped and Stop sent") {
+                audio.captures.snapshot().singleOrNull()?.stopped == true && sentFrames<PttSessionFrame.Stop>().isNotEmpty()
+            }
 
-            assertTrue(audio.captures.snapshot().single().stopped)
             val stop = sentFrames<PttSessionFrame.Stop>().single()
             assertEquals(sessionId, stop.sessionId)
             assertEquals(LOCAL_ID, stop.from)
@@ -196,6 +202,8 @@ class PttSessionEngineSessionTest {
             audio.captures.snapshot().single().lose()
 
             awaitUntil("idle after capture loss") { engine.state.value is PttFloorState.Idle }
+            // Idle is published before the SendStop effect runs.
+            awaitUntil("Stop sent") { sentFrames<PttSessionFrame.Stop>().isNotEmpty() }
             assertEquals(1, sentFrames<PttSessionFrame.Stop>().size)
         }
     }
@@ -205,10 +213,12 @@ class PttSessionEngineSessionTest {
         withEngine { engine ->
             engine.onPttButton()
             awaitUntil("talking") { engine.state.value is PttFloorState.Talking }
+            awaitUntil("capture opened") { audio.captures.snapshot().isNotEmpty() }
 
             engine.onCallStarted()
 
             awaitUntil("idle after call start") { engine.state.value is PttFloorState.Idle }
+            awaitUntil("capture stopped") { audio.captures.snapshot().singleOrNull()?.stopped == true }
             assertTrue(audio.captures.snapshot().single().stopped)
         }
     }
