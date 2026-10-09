@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-10-09 - Linux group-call rejoin stalls ~40 s (ERROR-168, diagnostics added)
+
+### Worked on
+Owner's Linux `desktop.log`: leaving a group call and rejoining sits on Connecting.
+
+### Found
+First join healthy; each rejoin blocks 40 s after the Answers arrive (setRemoteDescription on the single media thread), peers hang up meanwhile. Process otherwise alive. Cause not proven (suspect audio device or camera restart on the 2nd session; `[webrtc-jvm]` stdout lines are not in the log).
+
+### Changed
+`NativeCallWatchdog.kt` + wrapping of set{Local,Remote}Description in `FlashGroupCallSession` (logs CALL_STALL, no behaviour change). `:core:calling:compileKotlinJvm` green. Not run on Linux, no unit test.
+
+### Next AI
+Get the LNXCALL-01 capture (docs/testing/TEST-BACKLOG.md 4zu) before changing teardown or ADM code.
+
 ## 2026-10-09 - Library re-tagged as v2.1.0-beta.1 (v2.1.0-beta is burned on JitPack)
 
 ### Worked on

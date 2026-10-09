@@ -3044,3 +3044,11 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 - HARD-22 R-20: save the same image twice in one millisecond (script) on desktop; two files exist. Status: TODO
 - HARD-23 R-11: a peer (test client) sends a fragmented text with a ping between fragments. Pass: message delivered, session stays up. Status: TODO
 - HARD-24 CI run on dev after these edits is green, including `:app:lintDebug`. Status: TODO
+
+## 4zu. Linux: leave and rejoin a group call (ERROR-168, 2026-10-09)
+
+### LNXCALL-01 - Rejoin after leaving a group call on Linux
+- Setup: Linux laptop with the build that has `NativeCallWatchdog` plus two other devices in one group video call; run the app from a terminal so stdout is kept.
+- Steps: join, wait for video, hang up, rejoin 10 s later, repeat twice. During any wait longer than 5 s run `eu-stack -p <pid>` (or `gdb -p <pid> -batch -ex 'thread apply all bt'`) and `pactl info`.
+- Pass: every leg reaches `ice=Completed` within 3 s of the Answer on every rejoin; no `CALL_STALL` line above 2 s. A FAIL is expected today: keep the `CALL_STALL` lines, the stack and the stdout `[webrtc-jvm]` lines for the root cause.
+- Source: ERROR-168. Status: TODO
