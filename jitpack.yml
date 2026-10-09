@@ -26,6 +26,11 @@
 #
 # -x test -x lint keeps builds fast and avoids test-only deps (bouncycastle,
 # robolectric) failing the publish.
+# gradle/gradle-daemon-jvm.properties pins the Gradle daemon to JDK 25 (updateDaemonJvm). JitPack runs JDK 17 and cannot fetch a 25 toolchain
+# (v2.1.0-beta failed with "Unable to download toolchain ... languageVersion=25", foojay answered 400), so the file is dropped on JitPack only;
+# the daemon then runs on the pinned JDK 17, which is what the library has always been published with.
+before_install:
+  - rm -f gradle/gradle-daemon-jvm.properties
 jdk:
   - openjdk17
 install:
