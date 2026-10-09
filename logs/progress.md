@@ -10,7 +10,7 @@ JitPack still showed the failed build for `v2.1.0-beta` after the `jitpack.yml` 
 - Left alone on purpose: Android `versionName 2.1.0-beta`, installer/APK file names, desktop `packageVersion 2.1.0`, historical logs and reports.
 
 ### Verification
-Text change only. The same install line was proven locally on JDK 17 earlier (BUILD SUCCESSFUL). JitPack result: see the next entry or `logs/handoff.md`.
+Text change only. The same install line was proven locally on JDK 17 earlier (BUILD SUCCESSFUL). JitPack result (2026-10-09 19:14): `v2.1.0-beta.1` = ok. A scratch JVM consumer (`kotlin("jvm")`, repositories mavenCentral/google/jitpack, `core-engine` + `core-calling` at `v2.1.0-beta.1`) resolved the `-jvm` variants incl. `webrtc-kmp-jvm` and `compileKotlin` succeeded (BUILD SUCCESSFUL). Both spellings `v2.1.0-beta.1` and `2.1.0-beta.1` resolve (JitPack builds each name separately; the first request after a push can say "Tag not found. Rechecking" and then builds). Not tested: an Android consumer (aar variants), release R8 of a consumer.
 
 ### Next AI
 Never move a published tag again; a failed JitPack build needs a new tag name. Check `https://jitpack.io/api/builds/com.github.Kali452345.Flash` for `v2.1.0-beta.1`.
