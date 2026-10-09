@@ -8,7 +8,7 @@ The `:core:persistence` module manages relational database storage, encrypted ta
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-persistence:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-persistence:v2.1.0-beta.1")
 }
 ```
 

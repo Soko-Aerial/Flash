@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-10-09 - Library re-tagged as v2.1.0-beta.1 (v2.1.0-beta is burned on JitPack)
+
+### Worked on
+JitPack still showed the failed build for `v2.1.0-beta` after the `jitpack.yml` fix: JitPack caches the result (failure included) per version string, moving the tag does not rebuild, and the owner's JitPack page offers no way to clear a failed build.
+
+### Changed
+- `gradle.properties` `flashLibraryVersion` 2.1.0-beta -> 2.1.0-beta.1; library coordinates `v2.1.0-beta` -> `v2.1.0-beta.1` in README, docs/developer-guide, docs/release-build.md, docs/architecture-modular-libraries-plan.md, sample/consumer-desktop, aboutlibraries fork entry; CHANGELOG notes why.
+- Left alone on purpose: Android `versionName 2.1.0-beta`, installer/APK file names, desktop `packageVersion 2.1.0`, historical logs and reports.
+
+### Verification
+Text change only. The same install line was proven locally on JDK 17 earlier (BUILD SUCCESSFUL). JitPack result: see the next entry or `logs/handoff.md`.
+
+### Next AI
+Never move a published tag again; a failed JitPack build needs a new tag name. Check `https://jitpack.io/api/builds/com.github.Kali452345.Flash` for `v2.1.0-beta.1`.
+
 ## 2026-10-09 - Release tag v2.1.0-beta, JitPack failure fixed, Windows/Android builds
 
 ### Worked on

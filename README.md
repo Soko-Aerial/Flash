@@ -37,11 +37,11 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.1")
 }
 ```
 
-The install snippet targets the `v2.1.0-beta` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
+The install snippet targets the `v2.1.0-beta.1` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
 you want only the lightweight transport pieces without the encrypted database.
 
 ## Quick start
@@ -141,8 +141,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta")   // optional in-call screen
+    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta.1")   // optional in-call screen
 }
 ```
 
@@ -438,7 +438,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.1")
 }
 ```
 

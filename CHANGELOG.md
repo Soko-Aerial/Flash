@@ -10,7 +10,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
 ## [2.1.0-beta] - unreleased
 
-Versions in this release: library `2.1.0-beta` (`flashLibraryVersion` in `gradle.properties`), Android `versionName 2.1.0-beta` /
+Versions in this release: library `2.1.0-beta.1` (`flashLibraryVersion` in `gradle.properties`), Android `versionName 2.1.0-beta` /
 `versionCode 3`, Windows installer `2.1.0`. Source: 138 commits since `v2.0.0-beta`, plus work that is still uncommitted in the
 working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026-10-09-overnight-report.md`).
 
@@ -84,7 +84,7 @@ working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026
 - ERROR-106: `DesktopEngineGroupSessionUpTest` in `:desktop:jvmTest` (see the release report for its status).
 - Background transfer is not claimed as supported: liveness differs by handset (Transsion devices freeze Flash at screen off).
 - Wi-Fi Direct is not implemented (ADR-056). The Android screen-share presenter and the radio pairing adapter are not built.
-- The `v2.1.0-beta` tag does not exist yet; JitPack coordinates in the README point at it.
+- JitPack tag `v2.1.0-beta` is burned: its first build failed (JDK 25 toolchain download, foojay HTTP 400), JitPack caches a failed build per version string and the owner cannot clear it. The library is published as `v2.1.0-beta.1` (same code plus the `jitpack.yml` fix). The Android app keeps `versionName 2.1.0-beta`.
 
 ## [2.0.0-beta]
 

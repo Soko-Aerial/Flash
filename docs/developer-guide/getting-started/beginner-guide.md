@@ -32,7 +32,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Kali452345.Flash:<module>:v2.1.0-beta)
+        maven { url = uri("https://jitpack.io") } // Flash artifacts (com.github.Kali452345.Flash:<module>:v2.1.0-beta.1)
         // mavenLocal() // only for a local `publishToMavenLocal` build (group com.transfer.flash)
     }
 }
@@ -47,9 +47,9 @@ Imports the complete Flash stack (discovery, pairing, encrypted messaging, chunk
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:ui-chat:v2.1.0-beta")     // Optional: If Jetpack Compose UI is needed
-    implementation("com.github.Kali452345.Flash:ui-theme:v2.1.0-beta")    // Design tokens and styling
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:ui-chat:v2.1.0-beta.1")     // Optional: If Jetpack Compose UI is needed
+    implementation("com.github.Kali452345.Flash:ui-theme:v2.1.0-beta.1")    // Design tokens and styling
 }
 ```
 
@@ -58,11 +58,11 @@ For resource-constrained devices or specialized services that do not need callin
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-common:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:core-discovery:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:core-network:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta")
-    implementation("com.github.Kali452345.Flash:core-messaging:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-common:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:core-discovery:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:core-network:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta.1")
+    implementation("com.github.Kali452345.Flash:core-messaging:v2.1.0-beta.1")
 }
 ```
 

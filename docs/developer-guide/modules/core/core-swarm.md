@@ -19,7 +19,7 @@ It is a Kotlin Multiplatform module with an **Android** and a **JVM** target (`c
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-swarm:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-swarm:v2.1.0-beta.1")
 }
 ```
 

@@ -8,7 +8,7 @@ The `:core:calling` module implements decentralized, real-time peer-to-peer audi
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.1")
 }
 ```
 

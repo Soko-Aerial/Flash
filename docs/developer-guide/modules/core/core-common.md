@@ -8,7 +8,7 @@ The `:core:common` module forms the root foundation of the Flash ecosystem. It d
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-common:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-common:v2.1.0-beta.1")
 }
 ```
 

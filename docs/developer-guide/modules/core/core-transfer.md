@@ -8,7 +8,7 @@ The `:core:transfer` module contains the high-throughput, multi-stream chunked f
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta.1")
 }
 ```
 

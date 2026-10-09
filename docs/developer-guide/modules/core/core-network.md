@@ -8,7 +8,7 @@ The `:core:network` module manages the bidirectional transport layer, WebSocket 
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-network:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-network:v2.1.0-beta.1")
 }
 ```
 
