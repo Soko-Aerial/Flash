@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-10-09 - Release tag v2.1.0-beta, JitPack failure fixed, Windows/Android builds
+
+### Worked on
+Tagged the library, built the apps, and fixed the first JitPack failure.
+
+### Changed
+- `jitpack.yml`: `before_install: rm -f gradle/gradle-daemon-jvm.properties`. Root cause of the JitPack failure of the first v2.1.0-beta tag: that file pins the Gradle daemon to JDK 25 and JitPack (JDK 17, Linux) must download it from foojay, which answers `400 Bad Request` for the Linux x64 id (the same 400 the owner hit on the Linux laptop, `docs/LINUX-PORT-PLAN.md`). v2.0.0-beta built because the toolchain download still worked then.
+- The tag `v2.1.0-beta` was moved from 8b129f3f to the commit with this fix (it had only produced a failed JitPack build).
+
+### Verification
+- JitPack install line run locally on JDK 17 (Temurin 17.0.20) with the daemon file absent: BUILD SUCCESSFUL in 11m27s, EXIT=0 (all 15 modules + the webrtc-kmp fork published to mavenLocal). This is the JDK 17 proof the release audit asked for, publish side only; no consumer resolved from the result yet.
+- `tools/build-release.ps1` (JBR 21): Flash-2.1.0-beta.apk (signed, v2/v3), -unsigned.apk, Flash-2.1.0.msi, Flash-2.1.0.exe in `dist/2.1.0-beta/`. One `packageExe` run died with exit -1073741571 (stack overflow) and passed on rerun: transient, cause unknown.
+- NOT done: any device install, lint, unit tests this session, CI check.
+
+### Next AI
+Confirm the JitPack build for v2.1.0-beta turns green (`https://jitpack.io/api/builds/com.github.Kali452345/Flash`); `Kali452345/Flash` redirects to `Soko-Aerial/Flash` and builds under the Kali452345 name worked for 1.0.0-2.0.0-beta, `Soko-Aerial` has an Error entry. Then run the REL-* checks in TEST-BACKLOG on the APK.
+
 ## 2026-10-09 - Library documentation verified against the code (docs only)
 
 ### Worked on
