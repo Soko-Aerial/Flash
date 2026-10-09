@@ -115,6 +115,11 @@ public object GroupFrameCodec {
                 "sinceId" to frame.sinceMessageId, "tier" to frame.tier.name.lowercase(),
                 "maxPerSec" to frame.maxPerSecond.toString(), "maxTotal" to frame.maxTotal.toString(),
                 "keyEpoch" to frame.keyEpoch.toString(),
+                // ADR-100: additive keys, absent when unset, so a request without them is byte-identical to before.
+            ) + listOfNotNull(
+                frame.windowMs?.let { "windowMs" to it.toString() },
+                frame.includeFiles?.let { "files" to it.toString() },
+                if (frame.continuation) "cont" to "true" else null,
             )
             is GroupWireFrame.SyncClaim -> SYNC_PREFIX to listOf(
                 "op" to "claim", "groupId" to frame.groupId, "syncId" to frame.syncId,
@@ -146,6 +151,13 @@ public object GroupFrameCodec {
                 "from" to frame.from, "hasMore" to frame.hasMore.toString(),
                 "keyEpoch" to frame.keyEpoch.toString(),
             ) + indexed("msg", frame.messageIds)
+            is GroupWireFrame.SyncPage -> SYNC_PREFIX to listOf(
+                "op" to "page", "groupId" to frame.groupId, "syncId" to frame.syncId,
+                "from" to frame.from, "count" to frame.count.toString(),
+                "remaining" to frame.remaining.toString(), "more" to frame.more.toString(),
+                "lastAt" to frame.lastSentAt.toString(), "lastId" to frame.lastMessageId,
+                "keyEpoch" to frame.keyEpoch.toString(),
+            )
             is GroupWireFrame.GroupMedia -> MEDIA_PREFIX to listOf(
                 "groupId" to frame.groupId,
                 "msgId" to frame.messageId,
@@ -341,7 +353,9 @@ public object GroupFrameCodec {
                 sizeBytes = fields.long("size") ?: 0L,
                 sentAt = fields.long("sentAt") ?: 0L,
                 signature = fields["sig"]?.ifBlank { null },
-                root = fields["root"]?.ifBlank { null },
+                // A root that is not 64 lowercase hex can never name a manifest; dropping it makes the frame a plain file
+                // offer instead of handing a hostile string to the swarm host.
+                root = fields["root"]?.ifBlank { null }?.takeIf { isSwarmRootHex(it) },
                 pieceSize = fields["psize"]?.toIntOrNull(),
                 swarm = fields["swarm"]?.toIntOrNull(),
                 rootSig = fields["rsig"]?.ifBlank { null },
@@ -359,6 +373,9 @@ public object GroupFrameCodec {
                     fields["tier"]?.uppercase()?.let { runCatching { GroupSyncTier.valueOf(it) }.getOrNull() }
                         ?: return null,
                     fields.int("maxPerSec") ?: return null, fields.int("maxTotal") ?: return null, epoch,
+                    windowMs = fields.long("windowMs")?.takeIf { it >= 0L },
+                    includeFiles = fields["files"]?.toBooleanStrictOrNull(),
+                    continuation = fields["cont"]?.toBooleanStrictOrNull() ?: false,
                 )
                 "claim" -> GroupWireFrame.SyncClaim(
                     groupId, syncId, from, fields.indexed("msg") ?: return null,
@@ -380,6 +397,15 @@ public object GroupFrameCodec {
                 "ack" -> GroupWireFrame.SyncAck(
                     groupId, syncId, from, fields.indexed("msg") ?: return null,
                     fields["hasMore"]?.toBooleanStrictOrNull() ?: return null, epoch,
+                )
+                "page" -> GroupWireFrame.SyncPage(
+                    groupId, syncId, from,
+                    count = fields.int("count")?.takeIf { it >= 0 } ?: return null,
+                    remaining = fields.int("remaining")?.takeIf { it >= 0 } ?: return null,
+                    more = fields["more"]?.toBooleanStrictOrNull() ?: return null,
+                    lastSentAt = fields.long("lastAt") ?: return null,
+                    lastMessageId = fields["lastId"] ?: return null,
+                    keyEpoch = epoch,
                 )
                 else -> null
             }
@@ -502,7 +528,7 @@ public object GroupFrameCodec {
     /** Null when anything a bundle must carry is missing or the cert list is over its cap. */
     /** All six fields or none: a half-described file is not an offer (the receiver would announce garbage). */
     private fun decodeSwarmOffer(fields: Map<String, String>): GroupWireFrame.SwarmOffer? {
-        val root = fields["aroot"]?.ifBlank { null } ?: return null
+        val root = fields["aroot"]?.ifBlank { null }?.takeIf { isSwarmRootHex(it) } ?: return null
         val sig = fields["arsig"]?.ifBlank { null } ?: return null
         val name = fields["afn"]?.ifBlank { null } ?: return null
         val pieceSize = fields["apsize"]?.toIntOrNull()?.takeIf { it > 0 } ?: return null
@@ -559,7 +585,15 @@ public object GroupFrameCodec {
         "setOpId" to s.opId,
         "setSigner" to s.signerId,
         "setSig" to s.sig,
-    )
+        // ADR-100 / ADR-105: emitted only when not the default, so default settings stay byte-identical on the wire. The
+        // ceiling is signed separately (`setHistSig`), so `setSig` above is the v1 signature an older build verifies.
+    ) + (
+        if (s.historyCeiling != GroupHistoryCeiling.DEFAULT) {
+            listOf("setHist" to s.historyCeiling.name, "setHistSig" to s.historyCeilingSig)
+        } else {
+            emptyList()
+        }
+        )
 
     private fun decodeSettings(fields: Map<String, String>, defaultGroupId: String): GroupSettings? {
         val ver = fields["setVer"]?.toLongOrNull() ?: return null
@@ -576,6 +610,11 @@ public object GroupFrameCodec {
         if (signer.length > 128) return null
         val sig = fields.required("setSig") ?: return null
         if (sig.length > 256) return null
+        // Absent means the default. ADR-105: a value this build does not know (a later ceiling) is not guessed and does not
+        // cost the other settings either: the v1 signature covers them, so the object is read with the default ceiling.
+        val ceiling = fields["setHist"]?.let { GroupHistoryCeiling.fromName(it) } ?: GroupHistoryCeiling.DEFAULT
+        val ceilingSig = if (ceiling == GroupHistoryCeiling.DEFAULT) "" else fields["setHistSig"].orEmpty()
+        if (ceilingSig.length > 256) return null
         return GroupSettings(
             groupId = defaultGroupId,
             version = ver,
@@ -587,6 +626,8 @@ public object GroupFrameCodec {
             opId = opId,
             signerId = signer,
             sig = sig,
+            historyCeiling = ceiling,
+            historyCeilingSig = ceilingSig,
         )
     }
 
@@ -651,3 +692,7 @@ public object GroupFrameCodec {
     private fun Map<String, String>.long(key: String): Long? = this[key]?.toLongOrNull()
     private fun Map<String, String>.int(key: String): Int? = this[key]?.toIntOrNull()
 }
+
+/** A swarm content root on the wire: exactly 64 lowercase hex characters (SHA-256 of the manifest). */
+internal fun isSwarmRootHex(root: String): Boolean =
+    root.length == 64 && root.all { it in '0'..'9' || it in 'a'..'f' }

@@ -38,6 +38,13 @@ public interface TransferStore {
      */
     public suspend fun clearDoneChunks(transferId: String) {}
 
+    /**
+     * Deletes the chunk rows of every transfer whose own row is already Completed or Cancelled and returns how many rows
+     * went (R-01, sweep 2026-10-09). Runs once at startup, without a schema change: it cleans up rows that earlier builds
+     * never deleted and rows a crash left behind. Defaults to a no-op so an older adapter still compiles.
+     */
+    public suspend fun purgeFinishedChunks(): Int = 0
+
     /** Lightweight `(transferId, chunkIndex)` projection returned by [allDoneChunks]. */
     public data class ChunkRef(public val transferId: String, public val chunkIndex: Int)
 }

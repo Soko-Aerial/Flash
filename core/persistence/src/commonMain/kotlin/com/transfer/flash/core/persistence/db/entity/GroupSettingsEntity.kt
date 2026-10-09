@@ -21,4 +21,6 @@ public data class GroupSettingsEntity(
     val opId: String,
     val signerId: String,
     val sig: String,
+    /** ADR-100: the signed history ceiling (`NONE|H24|D7|D30|ALL`); rows from before the column read as `D30`. */
+    val historyCeiling: String = "D30",
 )

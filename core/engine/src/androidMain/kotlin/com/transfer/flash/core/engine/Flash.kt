@@ -2,7 +2,6 @@
 
 package com.transfer.flash.core.engine
 
-import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import android.content.Context
 import android.util.Log
@@ -23,13 +22,9 @@ import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.messaging.RealFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
-import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.mode.ConnectionModeController
 import com.transfer.flash.core.network.mode.ConnectionModePolicy
@@ -61,10 +56,8 @@ import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
-import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.RejectReason
-import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.multistream.StreamChannel
 import com.transfer.flash.core.transfer.policy.FileRandomAccessSinkHandle
 import com.transfer.flash.core.transfer.policy.RandomAccessChunkSink
@@ -93,34 +86,43 @@ import kotlinx.coroutines.launch
 import okio.source
 
 /**
- * Consumer-facing knobs for [Flash.create]. Every field has a sensible default, so
- * `Flash.create(context)` yields a fully working engine.
+ * Android compatibility overload for [FlashConfig] accepting a [File] destination directory.
  */
-public data class FlashConfig(
-    /**
-     * Friendly name advertised to peers. When null, the persisted device identity's name is used
-     * (falling back to "Flash Device" on first run).
-     */
-    val displayName: String? = null,
-    /**
-     * When true, outbound/inbound chunk progress is persisted so a transfer interrupted by a
-     * process restart resumes instead of restarting. When false the transfer repository runs with
-     * no [com.transfer.flash.core.transfer.store.TransferStore] (still fully functional in-session).
-     * The encrypted chat/settings database is opened regardless — chats and settings require it.
-     */
-    val enableResume: Boolean = true,
-    /**
-     * Inbound-offer gate. When false (default, mirrors the app), every inbound file arrives as an
-     * OFFER that the consumer must accept via [com.transfer.flash.core.transfer.FlashTransferRepository.acceptIncoming];
-     * senders park until then. When true, inbound transfers are accepted automatically and senders
-     * stream immediately — the zero-friction path for the README quick-start.
-     */
-    val autoAcceptIncoming: Boolean = false,
-    /**
-     * Directory for received files. When null, `<externalFilesDir>/FlashReceived` is used.
-     */
-    val receivedFilesDir: File? = null,
+public fun FlashConfig(
+    displayName: String? = null,
+    enableResume: Boolean = true,
+    autoAcceptIncoming: Boolean = false,
+    receivedFilesDir: File?,
+): FlashConfig = FlashConfig(
+    displayName = displayName,
+    enableResume = enableResume,
+    autoAcceptIncoming = autoAcceptIncoming,
+    receivedFilesPath = receivedFilesDir?.absolutePath,
 )
+
+/**
+ * Android compatibility accessor for [FlashConfig.receivedFilesPath] as a [File].
+ */
+public val FlashConfig.receivedFilesDir: File?
+    get() = receivedFilesPath?.let { File(it) }
+
+/**
+ * Android compatibility `copy` taking a [File], for callers of the former
+ * `FlashConfig.copy(receivedFilesDir = ...)`. [receivedFilesDir] has no default on purpose, so the
+ * member `copy` (path-based) still handles every call that does not name it.
+ */
+public fun FlashConfig.copy(
+    receivedFilesDir: File?,
+    displayName: String? = this.displayName,
+    enableResume: Boolean = this.enableResume,
+    autoAcceptIncoming: Boolean = this.autoAcceptIncoming,
+): FlashConfig = copy(
+    displayName = displayName,
+    enableResume = enableResume,
+    autoAcceptIncoming = autoAcceptIncoming,
+    receivedFilesPath = receivedFilesDir?.absolutePath,
+)
+
 
 /**
  * One-call entry point that assembles a fully-wired [FlashEngine] (ADR-010 / Phase 5 Task 5.1).
@@ -156,7 +158,6 @@ public object Flash {
 }
 
 private const val TAG = "FlashEngine"
-private const val CALL_PREFIX = "FLASH_CALL"
 private const val XFER_PREFIX = "FLASH_XFER"
 
 /**
@@ -176,7 +177,7 @@ private const val SETTLE_BEFORE_RESUME_MS = 750L
  * engine is reached through [FlashEngine.onInboundCallText] rather than `FlashEngine.calls`.
  */
 internal fun isCallFrameText(text: String): Boolean =
-    FlashTextFraming.parseFields(text, CALL_PREFIX) != null
+    FlashInboundRouter.isCallFrameText(text)
 
 /**
  * Faithful port of the app's `DiscoveryEngineHolder` wiring, minus the app-only pieces (pairing UI
@@ -193,6 +194,9 @@ private class Wiring(
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
     private val receivedPaths = ConcurrentHashMap<String, String>()
     private val incomingByPeer = ConcurrentHashMap<String, MutableSet<String>>()
+
+    /** transferId to the peer that offered it; shared with the router so another peer cannot drive that transfer. */
+    private val incomingOwners = ConcurrentHashMap<String, String>()
     private val dataPortCache = ConcurrentHashMap<String, Int>()
     private val pausedIntakeIds = MutableStateFlow<Set<String>>(emptySet())
 
@@ -558,6 +562,7 @@ private class Wiring(
             groupSecretStore = com.transfer.flash.core.engine.group.RoomGroupSecretStore(db.groupSecretDao()),
             groupRotationDao = db.groupRotationDao(),
             groupSettingsDao = db.groupSettingsDao(),
+            groupHistoryDao = db.groupHistoryDao(),
             groupPreferencesDao = db.groupPreferencesDao(),
             localAddressHints = {
                 val port = networkImpl.serverPort
@@ -587,6 +592,7 @@ private class Wiring(
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
             incomingMeta.remove(transferId)
             receivedPaths.remove(transferId)
+            incomingOwners.remove(transferId)
             pausedIntakeIds.update { it - transferId }
             incomingByPeer.values.forEach { it.remove(transferId) }
             transferImpl.onIncomingFailed(transferId, reason)
@@ -625,6 +631,7 @@ private class Wiring(
             receivePipeline.declineSession(transferId)
             incomingMeta.remove(transferId)
             receivedPaths.remove(transferId)
+            incomingOwners.remove(transferId)
             pausedIntakeIds.update { it - transferId }
             incomingByPeer.values.forEach { it.remove(transferId) }
         }
@@ -658,23 +665,18 @@ private class Wiring(
                     // takes that session down as a matter of course and the dialer redials it in
                     // seconds: open a recovery window rather than ending the call (ERROR-033). The
                     // call engine is the facade's to notify, so the host does not duplicate this.
-                    facade?.onCallSignalingLost(stale.peerDeviceId.value)
+                    FlashSessionCoordinator.onSessionDown(
+                        peerDeviceId = stale.peerDeviceId.value,
+                        onSignalingLost = { pid -> facade?.onCallSignalingLost(pid) },
+                    )
                 }
                 sessions.values.forEach { session ->
                     if (session is WsSession && !sessionJobs.containsKey(session)) {
-                        // Bug 5: a peer session is up (first connect or reconnect) — flush the
-                        // durable outbox so messages queued while this peer was offline send now.
-                        // The peer id additionally makes that member's group deliveries retryable.
-                        chatImpl.notifyPeerSessionUp(session.peerDeviceId.value)
-                        // F3: holder-coordinated group catch-up (FLASH_GSYNC) with the returning peer.
-                        chatImpl.sendGroupSyncRequests(session.peerDeviceId.value)
-                        // F7: heal a membership frame this peer may have missed while it was offline -
-                        // membership frames have no delivery table, so a dropped Add/State is never retried.
-                        chatImpl.reconcileGroupMembership(session.peerDeviceId.value)
-                        // Closes any recovery window the matching onCallSignalingLost opened, so a
-                        // roam that resolved in two seconds does not cost the full grace period, and
-                        // the ICE restart offer has a channel to travel on (ERROR-033).
-                        facade?.onCallSignalingRestored(session.peerDeviceId.value)
+                        FlashSessionCoordinator.onSessionUp(
+                            peerDeviceId = session.peerDeviceId.value,
+                            chatRepository = chatImpl,
+                            onSignalingRestored = { pid -> facade?.onCallSignalingRestored(pid) },
+                        )
                         // Restart sends the peer's last disconnect killed. Byte-accurate resume
                         // already existed and nothing called it (ERROR-035).
                         scope.launch {
@@ -839,7 +841,11 @@ private class Wiring(
                     isCallActive = { (facade as? DefaultFlashEngine)?.busyCallPeerIds().orEmpty().isNotEmpty() },
                     isServingEnabled = { engine.discoveryMode.value != FlashDiscoveryMode.ECO },
                 )
-                binding.swarm
+                // Closeable view so DefaultFlashEngine.detachSwarm()/close() can stop the binding's
+                // collectors, environment poll and driver (they previously outlived the engine).
+                object : com.transfer.flash.core.swarm.api.FlashSwarm by binding.swarm, AutoCloseable {
+                    override fun close() = binding.detach()
+                }
             },
             onClose = {
                 runCatching { dcServer.stop() }
@@ -862,89 +868,20 @@ private class Wiring(
         peerDeviceId: String,
         text: String,
     ) {
-        // Calling first (ADR-025): the most latency-sensitive frame class, and the only handler that
-        // is attached at runtime instead of built by Flash.create. A recognized call frame is
-        // consumed or dropped here — never handed on. `CallCoordinator.onInboundText` answers false
-        // for a frame it has nothing to do with (a stale call id, a group query with no live call),
-        // and that frame still belongs to calling, so the branch returns either way.
-        if (isCallFrameText(text)) {
-            val consumed = facade?.onInboundCallText(peerDeviceId, text) == true
-            if (!consumed) {
-                Log.w(
-                    TAG,
-                    "Call frame dropped (no calling engine attached, or nothing to route it to) peer=$peerDeviceId",
-                )
-            }
-            return
-        }
-        // Presence sharing (PC4): consumes every FLASH_PRES frame, valid or not.
-        if (presenceRef?.onInboundText(peerDeviceId, text) == true) return
-        // Link control (PC5): consumes every FLASH_LINK frame, valid or not.
-        if (modeRef?.onInboundText(peerDeviceId, text) == true) return
-        // PTT next (ADR-032): ping + voice-session control share one entry point. When an engine
-        // is attached it owns decode, dedup, the fail-closed trust/transport-binding check and the
-        // floor reduction, and it answers true for recognized-but-rejected frames too. The
-        // no-engine branch below is what keeps a frame from falling through when nothing can
-        // handle it — it is deliberately `else`, so an attached engine pays two prefix parses once
-        // instead of twice on every inbound chat frame.
-        val ptt = facade?.ptt
-        if (ptt != null) {
-            if (ptt.onInboundText(peerDeviceId, text)) return
-        } else if (PttFrameCodec.decode(text) != null || PttSessionCodec.decode(text) != null) {
-            Log.w(TAG, "PTT frame dropped (no PTT engine attached) peer=$peerDeviceId")
-            return
-        }
-        GroupFrameCodec.decode(text)?.let { frame ->
-            Log.i(TAG, "Inbound group frame ${frame.javaClass.simpleName} from id=$peerDeviceId")
-            chatImpl.onInboundGroupWireFrame(peerDeviceId, frame)
-            return
-        }
-        val plainText = if (E2eFrameCodec.isSecuredFrame(text)) {
-            val sessionKey = trustStoreRef?.getSessionKey(FlashDeviceId(peerDeviceId))
-            if (sessionKey != null) {
-                E2eFrameCodec.decryptWireFrame(text, sessionKey) ?: return
-            } else {
-                return
-            }
-        } else {
-            // Audit S1b: the direct-chat family is ALWAYS encrypted by the sender once a session key
-            // exists, so a plaintext one from a keyed peer is a downgrade — drop it.
-            if (DirectChatFamily.matches(text) && trustStoreRef?.getSessionKey(FlashDeviceId(peerDeviceId)) != null) {
-                Log.w(TAG, "Dropped plaintext direct-chat frame from keyed peer $peerDeviceId (downgrade)")
-                return
-            }
-            text
-        }
-
-        DirectMessageActionCodec.decode(plainText)?.let { frame ->
-            chatImpl.onInboundWireFrame(frame, transportPeerId = peerDeviceId)
-            return
-        }
-        // Direct-chat text family through the shared codec (slice 3). Invalid-but-recognized
-        // frames drop, exactly as before; anything else falls through to the transfer family.
-        // transportPeerId is passed for ALL five families: the codec decodes the direct-chat
-        // family only (group frames travel a separate path), so for legit traffic the frame author
-        // IS the transport peer — and PR #11's fail-closed spoof guards (`transportPeerId != null`
-        // checks) only fire when it is non-null. Passing null here would silently neutralize them.
-        when (val decoded = ChatTextFrameCodec.decode(plainText, System.currentTimeMillis(), peerDeviceId)) {
-            is ChatTextFrameCodec.DecodeResult.Frame -> {
-                val frame = decoded.frame
-                chatImpl.onInboundWireFrame(
-                    frame,
-                    transportPeerId = peerDeviceId,
-                )
-                return
-            }
-            ChatTextFrameCodec.DecodeResult.RecognizedButInvalid -> return
-            null -> Unit
-        }
-        FlashTextFraming.parseFields(text, XFER_PREFIX)?.let { f ->
-            val action = f["action"] ?: return
-            val transferId = f["transferId"] ?: return
-            transferImpl.onRemoteTransferControl(transferId, action)
-            return
-        }
+        FlashInboundRouter.routeInboundText(
+            peerDeviceId = peerDeviceId,
+            text = text,
+            callHandler = { pid, txt -> facade?.onInboundCallText(pid, txt) == true },
+            presenceHandler = { pid, txt -> presenceRef?.onInboundText(pid, txt) == true },
+            modeHandler = { pid, txt -> modeRef?.onInboundText(pid, txt) == true },
+            pttProvider = { facade?.ptt },
+            sessionKeyLookup = { pid -> trustStoreRef?.getSessionKey(FlashDeviceId(pid)) },
+            chatRepository = chatImpl,
+            transferRepository = transferImpl,
+            incomingOwners = incomingOwners,
+        )
     }
+
     private fun handleInboundBinary(
         transferImpl: RealFlashTransferRepository,
         receivePipeline: ReceivePipeline,
@@ -953,129 +890,74 @@ private class Wiring(
         data: ByteArray,
         reply: (ByteArray) -> Boolean,
     ) {
-        // PTT voice audio first (ADR-032): the "PTT1" magic is disjoint from the transfer
-        // pipeline's "FLSH", so this costs one 4-byte compare and PTT audio can never reach the
-        // sender dispatcher or the receive pipeline — attached engine or not.
-        if (PttAudioFrame.isPttAudio(data)) {
-            facade?.ptt?.onInboundBinary(peerDeviceId, data)
-            return
-        }
-        val sessionKey = peerDeviceId?.let { trustStoreRef?.getSessionKey(FlashDeviceId(it)) }
-        val frameData = if (SecureBinaryFrameCodec.isSecureFrame(data)) {
-            if (sessionKey == null) {
-                Log.w(TAG, "Received encrypted binary frame from $peerDeviceId but no session key exists")
-                return
-            }
-            val decrypted = SecureBinaryFrameCodec.decryptOrNull(data, sessionKey)
-            if (decrypted == null) {
-                Log.w(TAG, "Failed to decrypt binary frame from $peerDeviceId (tampered or wrong key)")
-                return
-            }
-            decrypted
-        } else {
-            data
-        }
-
-        val secureReply: (ByteArray) -> Boolean = { replyBytes ->
-            val toSend = if (sessionKey != null) {
-                SecureBinaryFrameCodec.encrypt(replyBytes, sessionKey)
-            } else {
-                replyBytes
-            }
-            reply(toSend)
-        }
-
-        if (magicRouter.dispatch(peerDeviceId, frameData, secureReply)) {
-            return
-        }
-
-        // Sender-side ACK/COMPLETE first; if consumed, not a receiver frame.
-        val consumedBySender = try {
-            transferImpl.onInboundFrame(frameData)
-        } catch (t: Throwable) {
-            Log.w(TAG, "Failed to route inbound frame to sender: ${t.message}")
-            false
-        }
-        if (consumedBySender) return
-        val events = try {
-            receivePipeline.onFrame(frameData)
-        } catch (e: Throwable) {
-            Log.w(TAG, "Failed to process inbound binary frame: ${e.message}")
-            return
-        }
-        for (event in events) {
-            when (event) {
-                is ReceiveEvent.SessionStarted -> {
-                    val frame = event.frame
-                    incomingMeta[frame.transferId] = frame
-                    peerDeviceId?.let { pid ->
-                        incomingByPeer.getOrPut(pid) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(frame.transferId)
-                    }
-                    // If this transfer was already completed locally, reply COMPLETE immediately so the sender
-                    // stops re-offering, and do not redownload or overwrite the local file.
-                    val existing = transferImpl.activeTransfers.value.firstOrNull { it.id.value == frame.transferId }
-                    val existingPath = receivedPaths[frame.transferId] ?: existing?.localPath
-                    val alreadyCompleted = (existing != null && existing.state == com.transfer.flash.core.transfer.model.FlashTransferState.Completed) ||
-                        (existingPath != null && java.io.File(existingPath).exists() && java.io.File(existingPath).length() == frame.totalBytes)
-
-                    if (alreadyCompleted) {
-                        secureReply(com.transfer.flash.core.transfer.chunked.ChunkFrame.serialize(com.transfer.flash.core.transfer.chunked.ChunkFrame.Complete(frame.transferId, frame.fileId, verified = true)))
-                        peerDeviceId?.let { pid ->
-                            sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
-                        }
-                        continue
-                    }
-
-                    // A re-offer of a transfer this device already accepted is a RETRY: the previous
-                    // attempt's session died with the transport, so the sender's relaunch arrives as
-                    // a fresh FILE_START and would park on the acceptance gate with a deferred sink —
-                    // chunks dropped, no ACKs, progress frozen. Resolve the sink instead of asking
-                    // again. Cancelled stays excluded: a declined offer is never auto-accepted.
-                    if (transferImpl.isResumableInboundRetry(frame.transferId)) {
-                        receivePipeline.acceptSession(frame.transferId)
-                        transferImpl.onIncomingStarted(
-                            frame.transferId, frame.fileId, frame.fileName, frame.totalBytes,
-                            peerLabel, peerDeviceId, receivedPaths[frame.transferId],
-                        )
-                        peerDeviceId?.let { pid ->
-                            sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, frame.transferId)
-                        }
-                        continue
-                    }
-                    transferImpl.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, peerLabel, peerDeviceId)
-                    if (config.autoAcceptIncoming) acceptOffer?.invoke(frame.transferId)
+        FlashInboundRouter.routeInboundBinary(
+            peerDeviceId = peerDeviceId,
+            data = data,
+            reply = reply,
+            peerLabel = peerLabel,
+            pttProvider = { facade?.ptt },
+            sessionKeyLookup = { pid -> trustStoreRef?.getSessionKey(FlashDeviceId(pid)) },
+            magicRouter = magicRouter,
+            transferRepository = transferImpl,
+            receivePipeline = receivePipeline,
+            incomingMeta = incomingMeta,
+            receivedPaths = receivedPaths,
+            openHandles = openHandles,
+            fileExistsAndSizeMatches = { path, bytes ->
+                val f = java.io.File(path)
+                f.exists() && f.length() == bytes
+            },
+            sendXferResume = { pid, tid ->
+                sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_RESUME, tid)
+            },
+            sendXferCancel = { pid, tid ->
+                sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
+            },
+            incomingOwners = incomingOwners,
+            // First thing for every new session, before the already-completed and retry branches: a
+            // resumed or already-completed transfer is as much "incoming from this peer" as a fresh
+            // offer, so a peer disconnect can fail it (failInboundForPeer).
+            onSessionStarted = { frame, pid ->
+                pid?.let {
+                    incomingByPeer.getOrPut(it) { java.util.Collections.newSetFromMap(ConcurrentHashMap()) }.add(frame.transferId)
                 }
-                is ReceiveEvent.AckBatchReady -> {
-                    transferImpl.onIncomingChunkConfirmed(event.frame.transferId, event.frame.indexes)
-                    updateIncomingProgress(transferImpl, receivePipeline, event.frame.transferId)
-                    secureReply(ChunkFrame.serialize(event.frame))
+            },
+            // The router is finished with the id (already completed, or Completed handled even when
+            // assembling threw): drop the per-peer tracking. The real leak this closes: the
+            // already-completed branch never sees a Completed event, so its id stayed in
+            // incomingByPeer (and incomingMeta) for the life of the session.
+            onTransferUntracked = { transferId ->
+                incomingByPeer.values.forEach { it.remove(transferId) }
+            },
+            // A re-offer of a transfer this device already accepted is a RETRY: the previous attempt's
+            // session died with the transport, so the sender's relaunch arrives as a fresh FILE_START
+            // and would park on the acceptance gate with a deferred sink. Resolve the sink instead of
+            // asking again (Cancelled stays excluded by isResumableInboundRetry). Old Android behaviour,
+            // plus the ADR-069 / FA-2 storage gate that the normal accept path already applies.
+            onResumableRetry = { frame, pid, _ ->
+                if (transferImpl.admitIncoming(frame.transferId)) {
+                    receivePipeline.acceptSession(frame.transferId)
+                    transferImpl.onIncomingStarted(
+                        frame.transferId, frame.fileId, frame.fileName, frame.totalBytes,
+                        peerLabel, pid, receivedPaths[frame.transferId],
+                    )
+                    pid?.let { sendXfer?.invoke(it, RealFlashTransferRepository.ACTION_RESUME, frame.transferId) }
                 }
-                is ReceiveEvent.Completed -> {
-                    val transferId = event.frame.transferId
-                    openHandles.remove(transferId)?.let { it.flush(); it.close() }
-                    incomingByPeer.values.forEach { it.remove(transferId) }
-                    val path = receivedPaths.remove(transferId)
-                    val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
-                    val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
-                    val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
-                        receivePipeline.cancelSession(transferId)
-                        ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)
-                    } else {
-                        event.frame
-                    }
-                    secureReply(ChunkFrame.serialize(completeReply))
+            },
+            onOfferReceived = { frame, pid, _ ->
+                transferImpl.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, peerLabel, pid)
+                if (config.autoAcceptIncoming) acceptOffer?.invoke(frame.transferId)
+            },
+            onRejected = { event, pid ->
+                val tid = event.transferId
+                if (event.reason != RejectReason.UNEXPECTED_DIRECTION && event.reason != RejectReason.AWAITING_ACCEPTANCE) {
+                    Log.w(TAG, "Receiver rejected frame: reason=${event.reason} transferId=$tid index=${event.index}")
                 }
-                is ReceiveEvent.Rejected -> {
-                    val tid = event.transferId
-                    if (event.reason != RejectReason.UNEXPECTED_DIRECTION && event.reason != RejectReason.AWAITING_ACCEPTANCE) {
-                        Log.w(TAG, "Receiver rejected frame: reason=${event.reason} transferId=$tid index=${event.index}")
-                    }
-                    if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null && peerDeviceId != null) {
-                        sendXfer?.invoke(peerDeviceId, RealFlashTransferRepository.ACTION_CANCEL, tid)
-                    }
+                if (event.reason == RejectReason.UNKNOWN_TRANSFER && tid != null && pid != null) {
+                    sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
                 }
-            }
-        }
+            },
+        )
     }
     private fun openStreamChannel(channelId: Int, peerDeviceId: String?, networkImpl: WsFlashNetwork, localId: String): StreamChannel? {
         val active = networkImpl.activeSessions.value
@@ -1168,42 +1050,8 @@ private class Wiring(
         }
         return session.connection.sendText(wirePayload)
     }
-    private fun updateIncomingProgress(transferImpl: RealFlashTransferRepository, receivePipeline: ReceivePipeline, transferId: String) {
-        val start = incomingMeta[transferId] ?: return
-        val done = receivePipeline.doneIndexes(transferId) ?: return
-        var bytes = 0L
-        for (index in done) bytes += minOf(start.chunkSize.toLong(), start.totalBytes - index.toLong() * start.chunkSize)
-        transferImpl.onIncomingProgress(transferId, bytes)
-    }
-
-    private val ILLEGAL_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]")
-    private val WINDOWS_RESERVED_NAMES = setOf(
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    )
-
-    private fun sanitizePathComponent(raw: String): String {
-        val replaced = raw.replace(ILLEGAL_CHARS_REGEX, "_").trimEnd('.', ' ')
-        if (replaced.isBlank() || replaced == "." || replaced == "..") return "unnamed"
-
-        val dotIdx = replaced.indexOf('.')
-        val baseName = if (dotIdx != -1) replaced.substring(0, dotIdx) else replaced
-        val safeBase = if (baseName.uppercase() in WINDOWS_RESERVED_NAMES) "_$replaced" else replaced
-
-        return truncatePreservingExtension(safeBase, 120)
-    }
-
-    private fun truncatePreservingExtension(name: String, maxLen: Int): String {
-        if (name.length <= maxLen) return name
-        val lastDot = name.lastIndexOf('.')
-        if (lastDot > 0 && lastDot < name.length - 1 && (name.length - lastDot) <= 16) {
-            val ext = name.substring(lastDot)
-            val maxBaseLen = maxOf(1, maxLen - ext.length)
-            return name.substring(0, maxBaseLen) + ext
-        }
-        return name.take(maxLen)
-    }
+    private fun sanitizePathComponent(raw: String): String =
+        FlashPathSanitizer.sanitize(raw)
 
     private fun openSource(uriString: String): InputStream {
         require(uriString.startsWith("content://") || uriString.startsWith("file://")) { "Unsupported source descriptor: $uriString" }

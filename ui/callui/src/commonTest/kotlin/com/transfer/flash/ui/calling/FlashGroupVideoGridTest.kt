@@ -173,8 +173,8 @@ class FlashGroupVideoGridTest {
             assertFalse(healthWarningOffersSmallerVideo(it, alreadyOn = false), "$it")
         }
         val offered = healthWarningText(FlashCallHealthWarning.CPU, offersSmallerVideo = true)
-        assertTrue(offered.contains("smaller"), offered)
-        assertFalse(healthWarningText(FlashCallHealthWarning.CPU).contains("smaller"))
+        assertTrue(offered.contains("360p"), offered)
+        assertFalse(healthWarningText(FlashCallHealthWarning.CPU).contains("360p"))
     }
 
     private fun call(participants: List<FlashCallParticipantUi>) = FlashCallUiState(

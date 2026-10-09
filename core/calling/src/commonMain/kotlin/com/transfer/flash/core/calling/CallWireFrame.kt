@@ -218,6 +218,17 @@ public sealed interface CallWireFrame {
          * advertised `cv1`; an older client ignores the unknown field.
          */
         public val videoUpgrade: Boolean? = null,
+        /**
+         * ADR-102 (`ss=1` / `ss=0`): the sender is (not) presenting its screen. While `ss=1` the sender's one video is its
+         * screen, so it also states `cam=1` and an older client, which ignores `ss`, simply shows the picture as it shows
+         * any video. Null = not stated (an older client never says it).
+         */
+        public val sharing: Boolean? = null,
+        /**
+         * ADR-102 (`sst`): when the sender started presenting, on a counter that is always larger than any start the
+         * sender has seen (see [ShareArbiter]), so the latest start wins a take-over without comparing two clocks.
+         */
+        public val shareStartedAt: Long? = null,
     ) : CallWireFrame
 
     /** Group call: query whether an active call is ongoing in the group. */

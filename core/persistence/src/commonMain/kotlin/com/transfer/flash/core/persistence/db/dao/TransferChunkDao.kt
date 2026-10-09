@@ -44,6 +44,16 @@ public interface TransferChunkDao {
     /** Removes every chunk row of a transfer (ADR-068: the assembled file failed whole-file verification). */
     @Query("DELETE FROM transfer_chunks WHERE transferId = :transferId")
     public suspend fun deleteChunks(transferId: String)
+
+    /**
+     * R-01: removes the chunk rows of every transfer already finished (`transfers.status` Completed or Cancelled). The
+     * rows carry no timestamp, so the owning transfer's status is the age signal; no schema change. Returns the row count.
+     */
+    @Query(
+        "DELETE FROM transfer_chunks WHERE transferId IN " +
+            "(SELECT transferId FROM transfers WHERE status IN ('Completed', 'Cancelled'))",
+    )
+    public suspend fun purgeFinishedChunks(): Int
 }
 
 /** Lightweight projection for [TransferChunkDao.allDoneChunks]. */

@@ -72,4 +72,55 @@ class MagicFrameRouterTest {
         assertTrue(consumed)
         assertTrue(customHandled)
     }
+
+    @OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+    private fun captureWarnings(block: () -> Unit): Int {
+        var warnings = 0
+        com.transfer.flash.core.common.logging.FlashLog.installSink { level, tag, message, _ ->
+            if (level == com.transfer.flash.core.common.logging.FlashLogLevel.WARN && tag == "SWARM" && message.startsWith("Dropped reserved magic")) warnings++
+        }
+        try {
+            block()
+        } finally {
+            com.transfer.flash.core.common.logging.FlashLog.installSink { _, _, _, _ -> }
+        }
+        return warnings
+    }
+
+    @Test
+    fun `the first dropped reserved frame is logged even when the clock reads zero`() {
+        val warnings = captureWarnings {
+            val router = MagicFrameRouter(timeSource = { 0L })
+            router.dispatch("peer-1", "FSW1payload".encodeToByteArray(), reply = { true })
+        }
+        assertEquals(1, warnings)
+    }
+
+    @Test
+    fun `dropped reserved frames are rate limited and logged again after the interval`() {
+        var clock = 5L
+        val warnings = captureWarnings {
+            val router = MagicFrameRouter(timeSource = { clock })
+            val frame = "FSW1payload".encodeToByteArray()
+            router.dispatch("p", frame, reply = { true })
+            clock += 9_999L
+            router.dispatch("p", frame, reply = { true })
+            clock += 1L
+            router.dispatch("p", frame, reply = { true })
+        }
+        assertEquals(2, warnings)
+    }
+
+    @Test
+    fun `the default clock advances (it was always about zero)`() {
+        val clock = MagicFrameRouter.monotonicMillis()
+        val first = clock()
+        val deadline = first + 30
+        var later = clock()
+        while (later < deadline && later - first < 2_000) {
+            // busy-wait a few ms without a platform sleep (common test source set)
+            later = clock()
+        }
+        assertTrue(later - first >= 30, "default clock must increase over a small delay: $first -> $later")
+    }
 }

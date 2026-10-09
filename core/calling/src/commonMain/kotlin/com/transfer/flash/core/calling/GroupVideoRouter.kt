@@ -18,7 +18,7 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
  * - [maxSendHeight]: the tallest copy it sends (the camera profile may cap it lower).
  * - [acceptNew]: false while the device is too hot (G6); new requests are turned down.
  * - [smallerForMany]: the user's opt-in "Send smaller video in groups" (ADR-053, off by default):
- *   the more copies this device sends, the smaller each one ([heightForCopies]).
+ *   every copy goes at 360p ([SMALLER_HEIGHT], ADR-098).
  *
  * "Fast" is 5 GHz, 6 GHz or Ethernet. An unknown band keeps today's behaviour for receiving
  * (everything) and the table's default for sending.
@@ -31,6 +31,8 @@ internal data class GroupVideoLimits(
     val maxSendHeight: Int = HEIGHT_720,
     val acceptNew: Boolean = true,
     val smallerForMany: Boolean = false,
+    /** ADR-102: the device is hot or overloaded (G6); a share it watches is then asked for at 720p instead of 1080p. */
+    val struggling: Boolean = false,
 ) {
     /** Most watchers this device serves at once (twice [send] at 360p under the split budget). */
     val capacity: Int get() = if (splitBudget) send * 2 else send
@@ -41,8 +43,8 @@ internal data class GroupVideoLimits(
         const val HEIGHT_360 = 360
 
         /**
-         * @param struggling the device is hot or overloaded (G6): a LOW device then asks for
-         *   360p instead of 540p (owner decision Q4).
+         * @param struggling the device is hot or overloaded (G6): it then asks for 360p whatever
+         *   its tier (owner decision Q4, extended to every tier by ADR-098).
          * @param receiveCap an upper bound on [receive] (G6: "Show fewer", or a severe thermal state).
          * @param acceptNew see [GroupVideoLimits.acceptNew].
          * @param smallerForMany see [GroupVideoLimits.smallerForMany].
@@ -58,14 +60,9 @@ internal data class GroupVideoLimits(
             val slow = band == FlashNetworkBand.WIFI_2_4GHZ
             val fast = band == FlashNetworkBand.ETHERNET || band == FlashNetworkBand.WIFI_5GHZ ||
                 band == FlashNetworkBand.WIFI_6GHZ
-            val tall = if (slow) HEIGHT_540 else HEIGHT_720
+            val tall = sendHeightFor(tier)
             val base = when (tier) {
-                FlashPerformanceMode.LOW -> GroupVideoLimits(
-                    receive = 1,
-                    send = 1,
-                    quality = if (struggling) HEIGHT_360 else HEIGHT_540,
-                    maxSendHeight = HEIGHT_540,
-                )
+                FlashPerformanceMode.LOW -> GroupVideoLimits(receive = 1, send = 1, quality = tall, maxSendHeight = tall)
                 FlashPerformanceMode.MEDIUM -> GroupVideoLimits(receive = 2, send = 2, quality = tall, maxSendHeight = tall)
                 FlashPerformanceMode.HIGH -> GroupVideoLimits(
                     receive = if (slow) 3 else 5,
@@ -79,24 +76,32 @@ internal data class GroupVideoLimits(
                 )
             }
             return base.copy(
+                // A struggling device (hot or CPU-bound) asks every sender for the small copy.
+                quality = if (struggling) minOf(base.quality, HEIGHT_360) else base.quality,
                 receive = receiveCap?.let { minOf(it, base.receive) } ?: base.receive,
                 splitBudget = slow,
                 acceptNew = acceptNew,
                 smallerForMany = smallerForMany,
+                struggling = struggling,
             )
         }
 
         /**
-         * The tallest copy under [smallerForMany] when this device sends [copies] copies of its
-         * video (ADR-053): one keeps the full height, two go at 540p, three or more at 360p. The
-         * mesh runs one encoder per copy, so this cuts the encode work (the largest share of a
-         * desktop call's CPU, ERROR-078) roughly in proportion to the pixels.
+         * The tallest copy a device of [tier] sends or asks for (ADR-098): 540p for HIGH, 360p for
+         * MEDIUM and LOW. 720p is no longer a default on any tier: on the owner's 15 W laptop a
+         * 720p30 software VP8 call used 240-360% of one core (2026-10-08, `logs/experiments.md`).
          */
-        fun heightForCopies(copies: Int): Int = when {
-            copies >= 3 -> HEIGHT_360
-            copies == 2 -> HEIGHT_540
-            else -> HEIGHT_720
+        fun sendHeightFor(tier: FlashPerformanceMode): Int = when (tier) {
+            FlashPerformanceMode.HIGH -> HEIGHT_540
+            FlashPerformanceMode.MEDIUM, FlashPerformanceMode.LOW -> HEIGHT_360
         }
+
+        /**
+         * The tallest copy under [smallerForMany] (ADR-053, changed by ADR-098): always 360p, for
+         * any number of watchers. Before ADR-098 it followed the watcher count (720/540/360), so one
+         * watcher kept the full height and the option did nothing for a one-to-one call.
+         */
+        const val SMALLER_HEIGHT = HEIGHT_360
 
         /**
          * The bitrate ceiling for one copy of [height] (VP8, plan §4.2 estimates; G0 replaces
@@ -150,6 +155,10 @@ internal class GroupVideoRouter(
     private val stepUpMs: Long = 5_000L,
     private val requestRetryMs: Long = REQUEST_RETRY_MS,
     private val noResponseMs: Long = NO_RESPONSE_MS,
+    /** ADR-102: the tallest picture a share goes at for this many watchers (the presenter's ladder). */
+    private val shareHeight: (watchers: Int) -> Int = { ShareLadder.profile(it, ShareQuality.STANDARD, false).maxHeight },
+    /** ADR-102: how many devices this device sends its share to at once (a watcher beyond it is turned down). */
+    private val shareCap: () -> Int = { 4 },
 ) {
     sealed interface Effect {
         data class Send(val frame: CallWireFrame, val peerId: String) : Effect
@@ -191,6 +200,9 @@ internal class GroupVideoRouter(
     private var splitLevel = GroupVideoLimits.HEIGHT_540
     private var stepUpAt: Long? = null
 
+    /** ADR-102: this device presents; its one video is its screen, so a camera that is off no longer turns watchers down. */
+    private var sharing = false
+
     // Receiver side.
     private var receiving = false
     private val asked = LinkedHashMap<String, Asked>()
@@ -201,20 +213,24 @@ internal class GroupVideoRouter(
     private var candidate: String? = null
     private var candidateSince = 0L
 
+    /** ADR-102: the other device that presents. While set it is pinned (the main tile) and asked at share quality. */
+    private var presenter: String? = null
+    private var pinBeforePresenter: String? = null
+
     /** Whether the connection to [peerId] should carry this device's video. */
     fun isSending(peerId: String): Boolean =
-        capability[peerId] == Capability.LEGACY || peerId in watchers
+        if (capability[peerId] == Capability.LEGACY) peerId in legacyServed() else peerId in watchers
 
     /** How many more watchers this device would take now; the `vfree` it announces. */
     fun freeSlots(): Int {
         val limit = limits()
-        if (cameraOff || !limit.acceptNew) return 0
-        return (limit.capacity - watchers.size).coerceAtLeast(0)
+        if ((cameraOff && !sharing) || !limit.acceptNew) return 0
+        return (capacity() - watchers.size).coerceAtLeast(0)
     }
 
     /** The height of the copy sent to [peerId]: null for an old client (full profile), 0 when off. */
     fun sendHeight(peerId: String): Int? = when {
-        capability[peerId] == Capability.LEGACY -> null
+        capability[peerId] == Capability.LEGACY -> if (peerId in legacyServed()) null else 0
         else -> watchers[peerId]?.let { minOf(it.quality, level()) } ?: 0
     }
 
@@ -224,9 +240,10 @@ internal class GroupVideoRouter(
      * step is immediate both ways, since it changes only with a watcher arriving or leaving.
      */
     fun level(): Int {
+        if (sharing) return shareHeight(watchers.size + legacyServed().size)
         val limit = limits()
         val level = if (limit.splitBudget) minOf(splitLevel, limit.maxSendHeight) else limit.maxSendHeight
-        return if (limit.smallerForMany) minOf(level, GroupVideoLimits.heightForCopies(watchers.size)) else level
+        return if (limit.smallerForMany) minOf(level, GroupVideoLimits.SMALLER_HEIGHT) else level
     }
 
     /** The participant the view follows while nothing is pinned (for the LOW layout, G5). */
@@ -283,7 +300,7 @@ internal class GroupVideoRouter(
         val existing = watchers[peerId]
         when {
             // Before the existing-watcher case: a camera that is off keeps nobody, whoever asks again.
-            cameraOff -> {
+            cameraOff && !sharing -> {
                 if (watchers.remove(peerId) != null) adjustLevel(now)
                 turnedDown += peerId
                 out += deny(peerId, frame.seq, VideoDenyReason.CAMERA_OFF)
@@ -295,9 +312,9 @@ internal class GroupVideoRouter(
                 out += deny(peerId, frame.seq, VideoDenyReason.THERMAL)
                 return out + sendingChanges()
             }
-            watchers.size < limits().capacity -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
+            watchers.size < capacity() -> watchers[peerId] = Watcher(frame.seq, frame.quality, frame.focus, now)
             else -> {
-                val evict = if (localSpeaking) {
+                val evict = if (localSpeaking && !sharing) {
                     watchers.entries.filter { !it.value.focus }.minByOrNull { it.value.requestedAt }?.key
                 } else {
                     null
@@ -343,6 +360,7 @@ internal class GroupVideoRouter(
 
     /** The peer hung up or timed out: everything between us ends. */
     fun onPeerLeft(peerId: String): List<Effect> {
+        if (presenter == peerId) applyPresenter(null)
         if (watchers.remove(peerId) != null) adjustLevel(clock())
         turnedDown.remove(peerId)
         asked.remove(peerId)
@@ -364,6 +382,8 @@ internal class GroupVideoRouter(
     fun setCameraOff(off: Boolean): List<Effect> {
         cameraOff = off
         if (!off) return roomAnnouncements()
+        // ADR-102: while presenting, the video is the screen and the camera has nothing to do with the watchers.
+        if (sharing) return emptyList()
         val out = mutableListOf<Effect>()
         watchers.entries.toList().forEach { (peerId, watcher) ->
             out += deny(peerId, watcher.seq, VideoDenyReason.CAMERA_OFF)
@@ -374,13 +394,98 @@ internal class GroupVideoRouter(
         return out + sendingChanges()
     }
 
+    /**
+     * ADR-102: this device starts or stops presenting. Starting: watchers beyond [shareCap] are turned down (the
+     * focused ones stay), the devices that were turned down because the camera is off hear there is room, and every
+     * encoding is re-timed to the share's height. Stopping: a camera that is off turns the watchers down again, a
+     * camera that is on keeps them (trimmed to the camera's capacity).
+     */
+    fun setSharing(on: Boolean): List<Effect> {
+        if (sharing == on) return emptyList()
+        sharing = on
+        if (!on && cameraOff) return setCameraOff(true)
+        val out = mutableListOf<Effect>()
+        out += trimToCapacity()
+        adjustLevel(clock())
+        out += sendingChanges()
+        if (on) out += roomAnnouncements()
+        return out
+    }
+
+    /**
+     * The old clients that are sent video without asking. While presenting they count against the share's cap like any
+     * watcher (S7: an encode per watcher is what the cap protects), after the clients that asked, in call order; one
+     * that does not fit gets nothing, as it cannot be told "no" (it has no request protocol). Not presenting: all of them.
+     */
+    private fun legacyServed(): Set<String> {
+        val old = capability.filterValues { it == Capability.LEGACY }.keys
+        if (old.isEmpty() || !sharing) return old
+        val room = (capacity() - watchers.size).coerceAtLeast(0)
+        return participants().filter { it in old }.take(room).toSet()
+    }
+
+    /** How many watchers this device serves now: the share's cap while presenting, else the camera's capacity. */
+    private fun capacity(): Int {
+        val limit = limits()
+        if (!sharing) return limit.capacity
+        // 2.4 GHz carries two copies of a screen, not four (the split budget is counted for 540p cameras).
+        return if (limit.splitBudget) minOf(shareCap(), 2) else shareCap()
+    }
+
+    /** Turns down the watchers beyond [capacity], keeping the focused ones and then the earliest. */
+    private fun trimToCapacity(): List<Effect> {
+        val cap = capacity()
+        if (watchers.size <= cap) return emptyList()
+        val keep = watchers.entries.sortedByDescending { it.value.focus }.take(cap).map { it.key }.toSet()
+        val out = mutableListOf<Effect>()
+        watchers.entries.toList().filter { it.key !in keep }.forEach { (peerId, watcher) ->
+            watchers.remove(peerId)
+            turnedDown += peerId
+            out += deny(peerId, watcher.seq, VideoDenyReason.SENDER_AT_CAPACITY)
+        }
+        return out
+    }
+
+    /** How many devices receive this device's video now (asked for it, or old clients). */
+    val sendingCount: Int get() = watchers.size + legacyServed().size
+
+    /**
+     * ADR-102: [peerId] presents (null: nobody does). The presenter becomes the pinned participant, so it is asked first,
+     * at share quality, and is the main tile on every layout, including the one-video LOW layout. What the user had
+     * pinned is put back when the presentation ends, unless they pinned someone else meanwhile.
+     */
+    fun setPresenter(peerId: String?): List<Effect> =
+        if (applyPresenter(peerId)) reconcile() else emptyList()
+
+    /** [setPresenter] without the request step; true when the presenter changed. */
+    private fun applyPresenter(peerId: String?): Boolean {
+        val next = peerId?.takeIf { it != localId }
+        if (next == presenter) return false
+        val previous = presenter
+        presenter = next
+        if (next != null) {
+            if (previous == null) pinBeforePresenter = pinned
+            pinned = next
+            blocked.remove(next)
+        } else {
+            // Restore only if the pin is still the presenter's: a pin the user chose since stays theirs.
+            if (pinned == previous) pinned = pinBeforePresenter?.takeIf { it != localId }
+            pinBeforePresenter = null
+        }
+        return true
+    }
+
+    /** The device that presents, as far as this router knows. */
+    val presenterPeer: String? get() = presenter
+
     fun setLocalSpeaking(speaking: Boolean) {
         localSpeaking = speaking
     }
 
     /** Pins [peerId]'s video (a tap), or returns to following the speaker with null. */
     fun setFocus(peerId: String?): List<Effect> {
-        pinned = peerId?.takeIf { it != localId }
+        // ADR-102: with a presentation on, "no pin" means the presenter, not whoever speaks.
+        pinned = (peerId ?: presenter)?.takeIf { it != localId }
         if (pinned != null) blocked.remove(pinned)
         return reconcile()
     }
@@ -456,12 +561,18 @@ internal class GroupVideoRouter(
             // would ever ask again: one still unanswered after [requestRetryMs] is sent afresh, under a new
             // number, so the sender treats it as the current ask and an answer to the old one is ignored.
             val stale = current != null && !current.granted && now - current.sentAt >= requestRetryMs
-            if (current == null || current.focus != focus || current.quality != limit.quality || stale) {
+            // ADR-102: a presentation is asked for at share quality (text needs the height), not the camera's.
+            val quality = if (peerId == presenter) {
+                if (limit.struggling) ShareLadder.ASK_HEIGHT_LOWER else ShareLadder.ASK_HEIGHT
+            } else {
+                limit.quality
+            }
+            if (current == null || current.focus != focus || current.quality != quality || stale) {
                 val seq = nextSeq()
                 // A plain retry of the same ask keeps its first-sent time (so "no response" can be told); a changed ask is new.
-                val firstSentAt = current?.takeIf { stale && it.focus == focus && it.quality == limit.quality }?.firstSentAt ?: now
-                asked[peerId] = Asked(seq, limit.quality, focus, now, firstSentAt = firstSentAt)
-                out += Effect.Send(CallWireFrame.VideoRequest(callId, localId, seq, limit.quality, focus), peerId)
+                val firstSentAt = current?.takeIf { stale && it.focus == focus && it.quality == quality }?.firstSentAt ?: now
+                asked[peerId] = Asked(seq, quality, focus, now, firstSentAt = firstSentAt)
+                out += Effect.Send(CallWireFrame.VideoRequest(callId, localId, seq, quality, focus), peerId)
             }
         }
         return out + sendingChanges()

@@ -285,22 +285,38 @@ class GroupVideoRouterTest {
             high24,
         )
         assertEquals(6, high24.capacity)
-        assertEquals(GroupVideoLimits(5, 5, 720), GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.ETHERNET))
-        assertEquals(GroupVideoLimits(5, 4, 720), GroupVideoLimits.of(FlashPerformanceMode.HIGH, null))
-        assertEquals(GroupVideoLimits(2, 2, 720), GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_5GHZ))
+        // ADR-098: HIGH sends 540p, MEDIUM and LOW 360p; no tier defaults to 720p any more.
         assertEquals(
-            GroupVideoLimits(2, 2, 540, splitBudget = true, maxSendHeight = 540),
+            GroupVideoLimits(5, 5, 540, maxSendHeight = 540),
+            GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.ETHERNET),
+        )
+        assertEquals(
+            GroupVideoLimits(5, 4, 540, maxSendHeight = 540),
+            GroupVideoLimits.of(FlashPerformanceMode.HIGH, null),
+        )
+        assertEquals(
+            GroupVideoLimits(2, 2, 360, maxSendHeight = 360),
+            GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_5GHZ),
+        )
+        assertEquals(
+            GroupVideoLimits(2, 2, 360, splitBudget = true, maxSendHeight = 360),
             GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, FlashNetworkBand.WIFI_2_4GHZ),
         )
         assertEquals(
-            GroupVideoLimits(1, 1, 540, maxSendHeight = 540),
+            GroupVideoLimits(1, 1, 360, maxSendHeight = 360),
             GroupVideoLimits.of(FlashPerformanceMode.LOW, FlashNetworkBand.WIFI_6GHZ),
         )
+        assertEquals(540, GroupVideoLimits.sendHeightFor(FlashPerformanceMode.HIGH))
+        assertEquals(360, GroupVideoLimits.sendHeightFor(FlashPerformanceMode.MEDIUM))
+        assertEquals(360, GroupVideoLimits.sendHeightFor(FlashPerformanceMode.LOW))
     }
 
     @Test
-    fun `a struggling low-tier device asks for 360p, and the health caps apply`() {
+    fun `a struggling device of any tier asks for 360p, and the health caps apply`() {
         assertEquals(360, GroupVideoLimits.of(FlashPerformanceMode.LOW, null, struggling = true).quality)
+        assertEquals(360, GroupVideoLimits.of(FlashPerformanceMode.MEDIUM, null, struggling = true).quality)
+        assertEquals(360, GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.WIFI_5GHZ, struggling = true).quality)
+        assertEquals(540, GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.WIFI_5GHZ).quality)
         val capped = GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.ETHERNET, receiveCap = 1, acceptNew = false)
         assertEquals(1, capped.receive)
         assertFalse(capped.acceptNew)
@@ -380,41 +396,42 @@ class GroupVideoRouterTest {
     }
 
     @Test
-    fun `send smaller video in groups is off by default, then shrinks copies with the watcher count`() {
+    fun `send smaller video in groups is off by default, then sends every copy at 360p whatever the watcher count`() {
         val a = Node("a", GroupVideoLimits.of(FlashPerformanceMode.HIGH, FlashNetworkBand.WIFI_5GHZ).copy(receive = 0))
         assertFalse(a.limits.smallerForMany)
         val watchers = (1..3).map { Node("w$it", GroupVideoLimits(receive = 1, send = 5, quality = 720)) }
         watchers.forEach { it.router.setFocus("a") }
         val mesh = Mesh(a, *watchers.toTypedArray()).apply { join() }
         assertEquals(3, a.sendingTo.size)
-        assertTrue(a.heights.values.all { it == 720 }, "${a.heights}")
+        // HIGH sends 540p (ADR-098) even to watchers that ask for 720p.
+        assertTrue(a.heights.values.all { it == 540 }, "${a.heights}")
         // Turned on mid-call: the next tick re-sends all three at 360p.
         a.limits = a.limits.copy(smallerForMany = true)
         mesh.step(a) { tick(now) }
         assertTrue(a.heights.values.all { it == 360 }, "${a.heights}")
-        // Two watchers: 540p, at once.
+        // Two watchers, then one: still 360p (before ADR-098 one watcher got the full height).
         mesh.step(a) { onPeerLeft("w3") }
-        assertEquals(mapOf<String, Int?>("w1" to 540, "w2" to 540), a.heights)
-        // One watcher: full height again.
+        assertEquals(mapOf<String, Int?>("w1" to 360, "w2" to 360), a.heights)
         mesh.step(a) { onPeerLeft("w2") }
-        assertEquals(mapOf<String, Int?>("w1" to 720), a.heights)
+        assertEquals(mapOf<String, Int?>("w1" to 360), a.heights)
     }
 
     @Test
-    fun `send smaller video never raises a copy above the watcher's ask or the band's cap`() {
-        assertEquals(720, GroupVideoLimits.heightForCopies(0))
-        assertEquals(720, GroupVideoLimits.heightForCopies(1))
-        assertEquals(540, GroupVideoLimits.heightForCopies(2))
-        assertEquals(360, GroupVideoLimits.heightForCopies(3))
-        assertEquals(360, GroupVideoLimits.heightForCopies(7))
+    fun `send smaller video never raises a copy above the watcher's ask or the sender's cap`() {
+        assertEquals(360, GroupVideoLimits.SMALLER_HEIGHT)
         assertTrue(GroupVideoLimits.of(FlashPerformanceMode.HIGH, null, smallerForMany = true).smallerForMany)
         val a = Node("a", GroupVideoLimits(receive = 0, send = 5, quality = 540, maxSendHeight = 540, smallerForMany = true))
-        val b = Node("b", GroupVideoLimits(receive = 1, send = 5, quality = 360))
+        val b = Node("b", GroupVideoLimits(receive = 1, send = 5, quality = 540))
         val mesh = Mesh(a, b).apply { join() }
+        // The watcher asks for 540p; the sender's "send smaller" caps the copy at 360p.
         assertEquals(mapOf<String, Int?>("b" to 360), a.heights)
         b.limits = b.limits.copy(quality = 720)
         mesh.step(b) { tick(now) }
-        assertEquals(mapOf<String, Int?>("b" to 540), a.heights)
+        assertEquals(mapOf<String, Int?>("b" to 360), a.heights)
+        // A watcher that asks for less still gets less.
+        b.limits = b.limits.copy(quality = 360)
+        mesh.step(b) { tick(now) }
+        assertEquals(mapOf<String, Int?>("b" to 360), a.heights)
     }
 
     @Test

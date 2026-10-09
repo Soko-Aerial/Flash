@@ -16,9 +16,17 @@
 # The ui:* modules build against compileSdk 37 while core:* stay on 35, so they are the ones to look at first if a
 # JitPack build starts failing on an SDK platform it cannot install.
 #
+# The vendored webrtc-kmp fork (third_party/webrtc-kmp, an included build, ADR-034) is published FIRST, by its
+# included-build task path, under Flash's own group and version (ADR-103). core:calling and ui:callui api-depend on
+# it; their POMs name com.transfer.flash:webrtc-kmp-android / -jvm, which JitPack rewrites to
+# com.github.<user>.<repo> like every other module. Before ADR-103 those POMs named com.shepeliev:webrtc-kmp-android:
+# 0.125.11-flash-1, which exists nowhere a consumer can fetch it. Its native pieces stay on Maven Central:
+# io.github.webrtc-sdk:android (Android) and dev.onvoid.webrtc:webrtc-java (desktop; the per-OS native classifier jar is
+# the consumer's runtimeOnly choice, see README).
+#
 # -x test -x lint keeps builds fast and avoids test-only deps (bouncycastle,
 # robolectric) failing the publish.
 jdk:
   - openjdk17
 install:
-  - ./gradlew :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:swarm:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint
+  - ./gradlew :webrtc-kmp:webrtc-kmp:publishToMavenLocal :core:common:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:swarm:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.group.GroupLocalPreferences
+import com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling
 import com.transfer.flash.core.messaging.protocol.GroupSettings
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -65,6 +66,11 @@ public fun FlashGroupSettingsSheet(
     onUpdatePreferences: (serveToGroup: Boolean?, serveWifiOnly: Boolean?, batteryThreshold: Int?, keepDays: Int?) -> Unit = { _, _, _, _ -> },
     onShareInvite: (() -> Unit)? = null,
     onChangeGroupCode: (() -> Unit)? = null,
+    /** ADR-100 / UI-057: true only when the admin seam says this device may change the history ceiling. */
+    canChangeHistoryCeiling: Boolean = false,
+    onUpdateHistoryCeiling: (GroupHistoryCeiling) -> Unit = {},
+    /** ADR-100 / UI-057: "Load older messages" for a member; null hides the row (not a group member, or no sync). */
+    onLoadOlderHistory: ((windowMs: Long) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val canEdit = remember(isOwner, isAdmin) { FlashGroupSettingsMath.canEditGroupRules(isOwner, isAdmin) }
@@ -72,6 +78,10 @@ public fun FlashGroupSettingsSheet(
     val effectivePrefs = preferences ?: GroupLocalPreferences.defaults("preview")
 
     var showRotateConfirm by remember { mutableStateOf(false) }
+    var loadOlderOpen by remember { mutableStateOf(false) }
+    val ceiling = effectiveSettings.historyCeiling
+    val loadOlderOptions = remember(ceiling) { FlashGroupHistoryMath.loadOlderOptions(ceiling) }
+    var loadOlderSelected by remember(ceiling) { mutableIntStateOf(loadOlderOptions.lastIndex.coerceAtLeast(0)) }
 
     // Steppers compute the next value from the one on screen. Two quick taps would both read the stored value and
     // send the same number, losing a step, so each stepper keeps a local value that follows the stored one again
@@ -230,6 +240,79 @@ public fun FlashGroupSettingsSheet(
             )
 
             Spacer(modifier = Modifier.height(FlashSpacing.space24))
+
+            // Section 1b: earlier history (ADR-100). The ceiling is a signed rule; the load-older row is this member's own.
+            if (settings != null || onLoadOlderHistory != null) {
+                SectionHeader(
+                    title = FlashGroupHistoryMath.HISTORY_SECTION_TITLE,
+                    subtitle = FlashGroupHistoryMath.HISTORY_SECTION_SUBTITLE,
+                )
+                if (canChangeHistoryCeiling) {
+                    FlashText(
+                        text = FlashGroupHistoryMath.CEILING_TITLE,
+                        style = FlashTheme.typography.bodyEmphasis,
+                        color = colors.textPrimary,
+                        modifier = Modifier.padding(bottom = FlashSpacing.space8),
+                    )
+                    FlashChoiceChipRail(
+                        labels = FlashGroupHistoryMath.ceilingChoices.map { FlashGroupHistoryMath.ceilingLabel(it) },
+                        descriptions = FlashGroupHistoryMath.ceilingChoices.map {
+                            FlashGroupHistoryMath.ceilingOptionDescription(it, it == ceiling)
+                        },
+                        selectedIndex = FlashGroupHistoryMath.ceilingChoices.indexOf(ceiling).coerceAtLeast(0),
+                        onSelect = { index ->
+                            val chosen = FlashGroupHistoryMath.ceilingChoices[index]
+                            if (chosen != ceiling) onUpdateHistoryCeiling(chosen)
+                        },
+                    )
+                    FlashText(
+                        text = FlashGroupHistoryMath.ceilingDescription(ceiling) + " " + FlashGroupHistoryMath.CEILING_NOTE,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(top = FlashSpacing.space8),
+                    )
+                } else {
+                    FlashText(
+                        text = FlashGroupHistoryMath.ceilingReadOnly(ceiling),
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                        modifier = Modifier.padding(bottom = FlashSpacing.space4),
+                    )
+                }
+                if (onLoadOlderHistory != null && loadOlderOptions.isNotEmpty()) {
+                    ActionRow(
+                        title = FlashGroupHistoryMath.LOAD_OLDER_TITLE,
+                        icon = FlashIcons.Download,
+                        onClick = { loadOlderOpen = !loadOlderOpen },
+                    )
+                    if (loadOlderOpen) {
+                        FlashChoiceChipRail(
+                            labels = loadOlderOptions.map { FlashGroupHistoryMath.windowLabel(it) },
+                            descriptions = loadOlderOptions.mapIndexed { index, window ->
+                                FlashGroupHistoryMath.optionDescription(window, index == loadOlderSelected)
+                            },
+                            selectedIndex = loadOlderSelected.coerceIn(0, loadOlderOptions.lastIndex),
+                            onSelect = { loadOlderSelected = it },
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = FlashSpacing.space8),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            HistoryButton(
+                                text = FlashGroupHistoryMath.LOAD_OLDER_ACTION,
+                                filled = true,
+                                onClick = {
+                                    loadOlderOpen = false
+                                    onLoadOlderHistory(loadOlderOptions[loadOlderSelected.coerceIn(0, loadOlderOptions.lastIndex)])
+                                },
+                            )
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(FlashSpacing.space24))
+            }
 
             // Section 2: This device (Local preferences)
             SectionHeader(
@@ -406,7 +489,7 @@ private fun SectionHeader(title: String, subtitle: String) {
 }
 
 @Composable
-private fun SettingsSwitchRow(
+internal fun SettingsSwitchRow(
     title: String,
     description: String,
     checked: Boolean,

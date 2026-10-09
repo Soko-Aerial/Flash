@@ -142,13 +142,22 @@ bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", versi
 # JVM-variant-only scope; the human-authorized new dependency of the P2 decision.
 jna = { group = "net.java.dev.jna", name = "jna", version = "5.17.0" }
 jna-platform = { group = "net.java.dev.jna", name = "jna-platform", version = "5.17.0" }
+# BT-0x / ADR-101 (Bluetooth + serial radio link, 2026-10-09): serial ports for the KISS TNC radio link on Windows (COM ports,
+# including a Bluetooth SPP virtual COM port) and Linux (/dev/rfcomm*, /dev/ttyACM*). Dual licensed Apache-2.0 OR LGPL-3.0 (take
+# Apache-2.0). Bundles its own native libraries inside the jar and extracts them to a temp folder at first use. Alternatives
+# rejected: JSSC (LGPL-3 only, slower release cadence), purejavacomm (JNA, unmaintained), java.io on "\.\COMn" (no port listing,
+# no timeouts on Windows). `implementation` in `:core:network` jvmMain only; never Android (Android uses BluetoothSocket).
+jserialcomm = { group = "com.fazecast", name = "jSerialComm", version = "2.11.4" }
 # ERROR-063 (human-authorized 2026-09-16): pure-Java MP4 demux + AAC decode for desktop
 # voice notes. `implementation` in `:ui:platform-shims` jvmMain only — no public signature
 # mentions it (PCM stays inside the player), so nothing leaks into the published POM.
 jcodec = { group = "org.jcodec", name = "jcodec", version.ref = "jcodec" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
-webrtc-kmp = { group = "com.shepeliev", name = "webrtc-kmp", version = "0.125.11" }
+# ADR-103: `webrtc-kmp` (the vendored fork, third_party/webrtc-kmp, group com.transfer.flash, version = flashLibraryVersion) is
+# declared in settings.gradle.kts, NOT here: a toml cannot read the version property, and a version-less entry publishes a
+# POM dependency without a version. Do not add a `webrtc-kmp` line here (the catalog would have two). Upstream
+# `com.shepeliev:webrtc-kmp` has no jvm() target and is NOT a valid replacement (ADR-034).
 # Phase 14: desktop mDNS/DNS-SD. The group is `org.jmdns` — PHASE-14 specifies
 # `io.jmdns:jmdns`, which does NOT exist (Maven Central returns 404 for its
 # maven-metadata.xml). `javax.jmdns:jmdns` also exists but is abandoned at 3.4.1.

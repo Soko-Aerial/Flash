@@ -12,6 +12,7 @@ import com.transfer.flash.core.transfer.chunked.ChunkSource
 import com.transfer.flash.core.transfer.chunked.Chunker
 import com.transfer.flash.core.transfer.chunked.FileMeta
 import com.transfer.flash.core.transfer.chunked.ResumeBitVector
+import com.transfer.flash.core.transfer.chunked.ReceivePipeline
 import com.transfer.flash.core.transfer.chunked.Sha256
 import com.transfer.flash.core.transfer.chunked.WholeFileCheck
 import com.transfer.flash.core.transfer.chunked.WholeFileVerifier
@@ -502,6 +503,8 @@ public class RealFlashTransferRepository(
             when (val result = dispatcher.send()) {
                 is MultiStreamResult.Completed -> {
                     progressJob.cancel()
+                    // R-01: wait for a tick that is mid-write, or it re-inserts chunk rows after they are deleted below.
+                    progressJob.join()
                     if (result.verified == false) {
                         // The receiver assembled every chunk and its whole-file check failed (ADR-068). Not a
                         // success, and a retry must resend everything, so the confirmed set goes too.
@@ -526,6 +529,9 @@ public class RealFlashTransferRepository(
                         }
                         store?.setStatus(transferId, FlashTransferState.Completed.name)
                         store?.setBytesDone(transferId, fileSize)
+                        // R-01: a finished transfer keeps no chunk rows (they were never deleted, so the table grew
+                        // for ever and every start loaded all of it).
+                        store?.clearDoneChunks(transferId)
                     }
                 }
 
@@ -826,6 +832,7 @@ public class RealFlashTransferRepository(
             it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L)
         }
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
+        forgetChunks(transferId.value, null)
 
         // Tell the counterpart so both sides tear down deterministically (ADR-018).
         if (transfer != null) {
@@ -926,6 +933,7 @@ public class RealFlashTransferRepository(
                             errorMessage = "cancelled by receiver",
                         )
                     }
+                    forgetChunks(transferId, FlashTransferState.Cancelled)
                 }
                 FlashTransferDirection.Receiving -> {
                     // Host tears down sink + pipeline session on this event.
@@ -938,6 +946,7 @@ public class RealFlashTransferRepository(
                             errorMessage = "cancelled by sender",
                         )
                     }
+                    forgetChunks(transferId, FlashTransferState.Cancelled)
                 }
             }
         }
@@ -971,23 +980,55 @@ public class RealFlashTransferRepository(
     private val receiverRateMetersLock = PlatformLock()
     private val receiverRateMeters = mutableMapOf<String, RollingRateMeter>()
 
-    /** Warms [receiverDone] from persisted chunk rows. Call once during transport startup. */
+    /**
+     * Forgets the confirmed-chunk set of a finished transfer, in memory and in the store (R-01, sweep 2026-10-09).
+     * [status], when given, is written first so the startup purge can still find the row if the delete is lost.
+     */
+    private fun forgetChunks(transferId: String, status: FlashTransferState?) {
+        receiverDoneLock.withLock { receiverDone.remove(transferId) }
+        val activeStore = store ?: return
+        repositoryScope.launch(workerDispatcher) {
+            if (status != null) activeStore.setStatus(transferId, status.name)
+            activeStore.clearDoneChunks(transferId)
+        }
+    }
+
+    /**
+     * Warms [receiverDone] from persisted chunk rows. Call once during transport startup.
+     *
+     * R-01: rows of transfers already Completed or Cancelled are deleted first (no schema change; the rows carry no
+     * timestamp, so the transfer's own status is the only age signal), and the rest are loaded in one linear pass: the
+     * highest index per transfer is found first, each vector is allocated once and filled. The old loop re-allocated and
+     * re-copied the vector for every row that raised the highest index, under [receiverDoneLock].
+     * Rows of a receive that finished before the `transfers` row existed cannot be told from a live partial and are kept.
+     */
     public suspend fun preloadReceiverProgress() {
-        val rows = store?.allDoneChunks() ?: return
+        val activeStore = store ?: return
+        try {
+            val purged = activeStore.purgeFinishedChunks()
+            if (purged > 0) runCatching { FlashLog.i("DATABASE", "purged $purged chunk rows of finished transfers") }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            runCatching { FlashLog.w("DATABASE", "chunk purge failed: ${e::class.simpleName}") }
+        }
+        val rows = activeStore.allDoneChunks()
+        val highest = HashMap<String, Int>()
+        for (row in rows) {
+            if (row.chunkIndex < 0) continue
+            val seen = highest[row.transferId]
+            if (seen == null || row.chunkIndex > seen) highest[row.transferId] = row.chunkIndex
+        }
+        val built = HashMap<String, ResumeBitVector>(highest.size * 2)
+        for ((id, top) in highest) built[id] = ResumeBitVector(top + 1)
+        for (row in rows) {
+            if (row.chunkIndex < 0) continue
+            built[row.transferId]?.markReceived(row.chunkIndex)
+        }
         receiverDoneLock.withLock {
-            for (row in rows) {
-                if (row.chunkIndex < 0) continue
-                val existing = receiverDone[row.transferId]
-                val requiredChunks = row.chunkIndex + 1
-                val bits = if (existing == null || existing.totalChunks < requiredChunks) {
-                    ResumeBitVector(requiredChunks).also { grown ->
-                        if (existing != null) grown.reconcile(existing.doneIndexes())
-                        receiverDone[row.transferId] = grown
-                    }
-                } else {
-                    existing
-                }
-                bits.markReceived(row.chunkIndex)
+            for ((id, bits) in built) {
+                receiverDone[id]?.let { live -> bits.reconcile(live.doneIndexes()) }
+                receiverDone[id] = bits
             }
         }
     }
@@ -998,17 +1039,22 @@ public class RealFlashTransferRepository(
 
     /**
      * Records receiver-confirmed chunks (#20): updates memory immediately and persists only indexes
-     * not already known. Negative wire-derived indexes are ignored.
+     * not already known. Negative wire-derived indexes are ignored. A finished (Completed / Cancelled)
+     * transfer records nothing: a late confirmation must not re-create rows that were just deleted (R-01).
      */
     public fun onIncomingChunkConfirmed(transferId: String, indexes: List<Int>) {
         if (indexes.isEmpty()) return
+        val state = _activeTransfers.value.find { it.id.value == transferId }?.state
+        if (state == FlashTransferState.Completed || state == FlashTransferState.Cancelled) return
         val fresh = receiverDoneLock.withLock {
             val valid = indexes.filter { it >= 0 }
             if (valid.isEmpty()) return@withLock emptyList()
             val requiredChunks = valid.maxOrNull()!! + 1
             val existing = receiverDone[transferId]
             val bits = if (existing == null || existing.totalChunks < requiredChunks) {
-                ResumeBitVector(requiredChunks).also { grown ->
+                // Grow geometrically: exact-size growth copied the whole vector for every new highest index.
+                val size = maxOf(requiredChunks, minOf((existing?.totalChunks ?: 0) * 2, ReceivePipeline.MAX_TOTAL_CHUNKS))
+                ResumeBitVector(size).also { grown ->
                     if (existing != null) grown.reconcile(existing.doneIndexes())
                     receiverDone[transferId] = grown
                 }
@@ -1048,6 +1094,13 @@ public class RealFlashTransferRepository(
                     peerDeviceId = peerDeviceId,
                     isEncrypted = peerDeviceId?.let { isPeerEncrypted(it) } ?: false,
                 )
+            }
+        }
+        // R-01: a receive had chunk rows but no `transfers` row, so nothing could ever tell a finished receive's rows from
+        // a live partial one. The row (status Offered, then Completed / Cancelled) is what the startup purge keys on.
+        store?.let { activeStore ->
+            repositoryScope.launch(workerDispatcher) {
+                activeStore.insertTransfer(transferId, totalBytes, FlashTransferState.Offered.name)
             }
         }
     }
@@ -1128,6 +1181,7 @@ public class RealFlashTransferRepository(
                 errorMessage = "declined",
             )
         }
+        forgetChunks(id, FlashTransferState.Cancelled)
         // Host drops the (never-materialized) pipeline session; sender abandons the parked send.
         emitIncoming(id, ACTION_DECLINE)
         emitOutgoing(id, transfer.peerDeviceId, ACTION_CANCEL)
@@ -1238,6 +1292,7 @@ public class RealFlashTransferRepository(
                 localPath = localPath ?: transfer.localPath,
             )
         }
+        forgetChunks(transferId, FlashTransferState.Completed)
     }
 
     /**

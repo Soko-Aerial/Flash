@@ -17,14 +17,20 @@ import com.transfer.flash.core.swarm.model.SwarmTombstoneReason
 import com.transfer.flash.core.transfer.ExternalTransferControl
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.engine.concurrent.PlatformLock
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * The single place that wires the swarm engine into a host (§5.2, SW-8 Task 3).
@@ -36,6 +42,7 @@ import kotlinx.coroutines.launch
  * - Wires network state transitions to [SwarmDriver.onNetworkUp] and [SwarmDriver.onNetworkDown].
  * - Attaches swarm transfer rows into [RealFlashTransferRepository] with full [ExternalTransferControl].
  */
+@OptIn(FlashInternalApi::class)
 public class SwarmHostBinding(
     public val config: FlashSwarmConfig,
     public val localDeviceId: String,
@@ -53,8 +60,25 @@ public class SwarmHostBinding(
     seed: Long = 42L,
 ) {
 
-    private val bindingJob = Job()
-    private val bindingScope = CoroutineScope(scope.coroutineContext + bindingJob)
+    /**
+     * A child of the engine's [scope] (so closing the engine stops the poll loop, the collectors and the driver) and a
+     * supervisor (so one failing child, such as a hostile announcement, cannot cancel its siblings or the binding).
+     */
+    internal val bindingJob: Job = SupervisorJob(scope.coroutineContext[Job])
+
+    /** Anything that still escapes a launch body is logged here; without a handler it would reach the process's uncaught handler. */
+    private val bindingExceptionHandler = CoroutineExceptionHandler { _, t ->
+        FlashLog.e("SWARM", "swarm binding coroutine failed: ${t::class.simpleName}: ${t.message}", t)
+    }
+    private val bindingScope = CoroutineScope(scope.coroutineContext + bindingJob + bindingExceptionHandler)
+
+    /** Inbound FSW1 frames: one ordered, bounded queue per peer. */
+    private val inbox = PeerOrderedInbox(bindingScope, workerDispatcher) { peerId, frame ->
+        driver.onInboundFrame(peerId, frame)
+    }
+
+    private val detachLock = PlatformLock()
+    private var detached = false
 
     public val transport: NetworkSwarmTransport = NetworkSwarmTransport(
         sendFrameToPeer = { peerId, frameBytes ->
@@ -88,9 +112,7 @@ public class SwarmHostBinding(
         // 1. Register FSW1 magic with MagicFrameRouter
         magicRouter.register(MagicFrameRouter.FSW1_MAGIC) { peerDeviceId, frame, _ ->
             if (peerDeviceId != null) {
-                bindingScope.launch(workerDispatcher) {
-                    driver.onInboundFrame(peerDeviceId, frame)
-                }
+                inbox.offer(peerDeviceId, frame)
                 true
             } else {
                 false
@@ -104,6 +126,9 @@ public class SwarmHostBinding(
                     id.value to session.peer.features
                 }.toMap()
                 transport.updateConnectedPeers(peers)
+                // A peer that left has no use for its inbound queue (frames already queued are still handled).
+                val connected = sessions.keys.map { it.value }.toSet()
+                for (gone in inbox.peers().filter { it !in connected }) inbox.closePeer(gone)
             }
         }
 
@@ -168,28 +193,7 @@ public class SwarmHostBinding(
         // 5. Wire inbound swarm announcements from chatRepository
         chatRepository?.let { repo ->
             repo.swarmAnnouncementListener = com.transfer.flash.core.messaging.GroupSwarmAnnouncementListener { groupId, messageId, transferId, from, root, pieceSize, totalSize, fileName, mimeType, sentAt, rootSig ->
-                bindingScope.launch(workerDispatcher) {
-                    val now = com.transfer.flash.core.common.time.SystemTimeSource.nowMs()
-                    val authorKey = groupContext.authorKey(groupId, from) ?: ""
-                    val event = com.transfer.flash.core.swarm.engine.SwarmEvent.Announced(
-                        groupId = groupId,
-                        messageId = messageId,
-                        originId = from,
-                        originKey = authorKey,
-                        root = com.transfer.flash.core.swarm.model.ContentRoot(root),
-                        totalSize = totalSize,
-                        pieceSize = pieceSize,
-                        fileName = fileName,
-                        mime = mimeType,
-                        sentAtMs = sentAt,
-                        expiresAtMs = sentAt + (7 * 24 * 3600 * 1000L),
-                        isOrigin = false,
-                        localUri = null,
-                        autoAccept = config.autoAccept,
-                        nowMs = now,
-                    )
-                    driver.announceContent(event)
-                }
+                onSwarmAnnouncement(groupId, messageId, from, root, pieceSize, totalSize, fileName, mimeType, sentAt)
             }
         }
 
@@ -197,8 +201,66 @@ public class SwarmHostBinding(
         chatRepository?.let { repo ->
             repo.onGroupMessageDeletedForEveryone = { groupId, messageId ->
                 bindingScope.launch(workerDispatcher) {
-                    driver.cancelAsOrigin(messageId, reason = SwarmTombstoneReason.DELETED)
+                    try {
+                        driver.cancelAsOrigin(messageId, reason = SwarmTombstoneReason.DELETED)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        FlashLog.w("SWARM", "origin cancel after delete failed msg=$messageId: ${t::class.simpleName}: ${t.message}")
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * An announcement arrives from a group member over the wire, so every field is checked BEFORE an engine event is
+     * built: `ContentRoot(root)` throws on anything but 64 lowercase hex characters, and that exception used to
+     * escape an unguarded launch (remote-triggered crash of the host).
+     */
+    internal fun onSwarmAnnouncement(
+        groupId: String,
+        messageId: String,
+        from: String,
+        root: String,
+        pieceSize: Int,
+        totalSize: Long,
+        fileName: String,
+        mimeType: String,
+        sentAt: Long,
+    ) {
+        val problem = announcementProblem(root, pieceSize, totalSize)
+        if (problem != null) {
+            // The root is not logged raw: it is wire text of unknown shape. Only its length is.
+            FlashLog.w("SWARM", "swarm announcement dropped ($problem) group=$groupId msg=$messageId from=$from rootLen=${root.length}")
+            return
+        }
+        bindingScope.launch(workerDispatcher) {
+            try {
+                val now = com.transfer.flash.core.common.time.SystemTimeSource.nowMs()
+                val authorKey = groupContext.authorKey(groupId, from) ?: ""
+                val event = com.transfer.flash.core.swarm.engine.SwarmEvent.Announced(
+                    groupId = groupId,
+                    messageId = messageId,
+                    originId = from,
+                    originKey = authorKey,
+                    root = com.transfer.flash.core.swarm.model.ContentRoot(root),
+                    totalSize = totalSize,
+                    pieceSize = pieceSize,
+                    fileName = fileName,
+                    mime = mimeType,
+                    sentAtMs = sentAt,
+                    expiresAtMs = swarmExpiryFor(sentAt, now),
+                    isOrigin = false,
+                    localUri = null,
+                    autoAccept = config.autoAccept,
+                    nowMs = now,
+                )
+                driver.announceContent(event)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.w("SWARM", "swarm announcement failed group=$groupId msg=$messageId: ${t::class.simpleName}: ${t.message}")
             }
         }
     }
@@ -339,6 +401,8 @@ public class SwarmHostBinding(
                 offset += read
             }
             builder.build()
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Throwable) {
             return null
         } finally {
@@ -356,14 +420,39 @@ public class SwarmHostBinding(
         return manifest to rootSig
     }
 
-    private companion object {
+    internal companion object {
         const val ENVIRONMENT_POLL_MS: Long = 2_000L
+
+        /**
+         * Null when a wire announcement is acceptable, else the reason it is not. Mirrors the ContentRoot and PieceMath
+         * limits (64 lowercase hex, power-of-two piece size from 64 KiB to 1 MiB, 1..16 GiB, at most 16,384 pieces)
+         * without throwing.
+         */
+        fun announcementProblem(root: String, pieceSize: Int, totalSize: Long): String? {
+            if (root.length != 64 || !root.all { it in '0'..'9' || it in 'a'..'f' }) return "root is not 64 lowercase hex"
+            val min = com.transfer.flash.core.swarm.model.PieceMath.MIN_PIECE_SIZE
+            val max = com.transfer.flash.core.swarm.model.PieceMath.MAX_PIECE_SIZE
+            if (pieceSize !in min..max || (pieceSize and (pieceSize - 1)) != 0) return "bad piece size"
+            if (totalSize !in 1L..com.transfer.flash.core.swarm.model.PieceMath.MAX_SWARMABLE_FILE_SIZE) return "bad total size"
+            val pieces = (totalSize + pieceSize - 1) / pieceSize
+            if (pieces > com.transfer.flash.core.swarm.model.PieceMath.MAX_PIECE_COUNT) return "too many pieces"
+            return null
+        }
     }
 
     /**
-     * Detaches the swarm from the host and unregisters frame routers.
+     * Detaches the swarm from the host and unregisters frame routers. Idempotent.
      */
     public fun detach() {
+        // A second call (engine close after detachSwarm) must not unregister a router entry or listener that a newer
+        // binding has installed in the meantime.
+        val first = detachLock.withLock {
+            val was = detached
+            detached = true
+            !was
+        }
+        if (!first) return
+        inbox.closeAll()
         if (chatRepository?.swarmAnnouncementListener != null) {
             chatRepository.swarmAnnouncementListener = null
         }
@@ -373,4 +462,21 @@ public class SwarmHostBinding(
         magicRouter.unregister(MagicFrameRouter.FSW1_MAGIC)
         bindingJob.cancel()
     }
+}
+
+/** How long a received swarm announcement stays fetchable after it was sent. */
+internal const val SWARM_ANNOUNCEMENT_TTL_MS: Long = 7L * 24 * 3600 * 1000L
+
+/** How far into this device's future an announcement's `sentAt` is believed (matches the chat store's signed-message skew). */
+internal const val SWARM_SENT_AT_SKEW_MS: Long = 5L * 60_000L
+
+/**
+ * Expiry of a received swarm announcement (R-10, sweep 2026-10-09). `sentAt` is the sender's own number: it used to be
+ * added to the 7 day window as it came, so `Long.MAX_VALUE` overflowed to a negative expiry and a far-future stamp made
+ * the content effectively immortal. The base is capped at [now] plus a small clock-skew allowance and the sum saturates.
+ */
+internal fun swarmExpiryFor(sentAt: Long, now: Long): Long {
+    val latest = if (now > Long.MAX_VALUE - SWARM_SENT_AT_SKEW_MS) Long.MAX_VALUE else now + SWARM_SENT_AT_SKEW_MS
+    val base = minOf(sentAt, latest)
+    return if (base > Long.MAX_VALUE - SWARM_ANNOUNCEMENT_TTL_MS) Long.MAX_VALUE else base + SWARM_ANNOUNCEMENT_TTL_MS
 }

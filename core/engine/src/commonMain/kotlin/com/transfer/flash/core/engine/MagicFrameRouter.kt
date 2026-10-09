@@ -21,13 +21,13 @@ public typealias MagicFrameHandler = (peerDeviceId: String?, frame: ByteArray, r
  * the frame is dropped with a rate-limited log line so stray frames never reach the transfer pipeline.
  */
 public class MagicFrameRouter(
-    private val timeSource: () -> Long = {
-        kotlin.time.TimeSource.Monotonic.markNow().elapsedNow().inWholeMilliseconds
-    },
+    private val timeSource: () -> Long = monotonicMillis(),
 ) {
     private val lock = PlatformLock()
     private val handlers = mutableMapOf<MagicKey, MagicFrameHandler>()
-    private var lastReservedDropLogMs: Long = 0L
+
+    /** Null until the first drop is logged, so the first dropped frame is always reported (the clock's origin is arbitrary). */
+    private var lastReservedDropLogMs: Long? = null
 
     public fun register(magic: ByteArray, handler: MagicFrameHandler) {
         val key = MagicKey.of(magic) ?: throw IllegalArgumentException("Magic must be at least 4 bytes")
@@ -61,7 +61,8 @@ public class MagicFrameRouter(
         if (RESERVED_MAGICS.contains(key)) {
             val now = timeSource()
             val shouldLog = lock.withLock {
-                if (now - lastReservedDropLogMs >= LOG_RATE_LIMIT_MS) {
+                val last = lastReservedDropLogMs
+                if (last == null || now - last >= LOG_RATE_LIMIT_MS) {
                     lastReservedDropLogMs = now
                     true
                 } else {
@@ -92,6 +93,15 @@ public class MagicFrameRouter(
     public companion object {
         private const val TAG = "SWARM"
         private const val LOG_RATE_LIMIT_MS = 10_000L
+
+        /**
+         * A monotonic millisecond clock measured from a single origin captured NOW. The previous default called
+         * `markNow().elapsedNow()` on every read, which is always about 0, so the rate-limited drop warning never fired.
+         */
+        internal fun monotonicMillis(): () -> Long {
+            val origin = kotlin.time.TimeSource.Monotonic.markNow()
+            return { origin.elapsedNow().inWholeMilliseconds }
+        }
 
         public val FSW1_MAGIC: ByteArray = byteArrayOf('F'.code.toByte(), 'S'.code.toByte(), 'W'.code.toByte(), '1'.code.toByte())
 

@@ -45,11 +45,16 @@ class FlashShimContractTest {
     }
 
     @Test
-    fun `microphone is the only permission both actuals have to map`() {
-        // Each actual translates this enum to something platform-specific — a manifest name on
-        // Android, an unconditional `true` on desktop. A new constant added without touching both
-        // would compile and then fail at runtime on whichever platform was forgotten, so the count
-        // is the tripwire.
-        assertEquals(listOf(FlashPermission.Microphone), FlashPermission.entries.toList())
+    fun `microphone and camera are the permissions both actuals have to map`() {
+        // Each actual translates this enum to something platform-specific: a manifest name on Android
+        // (RECORD_AUDIO, CAMERA), an unconditional `true` on desktop. A new constant added without
+        // touching both would compile and then fail at runtime on whichever platform was forgotten, so
+        // the exact list is the tripwire. Camera joined in the UI polish roadmap (the system camera
+        // intent throws unless CAMERA is granted); this test was still pinning the single-entry list
+        // and went red on CI on 2026-10-08. Adding a constant means updating this list on purpose.
+        assertEquals(
+            listOf(FlashPermission.Microphone, FlashPermission.Camera),
+            FlashPermission.entries.toList(),
+        )
     }
 }

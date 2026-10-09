@@ -3,9 +3,12 @@ package com.transfer.flash.core.persistence.db
 import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.transfer.flash.core.persistence.db.entity.GroupDeliveryEntity
+import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.MessagePinEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
+import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
+import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -386,6 +389,70 @@ class FlashDatabaseJvmTest {
 
         assertEquals(1, dao.purgeExpiredTombstones(1700000060000L))
         assertNull(dao.getTombstone("g2-crew", "m-123"))
+    }
+
+    @Test
+    fun `R-01 purgeFinishedChunks deletes only the chunks of Completed and Cancelled transfers`() = runBlocking {
+        val db = openDatabase()
+        val transfers = db.transferDao()
+        val chunks = db.transferChunkDao()
+        for ((id, status) in listOf("done" to "Completed", "gone" to "Cancelled", "live" to "Transferring", "bad" to "Failed", "wait" to "Paused")) {
+            transfers.insert(TransferEntity(id, 100L, 0L, status))
+            chunks.insertAll((0 until 5).map { TransferChunkEntity(id, it, done = true) })
+        }
+        // A chunk set with no transfers row at all (a receive from before the row existed) must be left alone.
+        chunks.insertAll((0 until 3).map { TransferChunkEntity("orphan", it, done = true) })
+
+        val removed = chunks.purgeFinishedChunks()
+
+        assertEquals(10, removed, "5 rows of the Completed and 5 of the Cancelled transfer")
+        assertEquals(emptyList(), chunks.doneChunks("done"), "completed transfer keeps no chunk rows")
+        assertEquals(emptyList(), chunks.doneChunks("gone"), "cancelled transfer keeps no chunk rows")
+        for (id in listOf("live", "bad", "wait")) assertEquals(listOf(0, 1, 2, 3, 4), chunks.doneChunks(id), "$id is resumable")
+        assertEquals(listOf(0, 1, 2), chunks.doneChunks("orphan"), "rows with no transfer row are kept")
+        assertEquals(0, chunks.purgeFinishedChunks(), "second run finds nothing")
+    }
+
+    private fun fileRow(localId: String, conversation: String, sender: String, transferId: String) = MessageEntity(
+        localId = localId,
+        conversationId = conversation,
+        senderId = sender,
+        senderName = sender,
+        text = "",
+        sentAt = 1_000L,
+        status = "DELIVERED",
+        attachmentTransferId = transferId,
+        attachmentName = "a.bin",
+        attachmentSize = 10L,
+    )
+
+    @Test
+    fun `R-08 updateGroupContext moves the senders own provisional row and nobody elses`() = runBlocking {
+        val dao = openDatabase().messageDao()
+        dao.insert(fileRow("local-1", "peer-a", "peer-a", "tx-a"))
+        dao.insert(fileRow("local-2", "peer-b", "peer-b", "tx-b"))
+
+        assertEquals(0, dao.updateGroupContext("tx-b", "g2-grp", "wire-1", "peer-a", "Mallory"), "peer-a cannot claim peer-b's file")
+        assertEquals("peer-b", dao.getByLocalId("local-2")?.conversationId)
+        assertEquals("peer-b", dao.getByLocalId("local-2")?.senderId)
+
+        assertEquals(1, dao.updateGroupContext("tx-a", "g2-grp", "wire-1", "peer-a", "Alice"))
+        val moved = dao.getByLocalId("wire-1")
+        assertEquals("g2-grp", moved?.conversationId)
+        assertEquals("Alice", moved?.senderName)
+        assertNull(dao.getByLocalId("local-1"))
+    }
+
+    @Test
+    fun `R-08 updateGroupContext with a message id that is already taken changes nothing and does not throw`() = runBlocking {
+        val dao = openDatabase().messageDao()
+        dao.insert(fileRow("local-1", "peer-a", "peer-a", "tx-a"))
+        dao.insert(fileRow("taken", "g2-grp", "peer-c", "tx-c"))
+
+        assertEquals(0, dao.updateGroupContext("tx-a", "g2-grp", "taken", "peer-a", "Alice"))
+
+        assertEquals("peer-a", dao.getByLocalId("local-1")?.conversationId, "the provisional row stays where it was")
+        assertEquals("peer-c", dao.getByLocalId("taken")?.senderId, "the other row is untouched")
     }
 
     private fun peer(deviceId: String) = TrustedPeerEntity(

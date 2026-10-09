@@ -91,6 +91,27 @@ class PersistedFlashCryptoTest {
     }
 
     @Test
+    fun `R-17 a first-run persist failure continues with an in-memory identity and logs loudly`() {
+        val stateDir = stateDir()
+        val brokenVault = IdentityKeyVault(
+            protectFn = { throw java.io.IOException("DPAPI unavailable") },
+            unprotectFn = { it },
+        )
+        val logs = mutableListOf<String>()
+
+        val crypto = PersistedFlashCrypto(stateDir, brokenVault) { logs += it }
+        val pub = crypto.identityPublicKeyEncoded // the lazy initialiser used to throw here and the app did not start
+
+        assertTrue(pub.isNotEmpty())
+        assertTrue(logs.any { it.contains("IDENTITY NOT PERSISTED") && it.contains("IN-MEMORY") })
+        assertFalse("nothing half-written is left for the next start to misread", keyFile(stateDir).exists())
+        // The in-memory identity is usable and stable within the process.
+        val message = "still signs".toByteArray()
+        assertTrue(crypto.verify(crypto.sign(message), message, pub))
+        assertArrayEquals(pub, crypto.identityPublicKeyEncoded)
+    }
+
+    @Test
     fun `ephemeral session-key path is identical to the shared machinery`() {
         val crypto = PersistedFlashCrypto(stateDir(), IdentityKeyVault.PassThrough)
         val self = crypto.generateEphemeralEcdhKeyPair()

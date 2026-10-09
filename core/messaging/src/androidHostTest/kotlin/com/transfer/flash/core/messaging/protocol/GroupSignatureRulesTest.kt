@@ -415,6 +415,49 @@ class GroupSignatureRulesTest {
     }
 
     @Test
+    fun r13AnAdminCannotDemoteAnotherAdminToMember() {
+        val c = charter()
+        val adminLookup: (String) -> ByteArray? = { issuer ->
+            when (issuer) {
+                "bea" -> bea.publicKey
+                "mal" -> mal.publicKey
+                else -> null
+            }
+        }
+        val existingAdmin = cert(c, subject = "mal", role = MemberCert.ROLE_ADMIN)
+        val demote = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "mal",
+            subjectKey = mal.publicKey,
+            label = "Mal",
+            role = MemberCert.ROLE_MEMBER,
+            seq = 2L,
+            opId = "op-demote",
+            active = true,
+            issuerId = "bea",
+        )
+        assertEquals("issuer-privilege", rules.checkCert(c, demote, existingAdmin.subjectKey, adminLookup))
+    }
+
+    @Test
+    fun r13AnAdminCannotRelabelTheOwnerWithAnActiveOwnerCert() {
+        val c = charter()
+        val adminLookup: (String) -> ByteArray? = { issuer -> if (issuer == "bea") bea.publicKey else null }
+        val relabel = GroupSigning(bea).issueCert(
+            groupId = c.groupId,
+            subjectId = "owner",
+            subjectKey = owner.publicKey,
+            label = "Not the owner",
+            role = MemberCert.ROLE_OWNER,
+            seq = 2L,
+            opId = "op-relabel",
+            active = true,
+            issuerId = "bea",
+        )
+        assertEquals("issuer-privilege", rules.checkCert(c, relabel, null, adminLookup))
+    }
+
+    @Test
     fun anAdminCanRemoveARegularMember() {
         val c = charter()
         val adminLookup: (String) -> ByteArray? = { issuer -> if (issuer == "bea") bea.publicKey else null }

@@ -9,6 +9,7 @@ import com.transfer.flash.core.messaging.group.GroupTraffic
 import com.transfer.flash.core.messaging.group.toPreferences
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
+import com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSettings
 import com.transfer.flash.core.messaging.protocol.GroupSigning
@@ -546,5 +547,159 @@ class GroupSettingsTest {
         assertTrue(addRes is FlashResult.Failure)
         val err = (addRes as FlashResult.Failure).error
         assertTrue(err is FlashError.Unknown && err.message.contains("at most 2 members"))
+    }
+
+    // ---- ADR-100: the signed history ceiling
+
+    @Test
+    fun theHistoryCeilingIsSignedByTheOwnerAndReachesMembers() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val repoB = node("dev-b").repo
+        val groupId = (repoA.createGroup("Hist", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        assertEquals(GroupHistoryCeiling.D30, repoB.getGroupSettings(groupId).historyCeiling)
+
+        assertTrue(repoA.updateGroupSettings(groupId, historyCeiling = "D7") is FlashResult.Success)
+        settle()
+
+        assertEquals(GroupHistoryCeiling.D7, repoA.getGroupSettings(groupId).historyCeiling)
+        val onB = repoB.getGroupSettings(groupId)
+        assertEquals(GroupHistoryCeiling.D7, onB.historyCeiling)
+        assertEquals(2L, onB.version)
+        // ADR-105: the settings statement stays the v1 layout and the ceiling is signed on its own.
+        assertTrue(GroupCanonical.settingsBytes(onB).decodeToString().contains("flash-gset-v1"))
+        assertTrue(GroupCanonical.historyCeilingBytes(onB).decodeToString().contains("flash-gsethc-v1"))
+        assertTrue("the ceiling signature is stored and relayed", onB.historyCeilingSig.isNotEmpty())
+    }
+
+    @Test
+    fun anOlderBuildThatDoesNotKnowTheCeilingStillAppliesEveryOtherSettingOfTheSameObject() = runBlocking(dispatcher) {
+        // G2 (review 2026-10-09): the admin changes the join policy AND sets a non-default ceiling in one edit. A build from
+        // before ADR-100 reads neither setHist nor setHistSig, so what reaches it is the object without them.
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val repoB = node("dev-b").repo
+        val groupId = (repoA.createGroup("HistOld", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        assertTrue(
+            repoA.updateGroupSettings(groupId, joinPolicy = GroupSettings.POLICY_OPEN, historyCeiling = "D7") is FlashResult.Success,
+        )
+        wire.clear() // B has not heard of version 2 yet
+        val full = repoA.bundleForGroup(groupId)!!
+        assertTrue(GroupFrameCodec.encode(full).contains("setHist"))
+        val asSeenByAnOlderBuild = full.copy(
+            settings = full.settings!!.copy(historyCeiling = GroupHistoryCeiling.DEFAULT, historyCeilingSig = ""),
+        )
+        assertFalse(GroupFrameCodec.encode(asSeenByAnOlderBuild).contains("setHist"))
+
+        repoB.onInboundGroupWireFrame("dev-a", asSeenByAnOlderBuild)
+        val onB = repoB.getGroupSettings(groupId)
+        assertEquals("the other setting is applied", GroupSettings.POLICY_OPEN, onB.joinPolicy)
+        assertEquals(2L, onB.version)
+        assertEquals("the ceiling it cannot read stays the default", GroupHistoryCeiling.D30, onB.historyCeiling)
+    }
+
+    @Test
+    fun aTamperedCeilingIsRefusedAndTheGenuineOneIsApplied() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val repoB = node("dev-b").repo
+        val groupId = (repoA.createGroup("Hist2", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        assertTrue(repoA.updateGroupSettings(groupId, historyCeiling = "D7") is FlashResult.Success)
+        wire.clear() // B has not heard of version 2 yet
+        val genuine = repoA.bundleForGroup(groupId)!!
+
+        // An attacker (or a relay) swaps the ceiling for a wider one and keeps the signatures: the ceiling statement fails.
+        repoB.onInboundGroupWireFrame("dev-a", genuine.copy(settings = genuine.settings!!.copy(historyCeiling = GroupHistoryCeiling.ALL)))
+        assertEquals(1L, repoB.getGroupSettings(groupId).version)
+        assertEquals(GroupHistoryCeiling.D30, repoB.getGroupSettings(groupId).historyCeiling)
+        // A ceiling stated without any signature is refused as well.
+        repoB.onInboundGroupWireFrame(
+            "dev-a",
+            genuine.copy(settings = genuine.settings!!.copy(historyCeiling = GroupHistoryCeiling.NONE, historyCeilingSig = "")),
+        )
+        assertEquals(1L, repoB.getGroupSettings(groupId).version)
+
+        // A relay that cannot read the ceiling hands on the object without it: the v1 signature still verifies, so the
+        // rest of the settings apply and the ceiling reads as the default (the documented mixed-fleet limit) ...
+        repoB.onInboundGroupWireFrame(
+            "dev-a",
+            genuine.copy(settings = genuine.settings!!.copy(historyCeiling = GroupHistoryCeiling.D30, historyCeilingSig = "")),
+        )
+        assertEquals(2L, repoB.getGroupSettings(groupId).version)
+        assertEquals(GroupHistoryCeiling.D30, repoB.getGroupSettings(groupId).historyCeiling)
+
+        // ... and the complete copy of the SAME operation, arriving later, restores the ceiling.
+        repoB.onInboundGroupWireFrame("dev-a", genuine)
+        assertEquals(2L, repoB.getGroupSettings(groupId).version)
+        assertEquals(GroupHistoryCeiling.D7, repoB.getGroupSettings(groupId).historyCeiling)
+    }
+
+    @Test
+    fun aCeilingSignatureCannotBeMovedOntoAnotherSettingsObject() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val repoB = node("dev-b").repo
+        val groupId = (repoA.createGroup("Hist5", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        assertTrue(repoA.updateGroupSettings(groupId, historyCeiling = "D7") is FlashResult.Success)
+        settle()
+        val v2 = repoA.getGroupSettings(groupId)
+        assertEquals(GroupHistoryCeiling.D7, repoB.getGroupSettings(groupId).historyCeiling)
+        // Version 3: the owner resets the ceiling to the default and changes the join policy (a genuine object).
+        assertTrue(
+            repoA.updateGroupSettings(groupId, joinPolicy = GroupSettings.POLICY_OPEN, historyCeiling = "D30") is FlashResult.Success,
+        )
+        wire.clear() // B is still at version 2
+        val v3 = repoA.getGroupSettings(groupId)
+        assertEquals(3L, v3.version)
+        assertEquals(GroupHistoryCeiling.D30, v3.historyCeiling)
+        // A member splices version 2's ceiling and its signature onto the genuine version 3.
+        val spliced = v3.copy(historyCeiling = GroupHistoryCeiling.D7, historyCeilingSig = v2.historyCeilingSig)
+        repoB.onInboundGroupWireFrame("dev-a", repoA.bundleForGroup(groupId)!!.copy(settings = spliced))
+        assertEquals("the spliced object is refused", 2L, repoB.getGroupSettings(groupId).version)
+        repoB.onInboundGroupWireFrame("dev-a", repoA.bundleForGroup(groupId)!!)
+        assertEquals(3L, repoB.getGroupSettings(groupId).version)
+        assertEquals(GroupHistoryCeiling.D30, repoB.getGroupSettings(groupId).historyCeiling)
+    }
+
+    @Test
+    fun aPlainMemberCannotChangeTheCeilingAndAnUnknownNameIsRefused() = runBlocking(dispatcher) {
+        mesh("dev-a", "dev-b")
+        val repoA = node("dev-a").repo
+        val repoB = node("dev-b").repo
+        val groupId = (repoA.createGroup("Hist3", setOf("dev-b")) as FlashResult.Success).value
+        settle()
+        assertTrue(repoB.updateGroupSettings(groupId, historyCeiling = "ALL") is FlashResult.Failure)
+        assertTrue(repoA.updateGroupSettings(groupId, historyCeiling = "FOREVER") is FlashResult.Failure)
+        assertEquals(1L, repoA.getGroupSettings(groupId).version)
+    }
+
+    @Test
+    fun theDefaultCeilingStaysOffTheWireAndOldSettingsDecodeAsTheDefault() = runBlocking(dispatcher) {
+        val repoA = node("dev-a").repo
+        val groupId = (repoA.createGroup("Hist4", setOf("dev-b")) as FlashResult.Success).value
+        val bundle = repoA.bundleForGroup(groupId)!!
+        val plain = GroupFrameCodec.encode(bundle)
+        assertFalse("settings that never set the ceiling are byte-identical to before", plain.contains("setHist"))
+        val decodedPlain = GroupFrameCodec.decode(plain) as GroupWireFrame.Bundle
+        assertEquals(GroupHistoryCeiling.D30, decodedPlain.settings!!.historyCeiling)
+        assertEquals(bundle.settings, decodedPlain.settings)
+
+        val wide = bundle.copy(settings = bundle.settings!!.copy(historyCeiling = GroupHistoryCeiling.D7, historyCeilingSig = "c2ln"))
+        val encoded = GroupFrameCodec.encode(wide)
+        assertTrue(encoded.contains("setHist"))
+        val decodedWide = (GroupFrameCodec.decode(encoded) as GroupWireFrame.Bundle).settings!!
+        assertEquals(GroupHistoryCeiling.D7, decodedWide.historyCeiling)
+        assertEquals("c2ln", decodedWide.historyCeilingSig)
+        // ADR-105: a name this build does not know (a later ceiling) is not guessed and does not cost the other settings:
+        // the object is read with the default ceiling and the roster still decodes.
+        val unknown = encoded.replace("setHist=D7", "setHist=FOREVER")
+        val unknownSettings = (GroupFrameCodec.decode(unknown) as GroupWireFrame.Bundle).settings
+        assertNotNull(unknownSettings)
+        assertEquals(GroupHistoryCeiling.D30, unknownSettings!!.historyCeiling)
+        assertEquals("", unknownSettings.historyCeilingSig)
     }
 }

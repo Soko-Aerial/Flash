@@ -242,6 +242,57 @@ class ResumeBitVectorTest {
         bytes[offset + 2] = ((value ushr 16) and 0xFF).toByte()
         bytes[offset + 3] = ((value ushr 24) and 0xFF).toByte()
     }
+
+    // ------------------------------------------------------------------ sweep R-07: the count is a counter, not a popcount
+
+    private fun popcount(v: ResumeBitVector): Int = v.doneIndexes().size
+
+    @Test
+    fun `the maintained count equals a fresh popcount after random marks, reconciles and a round trip`() {
+        val random = kotlin.random.Random(20261009)
+        repeat(50) { round ->
+            val total = random.nextInt(1, 600)
+            val v = ResumeBitVector(total)
+            repeat(random.nextInt(0, 800)) {
+                if (random.nextBoolean()) {
+                    v.markReceived(random.nextInt(total))
+                } else {
+                    // Out-of-range and duplicate entries must change nothing.
+                    v.reconcile(List(random.nextInt(0, 20)) { random.nextInt(-5, total + 5) })
+                }
+                assertEquals(popcount(v), v.receivedCount, "round $round")
+            }
+            val restored = ResumeBitVector.fromSerialized(total, v.toSerialized())
+            assertNotNull(restored)
+            assertEquals(popcount(v), restored.receivedCount, "restored count round $round")
+            assertEquals(v.isComplete(), restored.isComplete())
+        }
+    }
+
+    @Test
+    fun `isComplete turns true on the very mark that fills the vector and not before`() {
+        val v = ResumeBitVector(130)
+        for (i in 0 until 129) {
+            v.markReceived(i)
+            assertFalse(v.isComplete(), "after $i")
+        }
+        assertFalse(v.markReceived(5), "a duplicate does not advance the count")
+        assertFalse(v.isComplete())
+        assertTrue(v.markReceived(129))
+        assertTrue(v.isComplete())
+    }
+
+    @Test
+    fun `a serialized payload with padding bits restores a count that ignores them`() {
+        // 10 chunks, but the one word has bits 0 and 40 set: bit 40 is padding and must not count.
+        val bytes = ByteArray(4 + 8)
+        bytes[0] = 1
+        bytes[4] = 1
+        bytes[4 + 5] = 1 // bit 40
+        val v = ResumeBitVector.fromSerialized(10, bytes)
+        assertNotNull(v)
+        assertEquals(1, v.receivedCount)
+    }
 }
 
 /** A word of all zeros, as it appears on the wire. */

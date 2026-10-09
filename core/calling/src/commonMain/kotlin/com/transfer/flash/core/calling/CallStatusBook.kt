@@ -31,6 +31,10 @@ internal class CallStatusBook(
         val cameraOn: Boolean = true,
         val handRaised: Boolean = false,
         val receiveVideo: Boolean = true,
+        /** ADR-102: presenting its screen. False until it says `ss=1`; an older client never does. */
+        val sharing: Boolean = false,
+        /** ADR-102: the presenter's start counter (see [ShareArbiter]); 0 when not presenting or not stated. */
+        val shareStartedAt: Long = 0L,
     )
 
     private data class Book(
@@ -66,6 +70,12 @@ internal class CallStatusBook(
                         cameraOn = status.cameraOn ?: before.cameraOn,
                         handRaised = status.handRaised ?: before.handRaised,
                         receiveVideo = status.receiveVideo ?: before.receiveVideo,
+                        sharing = status.sharing ?: before.sharing,
+                        shareStartedAt = when (status.sharing) {
+                            true -> status.shareStartedAt ?: before.shareStartedAt
+                            false -> 0L
+                            null -> before.shareStartedAt
+                        },
                     )
                     ),
             )

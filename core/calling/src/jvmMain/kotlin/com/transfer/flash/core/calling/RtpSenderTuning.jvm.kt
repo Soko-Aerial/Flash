@@ -31,7 +31,7 @@ internal actual fun RtpSender.applyAudioTuning(tuning: AudioSendTuning): Boolean
 }
 
 internal actual fun RtpSender.applyVideoTuning(tuning: VideoSendTuning): Boolean {
-    if (tuning.maintainFramerate || tuning.demoteForVoice) logDesktopGapOnce()
+    if (tuning.maintainFramerate || tuning.maintainResolution || tuning.demoteForVoice) logDesktopGapOnce()
     val native = native
     val params = native.parameters
     if (params.encodings.isEmpty()) return false

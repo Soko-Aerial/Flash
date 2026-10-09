@@ -150,7 +150,24 @@ public interface FlashChatRepository {
         maxMembers: Int? = null,
         swarmServing: Boolean? = null,
         membersMayAdd: Boolean? = null,
+        /** ADR-100: a [com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling] name (NONE, H24, D7, D30, ALL). */
+        historyCeiling: String? = null,
     ): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /**
+     * ADR-100: the join card's answer. Loads up to [windowMs] of earlier messages (and, when [includeFiles], the file
+     * offers of the last 7 days), both cut down to the group's ceiling.
+     */
+    public suspend fun chooseGroupHistory(groupId: String, windowMs: Long, includeFiles: Boolean): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** ADR-100: "no earlier history" from the join card; later messages still arrive. */
+    public suspend fun skipGroupHistory(groupId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
+
+    /** ADR-100: "Load older messages", up to [windowMs] back and inside the group's ceiling. */
+    public suspend fun loadOlderGroupHistory(groupId: String, windowMs: Long): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /**

@@ -134,16 +134,29 @@ public class SwarmDriver(
         // Persistence queue worker: ensures file sync and database writes are strictly FIFO
         scope.launch(workerDispatcher) {
             for (cmd in persistChannel) {
-                when (cmd) {
-                    is SwarmCommand.SyncAndPersistBits -> {
-                        val key = partialKeyFor(cmd.root, cmd.groupId)
-                        storage.openPartial(key, cmd.bytesDone)?.use { it.sync() }
-                        stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
+                // One failed write (disk full, a locked database) must not end this worker: every later write would
+                // be queued for ever and the cancellation would take the whole binding down with it.
+                try {
+                    when (cmd) {
+                        is SwarmCommand.SyncAndPersistBits -> {
+                            val key = partialKeyFor(cmd.root, cmd.groupId)
+                            storage.openPartial(key, cmd.bytesDone)?.use { it.sync() }
+                            stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
+                        }
+                        is SwarmCommand.PersistRecord -> {
+                            stateStore.upsert(cmd.record)
+                        }
+                        else -> {}
                     }
-                    is SwarmCommand.PersistRecord -> {
-                        stateStore.upsert(cmd.record)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (t: Throwable) {
+                    val what = when (cmd) {
+                        is SwarmCommand.SyncAndPersistBits -> "bits root=${cmd.root.hex.take(8)}"
+                        is SwarmCommand.PersistRecord -> "record root=${cmd.record.root.hex.take(8)}"
+                        else -> cmd::class.simpleName
                     }
-                    else -> {}
+                    FlashLog.e("SWARM", "persist failed ($what): ${t::class.simpleName}: ${t.message}", t)
                 }
             }
         }

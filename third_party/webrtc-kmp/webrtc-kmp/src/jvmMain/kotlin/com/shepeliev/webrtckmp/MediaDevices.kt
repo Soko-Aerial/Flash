@@ -26,7 +26,23 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
     private val deviceListeners: MutableList<MediaDeviceListener> = mutableListOf()
 
     init {
-        NativeMediaDevices.addDeviceChangeListener(this)
+        // ERROR-167: on Linux without libpulse the native class throws a java.lang.Error from its static initializer. An
+        // exception here would poison this object (and every later call) for the whole process; degrade to "no devices".
+        try {
+            NativeMediaDevices.addDeviceChangeListener(this)
+        } catch (t: Throwable) {
+            if (t is VirtualMachineError) throw t
+            println("[webrtc-jvm] device enumeration unavailable (${t::class.java.simpleName}: ${t.message}); no device-change events")
+        }
+    }
+
+    /** ERROR-167: a missing native audio/video backend is "no devices", not a crash. */
+    private inline fun <T> nativeList(what: String, block: () -> List<T>): List<T> = try {
+        block()
+    } catch (t: Throwable) {
+        if (t is VirtualMachineError) throw t
+        println("[webrtc-jvm] $what unavailable (${t::class.java.simpleName}: ${t.message}); treating as no devices")
+        emptyList()
     }
 
     override suspend fun getUserMedia(streamConstraints: MediaStreamConstraintsBuilder.() -> Unit): MediaStream {
@@ -37,7 +53,7 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
 
         var audioTrack: AudioStreamTrack? = null
         if (constraints.audio != null) {
-            val audioDevices = NativeMediaDevices.getAudioCaptureDevices()
+            val audioDevices = nativeList("audio capture devices") { NativeMediaDevices.getAudioCaptureDevices() }
 
             if (audioDevices.isNotEmpty()) {
                 // Deliberately NO ADM touch here (ERROR-061): the default builder selected +
@@ -84,7 +100,7 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
     }
 
     private fun getLocalVideoStreamTrack(constraints: MediaTrackConstraints): LocalVideoStreamTrack? {
-        val videoDevicesWithCapabilities = NativeMediaDevices.getVideoCaptureDevices().map {
+        val videoDevicesWithCapabilities = nativeList("video capture devices") { NativeMediaDevices.getVideoCaptureDevices() }.map {
             Pair(it, getMatchingCapabilities(it, constraints))
         }
 
@@ -193,21 +209,21 @@ internal object MediaDevicesImpl : MediaDevices, DeviceChangeListener {
     override suspend fun supportsDisplayMedia(): Boolean = true
 
     override suspend fun enumerateDevices(): List<MediaDeviceInfo> {
-        val audioInputDevices = NativeMediaDevices.getAudioCaptureDevices().map {
+        val audioInputDevices = nativeList("audio capture devices") { NativeMediaDevices.getAudioCaptureDevices() }.map {
             MediaDeviceInfo(
                 deviceId = it.descriptor,
                 label = it.name,
                 kind = MediaDeviceKind.AudioInput
             )
         }
-        val audioOutputDevices = NativeMediaDevices.getAudioRenderDevices().map {
+        val audioOutputDevices = nativeList("audio render devices") { NativeMediaDevices.getAudioRenderDevices() }.map {
             MediaDeviceInfo(
                 deviceId = it.descriptor,
                 label = it.name,
                 kind = MediaDeviceKind.AudioOutput
             )
         }
-        val videoDevices = NativeMediaDevices.getVideoCaptureDevices().map {
+        val videoDevices = nativeList("video capture devices") { NativeMediaDevices.getVideoCaptureDevices() }.map {
             MediaDeviceInfo(
                 deviceId = it.descriptor,
                 label = it.name,

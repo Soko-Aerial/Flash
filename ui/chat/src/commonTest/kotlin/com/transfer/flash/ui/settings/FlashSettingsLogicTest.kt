@@ -82,8 +82,11 @@ class FlashSettingsLogicTest {
     fun `the smaller-video row is off by default and names the heights`() {
         assertFalse(FlashSettingsModel().smallerVideoForMany)
         val on = FlashSettingsMath.smallerVideoForManySubtitle(enabled = true)
-        assertTrue(on.contains("540p") && on.contains("360p"), on)
-        assertNotEquals(on, FlashSettingsMath.smallerVideoForManySubtitle(enabled = false))
+        // ADR-098: on means 360p for everyone; off names the tier defaults (540p, 360p).
+        assertTrue(on.contains("360p"), on)
+        val off = FlashSettingsMath.smallerVideoForManySubtitle(enabled = false)
+        assertTrue(off.contains("540p") && off.contains("360p"), off)
+        assertNotEquals(on, off)
     }
 
     /** SW-11 / UI-055: swarm defaults. */

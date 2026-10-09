@@ -372,6 +372,10 @@ internal fun FlashCallMorePanel(
     onSetDataSaver: (Boolean) -> Unit,
     onEnterPictureInPicture: (() -> Unit)?,
     onDismiss: () -> Unit,
+    /** ADR-102: opens the picker; null when this device cannot present now. */
+    onShareScreen: (() -> Unit)? = null,
+    /** ADR-102: stops this device's share; the row shows while [FlashCallUiState.sharing]. */
+    onStopShare: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val haptic = rememberFlashHaptics()
@@ -423,6 +427,26 @@ internal fun FlashCallMorePanel(
             selected = state.handRaised,
             onClick = { onSetHandRaised(!state.handRaised) },
         )
+        if (state.sharing) {
+            FlashCallPanelRow(
+                icon = FlashIcons.ScreenShare,
+                title = CallShareText.ROW_STOP_TITLE,
+                subtitle = CallShareText.rowStopSubtitle(state.shareSourceTitle),
+                selected = null,
+                onClick = {
+                    onDismiss()
+                    onStopShare()
+                },
+            )
+        } else if (onShareScreen != null) {
+            FlashCallPanelRow(
+                icon = FlashIcons.ScreenShare,
+                title = CallShareText.ROW_START_TITLE,
+                subtitle = CallShareText.ROW_START_SUBTITLE,
+                selected = null,
+                onClick = onShareScreen,
+            )
+        }
         if (state.video) {
             FlashCallPanelRow(
                 icon = FlashIcons.DataSaver,

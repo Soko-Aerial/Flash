@@ -16,16 +16,56 @@ plugins {
 //    module must use `com.android.kotlin.multiplatform.library` — the same shape as every
 //    converted `:core:*` module (see core/engine/build.gradle.kts). Source sets renamed to
 //    match: androidUnitTest -> androidHostTest, androidInstrumentedTest -> androidDeviceTest.
-//  - `signing`/nexus publish removed: nothing here is published; the composite build
-//    substitutes the artifacts directly into the consuming build (same
-//    `com.shepeliev:webrtc-kmp` coordinates as the Maven original, which is what makes
-//    substitution automatic).
+//  - `signing`/nexus publish removed: the upstream release pipeline is gone. Locally the composite build
+//    substitutes the project directly into the consuming build. Since ADR-103 the artifacts are also
+//    published to maven local by the JitPack build, under Flash's own coordinates (see below).
 //  - webrtc-java bumped 0.8.0 -> 0.17.0 (gradle/libs.versions.toml) — the ONE version
 //    movement D12 authorizes (R10 exception, ADR-034).
 
-group = "com.shepeliev"
+// ADR-103 (2026-10-09): the fork is PUBLISHED under the project's own coordinates, in the same JitPack
+// build as the 15 library modules. Before this, its artifacts carried `com.shepeliev:webrtc-kmp*:0.125.11-flash-1`,
+// which exists on neither Maven Central nor JitPack, so the published `core-calling` / `ui-callui` POMs were
+// unresolvable for consumers. Two rules keep this working:
+//  - group `com.transfer.flash` (the SAME group as every Flash module), so JitPack rewrites it to
+//    `com.github.<user>.<repo>` and the version to the tag exactly as it does for the other modules;
+//  - version = the library version, read from the single source of truth (`flashLibraryVersion` in the root
+//    gradle.properties). A separate version here would be one more number to forget to bump.
+// Local development is unchanged: the root settings still `includeBuild`s this directory, and Gradle substitutes
+// the project for the catalog entry `com.transfer.flash:webrtc-kmp` (gradle/libs.versions.toml).
+group = "com.transfer.flash"
 
-version = "0.125.11-flash-1"
+version = run {
+    val file = rootProject.layout.projectDirectory.file("../../gradle.properties")
+    val text = providers.fileContents(file).asText.orNull
+        ?: error("webrtc-kmp fork: ${file.asFile} not found; the fork must be built from inside the Flash repository (ADR-103)")
+    Regex("""^\s*flashLibraryVersion\s*=\s*(\S+)\s*$""", RegexOption.MULTILINE).find(text)?.groupValues?.get(1)
+        ?: error("webrtc-kmp fork: flashLibraryVersion is missing from ${file.asFile} (ADR-103)")
+}
+
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        pom {
+            name.set("webrtc-kmp (Flash fork)")
+            description.set(
+                "Fork of shepeliev/webrtc-kmp via aschulz90/webrtc-kmp (Android + JVM only), modified by the Flash project. " +
+                    "See MODIFICATIONS.md.",
+            )
+            url.set("https://github.com/shepeliev/webrtc-kmp")
+            licenses {
+                license {
+                    name.set("The Apache Software License, Version 2.0")
+                    url.set("https://www.apache.org/licenses/LICENSE-2.0.txt")
+                    distribution.set("repo")
+                }
+            }
+        }
+    }
+}
+
+val licenseResources = tasks.register<Sync>("licenseResources") {
+    from(rootProject.layout.projectDirectory.file("LICENSE")) { rename { "LICENSE-webrtc-kmp.txt" } }
+    into(layout.buildDirectory.dir("generated/licenseResources/META-INF"))
+}.map { layout.buildDirectory.dir("generated/licenseResources").get() }
 
 kotlin {
     @OptIn(ExperimentalKotlinGradlePluginApi::class)
@@ -56,6 +96,11 @@ kotlin {
     }
 
     sourceSets {
+        // Apache-2.0 §4(a): every published binary (jvm jar, android aar) carries the licence text. The file is copied
+        // from the fork root into a generated resources dir, so there is exactly one LICENSE in the source tree.
+        commonMain {
+            resources.srcDir(licenseResources)
+        }
         commonMain.dependencies {
             implementation(libs.kotlin.coroutines)
         }

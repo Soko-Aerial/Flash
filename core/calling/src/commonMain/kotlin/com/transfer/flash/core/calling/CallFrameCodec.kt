@@ -185,6 +185,8 @@ public object CallFrameCodec {
                 frame.reaction?.let { "react" to it.wire },
                 frame.reaction?.let { "rseq" to frame.reactionSeq.toString() },
                 flag("vu", frame.videoUpgrade),
+                flag("ss", frame.sharing),
+                frame.shareStartedAt?.takeIf { frame.sharing == true }?.let { "sst" to it.toString() },
             )
         }
         return FlashTextFraming.encodeFields(PREFIX, fields)
@@ -318,6 +320,8 @@ public object CallFrameCodec {
                 reaction = FlashCallReactionKind.fromWire(fields["react"]),
                 reactionSeq = fields["rseq"]?.toLongOrNull() ?: 0L,
                 videoUpgrade = fields["vu"].toFlag(),
+                sharing = fields["ss"].toFlag(),
+                shareStartedAt = fields["sst"]?.toLongOrNull()?.takeIf { it >= 0L },
             )
             else -> null
         }

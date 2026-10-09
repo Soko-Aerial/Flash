@@ -42,9 +42,11 @@ package com.transfer.flash.core.transfer.chunked
  *   longer array for the same set of bits and change every serialized payload, so
  *   [significantWordCount] reproduces the trim. This is what the golden vectors in
  *   `ResumeBitVectorTest` exist to pin.
- * - **`cardinality()` is a population count**, here `Long.countOneBits()` per word. Kept as a
- *   computed property rather than a maintained counter: [fromSerialized] writes words wholesale,
- *   and a counter would be one more thing that can drift out of step with the bits.
+ * - **`cardinality()` is a population count**, here `Long.countOneBits()` per word. It WAS a computed property
+ *   (a full pass per read), which made `isComplete()` cost one pass per received chunk: a 100 GB file at 64 KiB
+ *   chunks is 25 000 words, so about 4e10 word reads over the transfer (sweep R-07, 2026-10-09). It is now a counter
+ *   kept by the three mutators and recomputed once by [fromSerialized], the only place that writes words wholesale;
+ *   `ResumeBitVectorTest` checks the counter against a fresh popcount after random operations.
  * - **`nextSetBit` skips empty words.** [doneIndexes] keeps that complexity with
  *   `countTrailingZeroBits()` and the `w and (w - 1)` lowest-set-bit clear, so a mostly-empty
  *   vector over a million chunks still costs one pass over 15,625 words and not a million bit
@@ -64,13 +66,12 @@ public class ResumeBitVector(public val totalChunks: Int) {
 
     private val words = LongArray((totalChunks + WORD_BITS - 1) / WORD_BITS)
 
-    /** Number of distinct received (marked) chunk indexes. */
+    /** Maintained by [markReceived], [reconcile] and [fromSerialized]; see the class KDoc. */
+    private var received: Int = 0
+
+    /** Number of distinct received (marked) chunk indexes. O(1). */
     public val receivedCount: Int
-        get() {
-            var n = 0
-            for (word in words) n += word.countOneBits()
-            return n
-        }
+        get() = received
 
     /**
      * Marks [index] as received.
@@ -82,7 +83,10 @@ public class ResumeBitVector(public val totalChunks: Int) {
         val w = index / WORD_BITS
         val mask = 1L shl (index % WORD_BITS)
         val was = (words[w] and mask) != 0L
-        words[w] = words[w] or mask
+        if (!was) {
+            words[w] = words[w] or mask
+            received++
+        }
         return !was
     }
 
@@ -90,7 +94,7 @@ public class ResumeBitVector(public val totalChunks: Int) {
         index in 0 until totalChunks &&
             (words[index / WORD_BITS] and (1L shl (index % WORD_BITS))) != 0L
 
-    public fun isComplete(): Boolean = receivedCount == totalChunks
+    public fun isComplete(): Boolean = received == totalChunks
 
     /** Ascending list of not-yet-received chunk indexes (the "holes" to request on resume). */
     public fun missingIndexes(): List<Int> {
@@ -151,7 +155,11 @@ public class ResumeBitVector(public val totalChunks: Int) {
         for (i in remoteDoneIndexes) {
             if (i in 0 until totalChunks) {
                 val w = i / WORD_BITS
-                words[w] = words[w] or (1L shl (i % WORD_BITS))
+                val mask = 1L shl (i % WORD_BITS)
+                if ((words[w] and mask) == 0L) {
+                    words[w] = words[w] or mask
+                    received++
+                }
             }
         }
     }
@@ -194,6 +202,12 @@ public class ResumeBitVector(public val totalChunks: Int) {
         }
     }
 
+    private fun recount() {
+        var n = 0
+        for (word in words) n += word.countOneBits()
+        received = n
+    }
+
     override fun toString(): String =
         "ResumeBitVector(received=${receivedCount}/$totalChunks)"
 
@@ -229,6 +243,7 @@ public class ResumeBitVector(public val totalChunks: Int) {
             // wordCount <= maxWords == vector.words.size, checked above, so this cannot overrun.
             words.copyInto(vector.words)
             vector.clearPaddingBits()
+            vector.recount()
             return vector
         }
 

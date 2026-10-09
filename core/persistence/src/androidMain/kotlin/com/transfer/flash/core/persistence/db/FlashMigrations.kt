@@ -49,6 +49,9 @@ public object FlashMigrations {
     /** v11 -> v12: device-local pinned messages (UI roadmap 3.4). */
     public val MIGRATION_11_12: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_11_12)
 
+    /** v12 -> v13: group history sync, the signed ceiling column and two device-local tables (ADR-100). */
+    public val MIGRATION_12_13: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_12_13)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

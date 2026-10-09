@@ -27,27 +27,36 @@ public class KeystorePassphraseProvider(context: Context) : PassphraseProvider {
 
     private val prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
+    private val keeper = PassphraseKeeper(
+        readStored = { prefs.getString(KEY_WRAPPED, null) },
+        // commit(), not apply(): the wrapper must be on disk before the passphrase is used to create a database.
+        writeStored = { prefs.edit().putString(KEY_WRAPPED, it).commit() },
+        unwrap = ::unwrap,
+        wrap = ::wrap,
+    )
+
     /**
      * True when the most recent [passphrase] call had to mint a NEW passphrase: first run, or the
-     * stored one could not be unwrapped (keystore key gone after a restore or a lock-screen change).
+     * stored one is permanently unusable (keystore key gone after a restore or a lock-screen change).
      * An existing database can never be opened with a minted passphrase, so callers that open a DB
      * must check this. `EncryptedDatabaseRecovery` does (audit B7).
+     *
+     * A transient keystore failure does NOT mint (it is retried once and then thrown as
+     * [PassphraseUnavailableException]): see [PassphraseKeeper].
      */
-    @Volatile
-    public var mintedNewPassphrase: Boolean = false
-        private set
+    public val mintedNewPassphrase: Boolean get() = keeper.minted
 
-    override fun passphrase(): ByteArray {
-        val stored = prefs.getString(KEY_WRAPPED, null)
-        if (stored != null) {
-            runCatching { return unwrap(stored).also { mintedNewPassphrase = false } }
-            // Corrupt/rotated wrapper: fall through and re-seed (the caller must quarantine the DB).
-        }
-        val fresh = ByteArray(PASSPHRASE_BYTES).also { java.security.SecureRandom().nextBytes(it) }
-        prefs.edit().putString(KEY_WRAPPED, wrap(fresh)).apply()
-        mintedNewPassphrase = true
-        return fresh
-    }
+    /** Returns the passphrase; a newly minted one is stored immediately. */
+    override fun passphrase(): ByteArray = keeper.resolve(commit = true)
+
+    /**
+     * Like [passphrase], but a newly minted passphrase is NOT stored until [commitMintedPassphrase]. The caller (recovery)
+     * keeps the old wrapper until the old database has been moved aside and the new one created.
+     */
+    public fun passphraseDeferringCommit(): ByteArray = keeper.resolve(commit = false)
+
+    /** Stores the passphrase minted by [passphraseDeferringCommit]. A no-op when nothing is pending. */
+    public fun commitMintedPassphrase(): Unit = keeper.commitPending()
 
     private fun wrap(plain: ByteArray): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -92,7 +101,6 @@ public class KeystorePassphraseProvider(context: Context) : PassphraseProvider {
         const val KEY_ALIAS = "flash_db_passphrase_key"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val PASSPHRASE_BYTES = 32
         const val GCM_IV_BYTES = 12
         const val GCM_TAG_BITS = 128
     }

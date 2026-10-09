@@ -168,6 +168,39 @@ public interface FlashCalling {
     public fun setDataSaver(on: Boolean): Unit = Unit
 
     /**
+     * ADR-102: what this device can present, screens first and then windows. Empty when the platform cannot present
+     * (Android today) or lists nothing. May take a moment (a native call); call it when the picker opens, not per frame.
+     */
+    public suspend fun listShareSources(): List<ShareSource> = emptyList()
+
+    /**
+     * ADR-102: true on a platform where the system asks which screen to share (Wayland), so the app's list may be short
+     * and the picker should say the system will ask.
+     */
+    public val shareUsesSystemPicker: Boolean get() = false
+
+    /**
+     * ADR-102: starts presenting [source] to the call, replacing this device's camera picture on every connection. False
+     * (and a [FlashCallUiState.shareNotice]) when it did not start. Another participant already presenting is taken over
+     * only with [takeOver] true; without it the call is left alone and the notice is
+     * [FlashShareNotice.SOMEONE_PRESENTING], which the UI answers with a confirmation.
+     */
+    public suspend fun startScreenShare(
+        source: ShareSource,
+        quality: ShareQuality = ShareQuality.STANDARD,
+        takeOver: Boolean = false,
+    ): Boolean = false
+
+    /** ADR-102: stops presenting and puts the camera back. No-op when not presenting. */
+    public suspend fun stopScreenShare(): Unit = Unit
+
+    /** ADR-102: "Share at lower quality" on or off while presenting (also the choice made for the next share). */
+    public fun setShareQuality(quality: ShareQuality): Unit = Unit
+
+    /** ADR-102: clears [FlashCallUiState.shareNotice] once the UI has shown it. */
+    public fun dismissShareNotice(): Unit = Unit
+
+    /**
      * Feeds one inbound text frame in. Returns true when the text was a `FLASH_CALL` frame that
      * was consumed, false when it is not a call frame at all — letting a host chain this ahead
      * of its other text handlers.

@@ -40,6 +40,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -147,6 +148,10 @@ public class FlashCallSession(
      * (false) hides the "Turn on camera" button, which is what a host that does not advertise `cv1` wants.
      */
     private val peerCanUpgrade: () -> Boolean = { false },
+    /** ADR-102: what this device can present with. The default is the platform's capturer (desktop only today). */
+    private val screenCapture: ScreenCaptureProvider = defaultScreenCaptureProvider(),
+    /** The wall clock the screen-share rules read (the start counter and the first-frame watchdog); a test drives it. */
+    private val shareNowMs: () -> Long = { SystemTimeSource.nowMs() },
 ) : FlashCallMedia {
     private val _state = MutableStateFlow(
         FlashCallUiState(
@@ -257,6 +262,24 @@ public class FlashCallSession(
 
     /** What the other end's controls say (ADR-067): mic, camera, hand, data saver, reactions. */
     private val statusBook = CallStatusBook()
+
+    // ---- ADR-102 screen share: the presenter side. See docs/calling/SCREEN-SHARE-DESIGN.md.
+    private val shareArbiter = ShareArbiter(localDeviceId, shareNowMs)
+    private val shareRun = ScreenShareRun(screenCapture, nowMs = shareNowMs)
+
+    /** Serialises start and stop, so a second tap or a take-over never interleaves with an opening capture. */
+    private val shareMutex = Mutex()
+
+    /** The camera track kept (disabled) during a share when the camera was off; null when it was stopped or never there. */
+    private var cameraStashedForShare: VideoStreamTrack? = null
+
+    /** The camera was on when the share began, so it is opened again when the share ends. */
+    private var cameraWasOnBeforeShare = false
+    private var shareWatchdogJob: Job? = null
+
+    /** A share was stated once, so later statuses say `ss=0` too (an older peer ignores it; a newer one needs the end). */
+    @Volatile
+    private var shareAnnounced = false
 
     /** Local microphone track once media is started; null before/after. Not public: an audio
      *  track is not renderable, so nothing outside this module has a use for it. */
@@ -470,6 +493,8 @@ public class FlashCallSession(
      */
     public fun toggleCamera(): Boolean {
         val current = _state.value
+        // ADR-102: the camera is off for the whole share (the button is disabled); it comes back when the share ends.
+        if (shareRun.machine.busy) return current.cameraOff
         // ERROR-105: the camera stopped, so the button opens it again (a new capture) instead of unmuting a dead track.
         if (current.cameraNeedsRestart()) {
             scope.launch { restartCamera() }
@@ -582,6 +607,259 @@ public class FlashCallSession(
         }
     }
 
+    // ------------------------------------------------------------------ screen share (ADR-102)
+
+    /** What this device can present, screens first. Empty when the platform cannot or lists nothing. */
+    public suspend fun listShareSources(): List<ShareSource> {
+        if (!screenCapture.supported) return emptyList()
+        return try {
+            onMediaThread { screenCapture.listSources() }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "share: could not list sources: ${t.message}")
+            emptyList()
+        }
+    }
+
+    /** True when the system asks which screen to share (Wayland), see [FlashCalling.shareUsesSystemPicker]. */
+    public val shareUsesSystemPicker: Boolean get() = screenCapture.usesSystemPicker
+
+    /**
+     * Starts presenting [source] to the peer: the screen replaces the camera picture on the existing video connection
+     * (`replaceTrack`, no renegotiation), the camera device is released, and the peer is told (`ss=1`). False when it did
+     * not start. If the peer is presenting already it is taken over only with [takeOver].
+     */
+    public suspend fun startScreenShare(source: ShareSource, quality: ShareQuality, takeOver: Boolean): Boolean {
+        refreshShareAvailability()
+        if (!_state.value.canShareScreen) return false
+        if (shareArbiter.remotePresenter != null && !takeOver) {
+            updateState { it.copy(shareNotice = FlashShareNotice.SOMEONE_PRESENTING) }
+            return false
+        }
+        return shareMutex.withLock { startShareLocked(source, quality) }
+    }
+
+    private suspend fun startShareLocked(source: ShareSource, quality: ShareQuality): Boolean {
+        val startedAt = shareArbiter.nextStart(shareNowMs())
+        if (!shareRun.machine.begin(source.title, startedAt, quality)) return false
+        shareArbiter.setLocal(startedAt)
+        FlashLog.i("CALL", "share: starting source=${source.kind} quality=$quality call=$callId")
+        updateState {
+            it.copy(
+                sharing = true,
+                shareStarting = true,
+                shareSourceTitle = source.title,
+                shareQuality = quality,
+                shareWatchers = 0,
+                shareLowered = false,
+                shareNotice = null,
+            )
+        }
+        var cancelled: CancellationException? = null
+        val opened = try {
+            onMediaThread { mediaLifecycleMutex.withLock { openShareLocked(source) } }
+        } catch (e: CancellationException) {
+            // The caller's scope ended mid-open (S4): the rollback below still runs, on the media thread, then this rethrows.
+            cancelled = e
+            false
+        } catch (t: Throwable) {
+            FlashLog.e("CALL", "share: could not start call=$callId", t)
+            false
+        }
+        if (!opened || ended) {
+            // The capture may be half open: close it, put the camera back, tell nobody (nothing was announced yet).
+            // Not cancellable: a cancelled caller must not leave the machine in STARTING or the capture running.
+            withContext(NonCancellable) {
+                shareRun.machine.fail()
+                shareArbiter.setLocal(null)
+                onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                shareRun.machine.finished()
+                updateState {
+                    it.copy(
+                        sharing = false,
+                        shareStarting = false,
+                        shareSourceTitle = null,
+                        shareNotice = if (cancelled == null) FlashShareNotice.FAILED else it.shareNotice,
+                    )
+                }
+                if (cameraWasOnBeforeShare && !ended) restartCameraAfterShare()
+                cameraWasOnBeforeShare = false
+            }
+            cancelled?.let { throw it }
+            return false
+        }
+        shareRun.machine.ready()
+        updateState { it.copy(shareStarting = false, shareWatchers = if (statusBook.wantsVideo(peerId)) 1 else 0) }
+        sendStatus()
+        armShareWatchdog()
+        return true
+    }
+
+    /** Media thread, lifecycle lock held. Opens the capture, puts it on the sender and releases the camera. */
+    private suspend fun openShareLocked(source: ShareSource): Boolean {
+        if (ended) return false
+        val sender = videoSender ?: return false
+        val handle = shareRun.open(source)
+        try {
+            handle.sendOn(sender)
+        } catch (t: Throwable) {
+            shareRun.close()
+            throw t
+        }
+        // The camera: published empty first, so its end-watcher (which reports only while its track is published) stays quiet.
+        val camera = _localVideoStreamTrack.value
+        cameraWasOnBeforeShare = camera != null && !_state.value.cameraOff
+        cameraStashedForShare = null
+        if (camera != null) {
+            _localVideoStreamTrack.value = null
+            if (cameraWasOnBeforeShare) {
+                runCatching { localStream?.removeTrack(camera) }
+                runCatching { camera.stop() }
+            } else {
+                cameraStashedForShare = camera
+            }
+        }
+        tuneShareSender(sender)
+        return true
+    }
+
+    /**
+     * Stops presenting and puts the camera back. Safe to call twice; a call that is not presenting is a no-op.
+     * Order (ERROR-123): the screen comes off the sender, then the capture stops, then the camera returns.
+     */
+    public suspend fun stopScreenShare() {
+        stopShare(ShareStopReason.USER)
+    }
+
+    private suspend fun stopShare(reason: ShareStopReason) {
+        shareMutex.withLock {
+            if (!shareRun.machine.end()) return
+            FlashLog.i("CALL", "share: stopping reason=$reason call=$callId")
+            shareWatchdogJob?.cancel()
+            shareArbiter.setLocal(null)
+            val notice = when (reason) {
+                ShareStopReason.TAKEN_OVER -> FlashShareNotice.TAKEN_OVER
+                ShareStopReason.SOURCE_LOST -> FlashShareNotice.SOURCE_LOST
+                ShareStopReason.NO_FRAMES -> FlashShareNotice.NO_FRAMES
+                ShareStopReason.FAILED -> FlashShareNotice.FAILED
+                ShareStopReason.USER, ShareStopReason.CALL_ENDED -> null
+            }
+            // The UI comes first: the indicator must not outlive the share by the time the native stop takes.
+            updateState {
+                it.copy(
+                    sharing = false,
+                    shareStarting = false,
+                    shareSourceTitle = null,
+                    shareWatchers = 0,
+                    shareLowered = false,
+                    shareNotice = notice ?: it.shareNotice,
+                )
+            }
+            // Not cancellable (S1): whoever cancelled the caller, the screen must come off the sender, the capture must
+            // stop and the machine must reach IDLE, or the share is stuck in STOPPING for the rest of the call.
+            try {
+                withContext(NonCancellable) {
+                    onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                }
+            } catch (t: Throwable) {
+                FlashLog.e("CALL", "share: stop failed call=$callId", t)
+            } finally {
+                shareRun.machine.finished()
+                shareRun.strain.reset()
+            }
+        }
+        sendStatus()
+        if (cameraWasOnBeforeShare && !ended) restartCameraAfterShare()
+        cameraWasOnBeforeShare = false
+    }
+
+    /** Media thread, lifecycle lock held. The screen leaves the sender, the capture stops, a kept camera returns. */
+    private suspend fun closeShareLocked() {
+        val sender = videoSender
+        // The kept camera, or the one still published when the share never got as far as touching it; nothing when the
+        // call is over (the screen still leaves the sender first, ADR-102 D10).
+        val replacement = if (ended) null else cameraStashedForShare ?: _localVideoStreamTrack.value
+        shareRun.closeAfter { sender?.replaceTrack(replacement) }
+        val camera = cameraStashedForShare
+        cameraStashedForShare = null
+        if (camera != null && !ended) {
+            _localVideoStreamTrack.value = camera
+        }
+        if (!ended) videoSender?.let { tuneVideoSender(it) }
+    }
+
+    /** The camera was on before the share: open it again (a new capture, handed to the sender with `replaceTrack`). */
+    private suspend fun restartCameraAfterShare() {
+        FlashLog.i("CALL", "share: reopening the camera call=$callId")
+        restartCamera()
+    }
+
+    /** ADR-102: first-frame watchdog, then a re-tune once the captured size is known or changes. */
+    private fun armShareWatchdog() {
+        shareWatchdogJob?.cancel()
+        shareWatchdogJob = scope.launch {
+            while (!ended && shareRun.machine.sharing) {
+                delay(SHARE_WATCHDOG_MS)
+                when (shareRun.check()) {
+                    ScreenShareRun.Check.OK -> Unit
+                    ScreenShareRun.Check.RETUNE -> onMediaThread { tuneShareSender(videoSender) }
+                    ScreenShareRun.Check.NO_FRAMES -> {
+                        FlashLog.w("CALL", "share: no frame within ${ShareLadder.FIRST_FRAME_TIMEOUT_MS} ms, stopping call=$callId")
+                        // On the session scope, NOT as a child of this job: stopShare cancels this job (S1).
+                        scope.launch { stopShare(ShareStopReason.NO_FRAMES) }
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    /** The stats sampler's word on whether the computer keeps up; a verdict change re-tunes the share one rung. */
+    private fun onShareStatsSample(strained: Boolean) {
+        if (!shareRun.strain.onSample(strained)) return
+        val struggling = shareRun.strain.struggling
+        FlashLog.i("CALL", "share: struggling=$struggling call=$callId")
+        updateState { it.copy(shareLowered = struggling) }
+        tuneShareSender(videoSender)
+    }
+
+    /** Applies the share ladder's rung (and the governor's scaling) to [sender]. Best effort, like every tuning. */
+    private fun tuneShareSender(sender: RtpSender?) {
+        val target = sender ?: return
+        try {
+            val applied = target.applyVideoTuning(
+                shareRun.legTuning(
+                    watchers = 1,
+                    askedHeight = null,
+                    // A peer on data saver wants no video, and the governor can pause it to protect the voice.
+                    active = statusBook.wantsVideo(peerId),
+                    concession = concession,
+                    demoteForVoice = prioritiseVoice(),
+                ),
+            )
+            val rung = shareRun.profile(1)
+            FlashLog.i(
+                "CALL",
+                "share tuned applied=$applied rung=${rung.level} ${rung.maxHeight}p fps=${rung.fps} " +
+                    "max=${rung.maxBitrateKbps}kbps source=${shareRun.handle?.width}x${shareRun.handle?.height}",
+            )
+        } catch (t: Throwable) {
+            FlashLog.w("CALL", "share tuning failed: ${t.message}")
+        }
+    }
+
+    /** Remembers the quality for the share (also while presenting: the rung changes at the next tuning). */
+    public fun setShareQuality(quality: ShareQuality) {
+        shareRun.machine.setQuality(quality)
+        updateState { it.copy(shareQuality = quality) }
+        if (shareRun.machine.sharing) scope.launch(callMediaDispatcher) { tuneShareSender(videoSender) }
+    }
+
+    public fun dismissShareNotice() {
+        updateState { if (it.shareNotice == null) it else it.copy(shareNotice = null) }
+    }
+
     /** ADR-067: raises or lowers this device's hand and tells the peer. */
     public fun setHandRaised(raised: Boolean) {
         if (_state.value.handRaised == raised) return
@@ -633,9 +911,19 @@ public class FlashCallSession(
      */
     private fun refreshUpgradeOffer() {
         updateState {
-            val offer = it.state == FlashCallState.ACTIVE && _localVideoStreamTrack.value == null && peerCanUpgrade()
+            // ADR-102: during a share the local preview is empty on purpose; that is not "no camera".
+            val offer = it.state == FlashCallState.ACTIVE && _localVideoStreamTrack.value == null && peerCanUpgrade() &&
+                !shareRun.machine.busy && cameraStashedForShare == null
             if (it.canUpgradeToVideo == offer) it else it.copy(canUpgradeToVideo = offer)
         }
+        refreshShareAvailability()
+    }
+
+    /** ADR-102: sets [FlashCallUiState.canShareScreen]: a capturer, a live call, and a video connection to put it on. */
+    private fun refreshShareAvailability() {
+        val can = screenCapture.supported && _state.value.state == FlashCallState.ACTIVE && videoActive &&
+            videoSender != null && !ended
+        updateState { if (it.canShareScreen == can) it else it.copy(canShareScreen = can) }
     }
 
     /**
@@ -1432,6 +1720,16 @@ public class FlashCallSession(
         _state.update { it.copy(state = state) }
     }
 
+    /** Test hook (ADR-102): a video connection exists, so a share can start without a native peer connection. */
+    internal fun setVideoSenderForTesting(sender: RtpSender?) {
+        videoSender = sender
+    }
+
+    /** Test hook (ADR-102): the camera track the share has to take off the sender and put back. */
+    internal fun setLocalVideoTrackForTesting(track: VideoStreamTrack?) {
+        _localVideoStreamTrack.value = track
+    }
+
     /** Test hook: this side added a camera but the peer has not yet answered an offer for it (ADR-078 retry). */
     internal fun setUpgradeRequestPendingForTesting(pending: Boolean) {
         upgradeRequestPending = pending
@@ -1465,16 +1763,21 @@ public class FlashCallSession(
     ) {
         if (!statusFlows()) return
         val st = _state.value
+        // ADR-102: while presenting, the one video is the screen: `cam=1` so an older client shows it, `ss=1` for a newer one.
+        val presenting = shareRun.machine.sharing
+        if (presenting) shareAnnounced = true
         val frame = CallWireFrame.Status(
             callId = callId,
             from = localDeviceId,
             micOn = !st.micMuted,
-            cameraOn = if (videoActive) !st.cameraOff else null,
+            cameraOn = if (videoActive) (!st.cameraOff || presenting) else null,
             handRaised = st.handRaised,
             receiveVideo = if (videoActive) !st.dataSaver else null,
             reaction = reaction,
             reactionSeq = reactionSeq,
             videoUpgrade = if (videoUpgrade || upgradeRequestPending) true else null,
+            sharing = if (videoActive && (presenting || shareAnnounced)) presenting else null,
+            shareStartedAt = if (presenting) shareRun.machine.startedAt else null,
         )
         scope.launch { sendFrame(frame) }
     }
@@ -1499,6 +1802,9 @@ public class FlashCallSession(
         val wantedVideo = statusBook.wantsVideo(peerId)
         val shown = statusBook.apply(peerId, frame)
         val peer = statusBook.peer(peerId)
+        // ADR-102: one presenter at a time, the latest start wins. An older client never states a share.
+        shareArbiter.onStatus(peerId, frame.sharing, frame.shareStartedAt)
+        val presenterId = shareArbiter.remotePresenter
         updateState {
             it.copy(
                 peerMicMuted = !peer.micOn,
@@ -1506,7 +1812,14 @@ public class FlashCallSession(
                 peerHandRaised = peer.handRaised,
                 peerDataSaver = videoActive && !peer.receiveVideo,
                 reactions = statusBook.activeReactions(),
+                presenterId = presenterId,
+                // S9: the one watcher turned its data saver on or off during our share.
+                shareWatchers = if (it.sharing && !it.shareStarting) (if (peer.receiveVideo) 1 else 0) else it.shareWatchers,
             )
+        }
+        if (shareArbiter.localMustYield()) {
+            FlashLog.i("CALL", "share: ${presenterId} started presenting after this device, stopping call=$callId")
+            scope.launch { stopShare(ShareStopReason.TAKEN_OVER) }
         }
         refreshUpgradeOffer()
         if (shown != null) scheduleReactionExpiry()
@@ -1715,6 +2028,11 @@ public class FlashCallSession(
         // read-copy-write here lost the peer's data-saver flag in a test).
         updateState { it.copy(videoLimitReason = level.reason) }
         val sender = videoSender ?: return
+        // ADR-102: a share keeps its own ladder; the governor only scales and pauses it (voice still comes first).
+        if (shareRun.machine.sharing) {
+            tuneShareSender(sender)
+            return
+        }
         // Scale the TIER's ceiling, not a constant: a concession is a fraction of what this device
         // was ever going to send, so on LOW the ladder walks down from 350 kbit/s, not 2.5 Mbit/s.
         val profile = performanceMode().video
@@ -1798,6 +2116,9 @@ public class FlashCallSession(
         val audioIn = inbound.firstOrNull { it.members.str("kind") == "audio" }
         val videoIn = inbound.firstOrNull { it.members.str("kind") == "video" }
         val videoOut = outbound.firstOrNull { it.members.str("kind") == "video" }
+        if (shareRun.machine.sharing) {
+            onShareStatsSample(strained = videoOut?.members?.str("qualityLimitationReason") == "cpu")
+        }
 
         val bytesIn = inbound.sumOf { it.members.num("bytesReceived")?.toLong() ?: 0L }
         val bytesOut = outbound.sumOf { it.members.num("bytesSent")?.toLong() ?: 0L }
@@ -1967,6 +2288,13 @@ public class FlashCallSession(
         _localVideoStreamTrack.value = null
         _remoteVideoStreamTrack.value = null
         remoteAudio = null
+        // ADR-102 D10 / ERROR-123: the screen leaves the sender, then the capture stops, then the connection closes (S2).
+        shareWatchdogJob?.cancel()
+        if (shareRun.handle != null) {
+            val shareSender = videoSender
+            shareRun.closeAfter { shareSender?.replaceTrack(null) }
+        }
+        cameraStashedForShare = null
         // The governor's rung and the encoder's parameters have to agree, so the only place the
         // governor is allowed to forget is the place the encoder ceases to exist.
         audioSender = null
@@ -2046,5 +2374,8 @@ public class FlashCallSession(
          * (RtpSenderTuning.kt) with the rest of the native-knob plumbing — S2e.)
          */
         const val BPS_PER_KBPS = 1_000
+
+        /** ADR-102: how often the presenter looks at its capture (first frame, then the captured size). */
+        const val SHARE_WATCHDOG_MS = 1_000L
     }
 }

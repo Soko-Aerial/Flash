@@ -358,10 +358,12 @@ public class WsConnection(
     }
 
     private suspend fun readLoop() {
+        // One reader per connection: it keeps a fragmented message across interleaved ping/pong frames (R-11).
+        val reader = WebSocketCodec.MessageReader()
         try {
             while (!closed.get() && scope.isActive) {
                 val message = try {
-                    WebSocketCodec.readMessage(input, maxMessageBytes)
+                    reader.read(input, maxMessageBytes)
                 } catch (idle: WebSocketCodec.IdleTimeout) {
                     // The socket read timeout expired at a frame boundary: no frame arrived, but
                     // the socket is still valid and the stream is still aligned. Silence is the

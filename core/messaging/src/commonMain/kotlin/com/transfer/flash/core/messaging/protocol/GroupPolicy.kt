@@ -42,6 +42,19 @@ public object GroupPolicy {
     public const val SYNC_REQUEST_TTL_MS: Long = 10L * 60L * 1000L
     public const val MAX_OUTGOING_SYNC_REQUESTS: Int = 256
 
+    /**
+     * ADR-106 (review G3): a catch-up asks one holder at a time. The holder in charge is replaced when it has shown no sign of
+     * life (no push, no page marker) for this long; a page of 100 rows at the slowest pace (5 per second) takes 20 s.
+     */
+    public const val CATCH_UP_STALL_MS: Long = 45_000L
+
+    /** After a holder delivered a complete chain, the other holders are not asked again for this long (the next episode asks another one). */
+    public const val CATCH_UP_EPISODE_MS: Long = 3L * 60L * 1000L
+
+    /** G11: catch-up requests one requester may send a holder per [SYNC_REQUEST_RATE_WINDOW_MS] (a legitimate chain sends one per page). */
+    public const val SYNC_REQUESTS_PER_WINDOW: Int = 30
+    public const val SYNC_REQUEST_RATE_WINDOW_MS: Long = 10_000L
+
     // --- v2 groups (ADR-044 V1, docs/group/v1-signed-membership-plan.md) ---
 
     /** The `proto` of a [GroupCharter]; also the group protocol level a device needs (`gv`). */

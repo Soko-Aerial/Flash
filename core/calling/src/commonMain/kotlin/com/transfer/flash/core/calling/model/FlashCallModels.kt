@@ -1,5 +1,7 @@
 package com.transfer.flash.core.calling.model
 
+import com.transfer.flash.core.calling.FlashShareNotice
+import com.transfer.flash.core.calling.ShareQuality
 import com.transfer.flash.core.common.perf.FlashNetworkBand
 
 /**
@@ -167,6 +169,28 @@ public data class FlashCallUiState(
      * "Turn on camera". False on a video call, a group call, a call that is not connected and for an older peer.
      */
     public val canUpgradeToVideo: Boolean = false,
+    /**
+     * ADR-102: this device can present its screen in this call right now: the platform has a capturer, the call is
+     * live, and it has a video connection to put the picture on. False on Android today, on a voice call and on a call
+     * this device joined without a camera.
+     */
+    public val canShareScreen: Boolean = false,
+    /** ADR-102: this device is presenting, or is opening the capture to (see [shareStarting]). */
+    public val sharing: Boolean = false,
+    /** ADR-102: the capture is being opened; the indicator shows "Starting" and Stop is already available. */
+    public val shareStarting: Boolean = false,
+    /** ADR-102: the title of the screen or window being shared, for the indicator; null when not presenting. */
+    public val shareSourceTitle: String? = null,
+    /** ADR-102: the quality chosen for the share (the "Share at lower quality" switch). */
+    public val shareQuality: ShareQuality = ShareQuality.STANDARD,
+    /** ADR-102: how many participants this device is sending the share to right now (0 when not presenting). */
+    public val shareWatchers: Int = 0,
+    /** ADR-102: the share runs at a lower rung than asked because the computer is busy (shown as a quiet hint). */
+    public val shareLowered: Boolean = false,
+    /** ADR-102: the OTHER device that is presenting, or null. In a 1:1 call it is the peer's id. */
+    public val presenterId: String? = null,
+    /** ADR-102: a one-line message about the share, shown once and cleared by the UI. */
+    public val shareNotice: FlashShareNotice? = null,
 ) {
     /**
      * The devices this call needs a session with right now; the connection-mode controller keeps
@@ -258,6 +282,8 @@ public data class FlashCallParticipantUi(
     public val cameraOff: Boolean = false,
     /** ADR-067: the participant's hand is raised. */
     public val handRaised: Boolean = false,
+    /** ADR-102: the participant is presenting their screen (the one presenter of the call). */
+    public val sharing: Boolean = false,
 )
 
 /** An emoji reaction sent during a call (ADR-067). The wire names are part of `docs/protocol.md`. */

@@ -7,8 +7,10 @@ import kotlinx.coroutines.sync.withLock
 import com.transfer.flash.core.messaging.protocol.GroupCanonical
 import com.transfer.flash.core.messaging.protocol.GroupCharter
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
+import com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling
 import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
+import com.transfer.flash.core.messaging.protocol.isSwarmRootHex
 import com.transfer.flash.core.messaging.protocol.GroupSignatureRules
 import com.transfer.flash.core.messaging.protocol.GroupSigning
 import com.transfer.flash.core.messaging.protocol.GroupVouchVerdict
@@ -151,8 +153,9 @@ internal class SignedGroups(
         maxMembers: Int? = null,
         swarmServing: Boolean? = null,
         membersMayAdd: Boolean? = null,
+        historyCeiling: GroupHistoryCeiling? = null,
     ): GroupWireFrame.Bundle? = settingsUpdateLock.withLock {
-        updateSettingsLocked(groupId, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd)
+        updateSettingsLocked(groupId, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd, historyCeiling)
     }
 
     private suspend fun updateSettingsLocked(
@@ -162,6 +165,7 @@ internal class SignedGroups(
         maxMembers: Int?,
         swarmServing: Boolean?,
         membersMayAdd: Boolean?,
+        historyCeiling: GroupHistoryCeiling?,
     ): GroupWireFrame.Bundle? {
         val settingsDao = groupSettingsDao ?: return null
         val charter = storedCharter(groupId) ?: return null
@@ -177,6 +181,7 @@ internal class SignedGroups(
         val nextMaxMembers = (maxMembers ?: current.maxMembers).coerceIn(2, GroupPolicy.MAX_MEMBERS_V2)
         val nextSwarmServing = swarmServing ?: current.swarmServing
         val nextMembersMayAdd = membersMayAdd ?: current.membersMayAdd
+        val nextHistoryCeiling = historyCeiling ?: current.historyCeiling
         val opId = newId()
 
         val signed = signing.signSettings(
@@ -189,6 +194,7 @@ internal class SignedGroups(
             membersMayAdd = nextMembersMayAdd,
             opId = opId,
             signerId = localDeviceId,
+            historyCeiling = nextHistoryCeiling,
         )
 
         settingsDao.upsert(signed.toEntity())
@@ -752,6 +758,8 @@ internal class SignedGroups(
         sentAt: Long,
         rootSig: String,
     ): Boolean {
+        // A member can sign any string; the root must still be a real content root before it reaches the swarm host.
+        if (!isSwarmRootHex(root)) return false
         val member = members.member(groupId, authorId) ?: return false
         if (!member.isActive) return false
         val memberKey = member.subjectKey ?: return false
@@ -821,10 +829,21 @@ internal class SignedGroups(
         // `membersMayAdd` decides whether a plain member's cert counts, so it is read only from settings whose
         // signature checks out against the owner or a known admin, never from the raw frame. A group this device
         // is only now joining has no stored settings, so the frame's own (verified) settings are what apply.
+        //
+        // R-14 (sweep 2026-10-09): the answer depends only on which admin keys are known, so it is computed again only when
+        // that set changed (a verified admin cert in this same bundle). It used to verify the settings signature once per
+        // certificate per pass, outside the budget that charges a candidate cert.
+        var adminKeysVersion = 0
+        var memberMayAddAt = -1
+        var memberMayAddValue = false
         fun membersMayAddNow(): Boolean {
-            val incoming = frame.settings?.takeIf { s -> rules.checkSettings(charter, s) { id -> adminKeys[id] } == null }
-            val effective = if (incoming != null && settingsWins(incoming, storedSettings)) incoming else storedSettings
-            return effective?.membersMayAdd ?: false
+            if (memberMayAddAt != adminKeysVersion) {
+                val incoming = frame.settings?.takeIf { s -> rules.checkSettings(charter, s) { id -> adminKeys[id] } == null }
+                val effective = if (incoming != null && settingsWins(incoming, storedSettings)) incoming else storedSettings
+                memberMayAddValue = effective?.membersMayAdd ?: false
+                memberMayAddAt = adminKeysVersion
+            }
+            return memberMayAddValue
         }
 
         // A member-issued cert is only checkable once its issuer's own cert is known, and that cert usually travels
@@ -854,9 +873,12 @@ internal class SignedGroups(
                     progressed = true
                     if (cert.active) GroupCanonical.decode(cert.subjectKey)?.let { memberKeys[cert.subjectId] = it }
                     if (cert.role == MemberCert.ROLE_ADMIN && cert.active) {
-                        GroupCanonical.decode(cert.subjectKey)?.let { adminKeys[cert.subjectId] = it }
+                        GroupCanonical.decode(cert.subjectKey)?.let {
+                            adminKeys[cert.subjectId] = it
+                            adminKeysVersion++
+                        }
                     } else if (!cert.active || cert.role != MemberCert.ROLE_ADMIN) {
-                        adminKeys.remove(cert.subjectId)
+                        if (adminKeys.remove(cert.subjectId) != null) adminKeysVersion++
                     }
                 } else {
                     FlashLog.w("CHAT", "Group cert dropped: group=$groupId subject=${cert.subjectId} from=$peerId reason=$reason")

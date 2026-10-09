@@ -197,6 +197,46 @@ class RoomSwarmStateStoreTest {
         assertTrue(store.loadAll().isEmpty())
     }
 
+    private fun entityWith(root: String, messageId: String, role: String = "RECEIVER", state: String = "ACTIVE") = SwarmContentEntity(
+        root = root, groupId = "g1", messageId = messageId, role = role, originId = "a", originKey = "k",
+        fileName = "f", mime = "m", totalSize = 10, pieceSize = 10, manifest = null, bits = byteArrayOf(1),
+        bytesDone = 0, state = state, waitReason = null, failReason = null, localTransferId = messageId,
+        sourceUri = null, sourcePersistent = false, partialKey = "pk", finalPath = null, identitySize = 0,
+        identityModifiedMs = 0, deliveredTo = "", createdAtMs = 1, lastProgressAtMs = 1, expiresAtMs = 100,
+    )
+
+    @Test
+    fun `one row with an unknown enum value or a corrupt root does not abort the restore`() = runTest {
+        val good1 = "1".repeat(64)
+        val good2 = "2".repeat(64)
+        fakeDao.upsertContent(entityWith(good1, "ok1"))
+        fakeDao.upsertContent(entityWith("3".repeat(64), "bad-state", state = "FROM_A_NEWER_BUILD"))
+        fakeDao.upsertContent(entityWith("4".repeat(64), "bad-role", role = "SPECTATOR"))
+        fakeDao.upsertContent(entityWith("not-a-root", "bad-root"))
+        fakeDao.upsertContent(entityWith(good2, "ok2"))
+
+        val loaded = store.loadAll()
+
+        assertEquals(setOf("ok1", "ok2"), loaded.map { it.messageId }.toSet())
+    }
+
+    @Test
+    fun `a tombstone with a corrupt root is skipped, the others are restored`() = runTest {
+        fakeDao.upsertTombstone(
+            SwarmTombstoneEntity(
+                groupId = "g1", messageId = "t-bad", root = "zz", originId = "o", reason = "USER",
+                cancelledAtMs = 1, signature = byteArrayOf(1), receivedAtMs = 1, expiresAtMs = 100,
+            )
+        )
+        fakeDao.upsertTombstone(
+            SwarmTombstoneEntity(
+                groupId = "g1", messageId = "t-ok", root = "5".repeat(64), originId = "o", reason = "USER",
+                cancelledAtMs = 1, signature = byteArrayOf(1), receivedAtMs = 1, expiresAtMs = 100,
+            )
+        )
+        assertEquals(listOf("t-ok"), store.tombstones().map { it.messageId })
+    }
+
     private class FakeSwarmDao : SwarmDao {
         val contents = mutableMapOf<Pair<String, String>, SwarmContentEntity>()
         val tombstones = mutableMapOf<Pair<String, String>, SwarmTombstoneEntity>()

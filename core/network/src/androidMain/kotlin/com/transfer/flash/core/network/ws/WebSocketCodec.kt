@@ -147,71 +147,111 @@ public object WebSocketCodec {
     /**
      * Reads one complete WebSocket message, reassembling continuation frames.
      *
+     * Stateless convenience over a fresh [MessageReader]: a control frame (ping / pong / close) arriving between the
+     * fragments of a message drops the partial message. A long-lived connection must use ONE [MessageReader] for its
+     * whole lifetime instead (R-11).
+     *
      * @throws IdleTimeout when the read timeout expires before the first byte of the message —
      *   retryable on the same stream (see [IdleTimeout]).
      */
-    public fun readMessage(input: InputStream, maxMessageBytes: Long = MAX_MESSAGE_BYTES): Message {
-        val messageBuffer = ByteArrayOutputStream()
-        var messageOpcode = -1
-        var atMessageStart = true
-        while (true) {
-            val header = readFrameHeader(input, retryableIdle = atMessageStart, maxMessageBytes = maxMessageBytes)
-            atMessageStart = false
-            val payload = readFramePayload(input, header)
-            when (header.opcode) {
-                OPCODE_CLOSE -> {
-                    val code = if (payload.size >= 2) {
-                        ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
-                    } else {
-                        1000
-                    }
-                    val reason = if (payload.size > 2) {
-                        String(payload, 2, payload.size - 2, Charsets.UTF_8)
-                    } else {
-                        ""
-                    }
-                    return Message.Close(code, reason)
-                }
+    public fun readMessage(input: InputStream, maxMessageBytes: Long = MAX_MESSAGE_BYTES): Message =
+        MessageReader().read(input, maxMessageBytes)
 
-                OPCODE_PING -> return Message.Ping(payload)
-                OPCODE_PONG -> return Message.Pong(payload)
+    /**
+     * Reassembles messages from one connection's frames and KEEPS a partly received fragmented message across
+     * interleaved control frames.
+     *
+     * RFC 6455 section 5.4: control frames "MAY be injected in the middle of a fragmented message". The old stateless
+     * [readMessage] kept the partial message in locals and returned the ping at once, so the next call began with an
+     * empty buffer and the following continuation frame failed with "Continuation frame without a started message"
+     * (R-11, sweep 2026-10-09). Flash's own writer never fragments, but any peer that does and also pings (a browser
+     * or proxy-fronted client of a future version) would have closed the session. Not thread-safe: one reader loop.
+     */
+    public class MessageReader {
+        private val messageBuffer = ByteArrayOutputStream()
+        private var messageOpcode = -1
 
-                OPCODE_TEXT, OPCODE_BINARY, OPCODE_CONTINUATION -> {
-                    if (header.opcode != OPCODE_CONTINUATION) {
-                        if (messageOpcode != -1) {
-                            throw IOException("New WebSocket message started before previous one finished")
-                        }
-                        messageOpcode = header.opcode
-                    } else if (messageOpcode == -1) {
-                        throw IOException("Continuation frame without a started message")
-                    }
-                    // Outbound messages are never fragmented, so nearly every message completes in
-                    // its first frame: return that payload directly instead of copying it through
-                    // the reassembly buffer (one full-size copy per chunk on the receive side).
-                    if (header.fin && messageBuffer.size() == 0) {
-                        return if (messageOpcode == OPCODE_TEXT) {
-                            Message.Text(String(payload, Charsets.UTF_8))
+        /** True while a fragmented message is partly received. */
+        public val inFragmentedMessage: Boolean get() = messageOpcode != -1
+
+        /**
+         * Reads frames until one message (data or control) is complete.
+         *
+         * @throws IdleTimeout when the read timeout expires at a frame boundary with no message in progress. Inside a
+         *   fragmented message a stall is a plain timeout IOException (the stream is mid-message).
+         */
+        public fun read(input: InputStream, maxMessageBytes: Long = MAX_MESSAGE_BYTES): Message {
+            var atMessageStart = !inFragmentedMessage
+            while (true) {
+                val header = readFrameHeader(input, retryableIdle = atMessageStart, maxMessageBytes = maxMessageBytes)
+                atMessageStart = false
+                val payload = readFramePayload(input, header)
+                when (header.opcode) {
+                    OPCODE_CLOSE -> {
+                        val code = if (payload.size >= 2) {
+                            ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
                         } else {
-                            Message.Binary(payload)
+                            1000
                         }
-                    }
-                    // Checked BEFORE the write, so a fragmented message cannot grow past the cap.
-                    if (messageBuffer.size().toLong() + payload.size > maxMessageBytes) {
-                        throw IOException("WebSocket message exceeds size guard ($maxMessageBytes bytes)")
-                    }
-                    messageBuffer.write(payload)
-                    if (header.fin) {
-                        val data = messageBuffer.toByteArray()
-                        return if (messageOpcode == OPCODE_TEXT) {
-                            Message.Text(String(data, Charsets.UTF_8))
+                        val reason = if (payload.size > 2) {
+                            String(payload, 2, payload.size - 2, Charsets.UTF_8)
                         } else {
-                            Message.Binary(data)
+                            ""
+                        }
+                        return Message.Close(code, reason)
+                    }
+
+                    OPCODE_PING -> return Message.Ping(payload)
+                    OPCODE_PONG -> return Message.Pong(payload)
+
+                    OPCODE_TEXT, OPCODE_BINARY, OPCODE_CONTINUATION -> {
+                        if (header.opcode != OPCODE_CONTINUATION) {
+                            if (messageOpcode != -1) {
+                                reset()
+                                throw IOException("New WebSocket message started before previous one finished")
+                            }
+                            messageOpcode = header.opcode
+                        } else if (messageOpcode == -1) {
+                            throw IOException("Continuation frame without a started message")
+                        }
+                        // Outbound messages are never fragmented, so nearly every message completes in
+                        // its first frame: return that payload directly instead of copying it through
+                        // the reassembly buffer (one full-size copy per chunk on the receive side).
+                        if (header.fin && messageBuffer.size() == 0) {
+                            val opcode = messageOpcode
+                            reset()
+                            return if (opcode == OPCODE_TEXT) {
+                                Message.Text(String(payload, Charsets.UTF_8))
+                            } else {
+                                Message.Binary(payload)
+                            }
+                        }
+                        // Checked BEFORE the write, so a fragmented message cannot grow past the cap.
+                        if (messageBuffer.size().toLong() + payload.size > maxMessageBytes) {
+                            reset()
+                            throw IOException("WebSocket message exceeds size guard ($maxMessageBytes bytes)")
+                        }
+                        messageBuffer.write(payload)
+                        if (header.fin) {
+                            val data = messageBuffer.toByteArray()
+                            val opcode = messageOpcode
+                            reset()
+                            return if (opcode == OPCODE_TEXT) {
+                                Message.Text(String(data, Charsets.UTF_8))
+                            } else {
+                                Message.Binary(data)
+                            }
                         }
                     }
-                }
 
-                else -> throw IOException("Unsupported WebSocket opcode ${header.opcode}")
+                    else -> throw IOException("Unsupported WebSocket opcode ${header.opcode}")
+                }
             }
+        }
+
+        private fun reset() {
+            messageBuffer.reset()
+            messageOpcode = -1
         }
     }
 

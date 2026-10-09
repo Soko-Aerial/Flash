@@ -25,7 +25,10 @@ import org.junit.rules.TemporaryFolder
 @OptIn(ExperimentalCoroutinesApi::class)
 class FlashSettingsDataStoreTest {
 
-    @get:Rule
+    @get:Rule(order = 0)
+    val sdkInt = HostSdkIntRule()
+
+    @get:Rule(order = 1)
     val tmp = TemporaryFolder()
 
     private fun newSettings(): FlashSettingsDataStore {

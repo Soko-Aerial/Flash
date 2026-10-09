@@ -86,7 +86,21 @@ public class PersistedFlashCrypto(
         val file = keyFile(stateDir)
         if (!file.isFile) {
             val generated = EcP256Ops.ephemeralKeyPair() // same generator SoftwareFlashCrypto uses
-            persist(file, generated)
+            // R-17 (sweep 2026-10-09): a first-run persist failure (read-only home, full disk, DPAPI error) used to escape
+            // the lazy initialiser, so the app failed to start with no explanation, where an unreadable EXISTING file
+            // already degraded to an in-memory identity. The same rule now applies: log loudly and carry on.
+            try {
+                persist(file, generated)
+            } catch (e: Exception) {
+                // A half-written file would be read next start as corruption; leave nothing behind that the next run misreads.
+                runCatching { File(file.parentFile, file.name + ".tmp").delete() }
+                log(
+                    "IDENTITY NOT PERSISTED: the new identity key could not be saved to ${file.path} " +
+                        "(${e.message}). Continuing with an IN-MEMORY identity: peers will see a new device " +
+                        "after every restart until the location is writable.",
+                )
+                return generated
+            }
             FlashLog.i(TAG, "identity keypair generated and persisted to ${file.path}")
             return generated
         }

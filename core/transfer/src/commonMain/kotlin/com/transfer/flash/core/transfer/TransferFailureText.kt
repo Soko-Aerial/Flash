@@ -35,6 +35,10 @@ public object TransferFailureText {
 
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
 
+    /** The receiver could not write a chunk to storage (R-06): full disk, removed card, revoked folder access. */
+    public const val WRITE_FAILED: String =
+        "The file could not be saved on this device. Check that there is free space and that the save location is still available, then ask for it to be sent again."
+
     // Swarm-specific failure sentences (ADR-072, Table 8.2)
     public const val DAMAGED: String =
         "The received file did not match what was sent. Ask for it to be sent again."
@@ -125,6 +129,7 @@ public object TransferFailureText {
             "source_lost" in lower -> SOURCE_LOST
             "not_member" in lower -> NOT_MEMBER
             "expired" in lower -> EXPIRED
+            "write_failed" in lower -> WRITE_FAILED
             "storage_failed" in lower || "storage_unavailable" in lower -> STORAGE_UNAVAILABLE
             "system_timeout" in lower || "system_suspend" in lower -> SYSTEM_TIMEOUT
             "length mismatch" in lower -> FILE_CHANGED

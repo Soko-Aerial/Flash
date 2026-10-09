@@ -106,6 +106,8 @@ internal object CallDockText {
 
     fun videoLabel(cameraOff: Boolean): String = if (cameraOff) "Video off" else "Video on"
     fun videoDescription(cameraOff: Boolean): String = if (cameraOff) "Turn camera on" else "Turn camera off"
+    fun videoDescription(cameraOff: Boolean, sharing: Boolean): String =
+        if (sharing) CallShareText.CAMERA_OFF_WHILE_SHARING else videoDescription(cameraOff)
 
     /** ADR-078: the button on a voice call that adds this device's camera to it. */
     const val UPGRADE_LABEL: String = "Camera"
@@ -257,13 +259,16 @@ internal fun FlashCallControlDock(
                 )
             }
             if (state.video) {
+                // ADR-102: while this device presents, the one video is the screen; the camera is off and cannot be switched on.
+                val camOff = state.cameraOff || state.sharing
                 FlashCallDockButton(
-                    icon = if (state.cameraOff) FlashIcons.VideoOff else FlashIcons.Video,
-                    label = CallDockText.videoLabel(state.cameraOff),
-                    description = CallDockText.videoDescription(state.cameraOff),
-                    emphasised = state.cameraOff,
-                    rippleOutward = !state.cameraOff,
+                    icon = if (camOff) FlashIcons.VideoOff else FlashIcons.Video,
+                    label = CallDockText.videoLabel(camOff),
+                    description = CallDockText.videoDescription(state.cameraOff, state.sharing),
+                    emphasised = camOff,
+                    rippleOutward = !camOff,
                     gesture = DockGesture.Eyelid,
+                    enabled = !state.sharing,
                     // A video call joined without a camera has nothing to switch on: the button adds one.
                     onClick = upgrade ?: onToggleCamera,
                     buttonSize = buttonSize,
@@ -277,7 +282,7 @@ internal fun FlashCallControlDock(
                     rippleOutward = true,
                     gesture = DockGesture.Spin,
                     // Nothing to flip while our camera is off: dim it rather than let it vanish and shift the row.
-                    enabled = !state.cameraOff,
+                    enabled = !state.cameraOff && !state.sharing,
                     onClick = onSwitchCamera,
                     buttonSize = buttonSize,
                     modifier = Modifier.weight(1f),

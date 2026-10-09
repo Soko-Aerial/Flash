@@ -623,6 +623,110 @@ class RealFlashTransferRepositoryTest {
         assertEquals(emptyList<Int>(), repo.receiverDoneIndexes("rx-none"))
     }
 
+    /** An in-memory stand-in for the Room tables: chunk rows per transfer and one status per transfer. */
+    private class LedgerStore(seed: List<TransferStore.ChunkRef> = emptyList()) : TransferStore {
+        val rows = java.util.concurrent.ConcurrentHashMap<String, MutableSet<Int>>().also { m ->
+            seed.forEach { m.getOrPut(it.transferId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add(it.chunkIndex) }
+        }
+        val status = java.util.concurrent.ConcurrentHashMap<String, String>()
+        val purges = AtomicInteger(0)
+        override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) {
+            this.status[transferId] = status
+        }
+        override suspend fun setBytesDone(transferId: String, bytesDone: Long) = Unit
+        override suspend fun setStatus(transferId: String, status: String) {
+            if (this.status.containsKey(transferId)) this.status[transferId] = status
+        }
+        override suspend fun doneChunks(transferId: String): List<Int> = rows[transferId]?.sorted() ?: emptyList()
+        override suspend fun markChunksDone(transferId: String, indexes: List<Int>) {
+            rows.getOrPut(transferId) { java.util.concurrent.ConcurrentHashMap.newKeySet() }.addAll(indexes)
+        }
+        override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> =
+            rows.flatMap { (id, set) -> set.map { TransferStore.ChunkRef(id, it) } }
+        override suspend fun clearDoneChunks(transferId: String) {
+            rows.remove(transferId)
+        }
+        override suspend fun purgeFinishedChunks(): Int {
+            purges.incrementAndGet()
+            var n = 0
+            for ((id, st) in status) if (st == "Completed" || st == "Cancelled") n += rows.remove(id)?.size ?: 0
+            return n
+        }
+    }
+
+    @Test
+    fun `R-01 a completed receive leaves no chunk rows and a late confirmation does not bring them back`() = runBlocking {
+        val store = LedgerStore()
+        val repo = receiveRepo(store)
+        repo.onIncomingOffered("rx-fin", "file-1", "a.bin", 4L * 65_536, "Peer", "peer-1")
+        awaitUntil(describe = { "offer row not written" }) { store.status["rx-fin"] == "Offered" }
+        repo.onIncomingChunkConfirmed("rx-fin", listOf(0, 1, 2, 3))
+        awaitUntil(describe = { "chunks not persisted" }) { store.rows["rx-fin"]?.size == 4 }
+
+        repo.onIncomingCompleted("rx-fin", verified = true, localPath = "/x/a.bin")
+
+        awaitUntil(describe = { "rows not deleted: ${store.rows}" }) { store.rows["rx-fin"] == null }
+        assertEquals("Completed", store.status["rx-fin"])
+        assertEquals(emptyList<Int>(), repo.receiverDoneIndexes("rx-fin"))
+        repo.onIncomingChunkConfirmed("rx-fin", listOf(2))
+        Thread.sleep(150)
+        assertEquals("a confirmation after completion is dropped", null, store.rows["rx-fin"])
+    }
+
+    @Test
+    fun `R-01 a declined receive leaves no chunk rows`() = runBlocking {
+        val store = LedgerStore()
+        val repo = receiveRepo(store)
+        repo.onIncomingOffered("rx-dec", "file-2", "b.bin", 3L * 65_536, "Peer", "peer-1")
+        awaitUntil(describe = { "offer row not written" }) { store.status["rx-dec"] == "Offered" }
+        repo.onIncomingChunkConfirmed("rx-dec", listOf(0, 1))
+        awaitUntil(describe = { "chunks not persisted" }) { store.rows["rx-dec"]?.size == 2 }
+
+        repo.declineIncoming(FlashTransferId("rx-dec"))
+
+        awaitUntil(describe = { "rows not deleted after decline" }) { store.rows["rx-dec"] == null }
+        assertEquals("Cancelled", store.status["rx-dec"])
+    }
+
+    @Test
+    fun `R-01 the startup purge removes finished transfers rows and the preload then loads only live ones`() = runBlocking {
+        val seed = (0 until 10).map { TransferStore.ChunkRef("old-done", it) } +
+            (0 until 4).map { TransferStore.ChunkRef("live", it) }
+        val store = LedgerStore(seed)
+        store.status["old-done"] = "Completed"
+        store.status["live"] = "Transferring"
+        val repo = receiveRepo(store)
+
+        repo.preloadReceiverProgress()
+
+        assertEquals(1, store.purges.get())
+        assertEquals(emptyList<Int>(), repo.receiverDoneIndexes("old-done"))
+        assertEquals(listOf(0, 1, 2, 3), repo.receiverDoneIndexes("live"))
+        assertEquals(null, store.rows["old-done"])
+    }
+
+    @Test(timeout = 60_000)
+    fun `R-01 preloading a hundred thousand ascending rows is linear, not quadratic`() = runBlocking {
+        val rows = (0 until 100_000).map { TransferStore.ChunkRef("big", it) } +
+            (99_999 downTo 0 step 2).map { TransferStore.ChunkRef("big-desc", it) }
+        val repo = receiveRepo(LedgerStore(rows))
+        val started = System.nanoTime()
+
+        repo.preloadReceiverProgress()
+
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertEquals(100_000, repo.receiverDoneIndexes("big").size)
+        assertEquals(50_000, repo.receiverDoneIndexes("big-desc").size)
+        assertTrue("took ${tookMs} ms", tookMs < 8_000)
+    }
+
+    @Test
+    fun `R-01 chunk confirmations that raise the highest index one by one stay correct`() = runBlocking {
+        val repo = receiveRepo(LedgerStore())
+        for (i in 0 until 3_000) repo.onIncomingChunkConfirmed("rx-grow", listOf(i))
+        assertEquals((0 until 3_000).toList(), repo.receiverDoneIndexes("rx-grow"))
+    }
+
     @Test
     fun `onIncomingChunkConfirmed persists only fresh indexes and ignores repeats`() = runBlocking {
         val store = RecordingStore()

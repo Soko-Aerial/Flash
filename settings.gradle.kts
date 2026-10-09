@@ -28,15 +28,26 @@ dependencyResolutionManagement {
         mavenCentral()
         maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }
     }
+    versionCatalogs {
+        // ADR-103: the vendored webrtc-kmp fork is versioned with the library (flashLibraryVersion, gradle.properties).
+        // The catalog entry `webrtc-kmp` cannot carry that version in the toml (a toml cannot read a property), and a
+        // version-less entry makes :core:calling / :ui:callui publish a POM dependency without a version. So the version
+        // is added here, to the default `libs` catalog (already imported from gradle/libs.versions.toml, which therefore has no
+        // `webrtc-kmp` line), from the same property the root build and the fork read.
+        create("libs") {
+            val flashLibraryVersion = providers.gradleProperty("flashLibraryVersion").get()
+            library("webrtc-kmp", "com.transfer.flash", "webrtc-kmp").version(flashLibraryVersion)
+        }
+    }
 }
 
 rootProject.name = "Flash"
 
-// ADR-034 (D12): the vendored webrtc-kmp fork (com.shepeliev:webrtc-kmp with a jvm() target).
-// Because the fork declares the SAME group:name as the Maven original, Gradle's composite-build
-// dependency substitution redirects every `libs.webrtc.kmp` edge here automatically — the
-// consuming modules' dependency lines do not change. See third_party/webrtc-kmp/README note
-// in its build files.
+// ADR-034 (D12) + ADR-103: the vendored webrtc-kmp fork (upstream com.shepeliev:webrtc-kmp, plus a jvm() target).
+// Since ADR-103 the fork carries Flash's own group (com.transfer.flash) and the library version, so the same build
+// publishes it next to the other modules (jitpack.yml). Gradle's composite-build dependency substitution still redirects
+// every `libs.webrtc.kmp` edge (declared above, with the version) to this included build, so the consuming modules'
+// dependency lines do not change. See third_party/webrtc-kmp/MODIFICATIONS.md.
 includeBuild("third_party/webrtc-kmp")
 
 include(":app")

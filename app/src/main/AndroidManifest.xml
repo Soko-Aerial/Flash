@@ -46,6 +46,13 @@
          and the user's "vibrate for calls" setting. Install-time (normal) permission. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- No Bluetooth permissions on purpose (release hygiene, 2026-10-09). The Android RFCOMM radio link (ADR-101, BT-03/BT-04)
+         is groundwork only: nothing in the app requests or uses BLUETOOTH_CONNECT / BLUETOOTH_SCAN yet, and declaring them adds
+         a Play permission declaration and an install-time "Nearby devices" line for no benefit. When the Android radio entry is
+         wired, add back: BLUETOOTH (maxSdkVersion 30), BLUETOOTH_CONNECT, BLUETOOTH_SCAN (usesPermissionFlags=neverForLocation,
+         the app never scans) and an optional android.hardware.bluetooth uses-feature (required=false). Source:
+         developer.android.com/develop/connectivity/bluetooth/bt-permissions, checked 2026-10-09. See docs/decisions.md ADR-101. -->
+
     <!-- Package visibility (API 30+) for OemBatteryOptimizationHelper's OEM autostart/battery screens. -->
     <queries>
         <package android:name="com.miui.securitycenter" />

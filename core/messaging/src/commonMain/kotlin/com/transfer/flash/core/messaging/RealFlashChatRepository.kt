@@ -21,6 +21,7 @@ import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
+import com.transfer.flash.core.messaging.model.FlashGroupHistoryUi
 import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
@@ -36,8 +37,14 @@ import com.transfer.flash.core.messaging.group.GroupProofResult
 import com.transfer.flash.core.messaging.group.GroupProofSessions
 import com.transfer.flash.core.messaging.group.GroupSecretStore
 import com.transfer.flash.core.messaging.group.GroupTraffic
+import com.transfer.flash.core.messaging.protocol.CatchUpLane
 import com.transfer.flash.core.messaging.protocol.ChatWireFrame
+import com.transfer.flash.core.messaging.protocol.GroupAdminPolicy
 import com.transfer.flash.core.messaging.protocol.GroupCrypto
+import com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling
+import com.transfer.flash.core.messaging.protocol.GroupHistoryChoice
+import com.transfer.flash.core.messaging.protocol.GroupHistoryPolicy
+import com.transfer.flash.core.messaging.protocol.GroupHistoryWindows
 import com.transfer.flash.core.messaging.protocol.GroupMembershipVersion
 import com.transfer.flash.core.messaging.protocol.GroupPolicy
 import com.transfer.flash.core.messaging.protocol.GroupRotation
@@ -50,6 +57,7 @@ import com.transfer.flash.core.messaging.protocol.GroupVouching
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.OutgoingSyncRequest
+import com.transfer.flash.core.messaging.protocol.VerifyBudget
 import com.transfer.flash.core.messaging.protocol.membershipUpdateWins
 import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.messaging.util.assignDaySeparators
@@ -64,6 +72,7 @@ import com.transfer.flash.core.messaging.util.throttleLatest
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
+import com.transfer.flash.core.persistence.db.dao.GroupHistoryDao
 import com.transfer.flash.core.persistence.db.dao.GroupInviteDao
 import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
@@ -77,7 +86,9 @@ import com.transfer.flash.core.messaging.group.toEntity
 import com.transfer.flash.core.messaging.group.toPreferences
 import com.transfer.flash.core.messaging.group.toSettings
 import com.transfer.flash.core.messaging.protocol.GroupSettings
+import com.transfer.flash.core.persistence.db.entity.GroupHistoryStateEntity
 import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
+import com.transfer.flash.core.persistence.db.entity.GroupSyncWatermarkEntity
 import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
 import com.transfer.flash.core.security.group.GroupInvite
 import com.transfer.flash.core.security.group.GroupInviteCodec
@@ -123,6 +134,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -301,6 +313,11 @@ public class RealFlashChatRepository(
     private val groupSettingsDao: GroupSettingsDao? = null,
     /** GM-9: Group local preferences storage DAO. */
     private val groupPreferencesDao: GroupPreferencesDao? = null,
+    /**
+     * ADR-100: device-local group history state and catch-up watermarks. Null (tests, previews) keeps the pre-ADR-100
+     * behaviour exactly: no join card, no deferral, and catch-up requests carry no window.
+     */
+    private val groupHistoryDao: GroupHistoryDao? = null,
 ) : FlashChatRepository {
 
     /**
@@ -532,7 +549,10 @@ public class RealFlashChatRepository(
     private val outboxDeadlines = mutableListOf<Long>()
 
     /** Catch-up arrivals per group (UI-052). [generation] lets the quiet timer tell whether a newer arrival superseded it. */
-    private data class SyncActivity(val received: Int, val generation: Long)
+    private data class SyncActivity(val received: Int, val generation: Long, val expected: Int? = null)
+
+    /** What the catch-up banner needs: arrivals so far, and the holder's estimate of the total while a page chain continues (ADR-100). */
+    private data class SyncBanner(val received: Int, val expected: Int?)
 
     private val groupSyncActivity = MutableStateFlow<Map<String, SyncActivity>>(emptyMap())
 
@@ -546,13 +566,38 @@ public class RealFlashChatRepository(
         groupSyncActivity.update { current ->
             val previous = current[groupId]
             generation = (previous?.generation ?: 0L) + 1L
-            current + (groupId to SyncActivity((previous?.received ?: 0) + 1, generation))
+            current + (groupId to SyncActivity((previous?.received ?: 0) + 1, generation, previous?.expected))
         }
         val armed = generation
         scope.launch {
             delay(groupSyncQuietMs)
             groupSyncActivity.update { current ->
                 if (current[groupId]?.generation == armed) current - groupId else current
+            }
+        }
+    }
+
+    /**
+     * ADR-100: a catch-up page ended. [remaining] is the holder's count of rows still to come (null when the chain is over).
+     * Only a banner that is already up is touched (a page of duplicates must not start one), and the quiet timer restarts so
+     * the banner stays up between pages.
+     */
+    private fun recordCatchUpPage(groupId: String, remaining: Int?) {
+        var armed = -1L
+        groupSyncActivity.update { current ->
+            val previous = current[groupId] ?: return@update current
+            armed = previous.generation + 1L
+            current + (groupId to previous.copy(
+                generation = armed,
+                expected = remaining?.let { GroupHistoryPolicy.expectedTotal(previous.received, it) },
+            ))
+        }
+        if (armed < 0L) return
+        val mine = armed
+        scope.launch {
+            delay(groupSyncQuietMs)
+            groupSyncActivity.update { current ->
+                if (current[groupId]?.generation == mine) current - groupId else current
             }
         }
     }
@@ -1004,7 +1049,7 @@ public class RealFlashChatRepository(
             val rosterFlow = combine(rawRosterFlow, conversationRefreshTrigger) { roster, _ -> roster }
             // UI-052: how many catch-up messages have arrived, for the banner; nothing for a direct chat.
             val syncFlow = if (isGroupConversation) {
-                groupSyncActivity.map { it[conversationId]?.received }.distinctUntilChanged()
+                groupSyncActivity.map { all -> all[conversationId]?.let { SyncBanner(it.received, it.expected) } }.distinctUntilChanged()
             } else {
                 flowOf(null)
             }
@@ -1015,7 +1060,7 @@ public class RealFlashChatRepository(
                 typingFlow,
                 rosterFlow,
                 syncFlow,
-            ) { content, peers, typingByConversation, _, syncReceived ->
+            ) { content, peers, typingByConversation, _, syncBanner ->
                 // Group Phase A: a group thread derives its header from the member roster, not
                 // from a peer-name lookup (a groupId is not a device id — the UUID used to win).
                 val conversationEntity = conversationDao.get(conversationId)
@@ -1045,6 +1090,13 @@ public class RealFlashChatRepository(
                     val canAdd = isMemberActive && (!isV2 || isOwner || isAdmin || currentSettings?.membersMayAdd == true)
                     val pendingReqs = if (isV2 && (isOwner || isAdmin)) getPendingJoinRequests(conversationId) else emptyList()
                     val localPrefs = if (isV2) getGroupLocalPreferences(conversationId) else null
+                    // ADR-100: the join card shows while this member has not chosen how much history to load.
+                    val historyPending = isMemberActive && groupHistoryDao?.state(conversationId)?.cardState == HISTORY_PENDING
+                    val historyCeiling = currentSettings?.historyCeiling ?: historyCeilingOf(conversationId)
+                    val rosterForAdmin = (groupMemberDao?.allMembers(conversationId).orEmpty())
+                        .map { GroupAdminPolicy.Member(it.deviceId, it.role, it.isActive) }
+                    val canChangeCeiling = isV2 && isMemberActive &&
+                        GroupAdminPolicy.canChangeHistoryCeiling(localDeviceId, conversationEntity.groupCreatedBy, rosterForAdmin)
                     FlashConversationUiState(
                         header = FlashChatHeaderUiState(
                             title = title,
@@ -1077,7 +1129,9 @@ public class RealFlashChatRepository(
                         canPromoteAdmin = isMemberActive && isV2 && isOwner,
                         canContinueInNewGroup = isMemberActive && !isOwner,
                         selfMembership = selfMembership,
-                        groupSync = syncReceived?.let { FlashGroupSyncUi(receivedCount = it) },
+                        groupSync = syncBanner?.let { FlashGroupSyncUi(receivedCount = it.received, expectedCount = it.expected) },
+                        groupHistory = if (historyPending) FlashGroupHistoryUi(ceiling = historyCeiling) else null,
+                        canChangeHistoryCeiling = canChangeCeiling,
                         canShareInvite = canShare,
                         isGroupV2 = isV2,
                         pendingJoinRequests = pendingReqs,
@@ -1600,7 +1654,7 @@ public class RealFlashChatRepository(
                 ?: return@withContext FlashResult.Failure(FlashError.Unknown("Failed to certify member"))
             val now = timeSource.nowMs()
             groupJoinRequestDao?.updateDecision(groupId, subjectId, req.subjectKey, "APPROVED", localDeviceId, now)
-            conversationRefreshTrigger.value = now
+            touchConversationRefresh()
             // Send full bundle to subject. If the link is down right now this is lost; the subject asks again when it
             // reconnects (its request is answered with the roster) and the roster reconcile on session-up covers it too.
             val bundleSent = groupTransportSink?.send(subjectId, added.full)
@@ -1646,7 +1700,7 @@ public class RealFlashChatRepository(
         } ?: return@withContext FlashResult.Failure(FlashError.Unknown("Join request not found"))
         val now = timeSource.nowMs()
         groupJoinRequestDao?.updateDecision(groupId, subjectId, req.subjectKey, "REFUSED", localDeviceId, now)
-        conversationRefreshTrigger.value = now
+        touchConversationRefresh()
         val decBytes = GroupCanonical.joinDecisionBytes(groupId, subjectId, false, reason, localDeviceId, now)
         val decSig = GroupCanonical.encode(groupCrypto?.sign(decBytes) ?: ByteArray(0))
         val decision = GroupWireFrame.GsJoinDecision(
@@ -1689,7 +1743,7 @@ public class RealFlashChatRepository(
             val invite = groupInviteDao?.getByGroupId(groupId)
                 ?: return@withContext FlashResult.Failure(FlashError.Unknown("No invite found for group"))
             groupInviteDao?.updateState(groupId, "ABANDONED")
-            conversationRefreshTrigger.value = timeSource.nowMs()
+            touchConversationRefresh()
             FlashResult.Success(Unit)
         }
 
@@ -1990,7 +2044,7 @@ public class RealFlashChatRepository(
             targets.forEach { groupTransportSink?.send(it, bundle) }
         }
         FlashLog.i("CHAT", "Group secret rotated (change group code): group=$groupId newEpoch=${rotation.newEpoch}")
-        conversationRefreshTrigger.value = timeSource.nowMs()
+        touchConversationRefresh()
         return FlashResult.Success(Unit)
     }
 
@@ -2135,15 +2189,21 @@ public class RealFlashChatRepository(
         maxMembers: Int?,
         swarmServing: Boolean?,
         membersMayAdd: Boolean?,
+        historyCeiling: String?,
     ): FlashResult<Unit> =
         withContext(ioDispatcher) {
+            val ceiling = if (historyCeiling == null) null else {
+                GroupHistoryCeiling.fromName(historyCeiling)
+                    ?: return@withContext FlashResult.Failure(FlashError.Unknown("Unknown history limit"))
+            }
             val signed = signedGroups
                 ?: return@withContext FlashResult.Failure(FlashError.Unknown("Signed groups are unavailable on this device"))
             val members = groupMemberDao
                 ?: return@withContext FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
-            val self = members.member(groupId, localDeviceId)?.takeIf { it.isActive }
-            val isOwner = conversationDao.get(groupId)?.groupCreatedBy == localDeviceId
-            val isAdmin = isOwner || self?.role == "admin"
+            val ownerId = conversationDao.get(groupId)?.groupCreatedBy
+            // One seam decides who is an admin (ADR-100, O3): a later co-admin rule changes GroupAdminPolicy only.
+            val roster = members.allMembers(groupId).map { GroupAdminPolicy.Member(it.deviceId, it.role, it.isActive) }
+            val isAdmin = GroupAdminPolicy.canChangeHistoryCeiling(localDeviceId, ownerId, roster)
             if (!isAdmin) {
                 return@withContext FlashResult.Failure(FlashError.Unknown("Only the group owner or an admin can update settings"))
             }
@@ -2154,13 +2214,14 @@ public class RealFlashChatRepository(
                 maxMembers = maxMembers,
                 swarmServing = swarmServing,
                 membersMayAdd = membersMayAdd,
+                historyCeiling = ceiling,
             ) ?: return@withContext FlashResult.Failure(FlashError.Unknown("Failed to sign or update group settings"))
 
             val activeOthers = members.activeMembers(groupId).map { it.deviceId } - localDeviceId
             activeOthers.forEach { target ->
                 groupTransportSink?.send(target, bundle)
             }
-            conversationRefreshTrigger.value = timeSource.nowMs()
+            touchConversationRefresh()
             FlashResult.Success(Unit)
         }
 
@@ -2192,7 +2253,7 @@ public class RealFlashChatRepository(
                 )
                 groupPreferencesDao?.upsert(updated.toEntity())
             }
-            conversationRefreshTrigger.value = timeSource.nowMs()
+            touchConversationRefresh()
             FlashResult.Success(Unit)
         }
 
@@ -2667,7 +2728,8 @@ public class RealFlashChatRepository(
                             senderId = media.from,
                             senderName = media.senderName,
                             text = "",
-                            sentAt = media.sentAt.takeIf { it > 0 } ?: now,
+                            // R-10: the same bound as every other inbound group row (a far-future stamp used to pin the row).
+                            sentAt = storedSentAt(media.sentAt.takeIf { it > 0 } ?: now, now, signed = media.signature != null),
                             status = "DELIVERED",
                             attachmentTransferId = transferId,
                             attachmentName = media.fileName.ifBlank { fileName },
@@ -2919,6 +2981,8 @@ public class RealFlashChatRepository(
                 // session-up - so re-stamping sortOrder/groupCreatedAt here would shuffle the chat
                 // list and rewrite the group's creation time on every reconnect.
                 val existingGroupConversation = conversationDao.get(frame.groupId)
+                // G7: only a group this device had no record of is a join; a returning member with zero rows is not.
+                val wasNewHere = existingGroupConversation == null && members.member(frame.groupId, localDeviceId) == null
                 // ADR-044 V1a (F-2): once this device has a record of the group, only a member it
                 // already knows as active may reconcile it. No record = the bootstrap above.
                 // Accepted cost: a member this device has not yet learned about cannot teach it
@@ -2964,7 +3028,7 @@ public class RealFlashChatRepository(
                 // catch-up cursor is empty - ask the other members for the history now, because
                 // nothing else will (F3 sync only ever fires on a session-up edge, and this device
                 // is already connected to the peer that just bootstrapped it).
-                requestGroupCatchUp(frame.groupId)
+                requestGroupCatchUp(frame.groupId, newlyJoined = wasNewHere)
             }
             is GroupWireFrame.Message -> {
                 if (!isActiveGroupMember(members, frame.groupId, frame.from)) {
@@ -3085,7 +3149,7 @@ public class RealFlashChatRepository(
                         hintsExhausted.remove(frame.groupId)
                         // The group is new here and holds no messages, and F3 sync only fires on a
                         // session-up edge: ask for history now, as a legacy bootstrap does.
-                        requestGroupCatchUp(frame.groupId)
+                        requestGroupCatchUp(frame.groupId, newlyJoined = outcome.joined)
                     }
                     if (outcome.needsSecret && outcome.rotation != null) {
                         if (groupGate.allows(frame.groupId, peerDeviceId, GroupTraffic.CHAT)) {
@@ -3122,6 +3186,11 @@ public class RealFlashChatRepository(
                     is GroupWireFrame.SyncClaim -> handleSyncClaim(frame)
                     is GroupWireFrame.SyncPush -> handleSyncPush(frame)
                     is GroupWireFrame.SyncAck -> handleSyncAck(frame)
+                    // G4: the marker may wait up to SYNC_PAGE_WAIT_MS for its pushes; it must not hold this session's
+                    // inbound pipeline (call signalling shares it) while it does.
+                    is GroupWireFrame.SyncPage -> {
+                        scope.launch(ioDispatcher) { handleSyncPage(frame) }
+                    }
                 }
             }
             is GroupWireFrame.GroupMedia -> {
@@ -3193,7 +3262,7 @@ public class RealFlashChatRepository(
                                     senderId = frame.from,
                                     senderName = senderName,
                                     text = "",
-                                    sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
+                                    sentAt = storedSentAt(frame.sentAt.takeIf { it > 0 } ?: now, now, signed = groupSig != null || frame.rootSig != null),
                                     status = "DELIVERED",
                                     // ERROR-108: the swarm's row id is the message id, not this recipient's transfer id.
                                     // A bubble keyed by the transfer id never found its row, so it showed no progress and
@@ -3279,13 +3348,24 @@ public class RealFlashChatRepository(
                     if (messageDao.existsAttachment(frame.transferId)) {
                         // If FILE_START beat GroupMedia, the row was provisionally inserted under
                         // the peer's 1-to-1 conversation. Move it to the group conversation!
-                        messageDao.updateGroupContext(
-                            transferId = frame.transferId,
-                            groupId = frame.groupId,
-                            messageId = frame.messageId,
-                            senderId = frame.from,
-                            senderName = senderName,
-                        )
+                        val moved = try {
+                            messageDao.updateGroupContext(
+                                transferId = frame.transferId,
+                                groupId = frame.groupId,
+                                messageId = frame.messageId,
+                                senderId = frame.from,
+                                senderName = senderName,
+                            )
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            throw ce
+                        } catch (e: Exception) {
+                            // R-08: a failing UPDATE must not take the receive coroutine down with it.
+                            FlashLog.w("CHAT", "Group media re-attribution failed (group=${frame.groupId} msg=${frame.messageId}): ${e::class.simpleName}")
+                            0
+                        }
+                        if (moved == 0) {
+                            FlashLog.w("CHAT", "Group media for transfer ${frame.transferId} not re-attributed: the stored row is not ${frame.from}'s or the message id is taken (group=${frame.groupId})")
+                        }
                         touchConversation(frame.groupId, now)
                     } else if (claimedGroupMedia.add(frame.transferId)) {
                         // Mint the group attachment offer bubble now so it appears immediately!
@@ -3298,7 +3378,7 @@ public class RealFlashChatRepository(
                                 senderId = frame.from,
                                 senderName = senderName,
                                 text = "",
-                                sentAt = frame.sentAt.takeIf { it > 0 } ?: now,
+                                sentAt = storedSentAt(frame.sentAt.takeIf { it > 0 } ?: now, now, signed = groupSig != null),
                                 status = "DELIVERED",
                                 attachmentTransferId = frame.transferId,
                                 attachmentName = frame.fileName,
@@ -3582,7 +3662,7 @@ public class RealFlashChatRepository(
             } else {
                 val groupTitle = conversationDao.get(frame.groupId)?.title ?: "Group"
                 onJoinRequestNotification?.invoke(frame.groupId, groupTitle, frame.label)
-                conversationRefreshTrigger.value = timeSource.nowMs()
+                touchConversationRefresh()
             }
         } else {
             // Forward signed request to every admin this device has an active session with
@@ -3734,7 +3814,7 @@ public class RealFlashChatRepository(
             groupSecretStore?.forget(groupId)
         }
         FlashLog.w("GROUP", "Invite can not complete: group=$groupId state=$state")
-        conversationRefreshTrigger.value = timeSource.nowMs()
+        touchConversationRefresh()
     }
 
     private suspend fun sendJoinRequest(peerId: String, groupId: String, epoch: Long) {
@@ -3939,14 +4019,16 @@ public class RealFlashChatRepository(
      * each holder answers with the messages IT owns, which is why the request goes to every member
      * and not just to the peer that bootstrapped us.
      */
-    internal fun requestGroupCatchUp(groupId: String) {
+    internal fun requestGroupCatchUp(groupId: String, newlyJoined: Boolean = true) {
         scope.launch(ioDispatcher) {
             val members = groupMemberDao ?: return@launch
+            // ADR-100: a member that has just joined and holds no message yet is asked first how much history it wants.
+            if (!historyMayBeRequested(groupId, newlyJoined)) return@launch
             val others = members.activeMembers(groupId)
                 .map { it.deviceId }
                 .filter { it != localDeviceId }
             FlashProbe.emit("group.catchup.request", "group" to FlashProbe.short(groupId), "to" to others.size, "why" to "bootstrap")
-            others.forEach { memberId -> sendSyncRequestFor(memberId, groupId) }
+            catchUpFrom(groupId, others)
         }
     }
 
@@ -4034,15 +4116,43 @@ public class RealFlashChatRepository(
         )
     }
 
-    /** One F3 catch-up request for a single (group, peer) pair - the existing wire shape. */
-    private suspend fun sendSyncRequestFor(peerDeviceId: String, groupId: String) {
+    /**
+     * One F3 catch-up request for a single (group, peer) pair - the existing wire shape. True when a request was handed to the
+     * transport (a live session took it); false when none must be sent (the join card is still up, a window of nothing) or the
+     * peer has no session, so the caller can move on to the next holder.
+     */
+    private suspend fun sendSyncRequestFor(peerDeviceId: String, groupId: String): Boolean {
+        val historyDao = groupHistoryDao
         val newest = messageDao.historyBefore(groupId, Long.MAX_VALUE, "\uFFFF", limit = 1).firstOrNull()
+        if (historyDao != null) {
+            // ADR-100: a windowed request that continues from the contiguous watermark of the asked holder.
+            val now = timeSource.nowMs()
+            val state = historyDao.state(groupId)
+            val watermarkRow = historyDao.watermark(groupId, peerDeviceId)
+            // G1: "returning" is a fact about the ASKED holder (when it last served this device), not about the group:
+            // one holder finishing used to shrink every other holder's window to the 7-day floor.
+            val choice = GroupHistoryPolicy.requestFor(
+                historyCeilingOf(groupId), state?.toRequestState(watermarkRow?.updatedAtMs ?: 0L), now,
+            ) ?: return false
+            val watermark = watermarkRow?.let { GroupSyncCursor(it.sentAt, it.messageId) }
+            // Without a watermark the request asks from the window floor, so a gap below the newest local row (defect S1)
+            // is asked for. A holder that has sent a page marker is known to page, so it always is. One that has not
+            // (an older build, or a first page that died) gets at most [SYNC_FLOOR_ATTEMPTS] such requests per process,
+            // then the newest local row is the cursor again, which is exactly the pre-ADR-100 traffic.
+            val holderKey = "$groupId|$peerDeviceId"
+            val attempts = (syncFloorAttempts[holderKey] ?: 0)
+            val firstFromFloor = watermark == null && (syncPagedHolders.contains(holderKey) || attempts < SYNC_FLOOR_ATTEMPTS)
+            if (watermark == null && !syncPagedHolders.contains(holderKey)) syncFloorAttempts[holderKey] = attempts + 1
+            val newestCursor = newest?.let { GroupSyncCursor(it.sentAt, it.localId) }
+            val start = GroupHistoryPolicy.requestStart(watermark, if (firstFromFloor) null else newestCursor, now, choice.messageWindowMs)
+            return sendHistoryRequest(peerDeviceId, groupId, start, choice, continuation = false, pageNo = 0)
+        }
         val tier = syncTier()
         val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
         val syncId = UuidIdGenerator.newId()
         // Recorded BEFORE the send so a fast answer cannot beat the ledger entry (F-4).
         recordOutgoingSync(syncId, groupId, peerDeviceId)
-        groupTransportSink?.send(
+        return groupTransportSink?.send(
             peerDeviceId,
             GroupWireFrame.SyncRequest(
                 groupId = groupId,
@@ -4054,7 +4164,216 @@ public class RealFlashChatRepository(
                 maxPerSecond = maxPerSecond,
                 maxTotal = maxTotal,
             ),
+        ) ?: false
+    }
+
+    /** One windowed catch-up request (ADR-100); the legacy request above is the same frame without the window keys. */
+    private suspend fun sendHistoryRequest(
+        peerDeviceId: String,
+        groupId: String,
+        start: GroupSyncCursor,
+        choice: GroupHistoryChoice,
+        continuation: Boolean,
+        pageNo: Int,
+    ): Boolean {
+        val tier = syncTier()
+        val (maxPerSecond, maxTotal) = GroupPolicy.syncLimits(tier)
+        val syncId = UuidIdGenerator.newId()
+        recordOutgoingSync(syncId, groupId, peerDeviceId, choice.messageWindowMs, choice.includeFiles, pageNo)
+        FlashProbe.emit(
+            "group.catchup.request",
+            "group" to FlashProbe.short(groupId),
+            "to" to FlashProbe.short(peerDeviceId),
+            "why" to if (continuation) "page" else "session",
+            "windowMs" to choice.messageWindowMs,
+            "files" to choice.includeFiles,
+            "page" to pageNo,
         )
+        return groupTransportSink?.send(
+            peerDeviceId,
+            GroupWireFrame.SyncRequest(
+                groupId = groupId,
+                syncId = syncId,
+                from = localDeviceId,
+                sinceSentAt = start.sentAt,
+                sinceMessageId = start.messageId,
+                tier = tier,
+                maxPerSecond = maxPerSecond,
+                maxTotal = maxTotal,
+                windowMs = choice.messageWindowMs,
+                includeFiles = choice.includeFiles,
+                continuation = continuation,
+            ),
+        ) ?: false
+    }
+
+    /** Requests per (group|holder) that started at the window floor because no watermark existed (ADR-100); see [sendSyncRequestFor]. */
+    private val syncFloorAttempts = SyncMap<String, Int>()
+
+    /** (group|holder) pairs that have sent a page marker in this process, i.e. holders known to page. */
+    private val syncPagedHolders = SyncSet<String>()
+
+    /**
+     * G1: [holderContactAtMs] is when the ASKED holder last served this device (its watermark's `updatedAtMs`, 0 when it never
+     * has). The row's own group-wide `lastContactAtMs` is still written but no longer decides a window.
+     */
+    private fun GroupHistoryStateEntity.toRequestState(holderContactAtMs: Long) = GroupHistoryPolicy.RequestState(
+        pending = cardState == HISTORY_PENDING,
+        chosenWindowMs = windowMs,
+        includeFiles = includeFiles,
+        decidedAtMs = decidedAtMs,
+        lastContactAtMs = holderContactAtMs,
+    )
+
+    /** ADR-106 (G3): who answers a group's catch-up; one lane per group, one holder in charge at a time. */
+    private val catchUpLanes = SyncMap<String, CatchUpLane>()
+
+    /** How long the holder in charge may stay silent before the next one is asked; a field so tests need not wait 45 s. */
+    internal var catchUpStallMs: Long = GroupPolicy.CATCH_UP_STALL_MS
+
+    /** G11: catch-up requests accepted per (group, requester) per window. */
+    private val syncRequestBudget = VerifyBudget(GroupPolicy.SYNC_REQUESTS_PER_WINDOW, GroupPolicy.SYNC_REQUEST_RATE_WINDOW_MS)
+
+    /**
+     * Asks [holders] for the history this device lacks, ONE at a time (ADR-106, review G3). Holders that wait behind the one in
+     * charge are asked only if it fails, goes quiet or delivers nothing; once one delivered a complete chain the others are
+     * left alone for [GroupPolicy.CATCH_UP_EPISODE_MS]. Without the history store the old one-request-per-holder shape stays.
+     */
+    private suspend fun catchUpFrom(groupId: String, holders: List<String>) {
+        val historyDao = groupHistoryDao
+        if (historyDao == null) {
+            holders.forEach { sendSyncRequestFor(it, groupId) }
+            return
+        }
+        if (holders.isEmpty()) return
+        val lane = catchUpLanes.getOrPut(groupId) { CatchUpLane(catchUpStallMs) }
+        // The holder served longest ago leads (never-served first): the lead rotates from episode to episode, and a row one
+        // holder missed can arrive from another later. Ties are broken per requester so a crowd of new members does not all
+        // ask the same device.
+        val served = historyDao.watermarks(groupId).associate { it.holderId to it.updatedAtMs }
+        val ordered = holders.sortedWith(compareBy<String>({ served[it] ?: 0L }, { "$localDeviceId|$it".hashCode() }))
+        runLane(groupId, lane, lane.offer(ordered, timeSource.nowMs()))
+    }
+
+    /** Starts [first]; while a holder cannot be asked at all the lane moves to the next one. */
+    private suspend fun runLane(groupId: String, lane: CatchUpLane, first: String?) {
+        var next = first
+        while (next != null) {
+            if (sendSyncRequestFor(next, groupId)) {
+                watchLane(groupId, lane, next)
+                return
+            }
+            next = lane.finish(next, complete = false, nowMs = timeSource.nowMs())
+        }
+    }
+
+    /** The holder in charge stopped answering (no push, no marker) for [catchUpStallMs]: the next one is asked. */
+    private fun watchLane(groupId: String, lane: CatchUpLane, holder: String) {
+        scope.launch(ioDispatcher) {
+            while (true) {
+                delay((catchUpStallMs / 2).coerceAtLeast(20L))
+                val step = lane.checkStall(holder, timeSource.nowMs())
+                if (!step.stillLeads) {
+                    if (step.next != null) runLane(groupId, lane, step.next)
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private suspend fun finishLane(groupId: String, holder: String, complete: Boolean) {
+        val lane = catchUpLanes[groupId] ?: return
+        runLane(groupId, lane, lane.finish(holder, complete, timeSource.nowMs()))
+    }
+
+    /** Strictly increasing, so two refreshes in the same millisecond still reach a collector (G13). */
+    internal fun touchConversationRefresh() {
+        val now = timeSource.nowMs()
+        conversationRefreshTrigger.update { maxOf(now, it + 1L) }
+    }
+
+    /** Test view of the refresh trigger (G13). */
+    internal fun conversationRefreshValue(): Long = conversationRefreshTrigger.value
+
+    /** The signed history ceiling of [groupId]; a legacy group, or one nobody changed, has the default. */
+    private suspend fun historyCeilingOf(groupId: String): GroupHistoryCeiling =
+        (signedGroups?.currentSettings(groupId) ?: groupSettingsDao?.getByGroupId(groupId)?.toSettings())
+            ?.historyCeiling ?: GroupHistoryCeiling.DEFAULT
+
+    /**
+     * ADR-100: false while the member has to choose how much history to load. A device that just joined a group and holds
+     * no message of it gets a `PENDING` row (the join card); one that already has rows, or only re-applied a roster, is
+     * a returning member and is never asked. Always true without the history store.
+     */
+    private suspend fun historyMayBeRequested(groupId: String, newlyJoined: Boolean): Boolean {
+        val dao = groupHistoryDao ?: return true
+        val existing = dao.state(groupId)
+        if (existing != null) return existing.cardState != HISTORY_PENDING
+        if (!newlyJoined) return true
+        val hasRows = messageDao.historyBefore(groupId, Long.MAX_VALUE, "\uFFFF", limit = 1).isNotEmpty()
+        if (hasRows) return true
+        val now = timeSource.nowMs()
+        dao.upsertState(
+            GroupHistoryStateEntity(
+                groupId = groupId, cardState = HISTORY_PENDING, windowMs = 0L, includeFiles = false,
+                decidedAtMs = 0L, lastContactAtMs = 0L, createdAtMs = now,
+            ),
+        )
+        FlashProbe.emit("group.history.card", "group" to FlashProbe.short(groupId), "state" to HISTORY_PENDING)
+        touchConversationRefresh()
+        return false
+    }
+
+    override suspend fun chooseGroupHistory(groupId: String, windowMs: Long, includeFiles: Boolean): FlashResult<Unit> =
+        withContext(ioDispatcher) { storeHistoryChoice(groupId, windowMs, includeFiles, resetWatermarks = false) }
+
+    override suspend fun skipGroupHistory(groupId: String): FlashResult<Unit> =
+        withContext(ioDispatcher) { storeHistoryChoice(groupId, 0L, false, resetWatermarks = false) }
+
+    override suspend fun loadOlderGroupHistory(groupId: String, windowMs: Long): FlashResult<Unit> =
+        // Older rows lie BELOW every watermark, so they are reset and the next request starts at the new window's floor.
+        withContext(ioDispatcher) { storeHistoryChoice(groupId, windowMs, true, resetWatermarks = true) }
+
+    private suspend fun storeHistoryChoice(
+        groupId: String,
+        windowMs: Long,
+        includeFiles: Boolean,
+        resetWatermarks: Boolean,
+    ): FlashResult<Unit> {
+        val dao = groupHistoryDao ?: return FlashResult.Failure(FlashError.Unknown("Group history is unavailable on this device"))
+        val members = groupMemberDao ?: return FlashResult.Failure(FlashError.Unknown("Group storage unavailable"))
+        if (members.member(groupId, localDeviceId)?.isActive != true) {
+            return FlashResult.Failure(FlashError.Unknown("You are not a member of this group"))
+        }
+        val now = timeSource.nowMs()
+        val ceiling = historyCeilingOf(groupId)
+        val previous = dao.state(groupId)
+        // G8: "Load older" only widens; asking for 7 days after choosing 30 must not lower the stored window.
+        val wanted = if (resetWatermarks) maxOf(windowMs, previous?.windowMs ?: 0L) else windowMs
+        val choice = GroupHistoryPolicy.clamp(GroupHistoryChoice(wanted.coerceAtLeast(0L), includeFiles), ceiling)
+        dao.upsertState(
+            GroupHistoryStateEntity(
+                groupId = groupId,
+                cardState = if (choice.messageWindowMs == 0L && !choice.includeFiles) HISTORY_SKIPPED else HISTORY_DECIDED,
+                windowMs = choice.messageWindowMs,
+                includeFiles = choice.includeFiles,
+                decidedAtMs = now,
+                lastContactAtMs = 0L,
+                createdAtMs = previous?.createdAtMs ?: now,
+            ),
+        )
+        if (resetWatermarks) dao.deleteWatermarks(groupId)
+        FlashProbe.emit(
+            "group.history.choice", "group" to FlashProbe.short(groupId),
+            "windowMs" to choice.messageWindowMs, "files" to choice.includeFiles, "ceiling" to ceiling.name,
+        )
+        touchConversationRefresh()
+        // A new choice is a new episode, whatever the lane was doing.
+        catchUpLanes[groupId]?.reset()
+        scope.launch(ioDispatcher) {
+            catchUpFrom(groupId, members.activeMembers(groupId).map { it.deviceId }.filter { it != localDeviceId })
+        }
+        return FlashResult.Success(Unit)
     }
 
     // ------------------------------------------------------------------ F3: FLASH_GSYNC
@@ -4067,7 +4386,14 @@ public class RealFlashChatRepository(
         val messageIds: SyncSet<String>,
         val acknowledgedMessageIds: SyncSet<String>,
         val claimants: SyncMap<String, GroupSyncTier>,
-    )
+    ) {
+        /** ADR-100: set for a windowed request; the marker the holder sends after the pushes of this page. */
+        @Volatile
+        var page: SyncPageInfo? = null
+    }
+
+    /** What the holder tells the requester about one page: how many rows were pushed and how many remain behind them. */
+    private class SyncPageInfo(val count: Int, val remaining: Int, val more: Boolean, val end: GroupSyncCursor?)
 
     /** syncId → round. Bounded by [GroupPolicy.MAX_PENDING_SYNC_MESSAGES] semantics via ack/TTL. */
     private val syncRounds = SyncMap<String, SyncRound>()
@@ -4087,7 +4413,7 @@ public class RealFlashChatRepository(
     public fun sendGroupSyncRequests(peerDeviceId: String) {
         scope.launch(ioDispatcher) {
             val groupIds = groupMemberDao?.activeGroupIdsFor(localDeviceId).orEmpty()
-            for (groupId in groupIds) sendSyncRequestFor(peerDeviceId, groupId)
+            for (groupId in groupIds) catchUpFrom(groupId, listOf(peerDeviceId))
         }
     }
 
@@ -4102,8 +4428,13 @@ public class RealFlashChatRepository(
         v2Group: Boolean,
         nowMs: Long,
         wanted: Int,
-    ): List<MessageEntity> {
-        val floor = nowMs - GroupPolicy.SWARM_OFFER_SYNC_TTL_MS
+        windows: GroupHistoryWindows,
+    ): CatchUpScan {
+        // ADR-100: the read starts at the widest window the request may use (for an older requester that is the
+        // 7-day swarm window, exactly as before) and each row is kept when it is inside the window of its own kind.
+        val widest = maxOf(windows.textMs, windows.fileMs)
+        if (widest <= 0L) return CatchUpScan(emptyList(), null, exhausted = true)
+        val floor = GroupHistoryPolicy.floorMs(nowMs, widest)
         var sinceAt = frame.sinceSentAt
         var sinceId = frame.sinceMessageId
         if (sinceAt < floor) {
@@ -4112,20 +4443,70 @@ public class RealFlashChatRepository(
         }
         val page = GroupPolicy.MAX_PENDING_SYNC_MESSAGES
         val usable = ArrayList<MessageEntity>()
+        var scanEnd: GroupSyncCursor? = null
+        var exhausted = false
         var pages = 0
-        while (pages < GroupPolicy.MAX_CATCH_UP_PAGES) {
+        scan@ while (pages < GroupPolicy.MAX_CATCH_UP_PAGES) {
             val rows = messageDao.historyAfter(frame.groupId, sinceAt, sinceId, page)
             for (row in rows) {
-                val ttl = if (row.swarmRoot != null) GroupPolicy.SWARM_OFFER_SYNC_TTL_MS else GroupPolicy.SYNC_TTL_MS
-                if (row.sentAt >= nowMs - ttl && (!v2Group || row.groupSig != null)) usable.add(row)
+                scanEnd = GroupSyncCursor(row.sentAt, row.localId)
+                if (row.deletedAt == null &&
+                    GroupHistoryPolicy.inWindow(row.sentAt, row.swarmRoot != null, nowMs, windows) &&
+                    (!v2Group || row.groupSig != null)
+                ) {
+                    usable.add(row)
+                    // The page is full: stop exactly here, so the page end is the last row it carries.
+                    if (usable.size >= wanted) break@scan
+                }
             }
-            if (usable.size >= wanted || rows.size < page) break
+            if (rows.size < page) {
+                exhausted = true
+                break
+            }
             val last = rows.last()
             sinceAt = last.sentAt
             sinceId = last.localId
             pages++
         }
-        return usable
+        return CatchUpScan(usable, scanEnd, exhausted)
+    }
+
+    /** The rows a catch-up read found, where it stopped, and whether it reached the end of this holder's history. */
+    private class CatchUpScan(val usable: List<MessageEntity>, val scanEnd: GroupSyncCursor?, val exhausted: Boolean)
+
+    /**
+     * How many more rows [after] this holder would serve under [windows], counted up to
+     * [GroupHistoryPolicy.MAX_REMAINING_COUNT]; `reachedEnd` is false when the bounded read stopped before the end.
+     */
+    private suspend fun countRemaining(
+        groupId: String,
+        after: GroupSyncCursor,
+        v2Group: Boolean,
+        nowMs: Long,
+        windows: GroupHistoryWindows,
+    ): Pair<Int, Boolean> {
+        var sinceAt = after.sentAt
+        var sinceId = after.messageId
+        var counted = 0
+        val page = GroupPolicy.MAX_PENDING_SYNC_MESSAGES
+        var pages = 0
+        while (pages < GroupPolicy.MAX_CATCH_UP_PAGES) {
+            val rows = messageDao.historyAfter(groupId, sinceAt, sinceId, page)
+            for (row in rows) {
+                if (row.deletedAt == null &&
+                    GroupHistoryPolicy.inWindow(row.sentAt, row.swarmRoot != null, nowMs, windows) &&
+                    (!v2Group || row.groupSig != null)
+                ) {
+                    counted++
+                    if (counted >= GroupHistoryPolicy.MAX_REMAINING_COUNT) return counted to false
+                }
+            }
+            if (rows.size < page) return counted to true
+            sinceAt = rows.last().sentAt
+            sinceId = rows.last().localId
+            pages++
+        }
+        return counted to false
     }
 
     /**
@@ -4140,17 +4521,48 @@ public class RealFlashChatRepository(
         // attachment) could not be verified by the receiver.
         val v2Group = isV2Group(frame.groupId)
         val nowMs = timeSource.nowMs()
+        // G11: a member that sends requests back to back (continuations skip the pacing delay and cost a bounded read per
+        // page) is answered up to a budget per window; an honest chain sends about one request per page.
+        if (!syncRequestBudget.tryConsume("${frame.groupId}|${frame.from}", 1, nowMs)) {
+            FlashProbe.emit("group.sync.drop", "group" to FlashProbe.short(frame.groupId), "from" to FlashProbe.short(frame.from), "reason" to "request_rate")
+            return
+        }
+        // ADR-100: every holder enforces the signed ceiling, whatever the requester believes it may ask for. A request
+        // without a window (an older build) is served today's 24 h of text and 7 days of file offers, inside the ceiling.
+        val ceiling = historyCeilingOf(frame.groupId)
+        val windows = GroupHistoryPolicy.holderWindows(ceiling, frame.windowMs, frame.includeFiles)
+        val paged = frame.windowMs != null
+        val pageSize = if (paged) GroupHistoryPolicy.PAGE_SIZE else maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES)
+        val scan = catchUpCandidates(frame, v2Group, nowMs, pageSize, windows)
         val owned = GroupSyncPolicy.ownedMessages(
-            messages = catchUpCandidates(frame, v2Group, nowMs, maxTotal.coerceAtMost(GroupPolicy.MAX_PENDING_SYNC_MESSAGES)),
+            messages = scan.usable,
             cursor = GroupSyncCursor(frame.sinceSentAt, frame.sinceMessageId),
-            maxTotal = maxTotal,
+            maxTotal = if (paged) pageSize else maxTotal,
             nowMs = nowMs,
             sentAt = { it.sentAt },
             messageId = { it.localId },
             deletedAt = { it.deletedAt },
-            ttlMs = { if (it.swarmRoot != null) GroupPolicy.SWARM_OFFER_SYNC_TTL_MS else GroupPolicy.SYNC_TTL_MS },
+            ttlMs = { if (it.swarmRoot != null) windows.fileMs else windows.textMs },
         )
-        if (owned.isEmpty()) return
+        // ADR-100: what follows this page, so the requester can ask for the next one and show "N of about M".
+        var pageInfo: SyncPageInfo? = null
+        if (paged) {
+            val end = owned.lastOrNull()?.let { GroupSyncCursor(it.sentAt, it.localId) }
+            val full = owned.size >= pageSize
+            val (remaining, reachedEnd) = if (full && end != null) {
+                countRemaining(frame.groupId, end, v2Group, nowMs, windows)
+            } else {
+                0 to scan.exhausted
+            }
+            val more = remaining > 0 || !reachedEnd
+            // A page with nothing usable in a read that stopped early still moves the requester past what was scanned.
+            val pageEnd = end ?: if (more) scan.scanEnd else null
+            pageInfo = SyncPageInfo(owned.size, remaining, more, pageEnd)
+        }
+        if (owned.isEmpty()) {
+            if (pageInfo != null) sendSyncPage(frame.from, frame.groupId, frame.syncId, pageInfo, frame.keyEpoch)
+            return
+        }
         // The requester is who the pushes and the ack go back to.
         syncRequesters[frame.syncId] = frame.from
         val round = syncRounds.getOrPut(frame.syncId) {
@@ -4164,6 +4576,7 @@ public class RealFlashChatRepository(
             )
         }
         owned.forEach { round.messageIds.add(it.localId) }
+        round.page = pageInfo
         round.claimants[localDeviceId] = syncTier()
         val claim = GroupWireFrame.SyncClaim(
             groupId = frame.groupId,
@@ -4174,7 +4587,26 @@ public class RealFlashChatRepository(
         groupMemberDao?.activeMembers(frame.groupId)
             ?.filter { it.deviceId != localDeviceId }
             ?.forEach { member -> groupTransportSink?.send(member.deviceId, claim) }
-        armBackupPush(frame.groupId, frame.syncId)
+        // A continuation page is the requester's next step of a request it already made, so it does not wait out the
+        // backup delay again (the first request of a chain does, exactly as before).
+        armBackupPush(frame.groupId, frame.syncId, if (frame.continuation) 0L else GroupPolicy.BACKUP_DELAY_MS)
+    }
+
+    private suspend fun sendSyncPage(to: String, groupId: String, syncId: String, info: SyncPageInfo, keyEpoch: Long) {
+        groupTransportSink?.send(
+            to,
+            GroupWireFrame.SyncPage(
+                groupId = groupId,
+                syncId = syncId,
+                from = localDeviceId,
+                count = info.count,
+                remaining = info.remaining,
+                more = info.more,
+                lastSentAt = info.end?.sentAt ?: 0L,
+                lastMessageId = info.end?.messageId ?: "",
+                keyEpoch = keyEpoch,
+            ),
+        )
     }
 
     /**
@@ -4193,10 +4625,12 @@ public class RealFlashChatRepository(
      * pusher per message over the observed claimants and push if this device wins rank 0.
      * Paced to the requester's [SyncRound.requesterMaxPerSecond].
      */
-    private fun armBackupPush(groupId: String, syncId: String) {
+    private fun armBackupPush(groupId: String, syncId: String, delayMs: Long = GroupPolicy.BACKUP_DELAY_MS) {
         scope.launch(ioDispatcher) {
-            delay(GroupPolicy.BACKUP_DELAY_MS)
+            delay(delayMs)
             val round = syncRounds[syncId] ?: return@launch
+            // Read before any push: the last ack can retire the round (and the requester entry) before the marker below.
+            val requesterId = syncRequesters[syncId]
             if (GroupSyncRoundState(round.messageIds.toSet(), round.acknowledgedMessageIds.toSet()).isComplete) {
                 return@launch
             }
@@ -4223,6 +4657,12 @@ public class RealFlashChatRepository(
                     ),
                 )
                 delay(interval)
+            }
+            // ADR-100: after the last push of a page, tell the requester how the page ended. Only when this device pushed
+            // the whole page, so a marker never vouches for rows another holder was elected to send.
+            val info = round.page
+            if (info != null && requesterId != null && mine.size == ids.size) {
+                sendSyncPage(requesterId, groupId, syncId, info, keyEpoch = 0L)
             }
         }
     }
@@ -4327,6 +4767,12 @@ public class RealFlashChatRepository(
             probeGroupMessageDrop("group.sync.drop", frame.groupId, frame.from, "no_matching_request", frame.message.sentAt)
             FlashLog.w("CHAT", "Group SyncPush dropped: no matching request (syncId=${frame.syncId} from=${frame.from})")
             return
+        }
+        // ADR-100: a push of a windowed request is counted when it is SEEN, whatever becomes of it below (stored, a duplicate,
+        // or refused as unsigned), because the page marker's count is the number of rows the holder sent.
+        if (request.windowMs != null) {
+            request.tally.record(GroupSyncCursor(frame.message.sentAt, frame.message.messageId))
+            catchUpLanes[request.groupId]?.progress(frame.from, 1, timeSource.nowMs())
         }
         val message = frame.message
         if (message.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
@@ -4511,9 +4957,83 @@ public class RealFlashChatRepository(
     /** Catch-up requests this device sent, keyed by `syncId` (ADR-044 V1a, finding F-4). */
     private val outgoingSyncRequests = SyncMap<String, OutgoingSyncRequest>()
 
-    private fun recordOutgoingSync(syncId: String, groupId: String, askedPeerId: String) {
+    /**
+     * Requester side of a page marker (ADR-100): once every row the holder said it pushed has been seen, the watermark for
+     * that holder moves to the page end (never earlier: a page that lost a frame leaves it, and the next session resumes
+     * from it), the banner learns how many rows remain, and a page that is not the last asks for the next one.
+     */
+    private suspend fun handleSyncPage(frame: GroupWireFrame.SyncPage) {
+        val request = outgoingSyncRequests[frame.syncId]
+        if (request == null || !request.acceptsPush(frame.groupId, frame.from, timeSource.nowMs()) || request.windowMs == null) {
+            FlashLog.w("CHAT", "Group SyncPage dropped: no matching request (syncId=${frame.syncId} from=${frame.from})")
+            return
+        }
+        val dao = groupHistoryDao ?: return
+        syncPagedHolders.add("${frame.groupId}|${frame.from}")
+        val tally = request.tally
+        // Frames of one session arrive in order, but handling is not serialised, so give the last push a moment to land.
+        val complete = withTimeoutOrNull(SYNC_PAGE_WAIT_MS) {
+            tally.seen.first { it >= frame.count }
+        } != null
+        val seen = tally.seen.value
+        val newest = tally.newest
         val now = timeSource.nowMs()
-        outgoingSyncRequests[syncId] = OutgoingSyncRequest(groupId, askedPeerId, now)
+        catchUpLanes[frame.groupId]?.progress(frame.from, 0, now)
+        // G12: the marker is believed only as far as the pushes it announced. A claimed end past the newest row actually
+        // received is cut back to it, and a scan end with no rows (a count-0 page) is refused when it lies in the future.
+        val claimedEnd = if (frame.count > 0 || frame.more) GroupSyncCursor(frame.lastSentAt, frame.lastMessageId) else null
+        val pageEnd = when {
+            claimedEnd == null -> null
+            frame.count > 0 -> if (newest != null && claimedEnd > newest) newest else claimedEnd
+            claimedEnd.sentAt > now + MARKER_END_SKEW_MS -> null
+            else -> claimedEnd
+        }
+        if (complete && pageEnd != null) {
+            val current = dao.watermark(frame.groupId, frame.from)?.let { GroupSyncCursor(it.sentAt, it.messageId) }
+            val next = GroupHistoryPolicy.advanceWatermark(current, pageEnd, frame.count, seen)
+            if (next != null && next != current) {
+                dao.upsertWatermark(GroupSyncWatermarkEntity(frame.groupId, frame.from, next.sentAt, next.messageId, now))
+            }
+        }
+        FlashProbe.emit(
+            "group.sync.page", "group" to FlashProbe.short(frame.groupId), "holder" to FlashProbe.short(frame.from),
+            "count" to frame.count, "seen" to seen, "remaining" to frame.remaining, "more" to frame.more, "complete" to complete,
+        )
+        recordCatchUpPage(frame.groupId, if (frame.more) frame.remaining else null)
+        if (complete && frame.more && pageEnd != null && request.pageNo < GroupHistoryPolicy.MAX_CONTINUATION_PAGES) {
+            sendHistoryRequest(
+                frame.from, frame.groupId, pageEnd,
+                GroupHistoryChoice(request.windowMs, request.includeFiles ?: true),
+                continuation = true, pageNo = request.pageNo + 1,
+            )
+            return
+        }
+        if (complete && !frame.more) {
+            // G1: the contact is recorded PER HOLDER, in its watermark (an empty chain leaves a watermark at the start of time,
+            // which asks from the window floor exactly as no watermark does), so one holder finishing no longer shortens the
+            // window another holder is asked for.
+            val mark = dao.watermark(frame.groupId, frame.from)
+            dao.upsertWatermark(mark?.copy(updatedAtMs = now) ?: GroupSyncWatermarkEntity(frame.groupId, frame.from, 0L, "", now))
+            val state = dao.state(frame.groupId)
+            // A row made here (a member from before ADR-100) is a returning member that was served the 7-day floor.
+            dao.upsertState(
+                (state ?: GroupHistoryStateEntity(frame.groupId, HISTORY_DECIDED, GroupHistoryPolicy.RETURNING_FLOOR_MS, true, now, 0L, now))
+                    .copy(lastContactAtMs = now),
+            )
+        }
+        finishLane(frame.groupId, frame.from, complete)
+    }
+
+    private fun recordOutgoingSync(
+        syncId: String,
+        groupId: String,
+        askedPeerId: String,
+        windowMs: Long? = null,
+        includeFiles: Boolean? = null,
+        pageNo: Int = 0,
+    ) {
+        val now = timeSource.nowMs()
+        outgoingSyncRequests[syncId] = OutgoingSyncRequest(groupId, askedPeerId, now, windowMs, includeFiles, pageNo)
         OutgoingSyncRequest.keysToDrop(outgoingSyncRequests.toMap(), now).forEach { outgoingSyncRequests.remove(it) }
     }
 
@@ -5381,6 +5901,10 @@ public class RealFlashChatRepository(
             messageDao.deleteByConversations(list)
             conversationDao.deleteConversations(list)
             list.forEach { messagePinDao?.clearConversation(it) }
+            list.forEach {
+                groupHistoryDao?.deleteState(it)
+                groupHistoryDao?.deleteWatermarks(it)
+            }
         }
         clearListSelection()
     }
@@ -5809,6 +6333,19 @@ public class RealFlashChatRepository(
         const val VOICE_META_PREFIX = "vmsg:"
         /** Longest file name a catch-up label carries. */
         const val SYNC_LABEL_NAME_MAX = 80
+
+        const val HISTORY_PENDING = GroupHistoryPolicy.STATE_PENDING
+        const val HISTORY_DECIDED = GroupHistoryPolicy.STATE_DECIDED
+        const val HISTORY_SKIPPED = GroupHistoryPolicy.STATE_SKIPPED
+
+        /** How long a page marker waits for the pushes it counts (ADR-100); frames of one session normally arrive in order. */
+        const val SYNC_PAGE_WAIT_MS = 5_000L
+
+        /** G12: a page marker whose scan end lies further than this in the future is not believed. */
+        const val MARKER_END_SKEW_MS = 5L * 60L * 1000L
+
+        /** Floor-start requests a holder that never pages may cost per process (ADR-100). */
+        const val SYNC_FLOOR_ATTEMPTS = 3
 
         /** Detail line of a group file whose offer is kept but cannot be fetched because swarm is off on this device. */
         const val SWARM_OFF_DETAIL = "Group file sharing is off on this device"
