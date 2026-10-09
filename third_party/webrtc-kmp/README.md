@@ -1,5 +1,13 @@
 # WebRTC KMP ![Maven Central](https://img.shields.io/maven-central/v/com.shepeliev/webrtc-kmp?style=flat-square)
 
+> **Flash fork note (2026-10-09, docs verification).** This is the vendored fork used by Flash (provenance and changes: `MODIFICATIONS.md`,
+> ADR-034 and ADR-103), not the upstream project. The rest of this README is the upstream text and is **not** a description of how Flash
+> consumes it. Differences that matter: Flash publishes it as `com.transfer.flash:webrtc-kmp` (`-android`, `-jvm`; JitPack
+> `com.github.Kali452345.Flash:webrtc-kmp:<tag>`), not `com.shepeliev:webrtc-kmp` from Maven Central, so the Maven Central badge and install
+> snippet below do not apply; Flash uses only the Android and JVM targets (the iOS and JS rows are upstream's); and this tree pins
+> `webrtc-java` **0.19.0** (`gradle/libs.versions.toml`), whereas the JVM snippet below shows `0.8.0`.
+
+
 WebRTC Kotlin Multiplatform SDK is a comprehensive toolkit for integrating WebRTC functionality into your multiplatform projects. 
 It supports Android, iOS, JS. Other platforms - PRs are welcome.
 

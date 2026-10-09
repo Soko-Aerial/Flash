@@ -1,5 +1,7 @@
 # Library-compliance review
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** This review is a snapshot of 2026-09-12 (commit `e012bed`). Its findings predate the Kotlin Multiplatform conversion, `:core:swarm`, the desktop hosts and the 2.1.0-beta release preparation, so check any finding against the current code before acting on it. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 **Date:** 2026-09-12
 **Tree:** `dev` at `e012bed` + the uncommitted working tree
 **Scope:** the published `core-*` / `ui-*` artifacts and the app as a consumer of them

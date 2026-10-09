@@ -4308,3 +4308,171 @@ L1 lands the Secret Service or passphrase vault; then the key-file vault becomes
 7. **Paths:** `DesktopPaths` (Linux plan C8/L1) puts the state folder at `$XDG_DATA_HOME/flash` (default `~/.local/share/flash`) on Linux only, keeps a non-empty `~/.flash` when the XDG folder is empty, and sends received files to the XDG download folder + `/Flash`. Windows and macOS keep `~/.flash` and `~/FlashReceived`. Single folder; the config/data/cache split is deferred.
 
 **Revisit when:** `LNX-02` shows the real Secret Service flow differs (GNOME Keyring, KDE/KWallet, KeePassXC), or a threat review wants the encrypted session or a passphrase tier.
+
+
+## ADR-098 - Group-call video is sent at 540p (High) or 360p (Medium, Low); "Send smaller" is always 360p
+
+### Date
+2026-10-08
+
+### Status
+ACCEPTED by the owner's instruction 2026-10-08 ("move High to 540p, Medium and Low to 360p, the option that shows when the phone is struggling should change to 360p"). Built and unit-tested; not device-verified.
+
+### Context
+The owner's Windows laptop (i5-8350U, 4 cores / 8 threads, 15 W) used 240-365 % of one core in a group call with one person connected (`logs/experiments.md` EXP-021). Flash uses software VP8 on desktop (ADR-052). Until now every tier could send up to 720p (`GroupVideoLimits.of`: `tall = 720` unless on 2.4 GHz), the camera was opened at the tier's profile capped at 720p, and "Send smaller video in groups" (ADR-053) did nothing for a single watcher (1 watcher kept 720p; 2 gave 540p; 3 or more 360p).
+
+### Decision
+- `GroupVideoLimits.sendHeightFor(tier)`: HIGH 540p, MEDIUM 360p, LOW 360p. `GroupVideoLimits.of` uses it for both `quality` (what the device asks senders for) and `maxSendHeight`. 720p is no longer the default on any tier or band.
+- The camera is opened at the tier's send height (`groupCaptureProfile`), so no larger picture is captured, converted and scaled for nothing. Frame rate and bitrate ceilings are unchanged (the per-copy ceiling already follows the height: 540p 900 kbps, 360p 450 kbps).
+- A struggling device (hot or CPU-bound, `CallHealthMonitor`) asks every sender for 360p on every tier (was LOW only).
+- "Send smaller video in groups" (and the CPU banner action, now labelled **Send 360p**) caps every copy at 360p whatever the number of watchers (`GroupVideoLimits.SMALLER_HEIGHT`). `heightForCopies` is removed.
+
+### Not changed (on purpose)
+- **1:1 calls** (`FlashCallSession`) still use the tier's `FlashVideoProfile` (HIGH = 1080p30, MEDIUM = 540p24, LOW = 360p15). The owner measured a *group* call; whether 1:1 should follow is an open question for the owner.
+- Codecs (VP8 stays, ADR-052), the CPU threshold, and the LOW-tier capacities.
+
+### Consequences
+- Pictures from High devices are 540p, visibly softer than the old 720p on a large desktop window. That is the trade the owner chose.
+- Expected CPU saving is an **estimate**: encode cost scales with pixels (540p is 56 % of 720p), but encode was only about 0.5-1 of 2.4 cores; the rest (capture, preview conversion, decode, audio, rendering) does not shrink. EXP-021 owes the after-measurement (`VID540-01`).
+- Mixed calls: a MEDIUM device receiving from a HIGH one asks for 360p, so the HIGH sender sends it 360p (the lowest of ask and level).
+
+### Revisit when
+`VID540-01` shows the real saving; or hardware H.264 exists on desktop (ADR-052); or the owner wants 1:1 calls to follow.
+
+
+## ADR-099 - The shared inbound router reaches host behaviour only through hooks; an inbound transfer id belongs to the peer that started it
+
+### Decision
+`FlashInboundRouter` (commonMain) owns frame routing and the `ReceivePipeline` event loop for both hosts, but every behaviour that differed between the two old host copies is a **hook the host supplies**, not a copy of one host:
+- `onSessionStarted(frame, peer)` runs first for every `SessionStarted` (before the already-completed and resumable-retry branches); Android registers `incomingByPeer` there.
+- `onResumableRetry(frame, peer)`: desktop passes `acceptOffer` (storage admission, progress seeding, RESUME); Android runs `admitIncoming`, then `onIncomingStarted` and RESUME (a small behaviour change: Android's old inline retry skipped the storage admission, now it is refused like a fresh offer); the router default is `admitIncoming` then `acceptSession`, and RESUME is sent only when `acceptSession` returned true.
+- `onTransferUntracked(transferId)` runs in a `finally` on completion, cancel and refusal.
+- `incomingOwners` (transferId to peer id): control frames, re-offers and chunks from a peer that does not own the id are ignored with a WARN; ids that change under `FlashPathSanitizer.sanitize`, or that differ only by case from a live id, are refused with a cancel.
+- A flush or close failure on the received file is trusted only if the whole-file SHA-256 matches; otherwise the transfer fails and the file is deleted.
+- The router wraps each routed frame and each `ReceiveEvent` in `try/catch(Throwable)` (cancellation rethrown) so one throwing hook cannot end a session's receive loops.
+- `autoAcceptIncoming` applies to paired peers only (AGENTS.md section 19). `FlashConfig.displayName` is an in-memory override on desktop and is never persisted. `DefaultFlashEngine.detachSwarm()` closes an attached swarm that is `AutoCloseable`; Android returns a closeable view of the `SwarmHostBinding`.
+
+### Context
+The C7.0 refactor moved ~600 lines of inbound handling out of `Flash.kt` and `DesktopEngine.kt`. The audit (ERROR-125) found that moving it had silently picked one host's variant for each branch (desktop lost its FA-2 disk-space refusal on resumed receives; Android lost tracking of resumed transfers), and that nothing tested the event branches.
+
+### Alternatives considered
+- Keep two host copies of the event loop: rejected, it is how the copies drifted.
+- Make the router call host methods through a large interface: rejected for now; lambdas keep the commonMain router free of Android and desktop types, and the unit tests use plain fakes.
+- Bind sender-side ACK/COMPLETE frames to the peer as well: not done, it needs a signature change in `:core:transfer` (`onInboundFrame(bytes)`); tracked as a follow-up.
+
+### Why this choice
+Behaviour that must differ per host is now visible at the construction site, and `FlashInboundRouterTest` pins each branch with a real `ReceivePipeline`.
+
+### Revisit when
+A third host appears (iOS/Linux native), or when sender-side frames get peer binding, or when the lambdas grow past about a dozen and a typed host interface becomes clearer.
+
+## ADR-102 - Screen share in calls: replace the camera track, one presenter, a share-specific ladder
+
+### Decision
+A desktop participant shares a screen or a window by replacing the video track on every video RtpSender (no renegotiation). Presenting is stated
+as Status `ss=1` + `sst=<start value: max(now, highest seen + 1)>`; the presenter also states `cam=1` so older builds show the picture. One presenter at a time: the highest
+(sst, id) wins and the loser stops itself; a deliberate take-over asks first. The share has its own ladder (1080/10, 720/8, 720/5, 540/5) and a
+watcher cap by performance tier (HIGH 4, MEDIUM 3, LOW 2; 2.4 GHz split 2), because the mesh costs one software encode per watcher (ADR-052).
+Receivers render fit-contain and make the presenter the router's main tile. Android watches only.
+
+### Context
+The owner lifted the deferral of ADR-056's list for screen share; the investigation (docs/calling/SCREEN-SHARE-INVESTIGATION.md) recommended
+replace-not-add and a bounded watcher count.
+
+### Alternatives considered
+A second video track per leg (renegotiation, old builds); wall-clock take-over ordering (clock skew); first-presenter-wins (no take-over);
+reuse of ADR-098's 540p/360p (text unreadable); a periodic silence watchdog (a static screen sends no frames); a seventh dock button.
+
+### Why
+Smallest wire change that old builds survive; cost control where the cost is (encodes, not bandwidth); the same code path for 1:1 and group.
+
+### Revisit when
+EXP-024 / SHARE-04 measure CPU and legibility (replace the ladder); the first Android presenter is built; a pending MediaProjection / Wayland result
+differs from the assumptions in SCREEN-SHARE-DESIGN.md; the closed-window behaviour (SHARE-10) is known.
+
+## ADR-101 - Bluetooth/radio link: layers, seam and session-layer recommendation (2026-10-09) - PROPOSED
+
+### Decision
+1. The radio path is `ByteLink` (serial COM port or RFCOMM) -> `KissTncDriver` -> AX.25 UI (PID F0) -> Flash radio frame (Profile M). It is a separate stack in `:core:network` (`...network.kiss`, `...network.radio`) that does not touch `PeerTransport`-style engine code (no such type exists) or `FlashTransportType`.
+2. The radio frame has its own compact AEAD (12-byte header, counter nonce, per-direction HKDF keys from the pairing session key, 64-wide replay window, per-segment AEAD), not FSEC, because FSEC's random nonce and 22-byte header leave too little of a 220-byte information field.
+3. For a future Flash-to-Flash session over Bluetooth RFCOMM (phone to phone, no radio): reuse the pairing-derived FSEC-style AEAD over a minimal length-prefixed framer (`StreamFramer`, u16 length), authenticated by the pinned Flash identity. Bluetooth OS pairing alone is NOT Flash trust: it is a link-layer convenience and an unknown peer must still pass Flash's own pairing/TOFU rules.
+4. Android: paired devices only (no discovery), permissions BLUETOOTH_CONNECT (+ BLUETOOTH_SCAN neverForLocation for cancelDiscovery), SPP UUID for serial radios, a Flash-specific UUID (`5f1a5c3e-9b24-4d7e-8a61-0c2f4e7b9a13`) for Flash-to-Flash.
+5. The test tool uses a public test key and is launched from Gradle only.
+
+### Context
+Owner reports the VR-N76 / UV-Pro class radio carries bytes over a Bluetooth virtual COM port. The plan `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md` had known errors (E1, E2, E3, E7, E9, E11) now corrected in `docs/network/RADIO-WIRE-FORMAT.md`.
+
+### Alternatives considered
+- Reuse FSEC for the radio frame (rejected: budget). Reuse `core:security` internals (rejected: internal visibility, shared module).
+- TLS over RFCOMM for Flash-to-Flash (rejected for now: handshake cost and two security layers; the existing AEAD session design already authenticates by identity).
+- A raw stream with no framing (rejected: RFCOMM has no message boundaries).
+- Add `FlashTransportType.BLUETOOTH` immediately (deferred: touches shared files; do it with the planner hook once BT-03 has a measured need).
+- Discovery-based pairing in-app / Companion Device Manager (deferred).
+
+### Consequences
+Radio frames and LAN sessions are separate trust paths until an adapter derives radio keys from the real pairing key. All radio numbers (airtime, goodput, RTT) are estimates until EXP-023.
+
+### Revisit when
+BT-00 shows the radio does not behave as assumed (BLE-only, no KISS, frame limit < 236 B); or when Flash-to-Flash Bluetooth is scheduled.
+
+## ADR-100 - Group history is bounded by a signed ceiling; catch-up is paged and resumes from a contiguous watermark
+
+### Decision
+1. A v2 group has a signed setting `historyCeiling` (NONE, H24, D7, D30, ALL; default D30) changed by any admin (owner or an `admin` certificate; one seam, `GroupAdminPolicy`). Every holder enforces it whatever a requester asks.
+2. A new member chooses its window on a join card (default 30 days, never above the ceiling; "no history" means no files). A returning member asks for `min(ceiling, max(7 days, time away))`. Files are offered for 7 days.
+3. Catch-up requests carry an optional window and file flag; a holder answers in 100-row pages and closes each with a `page` marker. The requester keeps a contiguous watermark per (group, holder), advanced only when a whole page was seen, and resumes from it.
+4. Wire is additive: optional request keys, a new `op=page`, `setHist` only when not D30. Non-default settings sign under `flash-gset-v2`; D30 keeps the v1 bytes.
+
+### Context
+Two defects: the request cursor was the newest local row (an older missed row was never asked for again), and every holder served a fixed 24 hours (a longer absence lost its middle).
+
+### Alternatives considered
+Raise swarm retention to 30 days for files (storage cost); always sign v2 (invalidates stored signatures); per-row watermark (reintroduces the gap on a lost frame); a modal dialog or silent default for the join card.
+
+### Consequences
+Old builds ignore non-default ceilings and the new request keys (mixed-fleet limit); the ceiling is a sharing rule enforced by honest holders, not a confidentiality control; schema 13.
+
+### Revisit when
+A co-admin or enterprise delegation model is designed (change `GroupAdminPolicy`), or device tests show the 100-row page or 3-attempt fallback needs tuning.
+
+## ADR-105 - History ceiling signed separately; setSig stays v1 (PROPOSED)
+Decision: `setSig` always covers `flash-gset-v1`. A non-default ceiling adds `setHist` and `setHistSig` (statement `flash-gsethc-v1` over group,
+version, opId, signer, ceiling). Stored as `D7~<sig>` in the existing column. Tie: the copy with a non-default ceiling beats a stripped copy.
+Alternatives: a `flash-gset-v2` signature (rejected: blinds every older build, never released); an unsigned ceiling (rejected: any member could lower it).
+Revisit when: a settings v2 with a version negotiation exists. Limitation: an old-build admin edit resets the ceiling to D30.
+
+## ADR-106 - One holder at a time for group catch-up (PROPOSED)
+Decision: `CatchUpLane` per group; holders ordered by watermark `updatedAtMs` ascending; stall 45 s; episode 3 min; per-holder contact time.
+Alternatives: ask all holders (rejected: N-fold duplicate pushes); split the window across holders (rejected: needs a wire key, G8 follow-up).
+Revisit when: device numbers (HARD-03) show the stall or episode values are wrong.
+
+## ADR-103 - Publish the vendored webrtc-kmp fork under Flash's own coordinates
+
+### Date
+2026-10-09
+
+### Decision
+`third_party/webrtc-kmp` (the included build of ADR-034) is published by the same JitPack build as the other fifteen modules,
+as `com.transfer.flash:webrtc-kmp`, `webrtc-kmp-android` and `webrtc-kmp-jvm`, with the library version (`flashLibraryVersion`
+in `gradle.properties`). Its publish task `:webrtc-kmp:webrtc-kmp:publishToMavenLocal` is the first task of the `jitpack.yml`
+install line. The catalog entry `webrtc-kmp` is declared in `settings.gradle.kts` so it carries that version.
+
+### Context
+`core-calling` and `ui-callui` `api`-depend on the fork. Their published POMs named `com.shepeliev:webrtc-kmp-android:
+0.125.11-flash-1`, a coordinate that exists in no repository (the included build is substituted only inside this repository), so
+no consumer of the calling modules could resolve them.
+
+### Alternatives considered
+- Publish under Flash's own coordinates [chosen]: one build, one version, JitPack rewrites the group like every other module,
+  local includeBuild substitution keeps working.
+- Depend on upstream `com.shepeliev:webrtc-kmp`: it has no `jvm()` target, so desktop calling would be lost (ADR-034).
+- Shade the fork into `core-calling`: bloats the artifact, breaks included-build substitution, hides the licence.
+- Drop the calling modules from publication: removes a shipped feature.
+
+### Consequences
+Apache-2.0 requires the licence and a notice of changes: `LICENSE` is packed into the jar/AAR and `MODIFICATIONS.md` lists the
+changes. The desktop native classifier stays the consumer's choice (documented in the README). The fork version moves with the
+library version; bumping `flashLibraryVersion` bumps both.
+
+### Revisit when
+Upstream gains a jvm target (drop the fork) or the fork is split into its own repository.

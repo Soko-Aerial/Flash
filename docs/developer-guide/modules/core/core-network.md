@@ -8,7 +8,7 @@ The `:core:network` module manages the bidirectional transport layer, WebSocket 
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-network:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-network:v2.1.0-beta")
 }
 ```
 
@@ -16,45 +16,50 @@ dependencies {
 
 ## 2. Network Architecture & Resilience
 
-1. **Embedded WebSocket Server & Client:**
-   * Every Flash instance runs an embedded WebSocket server (`WsTransferServer`) bound to an available port.
-   * Peers initiate bidirectional WebSocket connections (`ws://` or encrypted `wss://`).
-   * Handles text framing for control messages and binary framing for high-speed file chunk transfers.
-2. **Keepalive Watchdog & Health Probing:**
-   * Sends periodic ping frames (`pingIntervalMs`) to detect half-open or dead TCP sockets.
-   * If no inbound frame arrives within `livenessTimeoutMs`, the session is cleanly closed and redialed.
-3. **Link Roaming & Interface Monitoring:**
-   * **Desktop (`JvmNetworkWatcher`):** Periodically polls system network interfaces (`java.net.NetworkInterface`) to detect Wi-Fi router roams, IP address changes, and cable reconnects, immediately re-triggering discovery and reconnect sweeps.
-   * **Android (`AndroidNetworkWatcher`):** Registers an Android `ConnectivityManager.NetworkCallback` with `NetworkCapabilities.NET_CAPABILITY_INTERNET` or `NET_CAPABILITY_NOT_RESTRICTED` to react immediately to cellular/Wi-Fi transitions.
+1. **Embedded WebSocket server and client over TLS.**
+   * Every Flash instance runs a WebSocket server (`WsTransferServer`) on a port it chooses (`start(listenPort = 0)` picks a free one and returns it) and dials peers with `WsTransferClient`. The implementations are `WsFlashNetwork` (Android) and `JvmWsFlashNetwork` (desktop).
+   * The channel is always TLS with **pinned device identities** (TOFU on first pairing, `TofuX509TrustManager` / `FlashPinVerifier`); there is no plaintext fallback. Text frames carry control and chat messages, binary frames carry file chunks. The HELLO frame advertises feature tokens (`HelloFeatures`) and the group protocol generation.
+2. **Keepalive and health.** `HeartbeatPolicy` / `HeartbeatTracker` ping at the profile's `pingIntervalMs` and close a session that has shown no life within `livenessTimeoutMs`; only the dialing side redials (`ReconnectPolicy`, `ReconnectStagger`). `ConnectionHealthAggregator` feeds `FlashNetwork.connectionHealth`.
+3. **Link roaming.** `JvmNetworkWatcher` (desktop) polls `java.net.NetworkInterface` for IP and interface changes; `AndroidNetworkWatcher` registers a `ConnectivityManager` network callback. Either one triggers a re-browse and a reconnect pass.
+4. **Connection planning.** `ConnectionPlanner` / `AutoConnector` decide whom to dial. `ConnectionStrategy` has three modes, `ECO` (few sessions, slow keepalive), `STANDARD` and `BOOST` (every device, fast keepalive); the session ceiling is 24 for every mode (ADR-057), `DialBudget` limits dials in crowds. `RememberedRoutes` (DR1), the `SubnetSweeper` (DR3) and `PresenceExchange` supply addresses and liveness hints.
+5. **Radio / serial link (ADR-101, groundwork only).** `radio/` holds a KISS-over-serial/Bluetooth byte link (`ByteLink`, `KissTncDriver`, `RadioSession`, `RadioCrypto`) and the `RadioLinkTester` diagnostic. It is **not** wired into the apps' sessions yet (no pairing-key adapter, no `FlashTransportType.BLUETOOTH`), and the tester classes currently ship inside `core-network-jvm` (open item in `logs/handoff.md`).
 
 ---
 
 ## 3. Key Public Interfaces and Classes
 
 ### 3.1 `FlashNetwork`
-Located in [`com.transfer.flash.core.network`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/network):
+
+Located in [`com.transfer.flash.core.network`](../../../../core/network/src/commonMain/kotlin/com/transfer/flash/core/network/FlashNetwork.kt):
 
 ```kotlin
 public interface FlashNetwork {
-    /** Reactive map of currently active connected peer sessions. */
-    public val activeSessions: StateFlow<Map<String, WsSession>>
+    public val networkState: StateFlow<FlashNetworkState>
+    public val activeSessions: StateFlow<Map<FlashDeviceId, FlashSession>>
+    public val connectionHealth: StateFlow<FlashConnectionHealth>
 
-    /** Starts the local inbound listening server. */
-    public suspend fun startServer(): Int // Returns bound port
+    public suspend fun start(listenPort: Int = 0): FlashResult<Int>   // returns the bound port
+    public suspend fun stop(): FlashResult<Unit>
+    public suspend fun connect(device: FlashDevice): FlashResult<FlashSession>
+    public suspend fun connectManual(host: String, port: Int): FlashResult<FlashSession>
+    public suspend fun disconnect(deviceId: FlashDeviceId): FlashResult<Unit>
+    public fun retryConnection(): Boolean = false
+}
 
-    /** Connects to an outbound peer endpoint. */
-    public suspend fun connect(peerId: String, host: String, port: Int): FlashResult<WsSession>
-
-    /** Sends a text frame to a connected peer. */
-    public suspend fun sendText(peerId: String, text: String): Boolean
-
-    /** Sends a raw binary frame (e.g. file chunk) to a connected peer. */
-    public suspend fun sendBinary(peerId: String, data: ByteArray): Boolean
-
-    /** Shuts down the server and disconnects all sessions. */
-    public suspend fun stop()
+public interface FlashSession {
+    public val peer: FlashDevice
+    public val peerDeviceId: FlashDeviceId
+    public val connectionState: StateFlow<FlashConnectionState>
+    public val transportType: FlashTransportType
+    public val frameAcks: Flow<FrameAck>                       // SocketWritten, then PeerAcknowledged
+    public suspend fun send(message: ByteArray): FlashResult<Unit>
+    public suspend fun sendText(text: String): FlashResult<Unit>
+    public fun disconnect(reason: String = "Normal disconnect")
 }
 ```
+
+Sending is per session: there is no `sendText(peerId, ...)` / `sendBinary` on `FlashNetwork`. `connectManual` pins whoever answers the first time, so
+only use it for a host you trust (the named-dial TOFU trap); the engine dials only already-pinned peers on its own.
 
 ---
 
@@ -62,17 +67,19 @@ public interface FlashNetwork {
 
 ```kotlin
 import com.transfer.flash.core.network.FlashNetwork
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 
 fun monitorNetworkSessions(network: FlashNetwork) {
     scope.launch {
         network.activeSessions.collect { sessions ->
             println("Active peer connections: ${sessions.size}")
             sessions.forEach { (peerId, session) ->
-                println(" -> Session with $peerId is OPEN (${session.remoteAddress})")
+                session.connectionState.value.let { println(" -> ${session.peer.friendlyName} ($peerId): $it") }
             }
         }
     }
+}
+
+suspend fun ping(network: FlashNetwork, peerId: FlashDeviceId) {
+    network.activeSessions.value[peerId]?.sendText("hello")
 }
 ```

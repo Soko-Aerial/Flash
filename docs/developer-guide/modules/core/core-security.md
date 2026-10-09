@@ -8,7 +8,7 @@ The `:core:security` module provides the cryptographic engine, device identity g
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-security:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-security:v2.1.0-beta")
 }
 ```
 
@@ -16,56 +16,71 @@ dependencies {
 
 ## 2. Cryptographic Architecture
 
-Flash implements a zero-trust, authenticated security layer:
+Source layout (`core/security/src`): `crypto/` (identity, ECDH, frame codecs), `pairing/`, `trust/`, `identity/`, `group/` (group secrets and invites, GM track).
 
-1. **Hardware-Backed Device Identity:**
-   * **Android:** Keys generated inside AndroidKeyStore using ECDSA P-256 with `DIGEST_NONE` and `DIGEST_SHA256..512` authorized ([`KeystoreFlashCrypto.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/security/src/androidMain/kotlin/com/transfer/flash/core/security/KeystoreFlashCrypto.kt)). Private keys never leave the secure hardware enclave.
-   * **Desktop / JVM:** Software-backed EC P-256 keypair generated via standard JCA providers and stored in a secure local keystore file (`~/.flash/identity.p12`).
-2. **Device Pairing & Key Exchange:**
-   * Uses Elliptic Curve Diffie-Hellman (ECDH) over SECP256r1 to negotiate a 256-bit pairwise shared secret.
-   * Derives a symmetric AES-256-GCM key using HKDF-SHA256.
-   * Out-of-band verification via 6-digit SAS verification codes or 64-hex cryptographic fingerprint comparisons ([`FlashFingerprint`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/security/src/commonMain/kotlin/com/transfer/flash/core/security/FlashFingerprint.kt)).
-3. **End-to-End Wire Framing (`E2eFrameCodec`):**
-   * Encrypts outgoing text frames into opaque `FLASH_SEC payload=<base64>` envelopes.
-   * Uses AES-256-GCM authenticated encryption with a fresh 12-byte cryptographically secure random nonce per frame.
-   * Fails closed if message tampering or decryption authentication tag failure occurs.
+1. **Device identity.**
+   * **Android:** an EC P-256 key generated inside AndroidKeyStore (`KeystoreFlashCrypto`), StrongBox-backed when the device has it. The private key is not exportable.
+   * **Desktop / JVM:** a software EC P-256 key (`PersistedFlashCrypto`) whose blob is sealed at rest by an `IdentityKeyVault`: Windows DPAPI on Windows, a Secret Service keyring on Linux (provided by the desktop app, `DesktopVaults`, ADR-092; not device-verified), an owner-only key file otherwise. This is weaker than a hardware key (code running as the same user can unseal it, ADR-035).
+2. **Pairing (v2, ADR-042).** A commit-then-reveal numeric comparison: each side commits to a nonce, the responder reveals first, and the 6-digit code is `H(fp_I, fp_R, epk_I, epk_R, N_I, N_R) mod 10^6`. A man-in-the-middle cannot steer the code (a false match has probability about 10^-6), and each side requires the peer's fingerprint to equal the key TLS pinned for that connection. The classes are `PairingV2`, `NumericComparisonCode`, `PairingSessionStateMachine`, `PairingWireCodec`/`FlashPairingFrames` (desktop adds `FlashPairingCoordinator`). The 64-hex fingerprint (`FlashFingerprint`, SHA-256 of the encoded public key) is the manual fallback.
+3. **Session key.** After pairing, an ephemeral ECDH (P-256) shared secret goes through HKDF-SHA256 (`Hkdf`, info string `flash-e2e-v<protocol version>`) to a 32-byte AES-256 key.
+4. **Wire framing.**
+   * `E2eFrameCodec`: AES-256-GCM, a fresh random 12-byte nonce per frame, 128-bit tag; text frames become `FLASH_SEC payload=<base64>`. `decrypt` throws on a tag failure.
+   * `SecureBinaryFrameCodec`: the same cipher for binary frames (`decryptOrNull` returns null instead of throwing).
+5. **Trust and pinning.** `FlashTrustStore` holds paired devices, session keys and TLS identity pins, plus **vouches** (a group can vouch a member's key so a group of up to 20 needs each member paired only with the owner, ADR-044). `VouchRules` decides pin sources; the TOFU policy refuses to pin the device's own key.
+6. **Group secrets (Track GM).** `group/` has `GroupSecret`, `GroupSecretKdf` (auth and beacon keys per group id and epoch), `GroupSecretCommit`, `GroupProof` (mutual challenge proof) and `GroupInvite`/`GroupInviteCodec` (`flash://g/1/...` links). Details: `docs/security.md` section 10.
 
 ---
 
 ## 3. Key Public Interfaces and Classes
 
 ### 3.1 `FlashCrypto`
-Abstracts asymmetric signing, verification, and ephemeral key agreement:
+
+`com.transfer.flash.core.security.crypto.FlashCrypto`. Signing and ephemeral key agreement:
 
 ```kotlin
 public interface FlashCrypto {
-    public fun getLocalPublicKey(): ByteArray
-    public fun signData(data: ByteArray): ByteArray
-    public fun verifySignature(publicKey: ByteArray, data: ByteArray, signature: ByteArray): Boolean
-    public fun computeSharedSecret(peerPublicKey: ByteArray): ByteArray
+    public val identityPublicKeyEncoded: ByteArray
+    public fun sign(data: ByteArray): ByteArray                                   // SHA256withECDSA
+    public fun verify(signature: ByteArray, data: ByteArray, peerPublicKey: ByteArray): Boolean
+    public fun generateEphemeralEcdhKeyPair(): FlashEcKeyPair
+    public fun ecdhSessionKey(selfEphemeral: FlashEcKeyPair, peerEphemeralPublicKey: ByteArray): ByteArray // 32 bytes
 }
 ```
 
 ### 3.2 `FlashTrustStore`
-Manages paired device fingerprints and session keys:
+
+`com.transfer.flash.core.security.trust.FlashTrustStore` (abridged; most methods also have a `String` overload):
 
 ```kotlin
 public interface FlashTrustStore {
-    public fun isPeerTrusted(peerId: String): Boolean
-    public fun getPeerPublicKey(peerId: String): ByteArray?
-    public fun getSessionKey(peerId: String): ByteArray?
-    public fun storePairing(peerId: String, publicKey: ByteArray, sessionKey: ByteArray)
-    public fun revokePairing(peerId: String)
+    public fun isTrusted(deviceId: FlashDeviceId): Boolean
+    public fun trustPeer(deviceId: FlashDeviceId, friendlyName: String): FlashResult<Unit>
+    public fun revokeTrust(deviceId: FlashDeviceId): FlashResult<Unit>
+    public fun getTrustedPeers(): Map<FlashDeviceId, String>
+    public fun saveSessionKey(deviceId: FlashDeviceId, key: ByteArray): FlashResult<Unit>
+    public fun getSessionKey(deviceId: FlashDeviceId): ByteArray?
+    public fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit>
+    public fun getPin(deviceId: FlashDeviceId): String?
+    public fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit>
+    public fun isVerified(deviceId: FlashDeviceId): Boolean
+    public fun vouchingGroups(deviceId: FlashDeviceId): Set<String>
+    public fun applyVouch(deviceId: FlashDeviceId, fingerprintHex: String, groupId: String): VouchVerdict
+    public fun revokeVouch(deviceId: FlashDeviceId, groupId: String)
+    public fun pinSource(deviceId: FlashDeviceId): PinSource?
 }
 ```
 
 ### 3.3 `E2eFrameCodec`
-Located in [`com.transfer.flash.core.security.E2eFrameCodec`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/security/src/commonMain/kotlin/com/transfer/flash/core/security/E2eFrameCodec.kt):
+
+`com.transfer.flash.core.security.crypto.E2eFrameCodec`:
 
 ```kotlin
 public object E2eFrameCodec {
-    public fun encryptFrame(sessionKey: ByteArray, plainTextFrame: String): String
-    public fun decryptFrame(sessionKey: ByteArray, encryptedWireFrame: String): String
+    public const val SEC_PREFIX: String = "FLASH_SEC"
+    public fun isSecuredFrame(text: String): Boolean
+    public fun encrypt(payloadJson: String, sessionKey: ByteArray): ByteArray
+    public fun decrypt(frame: ByteArray, sessionKey: ByteArray): String
+    public fun encryptToWireFrame(plainText: String, sessionKey: ByteArray): String // "FLASH_SEC payload=<base64>"
 }
 ```
 
@@ -74,20 +89,19 @@ public object E2eFrameCodec {
 ## 4. Practical Code Example
 
 ```kotlin
-import com.transfer.flash.core.security.E2eFrameCodec
-import com.transfer.flash.core.security.FlashFingerprint
+import com.transfer.flash.core.security.crypto.E2eFrameCodec
+import com.transfer.flash.core.security.crypto.FlashFingerprint
 
-// Displaying human-verifiable security fingerprint
+// Showing a human-verifiable fingerprint
 val peerPublicKeyBytes: ByteArray = ...
-val fingerprint = FlashFingerprint.fromPublicKey(peerPublicKeyBytes)
-println("Peer Cryptographic Fingerprint:")
-println(fingerprint.formattedHexGroups) // Format: "ABCD 1234 EF56 7890 ..."
+val fp = FlashFingerprint.fingerprint(peerPublicKeyBytes)       // SHA-256 of the encoded key
+println(FlashFingerprint.formatHexGroups(fp))                    // grouped hex for display
 
 // Encrypting a protocol frame
-val sessionKey: ByteArray = ... // 32-byte AES key derived from ECDH
-val wireFrame = E2eFrameCodec.encryptFrame(
+val sessionKey: ByteArray = ... // 32-byte AES key from FlashCrypto.ecdhSessionKey
+val wireFrame = E2eFrameCodec.encryptToWireFrame(
+    plainText = "FLASH_MSG id=msg_100 body=Confidential",
     sessionKey = sessionKey,
-    plainTextFrame = "FLASH_MSG id=msg_100 body=Confidential"
 )
-println("Encrypted wire output: $wireFrame") // Format: "FLASH_SEC payload=..."
+println("Encrypted wire output: $wireFrame") // "FLASH_SEC payload=..."
 ```

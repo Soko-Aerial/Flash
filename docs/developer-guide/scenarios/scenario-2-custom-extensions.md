@@ -1,147 +1,147 @@
 # Scenario 2: Custom Implementations & Architecture Extensions
 
-Flash's clean interface-based architecture allows developers to swap, extend, or augment any major layer. This guide covers how to build custom transports, plug in alternative persistence engines, integrate hardware security modules, and customize the user interface.
+> **Verified against the code 2026-10-09.** The previous revision used signatures that do not exist (`StreamChannel.close()`,
+> `StreamChannelFactory.open(channelIndex, ...)`, `writeAt(offset, source, sourceOffset, byteCount)`, a four-method `FlashCrypto`,
+> a public `LocalFlashColors`, `FlashColors(brandPrimary = ...)`). This page now shows the real interfaces. The snippets are
+> illustrations; nothing here is compile-checked (only `sample/consumer` is) and none of it has been run on a device.
+>
+> **Important:** `Flash.create` / `FlashDesktop.create` do **not** take a transport, a sink or a crypto object. Every seam below is
+> a constructor parameter of a core class, so using one means wiring the engine yourself the way the real hosts do
+> (`app/.../debug/DiscoveryEngineHolder.kt` on Android, `desktop/.../DesktopEngine.kt` on desktop).
 
 ---
 
-## 1. Building a Custom Transport (e.g., Bluetooth / BLE / LoRa)
+## 1. A custom transport for file chunks
 
-Flash's transfer and messaging engines do not depend on WebSockets or TCP directly. They communicate over the abstract `StreamChannelFactory` and `FlashNetwork` interfaces.
-
-### Step 1: Implement a Custom Stream Channel
-
-To stream chunked file frames over an alternative transport (e.g., Bluetooth RFCOMM or serial USB OTG):
+The transfer engine only needs `StreamChannelFactory` / `StreamChannel`
+([source](../../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/multistream/StreamChannel.kt)):
 
 ```kotlin
-import com.transfer.flash.core.transfer.multistream.StreamChannel
-import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
-import java.io.InputStream
-import java.io.OutputStream
+public interface StreamChannel {
+    public val id: Int                                             // stable id for telemetry, ACK routing
+    public suspend fun sendFrame(frameBytes: ByteArray): Boolean   // true = handed to the transport
+}
 
+public fun interface StreamChannelFactory {
+    public suspend fun open(channelId: Int, peerDeviceId: String?): StreamChannel?   // null = no more streams
+}
+```
+
+Rules from the KDoc: `sendFrame` is called by one dispatcher worker at a time per channel; returning `false` or throwing marks only
+that channel dead and its un-ACKed chunks go back to the shared pool; at least one channel must open or the transfer fails.
+There is no `close()` on the channel. ACKs come back as `ACK_BATCH` frames on the session, not from `sendFrame`.
+
+```kotlin
 class BluetoothStreamChannel(
     override val id: Int,
-    private val inStream: InputStream,
-    private val outStream: OutputStream
+    private val out: java.io.OutputStream,
 ) : StreamChannel {
+    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = try {
+        withContext(Dispatchers.IO) { out.write(frameBytes); out.flush() }
+        true
+    } catch (e: java.io.IOException) { false }
+}
 
-    override suspend fun sendFrame(frame: ByteArray): Boolean {
-        return try {
-            outStream.write(frame)
-            outStream.flush()
-            true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    override suspend fun close() {
-        inStream.close()
-        outStream.close()
-    }
+val factory = StreamChannelFactory { channelId, peerDeviceId ->
+    if (channelId > 0 || peerDeviceId == null) null            // one stream only on a serial link
+    else socketFor(peerDeviceId)?.let { BluetoothStreamChannel(channelId, it.outputStream) }
 }
 ```
 
-### Step 2: Implement the Factory
+The factory goes to `RealFlashTransferRepository(streamChannelFactory = factory, fileSourceOpener = ..., ...)`. `MultiStreamDispatcher` is
+`internal`; you never construct it. Both real hosts pass a lambda that sends on the existing authenticated WebSocket session
+(`sessionChannel` in `DesktopEngine`, `openStreamChannel` in `Flash.kt`).
 
-```kotlin
-class BluetoothStreamChannelFactory(
-    private val bluetoothSocketProvider: (peerId: String) -> BluetoothStreamChannel
-) : StreamChannelFactory {
-
-    override suspend fun open(channelIndex: Int, peerDeviceId: String?): StreamChannel? {
-        if (peerDeviceId == null) return null
-        return bluetoothSocketProvider(peerDeviceId)
-    }
-}
-```
-
-Now, pass this factory into [`MultiStreamDispatcher`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/multistream/MultiStreamDispatcher.kt). All file chunking, bit-vector verification, and pause/resume logic will operate over your Bluetooth link without any code changes to the transfer engine.
+**What a transport must also provide:** the receiving side needs the same frames delivered to `FlashInboundRouter`, chat and
+control frames travel on the same session, and pairing/identity checks happen in `:core:network`, not in the transfer module. A
+new link is therefore a new *session* type, not just a channel factory. The radio / Bluetooth work is specified in
+`docs/network/RADIO-WIRE-FORMAT.md` (ADR-101, PROPOSED, not built).
 
 ---
 
-## 2. Implementing Custom Storage & Sink Handles
+## 2. A custom sink for received files
 
-By default, Flash writes incoming files directly to disk using [`RandomAccessSinkHandle`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/sink/RandomAccessSinkHandle.kt). You can write a custom sink handle to stream chunks directly to an in-memory buffer, an S3/cloud bucket, or an encrypted virtual disk:
+`RandomAccessSinkHandle`
+([source](../../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/policy/RandomAccessSinkHandle.kt)) is:
 
 ```kotlin
-import com.transfer.flash.core.transfer.sink.RandomAccessSinkHandle
-import java.util.concurrent.ConcurrentHashMap
+public interface RandomAccessSinkHandle : AutoCloseable {
+    public fun writeAt(byteOffset: Long, data: ByteArray)
+    public fun flush()
+    public val isOpen: Boolean
+}
+```
 
-class InMemorySinkHandle(private val targetMap: ConcurrentHashMap<Long, ByteArray>) : RandomAccessSinkHandle {
-    private var isOpen = true
+The shipped implementation is `FileRandomAccessSinkHandle(file, totalBytes)` (okio `FileHandle`, one code path for Android and
+desktop). Chunks arrive out of order, so `writeAt` must accept any offset and tolerate a re-sent chunk. An in-memory example,
+only suitable for small files because it holds everything in RAM (AGENTS.md section 18 forbids that for real transfers):
 
-    override fun writeAt(offset: Long, source: ByteArray, sourceOffset: Int, byteCount: Int) {
-        if (!isOpen) return
-        val chunk = source.copyOfRange(sourceOffset, sourceOffset + byteCount)
-        targetMap[offset] = chunk
+```kotlin
+class InMemorySinkHandle(totalBytes: Int) : RandomAccessSinkHandle {
+    private val buffer = ByteArray(totalBytes)
+    @Volatile override var isOpen = true
+        private set
+    override fun writeAt(byteOffset: Long, data: ByteArray) {
+        if (isOpen) data.copyInto(buffer, byteOffset.toInt())
     }
-
     override fun flush() {}
-
-    override fun close() {
-        isOpen = false
-    }
+    override fun close() { isOpen = false }
 }
 ```
 
+It is plugged in where the host builds its receive sink: `RandomAccessChunkSink(handle, start.chunkSize)` inside the
+`FlashInboundRouter` wiring (see `Flash.kt` around the `FileRandomAccessSinkHandle` line, and the desktop equivalent). That is host
+wiring, not a `FlashConfig` option. Keep the path-traversal check that precedes it in those hosts.
+
 ---
 
-## 3. Integrating Hardware Security Modules (HSM)
+## 3. Hardware-backed keys (custom `FlashCrypto`)
 
-If your enterprise or embedded hardware requires hardware-backed private keys (e.g. YubiKey, TPM 2.0, or PKCS#11 smart cards), implement [`FlashCrypto`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/security):
+`FlashCrypto` ([source](../../../core/security/src/commonMain/kotlin/com/transfer/flash/core/security/crypto/FlashCrypto.kt)) is the
+identity and session-key seam. Android's real implementation is `KeystoreFlashCrypto` (AndroidKeyStore); the JVM one persists a
+software key (`PersistedFlashCrypto`, `@FlashInternalApi`; Linux seals it with the Secret Service keyring, ADR-092). The contract:
 
 ```kotlin
-import com.transfer.flash.core.security.FlashCrypto
-
-class HsmFlashCrypto(private val hsmSession: HsmSession) : FlashCrypto {
-    override fun getLocalPublicKey(): ByteArray {
-        return hsmSession.exportEcPublicKey()
-    }
-
-    override fun signData(data: ByteArray): ByteArray {
-        return hsmSession.signDigest("SHA256withECDSA", data)
-    }
-
-    override fun verifySignature(publicKey: ByteArray, data: ByteArray, signature: ByteArray): Boolean {
-        return HsmUtils.verifyEcSignature(publicKey, data, signature)
-    }
-
-    override fun computeSharedSecret(peerPublicKey: ByteArray): ByteArray {
-        return hsmSession.deriveEcdhSecret(peerPublicKey)
-    }
+public interface FlashCrypto {
+    public val identityPublicKeyEncoded: ByteArray                       // X.509 SPKI, P-256
+    public fun sign(data: ByteArray): ByteArray                          // SHA256withECDSA
+    public fun verify(signature: ByteArray, data: ByteArray, peerPublicKey: ByteArray): Boolean
+    public fun generateEphemeralEcdhKeyPair(): FlashEcKeyPair
+    public fun ecdhSessionKey(selfEphemeral: FlashEcKeyPair, peerEphemeralPublicKey: ByteArray): ByteArray  // 32 bytes, HKDF-SHA256
 }
 ```
 
+The **identity key signs; the session key comes from an ephemeral ECDH pair**, so an HSM only has to implement `sign` and expose the
+public key. The ephemeral pair and HKDF can delegate to the software helpers the two shipped classes share. What matters: `verify`
+must return `false` (never throw) on malformed input, and the private identity key must never leave the module. As with the other
+seams, `Flash.kt` creates `KeystoreFlashCrypto(appContext)` itself, so `Flash.create` cannot take a replacement; use the
+hand-wired path.
+
+Changing the identity key changes the device id, so every existing pairing is lost. Treat it as a new install.
+
 ---
 
-## 4. Customizing UI & Whitelabeling
+## 4. Re-skinning the UI
 
-To re-skin the application for custom brand guidelines, pass customized [`FlashColors`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashColors.kt) to [`FlashTheme`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashTheme.kt):
+`FlashTheme` accepts the palette, typography and motion directly
+([source](../../../ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashTheme.kt)); the composition local is private, so
+pass the values as parameters. `FlashColors` is a data class, so start from `FlashColors.dark()` / `light()` and `copy(...)`:
 
 ```kotlin
-import androidx.compose.ui.graphics.Color
-import com.transfer.flash.ui.theme.FlashTheme
-import com.transfer.flash.ui.theme.FlashColors
-
-val CustomEnterpriseColors = FlashColors(
-    brandPrimary = Color(0xFF0284C7), // Sky Blue instead of Teal
-    brandSecondary = Color(0xFF38BDF8),
-    backgroundCanvas = Color(0xFFF8FAFC),
-    backgroundSurface = Color(0xFFFFFFFF),
-    textPrimary = Color(0xFF0F172A),
-    textSecondary = Color(0xFF64748B),
-    borderSubtle = Color(0xFFE2E8F0),
-    bubbleIncoming = Color(0xFFF1F5F9),
-    bubbleOutgoing = Color(0xFF0284C7),
-    textOnBubbleOutgoing = Color(0xFFFFFFFF)
+val brand = FlashColors.dark().copy(
+    accentPrimary = Color(0xFF0284C7),
+    accentSecondary = Color(0xFF38BDF8),
+    chatBgOutgoing = Color(0xFF0284C7),
 )
 
 @Composable
 fun EnterpriseApp() {
-    CompositionLocalProvider(LocalFlashColors provides CustomEnterpriseColors) {
-        FlashTheme {
-            // Your custom branded screens
-        }
+    FlashTheme(darkTheme = true, colors = brand) {
+        // FlashChatListScreen, FlashConversationScreen, ...
     }
 }
 ```
+
+`FlashColors` has about 60 semantic tokens (`accent*`, `text*`, `background*`, `border*`, `chat*`, `composer*`, avatar palettes, status
+colours); see [ui-theme](../modules/ui/ui-theme.md). `dynamicAccent = true` takes the accent from Material You on Android 12+.
+Icons come from `FlashIcons` (drawable-backed specs); replacing the icon set means replacing those resources.

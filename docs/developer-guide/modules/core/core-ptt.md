@@ -16,13 +16,12 @@ Android app and by the Windows desktop app.
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-ptt:2.0.0-beta")   // coordinates as published by this repo's build
+    implementation("com.github.Kali452345.Flash:core-ptt:v2.1.0-beta")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
 }
 ```
 
 `core-engine` already exposes it on Android (`api`), and `ui-callui` `api`s it because the shared session card takes a
-`FlashPtt`. Nothing is created until the host builds the engine and attaches it (Android: `FlashEngine.attachPtt`;
-desktop: `DesktopEngine` builds it during `assemble`).
+`FlashPtt`. Nothing is created until the host builds the engine and attaches it (a third-party host: `FlashEngine.attachPtt`; the Android app builds it itself in `DiscoveryEngineHolder`, the desktop app in `DesktopEngine.assemble`).
 
 ---
 
@@ -53,6 +52,7 @@ desktop: `DesktopEngine` builds it during `assemble`).
 | `notices: SharedFlow<String>` | user-facing one-shots ("<name> stopped talking", burst warnings) |
 | `pings: Flow<PttPingEvent>` | accepted, de-duplicated `FLASH_PTT` pings |
 | `onPttButton(): PttPressOutcome` | toggle the floor; `ACCEPTED`, `NO_PEERS`, `NO_MIC`, `CALL_ACTIVE`, `VOICE_NOTE_ACTIVE` |
+| `sendPing(): Boolean` / `postNotice(text)` | send a `FLASH_PTT` ping to the paired peers; show a one-shot notice |
 | `stopLocal()` / `onCallStarted()` / `shutdown()` | stop, tear down for a call, terminal teardown |
 | `acquireVoiceNoteLease()` / `releaseVoiceNoteLease(id)` | the microphone gate for voice messages |
 | `onInboundText(peerId, text)` / `onInboundBinary(peerId, data)` | host routing seams; return true for PTT frames **including rejected ones** |
@@ -87,7 +87,7 @@ parameter so tests never open a real microphone. Three small `expect`s complete 
 
 ## 5. Hosting it
 
-- **Android:** the engine is created by `FlashEngine`; `PttSessionOverlay` (app) adds the deferred hardware press, the
+- **Android:** the engine is created by `DiscoveryEngineHolder` (`FlashEngine.attachPtt` does the same for a third-party host); `PttSessionOverlay` (app) adds the deferred hardware press, the
   `RECORD_AUDIO` prompt and the notification mirror, and draws the card.
 - **Desktop:** `DesktopEngine.assemble` builds the engine over its WebSocket sessions (members = active sessions that are paired),
   and the shell adds a mic button, `Ctrl+Shift+T` (in-window only) and `Esc`.

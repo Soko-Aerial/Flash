@@ -1,5 +1,7 @@
 # Flash Modular Multi-Library Architecture & Publishing Plan
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** The modular split was carried out. The module list and the `2.0.0-beta`-era coordinates here are out of date: the published set is now 15 modules at `2.1.0-beta` (JitPack `com.github.Kali452345.Flash:<module>:v2.1.0-beta`), plus the `webrtc-kmp` fork (ADR-103). See `docs/release-build.md`. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 **Status:** APPROVED (ADR-008)  
 **Target Group ID:** `com.transfer.flash`  
 **Detailed Audit & Implementation Plan:** [`docs/architecture/library-first-migration-plan.md`](architecture/library-first-migration-plan.md)  

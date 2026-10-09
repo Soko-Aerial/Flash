@@ -548,3 +548,9 @@ All supported Android versions (API 24+).
 - Because `backup_rules.xml` and `data_extraction_rules.xml` explicitly exclude `domain="database"` and `domain="device_database"` from both `<cloud-backup>` and `<device-transfer>`, group secrets and encrypted chat databases never leave the device to Google Drive or unencrypted device migration tools.
 - Restoring onto another device would fail to open the database anyway (as the AndroidKeyStore master key is non-exportable hardware-backed), but excluding the files prevents quota exhaustion, unopenable file leaks, and corrupted state on new devices.
 
+
+## Addendum 2026-10-08 - Background delivery on Transsion: what the official documentation allows
+
+- Android developer documentation (read 2026-10-08): starting a foreground service from the background is allowed for a high-priority FCM message, Companion Device Manager (with `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`), exact alarms for user actions, boot broadcasts, battery optimisation disabled, and device/profile owners. Android 14+ forbids creating camera, microphone or location foreground services from the background even then.
+- Companion Device Manager presence is BLE and Bluetooth only, not Wi-Fi. Android 16 deprecates the string-based `startObservingDevicePresence`/`onDeviceAppeared`.
+- None of these is documented to unfreeze a process that an OEM freezer holds; whether Transsion's Hiber respects them is unverified (HIB-04, HIB-06, HIB-07). Project impact and ranked options: `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md`.

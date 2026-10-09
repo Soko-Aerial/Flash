@@ -1,5 +1,26 @@
 # Experiments Log
 
+## EXP-021 - Windows laptop CPU in a group video call (1 connected person), 720p software VP8
+
+### Date
+2026-10-08
+
+### Devices
+Windows 11, Intel Core i5-8350U (4 cores / 8 threads, 15 W), Flash desktop (JVM, webrtc-java 0.19.0 fork). Remote: a Linux laptop and a phone in the same group call (group call fa6259df, one leg CONNECTED, two INVITED). 5 GHz Wi-Fi, host/host path.
+
+### Measured (from `~/.flash/desktop.log` `CALL_DIAG` / `CALL_RENDER`, and `Get-Process` sampling)
+- Start of the call (15:35-15:36): process CPU 341-364 % of one core (43-45 % of 8). The machine was starved: camera 11-19 fps, encode 40-60 ms/frame, `limit=cpu`, WebRTC flapping the send size between 960x540 and 1280x720.
+- Steady state (15:39): 240-250 % of one core (30-31 %). 1280x720, 30 fps both ways, encode `libvpx` ~16 ms/frame, decode `libvpx` ~7 ms/frame, remote tile convert ~3 ms, own preview convert ~5.5 ms, still `limit=cpu`.
+- Live sample at 15:44 (PowerShell, 10 s): 291-323 % of one core.
+- Per-frame costs account for about 1 core (encode ~0.5 + decode ~0.2 + converts ~0.25); the other ~1.4 cores are in native WebRTC threads the JVM does not name (about 170 % across 8-10 native threads) plus Java pool threads (~25 %). libvpx runs several threads, so the 16 ms encode figure is wall time, not CPU time. Per-thread attribution was **not** obtained.
+- Camera preview conversion cost (150x84 output) was higher than the remote tile's at times (5-19 ms vs 3-10 ms), an oddity not explained.
+
+### Conclusion
+Software VP8 at 720p30 on a 15 W 4-core CPU is near the machine's limit; no leak or runaway loop was found. This is what ADR-098 acts on (540p/360p). The 1.4 unexplained cores are not codec work and need a profile (async-profiler / Windows Performance Recorder) before more is spent on codecs. See also the earlier note in EXP (codecs about 1 core of 2.5; hardware decode would save about 0.25).
+
+### Open
+`VID540-01` (re-measure after ADR-098), per-thread profile of the native threads.
+
 ## EXP-020 — Multi-node sans-IO group swarm simulation scenarios (SIM-01 through SIM-20)
 
 ### Date
@@ -1645,3 +1666,34 @@ which is non-deterministic when multiple eligible networks exist. Fixed by sorti
 
 ### Status
 HYPOTHESIS REJECTED. Root cause is ERROR-023 (connect-glare race), fixed.
+
+## EXP-024 - CPU of a screen share versus a camera, 1 / 2 / 4 watchers (OWED, nothing measured)
+Plan: Windows laptop (the EXP-021 machine), presenter shares a screen with a 10 pt text document, then the camera at 540p, with 1, 2, 4 watchers.
+Record per run: presenter CPU %, per-watcher encoder bitrate / fps / qualityLimitationReason, whether 10 pt text is legible on a phone, fan / thermals,
+ladder rung reached. Replaces the first-guess ladder in SCREEN-SHARE-DESIGN.md section 6.
+
+## EXP-023 - KISS TNC over Bluetooth: link, frame limit and goodput (TEMPLATE, fill from BT-00/BT-12)
+
+### Devices
+Radio: ____ (model, firmware). Second station/monitor: ____. PC: Windows ____, laptop ____, Bluetooth adapter ____.
+Flash build: ____ (commit). Tool: `:desktop:radioLinkTest` / CLI. jSerialComm 2.11.4.
+
+### Link
+Bluetooth Classic SPP or BLE: ____. COM port: ____ (outgoing). Baud setting used: ____. Radio data mode / KISS menu path: ____. Digital Mode on/off effect: ____.
+
+### Frames
+KISS transparency (C0/DB intact): yes / no. Largest accepted AX.25 frame: ____ B (236 tried). LCD behaviour: ____.
+
+### Pacing used
+TXDELAY ____ ms, min gap ____ ms, jitter ____ ms (tool defaults 300/500/1500 unless changed).
+
+### Burst results (copy the result line)
+5 x 192 B: accepted __ acked __ lost __ wall __ ms, RTT min/med/max __/__/__ ms, goodput __ B/s.
+5 x 50 B: ...
+9600 baud (if tried): ...
+
+### Other
+Two apps at once: ____. Power-cycle reconnect: ____ s. Range / RF conditions: ____. Battery/thermal: ____.
+
+### Conclusion
+(Pacing defaults kept or changed because ____. No universal assumption from one radio, per AGENTS.md section 9.)

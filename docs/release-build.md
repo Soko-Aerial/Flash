@@ -37,8 +37,54 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 | `Flash-windows-x64-<ver>.jar` | Only with `-UberJar`. It needs Java 21 installed to run. |
 | `SHA256SUMS.txt` | Checksums for every file in the folder. |
 
-The versions come from `versionName` in `app/build.gradle.kts` and `packageVersion` in `desktop/build.gradle.kts`.
-Bump them there before a release. `versionCode` must also go up for Android to accept the APK as an update.
+## Where the version lives (change all of them together)
+
+| What | File | Current (2026-10-09) |
+|---|---|---|
+| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta` |
+| Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0-beta` / `3` |
+| Windows installer `packageVersion` (MSI/EXE need a numeric `x.y.z`, so no `-beta`) | `desktop/build.gradle.kts` | `2.1.0` |
+| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta` |
+| README install snippets, installer names | `README.md` | `v2.1.0-beta`, `Flash-2.1.0.*` |
+| Release notes | `CHANGELOG.md` | `[2.1.0-beta]` |
+
+`versionCode` must go up for Android to accept the APK as an update (it was 2 in `v2.0.0-beta`). The library version is
+only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta`) and
+`flashLibraryVersion` should say the same thing.
+
+## Publishing the library (JitPack) and the WebRTC fork
+
+JitPack runs the `install:` line of `jitpack.yml` (`./gradlew ... publishToMavenLocal -x test -x lint`), scans `~/.m2`,
+and rewrites `com.transfer.flash` to `com.github.<user>.<repo>` and every version to the tag. Fifteen Flash modules are
+published, **plus the vendored WebRTC bindings fork** (ADR-103):
+
+- `third_party/webrtc-kmp` is an included build (ADR-034). `core:calling` and `ui:callui` `api`-depend on it, so their
+  POMs must name an artifact that exists. It is published under Flash's own coordinates,
+  `com.transfer.flash:webrtc-kmp`, `webrtc-kmp-android` and `webrtc-kmp-jvm`, with the same version as the library, by the
+  included-build task `:webrtc-kmp:webrtc-kmp:publishToMavenLocal`, which is the first task on the install line (it has to
+  be there before the dependents are published, and the order matters when you read the log).
+- Local development is unchanged: the root build still substitutes the included build for `com.transfer.flash:webrtc-kmp`.
+  The version catalog entry for the fork is declared in `settings.gradle.kts` (not in `libs.versions.toml`) so it can
+  carry `flashLibraryVersion`; without a version the substituted POM dependency would have no `<version>`.
+- The fork's Apache-2.0 `LICENSE` is packaged inside its jar/AAR (`META-INF/LICENSE-webrtc-kmp.txt`); the list of changes
+  from upstream is `third_party/webrtc-kmp/MODIFICATIONS.md`.
+- Not published, by design: the native libwebrtc for desktop (`dev.onvoid.webrtc:webrtc-java:0.19.0:<os>-<arch>`, a
+  consumer `runtimeOnly` choice) and `io.github.webrtc-sdk:android` (Maven Central).
+
+**Proof before tagging (never against the real `~/.m2`):** run the exact install line into a throwaway repository and look
+at the POMs, as ADR-103 did:
+
+```bash
+./gradlew -Dmaven.repo.local=<scratch>/m2 :webrtc-kmp:webrtc-kmp:publishToMavenLocal ...same line as jitpack.yml... -x test -x lint
+```
+
+Then point a consumer project at only that repository plus Google and Maven Central and resolve
+`core-calling`/`ui-callui` for both Android and JVM. Release-only failures (ProGuard, publication-block version
+overrides) are invisible to debug builds, so do this on JDK 17 as JitPack does (`jdk: openjdk17`).
+
+The `RadioLinkTest*` classes (the serial-radio tester, ADR-101) are excluded from the desktop jar and installers. The
+tester runs only through `:desktop:radioLinkTest` / `:desktop:radioLinkTestCli`, which use the compiled output
+directly.
 
 ## Signing
 
@@ -71,6 +117,12 @@ default `-Apk both` still builds the unsigned APK and prints how to set one up. 
 `-NewKeystore` creates `%USERPROFILE%\.flash-signing\flash-release.jks` (RSA 4096, valid 10 000 days, alias
 `flash`) with `keytool`, which asks for the password and a name. It then writes `keystore.properties` pointing at
 the key. It refuses to overwrite an existing key or config.
+
+The signing flow in one place: (1) one-time, `-NewKeystore` (or an existing key described in `keystore.properties`, or the
+`FLASH_KEYSTORE*` variables on CI); (2) `.\tools\build-release.ps1 -Target android` builds, zip-aligns and signs;
+(3) verify with `apksigner verify --print-certs dist\<ver>\Flash-<ver>.apk` and compare the certificate SHA-256 with the
+one you recorded when the key was created; (4) never commit `keystore.properties` or a `.jks` (both are git-ignored), and
+never paste them into a chat, issue or log. Passwords are never read by Gradle.
 
 **Back up the `.jks` file and its password somewhere other than this PC.** Android only installs an update if it's
 signed with the same key as the installed app. If the key or password is lost, every existing install must be
@@ -106,7 +158,7 @@ so SmartScreen shows "unknown publisher". Signing them needs a code-signing cert
 script doesn't do yet. The Linux `.deb` target in `desktop/build.gradle.kts` can only be built on Linux, so the
 script doesn't attempt it.
 
-These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with.
+These are the non-ProGuard `package*` tasks, the same ones the v2.0.0 installers were built with (`packageVersion` 2.1.0 now builds `Flash-2.1.0.msi` / `.exe`).
 `packageRelease*` (ProGuard) has never been verified for this app.
 
 ## Environment the script sets up

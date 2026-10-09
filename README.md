@@ -8,14 +8,14 @@
 
 # Flash
 
-**Offline, LAN peer-to-peer file transfer, messaging and calling for Android — no server, no
+**Offline, LAN peer-to-peer file transfer, messaging and calling for Android and Windows desktop (Linux in progress) — no server, no
 internet, no account.** Flash discovers nearby devices over your local network
 (Wi-Fi, or a phone hotspot), opens a direct encrypted channel between them, and
 streams files, chat and voice/video calls straight across. Nothing leaves the local network; there
 is no backend to run and nothing to sign up for. Free and open source under Apache-2.0.
 
-Built as a set of small Android library modules so you can take the whole engine or
-just the transport pieces you need. Supports **Android 8.0 (API 24) and up**.
+Built as a set of small Kotlin Multiplatform library modules (Android and desktop JVM targets) so you can
+take the whole engine or just the transport pieces you need. Supports **Android 7.0 (API 24) and up**.
 
 [![](https://jitpack.io/v/Kali452345/Flash.svg)](https://jitpack.io/#Kali452345/Flash)
 
@@ -37,18 +37,20 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta")
 }
 ```
 
-The install snippet targets the `v2.0.0-beta` tag. See [Published modules](#published-modules) if
+The install snippet targets the `v2.1.0-beta` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
 you want only the lightweight transport pieces without the encrypted database.
 
 ## Quick start
 
 One call builds and starts the whole engine — discovery, advertising, the network
-layer, and transfers all share a single coroutine scope. This snippet is compiled
-verbatim as `sample/consumer/.../QuickStart.kt`, so it never drifts from the real API:
+layer, and transfers all share a single coroutine scope. This snippet is the same sequence of
+calls as `sample/consumer/.../QuickStart.kt`, which is a compile-only module (it takes a
+`displayName` parameter and returns the `FlashResult`; this copy trims both), so a rename in the
+real API breaks that build. Checked against the code on 2026-10-09:
 
 ```kotlin
 import com.transfer.flash.core.engine.Flash
@@ -89,7 +91,7 @@ suspend fun sendFirstFileToAnyPeer(context: Context, fileUri: String, fileSize: 
 | `displayName` | `null` | Friendly name advertised to peers; falls back to the stored device name. |
 | `enableResume` | `true` | Persist transfer state so interrupted transfers resume across app restarts. |
 | `autoAcceptIncoming` | `false` | `true` = accept inbound offers automatically; `false` (default) = gate each with `engine.transfers.acceptIncoming(id)` / `declineIncoming(id)`. |
-| `receivedFilesDir` | `null` | Directory for received files; defaults to app-internal storage. |
+| `receivedFilesPath` (Android also accepts the legacy `receivedFilesDir: File`) | `null` | Directory for received files; defaults to app-internal storage. |
 
 ## Lifecycle
 
@@ -107,7 +109,7 @@ Flash includes a comprehensive, modular documentation suite located in [`docs/de
 |---|---|
 | [**Beginner's Guide**](docs/developer-guide/getting-started/beginner-guide.md) | Step-by-step setup, prerequisites, Maven coordinates, and complete "Hello World" connection & file transfer tutorial. |
 | [**Architecture Overview**](docs/developer-guide/getting-started/architecture-overview.md) | Multi-module hierarchy, dependency boundaries, lifecycle management, and reactive state paradigms. |
-| [**14 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Dedicated documentation for each of the 10 `:core:*` and 4 `:ui:*` modules with exact signatures, threading, and code examples. |
+| [**15 Per-Module Guides**](docs/developer-guide/README.md#1-documentation-map) | Dedicated documentation for each of the 11 `:core:*` and 4 `:ui:*` modules. Written 2026-09 to 2026-10; each guide carries a verification note where it was re-checked against the code. |
 | [**Ultra-Low Resource Devices (Scenario 1)**](docs/developer-guide/scenarios/scenario-1-ultra-low-resource.md) | Building for devices far more constrained than standard phones (<512MB RAM, IoT, POS, smartwatches, 2.4GHz radios) with memory caps and single-stream transfers. |
 | [**Custom Extensions & Architecture (Scenario 2)**](docs/developer-guide/scenarios/scenario-2-custom-extensions.md) | Custom transports (Bluetooth/BLE, LoRa, USB OTG), custom storage sinks, HSM hardware cryptography, and UI whitelabeling. |
 | [**Open Protocol Specification (Scenario 3)**](docs/developer-guide/scenarios/scenario-3-open-protocol-interop.md) | Complete wire protocol specification with runnable client samples in **Python**, **Rust**, and **Go**. |
@@ -119,9 +121,14 @@ Flash avoids hardcoded flagship assumptions by grading CPU, memory, radio airtim
 
 | Profile Tier | Target Hardware | Streams | Base Chunk | Queue Depths | Video Calls | Voice / PTT | Media Previews |
 |---|---|---|---|---|---|---|---|
-| **`LOW`** | <512MB RAM, IoT, POS, 2.4GHz radio | **1 stream** | 32 KB / 64 KB | 2 / 4 frames (<250 KB heap) | Disabled / Audio only | 60ms Opus DTX | File icons (skip heavy video thumbs) |
+| **`LOW`** | <512MB RAM, IoT, POS, 2.4GHz radio | **1 stream** | 32 KB / 64 KB | 2 / 4 frames (<250 KB heap) | 360p @ 15fps (480x360) | 60ms Opus DTX | File icons (skip heavy video thumbs) |
 | **`MEDIUM`** | Mid-tier phones, older laptops | **2 streams** | 64 KB | 8 / 16 frames | 540p @ 24fps | 20ms Opus | 512px downsampled |
 | **`HIGH`** | Flagships, desktop workstations | **4 streams** | 64 KB (adaptive to 1MB) | 16 / 64 frames (pipe saturation) | 1080p @ 30fps | 20ms Opus | Full 1024px + video keyframes |
+
+The Video Calls column is the **1:1 call** capture profile (`FlashVideoProfile`). **Group** video calls cap what a
+member sends lower (ADR-098: `HIGH` 540p, `MEDIUM` and `LOW` 360p), and a **screen share** uses its own ladder
+(ADR-102). Chunk sizes and stream counts are `FlashTransferProfile`; the table's queue depths and voice/preview
+columns were not re-derived on 2026-10-09.
 
 ## Voice & video calls
 
@@ -134,10 +141,19 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.0.0-beta")
-    implementation("com.github.Kali452345.Flash:ui-callui:v2.0.0-beta")   // optional in-call screen
+    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta")   // optional in-call screen
 }
 ```
+
+`core-calling` brings the WebRTC bindings with it. Since 2.1.0-beta those are Flash's own published artifact,
+`com.github.Kali452345.Flash:webrtc-kmp-android` (and `webrtc-kmp-jvm` for desktop), a vendored fork of
+`com.shepeliev:webrtc-kmp` (Apache-2.0; the changes are listed in `third_party/webrtc-kmp/MODIFICATIONS.md`) that is
+built and published in the same JitPack build as the other modules, so there is nothing extra to add. A **desktop JVM**
+app that places calls must also choose the native libwebrtc for its operating system, for example
+`runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.19.0:windows-x86_64")` (or `linux-x86_64`, `linux-aarch64`, `macos-*`):
+the natives are an OS-specific classifier that no POM can pick for you. Android needs nothing, the native libraries come
+from `io.github.webrtc-sdk:android` on Maven Central.
 
 `core-engine` declares `core-calling` as `compileOnly`, so the `FlashCalling` type is in the
 facade's API but native WebRTC is **not** pulled in by the umbrella (see
@@ -148,8 +164,16 @@ mesh is simply the one the sample app uses. Wire the outbound seam at constructi
 engine to the facade:
 
 ```kotlin
-// outbound: every frame the module emits goes through your transport
-val calling: FlashCalling = CallCoordinator(sendFrame = { peerId, text -> myTransport.send(peerId, text) })
+// outbound: every frame the module emits goes through your transport. `sendFrame` receives the
+// typed `CallWireFrame` (encode it with `CallFrameCodec`) and the destination peer id, and returns
+// whether it was sent. Everything after `sendFrame` (trust checks, call log, performance mode,
+// roster names, ...) is optional.
+val calling: FlashCalling = CallCoordinator(
+    localDeviceId = myDeviceId,
+    localName = myDisplayName,
+    scope = myScope,
+    sendFrame = { frame, peerId -> myTransport.send(peerId, CallFrameCodec.encode(frame)) },
+)
 
 // attach: from here the facade routes inbound FLASH_CALL frames to it and drives its
 // signaling-recovery window from the live sessions it observes (ERROR-033) — you no longer
@@ -168,6 +192,17 @@ navigation layer pushes and pops its call route off that one flow. Pair it with
 `calling.media` and hand both to `FlashCallScreen` from `ui-callui`. Grant the microphone (and, for
 video, the camera) **before** calling `startCall`/`accept`: a microphone opened in the wrong audio
 mode does not switch later.
+
+**Screen share (ADR-102, 2.1.0-beta):** `FlashCalling` also exposes `listShareSources()`, `startScreenShare(...)`,
+`stopScreenShare()`, `setShareQuality(...)` and `dismissShareNotice()`. The **presenter is desktop only** (Windows and Linux);
+Android devices can *watch* a share but the Android presenter (MediaProjection) is not built. The share replaces the
+camera track, one presenter per call, and the presenter encodes once per watcher (calls are a mesh), so watchers are capped
+by device tier. Unit-tested, not device-verified (`SHARE-*` in `docs/testing/TEST-BACKLOG.md`).
+
+**What the Flash apps themselves do:** the Android app (`DiscoveryEngineHolder`) and the desktop app (`DesktopEngine`) construct
+`CallCoordinator` themselves, with trust, roster, call-log and performance-mode callbacks, and route `FLASH_CALL` frames and
+signaling recovery in their own code; they do not go through `Flash.create` + `attachCalling`. The facade path above is the
+supported library contract and is covered by `DefaultFlashEngineTest`, but it is not what the shipped apps exercise.
 
 **Cost:** `core-calling` bundles native WebRTC — roughly 30 MB per ABI. `core-engine` does not
 declare it for a consumer, so an app that does not call simply does not depend on it. See
@@ -328,7 +363,7 @@ Wi-Fi/BLE scan, so no `ACCESS_FINE_LOCATION` is required.
 
 | Axis | Requirement |
 |---|---|
-| **minSdk** | 24 (Android 8.0) |
+| **minSdk** | 24 (Android 7.0) |
 | **compileSdk (library)** | 35 for `core-*`, 37 for `ui-*` |
 | **AGP (your app)** | 9.3+ |
 | **Gradle** | 9.5+ |
@@ -370,6 +405,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `ui-platform-shims` | Experimental — shipped | No | Platform seams (back handling, clipboard, file picking, permissions, image decode, audio playback, voice capture) that `ui-chat` compiles against. Transitive — depend on it only if you are reimplementing the chat UI. |
 | `ui-chat` | Experimental — shipped | No | The chat list / conversation / transfers / settings UI. Stateless; add `core-messaging` for its state types. |
 | `ui-callui` | Experimental — shipped | No (`api`s `core-calling` and `core-ptt`) | `FlashCallScreen`, the full-screen in-call surface, and `PttSessionOverlayContent`, the shared push-to-talk session card. |
+| `webrtc-kmp` (`-android`, `-jvm`) | Supporting — transitive | No | Flash's vendored fork of the `webrtc-kmp` bindings, published from this repository (ADR-103). `core-calling` depends on it; you do not name it. A desktop app also adds the native `dev.onvoid.webrtc:webrtc-java` classifier for its OS (see [Voice & video calls](#voice--video-calls)). |
 
 A LAN-only, no-database transfer app can depend on just `core-transfer`,
 `core-network`, and `core-discovery`, skipping the SQLCipher native libraries entirely.
@@ -402,7 +438,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta")
 }
 ```
 
@@ -413,7 +449,7 @@ resolution against the published tree.
 
 On desktop, the `:desktop` module provides a complete Compose Desktop application shell bundling
 `DesktopEngine`, Room encrypted SQLite database (`sqlite-jdbc-crypt`), system tray, single-instance
-enforcement, and native Windows installers (`Flash-2.0.0.exe` and `Flash-2.0.0.msi`). Voice and video
+enforcement, and native Windows installers (`Flash-2.1.0.exe` and `Flash-2.1.0.msi`). Voice and video
 calling on JVM is enabled via vendored multiplatform WebRTC.
 
 ## License

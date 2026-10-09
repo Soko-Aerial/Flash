@@ -23,6 +23,7 @@ docs/developer-guide/
 │   │   ├── core-messaging.md                  # RealFlashChatRepository, wire framing (FLASH_MSG, RCPT, READ, etc.)
 │   │   ├── core-calling.md                    # WebRTC 1:1 and mesh group calls, ICE restart, signaling
 │   │   ├── core-ptt.md                        # Push-To-Talk voice messaging engine, half-duplex arbitration
+│   │   ├── core-swarm.md                      # Group swarm file transfer (sans-IO engine, FSW1 frames, FlashSwarm facade)
 │   │   └── core-engine.md                     # FlashEngine, DesktopEngine, DiscoveryEngineHolder orchestrators
 │   └── ui/
 │       ├── ui-theme.md                        # FlashTheme, design tokens, colors, typography, shapes, icons, motion

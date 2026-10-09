@@ -2848,3 +2848,199 @@ The radio plan's `BT-01`...`BT-08` remain listed in that plan (section 9); copy 
 - **LNX-07 (ERROR-123 crash):** on the Linux laptop join a 3-device group video call and let one other device hang up (5 times; also with the Linux window on the call screen and with it minimised). **Pass:** Flash stays up every time, no `hs_err_pid*.log` appears, the log shows `Leg ... closed` and no `removeSink failed`. If it crashes, keep `hs_err_pid*.log` and `desktop.log`. **Status:** TODO
 - **GNOT-01 (ERROR-124, refused group offer):** device X paired only with phone A. Phone B (paired with A, not with X) makes a group and adds A; A adds X. **Pass:** X shows a notification titled with the group name saying A added it but it is not paired with the owner; it appears once, not once per message; the group still does not appear on X; after X pairs with B (or uses an invite link) the group shows. **Status:** TODO
 - **GNOT-02 (adder feedback):** on A (a member that is not the owner) add X to the group. **Pass:** a toast or snackbar says X can only join if also paired with the owner. As the owner, adding a device paired with you shows nothing extra. Make `addGroupMembers` fail (no live key) and check the failure text is shown. **Status:** TODO
+
+
+### 4zn. Group-call video heights (ADR-098) and Transsion background delivery research (2026-10-08)
+
+Owed from `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md` (HIB-01…HIB-04 already exist above) and ADR-098.
+
+- **VID540-01 (CPU after the 540p change, EXP-021):** on the same Windows laptop, same two peers, start a group video call, wait 2 minutes, read `CALL_DIAG: proc cpu=` for 2 minutes. **Pass:** `camera asked 960x540@30` in `GROUP_CALL: acquire media`, `vout` height 540 on the leg line, and steady `proc cpu` clearly below the 240-250 % of EXP-021 (record the number; "clearly" is the owner's call, the estimate was 180-220 %). Repeat with the camera preview tile shown. **Status:** TODO
+- **VID540-02 (tiers):** a MEDIUM or LOW phone joins the call with a HIGH laptop. **Pass:** the phone logs `camera asked …x360`; the laptop sends it 360p (`vout 360`) and the phone sends 360p to the laptop; the laptop shows 540p only for peers that ask for it. **Status:** TODO
+- **VID540-03 ("Send 360p" action and setting):** during a call let the CPU banner appear (or turn on Settings → Calls → "Send smaller video in groups"). **Pass:** the banner action reads **Send 360p**, tapping it turns the setting on, and the leg line shows `vout 360` within 2 samples, with one watcher and with three. The setting subtitle reads "Your video goes at 360p to everyone…". **Status:** TODO
+- **VID540-04 (struggling device):** make a HIGH device struggle (thermal or sustained CPU). **Pass:** its `video request` frames ask for 360 (was 540). **Status:** TODO
+- **HIB-05 (freeze detector idea, no code yet):** when the Hiber freezer is believed to be off for Flash, leave the screen off for 10 minutes with a peer sending a message every 30 s. **Pass:** the messages arrive within 60 s each and `adb logcat | findstr "Hiber.*transfer.flash"` shows no `freeze uid`. Record which of the reported switches (see research §4) were needed. **Status:** TODO
+- **HIB-06 (BLE wake probe):** a throw-away build that associates two phones through the Companion Device Manager and observes BLE presence; screen off on the Infinix for 10 minutes while the other phone advertises. **Pass:** `CompanionDeviceService.onDeviceAppeared` (or the Android 14 equivalent) is logged while `Hiber … freeze uid` is NOT logged, or the unfreeze is logged with a reason that is not `appToTop`. **Fail is a result too:** it closes option C in the research. **Status:** TODO
+- **HIB-07 (FCM wake probe, only if the owner allows FCM):** a high-priority data message sent to the frozen Infinix. **Pass:** a log line in the app within 10 s and a Hiber unfreeze with a reason that is not `appToTop`. **Status:** TODO (blocked on an owner decision)
+- **HIB-08 (OEM contact):** ask Transsion whether an enterprise whitelist or build exists. **Pass:** a written answer in the research doc. **Status:** TODO
+- **HIB-09 (stay awake while charging):** Infinix on a charger with "Stay awake" on (developer options), screen on and dimmed or locked-with-screen-on, 10 minutes, a message every 30 s from a peer. **Pass:** no `freeze uid` lines and every message arrives in 60 s. **Status:** TODO
+
+
+## 4zm. Shared engine refactor review fixes (ERROR-125, ADR-099, 2026-10-08)
+
+All unit-tested; none device-verified. Source for every case: ERROR-125 / ADR-099.
+
+- **ENG-01 (desktop resumed receive on a full disk):** Windows desktop receiving; start a large file from a phone, kill the phone app mid-transfer, fill the desktop volume so the remainder cannot fit, relaunch the send. **Pass:** the transfer is refused by name ("not enough space", `admitIncoming` refusal in the log) before any chunk is written; no half-written file grows. **Status:** TODO
+- **ENG-02 (desktop resume progress):** same setup with enough space. **Pass:** after the resume the bar starts at the already-received share, not 0 %, before the first ack. **Status:** TODO
+- **ENG-03 (Android resumed receive, peer drops again):** phone receiving from a laptop; interrupt, resume (retry branch), then switch the laptop's Wi-Fi off during the resumed transfer. **Pass:** within the disconnect window the row becomes Failed ("peer disconnected"), not stuck at Transferring; logcat shows `cleanupInbound` for that transfer id and no open-handle leak after 3 repetitions. **Status:** TODO
+- **ENG-04 (disk full while finishing):** fill the receiver's storage so the final flush fails, from a peer that sends a whole-file hash and from an older peer that does not. **Pass:** the row is Failed and the partial file is removed in both cases; the sender never shows "verified". **Status:** TODO
+- **ENG-05 (malformed swarm announcement):** with two test builds (or a debug injector) have a group member send a swarm announcement whose `root` is `zz`. **Pass:** the receiver logs one WARN naming only the root length, does not crash, and a following valid announcement still starts a download. **Status:** TODO
+- **ENG-06 (33 receives in one process):** receive 40 small files (or voice notes) one after another without restarting the app. **Pass:** all 40 are accepted; no `SESSION_FULL` reject in the log. **Status:** TODO
+- **ENG-07 (two same-named files at once, Android):** send `image.jpg` twice at the same time from two peers into one folder. **Pass:** the received files are `image.jpg` and `image (1).jpg`, neither replaced; an existing user file of that name is never overwritten. **Status:** TODO
+- **ENG-08 (keystore failure at boot must not wipe chat):** on a device where Keystore is slow after boot (cold start right after reboot, or an OEM that fails the first unwrap), open the app 5 times in the first minute. **Pass:** chat history is never quarantined by a transient failure; a real key loss still recovers with a fresh database and a notice. **Status:** TODO
+- **ENG-09 (long CJK file name):** send a file whose name is 100 CJK characters. **Pass:** the receiver stores it under a shortened name that keeps the extension, on Android and Windows; no sink-creation failure. **Status:** TODO
+- **ENG-10 (desktop auto-accept gate):** desktop with `autoAcceptIncoming` enabled in the host config; send a file from an unpaired LAN peer and from a paired one. **Pass:** the unpaired offer waits for the user; the paired one is accepted. **Status:** TODO
+- **ENG-11 (desktop close during boot):** start the desktop app and quit within 2 s, ten times. **Pass:** no orphan process, the WS port is free immediately after exit, no `ready` log after the close log. **Status:** TODO
+- **ENG-12 (owner check across group files):** receive a group file by swarm from a member while a 1:1 transfer is open; pause, resume and cancel both from their senders. **Pass:** controls apply only to the owning peer's transfer; no group-swarm row is ignored because its peer is a group id (watch for `Ignored transfer control ... belongs to another peer`). **Status:** TODO
+- **ENG-13 (flaky swarm interop test, pre-existing):** `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin` fails intermittently ("Converged bitfield must still be incomplete while origin is offline"). Measured 2026-10-08 by repeated single runs: clean `HEAD` 2 of 28, current tree 2 of 17, current tree with the old per-frame dispatch 1 of 16: the same rate, so not caused by the ERROR-125 work. Suspected cause (not proven): the test samples `unionAtDisconnect` from the fake DAO right after the sessions drop while the persist worker can still land pieces that arrived before the drop. **Pass:** after the test waits for the DAO count to stay unchanged for 500 ms before sampling, 30 consecutive runs pass. **Status:** TODO
+
+## 4zo. Screen share in calls (ADR-102, 2026-10-09)
+
+Common setup unless stated: Windows laptop (desktop build from this tree) presenter; one Android phone (this build) as a watcher; capture the app log from before pressing Share on every device (grep `SHARE` / `CALL`). Source for all: ADR-102, `docs/calling/SCREEN-SHARE-DESIGN.md`, `docs/reports/2026-10-09-screen-share.md`.
+
+### SHARE-01 - Windows screen to a phone (1:1)
+Setup: video call laptop <-> phone. Steps: More -> Share screen -> pick the screen -> Share. Pass: the phone shows the laptop screen letterboxed with
+"<name> is presenting" within 3 s; the laptop shows the "You are sharing - Stop" strip; log shows ss=1 sent. Status: TODO
+
+### SHARE-02 - Indicator and stop
+Steps: while sharing open the More panel, the picker, a chat; press Stop on the strip, then share again and stop from More. Pass: the strip is visible
+in every state and never after Stop; the phone returns to the camera or the avatar within 3 s. Status: TODO
+
+### SHARE-03 - Legibility of 10 pt text
+Steps: share a document with 10 pt text; look at it on the phone (and on a desktop watcher). Pass: readable without zoom at rung 0 and still readable
+at the lower-quality choice; record which rung the log reports. Status: TODO
+
+### SHARE-04 - CPU camera vs share at 1, 2 and 4 watchers (EXP-024)
+Setup: group call, laptop plus up to 4 watchers. Steps: camera 540p for 3 min per watcher count, then a share of a text document for 3 min per count. Pass:
+a table of presenter CPU %, bitrate, fps, qualityLimitationReason per run; share CPU <= camera CPU at every count, or the gap is recorded and the
+ladder revised. Status: TODO
+
+### SHARE-05 - Watcher cap and strain
+Steps: on a MEDIUM-tier presenter add a 4th watcher; run a CPU stressor. Pass: the 4th watcher is told "busy"; the share steps one rung down with the
+hint "Your computer is busy, so the picture is smaller", and steps back after the load ends. Status: TODO
+
+### SHARE-06 - Stop share does not crash (Windows and Linux)
+Steps: share, then Stop, 10 times each on Windows and on Linux (X11); also hang up while sharing. Pass: no native crash, no hs_err file, no hang; the
+log shows the close order (senders, sinks, source). Status: TODO
+
+### SHARE-07 - Camera -> share -> camera
+Steps: camera on, start a share, stop it. Pass: the camera comes back on by itself and the peer sees it; if the camera was off before the share it
+stays off. Status: TODO
+
+### SHARE-08 - Wayland picker
+Setup: Linux laptop on Wayland. Steps: open the picker, choose the one entry "Choose in the system dialog". Pass: the system dialog opens, the choice
+is shared; cancelling the dialog leaves the call unchanged with the notice "Sharing could not start". Record the compositor and portal versions. Status: TODO
+
+### SHARE-09 - One presenter and take-over
+Setup: three devices, two desktops. Steps: desktop A shares; desktop B shares and confirms. Pass: A stops with "B started sharing, so yours stopped";
+everyone shows B; B stops and A's share is not resurrected. Also: B hangs up while presenting, the others return to normal. Status: TODO
+
+### SHARE-10 - Closing the shared window
+Steps: share a window, close it. Pass: record what happens (frames stop / black / error). Required outcome: the call survives and the presenter can stop
+the share; file the exact behaviour in ERROR-137. Status: TODO
+
+### SHARE-11 - Resize / move the shared window
+Pass: the picture follows the window without a crash; the receivers re-letterbox. Status: TODO
+
+### SHARE-12 - Mixed builds
+Setup: one device with a build from before this change in the call. Pass: the old build shows the share as the presenter's camera, nothing else
+changes, no crash on either side; an old presenter never blocks a new one. Status: TODO
+
+### SHARE-13 - Late joiner and rebuilt leg
+Steps: a third person joins while A is presenting; kill the Wi-Fi of a watcher for 15 s and restore. Pass: the late joiner sees the share without the
+presenter doing anything; the rebuilt leg shows the screen, not the camera. Status: TODO
+
+### SHARE-14 - Call ends / app closes while sharing
+Steps: the other side hangs up; separately close the app window while sharing. Pass: no crash, the capture stops (screen-capture indicator of the OS
+disappears), the camera is free for the next call. Status: TODO
+
+## 4zp. Radio link tooling (BT-00 updated, BT-09..BT-17, 2026-10-09)
+
+### BT-00 - Radio hardware spike (UPDATED 2026-10-09: tooling now exists)
+- **Setup:** radio paired in Windows (Outgoing COM port noted), the Flash checkout, optionally a second radio/PC and a monitor receiver. Commands: `./gradlew :desktop:radioLinkTest`, `./gradlew :desktop:radioLinkTestCli -PradioArgs="--list"` (full list in `docs/reports/2026-10-09-bluetooth-radio.md` section 8).
+- **Steps:** report section 8 steps 1 to 12 (list ports, simulated run, open the real port, KISS on, KISS/AX.25/Flash frames, two-station burst, two apps, power cycle, optional 9600, export logs).
+- **Pass:** the exported logs plus the answers to the plan's open questions (Classic SPP vs BLE, KISS accepted, LCD behaviour with Digital Mode on/off, 220-byte frame accepted, goodput) written to `logs/experiments.md` as EXP-023; each UNVERIFIED marker in the radio plan (sections 0.2, 4.1, 4.5, 5.2) updated to measured fact or struck.
+- **Source:** radio plan sections 0.2 and 8; ADR-101. **Status:** TODO
+
+### BT-09 - Spike window opens and the simulated radio runs (no hardware)
+- **Setup:** the dev laptop. **Steps:** `./gradlew :desktop:radioLinkTest`; click Simulated radio, the three test buttons, a burst of 3. **Pass:** window readable (no clipped controls at 1100x820 and at a smaller window), feed and raw panes fill, the burst result shows `acked=3`, Export log writes a file that starts with `# Flash radio link test`. **Source:** `docs/ui/radio-link-test.md`. **Status:** TODO
+
+### BT-10 - KISS transparency through the real TNC
+- **Setup:** BT-00 steps 3 and 4. **Steps:** send the KISS test frame (bytes 00..DB..C0..DB, 220 B). **Pass:** a monitor receiver decodes an AX.25 UI frame from BT00A with exactly the 220 information bytes in order (C0 and DB intact). **Source:** `RADIO-WIRE-FORMAT.md` section 3. **Status:** TODO
+
+### BT-11 - A full 220-byte Flash frame is accepted and heard
+- **Steps:** send the Flash 220-byte payload. **Pass:** the monitor shows a 236-byte AX.25 frame, PID F0, information starting `F1 11`; the second station's feed shows `flash-rx kind=PING body=192B` when both use the test key. Record the largest frame the radio accepts if 236 fails. **Source:** plan 6.0 item 1. **Status:** TODO
+
+### BT-12 - Burst goodput and round trip at 1200 baud (feeds EXP-023)
+- **Setup:** two stations (role A burst, role B `--listen 300`). **Steps:** burst 5 x 192 B, then 5 x 50 B. **Pass:** `acked` equals sent (or the loss is explained), and RTT min/median/max and goodput B/s are recorded in EXP-023 next to the pacing defaults; the defaults (300 ms TXDELAY, 500 ms gap, 1500 ms jitter) are kept or changed with the number as the reason. **Status:** TODO
+
+### BT-13 - Link loss and reconnect
+- **Steps:** BT-00 step 10 (radio power cycle) and a second variant: walk out of Bluetooth range and back. **Pass:** the status shows waiting then connected without restarting the tool, sends during the outage return LinkDown (feed), log has `radio.link.down reason=...` then `radio.link.up`. **Status:** TODO
+
+### BT-14 - One app at a time
+- **Steps:** BT-00 step 9. **Pass:** which app keeps the radio is written down; whether the radio's own app can coexist is recorded. **Status:** TODO
+
+### BT-15 - Station label rotation (privacy)
+- **Steps:** send the Flash 220-byte payload, wait 16 minutes, send again, compare the AX.25 source callsign on the monitor. **Pass:** the callsign differs between the two frames and is never a real callsign; (and with the other station: both frames decode). **Source:** plan E7. **Status:** TODO
+
+### BT-16 - Android RFCOMM to the radio (BLOCKED: needs a debug entry)
+- **Why blocked:** `AndroidBluetoothCatalog` exists but nothing in the app calls it. Build a debug screen first. **Pass when built:** on Android 12+ the permission prompt appears once ("Nearby devices"), the radio is listed as a paired device, `openRfcomm` connects with the SPP UUID and bytes flow; on Android 11 or lower there is no runtime prompt. **Status:** TODO
+
+### BT-17 - Flash-to-Flash over RFCOMM (BLOCKED: not built)
+- **Why blocked:** only `StreamFramer`, the UUID constants and ADR-101 exist. Replaces plan test BT-03 once built. **Status:** TODO
+
+## 4zq. Group history sync (ADR-100, 2026-10-09)
+
+This section supersedes the one-line GSY-01...GSY-09 stub in 4zl (kept there, not deleted).
+
+### GSY-01...GSY-12 - Group history sync (ADR-100, 2026-10-09; unit-tested, none device-verified)
+Setup for all: phones A and B plus one desktop in one signed v2 group; a third phone C joins later. Source: ADR-100, `docs/reports/2026-10-09-group-sync.md`, `docs/group/GROUP-SYNC-REVAMP-PLAN.md` section 4.
+
+- **GSY-01 (join card, default):** A and B exchange messages and a file over several days (or seed 40 old messages). C joins by invite. **Steps:** open the group on C. **Pass:** the card "Catch up on this group?" shows once with 30 days selected and Include files on; "Catch up" starts the banner "N of about M"; messages from the last 30 days arrive; the card does not come back after a restart. **Status:** TODO
+- **GSY-02 (clamp):** admin sets the ceiling to 7 days, then C joins. **Pass:** the card offers None, 24 hours, 7 days only; footer "This group shares up to 7 days."; nothing older than 7 days arrives. **Status:** TODO
+- **GSY-03 (NONE):** ceiling Nothing, then C joins. **Pass:** the card reads "This group does not share earlier history" with OK only; no messages and no file offers arrive; "Load older messages" is hidden. **Status:** TODO
+- **GSY-04 (returning member, S2):** C offline for 3 days while A and B chat on each of the 3 days. **Pass:** after reconnecting C has every message of all 3 days (not just the last 24 h); log shows a request with `windowMs` of at least 7 days. **Status:** TODO
+- **GSY-05 (cursor gap, S1):** C receives a live message while it is missing older ones from A. **Pass:** the older ones still arrive from A after reconnect (log: request starts at the watermark, not after the newest row). **Status:** TODO
+- **GSY-06 (paging and resume):** 600+ messages on A; C joins with 30 days; kill C's session (Wi-Fi off) in the middle. **Pass:** banner "N of about M" advances in steps of 100; after reconnecting it resumes from the last whole page (no restart from zero) and ends with all rows once, no duplicates; the banner disappears. **Status:** TODO
+- **GSY-07 (admin control):** a second admin (ROLE_ADMIN) and a plain member open Group Settings. **Pass:** both admins see the five-chip ceiling picker and a change reaches the others within a minute; the plain member sees only a read-only sentence. **Status:** TODO
+- **GSY-08 (mixed fleet):** one device on a build without ADR-100 in the group. **Pass:** chat and normal catch-up still work between old and new devices; the old device keeps its previous window when the ceiling is not D30 (record it). **Status:** TODO
+- **GSY-09 (retention):** leave A with default retention for 35 days of messages. **Pass:** text younger than 30 days is still on A and served to C; nothing prunes it. **Status:** TODO
+- **GSY-10 (Load older messages):** C chose "None" or 24 hours on the card. **Steps:** Group Settings, Load older messages, 30 days, Load. **Pass:** older messages arrive (within the ceiling); a ceiling of 7 days offers at most 7 days; the row is hidden for NONE. **Status:** TODO
+- **GSY-11 (no files):** C joins choosing 30 days with Include files off, then once with "None". **Pass:** no file offers appear in either case; with files on, file offers from the last 7 days appear. **Status:** TODO
+- **GSY-12 (card UX):** card on phone and desktop, dark mode, large font, reduced motion, TalkBack/keyboard. **Pass:** chips wrap, minimum 48 dp targets, selected chip announced "selected", Tab order chips then switch then buttons, no animation under reduced motion, text readable in both palettes. **Status:** TODO
+
+### 4zs Fix round: screen share and radio (2026-10-09)
+- SHARE-15 No-frame watchdog. Setup: Windows presenter, a share source that produces no frame (a minimised window if the capturer then sends nothing). Steps: start sharing, wait past ShareLadder.FIRST_FRAME_TIMEOUT_MS. Pass: the share ends with the "no picture" notice, the camera returns, the viewer's tile goes back to the camera, a new share can start; log has "no frame within". Source: ERROR-138. Status: TODO
+- SHARE-16 Hang up while sharing, 20 times (Windows, then Linux). Pass: no native crash, no `hs_err`, capture closed each time. Source: ERROR-140, ERROR-123 class. Status: TODO
+- SHARE-17 Take-over after a skewed clock. Setup: three devices in a call, one with its clock set 30 days ahead. Steps: the skewed device shares, then a second device starts a share. Pass: the second device becomes the presenter on all three, the skewed one stops. Source: ERROR-139. Status: TODO
+- SHARE-18 Android presenter tuning (BLOCKED until the Android presenter exists). Steps: share, stop, check the camera sender degradation preference is back to balanced. Source: S6. Status: TODO
+- SHARE-19 Lost ss=0 in a group. Setup: three devices; the presenter stops while one viewer's signalling is down, then it recovers. Pass: the viewer drops the presenter claim within one status round. Source: ERROR-141. Status: TODO
+- BT-18 Radio that connects and drops. Setup: a serial radio that accepts the open then resets (or a wire pulled right after open). Pass: the Waiting retry delays grow (1 s, 2 s, 4 s ...) in the log. Source: ERROR-142. Status: TODO
+- BT-19 Stuck write on Android RFCOMM (BLOCKED: no debug entry yet, see BT-16). Steps: power the radio off mid-write, stop the driver. Pass: stop returns within about 1 s. Source: ERROR-143. Status: TODO
+- BT-20 Desktop window stays responsive while listing a hanging Bluetooth virtual COM port (Windows). Pass: the window repaints during Refresh. Source: ERROR-145. Status: TODO
+- MEDIA-01 Linux without libpulse (container or after removing it). Steps: start Flash desktop, start a call. Pass: no java.lang.Error, no crash; log says "unavailable ... treating as no devices"; the call reports no microphone. Source: ERROR-167. Status: TODO
+
+## 4zt. Fixes: group sync, transfer, security (2026-10-09)
+
+### GSY-13...GSY-16, HARD-01...HARD-05 - Sweep fixes (2026-10-09, unit-tested, none device-verified)
+
+- **GSY-13 (ceiling and old build):** admin on this build sets ceiling "7 days"; a phone on a build from before ADR-100 receives it. Pass: that phone
+  still shows the new join policy / member cap and keeps its own history window; no "settings refused" log. Source: ERROR-148, ADR-105. Status: TODO
+- **GSY-14 (one holder):** new member joins a group of 4+ online members. Pass: log shows one holder asked at a time, each message arrives once.
+  Source: ERROR-149, ADR-106. Status: TODO
+- **GSY-15 (dead holder):** same, but the first-asked holder is switched to airplane mode mid-catch-up. Pass: the next holder is asked after about
+  45 s and the history completes within 3 min. Source: ADR-106. Status: TODO
+- **GSY-16 (hammering requester):** repeat the catch-up button quickly 40 times. Pass: no crash, holder log shows dropped requests after 30 in 10 s.
+  Source: ERROR-150. Status: TODO
+- **HARD-01 (chunk rows):** send and receive a 1 GB file, restart the app. Pass: `transfer_chunks` has no rows for the finished transfer and the
+  start-up log shows the purge line. Source: ERROR-151. Status: TODO
+- **HARD-02 (write failure):** receive a file into a full or removed storage location. Pass: the row is Failed with the "could not be saved" text,
+  the sender stops. Source: ERROR-152..154. Status: TODO
+- **HARD-03 (measure):** stall 45 s / episode 3 min on a slow holder. Source: ADR-106. Status: TODO
+- **HARD-04 (identity key):** reboot a device and open the app immediately several times. Pass: pairings survive, no regenerate log. Source: ERROR-155.
+  Status: TODO
+- **HARD-05 (group hardening):** admin removes/demotes via crafted cert is not reproducible on device; check that join via invite, member add by a
+  member and proof still work. Source: ERROR-156. Status: TODO
+
+### 4zr Release 2.1.0-beta smoke checklist and hardening (2026-10-09)
+- REL-01 Install the signed APK over a clean phone; app starts; `apksigner verify --print-certs` matches the recorded key. Status: TODO
+- REL-02 Install Flash-2.1.0.msi on Windows; start; pair with the phone; send a file. Status: TODO
+- REL-03 Consumer from JitPack (tag v2.1.0-beta, JDK 17): resolve core-calling for Android and JVM; build. Status: TODO
+- REL-04 FileProvider: open and share a received file, a voice note, a camera capture and an exported log on a phone. Pass: no IllegalArgumentException "Failed to find configured root". Status: TODO
+- REL-05 Lint: `./gradlew :app:lintRelease` clean; no MissingPermission after the Bluetooth removal. Status: TODO
+- REL-06 `unzip -l desktop/build/libs/*.jar | grep -i RadioLinkTest` empty; `:desktop:radioLinkTestCli -PradioArgs="--list"` lists ports. Status: TODO
+- REL-07 Generated third-party notices list jSerialComm (Apache-2.0 election) and com.transfer.flash:webrtc-kmp. Status: TODO
+- HARD-20 R-02 on two phones: dial a paired peer by id while another paired peer answers (hotspot IP swap). Pass: log "dial rejected", no session registered. Status: TODO
+- HARD-21 R-05: from a test app send ACTION_SEND with a file:// URI into Flash private storage and a content://<package>.fileprovider URI. Pass: nothing offered. Status: TODO
+- HARD-22 R-20: save the same image twice in one millisecond (script) on desktop; two files exist. Status: TODO
+- HARD-23 R-11: a peer (test client) sends a fragmented text with a ping between fragments. Pass: message delivered, session stays up. Status: TODO
+- HARD-24 CI run on dev after these edits is green, including `:app:lintDebug`. Status: TODO

@@ -1,5 +1,7 @@
 # Flash Library-First Architectural Migration Plan
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** The migration this plan describes was executed (see `docs/migration/` and the ADRs); its phases and Gradle snippets are the 2026-08-20 plan, not the current build files. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 **Document Version:** 1.0.0  
 **Date:** 2026-08-20  
 **Author:** Lead Android Software Architect & Migration Engineer  

@@ -1,5 +1,7 @@
 # Flash Target Architecture & Topology
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** This is the 2026-08-20 target design written before the migration. The modules it plans now exist (15 published Kotlin Multiplatform modules plus the Android and desktop hosts), but details such as the transport (a pinned-TLS WebSocket mesh, not raw TCP), group swarm, calling, PTT and the desktop host were added after it and are not described here. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 **Author:** Lead Android Software Architect & Migration Engineer  
 **Date:** 2026-08-20  
 **Target Group ID:** `com.transfer.flash`  

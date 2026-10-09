@@ -1031,6 +1031,18 @@ Android's look preserved or improved).
 - **Fixed in code 2026-10-06, unit-tested, NOT device-verified (ERROR-112, ERROR-113, ERROR-114 stay OPEN):** joining a group by invite and members-may-add (a device added by a plain member never got its cert, the invite proof raced with itself when the inviter was already connected, the UI opened a chat titled with the group id; ADR-082). The desktop approval that never completed at 09:34 is not proven. Device checks `GJOIN-01`...`GJOIN-03` in `docs/testing/TEST-BACKLOG.md` section 4zf.
 - **Fixed in code 2026-10-06, unit-tested, NOT device-verified (ERROR-115 stays OPEN):** invite follow-ups (ADR-083): a stale or rejected invite link says so instead of waiting for ever, the join dialog names a known inviter, and the admin's join request row marks an unpaired requester. Device checks `GJOIN-04`...`GJOIN-06` in `docs/testing/TEST-BACKLOG.md` section 4zf. Open owner decisions on link expiry and a pending-join row are in `logs/handoff.md`.
 - **Group swarm + group membership by id + secret (docs only, 2026-10-04, nothing built):** plan `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (tracks SW-0..SW-12 and GM-1..GM-11). SW-0 wrote ADR-070..ADR-075 (all **PROPOSED**, awaiting the owner), `docs/protocol.md` "Group swarm wire FSW1 v1" / "Group membership v1" and `docs/security.md` section 10. The owner decided every member receives group files whether or not it is paired (O-5 replaced) and reversed ADR-044's group-secret rejection (D1). **No swarm or membership code before the ADRs are accepted;** the first code phase is GM-5 (the group gate).
+- **Built 2026-10-09 by three parallel agents, unit-tested, NOT device-verified, NOT committed** (summary: `docs/reports/2026-10-09-overnight-report.md`):
+  group history sync (ADR-100, UI-057, ERROR-126/127, Room schema 13, tests `GSY-01`...`GSY-12`), the radio / Bluetooth serial link groundwork
+  (ADR-101 PROPOSED, `docs/network/RADIO-WIRE-FORMAT.md`, BT-00 tool `:desktop:radioLinkTest`, tests `BT-00`, `BT-09`...`BT-17`; pairing-key
+  adapter and `FlashTransportType.BLUETOOTH` not built) and screen share in calls (ADR-102, desktop presenter, all receivers; Android presenter NOT
+  built; tests `SHARE-01`...`SHARE-14`, EXP-024).
+- **Fix round 2026-10-09, unit-tested, NOT device-verified, NOT committed:** every finding of the three audits (`docs/reports/2026-10-09-review-overnight-code.md`,
+  `-sweep-modules.md`, `-release-readiness.md`) was fixed or explicitly deferred by three agents (`-fix-calling-radio.md`, `-fix-messaging-transfer.md`,
+  `-fix-library-release.md`; ERROR-138...167, ADR-103/105/106). Library prepared as **2.1.0-beta** (versionCode 3, desktop 2.1.0): the vendored
+  webrtc-kmp fork is now published under `com.transfer.flash` (ADR-103) so core-calling / ui-callui resolve. A release signing key exists outside
+  the repo (`~/.flash-signing/flash-release.jks`, config in the git-ignored `keystore.properties`); back both up. Deferred: G8 re-pull, R-19 wire version,
+  Android presenter, `Rejected` handlers need `WRITE_FAILED` in three hosts.
+
 ## Not Yet Implemented
 
 - **Wi‑Fi Direct transport.** No `WifiP2pManager` code exists (verified 2026-09-24); postponed (ADR-056, FO-03). The concept and the transport
