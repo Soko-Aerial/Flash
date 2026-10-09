@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 
@@ -28,10 +29,13 @@ object OemBatteryOptimizationHelper {
         GENERIC,
     }
 
-    val currentBrand: OemBrand by lazy {
-        val manufacturer = Build.MANUFACTURER.lowercase()
-        val brand = Build.BRAND.lowercase()
-        when {
+    val currentBrand: OemBrand by lazy { brandOf(Build.MANUFACTURER, Build.BRAND) }
+
+    /** Pure so it can be unit-tested; [currentBrand] feeds it the device's build fields. */
+    fun brandOf(rawManufacturer: String, rawBrand: String): OemBrand {
+        val manufacturer = rawManufacturer.lowercase()
+        val brand = rawBrand.lowercase()
+        return when {
             manufacturer.contains("xiaomi") || brand.contains("xiaomi") ||
                 manufacturer.contains("redmi") || brand.contains("redmi") ||
                 manufacturer.contains("poco") || brand.contains("poco") -> OemBrand.XIAOMI
@@ -78,10 +82,8 @@ object OemBatteryOptimizationHelper {
                 Intent().setComponent(ComponentName("com.samsung.android.sm", "com.samsung.android.sm.battery.ui.BatteryActivity")),
                 Intent().setComponent(ComponentName("com.samsung.android.sm", "com.samsung.android.sm.ui.battery.BatteryActivity")),
             )
-            OemBrand.TRANSSION -> listOf(
-                Intent().setComponent(ComponentName("com.transsion.phonemaster", "com.transsion.phonemaster.autostart.AutoStartActivity")),
-                Intent().setComponent(ComponentName("com.transsion.phonemaster", "com.transsion.phonemaster.MainActivity")),
-            )
+            OemBrand.TRANSSION -> transsionCandidates(TranssionSetupGuide.Target.AUTO_START) +
+                transsionCandidates(TranssionSetupGuide.Target.POWER_SETTINGS)
             OemBrand.OPPO_REALME -> listOf(
                 Intent().setComponent(ComponentName("com.coloros.safecenter", "com.coloros.safecenter.permission.startup.StartupAppListActivity")),
                 Intent().setComponent(ComponentName("com.oppo.safe", "com.oppo.safe.permission.startup.StartupAppListActivity")),
@@ -105,6 +107,64 @@ object OemBatteryOptimizationHelper {
             }
         }
         return null
+    }
+
+    private const val PHONE_MASTER = "com.transsion.phonemaster"
+
+    /**
+     * Phone Master screens for [target], most specific first. Class names move between HiOS / XOS
+     * builds and were never settled on a device (HIB-01), so each target lists every name reported
+     * and [resolveTranssionIntent] launches the first one this phone resolves; the Phone Master
+     * main screen is the last resort and the AOSP fallbacks follow it.
+     */
+    internal fun transsionClassNames(target: TranssionSetupGuide.Target): List<String> = when (target) {
+        TranssionSetupGuide.Target.AUTO_START -> listOf(
+            "com.transsion.phonemaster.autostart.AutoStartActivity",
+            "com.transsion.phonemaster.autostart.AutoStartManageActivity",
+        )
+        TranssionSetupGuide.Target.POWER_SETTINGS -> listOf(
+            "com.transsion.phonemaster.power.activity.PowerSettingsActivity",
+        )
+        else -> emptyList()
+    } + "com.transsion.phonemaster.MainActivity"
+
+    private fun transsionCandidates(target: TranssionSetupGuide.Target): List<Intent> =
+        transsionClassNames(target).map { Intent().setComponent(ComponentName(PHONE_MASTER, it)) }
+
+    /** The first Phone Master screen for [target] that resolves on this phone, or null. */
+    fun resolveTranssionIntent(context: Context, target: TranssionSetupGuide.Target): Intent? {
+        val pm = context.packageManager
+        return transsionCandidates(target).firstOrNull { isIntentResolvable(pm, it) }
+            ?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    }
+
+    /** True when Android's own battery optimisation does not apply to this app (below API 23 there is none). */
+    fun isIgnoringBatteryOptimizations(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+        return context.getSystemService(PowerManager::class.java)
+            ?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+    }
+
+    /** Opens the screen behind a guide step; falls back to the app's own details page. False if nothing launched. */
+    fun openTarget(context: Context, target: TranssionSetupGuide.Target): Boolean {
+        val details = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
+        val intent = when (target) {
+            TranssionSetupGuide.Target.BATTERY_EXEMPTION ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${context.packageName}"))
+                } else {
+                    null
+                }
+            TranssionSetupGuide.Target.AUTO_START,
+            TranssionSetupGuide.Target.POWER_SETTINGS -> resolveTranssionIntent(context, target)
+            TranssionSetupGuide.Target.APP_DETAILS -> details
+            TranssionSetupGuide.Target.NONE -> null
+        }
+        for (candidate in listOfNotNull(intent, details)) {
+            candidate.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (runCatching { context.startActivity(candidate) }.isSuccess) return true
+        }
+        return false
     }
 
     private fun isIntentResolvable(pm: PackageManager, intent: Intent): Boolean {
