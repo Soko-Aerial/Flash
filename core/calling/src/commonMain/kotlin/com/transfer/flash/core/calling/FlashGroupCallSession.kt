@@ -2750,7 +2750,7 @@ public class FlashGroupCallSession(
         val sdpWithCodecs = CallSdp.enforceVp8Only(tunedSdp ?: desc.sdp)
         val finalDesc = if (sdpWithCodecs != desc.sdp) SessionDescription(desc.type, sdpWithCodecs) else desc
         try {
-            pc.setLocalDescription(finalDesc)
+            timedNative("setLocalDescription(${desc.type})") { pc.setLocalDescription(finalDesc) }
             FlashLog.i("GROUP_CALL", "local ${desc.type} (tuned) sdp len=${finalDesc.sdp.length}")
             return finalDesc
         } catch (e: CancellationException) {
@@ -2772,7 +2772,7 @@ public class FlashGroupCallSession(
         val tuned = runCatching { CallSdp.tuneRemote(sdp, performanceMode()) }.getOrNull()
         val sdpWithCodecs = CallSdp.enforceVp8Only(tuned ?: sdp)
         try {
-            pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs))
+            timedNative("setRemoteDescription($type)") { pc.setRemoteDescription(SessionDescription(type, sdpWithCodecs)) }
             FlashLog.i("GROUP_CALL", "remote $type (tuned) sdp len=${sdpWithCodecs.length}")
             return
         } catch (e: CancellationException) {

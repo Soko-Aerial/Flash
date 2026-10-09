@@ -8119,3 +8119,17 @@ Date 2026-10-09. Permissions removed; jvmJar excludes RadioLinkTest*. Build veri
 
 ## ERROR-167 - java.lang.Error from webrtc-java when libpulse is missing (product robustness)
 Date 2026-10-09. Found via CI. MediaDevices static init throws an Error and poisons the class for the process. Not fixed (core/calling, not my area). Status: OPEN.
+
+## ERROR-168 - Linux desktop: a member who leaves a group call and rejoins sits on "Connecting" for ~40 s, peers give up
+Date 2026-10-09. Area: core/calling (FlashGroupCallSession), third_party/webrtc-kmp jvm, Linux only so far.
+### Symptoms
+Owner's `desktop.log` (Linux laptop, local=f355ffde, Ubuntu 22.04, Temurin 25.0.4.1, wlp0s20f3; peers Raspberry, Quince, Alpha Workstation). First join of call eff419e6 at 15:40:05: offers out, answers applied in 56 ms, ICE Completed, video both ways (healthy). Hang up 15:40:39. Rejoin 15:40:49: offers sent 15:40:50.40, Answers received 15:40:50.48-.57, then **no "Applied answer" until 15:41:30.5 (leg 1) and 15:41:40.5 (legs 2,3)**: about 40 s then 10 s. Same again on the next rejoin: Answers rx 15:41:40.78, tracks/ICE only at 15:42:20.86 (40 s). The peers' GroupHangup frames are processed in the same millisecond the stall ends, so they gave up while waiting. The process is NOT frozen: GroupPresence every 4 s, discovery every 5 s, and the local preview render keep logging, but the preview shows `converted=0.0fps dropped=150` for the stall. Afterwards `video sender tuning failed: Object handle is null` (legs already closed).
+### Evidence it is one blocked native call
+`setRemoteDescription` (and everything else native) runs on the single `callMediaDispatcher` thread, so one call that blocks stalls all legs and the render path. Nothing logs during the stall, so the blocked call is inferred, not seen.
+### Root cause
+NOT PROVEN. Suspect: a native webrtc thread blocked while (re)starting audio or the camera on the 2nd+ session of a process (audio device module is process-wide and was left initialised after the first call; the camera is re-opened 10 s after release). The first call never stalls. `[webrtc-jvm]` lines are printed to stdout, not to desktop.log, so the ADM state of this run is unknown.
+### Change made (diagnostics only, no behaviour change)
+`NativeCallWatchdog.kt` `timedNative`: `setRemoteDescription` / `setLocalDescription` in `FlashGroupCallSession` now log `CALL_STALL native call still running: <label> elapsedMs=...` after 2 s and every 5 s (watchdog on Dispatchers.Default, not the blocked media thread) and `finished ... tookMs` when it takes 1 s or more. `:core:calling:compileKotlinJvm` green; not run on Linux.
+### Next
+Reproduce on the Linux laptop with the new build: join, leave, rejoin. Capture (1) the console stdout (`[webrtc-jvm]` lines), (2) `CALL_STALL` lines, (3) during the stall `eu-stack -p <pid>` or `gdb -p <pid> -batch -ex "thread apply all bt"` to see the blocked native frame, (4) `pactl info` and `pactl list short sources sinks` (is libpulse/PipeWire present at all, see ERROR-167). Not yet checked: whether the 1:1 session rejoin stalls too (it uses the same dispatcher).
+Status: OPEN.
