@@ -16,7 +16,7 @@ Android app and by the Windows desktop app.
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-ptt:v2.1.0-beta")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
+    implementation("com.github.Kali452345.Flash:core-ptt:v2.1.0-beta.1")   // JitPack coordinate; a mavenLocal build uses group com.transfer.flash
 }
 ```
 

@@ -8,7 +8,7 @@ The `:core:messaging` module implements the peer-to-peer chat repository, messag
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-messaging:v2.1.0-beta")
+    implementation("com.github.Kali452345.Flash:core-messaging:v2.1.0-beta.1")
 }
 ```
 

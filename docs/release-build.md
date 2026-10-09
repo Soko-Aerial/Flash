@@ -41,15 +41,15 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 
 | What | File | Current (2026-10-09) |
 |---|---|---|
-| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta` |
+| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta.1` |
 | Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0-beta` / `3` |
 | Windows installer `packageVersion` (MSI/EXE need a numeric `x.y.z`, so no `-beta`) | `desktop/build.gradle.kts` | `2.1.0` |
-| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta` |
-| README install snippets, installer names | `README.md` | `v2.1.0-beta`, `Flash-2.1.0.*` |
+| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta.1` |
+| README install snippets, installer names | `README.md` | `v2.1.0-beta.1`, `Flash-2.1.0.*` |
 | Release notes | `CHANGELOG.md` | `[2.1.0-beta]` |
 
 `versionCode` must go up for Android to accept the APK as an update (it was 2 in `v2.0.0-beta`). The library version is
-only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta`) and
+only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta.1`) and
 `flashLibraryVersion` should say the same thing.
 
 ## Publishing the library (JitPack) and the WebRTC fork

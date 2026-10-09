@@ -37,10 +37,10 @@ tasks.withType<JavaCompile>().configureEach {
 dependencies {
     // Mirror of :sample:consumer's umbrella shape, resolved from the published tree:
     // core-engine's api exposure must make the whole public vocabulary compilable.
-    implementation("com.transfer.flash:core-engine:2.1.0-beta")
+    implementation("com.transfer.flash:core-engine:2.1.0-beta.1")
     // Mirror of :sample:consumer-granular's single-artifact shape for the desktop tier:
     // core-network alone must re-expose core-common's FlashDevice through its api edge.
-    implementation("com.transfer.flash:core-network:2.1.0-beta")
+    implementation("com.transfer.flash:core-network:2.1.0-beta.1")
 }
 // No project-level `repositories {}`: the root settings' FAIL_ON_PROJECT_REPOS mode governs,
 // and its mavenLocal()-first order (added for this module in Phase 24 Step 2) is what makes
