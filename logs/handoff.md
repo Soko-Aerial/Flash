@@ -1,5 +1,79 @@
 # Current Handoff
 
+## 2026-10-09 - Docs verified against the code (docs only, NOT committed)
+- Developer-guide pages, scenarios, `docs/architecture.md` and `public-api.md` (partly) now match the source; historical architecture/publishing docs carry status notes. Details: `logs/progress.md` top entry. Remaining unverified: `public-api.md` sections not spot-checked, `PHASE-01..06` bodies.
+
+## 2026-10-09 - Release prep: library 2.1.0-beta, fork publishing (ADR-103) - NOT committed
+
+- 2026-10-09 release prep: library version 2.1.0-beta (gradle.properties flashLibraryVersion), fork published under com.transfer.flash (ADR-103). Uncommitted. Not run: assembleRelease, packageMsi, lintRelease, notices, JDK 17 proof, desktop jvmTest. Report: docs/reports/2026-10-09-fix-library-release.md.
+- Recommended next: run the REL-* checklist in TEST-BACKLOG, confirm the README JitPack account, then tag.
+
+## Messaging / transfer sweep fixes (2026-10-09, uncommitted, unit-tested only)
+- G1..G13 fixed except the G8 re-pull; ADR-105 (ceiling signature) and ADR-106 (catch-up lane) are PROPOSED.
+- R-01 chunk-row cleanup, R-03, R-04, R-06, R-07, R-08, R-09, R-10, R-12, R-13, R-14, R-16, R-17, R-18 fixed in code with tests.
+- No schema change (Room 13). One optional wire key pair (`setHist`/`setHistSig`) for G2.
+- Next: hosts must show WRITE_FAILED (`DiscoveryEngineHolder` ~2418, `Flash.kt` ~953, `DesktopEngine.kt` ~1941).
+- Files: `docs/reports/2026-10-09-fix-messaging-transfer.md`, `RealFlashChatRepository.kt`, `CatchUpLane.kt`, `FlashInboundRouter.kt`,
+  `RealFlashTransferRepository.kt`, `IdentityKeyCheck.kt`.
+
+## Fix round calling/radio (2026-10-09)
+Built and unit-tested, uncommitted, not device-verified: ERROR-138...147 and ERROR-167 fixes (see docs/reports/2026-10-09-fix-calling-radio.md). Not done: mutation checks of the new tests; the session-level proof that the teardown calls closeAfter (the test sender throws on every call, so the order is only proven on ScreenShareRun.closeAfter). :desktop:compileKotlinJvm is broken by another agent's DesktopHelpers.kt:154 until they fix it. `:app:lintRelease` as one task crashes in :core:messaging:lintAnalyzeAndroidHostTest (lint K2 bug); use :app:lintAnalyzeRelease then :app:lintReportRelease.
+
+## 2026-10-09 - Group history sync (ADR-100) - unit-tested, NOT device-verified, NOT committed
+
+- State:
+New member default 30 days (join card, UI-057), returning member 7-day floor, signed ceiling NONE|H24|D7|D30|ALL (admin-only control in the group settings sheet), paged catch-up with a per-holder watermark and resume. Room schema is now 13. Entry points: `GroupHistoryPolicy.kt`, `RealFlashChatRepository` (search `groupHistory`, `SyncPage`), `FlashGroupHistoryCard.kt`. Known gaps: report section 4 (`docs/reports/2026-10-09-group-sync.md`). Device checks GSY-01..GSY-12 in the backlog. Open: ERROR-126, ERROR-127. Unrelated failures: ERROR-106 (desktop test), DataStore tests on Windows.
+
+## 2026-10-09 - Radio link groundwork (ADR-101) - NOT committed
+- Built and unit-tested, not hardware-verified: KISS/AX.25/Flash radio frame codecs, `RadioSession`, `KissTncDriver`, desktop serial + Android RFCOMM links, BT-00 spike tool (`./gradlew :desktop:radioLinkTest` / `:radioLinkTestCli`).
+- Exact wire bytes: `docs/network/RADIO-WIRE-FORMAT.md` (golden vector asserted by `RadioGoldenFrameTest`).
+- Files: `core/network/src/*/.../kiss`, `.../radio`, `.../radio/diag`, `desktop/.../RadioLinkTestMain.kt`, `desktop/build.gradle.kts` (tasks appended), `app/src/main/AndroidManifest.xml` (Bluetooth permissions), `gradle/libs.versions.toml` (jserialcomm).
+- Owner next step: run the checklist in `docs/reports/2026-10-09-bluetooth-radio.md` section 8 and send back the exported logs; then record EXP-023 and the BT-* results.
+- Not built: pairing-key adapter, `FlashTransportType.BLUETOOTH`/planner hook, Android debug entry, chat integration.
+
+## 2026-10-09 - Screen share in calls (ADR-102) - NOT committed
+
+- **Screen share in calls, built 2026-10-09, unit-tested and mutation-checked, NOT device-verified (ADR-102, ERROR-136/137 OPEN):** a desktop
+  device presents a screen or window in 1:1 and group video calls; Android and desktop receivers render it fit-contain with "X is presenting".
+  Wire: Status `ss` / `sst` (additive). The Android presenter is NOT built (watch-only). Design: `docs/calling/SCREEN-SHARE-DESIGN.md`; report:
+  `docs/reports/2026-10-09-screen-share.md`. Device checks `SHARE-01`...`SHARE-14` and EXP-024 in `docs/testing/TEST-BACKLOG.md`.
+  Recommended next: run SHARE-01 and SHARE-06 on Windows and Linux; the ladder numbers are first guesses.
+  Files: core/calling ScreenShare.kt, FlashCallSession.kt, FlashGroupCallSession.kt, GroupVideoRouter.kt; ui/callui FlashCallShare.kt.
+
+## 2026-10-08 (e) - Audit + fix pass over the shared engine refactor (ERROR-125, ADR-099) - NOT committed
+
+- **State:** the (d) refactor was audited against `HEAD` and every finding fixed in code (router hooks, desktop resumed-retry gate, Android per-peer tracking, flush-failure handling, id ownership, swarm announcement validation + `SupervisorJob`, `ReceivePipeline` eviction, atomic `finalize`, sanitizer caps, `PassphraseKeeper`, desktop stand-in proxies, `close()` race, auto-accept trust gate). Details: `logs/progress.md` (e), `logs/errors.md` ERROR-125, `docs/decisions.md` ADR-099.
+- **Verified (unit/compile, 2026-10-08):** `:core:engine` jvm 140 + Android host 115, `:core:transfer` 127, `:core:swarm` 139, `:core:messaging` jvm 183 + host 467, `:desktop:jvmTest` 162 (1 failure = ERROR-106, unrelated), `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green. The (d) summary's "all green" omitted the ERROR-106 failure.
+- **Known flaky test (pre-existing, measured):** `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin`, about 7-12 % of single runs on both `HEAD` and the current tree. Not fixed (`ENG-13`).
+- **Not device-verified:** all of it. Device checks `ENG-01`...`ENG-13` in `docs/testing/TEST-BACKLOG.md` section 4zm.
+- **Open follow-ups:** sender-side ACK/COMPLETE peer binding (needs a `:core:transfer` signature change), desktop cancel/decline do not prune `incomingOwners`, `chats` not proxied pre-boot, `PeerOrderedInbox` throughput unmeasured.
+- **Do not commit or push without the owner:** the tree also holds the unrelated 540p video-height work (entry (c)) and Transsion docs; agree a commit split first.
+
+## 2026-10-08 (d) - Unified Shared Flash Engine across Android and Desktop JVM (C7.0 / ADR-010)
+
+- **Code:** Unified `FlashEngine` interface and `DefaultFlashEngine` created in `core/engine/src/commonMain/kotlin/.../FlashEngine.kt`.
+- **Desktop Engine:** `DesktopEngine` in `desktop/src/jvmMain/.../DesktopEngine.kt` implements `FlashEngine : AutoCloseable` with full subsystem accessors (`transfers`, `network`, `discovery`, `trustStore`), pre-boot stand-ins (`EmptyFlashTransferRepository`, `EmptyFlashDiscovery`, `EmptyFlashNetwork`), call/PTT/swarm attachment methods, and companion registration via `FlashDesktop.registerFactory`.
+- **Android Engine:** `AndroidFlashEngine` and `FlashEngine.settings` preserved in `androidMain` for 100% backward compatibility with Android callers.
+- **Cross-Platform Routing & Infrastructure:**
+  - `FlashInboundRouter`: unified handling for text frames (calls, presence, link, PTT, pairing, E2E decrypt/downgrade guard, actions, groups, chat text, transfer control) and binary frames (PTT audio, E2E decrypt, magic router, sender ACK/COMPLETE, receive pipeline events).
+  - `FlashSessionCoordinator`: shared session lifecycle coordination (up/down).
+  - `FlashPathSanitizer`: shared path sanitization and directory traversal prevention.
+  - `FlashDesktop.create(...)`: factory for Desktop JVM with lazy classloader fallback.
+- **Verification:**
+  - `:core:engine:jvmTest`: 100% green (all 72 unit and interop tests passed).
+  - `:core:engine:testAndroidHostTest`: 100% green.
+  - `:desktop:jvmTest`: All 4 tests in `FlashDesktopEngineTest` pass.
+  - `:desktop:compileKotlinJvm` & `:app:compileDebugKotlin`: Clean compiles (code 0).
+- **Not committed.**
+
+## 2026-10-08 (c) - Video heights 540p/360p (ADR-098) and Transsion research (uncommitted)
+
+- **Code:** group-call send heights are now HIGH 540p, MEDIUM/LOW 360p; "Send smaller" and the CPU banner action (**Send 360p**) cap at 360p; the camera opens at the tier's height. Files: `core/calling/.../GroupVideoRouter.kt`, `FlashGroupCallSession.kt` (`groupCaptureProfile`), `ui/chat/.../FlashSettingsScreen.kt`, `ui/callui/.../FlashCallHealthBanner.kt`, `GroupVideoRouterTest.kt`. Unit-tested, not device-verified. Tests `VID540-01`...`04`.
+- **1:1 calls unchanged** (still the full tier profile). Open question for the owner.
+- **Research (no code):** `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md`. Recommended order: HIB-01 (apply the Transsion switches, read the Hiber log), then a guided first-run + freeze detector, then HIB-06 (Companion Device Manager + BLE), FCM only if the owner allows it. Rust/C++ and daemons do not help (freezer works per UID).
+- **Investigated, no code:** screen share (`docs/calling/SCREEN-SHARE-INVESTIGATION.md`: mesh means one encode per watcher, JVM `getDisplayMedia` is a stub; earlier deferral stands until the owner lifts it) and group history sync (`docs/group/GROUP-SYNC-REVAMP-PLAN.md` / ADR-097: design not finished, O1-O4 open, no join-card UI doc yet).
+- **Not committed.** Ask before committing or pushing.
+
 ## 2026-10-08 (b) - Linux crash fix, native notifications, refused group offers (not committed)
 
 - **ERROR-123** (JVM SIGSEGV in `VideoTrack.removeSinkInternal` after a group-call peer hung up): sinks are now detached before the connection closes (vendored `RenderedVideoStreamTrack`). Cause inferred, not proven; read `hs_err_pid*.log` on the laptop if it recurs. Test `LNX-07`.

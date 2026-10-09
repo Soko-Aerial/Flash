@@ -1,5 +1,11 @@
 # Scenario 1: Ultra-Low Resource & Severely Constrained Devices
 
+> **Verified against the code 2026-10-09.** The numbers in the blueprint are the real `FlashPerformanceMode.LOW` profile values
+> (`FlashTransferProfile.LOW`, `FlashVoiceProfile.LOW`, `FlashTransportProfile.LOW`). Two corrections to the earlier text:
+> (1) the tier is **chosen by the host**, not through `FlashConfig`: `Flash.create` currently plans connections as `HIGH` and has no
+> performance-mode option, while the Android app's `DiscoveryEngineHolder` holds a `performanceMode` it sets from the device classifier
+> or the user's setting; (2) the benchmark table in section 4 was **never measured** and is kept only as history.
+
 This guide explains how to configure, tune, and strip down Flash when building for devices that are **far more resource-constrained than standard mobile phones** (e.g. devices with 128MB–512MB RAM, slow single/dual-core low-clock ARM CPUs, 2.4 GHz b/g/n radios, smartwatches, Point-of-Sale (POS) terminals, or solar/battery-powered embedded IoT boards).
 
 ---
@@ -24,13 +30,13 @@ When deploying Flash to a constrained device, apply the following optimizations:
 │               Ultra-Low Resource Profile                  │
 ├───────────────────────┬───────────────────────────────────┤
 │ Concurrency & Streams │ streamCount = 1 (single-stream)   │
-│ Transfer Chunk Size   │ 32 KB fixed (low RAM per chunk)   │
+│ Transfer Chunk Size   │ 32 KB base, adaptive to 64 KB     │
 │ Buffer Queue Depths   │ feedBuffer = 2, sharedBuffer = 4  │
-│ Media & Video Calling │ Completely disabled (audio-only)  │
+│ Media & Video Calling │ Omit :core:calling (or voice only)│
 │ Opus Voice Frame Size │ 60ms with DTX enabled             │
 │ Thumbnail Extraction  │ Completely disabled (file icons)  │
-│ SQLite Cache Memory   │ PRAGMA cache_size = -1000 (1 MB)  │
-│ Keepalive Interval    │ 30,000ms – 60,000ms               │
+│ SQLite Cache Memory   │ PRAGMA cache_size = -1024 (1 MB)  │
+│ Keepalive Interval    │ 15,000 ms (LOW tier ping)         │
 └───────────────────────┴───────────────────────────────────┘
 ```
 
@@ -38,66 +44,41 @@ When deploying Flash to a constrained device, apply the following optimizations:
 
 ## 3. Step-by-Step Implementation Guide
 
-### Step 1: Enforce `FlashPerformanceMode.LOW` at Startup
+### Step 1: Know which tier you are in
 
-Pin the device's performance tier programmatically during initialization so that the stack never attempts high-end operations:
+`FlashPerformanceMode` (`LOW`, `MEDIUM`, `HIGH`) carries the profiles; `FlashPerformanceClassifier` rates a `FlashDeviceProfile` (RAM, cores, radio) and the Android app stores an `auto` / `low` / `medium` / `high` choice (`FlashPerformanceMode.Keys`). To read the numbers a tier implies:
 
 ```kotlin
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 
-// Force LOW mode regardless of hardware detection
-val performanceTier = FlashPerformanceMode.LOW
-
-// Verify constraints:
-println("Reduce Motion: ${performanceTier.reduceMotion}") // true
-println("Minimal Chrome: ${performanceTier.minimalChrome}") // true
-println("Opus Packet Size: ${performanceTier.voice.frameDurationMs} ms") // 60 ms
-println("Signaling Keepalive: ${performanceTier.transport.pingIntervalMs} ms") // 15,000 ms (or stretched to 30,000 ms)
+val tier = FlashPerformanceMode.LOW
+println("Reduce Motion: ${tier.reduceMotion}")                      // true
+println("Minimal Chrome: ${tier.minimalChrome}")                     // true
+println("Opus packet: ${tier.voice.ptimeMs} ms, DTX=${tier.voice.useDtx}")   // 60 ms, true
+println("Ping interval: ${tier.transport.pingIntervalMs} ms")        // 15000
+println("Streams: ${tier.transfer.streamCount}, chunk: ${tier.transfer.chunkSizeBytes}")  // 1, 32768
 ```
 
-### Step 2: Configure Single-Stream, Bounded Transfer Queues
+A library consumer that needs LOW behaviour today must apply the profile values itself where it builds the pieces (see Step 2), because the engine factories do not take a tier. A `FlashConfig` performance field would be a sensible addition; it does not exist yet.
 
-In `:core:transfer`, pass constrained chunking and single-stream parameters into the dispatcher:
+### Step 2: Single-stream, bounded transfer queues
 
-```kotlin
-import com.transfer.flash.core.transfer.multistream.MultiStreamDispatcher
-import com.transfer.flash.core.transfer.chunked.Chunker
+`FlashTransferProfile.LOW` is: `streamCount = 1`, `chunkSizeBytes = 32 KiB` (adaptive ceiling 64 KiB), `feedBufferFrames = 2`, `sharedBufferFrames = 4`, `allowVideoThumbnails = false`, `maxImagePreviewDimension = 256`, `sqliteCacheSizeKb = 1024`. The (internal) `MultiStreamDispatcher` is given `feedBufferFrames` and `sharedBufferFrames` by the transfer repository, so a bounded queue is about `(2 + 4) frames x 32 KiB = ~192 KiB` of in-flight heap per transfer. (The chunk size bounds in `Chunker` are 16 KiB to 256 KiB, so 32 KiB is within range.)
 
-// 1. Cap chunk size to 32 KB (Chunker.MIN_CHUNK_SIZE_BYTES)
-val ultraLowChunkSize = 32 * 1024 // 32,768 bytes
+### Step 3: SQLite cache
 
-// 2. Set streamCount to 1 (prevents multi-socket overhead and context switching)
-val streamCount = 1
+On Android, `FlashDatabaseOpener` runs `PRAGMA cache_size = -<sqliteCacheSizeKb>` from the active profile (1 MB for LOW). The other pragmas that earlier revisions of this page listed (`temp_store`, `journal_mode = WAL`, `wal_autocheckpoint`) are **not** set by the library; if you want them, set them in your own database callback and measure first.
 
-// 3. Keep internal queue buffers strictly bounded
-// (In MultiStreamDispatcher, FEED_BUFFER_FRAMES = 2, SHARED_BUFFER_FRAMES = 4)
-// Total in-flight heap memory for this transfer: 6 frames * 32 KB = ~192 KB total RAM!
-```
+### Step 4: Leave out calling and thumbnails
 
-### Step 3: Optimize Database & SQLite Cache Footprint
-
-In `:core:persistence`, configure SQLite pragmas to restrict cache sizes:
-
-```sql
--- Limit database page cache to 1 megabyte
-PRAGMA cache_size = -1000;
-
--- Store temporary tables and indexes in memory to avoid flash wear
-PRAGMA temp_store = MEMORY;
-
--- Enable WAL mode with low checkpoint threshold
-PRAGMA journal_mode = WAL;
-PRAGMA wal_autocheckpoint = 100;
-```
-
-### Step 4: Disable Video Codecs & Throttle Thumbnails
-
-1. **Omit Calling Dependencies:** In your `build.gradle.kts`, omit `:core:calling` and `:ui:callui` entirely. This saves over 40 MB of native `.so` WebRTC libraries from being loaded into memory.
-2. **Disable Thumbnail Decoding:** When rendering received media or file lists, bypass image decoding (`FlashImageDecoder.decodeVideo`) and render standard vector file-type icons ([`FlashIcons`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashIcons.kt)).
+1. **Omit calling:** do not depend on `:core:calling` or `:ui:callui`. `core-engine` only sees calling as `compileOnly`, so omitting it removes the WebRTC native libraries from the app (the size saving depends on ABIs; measure your own build).
+2. **No thumbnails:** respect `allowVideoThumbnails = false` and `maxImagePreviewDimension` when you render media. `FlashImageDecoder` decodes images (and, on Android, a video frame) at the size you ask for; for a file list, draw an icon from `FlashIcons` (`com.transfer.flash.ui.icons`) instead of decoding.
 
 ---
 
-## 4. Benchmarking Ultra-Low Mode on 256MB RAM Device
+## 4. Benchmarking Ultra-Low Mode on 256MB RAM Device — NOT MEASURED (kept as history, 2026-10-09)
+
+> **Status: UNVERIFIED.** No log, experiment entry or test in the repository produced these figures (searched `logs/`, `docs/`). Do not quote them. Real numbers belong in `logs/experiments.md` after the `MEAS-*` tests in `docs/testing/TEST-BACKLOG.md` are run on a constrained device.
 
 | Metric | High/Default Mode | Ultra-Low Mode | Reduction |
 |---|---|---|---|

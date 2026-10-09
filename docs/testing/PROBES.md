@@ -71,6 +71,9 @@ Rules (AGENTS.md section 24 applies in full):
 | `swarm.recv.done` | same | a receiver finished and verified the file | `transfer`, `bytes`, `sinceAcceptMs`, `avgKBps` |
 | `swarm.member.first` | same | sender side: a member's holding first grew | `transfer`, `member`, `sinceSendMs` |
 | `swarm.member.done` | same | sender side: a member announced the whole file | `transfer`, `member`, `sinceSendMs`, `done` (members done so far), `seen` (members listed) |
+| `radio.link.up` | `KissTncDriver` (`:core:network`, radio spike, BT-00) | the byte link to the TNC opened | `link` (port or RFCOMM description, no key material), `attempt` |
+| `radio.link.down` | same | the link ended or failed | `reason`, `kissOk` (frames decoded so far), `garbage`, `badEscape`, `oversize` (KISS decoder counters) |
+| `radio.tnc.params` | same | KISS parameters were sent after connect (only when configured) | `txDelayMs`, `p`, `slotMs`, `tailMs`, `fullDuplex` |
 
 A row first seen already finished (receiver) or with members already holding (sender) was restored after a restart; it produces no `swarm.*` line (ERROR-121), so every `swarm.*` line describes the current run.
 

@@ -556,8 +556,9 @@ drops to one video by itself and must say so.
   - HOT: "Your phone is hot. Showing one video until it cools down."
 - Action: **Show fewer** (WARM, CPU, SOFTWARE_DECODE) → `FlashCalling.setShowFewerVideos(true)`. HOT has no action.
 - CPU only, while the "Send smaller video in groups" setting is off (ADR-053, 2026-09-29): a second action,
-  **Send smaller** (label "Send my video smaller in group calls"), which turns the setting on and saves it. The text
-  then reads "This call is keeping the processor busy. Showing fewer videos, or sending yours smaller, helps." With
+  **Send 360p** (label "Send my video at 360p in group calls"; was "Send smaller" until ADR-098, 2026-10-08), which turns
+  the setting on and saves it. The text
+  then reads "This call is keeping the processor busy. Showing fewer videos, or sending yours at 360p, helps." With
   two actions the banner has two lines: the words and close on top, the actions right-aligned below. Actions size to
   their text (min 96 dp wide, 48 dp tall).
 - Dismiss: a close icon (`FlashIcons.Close`). A dismissed kind does not come back for the rest of the call (the
@@ -718,3 +719,63 @@ navigation decision. See ADR-067 "Not built".
 - A 1:1 call and an Android activity with `configChanges` are new combinations; see `CALLX-06`.
 - Pre-API-31 phones enter picture-in-picture only from the More panel (no `onUserLeaveHint` hook was added).
 - A proximity wake lock is released after 2 hours as a safety net.
+
+## UI-050g — Screen share in calls (2026-10-09, ADR-102)
+
+**Status:** DESIGNED, then IMPLEMENTED on 2026-10-09 (unit-tested; not device-verified, `SHARE-01`...`SHARE-14`). Wire, states and ladder:
+`docs/calling/SCREEN-SHARE-DESIGN.md`. This section was written before the UI code (AGENTS section 34).
+
+### Purpose
+Let a person on the desktop app show a screen or a window to the other people in a 1:1 or group call, and let everyone else (phones
+included) see it clearly. Android can watch; it cannot present yet.
+
+### Approaches considered
+1. A seventh dock button. Rejected: six buttons already fill a 360 dp phone (UI-050e), and a phone cannot present.
+2. A full-screen picker route. Rejected: leaving the call surface hides the people.
+3. **Chosen:** a row in the existing More panel ("Share screen" / "Stop sharing") that opens the same custom panel as a picker; while
+   sharing, an indicator strip pinned to the top of the call that cannot be missed and carries its own Stop; receivers get a label and
+   a letterboxed picture.
+
+### Screens and copy (all text lives in `CallShareText`, unit-tested)
+| Where | Text |
+|---|---|
+| More panel row, idle | "Share screen" / "Show your screen or a window to the call" |
+| More panel row, sharing | "Stop sharing" / "You are sharing {title}" |
+| Picker title | "Share your screen" |
+| Picker sections | "Screens", "Windows" |
+| Picker quality switch | "Share at lower quality" / "Smaller picture for a slow computer. Small text may be harder to read." |
+| Picker, system dialog (Wayland) | "Your system will ask which screen or window to share." |
+| Picker, someone else presenting | "{name} is presenting. If you share, their share stops." |
+| Picker, nothing found | "Nothing to share was found." |
+| Indicator, opening | "Starting to share..." |
+| Indicator, live | "You are sharing {title}" with the action "Stop" |
+| Indicator detail | "Nobody is watching yet" / "Seen by 1 person" / "Seen by N people" |
+| Indicator, lowered | "Your computer is busy, so the picture is smaller" |
+| Receiver label | "{name} is presenting" (1:1 and group); group tile chip "Presenting" |
+| Notice, taken over | "{name} started sharing, so yours stopped" |
+| Notice, source lost | "The shared window closed, so sharing stopped" |
+| Notice, no frames | "Nothing could be captured from that screen, so sharing stopped" |
+| Notice, failed | "Sharing could not start" |
+| Notice, someone presenting | "{name} is presenting. Stop theirs first or share anyway" |
+| Notice, watcher cap | "Only {n} people can watch your share at once" |
+
+### Behaviour
+- **Indicator** is a strip under the status bar, accent-coloured, with the screen-share glyph, a red dot and the words (never colour
+  alone), a 48 dp "Stop" button, and a live-region description. It is drawn above the video and above every panel, so it is visible
+  while the More panel is open. It does not hide while the call is minimised inside the app; picture-in-picture shows the picture only
+  (unchanged).
+- **Camera:** while sharing, the camera button is disabled (its description says "Camera is off while sharing"), the self preview tile
+  shows nothing, and the camera comes back on its own when the share ends if it was on.
+- **Receivers:** the presenter's picture is letterboxed (`CallVideoFit.Fit`), never cropped, in the 1:1 main surface and in the group
+  tile. In a group the presenter is the main tile: the stage (about 70 % of the height) with everyone else in a row under it; the
+  compact (one-video) layout shows the presenter as its one tile; what the person had pinned is restored when the share ends.
+  Tapping the presenter's tile still pins and unpins it.
+- **Motion:** none added. The indicator appears without animation (it is a safety indicator, it must be there on the first frame).
+- **Accessibility:** the indicator and the receiver label are live regions; every control is 48 dp or larger; state is a word and a
+  glyph.
+- **Dark mode:** the strip uses the accent colour and `textOnAccent`; the label uses the same on-video scrim as the tile name bar.
+
+### Not built
+Presenting from Android (MediaProjection, a foreground service of type `mediaProjection`), audio of the shared content, annotation, a
+remote-control channel, a thumbnail preview in the picker (the capturer gives titles only), and group voice calls (a share needs the
+video call kind).

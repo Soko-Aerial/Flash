@@ -1,5 +1,7 @@
 # Flash Architecture Audit
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** This audit describes the repository on 2026-08-20 before the multi-module migration (a single `:app` module); the findings were the input to the migration and most are resolved. Its version numbers (AGP, Compose BOM) are from that date. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 **Author:** Lead Android Software Architect & Migration Engineer  
 **Date:** 2026-08-20  
 **Baseline Build Status:** Verified Green (`testDebugUnitTest` 24/24 tasks up-to-date / passing)  

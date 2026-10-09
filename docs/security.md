@@ -253,3 +253,12 @@ membership v1". **None of this exists yet; section 9's limits stay true until GM
 
 **Accepted limits (in addition to section 9):** no forward secrecy; a removed member keeps what it received; removal is eventually
 consistent; under `OPEN` a leaked invite admits its holder until the next rotation; a lying admin can approve a key it controls.
+
+## Inbound transfer identity and completion (ADR-099, ERROR-125, 2026-10-08)
+
+- A transfer id belongs to the peer that first offered it. Control frames (`pause`/`resume`/`cancel`), a repeated `FILE_START` and `CHUNK` frames for that id from any other peer are ignored and logged. Sender-side `ACK`/`COMPLETE` frames are **not** yet bound to a peer (needs a `:core:transfer` signature change; follow-up).
+- Transfer ids that change under `FlashPathSanitizer.sanitize` (for example `..`, `.`, ids with `:` or path separators), or that differ only by case from a live id, are refused with a cancel, because the sink directory is derived from the sanitized id.
+- If flushing or closing the received file fails, the transfer is accepted only when the whole-file SHA-256 from the sender matches; with no hash, or a mismatch, it fails and the partial file is deleted. A chunk-verified-only result never overrides a failed flush.
+- Swarm announcements are validated before any model object is built: `root` must be 64 lowercase hex characters, the piece size a power of two inside the allowed range, and the total size within 1 byte to 16 GiB. An invalid announcement is dropped with a WARN that logs only lengths.
+- File names are capped at 120 code points and 200 UTF-8 bytes on a code-point boundary with the extension kept; Windows device names (CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0-9, LPT0-9 and the superscript forms) are neutralised with or without an extension.
+- A failure to unwrap the database passphrase never mints a new one unless the Keystore key is permanently gone; a transient error is retried once and then surfaced, so chat history is not quarantined by a flaky Keystore.

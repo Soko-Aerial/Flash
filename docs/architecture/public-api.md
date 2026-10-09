@@ -12,6 +12,15 @@ absent: `internal` declarations, `@FlashInternalApi` members, Room entities/DAOs
 WebSocket/TCP transport classes are not supported API. If it is not listed here, do not depend
 on it.
 
+
+> **Status note 2026-10-09 (docs verification).** This specification was last fully re-verified on 2026-09-11 (version 1.3.0 of the
+> document, not the library; the library is `2.1.0-beta`). On 2026-10-09 these parts were re-checked against the code and corrected:
+> §8 `FlashCrypto` (it no longer uses `java.security` types), §9 `FlashDatabase` (schema version 13, 25 entities), §10 `FlashEngine`
+> (`AutoCloseable`, no `settings` member, plus the swarm and friendly-name members) and §10 `FlashConfig` (already current). The remaining
+> sections are **not re-verified since 2026-09-11**; features added after that date (group swarm `:core:swarm`, group membership by id +
+> secret, group history sync ADR-100, screen share ADR-102, call media failures ADR-078/079) are only partly reflected here. For a module
+> the developer guide pages in `docs/developer-guide/modules/` were verified on 2026-10-09 and are the better starting point; when the two
+> disagree, the source code wins.
 ---
 
 ## 1. Design Rules & Stability Annotations
@@ -818,16 +827,16 @@ Identity, trust, pairing and the cryptographic primitives underneath them (C2, D
 ### `FlashCrypto`
 - **Stability:** Stable
 - **Purpose:** the P-256 primitives every other module signs and key-agrees with.
-- **Definition:**
+- **Definition** (common code; keys are byte arrays, not `java.security` types, since D1 = Option B):
   ```kotlin
   public interface FlashCrypto {
-      public val identityPublicKey: PublicKey
+      public val identityPublicKeyEncoded: ByteArray        // X.509 SubjectPublicKeyInfo
       public fun sign(data: ByteArray): ByteArray
       public fun verify(signature: ByteArray, data: ByteArray, peerPublicKey: ByteArray): Boolean
-      public fun generateEphemeralEcdhKeyPair(): KeyPair
+      public fun generateEphemeralEcdhKeyPair(): FlashEcKeyPair
       public fun ecdhSessionKey(
-          selfEphemeralPrivateKey: PrivateKey,
-          peerEphemeralPublicKey: PublicKey,
+          selfEphemeral: FlashEcKeyPair,
+          peerEphemeralPublicKey: ByteArray,
       ): ByteArray
 
       public companion object {
@@ -850,8 +859,9 @@ Identity, trust, pairing and the cryptographic primitives underneath them (C2, D
   the wire.
 - The raw ECDH secret is always run through HKDF-SHA256 bound to the protocol version before it
   becomes an AES key (RFC 5869 §3.3 — the extract step is not optional for DH output).
-- Implementations (`KeystoreFlashCrypto`, `SoftwareFlashCrypto`) are wiring details, and the
-  HKDF helper and the E2E frame codec are `internal`.
+- Implementations are wiring details: `KeystoreFlashCrypto` (Android, public), `PersistedFlashCrypto` (JVM, `@FlashInternalApi`; Linux
+  seals the key with the Secret Service keyring, ADR-092) and `SoftwareFlashCrypto` (`internal`). The HKDF helper is `internal` and
+  `E2eFrameCodec` is `@FlashInternalApi`.
 
 ### `FlashFingerprint`
 - **Stability:** Stable
@@ -1043,7 +1053,7 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
 - **Stability:** Internal-ish — reachable, but reserved for `:core:engine` wiring.
 - **Definition:**
   ```kotlin
-  @Database(entities = [ /* 11 entities */ ], version = 3, exportSchema = true)
+  @Database(entities = [ /* 25 entities */ ], version = 13, exportSchema = true)
   public abstract class FlashDatabase : RoomDatabase() {
       public abstract fun messageDao(): MessageDao
       // conversationDao, receiptDao, outboxDao, transferDao, transferChunkDao,
@@ -1051,7 +1061,7 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
 
       public companion object {
           public const val DATABASE_NAME: String = "flash.db"
-          public const val DATABASE_VERSION: Int = 3
+          public const val DATABASE_VERSION: Int = 13
       }
   }
   ```
@@ -1069,7 +1079,9 @@ an entity appearing in consumer code as a layering bug, not as a supported call.
   back to a single one. This variant is a no-op once the row reached `DELIVERED` or `READ`, so
   delivery status only ever moves forwards. Prefer it to `updateStatus` for anything on a retry
   path.
-- v2 added the attachment columns to `MessageEntity`, v3 the reply columns.
+- v2 added the attachment columns to `MessageEntity`, v3 the reply columns. Later steps (4 to 13) added groups, swarm content and
+  tombstones (7), group secrets, invites, join requests, rotations (8 to 10), settings/preferences and history sync (13); the schema JSON
+  per version is in `core/persistence/schemas/`. The DAO list in the block above is abbreviated; the real database has many more.
 
 ### `FlashDatabaseOpener` / `PassphraseProvider`
 - **Stability:** Stable
@@ -1256,8 +1268,13 @@ than a constraint.
       public val displayName: String? = null,
       public val enableResume: Boolean = true,
       public val autoAcceptIncoming: Boolean = false,
-      public val receivedFilesDir: File? = null,
+      public val receivedFilesPath: String? = null,
   )
+  // Android source-compat shims (androidMain): FlashConfig(receivedFilesDir = File) factory,
+  // FlashConfig.copy(receivedFilesDir = File), and the receivedFilesDir extension property.
+  // FlashEngine.settings is an extension (throws on a non-Android engine); settingsOrNull returns null.
+  // AndroidFlashEngine (what Flash.create returns) extends DefaultFlashEngine and is java.io.Closeable.
+  // Binary compatibility with 0.x JitPack artifacts is NOT preserved (ADR-099, ERROR-125).
   ```
   ```kotlin
   val engine = Flash.create(context, FlashConfig(autoAcceptIncoming = true))
@@ -1267,7 +1284,9 @@ than a constraint.
   ```
 - **Every field defaults**, so `Flash.create(context)` is a complete engine. `displayName = null`
   falls back to the persisted identity name (`"Flash Device"` on first run);
-  `receivedFilesDir = null` means `<externalFilesDir>/FlashReceived`.
+  `receivedFilesPath = null` (or the legacy `receivedFilesDir = null`) means `<externalFilesDir>/FlashReceived`.
+  `autoAcceptIncoming` applies to paired peers only. On Desktop, `displayName` is an in-memory override
+  that never overwrites the persisted device name.
 - **`create` opens the encrypted database synchronously — call it off the main thread.** Everything
   else (network server, NSD advertise/browse, data-channel server, proactive auto-connect) starts
   asynchronously on the shared scope right after it returns.
@@ -1283,14 +1302,12 @@ than a constraint.
 - **Purpose:** the aggregate accessor surface for ViewModels and UI.
 - **Definition:**
   ```kotlin
-  public interface FlashEngine : Closeable {
+  public interface FlashEngine : AutoCloseable {
       public val chats: FlashChatRepository
       public val transfers: FlashTransferRepository
       public val discovery: FlashDiscovery
       public val network: FlashNetwork
       public val trustStore: FlashTrustStore
-      public val settings: FlashSettingsDataStore
-
       public val ptt: FlashPtt?
 
       public fun attachPtt(
@@ -1301,6 +1318,7 @@ than a constraint.
 
       public fun attachPtt(engine: FlashPtt)
       public fun detachPtt()
+      public fun updateFriendlyName(name: String): Boolean = false
 
       public val calls: FlashCalling?
 
@@ -1310,10 +1328,16 @@ than a constraint.
       public suspend fun onInboundCallText(peerDeviceId: String, text: String): Boolean
       public fun onCallSignalingLost(peerDeviceId: String)
       public fun onCallSignalingRestored(peerDeviceId: String)
+      public fun busyCallPeerIds(): Set<String> = emptySet()
+
+      public val swarm: FlashSwarm?                    // group file swarm, optional (ADR-070..075)
+      public fun attachSwarm(config: FlashSwarmConfig = FlashSwarmConfig()): FlashSwarm?
+      public fun attachSwarm(swarm: FlashSwarm)
+      public fun detachSwarm()
   }
+  // `settings` is NOT a member: on Android it is an extension property on the engine returned by Flash.create (see the FlashConfig note).
   ```
-- **Seven properties, every one an abstraction** from §3–§9 (`settings` being the documented
-  concrete exception). The facade adds no behaviour of its own — it is composition, not a god object.
+- **Five repository/service properties and three optional subsystems (`ptt`, `calls`, `swarm`)**, every one an abstraction from §3–§9. The facade adds no behaviour of its own — it is composition, not a god object.
 - **`ptt` is the one optional subsystem, and it is attached rather than created.** PTT needs a
   microphone grant and a foreground service that only an app can declare, so `Flash.create` wires a
   factory and waits: `attachPtt(hasMicPermission, isCallActive, audioRateHz)` builds a

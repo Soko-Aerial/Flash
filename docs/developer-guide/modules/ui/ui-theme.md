@@ -8,7 +8,7 @@ The `:ui:theme` module provides the visual design system, color palettes, typogr
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:ui-theme:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:ui-theme:v2.1.0-beta")
 }
 ```
 
@@ -16,13 +16,17 @@ dependencies {
 
 ## 2. Design System Architecture
 
-Flash uses a custom design system tokenized under [`FlashTheme`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashTheme.kt):
+Flash uses a custom design system, entered through `FlashTheme` (package `com.transfer.flash.ui.theme`, [source](../../../../ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashTheme.kt)):
 
-* **Color Tokens ([`FlashColors`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashColors.kt)):** Semantic tokens for `brandPrimary` (Flash Pulse Teal `#2DD4BF`), `backgroundCanvas`, `backgroundSurface`, `textPrimary`, `textSecondary`, `borderSubtle`, `bubbleIncoming`, and `bubbleOutgoing`.
-* **Typography ([`FlashTypography`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashTypography.kt)):** Scales for headers, message body text, metadata timestamps, and badges.
-* **Shape Tokens ([`FlashShapes`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashShapes.kt)):** Distinct asymmetric message bubble shapes (tapered tail on outgoing vs. incoming), squircles for medallions, and pills for badges.
-* **Motion Tokens ([`FlashMotion`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashMotion.kt)):** Physics-based spring animations with automatic reduce-motion overrides for low-performance devices or accessibility settings.
-* **Icons ([`FlashIcons`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/theme/src/commonMain/kotlin/com/transfer/flash/ui/theme/FlashIcons.kt)):** Handcrafted vector icons (Bolt, Tray, Send, Attachment, Call, Video, Mic, CheckDouble, Lock, Play, Pause, More).
+* **Colors (`FlashColors`):** semantic tokens such as `accentPrimary`, `accentSecondary`, `textPrimary` / `textSecondary` / `textTertiary` / `textOnAccent` / `textLink` / `textError` / `textSuccess`, `backgroundApp`, `backgroundChat`, `backgroundSurface` (plus `Subtle` / `Strong`), `borderSubtle` / `borderDefault` / `borderStrong`, the chat set (`chatBgIncoming`, `chatBgOutgoing`, `chatTextIncoming`, `chatTextOutgoing`, `chatTextTimestamp`, ...), `composer*`, `sheetSurface`, `scrim`, avatar palettes and `statusOnline` / `statusOffline` / `statusTransfer`. `FlashColors.dark()` and `FlashColors.light()` build the two palettes; the accent is the "Pulse" teal family.
+* **Typography (`FlashTypography`):** `display`, `headingLarge/Medium/Small`, `bodyDefault/Emphasis`, `captionDefault/Emphasis`, `metadataDefault/Emphasis`, `numericDefault/Emphasis` (all `TextStyle`).
+* **Shapes (`FlashShapes`):** radius tokens `radius2` ... `radius24`, `radiusFull`, and `bubbleTailSize`.
+* **Motion (`FlashMotion`):** spring and duration tokens; `reduceMotion` collapses durations to 0. `rememberFlashMotion()` derives it from the platform setting; `FlashPerformanceMode.reduceMotion` feeds the same policy on low tiers.
+* **Spacing, dimensions, elevation, interaction, feedback:** `FlashSpacing`, `FlashDimensions`, `FlashElevation`, `FlashInteraction`, `FlashFeedback` (haptics) and `FlashSounds`.
+* **Icons (`FlashIcons` in `com.transfer.flash.ui.icons`):** a set of drawable-backed `FlashIconSpec`s (`Send`, `Attach`, `Camera`, `Microphone`, `Call`, `VideoCall`, `Delivered`, `Read`, `Encryption`, `ScreenShare`, `WifiDirect`, `Bluetooth`, ... about 60), drawn with `FlashIcon(icon, state = FlashIconState.Default | Active | Disabled | Error)`. (`WifiDirect` and `Bluetooth` are only glyphs; there is no Wi-Fi Direct transport.)
+* **Also here:** `FlashAvatar` (`com.transfer.flash.ui.avatar`), the Ink launch splash (`FlashLaunchSplashOverlay`, UI-056 / ADR-080, not device-verified) and the brand animation.
+
+`FlashTheme.colors`, `.typography`, `.motion` and `.minimalChrome` read the current values. There is **no `FlashTheme.shapes`**; use the `FlashShapes` object directly.
 
 ---
 
@@ -32,23 +36,19 @@ Flash uses a custom design system tokenized under [`FlashTheme`](file:///C:/User
 import androidx.compose.runtime.Composable
 import androidx.compose.material3.Text
 import com.transfer.flash.ui.theme.FlashTheme
-import com.transfer.flash.ui.theme.FlashColors
 
 @Composable
 fun App() {
     FlashTheme(
-        darkTheme = true, // Or system-driven
-        dynamicColor = false
+        darkTheme = true,         // default: isSystemInDarkTheme()
+        dynamicAccent = false,    // true = take the accent from the platform (Android 12+ Material You)
+        hapticsEnabled = true,
+        minimalChrome = false,    // true on LOW / MEDIUM performance tiers
     ) {
-        // Access semantic design tokens anywhere in the Compose hierarchy:
-        val colors = FlashTheme.colors
-        val typography = FlashTheme.typography
-        val shapes = FlashTheme.shapes
-
         Text(
             text = "Welcome to Flash UI",
-            style = typography.titleLarge,
-            color = colors.textPrimary
+            style = FlashTheme.typography.headingLarge,
+            color = FlashTheme.colors.textPrimary,
         )
     }
 }

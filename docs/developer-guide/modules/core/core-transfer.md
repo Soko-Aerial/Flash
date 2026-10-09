@@ -8,7 +8,7 @@ The `:core:transfer` module contains the high-throughput, multi-stream chunked f
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-transfer:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-transfer:v2.1.0-beta")
 }
 ```
 
@@ -16,57 +16,56 @@ dependencies {
 
 ## 2. Core Architecture & Transfer Lifecycle
 
-The transfer engine is split into two complementary pipelines:
+Chunked transfer rides the same WebSocket mesh as chat (ADR-016); this module is transport-independent and talks to the network
+through the `FLASH_XFER` / `FLASH_FILE_ACK` text messages (`protocol/WsTransferMessages`) and binary chunk frames (`ChunkFrame`, framing v2).
 
-1. **Send Pipeline (`MultiStreamDispatcher`):**
-   * Computes a [`ChunkPlan`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/chunked/Chunker.kt) dividing files into bounded chunks (default 64KB, adaptive up to 1MB).
-   * **Lock-free materializer coroutine:** Streams chunks sequentially from an Okio `BufferedSource`, distributing chunk frames across $N$ worker coroutines.
-   * **Multi-Stream parallelism:** Utilizes multiple parallel socket channels (1 to 8 streams) to saturate available Wi-Fi / LAN bandwidth.
-   * **Redistribution on stream failure:** If an underlying stream channel dies, unacknowledged chunk frames are caught and redistributed to surviving streams without aborting the transfer.
-   * **Cooperative Pause & Resume:** Pausing does not abort the dispatcher; it freezes reading and transmission while keeping the ACK tracking alive. Resuming re-opens streaming from the last unconfirmed chunk.
-2. **Receive Pipeline (`ReceivePipeline`):**
-   * Listens for inbound binary chunk frames.
-   * Direct pwrite / seek writes into the target file via [`RandomAccessSinkHandle`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/sink/RandomAccessSinkHandle.kt) without memory allocations or file pre-allocation crashes.
-   * Deduplicates duplicate frames and maintains bit-vectors of completed chunks.
-   * Emits `FLASH_ACK` frames back to the sender.
-   * Verifies source whole-file SHA-256 or BLAKE3 checksums upon completion before releasing the file to user storage.
-3. **Security & Path Sanitization:**
-   * Incoming file paths are scrubbed with `sanitizeRelativePath` to prevent directory traversal attacks (`../`).
+1. **Send side (`MultiStreamDispatcher`, `SendPipeline`):**
+   * `Chunker` plans the chunks: default **64 KiB**, clamped to **16 KiB..256 KiB**, and `adaptiveSize` grows the size with measured throughput (256 KiB at 64 MiB/s and above). (Some KDoc in the module still says "up to 1 MB"; the code clamps at 256 KiB.)
+   * One *materializer* reads the file sequentially and routes each serialized chunk to `N` worker streams (static assignment `index % N`). The stream count comes from `FlashTransferProfile`: **LOW 1, MEDIUM 2, HIGH 4** (the profile also sets chunk base size and queue depths).
+   * At-least-once on the wire, exactly-once write: when a stream dies its unconfirmed frames are redistributed to the survivors.
+   * Pause is cooperative: the materializer parks before its next chunk while acknowledgements keep being tracked.
+2. **Receive side (`ReceivePipeline`, `MultiStreamReceiver`):**
+   * Each chunk's SHA-256 is verified **before** it is written, then written at its offset through a `RandomAccessSinkHandle` (no whole-file buffer). Duplicates are ignored, and completed chunks are kept in a `ResumeBitVector` (persisted per chunk in `TransferChunkEntity` when resume is enabled).
+   * When all chunks are in, `WholeFileVerifier` checks the whole-file SHA-256 before the file is released; a mismatch fails the transfer on both ends. (BLAKE3 was deferred, ADR-010.)
+   * An inbound offer waits for `acceptIncoming` unless the sender is paired and `autoAcceptIncoming` is on; a receive that cannot fit on disk is refused by name; failures are worded for people by `TransferFailureText`.
+3. **Resume.** `TransferReconnectResumePolicy` re-offers a failed transfer when the session comes back; the receiver answers with its done-set so only missing chunks are sent.
+4. **Path safety.** Relative paths in folder transfers are sanitized with `FlashPathSanitizer.sanitizeRelativePath` (in `:core:engine`) before anything is written. `DestinationPolicy` (Android) picks the destination.
 
 ---
 
 ## 3. Key Public Interfaces and Classes
 
 ### 3.1 `FlashTransferRepository`
-Located in [`com.transfer.flash.core.transfer.FlashTransferRepository`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/FlashTransferRepository.kt):
+
+Located in [`com.transfer.flash.core.transfer.FlashTransferRepository`](../../../../core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/FlashTransferRepository.kt) (abridged):
 
 ```kotlin
 public interface FlashTransferRepository {
-    /** Reactive list of all active and historical transfers. */
-    public val transfers: StateFlow<List<FlashTransferItemUi>>
+    /** Every row: active, finished, failed. */
+    public val activeTransfers: StateFlow<List<FlashTransfer>>
 
-    /** Initiates an outbound file transfer to a peer. */
     public suspend fun sendFile(
-        peerId: String,
-        uri: String,
-        fileName: String,
-        totalBytes: Long,
-        relativePath: String? = null
-    ): FlashResult<String> // Returns transfer ID
+        targetDevice: FlashDevice,
+        fileUri: String,
+        displayName: String,
+        fileSize: Long,
+    ): FlashResult<FlashTransferId>
+    // an overload adds wireFileId (group fan-out) and more
 
-    /** Observes progress, speed, and ETA for a specific transfer. */
-    public fun observeTransfer(transferId: String): Flow<FlashTransferItemUi?>
-
-    /** Cooperatively pauses an active transfer. */
-    public suspend fun pauseTransfer(transferId: String)
-
-    /** Resumes a paused or failed transfer. */
-    public suspend fun resumeTransfer(transferId: String)
-
-    /** Cancels an active transfer and cleans up temporary files. */
-    public suspend fun cancelTransfer(transferId: String)
+    public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
+    public suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit>
+    public suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit>
+    public suspend fun acceptIncoming(transferId: FlashTransferId): FlashResult<Unit>
+    public suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit>
+    public fun clearFinishedHistory()
+    public suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit>
 }
 ```
+
+Observe one transfer by filtering `activeTransfers` on `id`; there is no `observeTransfer`. A `FlashTransfer` carries `bytesDone`,
+`bytesTotal`, `state` (`Offered`, `Queued`, `Transferring`, `Paused`, `Verifying`, `Completed`, `Failed`, `Cancelled`),
+`speedBytesPerSec`, `etaSeconds`, `errorMessage`, `waitReason` and, for swarm rows, `holdersOnline`, `canGoOffline`,
+`pieceBlocks` and `recipients`. The `onIncoming*` / `onInboundFrame` methods are for the engine glue, not for consumers.
 
 ---
 
@@ -74,38 +73,26 @@ public interface FlashTransferRepository {
 
 ```kotlin
 import com.transfer.flash.core.transfer.FlashTransferRepository
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
+import com.transfer.flash.core.transfer.model.FlashTransferState
 
 fun executeFileTransfer(
     repository: FlashTransferRepository,
-    peerId: String,
-    filePath: String,
+    peer: FlashDevice,
+    fileUri: String,
     fileName: String,
-    fileSize: Long
+    fileSize: Long,
 ) {
     scope.launch {
-        val result = repository.sendFile(
-            peerId = peerId,
-            uri = "file://$filePath",
-            fileName = fileName,
-            totalBytes = fileSize
-        )
-
-        result.onSuccess { transferId ->
+        repository.sendFile(peer, fileUri, fileName, fileSize).onSuccess { transferId ->
             println("Initiated transfer: $transferId")
-            
-            repository.observeTransfer(transferId).collect { item ->
-                if (item == null) return@collect
-                
-                val progress = (item.bytesTransferred.toDouble() / item.totalBytes * 100).toInt()
-                val speedMb = item.speedBytesPerSec / (1024 * 1024)
-                println("Transfer progress: $progress% @ ${speedMb} MB/s (Status: ${item.status})")
-                
-                if (item.status.isTerminal) {
-                    println("Transfer finished with outcome: ${item.status}")
+            repository.activeTransfers
+                .map { rows -> rows.firstOrNull { it.id == transferId } }
+                .takeWhile { it == null || it.state !in setOf(FlashTransferState.Completed, FlashTransferState.Failed, FlashTransferState.Cancelled) }
+                .collect { t ->
+                    t ?: return@collect
+                    val progress = if (t.bytesTotal > 0) (t.bytesDone * 100 / t.bytesTotal).toInt() else 0
+                    println("Transfer progress: $progress% @ ${t.speedBytesPerSec / (1024 * 1024)} MB/s (${t.state})")
                 }
-            }
         }
     }
 }

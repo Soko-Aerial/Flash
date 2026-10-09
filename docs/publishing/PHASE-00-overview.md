@@ -1,5 +1,7 @@
 # Flash Core — Publishing Plan (GitHub → JitPack → Gradle)
 
+> **Status note 2026-10-09 (docs verification): HISTORICAL.** The phase files in this folder (PHASE-00 to PHASE-06) are the 2026-08 publishing plan, written for 8 modules at `1.0.0`; later work grew the set to 15 modules and moved to `2.1.0-beta`. Current release procedure: `docs/release-build.md` and `jitpack.yml`. Kept as the record of how the project got here (AGENTS.md section 27). For the current structure read `docs/architecture.md`, `docs/architecture/public-api.md` and `docs/developer-guide/`; where this page disagrees with the code, the code wins.
+
 > **Audience:** the implementing AI. This folder turns every publishing blocker
 > for the `core:*` LAN‑transfer library into an ordered set of phases, each with
 > exact files, code, and acceptance criteria. Do the phases **in order** — later

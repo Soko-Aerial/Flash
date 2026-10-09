@@ -1,6 +1,6 @@
 # Core Persistence Module (`:core:persistence`)
 
-The `:core:persistence` module manages relational database storage, encrypted tables, and transactional history across Android and Compose Desktop. It is backed by Android Room and encrypted SQLite (via SQLCipher on Android and `sqlite-jdbc-crypt` on JVM desktop).
+The `:core:persistence` module manages relational database storage, encrypted tables, and transactional history across Android and Compose Desktop. It is backed by Room (KMP) and encrypted SQLite (via SQLCipher on Android and `sqlite-jdbc-crypt` on JVM desktop).
 
 ---
 
@@ -8,7 +8,7 @@ The `:core:persistence` module manages relational database storage, encrypted ta
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:core-persistence:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:core-persistence:v2.1.0-beta")
 }
 ```
 
@@ -16,34 +16,39 @@ dependencies {
 
 ## 2. Architecture and Database Schema
 
-The core database entry point is [`FlashDatabase`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabase.kt). It provides persistent tables for:
+The database is [`FlashDatabase`](../../../../core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabase.kt)
+(Room, **schema version 13**, schemas exported to `core/persistence/schemas/`). Opening it is platform code:
+`FlashDatabaseOpener` (Android, SQLCipher) and `JvmFlashDatabaseOpener` (desktop, `sqlite-jdbc-crypt` through `JdbcCipherSQLiteDriver`);
+migrations are `FlashMigrations` / `FlashJvmMigrations`, built from the shared `FlashSchemaSteps`. The key is supplied by the host
+(on Android it is wrapped by the Keystore); a database that can no longer be opened fails loudly rather than being recreated.
 
-* **Conversations (`ConversationEntity`):** Conversation IDs, thread types (Direct / Group), titles, draft text, pinned status, unread counts, and last activity timestamps.
-* **Messages (`MessageEntity`):** Unique message IDs, conversation parent, sender device ID, delivery states (`Sending`, `Sent`, `Delivered`, `Read`, `Failed`), text content, timestamp, tombstoning flags, and reply associations.
-* **Reactions (`ReactionEntity`):** Unicode emoji reactions keyed by message ID and authoring peer.
-* **Transfers (`TransferEntity`):** Active and completed file transfers, wire IDs, file paths, total bytes, transferred bytes, transfer direction (Inbound / Outbound), pause state, and terminal status.
-* **Transfer Chunks (`TransferChunkEntity`):** Bitmap indexes of chunks transferred during multi-part file streaming to support seamless pause and resume across process restarts.
-* **Peers / Trust (`DeviceTrustEntity`):** Fingerprint mappings, mutual pairing confirmation state, public keys, and derived pairwise symmetric keys.
+25 entities, grouped:
+
+| Area | Entities |
+|---|---|
+| Chat | `MessageEntity` (text, status string, sent/edited/deleted times, attachment columns, reply preview, group signature, swarm root columns), `ConversationEntity`, `ReceiptEntity`, `ReactionEntity`, `DraftEntity`, `ReadCursorEntity`, `MessagePinEntity`, `RecentSearchEntity`, `OutboxEntity` (the durable outbox) |
+| Transfers | `TransferEntity` (`transferId`, `totalBytes`, `bytesDone`, `status`, ...), `TransferChunkEntity` (per-chunk `done` flag for resume) |
+| Trust | `TrustedPeerEntity` (`deviceId`, `name`, `fingerprintHex`, `trustedAt`; session keys are not stored here) |
+| Discovery | `RememberedEndpointEntity` (remembered routes, DR1) |
+| Groups | `GroupMemberEntity`, `GroupDeliveryEntity`, `GroupSecretEntity`, `GroupInviteEntity`, `GroupJoinRequestEntity`, `GroupRotationEntity`, `GroupSettingsEntity`, `GroupPreferencesEntity`, `GroupHistoryStateEntity`, `GroupSyncWatermarkEntity` (history sync, ADR-100) |
+| Swarm | `SwarmContentEntity`, `SwarmTombstoneEntity` |
+
+`RetentionPolicy` (commonMain) holds the purge rules. The app's backup rules exclude the database files (Auto Backup and data extraction).
 
 ---
 
 ## 3. Key Public Interfaces & DAOs
 
-DAOs provide reactive Kotlin `Flow` queries and suspendable mutations:
+One DAO per area, reached from `FlashDatabase` (`messageDao()`, `conversationDao()`, `transferDao()`, `transferChunkDao()`,
+`trustedPeerDao()`, `swarmDao()`, `groupSecretDao()`, ...). Reactive queries return `Flow`; mutations are `suspend`. A few of the
+most used (all in `...core.persistence.db.dao`):
 
-* **[`MessageDao`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/MessageDao.kt):**
-  * `observeMessages(conversationId: String): Flow<List<MessageEntity>>`
-  * `insertMessage(message: MessageEntity)`
-  * `updateDeliveryStatus(messageId: String, status: MessageDeliveryStatus)`
-  * `searchConversationMessages(conversationId: String, query: String): Flow<List<MessageEntity>>`
-  * `markConversationAsRead(conversationId: String, readTimestamp: Long)`
-* **[`TransferDao`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/TransferDao.kt):**
-  * `observeTransfer(transferId: String): Flow<TransferEntity?>`
-  * `observeActiveTransfers(): Flow<List<TransferEntity>>`
-  * `updateProgress(transferId: String, bytesTransferred: Long, speed: Double)`
-* **[`TransferChunkDao`](file:///C:/Users/KaliOxygen/Downloads/Flash/core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/TransferChunkDao.kt):**
-  * `recordChunkReceived(transferId: String, chunkIndex: Int)`
-  * `getReceivedChunkIndexes(transferId: String): List<Int>`
+* **`MessageDao`:** `insert(message): Long`, `observeConversation(conversationId): Flow<List<MessageEntity>>`, `historyBefore(...)` / `historyAfter(...)` (paging), `getByLocalId`, `updateStatus(localId, status: String)`, `markReadUpTo(conversationId, selfId, upToMessageId)`, `observeUnreadCounts(selfId)`, `observeLatestPreviews()`, `markEdited`, `markDeleted`, `searchMessages(query, limit)`, `searchConversationMessages(...)`.
+* **`TransferDao`:** `insert(transfer)`, `observe(transferId): Flow<TransferEntity?>`, `setBytesDone(transferId, bytesDone)`, `setStatus(transferId, status)`. There is no `observeActiveTransfers`; the engine builds the active list in memory.
+* **`TransferChunkDao`:** `insertAll`, `markChunkDone(transferId, chunkIndex)`, `doneChunks(transferId): List<Int>`, `allDoneChunks()`, `resetStuck`, `deleteChunks`, `purgeFinishedChunks()`.
+
+Delivery status, transfer status and the like are stored as **strings**, not Kotlin enums; the repositories map them.
+Most consumers never touch the DAOs: `core-messaging` and `core-transfer` define persistence *ports* and `core-engine` supplies the Room adapters (ADR-024).
 
 ---
 
@@ -51,18 +56,14 @@ DAOs provide reactive Kotlin `Flow` queries and suspendable mutations:
 
 ```kotlin
 import com.transfer.flash.core.persistence.db.FlashDatabase
-import com.transfer.flash.core.persistence.db.entity.MessageEntity
-import com.transfer.flash.core.persistence.db.entity.MessageDeliveryStatus
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 
 // Observing in-conversation messages reactively
 fun monitorConversation(db: FlashDatabase, conversationId: String) {
     scope.launch {
-        db.messageDao().observeMessages(conversationId).collect { messages ->
+        db.messageDao().observeConversation(conversationId).collect { messages ->
             println("Thread $conversationId updated (${messages.size} messages):")
             messages.forEach { msg ->
-                println(" [${msg.deliveryStatus}] ${msg.senderId}: ${msg.content}")
+                println(" [${msg.status}] ${msg.senderId}: ${msg.text}")
             }
         }
     }

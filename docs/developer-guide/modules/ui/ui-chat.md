@@ -8,7 +8,7 @@ The `:ui:chat` module contains the complete messaging user interface for Flash. 
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:ui-chat:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:ui-chat:v2.1.0-beta")
 }
 ```
 
@@ -16,22 +16,26 @@ dependencies {
 
 ## 2. Key Screen and Component Architecture
 
-* **[`FlashChatListScreen`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListScreen.kt):** Lists active threads, peer presence indicators (Online / Offline / Typing dots), unread badges, multi-selection mode, archive actions, and live search.
-* **[`FlashConversationScreen`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt):** Active conversation screen rendering:
-  * **Header:** Peer status, encryption lock indicators, security code sheet trigger, and voice/video calling buttons.
-  * **Message List (`FlashMessageList`):** Inverted virtualized `LazyColumn` rendering incoming/outgoing bubbles with delivery ticks, reactions, and jump-to-bottom pill.
-  * **File Cards (`FlashFileMessageCard`):** Interactive transfer cards showing real-time progress circles, speed, ETA, and in-bubble Pause/Resume/Cancel controls.
-  * **Composer (`FlashComposer`):** Custom multi-line text input, voice recording slide-to-cancel pill, emoji picker, attachment action sheet, and hardware keyboard shortcuts (Enter sends, Shift+Enter newlines).
-* **Adaptive Dual-Pane Layouts ([`FlashNavigationRail`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/FlashNavigationRail.kt) & [`FlashAdaptiveLayouts`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/adaptive/FlashAdaptiveLayouts.kt)):**
-  * Automatically transforms to a 68dp slim Navigation Rail and two-pane layout when display width $\ge 840$dp (Desktop and Tablets/Foldables).
-  * Clamps list pane width (320–480dp) and caps reading bubble width (`580.dp`) for optimal wide-screen ergonomics.
+The screens are **stateless**: each takes a UI-state object from `:core:messaging` plus callbacks, and the host (the Android app or the desktop shell) owns the state and routes the callbacks to the engine. They do not take a `FlashChatRepository`. Everything is under `com.transfer.flash.ui.*` in `ui/chat/src/commonMain`.
+
+* **`FlashChatListScreen`** (`ui.chat`): `state: FlashChatListUiState`, `onConversationClick`, optional `onSearchClick` / new-group handlers (a `null` handler hides the icon instead of drawing a dead button). Presence dots, unread badges, multi-selection, archive, pinned and muted rows.
+* **`FlashConversationScreen`** (`ui.chat`): `state: FlashConversationUiState`, `onBack`, `onSendText`, `onSendReply`, `onPersistDraft`, `onStartCall` / `onStartVideoCall`, `onCancelTransfer`, peer-trust and fingerprint hooks, and many more optional callbacks with inert defaults so previews work. It composes:
+  * the header (`FlashChatHeader`, `FlashGroupHeader`; presence, encryption indicators, call buttons),
+  * `FlashMessageList` with `FlashMessageBubble`, reactions (`FlashReactionsRow`, `FlashReactionsDock`), quoted replies, pinned banner, jump-to-bottom,
+  * `FlashFileMessageCard` (progress, speed, ETA, pause / resume / cancel; swarm availability lines),
+  * `FlashComposer` (custom multi-line input, voice recording with slide-to-cancel and lock, attachment sheet and pre-send staging tray, Enter sends / Shift+Enter newline),
+  * sheets for message actions and info, peer details, group members, settings and invites, and the media viewer.
+* **Other screens:** `FlashNearbyScreen` (+ `FlashManualConnectDialog`), `FlashTransfersScreen`, `FlashSettingsScreen`, `FlashBottomNav` (`ui.shell`), `FlashPairingFlow`.
+* **Adaptive layout (`ui.adaptive`, `FlashAdaptiveMath`):** width classes at **600 dp (Medium)** and **840 dp (Expanded)**; the two-pane list/detail layout (`FlashAdaptiveTwoPane`) and the navigation rail (`FlashNavigationRail`) are available from Medium up. The list pane is clamped to 320 to 480 dp (the detail pane needs at least 480 dp) and a reading bubble is capped at 580 dp. There is no draggable splitter yet and no fold-posture support (`docs/migration/ADAPTIVE-UI-PLAN.md`). Not device-verified.
+
+The module depends on `:core:messaging` (for the state types), `:core:transfer`, `:core:security`, `:ui:theme` and `:ui:platform-shims`; it does not depend on `:core:calling`, so the call buttons are plain callbacks.
 
 ---
 
 ## 3. Practical Code Example
 
 ```kotlin
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.ui.chat.FlashConversationScreen
 
@@ -39,14 +43,25 @@ import com.transfer.flash.ui.chat.FlashConversationScreen
 fun ConversationRoute(
     chatRepository: FlashChatRepository,
     conversationId: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onPlaceVoiceCall: () -> Unit,
+    onPlaceVideoCall: () -> Unit,
 ) {
+    LaunchedEffect(conversationId) { chatRepository.openConversation(conversationId) }
+    DisposableEffect(Unit) { onDispose { chatRepository.closeConversation() } }
+
+    val state by chatRepository.conversationState.collectAsState()
+
     FlashConversationScreen(
-        conversationId = conversationId,
-        repository = chatRepository,
+        state = state,
         onBack = onBack,
-        onPlaceVoiceCall = { peerId -> /* trigger calling */ },
-        onPlaceVideoCall = { peerId -> /* trigger calling */ }
+        onSendText = chatRepository::sendText,
+        onSendReply = chatRepository::sendReply,
+        onPersistDraft = chatRepository::saveDraft,
+        onStartCall = onPlaceVoiceCall,
+        onStartVideoCall = onPlaceVideoCall,
     )
 }
 ```
+
+Wrap it in `FlashTheme { ... }` ([ui-theme](ui-theme.md)).

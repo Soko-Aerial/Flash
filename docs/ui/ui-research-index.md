@@ -98,6 +98,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-054 | Group invite and join flow (invite creation/sharing, join dialog, pending status, admin join requests banner/sheet) | [group-invite-join.md](group-invite-join.md) | IMPLEMENTED 2026-10-05 (ADR-074, ADR-076, GM-10; unit-tested; device checks GMB-04, GMB-14 owed) | UI-053, UI-029, UI-001 |
 | UI-055 | Group file availability (swarm row states, wait reasons, "Delivered to k of n", "You can go offline now", Cancel for everyone) | [group-file-availability.md](group-file-availability.md) | IMPLEMENTED 2026-10-05 (ADR-072, SW-11) | UI-016, UI-047, UI-027 |
 | UI-056 | Launch splash "Ink" (the name written by hand in Hershey Script 1-stroke, then the bolt; cold start only, plays to the end, setting to turn it off; Android + desktop) | [launch-splash.md](launch-splash.md) | IMPLEMENTED 2026-10-06 (ADR-080; unit-tested; device checks SPLASH-01..08 owed) | UI-001, UI-037, UI-049 |
+| UI-057 | Group history join card (new member picks how much earlier history to receive, clamped to the signed ceiling; "Load older messages"; admin ceiling control) | [group-history-join-card.md](group-history-join-card.md) | DESIGNED 2026-10-09 (ADR-100; implementation in progress) | UI-052, UI-053, UI-029 |
 
 > UI-046–UI-049 were added under Phase 8 App-Shell authority (`docs/ui-page-plan.md`, owner-approved plan).
 > All four research docs reached DESIGNED before their implementation per the research-first rule.

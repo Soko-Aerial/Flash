@@ -1,6 +1,6 @@
 # UI Platform Shims Module (`:ui:platform-shims`)
 
-The `:ui:platform-shims` module decouples Jetpack Compose UI code from platform-specific APIs. It encapsulates seven core platform capabilities behind unified multiplatform abstractions (`expect` / `actual`), allowing `:ui:chat` to run identically on Android and Desktop JVM.
+The `:ui:platform-shims` module decouples Jetpack Compose UI code from platform-specific APIs. It encapsulates nine platform capabilities behind unified multiplatform abstractions (`expect` / `actual`), allowing `:ui:chat` to run identically on Android and Desktop JVM.
 
 ---
 
@@ -8,7 +8,7 @@ The `:ui:platform-shims` module decouples Jetpack Compose UI code from platform-
 
 ```kotlin
 dependencies {
-    implementation("com.transfer.flash:ui-platform-shims:2.0.0-beta")
+    implementation("com.github.Kali452345.Flash:ui-platform-shims:v2.1.0-beta")
 }
 ```
 
@@ -16,15 +16,19 @@ dependencies {
 
 ## 2. Platform Capabilities Abstracted
 
-| Capability | Interface / Class | Android Implementation | JVM Desktop Implementation |
+Each capability is a small common interface (or `expect` composable) with an Android and a JVM implementation; callers use the `remember...` composable. Package `com.transfer.flash.ui.shims`.
+
+| Capability | Common API | Android | JVM desktop |
 |---|---|---|---|
-| **Audio Playback** | [`FlashAudioPlayer`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashAudioPlayer.kt) | Android `MediaPlayer` / `AudioTrack` | Java Sound API (`javax.sound.sampled`) |
-| **Voice Capture** | [`FlashVoiceRecorder`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashVoiceRecorder.kt) | Android `MediaRecorder` | Java Sound `TargetDataLine` WAV recorder |
-| **Image Decoding** | [`FlashImageDecoder`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashImageDecoder.kt) | Android `BitmapFactory` + EXIF | AWT `ImageIO` + EXIF orientation + JCodec video frames |
-| **File Picker** | [`FlashFilePicker`](file:///C:/Users/KaliOxygen/Downloads/Flash/ui/platform-shims/src/commonMain/kotlin/com/transfer/flash/ui/shims/FlashFilePicker.kt) | SAF `ActivityResultLauncher` | Swing `JFileChooser` (multi-file enabled) |
-| **Clipboard** | `FlashClipboard` | Android `ClipboardManager` | AWT `Toolkit.getDefaultToolkit().systemClipboard` |
-| **System Back** | `FlashBackHandler` | AndroidX `BackHandler` | Keyboard `Escape` and navigation stack pops |
-| **Permissions** | `FlashPermissionManager` | Android runtime permissions | No-op grant (desktop has OS filesystem access) |
+| **Audio playback** | `FlashAudioPlayer` (`play`, `pause`, `seekTo(ms)`, `setSpeed`, `positionMs()`, `isPlaying()`, `release()`), `rememberFlashAudioPlayer(uri): FlashAudioPlayer?` | `MediaPlayer` | `javax.sound.sampled` `Clip`; AAC voice notes are decoded with JCodec |
+| **Voice capture** | `FlashVoiceRecorder`, `rememberFlashVoiceRecorder()` | `MediaRecorder` (AAC in MPEG-4, into the app cache) | `TargetDataLine` recorder |
+| **Image decoding** | `FlashImageDecoder`, `rememberFlashImageDecoder()` | `BitmapFactory` + EXIF | AWT `ImageIO` |
+| **File picking** | `FlashPickedFile`, `FlashFilePickerLauncher`, `rememberFlashFilePickerLauncher(...)` | Storage Access Framework | Swing `JFileChooser` |
+| **Camera capture** | `FlashCameraCaptureLauncher`, `rememberFlashCameraCaptureLauncher(...)` | system camera intent | `JFileChooser` stand-in (no camera capture on desktop) |
+| **Clipboard** | `FlashClipboard.copy(text)`, `rememberFlashClipboard()` | Compose `LocalClipboardManager` | same (common code) |
+| **System back** | `FlashBackHandler(enabled, onBack)` | AndroidX back handling | Escape key and navigation pops |
+| **Permissions** | `FlashPermission` (`Microphone`, `Camera`), `FlashPermissionRequester`, `rememberFlashPermissionRequester()` | runtime permissions | always granted |
+| **Video surface** | `FlashVideoSurface(uri, isPlaying, isMuted, seekToMs, onPlaybackStateChanged, onError, modifier)` | platform player surface | desktop player surface |
 
 ---
 
@@ -32,22 +36,20 @@ dependencies {
 
 ```kotlin
 import com.transfer.flash.ui.shims.rememberFlashAudioPlayer
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 
 @Composable
 fun AudioMessagePreview(audioUri: String) {
-    val player = rememberFlashAudioPlayer()
+    val player = rememberFlashAudioPlayer(audioUri) ?: return   // null when the file cannot be opened
+    var playing by remember { mutableStateOf(false) }
 
     Button(onClick = {
-        if (player.isPlaying.value) {
-            player.pause()
-        } else {
-            player.play(audioUri)
-        }
+        if (player.isPlaying()) player.pause() else player.play()
+        playing = player.isPlaying()
     }) {
-        Text(if (player.isPlaying.value) "Pause" else "Play Voice Message")
+        Text(if (playing) "Pause" else "Play Voice Message")
     }
 }
 ```

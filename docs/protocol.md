@@ -456,6 +456,39 @@ FLASH_GSYNC op=ack     groupId=<uuid> syncId=<uuid> from=<id> hasMore=<0|1> msgC
   2 s backup, others stand down; a broadcast batch `ack` cancels backups. Budgets: LOW
   returner 5/sec · 100/round; MEDIUM/HIGH 20/sec · 500/round; TTL 24 h; ≤ 2 copies/message.
 
+#### History window, paging and the watermark (ADR-100, 2026-10-09; unit-tested, not device-verified)
+
+All additions are optional keys or a new `op`, so an older build ignores them (a request it cannot parse is simply not answered).
+
+```text
+FLASH_GSYNC op=request ... [windowMs=<ms>] [files=<true|false>] [cont=true]
+FLASH_GSYNC op=page    groupId=<uuid> syncId=<uuid> from=<id> count=<n> remaining=<n> more=<true|false> lastAt=<ms> lastId=<msgId> keyEpoch=<n>
+```
+
+- `windowMs` (omitted when the requester states none, i.e. an older build): how far back the requester wants messages. The holder serves
+  `min(windowMs, ceiling)`; an omitted window means today's 24 h of text and 7 days of file offers, still inside the ceiling. `files=false`
+  skips file offers; a stated window also limits file offers to inside it (never beyond 7 days, `SwarmConfig.retentionMs`).
+- `cont=true`: the requester is continuing a chain after a `page` with `more=true`; the holder serves the next page from the cursor.
+- `page` closes one round of pushes (sent after the pushes, only to a requester that sent `windowMs`): `count` rows were pushed, `remaining` more are
+  held past this page (capped at 2 000, so a larger history reports "at least"), `more` says another page is available, `lastAt`/`lastId`
+  is the last row served (a count-0 page with `more=true` carries the scan end). The requester advances its per-(group, holder)
+  **contiguous watermark** to `(lastAt, lastId)` only when it has seen all `count` pushes of the page (even ones refused as
+  duplicate or unsigned); a page that lost a frame leaves the watermark where it was and the next session resumes from it. A requester
+  starts after the watermark of the asked holder, else after its newest local row (older holders), never earlier than the window allows.
+- The ceiling is enforced by every holder, whatever the requester asks for: a window above it shrinks to it, `NONE` serves nothing (no
+  messages, no files). A chain is at most 100 pages of 100 rows.
+- Requester window: a newly joined member asks for the window it chose on the join card (default 30 days) plus the time since it chose;
+  a returning member asks for `min(ceiling, max(7 days, time since last contact))`, never reaching further back than what it chose
+  to see; a member that predates the feature is a returning member with files.
+- Contact time is **per holder** (sweep G1, 2026-10-09): "time since last contact" is measured against the holder asked, from that
+  holder's watermark `updatedAtMs`, not from the group as a whole, so a quiet holder is not asked for a window sized by a chatty one.
+- One holder at a time (sweep G3, ADR-106): the requester serialises catch-up per group in a `CatchUpLane`. Holders are tried in order of
+  watermark `updatedAtMs` ascending (the one it has heard from least recently first); a holder that sends nothing for 45 s is dropped and the next
+  is asked; one episode lasts at most 3 minutes. Nothing changes on the wire.
+- The `page` end marker is clamped (sweep G12): the requester never advances a watermark beyond the newest push it actually received, and
+  a count-0 page whose end lies more than 5 minutes in the future is refused. A holder answers at most 30 `request` frames per 10 s per
+  (group, requester) (sweep G11); further ones are dropped silently.
+
 ### v2 groups (ADR-044 V1, 2026-09-30)
 
 Design and rationale: `docs/group/v1-signed-membership-plan.md` (D1–D9) and `docs/group/v0-threat-review.md`. A v2 group is
@@ -1090,11 +1123,36 @@ rotRmCount=<0..64> rotRm0=<id> … rotSig=<b64>
 Carried as extra keys on the bundle:
 
 ```text
-setVer=<n> setJoin=<APPROVE|OPEN> setShare=<ALL|ADMINS> setMax=<1..20> setServe=<true|false> setAdd=<true|false>
-setOp=<uuid> setBy=<admin id> setSig=<b64>
+setVer=<n> setPolicy=<APPROVE|OPEN> setSharers=<ALL|ADMINS> setMax=<2..20> setSwarm=<true|false> setMayAdd=<true|false>
+setOpId=<uuid> setSigner=<admin id> setSig=<b64>
+[setHist=<NONE|H24|D7|D30|ALL> setHistSig=<b64>]      (ADR-105; only when the ceiling is not D30)
 ```
 
-- Statement `flash-gset-v1`: groupId, version, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd, opId, signerId.
+- Statement `flash-gset-v1` (`setSig`): groupId, version, joinPolicy, inviteSharers, maxMembers, swarmServing, membersMayAdd, opId, signerId.
+  **It never covers the history ceiling** (ADR-105), so every build, including one that predates ADR-100, verifies it.
+- ADR-100 history ceiling, signed by ADR-105: `setHist=<NONE|H24|D7|D30|ALL>` and `setHistSig`, written **only when the ceiling is not
+  the default `D30`**, so default settings stay byte-identical on the wire. `setHistSig` is the same admin's signature over the statement
+  `flash-gsethc-v1`: groupId, version, opId, signerId, ceiling name (each length-prefixed like every canonical field). Binding the group,
+  version, opId and signer stops a member splicing a genuine ceiling signature onto another settings object. A receiver that knows
+  the ceiling requires a valid `setHistSig` by the same key as `setSig` for any non-default ceiling and refuses the whole object
+  otherwise; a missing `setHist` means `D30`. A `setHist` name this build does not know (a later ceiling) reads as `D30` without
+  discarding the other settings.
+- Superseded: the first ADR-100 draft signed a non-default ceiling by swapping `setSig` to a `flash-gset-v2` statement. That made every
+  build from before ADR-100 reject the entire object (the join policy, sharers, member cap and swarm switch with it) the moment an admin
+  chose a ceiling. The `flash-gset-v2` tag was never released and no build verifies it.
+- Mixed fleet (old build = before ADR-100 or ADR-105, new build = this one):
+
+  | Sender | Receiver | Result |
+  |---|---|---|
+  | new, default ceiling | old | identical bytes to before; applies |
+  | new, non-default ceiling | old | v1 `setSig` verifies; the other settings apply; `setHist`/`setHistSig` are ignored, so the old build keeps its old history window |
+  | old | new | no `setHist`: the ceiling reads as `D30`; applies |
+  | new, non-default ceiling | new | applies, ceiling enforced by the receiver, which also relays it |
+  | new relays through an old build | new | the old build re-encodes the stored object without the ceiling; the same operation (equal version and opId) arriving complete wins over the stripped copy (`settingsWins`), so the ceiling is restored |
+  | old admin edits after a new admin set a ceiling | all | the edit is version + 1 and carries no ceiling, so the group returns to `D30` until a new-build admin sets it again |
+  | member splices a ceiling signature onto another object | new | refused: the ceiling statement binds version, opId and signer |
+
+  The stored form (no schema change, Room stays at 13) is the existing `historyCeiling` column holding `D7~<b64 sig>`.
 - Valid only when an admin signed it. The highest `setVer` wins; on a tie, the smaller `setOp`. Device-local preferences never appear on any
   wire.
 

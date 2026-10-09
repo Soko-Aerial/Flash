@@ -7939,3 +7939,183 @@ By design (ADR-044 V1/V2): a device accepts a signed group's charter only if it 
 
 ### Status
 OPEN (fixed in code, awaiting `GNOT-01` / `GNOT-02`)
+
+
+## ERROR-125 - Shared-engine refactor (C7.0): resumed receives lost their guards, plus library bugs found by the audit sweep
+
+### Date
+2026-10-08
+
+### Area
+`core/engine` shared `FlashInboundRouter` / both hosts / swarm binding / receive pipeline / piece storage / keystore
+
+### Symptoms
+An audit of the uncommitted "Shared Flash Engine" refactor (three read-only audit agents, findings spot-checked by the lead against the code) found regressions against `HEAD` and older library bugs:
+1. **Desktop:** a resumed inbound retry skipped `admitIncoming` (the ADR-069 / FA-2 "does not fit" refusal) and did not seed progress. The router had copied Android's older inline retry branch; desktop used to call `acceptOffer`.
+2. **Android:** a resumed or already-completed inbound transfer was no longer added to `incomingByPeer` (tracking moved into the `onOfferReceived` lambda, which those branches skip), so a peer disconnect left the row "Transferring" and leaked the pipeline session and sink handle. The refactor summary's "incomingByPeer leak fix" was inaccurate: `HEAD` already cleared on `Completed`; the real old leak was the already-completed path.
+3. The router swallowed `flush()/close()` failures (`runCatching`), so a truncated file could be answered `Complete(verified=true)` when the sender sent no whole-file hash.
+4. Router exceptions in any hook ended the session's receive loops; transfer ids were not bound to the sending peer; ids that change under `FlashPathSanitizer.sanitize` could alias one directory.
+5. Pre-existing: one malformed swarm announcement (`root="zz"`) from a group member threw `IllegalArgumentException` inside an unguarded `launch` on a plain root `Job` (Android process crash, binding dead, crash loop on catch-up replay); `SwarmHostBinding` outlived the engine; the persist worker had no try/catch; `ReceivePipeline` never evicted finished sessions (after 32 inbound transfers every offer was `SESSION_FULL`); `MagicFrameRouter`'s default clock was always ~0 (the drop warning never logged); piece-storage `finalize` could replace a concurrently finalized or user file; sanitizer length/reserved-name gaps; a transient keystore exception minted a new passphrase and destroyed chat history.
+6. Desktop engine: pre-boot `Empty*` stand-ins were singletons that early consumers kept forever and returned fake `Success`; `close()` could race `assemble()` and leave `ready == true` with bound sockets; `autoAcceptIncoming` bypassed the pairing gate (AGENTS section 19); `displayName` overwrote the persisted name on every create; `attachSwarm/attachCalling` were facade-only and non-exclusive; `FlashDesktopEngineTest` wrote to the real `~/.flash` and asserted tautologies.
+
+### Root cause
+Behaviour was moved out of two hosts into one router without a test for the `ReceivePipeline` event branches, so the differences between the two old host copies (desktop `acceptOffer` vs Android inline; Android-only `incomingByPeer`) were flattened to one of them. The library bugs predate it and were found by the sweep.
+
+### Failed attempts
+None recorded. Note for the next AI: `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin` is intermittent (see Verification).
+
+### Working fix
+Fixed in code on 2026-10-08, three parallel agents plus lead follow-ups, see `logs/progress.md` (2026-10-08 e). Highlights: router hooks `onSessionStarted`, `onTransferUntracked`, `onResumableRetry` and `incomingOwners`; flush/close failure needs a whole-file hash match; `try/catch` per event; transfer-id ownership + sanitize/case-alias refusal; `SwarmHostBinding` validates announcements, uses `SupervisorJob(scope.job)` + `PeerOrderedInbox`; `ReceivePipeline` counts only unfinished sessions (finished LRU 64) and exposes O(1) `doneBytes`; `PassphraseKeeper` (never mint on a transient error); atomic `finalize` with placeholder reservation; `FlashPathSanitizer` byte/code-point caps and reserved names; desktop `EngineProxies`, failing `Empty*`, shared `shutdown()`, `shouldAutoAcceptOffer`, name override, exclusive attach, state-dir guard.
+
+### Verification
+Unit-tested on 2026-10-08 (lead re-ran the gate after all edits): `:core:engine:jvmTest` 140, `:core:engine:testAndroidHostTest` 115, `:core:transfer:jvmTest` 127, `:core:swarm:jvmTest` 139, `:core:messaging` jvm 183 + host 467 all green; `:desktop:jvmTest` 162 with one failure, the known ERROR-106; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green. `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin` is intermittent but pre-existing: repeated single runs gave 2 failures in 28 on clean `HEAD`, 2 in 17 on the current tree and 1 in 16 with the old per-frame swarm dispatch restored, so it is not caused by this work (`ENG-13`). Mutation (revert-and-fail) checks were done only for some router and boot-tail tests. NOT device-verified. `AndroidPieceStorage.finalize` and the real Keystore path have no host seam and are untested here.
+
+### Related files
+- `core/engine/src/commonMain/.../FlashInboundRouter.kt`, `FlashEngine.kt`, `FlashConfig.kt`, `FlashPathSanitizer.kt`, `MagicFrameRouter.kt`
+- `core/engine/src/androidMain/.../Flash.kt`, `FlashEngine.kt`, `store/PassphraseKeeper.kt`, `AndroidPieceStorage.kt`
+- `core/engine/src/commonMain/.../swarm/SwarmHostBinding.kt`, `PeerOrderedInbox.kt`; `core/swarm/.../SwarmDriver.kt`; `core/transfer/.../ReceivePipeline.kt`
+- `desktop/src/jvmMain/.../DesktopEngine.kt`, `EngineProxies.kt`; `core/engine/src/jvmMain/.../FlashDesktop.kt`, `JvmPieceStorage.kt`
+- `core/{network,discovery,transfer}/.../Empty*.kt`
+
+### Status
+OPEN (fixed in code, awaiting device checks `ENG-01`...`ENG-12` in `docs/testing/TEST-BACKLOG.md` section 4zm)
+
+## ERROR-134 - A group call presenter who hung up stayed the presenter
+Date 2026-10-09. Area calling / screen share. Symptoms: after the presenter left, the call still showed "X is presenting". Root cause: the share
+arbiter kept the claim of a peer that left through the hang-up path and through the pruned-leg path. Fix: ShareArbiter.onPeerLeft + refreshUiState at
+both places. Verification: FlashScreenShareSessionTest `a presenter who hangs up is no longer the presenter`; mutation-checked. Status: RESOLVED (code; device check SHARE-09).
+
+## ERROR-135 - DesktopVideoStreamTrack.onStop disposed the source before detaching sinks
+Date 2026-10-09. Area: third_party/webrtc-kmp desktop video. Symptoms: none seen yet; same class as ERROR-123 (native crash when a sink outlives its source).
+Fix: onStop calls detachSinks() before videoSource.stop()/dispose(); the screen capture handle closes in the same order. Verification: compile + unit tests only. Status: OPEN until SHARE-06 on Windows and Linux.
+
+## ERROR-136 - No content hint / degradation preference on the JVM backend (limitation)
+Date 2026-10-09. maintainResolution is applied on Android only. On desktop the fps cap and the bitrate window are the only protection of text resolution. Status: OPEN, measure in SHARE-04/05.
+
+## ERROR-137 - Behaviour when the shared window is closed is unknown
+Date 2026-10-09. The watchdog checks only the first frame (a static screen sends none). Status: OPEN until SHARE-10 records what the capturer does.
+
+## ERROR-130 - KissTncDriver TX queue was not bounded (found in unit test, own new code)
+
+### Date
+2026-10-09
+### Area
+Radio link / `KissTncDriver.sendAx25`
+### Symptoms
+`KissTncDriverTest.aFullQueueRefusesInsteadOfGrowing`: with `maxQueue = 2` six concurrent sends were all accepted; none returned `QueueFull`.
+### Root cause
+The send queue was a `Channel` with capacity `maxQueue + 8`; `trySend` only failed after that many, so the advertised bound was not the real one.
+### Failed attempts
+1. Reducing the channel capacity: the in-flight frame being transmitted is not in the channel, so the bound was off by one and racy.
+### Working fix
+A separate `pendingFrames` counter, incremented under the radio lock before `trySend` and decremented in a `finally` after the result is awaited; admission fails with `QueueFull` at `maxQueue`.
+### Verification
+The test passes; 101 radio/kiss tests green at that point.
+### Related files
+`core/network/src/commonMain/kotlin/com/transfer/flash/core/network/radio/KissTncDriver.kt`, `.../KissTncDriverTest.kt`
+### Status
+RESOLVED (unit test only; no radio)
+
+## ERROR-126 - Group catch-up skipped older missing messages (cursor was the newest local row)
+Date 2026-10-09. Area: group sync. Symptom: a device that received a recent message first never asked for the older ones it was missing. Root cause: the request cursor was `(sentAt, id)` of the newest local row. Fix (in code): per (group, holder) contiguous watermark advanced only when a whole page was seen; floor start when no watermark. Verification: `GroupHistorySyncTest.s1...`, `GroupHistoryPolicyTest`; mutant "watermark ignores incomplete page" killed. Related: `GroupHistoryPolicy.kt`, `RealFlashChatRepository.kt`. Status: OPEN (device test GSY-05, GSY-06).
+
+## ERROR-127 - A member away longer than 24 hours lost the middle of its absence
+Date 2026-10-09. Area: group sync. Symptom: after 3 days offline only the last 24 h of text arrived. Root cause: every holder answered with the fixed `SYNC_TTL_MS` window. Fix (in code): requests carry a window (returning member `min(ceiling, max(7 d, time away))`), holders serve inside `min(window, ceiling)`. Verification: `GroupHistorySyncTest.s2...`. Related: same files. Status: OPEN (device test GSY-04).
+
+## ERROR-138 - Screen-share first-frame watchdog cancelled its own stop
+Date 2026-10-09. Area: core/calling screen share. Symptom (reviewed, not seen on a device): a capture that opens but never delivers a frame left the share stuck in STOPPING: no ss=0, camera not restored, capture open. Root cause: the stop was launched inside the watchdog job and stopShare cancels that job, so the child cancelled itself at its first suspension. Fix: stop launched on the session scope, native close in withContext(NonCancellable), finally { machine.finished() } (both sessions). Verification: FlashScreenShareStopTest watchdog tests (1:1, group). Status: OPEN until SHARE-15.
+
+## ERROR-139 - A presenter claim could hold the role for good
+Date 2026-10-09. Area: core/calling ShareArbiter. Root cause: remote claims were clamped to year 2100, local ones were not, and the honest take-over tied with the absurd claim at the ceiling, where the higher id won. Fix: claims bounded by max(clock + 24 h, highestSeen + 1), local claim bounded the same. Verification: ScreenShareTest S3 tests. Residual: any member can still take over by starting a share (no authority, by design). Status: OPEN until SHARE-17.
+
+## ERROR-140 - Call teardown closed the screen capture before the senders let go
+Date 2026-10-09. Area: core/calling. Same class as ERROR-123 (native crash when a sink outlives its source). Fix: ScreenShareRun.closeAfter (senders replaceTrack first, then the capture, even if the sender throws or the caller is cancelled), used by stop and teardown in both sessions. Verification: order proven on ScreenShareRun in ScreenShareTest; session wiring only by test of "capture closed with a dead sender". Status: OPEN until SHARE-16.
+
+## ERROR-141 - Screen-share Lows S4, S7, S9, S10
+Date 2026-10-09. A cancelled start left STARTING (rollback now NonCancellable on the media thread); pre-G3 peers bypassed the watcher cap (legacyServed); 1:1 shareWatchers was set once; a lost ss=0 in a group was never repaired (status re-sent on signalling restore). Verification: FlashScreenShareStopTest, GroupVideoRouterShareTest. Status: OPEN until SHARE-19.
+
+## ERROR-142 - KissTncDriver reconnect backoff reset on open
+Date 2026-10-09. A radio that accepts the open and drops at once was retried every base delay for ever. Fix: stableAfterMs (10 s up, or one KISS frame) before the backoff starts over. Verification: three KissTncDriverTest tests. Status: OPEN until BT-18.
+
+## ERROR-143 - KissTncDriver: uninterruptible write and last-writer-wins reason
+Date 2026-10-09. A blocking RFCOMM write ignores coroutine cancellation and the link was closed only after serve() returned; the link-down reason was whichever side finished last. Fix: closer child closes the link on cancel or when either side ends; first cause wins. Verification: KissTncDriverTest stuck-write and first-cause tests (fake links). Status: OPEN until BT-19 (real socket).
+
+## ERROR-144 - BT-00 tester: unsynchronised RadioSession and a burst clearing other bursts' ACKs
+Date 2026-10-09. RadioSession is not thread-safe but the receive collector and the callers shared it; a finishing burst did pendingAcks.clear() and lost the other bursts' ACKs (found by the new stress test: 97/100 and 87/100 acked). Fix: sessionLock mutex; bursts remove only their own counters. Verification: RadioLinkTesterTest concurrent bursts (100/100). Status: RESOLVED (test-tool code, unit-tested; no device needed).
+
+## ERROR-145 - BT-00 desktop window blocked its UI thread on serial calls
+Date 2026-10-09. listPorts/open are blocking native calls called from the Compose scope. Fix: suspend + Dispatchers.IO in the harness. Verification: RadioLinkTestHarnessTest.blockingPortCallsNeverRunOnTheCallersThread. Status: OPEN until BT-20.
+
+## ERROR-146 - RadioSession.encode did not validate ttl
+Date 2026-10-09. A bad ttl threw IllegalArgumentException from the header; now Refused("bad_ttl") in encode and encodeSigned. Verification: RadioSessionTest. BluetoothPermissions KDoc corrected (cancelDiscovery permission on API 30 and lower is UNVERIFIED). Status: RESOLVED.
+
+## ERROR-147 - Four NewApi lint errors in FlashCallScreenSupport.kt
+Date 2026-10-09. Picture-in-picture needs API 26, minSdk is 24; the call sites were guarded only by a helper lint cannot see. Fix: @RequiresApi(O) on params(), explicit SDK_INT check in enter(). Verification: :app:lintReportRelease 0 errors. Status: RESOLVED (lint). Device check of PiP unchanged.
+
+## ERROR-167 update
+2026-10-09: jvm MediaDevices now guards the listener registration and every device enumeration; a java.lang.Error from the native backend means "no devices" plus a log. Not unit-tested. Status: OPEN until MEDIA-01.
+
+## ERROR-148 - Non-default history ceiling made old builds drop all group settings
+Date 2026-10-09. Area group settings / ADR-100. Root cause: `setSig` switched to `flash-gset-v2` for a non-D30 ceiling. Fix: ADR-105 (separate
+`setHistSig`). Verified by `GroupCanonicalTest`/`GroupSettingsTest`. Status: OPEN until device-verified (GSY-13).
+
+## ERROR-149 - Catch-up asked every holder for the same rows and used a group-wide contact time
+Area group history sync (G1, G3). Fix: per-holder contact time; `CatchUpLane` (ADR-106). Status: OPEN until GSY-14, GSY-15.
+
+## ERROR-150 - Group sync marker could move the watermark past rows never sent; no request rate limit
+Area group history sync (G11, G12). Fix: clamp to the newest push received; 30 requests / 10 s per (group, requester). Status: OPEN until GSY-16.
+
+## ERROR-151 - transfer_chunks rows never deleted; quadratic preload
+Area transfer / persistence (R-01). Fix: delete on terminal states, `transfers` row for receives, `purgeFinishedChunks` at start, linear preload.
+Status: OPEN until HARD-01.
+
+## ERROR-152 - A failed storage write was swallowed, the transfer looked live
+Area receive pipeline (R-06). Fix: `RejectReason.WRITE_FAILED` handled in `FlashInboundRouter` (fails row, closes sink, cancels sender). Status: OPEN
+until HARD-02. Hosts still only log `Rejected`.
+
+## ERROR-153 - A file of the right length but other content was reported already completed
+Area inbound router (R-04). Fix: whole-file hash must match. Status: OPEN until HARD-02.
+
+## ERROR-154 - Unbounded pre-accept allocation and O(n) isComplete
+Area receive pipeline (R-07). Fix: `MAX_TOTAL_CHUNKS`, O(1) counter. Status: OPEN until HARD-02.
+
+## ERROR-155 - Keystore identity key deleted on any probe exception
+Area security (R-09). Fix: `IdentityKeyCheck`; only a definite verdict regenerates. Status: OPEN until HARD-04 (needs a device).
+
+## ERROR-156 - Group proof / certificate hardening (R-03, R-08, R-10, R-12, R-13, R-14, R-16)
+Fixes as in the report table. Status: OPEN until HARD-05.
+
+## ERROR-157 - Host test failures: "Unable to rename preferences_pb.tmp" (12 tests)
+Root cause: Gradle test JVM is JDK 25; on Windows `File.renameTo` no longer replaces an existing file; DataStore falls back to it when
+`SDK_INT < 26` (stub android.jar: 0). Fix: `HostSdkIntRule`. Failed attempt: suspected a concurrent reader or antivirus lock (a JDK 21 program and a
+`Files.move` program both succeeded). Status: RESOLVED (suite observed green 2026-10-09, report section 7).
+
+## ERROR-158 - Published POMs of core-calling/ui-callui name an unpublished WebRTC artifact
+Date 2026-10-09. Area: publishing. Symptom: consumers cannot resolve com.shepeliev:webrtc-kmp-android:0.125.11-flash-1. Root cause: the fork exists only as an included build. Fix: ADR-103 (publish under com.transfer.flash). Verification: throwaway repo + consumer on JDK 21; JDK 17 owed. Status: RESOLVED (pending JDK 17 proof).
+
+## ERROR-159 - README said Android 8.0 for API 24
+Date 2026-10-09. API 24 is Android 7.0. Fixed in two places. Status: RESOLVED.
+
+## ERROR-160 - connectManual accepted a HELLO id different from the dialed id (R-02)
+Date 2026-10-09. A paired peer answering a dial to another paired peer could be registered as that peer. Fix: fail closed in both twins, unnamed dial (ADR-040) unchanged. Tests DialedIdBindingTest/JvmDialedIdBindingTest, mutation killed (Android twin). Status: RESOLVED in code, not device-verified.
+
+## ERROR-161 - Exported share target opened file: and own-provider URIs (R-05)
+Date 2026-10-09. Fix: ShareUriPolicy; intent.data no longer folded in. Test ShareUriPolicyTest. Status: RESOLVED in code, not device-verified.
+
+## ERROR-162 - FileProvider exposed the whole private tree and the filesystem root (R-15)
+Date 2026-10-09. Fix: file_paths.xml narrowed. Risk: a caller outside the kept roots now throws; REL-04. Status: RESOLVED in code, not device-verified.
+
+## ERROR-163 - A ping between WebSocket fragments dropped the message (R-11)
+Date 2026-10-09. Fix: WebSocketCodec.MessageReader in both twins. Status: RESOLVED in code.
+
+## ERROR-164 - Desktop netsh read could hang for ever; image save could overwrite (R-20)
+Date 2026-10-09. Fix: reader thread with bounded wait; CREATE_NEW names; failures logged. User feedback on a failed save not added. Status: RESOLVED (partial).
+
+## ERROR-165 - Red CI tests of 2026-10-08
+Date 2026-10-09. FlashShimContractTest (stale after Camera), RotatingFileLogSinkTest (rotation checked per batch; fixed in the sink), PttSessionEngineSessionTest (state published before effects; test waits for effects), DesktopMediaDevicesTest (libpulse missing on the Ubuntu runner; CI installs libpulse0), ERROR-106 (scenario rewritten, ERROR-095 rule untouched). Status: RESOLVED in code, CI run owed.
+
+## ERROR-166 - Unused Bluetooth permissions and the radio tester in the desktop jar
+Date 2026-10-09. Permissions removed; jvmJar excludes RadioLinkTest*. Build verification owed. Status: OPEN until the jar listing is checked.
+
+## ERROR-167 - java.lang.Error from webrtc-java when libpulse is missing (product robustness)
+Date 2026-10-09. Found via CI. MediaDevices static init throws an Error and poisons the class for the process. Not fixed (core/calling, not my area). Status: OPEN.

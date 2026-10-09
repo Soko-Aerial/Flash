@@ -10,6 +10,29 @@
 
 ---
 
+## Implementation status 2026-10-09
+
+The BT-0 / BT-1 groundwork was built and unit-tested on 2026-10-09 (one session, no radio available). **The plan's own status line
+above ("DESIGN ONLY") is superseded for the pieces listed here; nothing below has touched a real radio or phone.** Details,
+decisions and the hardware checklist: `docs/reports/2026-10-09-bluetooth-radio.md`. Exact byte layout: `docs/network/RADIO-WIRE-FORMAT.md`.
+
+Built (package `com.transfer.flash.core.network.kiss` / `.radio` / `.radio.diag`, module `:core:network`):
+
+- KISS streaming codec, AX.25 v2.2 UI codec (PID `F0`; `CC`/`CD` refused), Flash radio frame Profile M (AES-256-GCM, counter nonce,
+  64-wide replay window, rotating tag and station label, segmentation to 16 segments, signed clear-text mode for Profile A).
+- `ByteLink` seam; `KissTncDriver` (connect, TXDELAY/P/SlotTime/TXtail only if configured, pacing with injectable clock, reconnect with
+  backoff, PROBE lines); in-memory links, a fake TNC and a fake air channel for tests.
+- Platform links: desktop serial on jSerialComm 2.11.4 (`JvmSerialPortCatalog`), Android RFCOMM (`AndroidBluetoothCatalog`, SPP UUID and a
+  Flash UUID; Android 12+ `BLUETOOTH_CONNECT`/`BLUETOOTH_SCAN` handling). Manifest entries added to `app`.
+- Hardware-spike tool for BT-00: `./gradlew :desktop:radioLinkTest` (window) and `:desktop:radioLinkTestCli` (headless); spec `docs/ui/radio-link-test.md`.
+- `StreamFramer` for a future Flash-to-Flash Bluetooth session; ADR-101 records the session-layer recommendation.
+
+Not built: the adapter from the real pairing key to `RadioSession`, `FlashTransportType.BLUETOOTH` and the planner hook (see report:
+touching shared enums/engine files was avoided), any chat/UI integration, compression, Profile A operation, fragmentation
+retransmission, gateway/relay logic, anything about 9600 baud. Open facts stay open until BT-00 .. BT-08 are run.
+
+---
+
 ## 0. Review corrections (2026-10-07, fact-checked against the code, docs and public sources)
 
 The first draft of this plan was reviewed the day it was written. Corrections are applied inline (marked *[corrected]*)
