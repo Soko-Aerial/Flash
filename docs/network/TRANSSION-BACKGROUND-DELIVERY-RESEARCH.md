@@ -94,3 +94,10 @@ per handset**, not an MDM policy.
   execution stays inconsistent even after the settings).
 - MDM-vendor and Android Management API notes on OEM battery exemptions (reported).
 - Project evidence: ERROR-074, EXP-002, `Hiber` logcat lines.
+
+## 7. Owner proposal: an isolated daemon process (`:lan_daemon`), 2026-10-09
+
+The owner asked to run the networking in a separate foreground-service process so the freezer would not stop it. **Assessment (reasoned from measured data, not yet measured on this question):** ERROR-074 shows Hiber freezing the app **UID**; processes of one app share the UID, so a second process is expected to freeze with it. Moving the engine out of process is also a large change here (Room, the shared state flows and the Compose UI all read the engine in-process, so it would need IPC for all of it).
+**What was built instead, first:** a debug-only heartbeat service in process `:lan_daemon` (`app/src/debug/.../DaemonProbeService.kt`, logcat tag `DAEMON_PROBE`) so the idea is measured in minutes on the phone (test HIB-10). **Decision rule:** if the probe keeps beating through screen-off, write an ADR and plan the engine move; if it freezes, record the idea as a failed approach here and keep the per-app switches (guide, HIB-03).
+Also built on request: the Transsion set-up guide (`TranssionSetupGuide`, `TranssionGuideDialog`, Phone Master router candidates in `OemBatteryOptimizationHelper`). The owner declined the silent-audio loop (HIB-02, option F) on 2026-10-09: bad for the device, nothing found that it works.
+

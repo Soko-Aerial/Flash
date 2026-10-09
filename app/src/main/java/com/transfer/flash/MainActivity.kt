@@ -81,6 +81,8 @@ import com.transfer.flash.core.engine.group.GroupFileSender
 import com.transfer.flash.debug.DiscoveryEngineHolder
 import com.transfer.flash.debug.FlashBackgroundService
 import com.transfer.flash.debug.OemBatteryOptimizationHelper
+import com.transfer.flash.debug.TranssionGuideDialog
+import com.transfer.flash.debug.TranssionSetupGuide
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
@@ -198,6 +200,9 @@ class MainActivity : ComponentActivity() {
      */
     private val ignoringBatteryOptimizations = MutableStateFlow(false)
 
+    /** HIB-03: the Transsion set-up guide, opened from the same Settings entry as the battery prompt. */
+    private val transsionGuideVisible = MutableStateFlow(false)
+
     private val pendingShare = MutableStateFlow<FlashSharePayloadUi?>(null)
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
     private val pendingJoinLink = MutableStateFlow<String?>(null)
@@ -289,6 +294,15 @@ class MainActivity : ComponentActivity() {
                 onRestartApp = ::restartApp,
                 onExportLogs = ::exportLogs,
             )
+            val guideVisible by transsionGuideVisible.collectAsState()
+            val exempt by ignoringBatteryOptimizations.collectAsState()
+            if (guideVisible) {
+                TranssionGuideDialog(
+                    ignoringBatteryOptimizations = exempt,
+                    onOpen = { target -> OemBatteryOptimizationHelper.openTarget(this, target) },
+                    onDismiss = { transsionGuideVisible.value = false },
+                )
+            }
         }
         refreshReceivedStorageUsage()
     }
@@ -570,6 +584,11 @@ class MainActivity : ComponentActivity() {
      * docs/android-platform-notes.md.
      */
     private fun requestIgnoreBatteryOptimizations() {
+        // Transsion: one guide lists the system prompt and the Phone Master screens together.
+        if (TranssionSetupGuide.appliesTo(OemBatteryOptimizationHelper.currentBrand)) {
+            transsionGuideVisible.value = true
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val powerManager = getSystemService(PowerManager::class.java)
             if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(packageName)) {

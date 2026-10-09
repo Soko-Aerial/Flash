@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-10-09 - Transsion: set-up guide, daemon-process probe (HIB-03, HIB-10), silent audio declined
+
+### Worked on
+Owner asked to implement a Transsion keep-alive design: isolated `:lan_daemon` FGS process, silent audio, Phone Master intent router, guided set-up.
+
+### Changed
+- `TranssionSetupGuide` (5 steps: detectable system exemption + 4 manual overrides), `TranssionGuideDialog`, Phone Master router candidates and `openTarget`/`isIgnoringBatteryOptimizations` in `OemBatteryOptimizationHelper`; `MainActivity` shows the guide from the existing Settings > Background transfers entry on Transsion phones only.
+- Debug-only `DaemonProbeService` in process `:lan_daemon` (`app/src/debug`, not in release): logs `DAEMON_PROBE seq gapMs` each second and a WARN `THAWED after Nms` after a stall.
+- Silent audio loop: written, then REMOVED at the owner's request (not good for the device).
+- NOT done: moving the engine into a separate process. Reason: ERROR-074 shows the freezer acts per UID, which a second process shares; measure first (HIB-10), decision rule in the research doc section 7.
+
+### Verification
+`TranssionSetupGuideTest` (5 tests) and `:app:assembleDebug` green; the debug manifest contains the `:lan_daemon` service. NOT run on a phone: no device attached to this PC. Incremental Kotlin state was stale once (22 bogus unresolved-reference errors); `-Pkotlin.incremental=false` fixed it.
+
+### Next AI
+Owner runs HIB-10 and HIB-03a (docs/testing/TEST-BACKLOG.md 4zv). Do not move engine code before HIB-10 shows the daemon surviving screen-off.
+
 ## 2026-10-09 - Linux group-call rejoin stalls ~40 s (ERROR-168, diagnostics added)
 
 ### Worked on
@@ -14200,3 +14217,5 @@ Three things from the owner's second Linux log and report: a JVM crash when a gr
 
 ### Next AI
 Read `hs_err_pid*.log` if LNX-07 fails. Do not push or commit without the owner; the tree also holds the earlier uncommitted ERROR-122 follow-ups.
+
+

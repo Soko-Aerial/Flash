@@ -3052,3 +3052,17 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 - Steps: join, wait for video, hang up, rejoin 10 s later, repeat twice. During any wait longer than 5 s run `eu-stack -p <pid>` (or `gdb -p <pid> -batch -ex 'thread apply all bt'`) and `pactl info`.
 - Pass: every leg reaches `ice=Completed` within 3 s of the Answer on every rejoin; no `CALL_STALL` line above 2 s. A FAIL is expected today: keep the `CALL_STALL` lines, the stack and the stdout `[webrtc-jvm]` lines for the root cause.
 - Source: ERROR-168. Status: TODO
+
+## 4zv. Transsion: daemon-process probe and set-up guide (HIB-10, HIB-03, 2026-10-09)
+
+### HIB-10 - Does a second process (`:lan_daemon`) survive the Hiber freezer?
+- Why: the owner wants the engine moved into an isolated daemon process. ERROR-074 logged `freeze uid: com.transfer.flash`; a second process shares the UID, so this probe is expected to freeze too. Measure BEFORE moving any engine code.
+- Setup: Infinix/Tecno phone (Android 14), the DEBUG build from this commit (the probe is not in release), USB debugging, charger optional. Run the app once so it is installed; do NOT apply the Phone Master switches first (baseline).
+- Steps: 1) `adb shell am start-foreground-service -n com.transfer.flash/.debug.DaemonProbeService` 2) `adb logcat -v time DAEMON_PROBE:I Hiber:* *:S` and leave it running 3) confirm `seq` climbs once a second with a different `pid` from the app's 4) press power to turn the screen off, wait 3 minutes, turn it on 5) repeat with the Phone Master switches from the guide on (the app's Settings > Background transfers opens the guide).
+- Pass for "the daemon helps": during screen-off the beats continue at gapMs about 1000 with no `THAWED` warning. FAIL for the idea (expected): beats stop about 10 s after screen-off, a `THAWED after Nms` warning appears at screen-on, and a `Hiber ... freeze uid` line appears near the stop. Record which, with the phone model and firmware, in the Results log.
+- Source: `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md` (section 7), ERROR-074. Status: TODO
+
+### HIB-03a - Transsion set-up guide opens the right screens
+- Setup: same phone, release or debug build. Steps: Settings > Background transfers; the guide dialog should list the system exemption (hidden once granted) and four manual steps; tap Open on each that has a button.
+- Pass: Open reaches the Phone Master power and auto-start screens, or falls back to Flash's app details page; record which class names resolved (`OEM_BATTERY` log) so the candidate list can be trimmed. Status: TODO
+
