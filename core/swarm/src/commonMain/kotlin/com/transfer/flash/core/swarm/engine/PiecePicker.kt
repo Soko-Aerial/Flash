@@ -40,6 +40,7 @@ public class PiecePicker(
         localBitfield: Bitfield,
         availablePeers: List<PeerPieceAvailability>,
         inFlightByPiece: Map<Int, Set<String>>,
+        canDuplicate: ((Int) -> Boolean)? = null,
     ): Int? {
         val totalPieces = localBitfield.size
         if (totalPieces == 0 || localBitfield.isComplete() || availablePeers.isEmpty()) {
@@ -61,6 +62,7 @@ public class PiecePicker(
 
             val inFlight = inFlightByPiece[p] ?: emptySet()
             if (inFlight.size >= maxInFlightPerPiece) continue // Exceeded in-flight limit
+            if (inFlight.isNotEmpty() && canDuplicate != null && !canDuplicate(p)) continue
 
             // Count available holders who don't already have this piece in flight
             var holders = 0

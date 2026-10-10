@@ -63,7 +63,7 @@ public class SwarmEngine(
                         }
                         for ((peerId, peer) in peers) {
                             if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
-                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands)
+                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands, event.nowMs)
                             }
                         }
                     } else if (content.state == SwarmLifecycleState.OFFERED && content.role == SwarmRole.RECEIVER) {
@@ -75,7 +75,7 @@ public class SwarmEngine(
                         manifestHandler.maybeFetchManifest(content, peers, ::isPeerAllowed, commands, event.nowMs)
                         for ((peerId, peer) in peers) {
                             if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
-                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands)
+                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands, event.nowMs)
                             }
                         }
                     }
@@ -100,15 +100,7 @@ public class SwarmEngine(
                     if (content.state != SwarmLifecycleState.CANCELLED) {
                         for ((peerId, peer) in peers) {
                             if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(content.groupId, peerId)) {
-                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands)
-                                if (!content.isComplete && content.piecesDone > 0) {
-                                    commands.add(
-                                        SwarmCommand.Send(
-                                            peerId,
-                                            SwarmFrame.Have(content.groupId, content.root, content.persistedBits.toRanges()),
-                                        )
-                                    )
-                                }
+                                peerHandler.sendSummary(peerId, content.groupId, localServingEnabled, systemSuspended, commands, event.nowMs)
                             }
                         }
                     }
@@ -125,7 +117,7 @@ public class SwarmEngine(
                         )
                         for ((peerId, peer) in peers) {
                             if (peer.isConnected && peer.hasSw1Feature && isPeerAllowed(it.groupId, peerId)) {
-                                peerHandler.sendSummary(peerId, it.groupId, localServingEnabled, systemSuspended, commands)
+                                peerHandler.sendSummary(peerId, it.groupId, localServingEnabled, systemSuspended, commands, event.nowMs)
                             }
                         }
                     }
@@ -559,6 +551,23 @@ public class SwarmEngine(
         val (onlineHolders, _) = computeHolderStats(content)
         val isOriginConn = peers[content.originId]?.isConnected == true
 
+        val onlineCandidatePeers = peers.values.filter {
+            it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
+        }
+        var hasOnlineHoldersForMissing = false
+        for (p in onlineCandidatePeers) {
+            val pcs = p.contentStates[content.root]
+            if (pcs != null && !pcs.bitfield.isEmpty()) {
+                for (i in 0 until content.totalPieces) {
+                    if (!content.bitfield.get(i) && pcs.bitfield.get(i)) {
+                        hasOnlineHoldersForMissing = true
+                        break
+                    }
+                }
+            }
+            if (hasOnlineHoldersForMissing) break
+        }
+
         val offlineCandidatePeers = peers.values.filter {
             !it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
         }
@@ -586,7 +595,7 @@ public class SwarmEngine(
                 isOrigin = content.role == SwarmRole.ORIGIN,
                 isOriginConnected = isOriginConn,
                 isOriginSourceLost = content.originSourceLost,
-                hasConnectedHoldersForMissing = onlineHolders > 0,
+                hasConnectedHoldersForMissing = hasOnlineHoldersForMissing,
                 hasDisconnectedHoldersForMissing = hasOfflineHolders,
             )
         )

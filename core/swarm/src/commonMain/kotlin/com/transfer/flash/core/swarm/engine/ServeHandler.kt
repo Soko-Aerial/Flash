@@ -159,6 +159,7 @@ internal class ServeHandler(
                         root = content.root,
                         bits = content.bitfield.toByteArray(),
                         bytesDone = content.bytesDone,
+                        totalSize = content.totalSize,
                     )
                 )
                 // ERROR-109: the requester asked for this piece and must hear that it will not come, or it waits on a
@@ -230,10 +231,12 @@ internal class ServeHandler(
         }
 
         for (p in piecesToClear) {
-            content.inFlightRequests.remove(e.peerId to p)
-            content.inFlightByPiece[p]?.remove(e.peerId)
-            val pLen = content.pieceLength(p).toLong()
-            requestWindow.removeInFlightBytes(pLen)
+            val reqTime = content.inFlightRequests.remove(e.peerId to p)
+            if (reqTime != null) {
+                content.inFlightByPiece[p]?.remove(e.peerId)
+                val pLen = content.pieceLength(p).toLong()
+                requestWindow.removeInFlightBytes(pLen)
+            }
         }
 
         if (e.frame.reason != SwarmRejectReason.BUSY && e.frame.reason != SwarmRejectReason.ELSEWHERE) {

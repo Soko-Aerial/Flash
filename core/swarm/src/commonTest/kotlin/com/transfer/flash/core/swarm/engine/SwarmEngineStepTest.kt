@@ -285,6 +285,51 @@ class SwarmEngineStepTest {
     }
 
     @Test
+    fun `step 4i2 - finalize failure with empty badPieces marks FAILED instead of deadlocking in ACTIVE`() {
+        val (manifest, _) = createManifest()
+        val engine = SwarmEngine(
+            config = SwarmConfig(autoAcceptIncoming = true),
+            localDeviceId = "rxNode",
+            seed = 42L,
+        )
+        engine.handle(SwarmEvent.PeerUp("peerA", setOf("sw1"), 1000L))
+        engine.handle(
+            SwarmEvent.Announced(
+                groupId = "g1",
+                messageId = "m1",
+                originId = "origin",
+                originKey = "keyOrig",
+                root = manifest.root,
+                totalSize = manifest.totalSize,
+                pieceSize = manifest.pieceSize,
+                fileName = "test.bin",
+                mime = "application/octet-stream",
+                sentAtMs = 1000L,
+                expiresAtMs = 10_000_000L,
+                isOrigin = false,
+                nowMs = 1000L,
+            )
+        )
+        engine.handle(SwarmEvent.ManifestComplete("peerA", "g1", manifest.root, manifest, true, 1000L))
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, 0, 1000L))
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, 1, 1050L))
+
+        // Whole-file hash verification fails without specific bad piece info (e.g. empty list)
+        val failCmds = engine.handle(
+            SwarmEvent.FinalizeResult("g1", manifest.root, ok = false, badPieces = emptyList(), nowMs = 1100L)
+        )
+        val snap = engine.snapshot().contents[Pair("g1", manifest.root)]
+        assertNotNull(snap)
+        assertEquals(SwarmLifecycleState.FAILED, snap.state, "Must transition directly to FAILED, not deadlock in ACTIVE")
+        val pubRow = failCmds.filterIsInstance<SwarmCommand.PublishRow>().firstOrNull()
+        assertNotNull(pubRow)
+        assertEquals(SwarmLifecycleState.FAILED, pubRow.state)
+        val persistCmd = failCmds.filterIsInstance<SwarmCommand.PersistRecord>().firstOrNull()
+        assertNotNull(persistCmd)
+        assertEquals(SwarmFailReason.DAMAGED.reasonCode, persistCmd.record.failReason)
+    }
+
+    @Test
     fun `step 4j - origin local cancel signs tombstone and broadcasts CANCEL`() {
         val (manifest, _) = createManifest()
         val engine = SwarmEngine(
@@ -515,5 +560,74 @@ class SwarmEngineStepTest {
         assertNotNull(snap)
         assertEquals(SwarmWaitReason.WAITING_FOR_SYSTEM, snap.waitReason)
         assertTrue(cmds.filterIsInstance<SwarmCommand.SignTombstone>().isEmpty(), "SystemSuspend must never sign tombstone (INV-10)")
+    }
+
+    @Test
+    fun `step 4o - unsolicited or duplicate reject does not drain request window in flight bytes`() {
+        val (manifest, _) = createManifest(pieceCount = 2, pieceSize = 65536)
+        val engine = SwarmEngine(
+            config = SwarmConfig(autoAcceptIncoming = true),
+            localDeviceId = "rxNode",
+            seed = 42L,
+        )
+        engine.handle(SwarmEvent.PeerUp(peerId = "origin", features = setOf("sw1"), nowMs = 1000L))
+        engine.handle(
+            SwarmEvent.Announced(
+                groupId = "g1",
+                messageId = "m1",
+                originId = "origin",
+                originKey = "keyOrig",
+                root = manifest.root,
+                totalSize = manifest.totalSize,
+                pieceSize = manifest.pieceSize,
+                fileName = "test.bin",
+                mime = "application/octet-stream",
+                sentAtMs = 1000L,
+                expiresAtMs = 100_000L,
+                isOrigin = false,
+                manifest = manifest,
+                nowMs = 1000L,
+            )
+        )
+        engine.handle(
+            SwarmEvent.HaveAllArrived(
+                peerId = "origin",
+                frame = SwarmFrame.HaveAll(groupId = "g1", root = manifest.root),
+                nowMs = 1000L,
+            )
+        )
+
+        // Request piece 0
+        engine.handle(SwarmEvent.Tick(nowMs = 1000L))
+        // Unsolicited reject for piece 1 (which was never requested)
+        engine.handle(
+            SwarmEvent.RejectArrived(
+                peerId = "origin",
+                frame = SwarmFrame.Reject(
+                    groupId = "g1",
+                    root = manifest.root,
+                    reason = SwarmRejectReason.BUSY,
+                    retryAfterMs = 1000L,
+                    scopeAll = false,
+                    pieces = listOf(1),
+                ),
+                nowMs = 1100L,
+            )
+        )
+
+        // Piece 0 arrives and completes
+        engine.handle(
+            SwarmEvent.PieceArrived(
+                peerId = "origin",
+                groupId = "g1",
+                root = manifest.root,
+                index = 0,
+                bytes = ByteArray(65536),
+                verified = true,
+                nowMs = 1200L,
+            )
+        )
+        // Check that budget did not underflow to negative or corrupt other in-flight tracking
+        assertTrue(engine.debugDump().contains("inFlightBytes=0"))
     }
 }

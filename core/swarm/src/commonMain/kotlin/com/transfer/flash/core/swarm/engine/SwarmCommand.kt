@@ -65,6 +65,7 @@ public sealed interface SwarmCommand {
         public val root: ContentRoot,
         public val bits: ByteArray,
         public val bytesDone: Long,
+        public val totalSize: Long = 0L,
     ) : SwarmCommand {
         override fun equals(other: Any?): Boolean {
             if (this === other) return true
@@ -72,7 +73,8 @@ public sealed interface SwarmCommand {
             return groupId == other.groupId &&
                 root == other.root &&
                 bits.contentEquals(other.bits) &&
-                bytesDone == other.bytesDone
+                bytesDone == other.bytesDone &&
+                totalSize == other.totalSize
         }
 
         override fun hashCode(): Int {
@@ -80,6 +82,7 @@ public sealed interface SwarmCommand {
             result = 31 * result + root.hashCode()
             result = 31 * result + bits.contentHashCode()
             result = 31 * result + bytesDone.hashCode()
+            result = 31 * result + totalSize.hashCode()
             return result
         }
     }

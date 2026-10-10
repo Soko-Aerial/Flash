@@ -1,5 +1,393 @@
 # Progress Log
 
+## 2026-10-10 — Swarm File Transfer Subsystem: Audit, Functional Bug Fixes & Performance Optimization
+
+### Worked on
+- Audited the entire Swarm subsystem (`:core:swarm`, `:core:engine`, `:core:transfer`) covering sans-IO state machine determinism, frame codecs, AIMD flow control, disk storage preallocation, and inter-peer gossip.
+- Documented all findings in `docs/reports/2026-10-10-swarm-audit-and-fixes.md`.
+- Implemented and verified fixes for 5 functional bugs and 3 performance/resource bottlenecks:
+  1. **SWM-BUG-01 (Critical):** Fixed missing partial piece gossip where late-joining or late-accepting peers received `PARTIAL` state in Summary without any `Have` frames, leaving late peers stalled with 0 known pieces.
+  2. **SWM-BUG-02 (Critical):** Fixed finalize verification failure deadlock where whole-file SHA-256 failure with empty `badPieces` set state to `ACTIVE` with `isComplete == true`, resulting in a permanent transfer hang with 0 B/s and no retry.
+  3. **SWM-BUG-03 (High):** Fixed wait classification in `SwarmEngine.updateWaitReason` where peers were marked as active holders without checking if they held any pieces locally missing.
+  4. **SWM-BUG-04 (High):** Fixed flow control budget drain in `ServeHandler.handleRejectArrived` where unsolicited/duplicate Reject frames drained global in-flight bytes.
+  5. **SWM-BUG-05 (High):** Fixed partial storage preallocation hazard by passing authoritative `totalSize` in `SwarmCommand.SyncAndPersistBits` and `SwarmDriver.executeCommand`.
+  6. **SWM-PERF-06 (Medium):** Implemented airtime-aware endgame piece request gating in `PiecePicker` and `TransferScheduler`, preventing redundant 2x duplicate requests on the Wi-Fi medium when an in-flight request is on track.
+  7. **SWM-PERF-07 (Medium):** Eliminated Android Binder IPC thrashing during origin/seeder piece serving by caching open `SourceHandle` instances in `SwarmDriver` with lifecycle cleanup on cancellation and retention cleanup.
+  8. **SWM-PERF-08 (Medium):** Bounded `PeerOrderedInbox.DEFAULT_CAPACITY` from 64 to 16, preventing multi-peer RAM buffer bloat (~256 MB -> ~64 MB) on Android heaps.
+
+### Changed
+- `core/swarm/.../ServeHandler.kt`:
+  - Guarded `handleRejectArrived` to only deduct `removeInFlightBytes` when `content.inFlightRequests.remove(e.peerId to p)` was actually in flight.
+- `core/swarm/.../SwarmEngine.kt`:
+  - Fixed `hasConnectedHoldersForMissing` in `updateWaitReason` to verify `(!content.bitfield.get(i) && pcs.bitfield.get(i))`.
+  - Removed duplicate `Have` frame emission from `ContentRegistered` since `sendSummary` now handles it universally.
+  - Propagated `event.nowMs` into `peerHandler.sendSummary` across all call sites.
+- `core/swarm/.../SwarmCommand.kt`:
+  - Added `totalSize: Long = 0L` to `SwarmCommand.SyncAndPersistBits` with updated `equals()` and `hashCode()`.
+- `core/swarm/.../TransferScheduler.kt`:
+  - Passed `totalSize = content.totalSize` in `SyncAndPersistBits` emission.
+  - Guarded `handleFinalizeResult`: if `badPieces` is empty upon failure, transitions immediately to `FAILED(DAMAGED)` instead of deadlocking in `ACTIVE`.
+  - Added `canDuplicate` lambda to `pickNextPiece` based on peer EWMA speed and request elapsed time.
+- `core/swarm/.../PeerHandler.kt`:
+  - Updated `sendSummary` to automatically emit `SwarmFrame.Have` for any partial content, updating `pcs.lastHaveSentMs` and clearing pending haves.
+  - Removed redundant Have emissions in `handlePeerUp`.
+- `core/swarm/.../PiecePicker.kt`:
+  - Added `canDuplicate: ((Int) -> Boolean)? = null` parameter to `pickNextPiece` to gate dual requests in endgame mode.
+- `core/swarm/.../SwarmDriver.kt`:
+  - In `executeCommand(SyncAndPersistBits)`, passed `expectedSize` (from `cmd.totalSize` or record) to `storage.openPartial()`.
+  - Added cached `openSourceHandles = SyncMap<String, SourceHandle>()` with `getOrCreateSourceHandle`, `closeSourceHandle`, and `closeAllSourceHandles`.
+  - Updated `readPieceBytes` to read from cached `SourceHandle` instances instead of opening and closing per piece, and hardened `handle.readAt` in `runCatching` with auto-eviction on `ClosedChannelException`/`IOException`.
+  - Closed source handles on `cancelLocal`, `cancelAsOrigin`, and `runRetentionCleanup`.
+- `core/engine/.../PeerOrderedInbox.kt`:
+  - Reduced `DEFAULT_CAPACITY` from 64 to 16.
+- Unit Tests Added / Updated:
+  - `SwarmEngineStepTest.kt`: Added `step 4o` (unsolicited reject flow control check) and `step 4i2` (finalize failure with empty badPieces marks FAILED).
+  - `SwarmWaitReasonRecoveryTest.kt`: Added `WAITING_FOR_SENDER when connected peer holds only pieces already held locally`.
+  - `SwarmFirstContactTest.kt`: Added `partial holder sends Have frames alongside Summary so late peer learns pieces`.
+  - `PiecePickerTest.kt`: Added `endgame mode respects canDuplicate gate to save airtime`.
+
+### Verification
+- `:core:swarm:jvmTest`: All tests passing 100% green.
+- `:core:engine:jvmTest`: All 148 tests (including 3-endpoint origin drop & rejoin `SwarmInteropTest`) passing 100% green.
+
+### Next AI
+- Continue with physical device testing or proceed to next roadmap phase.
+
+---
+
+## 2026-10-10 — Notification System Audit, Edge-Case Hardening & Missing Capabilities
+
+### Worked on
+- In-depth audit of the notification subsystem for bugs, edge cases, lifecycle hazards, and missing features.
+- Fixed Android `BroadcastReceiver` lifecycle risk in `FlashTransferActionReceiver` using `goAsync()`.
+- Fixed notification channel Binder IPC thrashing by guarding `initChannels` with an `AtomicBoolean`.
+- Fixed completed notification retention when tapping "Open" by routing via `MainActivity` (`ACTION_OPEN_FILE`) with automatic dismissal and error handling.
+- Fixed historical transfer re-notification on engine reconnect in `FlashBackgroundService`.
+- Added notification progress rate-limiting (500ms debounce) to prevent Android notification drops and IPC overhead.
+- Added inbound transfer offer notifications (`showTransferOffered`) with inline "Accept" and "Decline" actions.
+- Added inline "Retry" action button to failed transfer notifications (`showTransferFailed`).
+- Added hours support to ETA formatting (`${hours}h ${mins}m left`) and 0-byte initial progress formatting.
+
+### Changed
+- `FlashTransferActionReceiver.kt`:
+  - Added `val pendingResult = goAsync()` and `try ... finally { pendingResult.finish() }` to guarantee Android OS does not terminate the process while background coroutines execute transfer actions.
+  - Added fallback boot (`DiscoveryEngineHolder.ensureStarted`) if repository is uninitialized when action arrives.
+  - Added handlers for `ACTION_ACCEPT_TRANSFER` and `ACTION_DECLINE_TRANSFER`.
+- `FlashNotificationManager.kt`:
+  - Guarded `initChannels` with `AtomicBoolean(false)` to prevent redundant system_server Binder transactions on every notification tick.
+  - Added `showTransferOffered` with "Accept" and "Decline" action buttons on `CHANNEL_TRANSFERS`.
+  - Added "Retry" action button to `showTransferFailed` routing to `ACTION_RESUME_TRANSFER`.
+  - Updated `showTransferCompleted`'s "Open" action to route via `MainActivity` (`ACTION_OPEN_FILE`) with `EXTRA_FILE_PATH` and `EXTRA_TRANSFER_ID`.
+  - Enhanced `formatNotificationEta` to support hours for long transfers (>= 3600s).
+  - Enhanced size display in progress and paused notifications to show "0 B / totalSize" rather than blank before the first chunk is received.
+- `FlashBackgroundService.kt`:
+  - Added `lastProgressPostMs` and `lastProgressPercent` maps to throttle progress notifications to 500ms intervals or percent changes during high-speed multi-chunk transfers.
+  - Prevented clearing `previousTransferStates` on transient `repo == null` emissions to eliminate re-notification of old completed/failed transfers.
+  - Handled `FlashTransferState.Offered` by displaying `showTransferOffered`.
+  - Optimized `updateTransferNotification` to only invoke `NotificationManager.notify` when active count or discovery mode changes.
+- `MainActivity.kt`:
+  - Added `ACTION_OPEN_FILE` handler in `handleIncomingIntent` that immediately cancels the transfer notification, launches `openAttachment` with mime type fallbacks, and navigates to Transfers tab.
+- `AndroidManifest.xml`:
+  - Added `ACTION_ACCEPT_TRANSFER` and `ACTION_DECLINE_TRANSFER` to `FlashTransferActionReceiver` `<intent-filter>`.
+- `FlashNotificationContentTest.kt`:
+  - Added unit tests for `transferOfferedNotificationContent`, `formatNotificationEta` with hours, and 0 B progress formatting (21/21 tests passed).
+
+### Verification
+- Unit Tests: `:app:testDebugUnitTest --tests com.transfer.flash.notifications.FlashNotificationContentTest` passed 21/21 tests green.
+- Full App Test Suite: `:app:testDebugUnitTest` completed 162 tasks with 0 failures.
+- Multiplatform Desktop: `:desktop:compileKotlinJvm` completed 53 tasks with 0 errors.
+
+### Remaining
+- Physical multi-device verification (TEST-BACKLOG UIP-01..10).
+
+### Next AI
+Proceed with physical device testing on available hardware.
+
+---
+
+## 2026-10-10 — Notification System Revamp: Transfer Progress, Completion, Paused State & PTT Notification Bug Fixes
+
+### Worked on
+Investigated and resolved notification system bugs:
+1. File download/transfer completion bug where notifications remained stuck in the status bar after a transfer finished.
+2. Push-To-Talk (PTT) notification latency, unclickable Stop/Leave button, and FGS type transition faults.
+3. System notification channels, action broadcast routing, paused states, and collision-free ID partitioning.
+
+### Changed
+- `FlashNotificationManager.kt`:
+  - Centralized idempotent channel registration (`initChannels`) creating 6 purpose-specific channels: `flash_messages` (IMPORTANCE_DEFAULT), `flash_transfers` (IMPORTANCE_DEFAULT), `flash_ptt` (IMPORTANCE_HIGH, silent), `flash_pairing` (IMPORTANCE_HIGH), `flash_calls_v2` (IMPORTANCE_HIGH, silent), `flash_discovery_bg` (IMPORTANCE_LOW).
+  - Separated ID spaces to eliminate collision risks: `NOTIFICATION_ID_BASE = 2000` (conversations 2000..2999), `TRANSFER_NOTIFICATION_BASE = 3000` (transfers 3000..3999), dedicated alerts at 310 (PTT ping), 311 (PTT tap-to-talk), 320 (pairing), and FGS services at 41, 42, 43.
+  - Implemented `showTransferProgress`: live progress notification on `CHANNEL_TRANSFERS` with percentage, speed, ETA, and Cancel action.
+  - Implemented `showTransferCompleted`: posts dismissable (`setOngoing(false)`, `setAutoCancel(true)`, `setProgress(0, 0, false)`) notification with direct "Open" action via `FileProvider` and "View Transfers" navigation.
+  - Implemented `showTransferPaused`: replaces ongoing progress notification with swipeable paused state (`setOngoing(false)`, `setAutoCancel(true)`) with "Resume" and "View Transfers" actions, preventing frozen downloading bars.
+  - Implemented `showTransferFailed` and `clearTransfer` / `clearAllTransfers`.
+  - Updated action PendingIntents: `createCancelTransferPendingIntent` and `createResumeTransferPendingIntent` route via `PendingIntent.getBroadcast` to `FlashTransferActionReceiver` to bypass Android 12+ background service start limits.
+- `FlashTransferActionReceiver.kt`:
+  - Created unexported broadcast receiver handling `ACTION_CANCEL_TRANSFER` and `ACTION_RESUME_TRANSFER`, immediately dismissing notifications and dispatching to `DiscoveryEngineHolder.currentTransfers()`.
+- `FlashBackgroundService.kt`:
+  - Decoupled FGS notification ID 41 from transfer progress: ID 41 represents the background mesh keepalive with `setProgress(0, 0, false)`.
+  - Avoided repeated `startForeground` calls after initial promotion; subsequent idle/active count updates use `NotificationManager.notify` to eliminate Android 14+ FGS type downgrade `IllegalArgumentException`.
+  - Fixed rapid completion edge case: handled transfers starting directly in `Completed` or `Failed` (`prevState == null`), and restored progress on initial collection if already `Transferring` or `Verifying`.
+- `MainActivity.kt`:
+  - Dismisses transfer notification upon receiving `ACTION_VIEW_TRANSFERS` when `EXTRA_TRANSFER_ID` is present.
+  - Clears all transfer notifications when user taps "Clear history".
+- `PttSessionService.kt` & `PttSessionActionReceiver.kt`:
+  - Fixed unresponsive Stop/Leave button by using explicit component intent (`Intent(this, PttSessionActionReceiver::class.java)`) and adding `<intent-filter>` in `AndroidManifest.xml`.
+  - Enters foreground with stable union of granted FGS types (`MEDIA_PLAYBACK` + `MICROPHONE` if granted + `CONNECTED_DEVICE`), preventing Android 14+ FGS downgrade crashes on Talking ↔ Listening floor switches.
+  - Redirected PTT pings and tap-to-talk notifications from `CHANNEL_MESSAGES` to `CHANNEL_PTT`.
+- Unit tests (`FlashNotificationContentTest.kt`):
+  - Added comprehensive tests for transfer progress formatting (receiving/sending/swarm), paused state formatting, speed and ETA formatting, and strict partition separation of notification ID ranges (18/18 tests passed).
+
+### Verification
+- Unit Tests: `:app:testDebugUnitTest --tests com.transfer.flash.notifications.FlashNotificationContentTest` passed 18/18 tests green.
+- Full App Unit Test Suite: `:app:testDebugUnitTest` passed 162 tasks with 0 failures.
+- Clean compilation: `:app:compileDebugKotlin` and test compilation successful.
+
+### Remaining
+- Live multi-device validation for file transfers and PTT notifications on physical devices (TEST-BACKLOG UIP-01..10).
+
+### Next AI
+Proceed with device verification on physical hardware.
+
+---
+
+## 2026-10-10 — Transsion Hiber: On-Demand Session-Aware Audio Shield Activation & Auto-Release on Idle (Live Device Verified)
+
+### Worked on
+- Implemented session-aware on-demand activation and auto-release for Transsion Hiber keep-alive:
+  1. **Activate Only During Transfers / Active Sessions:** Silent audio shield engages only when active file transfers (`Transferring`, `Verifying`, `Queued`), active calls, PTT, or connected mesh peer sessions are underway.
+  2. **Auto-Release on Idle:** When transfers complete and peers disconnect (or idle with 0 transfers/sessions), immediately stops `AudioTrack` (`audioTrack.stop()`, `audioTrack.release()`) and abandons audio focus (`abandonAudioFocusRequest`), allowing the phone to enter natural deep sleep.
+  3. **Graceful Audio Focus Loss:** Listens to `OnAudioFocusChangeListener`: on `AUDIOFOCUS_LOSS` (e.g. Spotify/YouTube playback) or `AUDIOFOCUS_LOSS_TRANSIENT`, immediately pauses silent audio without fighting for focus; attempts fallback to Bluetooth scan if available, or relies on background transfer traffic shield ($>10\text{ KB/s}$, Bit 14); resumes playback on `AUDIOFOCUS_GAIN` if session remains active.
+- Integrated reactive session monitoring into `FlashBackgroundService` via Kotlin Coroutines `combine` on `transfersFlow`, `sessionsFlow`, `callFlow`, and `pttFlow`.
+- Dynamically resolves and toggles foreground service type `mediaPlayback` (types=16 when idle, types=18/19 when audio tier active).
+- Updated unit tests in `TranssionHiberKeepAliveTest.kt` covering non-Transsion rejection, idle auto-release, active session elevation, tier demotion/elevation, and focus loss handling.
+- Verified on physical Infinix X6882B (`13114704AP002141`, Android 14).
+
+### Verification
+- **Unit Tests:** `:app:testDebugUnitTest --tests com.transfer.flash.debug.TranssionHiberKeepAliveTest` passed 100% (7/7 tests green).
+- **Desktop Compilation:** `:desktop:compileKotlinJvm` compiled clean without errors.
+- **Physical Device Live Verification (Infinix X6882B):**
+  - Boot/Startup Idle: Flash started with `types=16` (`connectedDevice`), `tier=NONE`, 0 audio focus held in `dumpsys audio`, 0 AudioTrack created.
+  - Active Peer Connection: As soon as a peer connected on local Wi-Fi, `Session activity evaluated: active=true (peers=1)` fired; keep-alive transitioned `NONE -> AUDIO`, requested audio focus (`res=1`), and dynamically promoted FGS to `types=18` (`connectedDevice|mediaPlayback`).
+  - Peer Disconnect / Idle: When Wi-Fi disconnected (0 peers, 0 active transfers), `Session activity evaluated: active=false (peers=0)` fired; keep-alive immediately logged:
+    `HIBER_KEEPALIVE: Transitioning keep-alive tier from AUDIO to NONE`
+    `HIBER_KEEPALIVE: Tier 3 (AUDIO) stopped: released audio focus and AudioTrack for deep sleep`
+    `SERVICE: resolveForegroundServiceType: SDK_INT=34, types=16, tier=NONE`
+    `dumpsys audio` verified Flash held zero audio focus.
+  - Peer Reconnection: As soon as Wi-Fi re-established, keep-alive re-engaged seamlessly: `NONE -> AUDIO`, `res=1`, `types=18`.
+  - Bluetooth Availability: When Bluetooth active list contained Flash, keep-alive promoted to `BLUETOOTH` (`types=17`), releasing audio focus and AudioTrack. When Bluetooth was disabled via `svc bluetooth disable`, it cascaded immediately to `AUDIO` (`types=19`), and when Bluetooth re-enabled, it returned to `BLUETOOTH` and released audio focus.
+
+### Remaining
+- Swarm transfer multi-peer performance benchmarks on physical devices (TEST-BACKLOG UIP-01..10).
+
+---
+
+## 2026-10-10 — Transsion Hiber: Active List Verification in Keep-Alive & Flawless Screen-Off Audio Defense (Live Device Verified)
+
+### Worked on
+- Analyzed Bluetooth consistency and investigated whether Flash can reliably stay in `bluetooth.active.applist`.
+- Added active `bluetooth.active.applist` verification to [`TranssionHiberKeepAlive.kt`](file:///C:/Users/KaliOxygen/Downloads/Flash/app/src/main/java/com/transfer/flash/debug/TranssionHiberKeepAlive.kt) so the app does not blindly assume Bluetooth protects it unless the package is confirmed present in the global list.
+- Deployed updated build to physical Infinix X6882B (`installDebug`) and verified screen-off behavior live.
+
+### Found
+1. **Bluetooth Active List Inconsistency:**
+   - In `/apex/com.android.btservices/app/Bluetooth.apk`, `GattService`'s field `mAdapterService` shadows the superclass field `ProfileService.mAdapterService`, causing `mAdapterService` to be `null` in `ProfileService.updateActiveAppName`, which silently skips the `Settings.Global.putString` write.
+   - Additionally, `mActvieAppList` is an in-memory `HashMap` inside `com.android.bluetooth`. If `Settings.Global` is out of sync, repeated scan calls skip writing because `mActvieAppList.containsKey` is already true.
+   - Non-system third-party apps cannot write `Settings.Global` directly (`WRITE_SECURE_SETTINGS` denied).
+   - Consequently, relying solely on Bluetooth to shield Flash without verifying the list leads to Hiber freezes (`freeze uid: 10482 ... pids:[31088]`).
+2. **Dynamic Fallback Verification:**
+   - When Flash started (PID 2261), `TranssionHiberKeepAlive` checked `bluetooth.active.applist`. Finding `com.transfer.flash` absent, it immediately cascaded to `tier=AUDIO`.
+   - `FlashBackgroundService` dynamically promoted with `types=18` (`connectedDevice|mediaPlayback`).
+   - Screen was turned off for sustained deep sleep:
+     - Hiber logged: `Hiber/importantScene: audio_mix: packageName=com.transfer.flash` every 5-10 seconds.
+     - Process 2261 remained **100% UNFROZEN** in deep sleep (`/dev/freezer/frozen/tasks` remained empty).
+     - Zero socket kills, zero audio heard, zero special permissions required.
+
+### Changed
+- Added active list verification in `TranssionHiberKeepAlive.canUseBluetoothTier` and `startBluetooth`.
+- All unit tests pass in `:app:testDebugUnitTest`. Clean compile on `:desktop:compileKotlinJvm`.
+- Verified live on physical Infinix X6882B.
+
+### Found
+1. **Overlay Window Screen-Off Failure (HIB-17 isolated):**
+   - With `SYSTEM_ALERT_WINDOW` granted, 1x1 transparent overlay attached successfully.
+   - Screen ON: Hiber logs `Hiber/importantScene: float_window: packageName=com.transfer.flash`.
+   - Screen OFF (`keyevent 26`): WindowManager marks `isShown = false`. Disassembly of `/system/framework/services.jar` (`TranAppStateManager.updateWindowState`) reveals `visible` strictly requires `isShown && hasSurface`. The moment `isShown` becomes false, `STATUS_SYSTEM_WINDOW` is cleared.
+   - Exactly 5.6s after screen-off, Hiber logged `Hiber/sceneManager: freeze uid: 10482 com.transfer.flash pids:[31550] costTime=1ms` and placed the PID into `/dev/freezer/frozen/tasks:31550`.
+   - On screen wake, probe logged a 61,178 ms late beat gap (`LATE BEAT gapMs=61178: NOT SCHEDULED while CPU awake (frozen/throttled)`).
+   - Conclusion: Floating overlay window keeps the app unfrozen while screen is ON, but fails during screen-off.
+2. **Silent Audio Focus Shield Re-verification (HIB-14):**
+   - Tested probe with silent AudioTrack (`AudioTrack.MODE_STATIC` zero buffer) and audio focus gain.
+   - Screen OFF for 25+ consecutive seconds:
+     - 0 late beats (`gapMs ~1004`, `upGapMs ~1004`).
+     - Hiber logged `Hiber/importantScene: audio_mix: packageName=com.transfer.flash` every check.
+     - Process completely absent from `/dev/freezer/frozen/tasks`.
+     - 0% CPU, 0 network bytes, 0 sound heard, zero permissions required.
+3. **Bluetooth Stack Reverse Engineering (`Bluetooth.apk`):**
+   - Disassembled Dalvik callers of `ProfileService.updateActiveAppName(pkg, profileId)`:
+     - `AdvertiseManager.startAdvertisingSet`: called on BLE advertising.
+     - `GattNativeInterface.gattClientConnect`: called on GATT client connection.
+     - `BluetoothSocketManagerBinder.createSocketChannelNative` / `connectSocketNative`: called on RFCOMM socket listen/connect.
+   - It records into in-memory `HashMap` `mActvieAppList` and only persists to `Settings.Global.putString("bluetooth.active.applist")` when new packages are added.
+
+### Changed
+- Updated `docs/network/TRANSSION-HIBER-INTERNALS.md` and `docs/testing/TEST-BACKLOG.md` (HIB-17 updated to SCREEN-ON PASS / SCREEN-OFF FAIL).
+- Updated `logs/handoff.md` and `logs/progress.md`.
+
+### Found
+1. **AppWidget Bitmask Finding:**
+   - In `TranImportantScene`, `IMPORT_SCREEN_ON_FLAG = 392191` contains Bit 6 (`widget` = 64).
+   - However, `IMPORT_SCREEN_OFF_FLAG = 389052` (0x5EFBC) omits Bit 6 (bit 6 is 0).
+   - This proves why an AppWidget keeps an app alive while screen is on/dozing, but allows Hiber to freeze the UID after 20s of screen-off deep sleep.
+2. **Bluetooth Stack Mechanism Decoded (`Bluetooth.apk`):**
+   - `ProfileService.updateActiveAppName(pkg, profileId)` concatenates the calling app into `mStrAppList` and calls `Settings.Global.putString(resolver, "bluetooth.active.applist", mStrAppList)`.
+   - Callers include `GattService.startScan` (BLE scanning), `GattService.startAdvertisingSet` (BLE advertising), and `GattService.clientConnect`.
+   - The Bluetooth stack never removes packages from this list while Bluetooth remains enabled!
+3. **Hardware Proof 1 — Bluetooth Active List (HIB-12 PASS):**
+   - Starting a low-power BLE scan (`BluetoothLeScanner.startScan`) immediately populated `com.transfer.flash` into `bluetooth.active.applist`.
+   - On screen-off deep sleep, Hiber evaluated Bit 15 (`IMPORT_BLUE_TOOTH`), logged `Hiber/importantScene: bt: packageName=com.transfer.flash`, and completely skipped the freeze!
+   - 38 consecutive screen-off beats with 0 late beats (`gapMs ~1004`, `upGapMs ~1004`). `/sys/fs/cgroup/uid_10482/cgroup.freeze` remained strictly `0`.
+   - **Zero audio focus, zero sound, zero network bytes!**
+4. **Hardware Proof 2 — Floating Overlay Window (HIB-17 PASS):**
+   - A 1x1 transparent `TYPE_APPLICATION_OVERLAY` window with `SYSTEM_ALERT_WINDOW` triggers `STATUS_SYSTEM_WINDOW` in `TranAppStateManager`.
+   - Evaluated by Bit 2 (`IMPORT_FLOAT_WINDOW = 4` in `IMPORT_SCREEN_OFF_FLAG = 389052`).
+   - 58 consecutive screen-off beats with 0 late beats, `cgroup.freeze = 0`, 0% CPU, and 0 bytes network.
+
+### Changed
+- Updated `DaemonProbeService.kt` with `--ez overlay true` and `--ez btScan true` probes.
+- Added permissions to `app/src/debug/AndroidManifest.xml`.
+- Updated `docs/network/TRANSSION-HIBER-INTERNALS.md`, `docs/testing/TEST-BACKLOG.md` (HIB-12 marked PASS, HIB-16 updated, HIB-17 marked PASS), `logs/handoff.md`, and `logs/progress.md`.
+
+### Worked on
+Dug deeper into firmware disassembly (`services.jar`, `hiber.json`, `TranImportantScene`, `TranAppStateManager`, `ProcessList`) to uncover all non-audio bypass mechanisms against Transsion's OEM freezer `Hiber`, and tested `AppZygote` shield on physical Infinix X6882B.
+
+### Found
+1. **AppZygote (Bit 18 = 262144 in `IMPORT_SCREEN_OFF_FLAG = 389052`):**
+   - Transsion's `ProcessList.startProcessLocked` explicitly checks `hostingRecord.usesAppZygote()`.
+   - When an isolated service declares `android:useAppZygote="true"` and `android:isolatedProcess="true"`, `ProcessList` invokes `TranAppStateManager.getInstance().hookUpdateAppZygote(definingUid, definingPkg, true)`.
+   - Transsion immediately unfreezes the UID (`Hiber/hiberManager: unfreeze: uid=10482, packageName=com.transfer.flash, reason=AppZygote`).
+   - On screen-off, `TranImportantScene.isImportantState` checks `appZygoteState(uid, pkgName, STATUS_APP_ZYGOTE.getId())` -> sets reason `app-zygote`, logs `Hiber/importantScene: app_zygote: packageName=...`, and returns `true`, completely skipping the cgroup freeze.
+2. **Other Uncovered Exemption Levers:**
+   - **Bluetooth Active List (Bit 15 = 32768):** `Settings.Global.getString("bluetooth.active.applist")` populated by `com.android.btservices.apex` during active GATT/RFCOMM sessions (Flash ADR-101 Radio link).
+   - **Float Window (Bit 2 = 4):** `WindowManagerService.hookSetShown` for `TYPE_APPLICATION_OVERLAY` sets `STATUS_SYSTEM_WINDOW`. Requires `SYSTEM_ALERT_WINDOW`.
+   - **VPN Service (Bit 16 = 65536):** `ConnectivityService` sets `STATUS_VPN`. Requires VPN consent.
+   - **Screen Record (Bit 3 = 8):** Active `MediaProjection` token sets `STATUS_SCREEN_RECORD`.
+   - **FCM Broadcast (c2dm.intent.RECEIVE):** Whitelisted in `hiber.json` lines 461-473 for high-priority remote wake-up.
+   - **Active Transfer Traffic (Bit 14 = 16384):** >= 10 KB/s + ongoing notification (HIB-13).
+
+### Physical Device Verification (Infinix X6882B, Android 14, UID 10482)
+- Implemented `ZygoteShieldService.kt` and bound it in `FlashBackgroundService.kt` with audio keep-alive disabled.
+- On launch, logcat recorded: `Hiber/hiberManager: unfreeze: uid=10482, packageName=com.transfer.flash, reason=AppZygote.`
+- Process tree confirmed: main app `com.transfer.flash`, `com.transfer.flash_zygote`, and isolated worker `com.transfer.flash:com.transfer.flash.debug.ZygoteShieldService`.
+- Screen turned off for multiple cycles: `/sys/fs/cgroup/uid_10482/cgroup.freeze` remained strictly `0`. Process absent from `/dev/freezer/frozen/tasks`.
+- Open TCP socket (`TCP_ESTABLISHED`) survived intact without disconnection.
+- **Audio impact:** ZERO audio focus, ZERO audio tracks, ZERO volume changes, ZERO battery drain, ZERO special permissions required!
+
+### Changed
+- Created `ZygoteShieldService.kt` (`android:useAppZygote="true"`, `android:isolatedProcess="true"`).
+- Added `ZygoteShieldService` to `AndroidManifest.xml`.
+- Integrated binding into `FlashBackgroundService.kt`.
+- Updated `docs/network/TRANSSION-HIBER-INTERNALS.md`, `docs/testing/TEST-BACKLOG.md` (HIB-15 PASS), `logs/handoff.md`, and `logs/progress.md`.
+
+## 2026-10-09 - Transsion: Hiber freeze completely bypassed via Audio Focus shield (HIB-14 PASS, HIB-02 PASS)
+
+### Worked on
+Investigated Transsion's OEM freezer `Hiber` on physical Infinix X6882B (Android 14, XOS 14.5.0, user 0, UID 10482) to find a permanent, working solution preventing background freezes and socket destruction.
+
+### Found
+- Firmware reverse-engineering: Disassembled `/system/framework/services.jar` (`dexdump -d`) focusing on `com.android.server.am.hiber.scene.TranImportantScene`, `TranAppStateManager`, and `com.android.server.audio.MediaFocusControl`.
+- In `IMPORT_SCREEN_OFF_FLAG = 389052`, Bit 5 = 32 (`STATUS_AUDIO_FOCUS` / `audio_mix`) is an active, unconditional screen-off exemption for non-blacklisted apps.
+- When an app requests audio focus (`AudioManager.requestAudioFocus`) and plays an audio stream, Android's `MediaFocusControl` synchronously triggers `TranAppStateManager.getInstance().hookAudioFocusChanged(focusGain, uid, packageName)`.
+- Upon screen-off, `TranImportantScene.isImportantState` checks `isAllowAudioMix(packageName)` (returns `true` as Flash is not in `AudioMixBlackList`), finds Flash UID in `getAudioFocusList(STATUS_AUDIO_FOCUS.getId())`, sets `pkg.setImportantReason("audio_mix")`, and returns `true`, completely exempting the app from the cgroup freeze.
+- Socket preservation: `TranNetworkManagementServiceMultiLinkImpl.destorySocketByUid` only destroys sockets 3.0s *after* a UID is frozen. Because `audio_mix` prevents the freeze, sockets are never destroyed.
+
+### Physical Device Verification (Infinix X6882B)
+- Tested with `DaemonProbeService` (HIB-14) over 183 consecutive seconds of screen-off:
+  - 183 consecutive heartbeats with 0 late beats (`gapMs=1002`, `upGapMs=1002`).
+  - Hiber logged: `Hiber/importantScene: audio_mix: packageName=com.transfer.flash` every cycle.
+  - `/sys/fs/cgroup/uid_10482/cgroup.freeze` remained `0` (unfrozen).
+  - Process was completely absent from `/dev/freezer/frozen/tasks` (while 700+ other tasks on the device were frozen).
+  - Network consumed: 0 bytes. Volume: inaudible zero PCM. CPU load: 0% (hardware DSP static loop).
+- Production validation:
+  - Launched Flash `MainActivity`, backgrounded app, turned screen off.
+  - Verified in logcat: `HIBER_KEEPALIVE: Audio focus requested: result=1`, `HIBER_KEEPALIVE: Transsion Hiber keep-alive active (audio_mix shield acquired)`.
+  - Open TCP sockets (`cat /proc/net/tcp6`) for UID 10482 remained active in `TCP_ESTABLISHED` and `TCP_LISTEN` without disconnects or socket kills.
+
+### Changed
+- Created `TranssionHiberKeepAlive.kt` with lifecycle management (`start`, `stop`, `ensureShieldArmed`), zero-volume static PCM loop (`AudioTrack.MODE_STATIC`), screen broadcast receiver (`ACTION_SCREEN_OFF`), and focus handling.
+- Integrated into `FlashBackgroundService.kt` for Transsion OEM devices (`OemBatteryOptimizationHelper.currentBrand == OemBrand.TRANSSION`), dynamically adding `FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK`.
+- Updated `app/src/main/AndroidManifest.xml` with `mediaPlayback` foreground service type.
+- Added unit tests in `TranssionHiberKeepAliveTest.kt`.
+- Updated `docs/network/TRANSSION-HIBER-INTERNALS.md`, `docs/testing/TEST-BACKLOG.md` (HIB-02 marked PASS), and `logs/handoff.md`.
+
+## 2026-10-09 - Transsion: exempt-list check (not reachable) and HIB-13 PASS (traffic + FGS keeps Flash unfrozen)
+
+### Worked on
+Owner asked whether Flash can put itself on Hiber's exempt list.
+
+### Found
+- The user white list (`mUserWhiteAppList`) is written only through `ActivityManagerService.setAppMode` / `addWhiteApp`, guarded by `TranAmHooker.checkApmPermissionLocked`: caller must be uid <= 1000, shell, a system / updated-system / platform-signed app, or `FLAG_PERSISTENT`. Otherwise `SecurityException`. The product lists (`/product/hiber/config/hiber.json`, Griffin JSONs) are read-only and the cloud policy is Transsion's. So an app cannot add itself; no spoofing was attempted. Details: `docs/network/TRANSSION-HIBER-INTERNALS.md` section 4a.
+- HIB-13 PASS (Infinix X6882B, debug probe + 50 KB/s LAN download, FGS + wake lock): `Hiber/importantScene ... is Protected by traffic because of speed 37-59 KB/S`; 100 s screen-off with no `freeze uid`, 118 beats at ~1 s, zero late beats. Control without traffic froze 4 s after start. Idle chat traffic (< 10 KB/s) will not qualify, so this protects active file transfers only.
+
+### Changed
+- Debug only: `DaemonProbeService` gained `--ei trafficKbps N [--es trafficUrl URL]` and `--ez gatt true`; debug manifest declares `BLUETOOTH_CONNECT` and `usesCleartextTraffic`. Release manifests untouched. Internals doc, TEST-BACKLOG 4zv (HIB-12, HIB-13 added; HIB-13 result recorded).
+- Not run: HIB-12 (needs a second BLE device and a runtime grant).
+
+### Remaining / Next AI
+HIB-13b: a real Flash transfer with the screen off (watch `traffic:` lines and whether the WS session survives). HIB-12. Owner decision: ask Transsion to list `com.transfer.flash`; outbox + fast redial UX; FCM only with an ADR. Faking idle traffic to stay alive is NOT recommended (defeats the freezer, battery).
+
+## 2026-10-09 - HIB-11: packet thaw does not exist for Flash; sockets are destroyed 3 s after the freeze
+
+### Found
+With the Windows app connected, phone screen off 3 min: UID frozen at +5 s, never thawed by traffic. `TranNetworkManagementServiceMultiLinkImpl linkTurb destorySocketByUid uid :10482` follows every freeze by exactly 3.0 s (7 of 7). The TCP session dies; at screen-on Flash logs `Software caused connection abort` and redials. Details in TEST-BACKLOG HIB-11 and research doc section 7.
+
+### Meaning
+No setting inside the app or its per-app menus can keep a socket alive through screen-off on this firmware. Delivery while the screen is off must be: durable outbox + redial on screen-on (exists), or a wake-up from outside the process (FCM, needs an ADR) or the BLE/CDM route (HIB-04). Owner decides next.
+
+## 2026-10-09 - Transsion pass 3 on the Infinix; guide class names were wrong (fixed)
+
+### Worked on
+Owner turned on the guide's switches but could not find auto-start and some options were missing. Inspected the phone over adb (`pm dump`, `uiautomator`, screenshots) and re-ran the freeze probe.
+
+### Found
+- The guide's Phone Master class names did not exist on XOS 14.5 / Phone Master 6.3.3; the real ones are under `com.cyin.himgr` (auto-start = "App Launch"). The launcher has no Freezer menu on this firmware. Flash was set Allowed in auto-start, not in any Freezer, but WAS on in Phone Master > Lock screen cleanup.
+- With Flash switched off in Lock screen cleanup (done on the owner's phone, 53 -> 52) Hiber still froze the UID 3 s after screen-off. Details: TEST-BACKLOG 4zv, HIB-10 pass 3.
+- Hiber thaws some apps on network packets (`reason:packet`): new test HIB-11.
+
+### Changed
+`OemBatteryOptimizationHelper` (real class names first, `LOCK_SCREEN_CLEANUP` target), `TranssionSetupGuide` (new step, Freezer step marked "if your phone has it"), unit tests updated (6 steps); `:app:installDebug` green and installed on the phone. Silent audio / daemon stay rejected.
+
+### Next AI
+Run HIB-11 with the Windows peer. Owner's phone keeps Flash OFF in Lock screen cleanup (harmless; turn back on if wanted).
+
+## 2026-10-09 - HIB-10 measured on the connected Infinix: isolated daemon process FAILS (failed approach)
+
+### Worked on
+Installed probe v2 with `:app:installDebug` on the owner's Infinix X6882B (Android 14) and ran it with a wake lock, with and without a Flash screen in the foreground, and through a 90 s screen-off.
+
+### Found
+Hiber freezes the whole UID (`freeze uid: 10482 pids:[32470, 31439]`, the daemon and the main process together) 3-5 s after screen-off, and 5 s after start with the screen on when no activity was open. FGS, deviceidle whitelist and a wake lock (force-released by Hiber) did not prevent it. Screen-off run: 76 s gap, `LATE BEAT ... NOT SCHEDULED while CPU awake`. Details in TEST-BACKLOG 4zv (HIB-10 run 2) and the research doc section 7.
+
+### Decision
+Moving the engine into `:lan_daemon` is rejected (no code was moved). Open routes: the guide's Phone Master switches (HIB-10 pass 3 still owed), Companion Device Manager + BLE (HIB-04), stay-awake while charging (HIB-09), vendor contact. Silent audio stays declined.
+
+### Gotcha
+The device's logcat ring buffer is 256 KiB and evicts the probe's lines within a minute: capture with a streaming `adb logcat -v time > file` started before the test, not `logcat -d` afterwards.
+
+## 2026-10-09 - HIB-10 run 1 on a real Infinix, probe v2
+
+### Worked on
+Owner ran the debug probe on an Infinix (Android 14, uid 10482) and reported it "still getting stopped after sometime".
+
+### Found
+`:lan_daemon` logged `THAWED` gaps of 5.8-79 s with the same pid, so the process is suspended, not killed. The result is NOT conclusive about Hiber: the probe used `elapsedRealtime` (counts CPU-suspend time), held no wake lock and logged no screen state, and the logcat filter `Hiber:*` matched nothing (tag is `Hiber/sceneManager`).
+
+### Changed
+`DaemonProbeService` v2 (debug only): logs `upGapMs` (uptime clock), `interactive`, `idle`, `wakeLock`, screen ON/OFF, an optional `--ez wakelock true` PARTIAL_WAKE_LOCK, and a `LATE BEAT` verdict (`CPU WAS SUSPENDED` vs `NOT SCHEDULED while CPU awake`). `:app:assembleDebug` green. Not run on a phone yet.
+
+### Next AI
+Owner re-runs HIB-10 with the new procedure (TEST-BACKLOG 4zv). Decision rule in the research doc section 7 stands; still no engine move.
+
 ## 2026-10-09 - Transsion: set-up guide, daemon-process probe (HIB-03, HIB-10), silent audio declined
 
 ### Worked on
