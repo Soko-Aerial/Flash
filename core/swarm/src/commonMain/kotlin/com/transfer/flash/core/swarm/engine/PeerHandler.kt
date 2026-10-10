@@ -36,7 +36,7 @@ internal class PeerHandler(
         if (peer.hasSw1Feature) {
             for (gid in sharedGroups) {
                 if (peer.allowedGroups[gid] == false) continue
-                sendSummary(e.peerId, gid, localServingEnabled, systemSuspended, commands)
+                sendSummary(e.peerId, gid, localServingEnabled, systemSuspended, commands, e.nowMs)
             }
             for (content in contents.values) {
                 if (peer.allowedGroups[content.groupId] == false) continue
@@ -44,20 +44,6 @@ internal class PeerHandler(
                     // ERROR-109: a member that was away hears that this origin cannot serve (already signed, no new signature).
                     if (content.originSourceLost) {
                         commands.add(SwarmCommand.Send(peerId = e.peerId, frame = lost))
-                    }
-                }
-                if (!content.isComplete && content.piecesDone > 0) {
-                    val ranges = content.persistedBits.toRanges()
-                    if (ranges.isNotEmpty()) {
-                        commands.add(
-                            SwarmCommand.Send(
-                                peerId = e.peerId,
-                                frame = SwarmFrame.Have(content.groupId, content.root, ranges),
-                            )
-                        )
-                        val pcs = peer.getOrCreateContent(content.root, content.totalPieces)
-                        pcs.lastHaveSentMs = e.nowMs
-                        pcs.pendingHavePieces.clear()
                     }
                 }
             }
@@ -125,7 +111,7 @@ internal class PeerHandler(
             }
         }
         if (peerNeedsOurState && peer.isConnected && peer.hasSw1Feature && peer.allowedGroups[e.frame.groupId] != false) {
-            sendSummary(e.peerId, e.frame.groupId, localServingEnabled, systemSuspended, commands)
+            sendSummary(e.peerId, e.frame.groupId, localServingEnabled, systemSuspended, commands, e.nowMs)
         }
         onSummaryApplied(e.frame.groupId)
     }
@@ -206,7 +192,7 @@ internal class PeerHandler(
                     content.outstandingServeBytes.remove(peerId)
                 }
             } else if (peer.isConnected && peer.hasSw1Feature) {
-                sendSummary(peerId, e.groupId, localServingEnabled, systemSuspended, commands)
+                sendSummary(peerId, e.groupId, localServingEnabled, systemSuspended, commands, e.nowMs)
             }
         }
 
@@ -221,6 +207,7 @@ internal class PeerHandler(
         localServingEnabled: Boolean,
         systemSuspended: Boolean,
         commands: MutableList<SwarmCommand>,
+        nowMs: Long = 0L,
     ) {
         val groupTombstones = tombstones.values.filter { it.groupId == groupId }
         val entries = ArrayList<SwarmFrame.Summary.Entry>()
@@ -250,6 +237,26 @@ internal class PeerHandler(
                 ),
             )
         )
+
+        // For partial content, send HAVE ranges so peer can populate piece bitfield (SWM-BUG-01)
+        for (content in contents.values.filter { it.groupId == groupId }) {
+            if (!content.isComplete && content.piecesDone > 0) {
+                val ranges = content.persistedBits.toRanges()
+                if (ranges.isNotEmpty()) {
+                    commands.add(
+                        SwarmCommand.Send(
+                            peerId = peerId,
+                            frame = SwarmFrame.Have(content.groupId, content.root, ranges),
+                        )
+                    )
+                    peers[peerId]?.let { peer ->
+                        val pcs = peer.getOrCreateContent(content.root, content.totalPieces)
+                        if (nowMs > 0L) pcs.lastHaveSentMs = nowMs
+                        pcs.pendingHavePieces.clear()
+                    }
+                }
+            }
+        }
     }
 
     private fun heldBytesOf(bits: com.transfer.flash.core.swarm.model.Bitfield, content: ContentState): Long {

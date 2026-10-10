@@ -49,6 +49,16 @@ internal class TransferScheduler(
                 localBitfield = content.bitfield,
                 availablePeers = availPeers,
                 inFlightByPiece = content.inFlightByPiece,
+                canDuplicate = { p ->
+                    val fetcher = content.inFlightByPiece[p]?.firstOrNull()
+                    val sentAt = if (fetcher != null) content.inFlightRequests[fetcher to p] ?: nowMs else nowMs
+                    val elapsedMs = nowMs - sentAt
+                    val pcs = if (fetcher != null) peers[fetcher]?.contentStates?.get(content.root) else null
+                    val speedBps = pcs?.ewmaSpeedBps ?: 1_000_000.0
+                    val expectedMs = if (speedBps > 0.0) ((content.pieceSize.toDouble() * 1000.0) / speedBps).toLong() else 500L
+                    val thresholdMs = maxOf(300L, (expectedMs * 15L) / 10L)
+                    elapsedMs >= thresholdMs
+                },
             ) ?: break
 
             val sourceCandidates = candidatePeers.mapNotNull { p ->
@@ -163,6 +173,7 @@ internal class TransferScheduler(
                 root = content.root,
                 bits = content.bitfield.toByteArray(),
                 bytesDone = content.bytesDone,
+                totalSize = content.totalSize,
             )
         )
         content.persistedBits.set(e.index, true)
@@ -217,7 +228,7 @@ internal class TransferScheduler(
             }
         } else {
             content.verifyFailures++
-            if (content.verifyFailures == 1) {
+            if (content.verifyFailures == 1 && e.badPieces.isNotEmpty()) {
                 for (bad in e.badPieces) {
                     if (bad in 0 until content.totalPieces) {
                         content.bitfield.set(bad, false)
@@ -233,6 +244,7 @@ internal class TransferScheduler(
                         root = content.root,
                         bits = content.bitfield.toByteArray(),
                         bytesDone = content.bytesDone,
+                        totalSize = content.totalSize,
                     )
                 )
                 onStateChanged(content)

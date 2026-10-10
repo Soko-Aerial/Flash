@@ -142,4 +142,49 @@ class SwarmFirstContactTest {
         val again = sentTo(origin.handle(SwarmEvent.SummaryArrived("rx", rxSummary, 2_200L)), "rx")
         assertEquals(1, again.filterIsInstance<SwarmFrame.Summary>().size, "a new session starts the exchange afresh")
     }
+
+    @Test
+    fun `partial holder sends Have frames alongside Summary so late peer learns pieces`() {
+        val m = manifest(pieceCount = 4)
+        val peerA = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "peerA", seed = 1L)
+        val peerB = SwarmEngine(SwarmConfig(autoAcceptIncoming = true), "peerB", seed = 2L)
+
+        // peerA announces and receives piece 0
+        peerA.handle(announce(m, origin = false, withManifest = true))
+        peerA.handle(SwarmEvent.PieceStored("g1", m.root, 0, 1_000L))
+
+        // peerB connects and sends Summary(NONE)
+        peerA.handle(SwarmEvent.PeerUp("peerB", setOf("sw1"), 1_100L))
+        peerB.handle(SwarmEvent.PeerUp("peerA", setOf("sw1"), 1_100L))
+        peerB.handle(announce(m, origin = false, withManifest = true))
+
+        val bSummary = SwarmFrame.Summary(
+            "g1",
+            emptyList(),
+            listOf(SwarmFrame.Summary.Entry(m.root, com.transfer.flash.core.swarm.codec.SwarmContentState.NONE, true)),
+        )
+        val aReply = sentTo(peerA.handle(SwarmEvent.SummaryArrived("peerB", bSummary, 1_200L)), "peerB")
+
+        // peerA must have sent Summary(PARTIAL) and Have for piece 0
+        val summaryFrame = aReply.filterIsInstance<SwarmFrame.Summary>().single()
+        assertEquals(com.transfer.flash.core.swarm.codec.SwarmContentState.PARTIAL, summaryFrame.entries.single().state)
+        val haveFrames = aReply.filterIsInstance<SwarmFrame.Have>()
+        assertEquals(1, haveFrames.size, "peerA must emit Have frame for its partial pieces")
+        assertEquals(0, haveFrames.single().ranges.single().start)
+        assertEquals(1, haveFrames.single().ranges.single().count)
+
+        // When peerB applies peerA's reply, peerB knows peerA holds piece 0 and issues a request
+        val rxCmds = mutableListOf<SwarmCommand>()
+        for (f in aReply) {
+            when (f) {
+                is SwarmFrame.Summary -> rxCmds += peerB.handle(SwarmEvent.SummaryArrived("peerA", f, 1_300L))
+                is SwarmFrame.Have -> rxCmds += peerB.handle(SwarmEvent.HaveArrived("peerA", f, 1_300L))
+                else -> {}
+            }
+        }
+        val peerBState = peerB.snapshot()
+        assertEquals(1, peerBState.contents[Pair("g1", m.root)]?.holdersOnline, "peerB must record 1 online holder")
+        assertTrue(sentTo(rxCmds, "peerA").any { it is SwarmFrame.Request }, "peerB should now request pieces from peerA")
+    }
 }
+

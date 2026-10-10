@@ -22,6 +22,7 @@ import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceMath
 import com.transfer.flash.core.swarm.model.PieceReadStatus
 import com.transfer.flash.core.swarm.model.PieceStorage
+import com.transfer.flash.core.swarm.model.SourceHandle
 import com.transfer.flash.core.swarm.model.StorageFinalizeResult
 import com.transfer.flash.core.swarm.model.SwarmContentRecord
 import com.transfer.flash.core.swarm.model.SwarmLifecycleState
@@ -88,6 +89,24 @@ public class SwarmDriver(
 
     private val cachedManifests = SyncMap<ContentRoot, SwarmManifest>()
     private val manifestFragments = SyncMap<ContentRoot, List<ByteArray>>()
+    private val openSourceHandles = SyncMap<String, SourceHandle>()
+
+    private suspend fun getOrCreateSourceHandle(uri: String): SourceHandle? {
+        openSourceHandles[uri]?.let { return it }
+        val handle = storage.openSource(uri) ?: return null
+        openSourceHandles[uri] = handle
+        return handle
+    }
+
+    private fun closeSourceHandle(uri: String) {
+        openSourceHandles.remove(uri)?.close()
+    }
+
+    private fun closeAllSourceHandles() {
+        for (uri in openSourceHandles.keysSnapshot()) {
+            openSourceHandles.remove(uri)?.close()
+        }
+    }
 
     /** Groups this device holds swarm content for; the gate is asked about each before a peer is told anything. */
     private val knownGroups = SyncSet<String>()
@@ -140,7 +159,8 @@ public class SwarmDriver(
                     when (cmd) {
                         is SwarmCommand.SyncAndPersistBits -> {
                             val key = partialKeyFor(cmd.root, cmd.groupId)
-                            storage.openPartial(key, cmd.bytesDone)?.use { it.sync() }
+                            val expectedSize = if (cmd.totalSize > 0L) cmd.totalSize else (contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone)
+                            storage.openPartial(key, expectedSize)?.use { it.sync() }
                             stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
                         }
                         is SwarmCommand.PersistRecord -> {
@@ -589,20 +609,34 @@ public class SwarmDriver(
 
         // 1. Try origin sourceUri if origin
         if (record?.role == SwarmRole.ORIGIN && record.sourceUri != null) {
-            storage.openSource(record.sourceUri)?.use { handle ->
+            val handle = getOrCreateSourceHandle(record.sourceUri)
+            if (handle != null) {
                 val buf = ByteArray(len)
-                val read = handle.readAt(offset, buf, len)
+                val read = runCatching { handle.readAt(offset, buf, len) }.getOrElse {
+                    closeSourceHandle(record.sourceUri)
+                    -1
+                }
                 if (read == len) return buf
+                if (read < 0) {
+                    closeSourceHandle(record.sourceUri)
+                }
             }
         }
 
         // 2. Try finalPath if receiver completed
         val finalPath = record?.finalPath
         if (finalPath != null) {
-            storage.openSource(finalPath)?.use { handle ->
+            val handle = getOrCreateSourceHandle(finalPath)
+            if (handle != null) {
                 val buf = ByteArray(len)
-                val read = handle.readAt(offset, buf, len)
+                val read = runCatching { handle.readAt(offset, buf, len) }.getOrElse {
+                    closeSourceHandle(finalPath)
+                    -1
+                }
                 if (read == len) return buf
+                if (read < 0) {
+                    closeSourceHandle(finalPath)
+                }
             }
         }
 
@@ -610,7 +644,7 @@ public class SwarmDriver(
         val key = partialKeyFor(root, groupId)
         storage.openPartial(key, record?.totalSize ?: 0L)?.use { handle ->
             val buf = ByteArray(len)
-            val read = handle.readAt(offset, buf, len)
+            val read = runCatching { handle.readAt(offset, buf, len) }.getOrDefault(-1)
             if (read == len) return buf
         }
 
@@ -791,6 +825,10 @@ public class SwarmDriver(
 
     override suspend fun cancelLocal(transferId: String) {
         val key = findKey(transferId) ?: return
+        contentRecords[key]?.let { rec ->
+            rec.sourceUri?.let { closeSourceHandle(it) }
+            rec.finalPath?.let { closeSourceHandle(it) }
+        }
         eventChannel.send(SwarmEvent.LocalCancel(key.first, key.second, asOrigin = false, nowMs = now()))
     }
 
@@ -799,6 +837,10 @@ public class SwarmDriver(
         reason: SwarmTombstoneReason,
     ) {
         val key = findKey(transferId) ?: return
+        contentRecords[key]?.let { rec ->
+            rec.sourceUri?.let { closeSourceHandle(it) }
+            rec.finalPath?.let { closeSourceHandle(it) }
+        }
         eventChannel.send(SwarmEvent.LocalCancel(key.first, key.second, asOrigin = true, reason = reason, nowMs = now()))
     }
 
@@ -821,6 +863,7 @@ public class SwarmDriver(
         // The files are named by partialKeyFor(); the key stored on a record is not guaranteed to match it.
         val activeKeys = activeRecords.map { partialKeyFor(it.root, it.groupId) }.toSet()
         storage.purgeOrphanedPartials(activeKeys)
+        closeAllSourceHandles()
         eventChannel.send(SwarmEvent.Tick(nowMs))
     }
 

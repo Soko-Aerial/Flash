@@ -99,6 +99,31 @@ class PiecePickerTest {
     }
 
     @Test
+    fun `endgame mode respects canDuplicate gate to save airtime`() {
+        val picker = PiecePicker(SeededRandom(1L))
+        val local = Bitfield(100)
+        for (i in 0 until 99) local.set(i, true)
+        val missingPiece = 99
+
+        val peerA = Bitfield(100).apply { set(missingPiece, true) }
+        val peerB = Bitfield(100).apply { set(missingPiece, true) }
+        val peers = listOf(
+            PeerPieceAvailability("peerA", peerA),
+            PeerPieceAvailability("peerB", peerB),
+        )
+
+        val inFlight1 = mapOf(missingPiece to setOf("peerA"))
+
+        // When canDuplicate is false, duplicate request is suppressed
+        val suppressed = picker.pickNextPiece(local, peers, inFlight1, canDuplicate = { false })
+        assertNull(suppressed)
+
+        // When canDuplicate is true (e.g. piece timeout exceeded), duplicate request is permitted
+        val allowed = picker.pickNextPiece(local, peers, inFlight1, canDuplicate = { true })
+        assertEquals(missingPiece, allowed)
+    }
+
+    @Test
     fun `returns null when no piece is available`() {
         val picker = PiecePicker(SeededRandom(1L))
         val local = Bitfield(5)

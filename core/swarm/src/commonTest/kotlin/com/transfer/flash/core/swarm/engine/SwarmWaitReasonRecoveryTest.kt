@@ -232,4 +232,28 @@ class SwarmWaitReasonRecoveryTest {
         engine.handle(SwarmEvent.PeerUp("holder1", setOf("sw1"), nowMs = 2000L))
         assertNull(engine.snapshot().contents[key]?.waitReason)
     }
+
+    @Test
+    fun `WAITING_FOR_SENDER when connected peer holds only pieces already held locally`() {
+        val (manifest, _) = createManifest(pieceCount = 4, pieceSize = 65536)
+        val engine = SwarmEngine(config = SwarmConfig(), localDeviceId = "rx", seed = 42L)
+        val key = setupActiveReceiver(manifest, originId = "origin", engine = engine)
+
+        // Store piece 0 locally on rx
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, index = 0, nowMs = 1100L))
+
+        // Peer holder connects and advertises piece 0 (which rx ALREADY has, but rx still misses pieces 1, 2, 3)
+        engine.handle(SwarmEvent.PeerUp("peer1", setOf("sw1"), nowMs = 1200L))
+        engine.handle(
+            SwarmEvent.HaveArrived(
+                peerId = "peer1",
+                frame = SwarmFrame.Have("g1", manifest.root, ranges = listOf(PieceRange(0, 1))),
+                nowMs = 1300L,
+            )
+        )
+
+        // Origin is offline, and peer1 has NO pieces that rx is missing!
+        // Must be WAITING_FOR_SENDER, NOT null / active transferring!
+        assertEquals(SwarmWaitReason.WAITING_FOR_SENDER, engine.snapshot().contents[key]?.waitReason)
+    }
 }

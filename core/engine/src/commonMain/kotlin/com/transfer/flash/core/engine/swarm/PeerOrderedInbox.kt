@@ -86,6 +86,6 @@ internal class PeerOrderedInbox(
     }
 
     internal companion object {
-        const val DEFAULT_CAPACITY: Int = 64
+        const val DEFAULT_CAPACITY: Int = 16
     }
 }
