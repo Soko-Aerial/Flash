@@ -5,25 +5,37 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.transfer.flash.core.calling.model.FlashCallState
+import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
+import com.transfer.flash.MainActivity
+import com.transfer.flash.notifications.FlashNotificationManager
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
@@ -41,10 +53,27 @@ import kotlinx.coroutines.launch
 class FlashBackgroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var keepAlive: TranssionHiberKeepAlive? = null
+    private val previousTransferStates = ConcurrentHashMap<String, FlashTransferState>()
+    private val lastProgressPostMs = ConcurrentHashMap<String, Long>()
+    private val lastProgressPercent = ConcurrentHashMap<String, Int>()
+    private var lastActiveTransfersCount = -1
+    private var lastDiscoveryMode: com.transfer.flash.core.discovery.core.FlashDiscoveryMode? = null
+    private var isFirstTransferCollection = true
+    private var isForeground = false
 
     override fun onCreate() {
         super.onCreate()
         activeInstance = this
+        keepAlive = TranssionHiberKeepAlive(
+            context = this,
+            onTierChanged = { oldTier, newTier ->
+                Log.i(TAG, "Transsion Hiber keep-alive tier changed: $oldTier -> $newTier")
+                val transfers = DiscoveryEngineHolder.currentTransfers()?.activeTransfers?.value ?: emptyList()
+                updateTransferNotification(transfers)
+            },
+        )
+        keepAlive?.start()
         scope.launch {
             runCatching {
                 DiscoveryEngineHolder.ensureStarted(applicationContext)
@@ -58,15 +87,14 @@ class FlashBackgroundService : Service() {
             Log.w(TAG, "Foreground promotion refused (background start restriction) — retaining service instance in background; promotion will be retried upon screen-on / network availability")
         }
 
-        // Observe active transfers to update ongoing notification with progress, speed, ETA, and cancel action
+        observeSessionActivity()
+
+        // Observe active transfers via transfersFlow to survive engine restarts and post completions/failures
         scope.launch {
-            var transferRepo: FlashTransferRepository? = null
-            while (transferRepo == null && isActive) {
-                transferRepo = DiscoveryEngineHolder.currentTransfers()
-                if (transferRepo == null) delay(500)
-            }
-            transferRepo?.activeTransfers?.collect { transfers ->
-                updateTransferNotification(transfers)
+            DiscoveryEngineHolder.transfersFlow.collectLatest { repo: FlashTransferRepository? ->
+                repo?.activeTransfers?.collect { transfers: List<FlashTransfer> ->
+                    handleTransfersChanged(transfers)
+                }
             }
         }
 
@@ -98,6 +126,15 @@ class FlashBackgroundService : Service() {
         if (activeInstance == this) {
             activeInstance = null
         }
+        previousTransferStates.clear()
+        lastProgressPostMs.clear()
+        lastProgressPercent.clear()
+        lastActiveTransfersCount = -1
+        lastDiscoveryMode = null
+        isFirstTransferCollection = true
+        isForeground = false
+        keepAlive?.stop()
+        keepAlive = null
         scope.cancel()
         super.onDestroy()
     }
@@ -126,7 +163,7 @@ class FlashBackgroundService : Service() {
         super.onTimeout(startId, fgsType)
     }
 
-    private fun buildIdleNotification(): Notification {
+    private fun buildIdleNotification(activeTransfersCount: Int = 0): Notification {
         val mode = DiscoveryEngineHolder.currentDiscoveryMode()
         val (title, text) = when (mode) {
             com.transfer.flash.core.discovery.core.FlashDiscoveryMode.STANDARD ->
@@ -140,33 +177,43 @@ class FlashBackgroundService : Service() {
             com.transfer.flash.core.discovery.core.FlashDiscoveryMode.RECEIVE_KIOSK ->
                 "Flash is in kiosk mode" to "Advertising kiosk availability."
         }
+        val tapIntent = PendingIntent.getActivity(
+            this,
+            NOTIFICATION_ID,
+            Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val bodyText = if (activeTransfersCount > 0) {
+            "$text • $activeTransfersCount active transfer(s)"
+        } else {
+            text
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(text)
+            .setContentText(bodyText)
             .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
+            .setContentIntent(tapIntent)
+            .setProgress(0, 0, false)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
 
     private fun startAsForeground(): Boolean {
-        // Channels exist from API 26; minSdk is 24, where calling these threw NoSuchMethodError and
-        // took the background service down on Android 7.x (lint NewApi, audit Phase 4.4).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-                NotificationChannel(
-                    CHANNEL_ID,
-                    "Flash nearby presence",
-                    NotificationManager.IMPORTANCE_LOW,
-                ),
-            )
-        }
+        FlashNotificationManager.initChannels(this)
         val notification: Notification = buildIdleNotification()
+        val fgsType = resolveForegroundServiceType()
+        Log.i(TAG, "Calling startForeground with NOTIFICATION_ID=$NOTIFICATION_ID, fgsType=$fgsType")
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                startForeground(NOTIFICATION_ID, notification, fgsType)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isForeground = true
             true
         } catch (error: Exception) {
             Log.e(TAG, "startForeground refused", error)
@@ -174,103 +221,182 @@ class FlashBackgroundService : Service() {
         }
     }
 
-    private fun updateTransferNotification(transfers: List<FlashTransfer>) {
-        val active = transfers.filter { it.state == FlashTransferState.Transferring }
-        val manager = getSystemService(NotificationManager::class.java) ?: return
-        if (active.isEmpty()) {
-            val notification = buildIdleNotification()
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
+    private fun observeSessionActivity() {
+        scope.launch {
+            DiscoveryEngineHolder.transfersFlow.collectLatest { repo: FlashTransferRepository? ->
+                val transfersFlow: StateFlow<List<FlashTransfer>> = repo?.activeTransfers ?: MutableStateFlow(emptyList<FlashTransfer>())
+                while (isActive && DiscoveryEngineHolder.currentNetwork() == null) {
+                    delay(300)
                 }
-            } catch (t: Throwable) {
-                manager.notify(NOTIFICATION_ID, notification)
+                val network = DiscoveryEngineHolder.currentNetwork()
+                val calling = DiscoveryEngineHolder.currentCalling()
+                val ptt = DiscoveryEngineHolder.currentPttSession()
+
+                val sessionsFlow = network?.activeSessions ?: MutableStateFlow(emptyMap())
+                val callFlow = calling?.activeCall ?: MutableStateFlow(null)
+                val pttFlow = ptt?.state ?: MutableStateFlow(PttFloorState.Idle)
+
+                combine(transfersFlow, sessionsFlow, callFlow, pttFlow) { transfers, sessions, callState, pttState ->
+                    val hasActiveTransfers = transfers.any {
+                        it.state == FlashTransferState.Transferring ||
+                        it.state == FlashTransferState.Verifying ||
+                        it.state == FlashTransferState.Queued
+                    }
+                    val hasConnectedPeers = sessions.isNotEmpty()
+                    val isCallActive = callState != null && callState.state != FlashCallState.ENDED
+                    val isPttActive = pttState !is PttFloorState.Idle
+
+                    val isActive = hasActiveTransfers || hasConnectedPeers || isCallActive || isPttActive
+                    Log.i(TAG, "Session activity evaluated: active=$isActive (activeTransfers=$hasActiveTransfers count=${transfers.size}, peers=${sessions.size}, call=$isCallActive, ptt=$isPttActive)")
+                    isActive
+                }.collect { isSessionActive ->
+                    keepAlive?.setSessionActive(isSessionActive)
+                }
             }
-        } else {
-            val primary = active.first()
-            val percent = if (primary.bytesTotal > 0) {
-                ((primary.bytesDone * 100) / primary.bytesTotal).toInt().coerceIn(0, 100)
+        }
+    }
+
+    private fun resolveForegroundServiceType(): Int {
+        var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        }
+        if (keepAlive?.currentTier == TranssionHiberKeepAlive.KeepAliveTier.AUDIO &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
+        ) {
+            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        }
+        Log.i(TAG, "resolveForegroundServiceType: SDK_INT=${Build.VERSION.SDK_INT}, types=$types, tier=${keepAlive?.currentTier}")
+        return types
+    }
+
+    private fun handleTransfersChanged(transfers: List<FlashTransfer>) {
+        if (isFirstTransferCollection) {
+            isFirstTransferCollection = false
+            for (transfer in transfers) {
+                previousTransferStates[transfer.id.value] = transfer.state
+                if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
+                    FlashNotificationManager.showTransferProgress(this, transfer)
+                } else if (transfer.state == FlashTransferState.Offered) {
+                    FlashNotificationManager.showTransferOffered(this, transfer)
+                }
+            }
+            updateTransferNotification(transfers)
+            return
+        }
+
+        for (transfer in transfers) {
+            val id = transfer.id.value
+            val prevState = previousTransferStates[id]
+            previousTransferStates[id] = transfer.state
+
+            val percent = if (transfer.bytesTotal > 0L) {
+                ((transfer.bytesDone * 100) / transfer.bytesTotal).toInt().coerceIn(0, 100)
             } else 0
-            val verb = if (primary.direction == FlashTransferDirection.Sending) "Sending" else "Receiving"
-            val title = "$verb ${primary.fileName} — $percent%"
-            val speedText = formatTransferSpeed(primary.speedBytesPerSec)
-            val etaText = formatTransferEta(primary.etaSeconds)
-            val swarmDetail = if (primary.direction == FlashTransferDirection.Sending && primary.canGoOffline) {
-                "You can go offline now"
-            } else if (primary.direction == FlashTransferDirection.Receiving && primary.holdersOnline > 1) {
-                "Getting it from ${primary.holdersOnline} devices"
-            } else null
-            val subtitle = listOfNotNull(
-                swarmDetail,
-                speedText.takeIf { it.isNotBlank() },
-                etaText.takeIf { it.isNotBlank() },
-                if (active.size > 1) "+${active.size - 1} more" else null,
-            ).joinToString(" • ").ifBlank { "$percent% completed" }
 
-            val cancelIntent = Intent(this, FlashBackgroundService::class.java).apply {
-                action = ACTION_CANCEL_TRANSFER
-                putExtra(EXTRA_TRANSFER_ID, primary.id.value)
-            }
-            val cancelPendingIntent = PendingIntent.getService(
-                this,
-                primary.id.value.hashCode(),
-                cancelIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-            )
-            val isSwarmOrigin = primary.direction == FlashTransferDirection.Sending &&
-                DiscoveryEngineHolder.currentTransfers()?.isExternalRow(primary.id.value) == true
-            val cancelLabel = if (isSwarmOrigin) "Cancel for everyone" else "Cancel"
-            val cancelAction = NotificationCompat.Action.Builder(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                cancelLabel,
-                cancelPendingIntent,
-            ).build()
-
-            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle(title)
-                .setContentText(subtitle)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setProgress(100, percent, false)
-                .addAction(cancelAction)
-                .setOngoing(true)
-                .build()
-
-            try {
-                val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-                } else 0
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    startForeground(NOTIFICATION_ID, notification, fgsType)
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
+            if (prevState == null) {
+                when (transfer.state) {
+                    FlashTransferState.Completed -> {
+                        FlashNotificationManager.showTransferCompleted(this, transfer)
+                    }
+                    FlashTransferState.Failed -> {
+                        FlashNotificationManager.showTransferFailed(this, transfer)
+                    }
+                    FlashTransferState.Transferring, FlashTransferState.Verifying -> {
+                        lastProgressPostMs[id] = System.currentTimeMillis()
+                        lastProgressPercent[id] = percent
+                        FlashNotificationManager.showTransferProgress(this, transfer)
+                    }
+                    FlashTransferState.Paused -> {
+                        FlashNotificationManager.showTransferPaused(this, transfer)
+                    }
+                    FlashTransferState.Offered -> {
+                        FlashNotificationManager.showTransferOffered(this, transfer)
+                    }
+                    else -> Unit
                 }
-            } catch (t: Throwable) {
+            } else if (prevState != transfer.state) {
+                when (transfer.state) {
+                    FlashTransferState.Completed -> {
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.showTransferCompleted(this, transfer)
+                    }
+                    FlashTransferState.Failed -> {
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.showTransferFailed(this, transfer)
+                    }
+                    FlashTransferState.Cancelled -> {
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.clearTransfer(this, id)
+                    }
+                    FlashTransferState.Paused -> {
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.showTransferPaused(this, transfer)
+                    }
+                    FlashTransferState.Offered -> {
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.showTransferOffered(this, transfer)
+                    }
+                    FlashTransferState.Transferring, FlashTransferState.Verifying -> {
+                        lastProgressPostMs[id] = System.currentTimeMillis()
+                        lastProgressPercent[id] = percent
+                        FlashNotificationManager.showTransferProgress(this, transfer)
+                    }
+                    else -> Unit
+                }
+            } else if (transfer.state == FlashTransferState.Transferring || transfer.state == FlashTransferState.Verifying) {
+                // Throttle progress updates to at most once per 500ms or on percent change,
+                // avoiding Binder IPC flood and system notification drops
+                val now = System.currentTimeMillis()
+                val lastPost = lastProgressPostMs[id] ?: 0L
+                val lastPercent = lastProgressPercent[id] ?: -1
+                if (now - lastPost >= 500L || percent != lastPercent) {
+                    lastProgressPostMs[id] = now
+                    lastProgressPercent[id] = percent
+                    FlashNotificationManager.showTransferProgress(this, transfer)
+                }
+            }
+        }
+
+        val currentIds = transfers.map { it.id.value }.toSet()
+        val removedIds = previousTransferStates.keys.filter { it !in currentIds }
+        for (removedId in removedIds) {
+            FlashNotificationManager.clearTransfer(this, removedId)
+            previousTransferStates.remove(removedId)
+            lastProgressPostMs.remove(removedId)
+            lastProgressPercent.remove(removedId)
+        }
+
+        updateTransferNotification(transfers)
+    }
+
+    private fun updateTransferNotification(transfers: List<FlashTransfer>) {
+        val active = transfers.filter {
+            it.state == FlashTransferState.Transferring || it.state == FlashTransferState.Verifying
+        }
+        val currentMode = DiscoveryEngineHolder.currentDiscoveryMode()
+        if (active.size == lastActiveTransfersCount && currentMode == lastDiscoveryMode && isForeground) {
+            return
+        }
+        lastActiveTransfersCount = active.size
+        lastDiscoveryMode = currentMode
+
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val notification = buildIdleNotification(activeTransfersCount = active.size)
+        if (isForeground) {
+            manager.notify(NOTIFICATION_ID, notification)
+        } else {
+            if (startAsForeground()) {
+                promotionRefused.set(false)
+            } else {
                 manager.notify(NOTIFICATION_ID, notification)
             }
         }
-    }
-
-    private fun formatTransferSpeed(bytesPerSec: Long): String {
-        if (bytesPerSec <= 0) return ""
-        val mb = bytesPerSec.toDouble() / (1024 * 1024)
-        return if (mb >= 1.0) {
-            String.format(java.util.Locale.US, "%.1f MB/s", mb)
-        } else {
-            val kb = bytesPerSec.toDouble() / 1024
-            String.format(java.util.Locale.US, "%.0f KB/s", kb)
-        }
-    }
-
-    private fun formatTransferEta(etaSeconds: Long): String {
-        if (etaSeconds <= 0) return ""
-        val mins = etaSeconds / 60
-        val secs = etaSeconds % 60
-        return if (mins > 0) "${mins}m ${secs}s left" else "${secs}s left"
     }
 
     companion object {
@@ -313,5 +439,19 @@ class FlashBackgroundService : Service() {
         fun stop(context: Context) {
             context.stopService(Intent(context, FlashBackgroundService::class.java))
         }
+
+        fun reevaluateKeepAlive() {
+            activeInstance?.keepAlive?.reevaluateTier()
+        }
+
+        fun setSessionActive(active: Boolean) {
+            activeInstance?.keepAlive?.setSessionActive(active)
+        }
+
+        fun isSessionActive(): Boolean =
+            activeInstance?.keepAlive?.isSessionActive ?: false
+
+        fun currentKeepAliveTier(): TranssionHiberKeepAlive.KeepAliveTier =
+            activeInstance?.keepAlive?.currentTier ?: TranssionHiberKeepAlive.KeepAliveTier.NONE
     }
 }

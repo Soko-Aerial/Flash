@@ -285,7 +285,9 @@ class FlashCallService : Service() {
                     val declineIntent = PendingIntent.getBroadcast(
                         this,
                         REQUEST_DECLINE,
-                        Intent(FlashCallActionReceiver.ACTION_DECLINE).setPackage(packageName),
+                        Intent(this, FlashCallActionReceiver::class.java).apply {
+                            action = FlashCallActionReceiver.ACTION_DECLINE
+                        },
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     // Android CallStyle.forIncomingCall signature: (person, declineIntent, answerIntent)
@@ -297,7 +299,9 @@ class FlashCallService : Service() {
                     val hangUpIntent = PendingIntent.getBroadcast(
                         this,
                         REQUEST_HANGUP,
-                        Intent(FlashCallActionReceiver.ACTION_HANGUP).setPackage(packageName),
+                        Intent(this, FlashCallActionReceiver::class.java).apply {
+                            action = FlashCallActionReceiver.ACTION_HANGUP
+                        },
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     builder.setStyle(
@@ -347,7 +351,9 @@ class FlashCallService : Service() {
                     val declineIntent = PendingIntent.getBroadcast(
                         this,
                         REQUEST_DECLINE,
-                        Intent(FlashCallActionReceiver.ACTION_DECLINE).setPackage(packageName),
+                        Intent(this, FlashCallActionReceiver::class.java).apply {
+                            action = FlashCallActionReceiver.ACTION_DECLINE
+                        },
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     builder.addAction(android.R.drawable.ic_menu_call, "Answer", answerIntent)
@@ -357,7 +363,9 @@ class FlashCallService : Service() {
                     val hangUpIntent = PendingIntent.getBroadcast(
                         this,
                         REQUEST_HANGUP,
-                        Intent(FlashCallActionReceiver.ACTION_HANGUP).setPackage(packageName),
+                        Intent(this, FlashCallActionReceiver::class.java).apply {
+                            action = FlashCallActionReceiver.ACTION_HANGUP
+                        },
                         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
                     )
                     builder.addAction(android.R.drawable.ic_menu_close_clear_cancel, "Hang up", hangUpIntent)

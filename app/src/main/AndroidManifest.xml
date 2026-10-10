@@ -46,12 +46,25 @@
          and the user's "vibrate for calls" setting. Install-time (normal) permission. -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- No Bluetooth permissions on purpose (release hygiene, 2026-10-09). The Android RFCOMM radio link (ADR-101, BT-03/BT-04)
-         is groundwork only: nothing in the app requests or uses BLUETOOTH_CONNECT / BLUETOOTH_SCAN yet, and declaring them adds
-         a Play permission declaration and an install-time "Nearby devices" line for no benefit. When the Android radio entry is
-         wired, add back: BLUETOOTH (maxSdkVersion 30), BLUETOOTH_CONNECT, BLUETOOTH_SCAN (usesPermissionFlags=neverForLocation,
-         the app never scans) and an optional android.hardware.bluetooth uses-feature (required=false). Source:
-         developer.android.com/develop/connectivity/bluetooth/bt-permissions, checked 2026-10-09. See docs/decisions.md ADR-101. -->
+    <!-- Tier 1 Transsion Hiber keep-alive (HIB-12) and RFCOMM radio link (ADR-101).
+         neverForLocation ensures no background location permission is required. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_CONNECT"
+        tools:targetApi="s" />
+    <!-- Tier 2 Transsion Hiber keep-alive overlay window (HIB-17). -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
 
     <!-- Package visibility (API 30+) for OemBatteryOptimizationHelper's OEM autostart/battery screens. -->
     <queries>
@@ -135,7 +148,8 @@
         <service
             android:name=".debug.FlashBackgroundService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|dataSync" />
+            android:foregroundServiceType="connectedDevice|dataSync|mediaPlayback" />
+
 
         <!-- Quick Settings Tile -->
         <service
@@ -148,6 +162,20 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
+
+        <!-- Home Screen Widget (HIB-16, Transsion STATUS_WIDGET screen-off exemption) -->
+        <receiver
+            android:name=".widget.FlashAppWidgetProvider"
+            android:exported="true"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.transfer.flash.action.PIN_WIDGET" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_flash_info" />
+        </receiver>
 
         <!-- C7 (calling): in-call FGS with microphone (and camera for video calls).
              The service is started while the app is foreground (user taps call / answers
@@ -162,7 +190,13 @@
              route through this receiver to the in-process CallCoordinator. -->
         <receiver
             android:name=".calling.FlashCallActionReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.transfer.flash.calling.ACTION_ANSWER" />
+                <action android:name="com.transfer.flash.calling.ACTION_DECLINE" />
+                <action android:name="com.transfer.flash.calling.ACTION_HANGUP" />
+            </intent-filter>
+        </receiver>
 
         <!-- PTT session (ADR-032 Phase 2): live-session FGS. The manifest declares the
              union the service may claim at runtime (talker: microphone, listener:
@@ -175,7 +209,23 @@
         <!-- PTT session Stop/Leave notification button routes here to the session engine. -->
         <receiver
             android:name=".ptt.PttSessionActionReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.transfer.flash.ptt.ACTION_STOP_SESSION" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Notification actions for file transfers (Cancel / Resume / Accept / Decline) -->
+        <receiver
+            android:name=".notifications.FlashTransferActionReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.transfer.flash.action.CANCEL_TRANSFER" />
+                <action android:name="com.transfer.flash.action.RESUME_TRANSFER" />
+                <action android:name="com.transfer.flash.action.ACCEPT_TRANSFER" />
+                <action android:name="com.transfer.flash.action.DECLINE_TRANSFER" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

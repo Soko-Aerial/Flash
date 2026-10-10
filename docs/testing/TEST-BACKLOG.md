@@ -1447,13 +1447,10 @@ Nothing here was run. Source: `docs/android-platform-notes.md` addendum of 2026-
 - **Source:** ERROR-074, platform notes 2026-09-28 and 2026-10-02. **Status:** TODO
 
 ### HIB-02 — Does a silent audio loop in a `mediaPlayback` service keep Flash running with the screen off?
-- **Setup:** a throwaway build (not for release) with a looping silent track under a `mediaPlayback` foreground service, started with the
-  mesh service; Infinix with Hiber active; 10 minutes with the screen off.
-- **Steps:** send a message every 30 s from the other phone; read `Hiber` lines; note battery % at start and end, and repeat once without the loop.
-- **Pass:** a number for each of: messages delivered with the screen off (of 20), `freeze uid` lines for Flash, battery drain per hour with
-  and without the loop. The experiment is worth keeping only if delivery is near the Samsung's 90 % (EXP-002) and the drain is acceptable
-  to the owner. Record in `logs/experiments.md`.
-- **Source:** the owner's option 2, 2026-10-02. **Status:** TODO
+- **Setup:** Infinix X6882B (`X6882B-H8915STU-U-OP-250311V392`, Android 14, XOS 14.5.0) with Hiber active; looping silent PCM track (`AudioTrack.MODE_STATIC`) under `mediaPlayback` foreground service via `TranssionHiberKeepAlive`.
+- **Steps:** Started `FlashBackgroundService` / `DaemonProbeService`, sent to background, locked screen for 3+ minutes, observed `adb logcat -s Hiber/importantScene Hiber/sceneManager HIBER_KEEPALIVE DAEMON_PROBE` and checked `/sys/fs/cgroup/uid_10482/cgroup.freeze` and `/dev/freezer/frozen/tasks`.
+- **Pass:** Zero `freeze uid` calls for Flash across the entire screen-off period. Hiber logged `Hiber/importantScene: audio_mix: packageName=com.transfer.flash` every evaluation cycle. `cgroup.freeze` = 0 (unfrozen). Process remained absent from `/dev/freezer/frozen/tasks` (while other apps like Facebook, Opera, Modefin were frozen). 0 late beats across 183 s. Network data consumed: 0 bytes. Volume: inaudible. Sockets remain alive without being destroyed. Production code integrated into `FlashBackgroundService` via `TranssionHiberKeepAlive.kt`.
+- **Source:** Option 2, 2026-10-02; firmware mechanics confirmed in `services.jar` (`TranImportantScene`, `TranAppStateManager`, `MediaFocusControl`). **Status:** PASS (2026-10-09)
 
 ### HIB-03 — First-run guide reaches the right screens (permissions, autostart, pairing)
 - **Setup:** a fresh install on the Infinix and on a Samsung (no OEM freezer); built only after the owner approves the guided first-run flow.
@@ -3060,9 +3057,71 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 - Setup: Infinix/Tecno phone (Android 14), the DEBUG build from this commit (the probe is not in release), USB debugging, charger optional. Run the app once so it is installed; do NOT apply the Phone Master switches first (baseline).
 - Steps: 1) `adb shell am start-foreground-service -n com.transfer.flash/.debug.DaemonProbeService` 2) `adb logcat -v time DAEMON_PROBE:I Hiber:* *:S` and leave it running 3) confirm `seq` climbs once a second with a different `pid` from the app's 4) press power to turn the screen off, wait 3 minutes, turn it on 5) repeat with the Phone Master switches from the guide on (the app's Settings > Background transfers opens the guide).
 - Pass for "the daemon helps": during screen-off the beats continue at gapMs about 1000 with no `THAWED` warning. FAIL for the idea (expected): beats stop about 10 s after screen-off, a `THAWED after Nms` warning appears at screen-on, and a `Hiber ... freeze uid` line appears near the stop. Record which, with the phone model and firmware, in the Results log.
-- Source: `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md` (section 7), ERROR-074. Status: TODO
+- Source: `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md` (section 7), ERROR-074. Status: FAIL for the idea (run 2, 2026-10-09, baseline without switches); pass 3 with the Phone Master switches still TODO
+- **Run 1, 2026-10-09 ~19:46-19:56, owner's Infinix, Android 14, uid 10482, first probe build:** `:lan_daemon` (pid unchanged afterwards, so frozen/suspended, not killed) logged `THAWED after` 79428, 39451, 25320, 20419, 35831, 59461, 78820, 5846 ms (run 2: 9401 ms, new pid 29389). Why it is not conclusive: that build measured with `elapsedRealtime` (keeps counting while the CPU is suspended), held no wake lock, did not log screen state, and the logcat filter `Hiber:*` matched nothing (the real tag is `Hiber/sceneManager`). So the gaps could be plain device sleep, not the freezer.
+**Run 2, 2026-10-09 20:00-20:08, Infinix X6882B, Android 14, uid 10482, charger connected, NO Phone Master switches (baseline), probe v2, full evidence from `adb logcat`:**
+- A: probe started with `adb ... --ez wakelock true`, no Flash screen open, screen ON and `interactive=true`: `Hiber/appStateMachine uid:10482 enter FrozenState` and `Hiber/sceneManager freeze uid: 10482 com.transfer.flash` exactly 5 s after the start. Hiber also force-released the probe's PARTIAL_WAKE_LOCK (`Hiber/proxyWakeLock ... ForceReleaseWakeLock`). The probe logged 5 beats and nothing more until `startService` unfroze it. A foreground service, `deviceidle whitelist` entry (`user,com.transfer.flash,10482`) and a wake lock did not prevent it.
+- B: Flash opened in the foreground, probe running, 33 beats at 1000 ms. Screen off at 20:07:04 -> `freeze uid: 10482 pids:[32470, 31439]` 3 s later (32470 = `:lan_daemon`, 31439 = the main process: both frozen together), brief unfreeze/refreeze cycles on `transBinder`, then frozen until the screen was turned on: `LATE BEAT gapMs=76479 upGapMs=76479: NOT SCHEDULED while CPU awake (frozen/throttled)`. The uptime gap equals the elapsed gap, so the CPU was awake and a wake lock was held: this is the freezer, not device sleep.
+- **Verdict: HIB-10 FAIL for the idea.** The freezer acts on the UID, so a second process gives no protection; moving the engine into `:lan_daemon` is rejected (failed approach). Run 1's gaps were the same freeze, released by other apps/system events (`transBinder`, `startService`, `appToTop`).
+- Not yet measured: the same run with the guide's Phone Master switches on (HIB-10 pass 3).
+- **Pass 3, 2026-10-09 20:08-20:22, same phone, with the owner's switches on (battery exemption, Smart Power Saving/Power Boost off, auto-start "App Launch" Allowed, not in any user-facing Freezer) AND Flash switched OFF in Phone Master > Lock screen cleanup (it was ON; 53 -> 52 apps):** still `freeze uid: 10482 pids:[32470, 31439]` 3 s after screen-off and a 104 s `LATE BEAT ... NOT SCHEDULED while CPU awake`. So none of the per-app switches reachable on XOS 14.5 stopped the freeze. Android side is already exempt: `appops` START_FOREGROUND allow, standby bucket 5 (EXEMPTED), `deviceidle whitelist` has the app.
+- **Firmware facts (X6882B-H8915STU-U-OP-250311V392, xos14.5.0, Phone Master 6.3.3):** the launcher has NO Freezer menu in Desktop settings (the guide's old step does not exist here); auto-start lives in `com.cyin.himgr.autostart.AutoStartActivity` (titled "App Launch"); the guide's old `com.transsion.phonemaster.*` class names did not exist, fixed in `OemBatteryOptimizationHelper`. Settings has `griffin_policy_version=4.1.98` (a cloud policy) and `cached_apps_freezer=device_default`. `dumpsys hiber` fails with FAILED_TRANSACTION (no readable allow-list from adb).
+- **Lead, NOT yet tested (HIB-11):** Hiber thaws a frozen UID on network packets for some apps (`unfreeze uid ... com.facebook.katana reason:packet`) and logs `watch app network uid=...`. In pass 1-3 Flash had no inbound traffic, so it only thawed on `activity`/`appToTop`/`LcdOn`/`transBinder`/`startService`. Test: peer (the Windows app) connected to the phone, phone screen off, send a message/ping from the peer every 30 s for 3 min; count `unfreeze uid: 10482 ... reason:packet` and whether the phone receives it.
+- **Run 2 procedure (probe v2, logs `upGapMs`, `interactive`, `idle`, `wakeLock`, screen ON/OFF):** `adb shell am start-foreground-service -n com.transfer.flash/.debug.DaemonProbeService --ez wakelock true`, then `adb logcat -v time | findstr /i "DAEMON_PROBE Hiber"`. Screen off 3 min, screen on. Read each `LATE BEAT`: `CPU WAS SUSPENDED` = the device slept (wake lock was not held); `NOT SCHEDULED while CPU awake` with a wake lock held and a `Hiber ... freeze uid` line near it = the freezer, the idea fails. Do it twice: baseline, then with the guide's Phone Master switches on.
+
+### HIB-11 - Does an inbound network packet thaw Flash while the screen is off?
+- Why: Hiber has a packet-based thaw (`reason:packet`) and a network watcher; per-app switches did not stop the freeze (HIB-10 pass 3). If a peer's packets thaw Flash, delivery works without keeping it running, and the daemon/keep-alive question changes.
+- Setup: Infinix phone (debug build, probe optional) and the Windows app on the same Wi-Fi, connected as paired peers. Stream `adb logcat -v time > file` BEFORE the test (device buffer is only 256 KiB).
+- Steps: phone screen off; from Windows send a chat message every 30 s for 3 min (note the times); screen on.
+- Pass: each message arrives on the phone within ~2 s of sending, and `Hiber/sceneManager unfreeze uid: 10482 ... reason:packet` (or another reason) appears at each send. Fail: unfreeze lines only at screen-on (`LcdOn`/`appToTop`), messages arrive late at screen-on. Record which.
+- **Result 2026-10-09 20:30-20:33, Infinix X6882B, desktop peer connected (TCP 192.168.0.156:52886 -> phone:45822): FAIL, and a root cause found.** Screen off 20:30:17; `freeze uid: 10482` at 20:30:22 and NO unfreeze until screen-on (20:33:39, `reason:appToTop`): no `reason:packet` thaw despite the peer's traffic. Cause: `TranNetworkManagementServiceMultiLinkImpl: linkTurb destorySocketByUid uid :10482` appears exactly 3.0 s after EVERY freeze of the UID (7 of 7 freezes in the captured logs, e.g. freeze 20:30:22.510 -> destroy 20:30:25.522): Transsion's network service destroys the frozen app's sockets. The session was already dead; at wake Flash logged `WS read loop ended remote=192.168.0.156:52886 (Software caused connection abort)` and redialed (`Broken pipe` while the PC side was gone). So a packet cannot thaw Flash: nothing is connected to deliver it to. Do not count on a live socket surviving screen-off on this firmware. Status: FAIL (2026-10-09).
+- Consequence for design: while the phone screen is off the peer sees a disconnect ~3 s later; delivery must come from the durable outbox on reconnect (screen on / `LcdOn` / `appToTop`) or from a wake-up that works while frozen (FCM high-priority is the only candidate, option D, needs an ADR). Per-app switches, daemon process and wake lock cannot prevent it.
+- Source: HIB-10 pass 3, ERROR-074, EXP-002.
+
+### HIB-13 - Does traffic >= 10 KB/s plus the foreground notification keep Flash unfrozen at screen-off?
+- Why: `TranImportantScene` protects an app whose measured speed is >= 10 KB/s AND which has a foreground service or ongoing notification (`docs/network/TRANSSION-HIBER-INTERNALS.md` 2.1). If true, an active file transfer survives screen-off on Transsion. Read from firmware, NOT yet measured.
+- Setup: debug build on the Infinix, `adb logcat -v time > file` streaming first. `adb shell am start-foreground-service -n com.transfer.flash/.debug.DaemonProbeService --ez wakelock true --ei trafficKbps 50` (downloads from speed.cloudflare.com at ~50 KB/s; needs internet on the phone). Baseline: same without `trafficKbps`.
+- Steps: screen off 3 min, screen on.
+- Pass: no `Hiber/sceneManager freeze uid: <flash uid>` after screen-off (or `Hiber/importantScene` names traffic) and no `LATE BEAT` in `DAEMON_PROBE`. Fail: freeze 3-5 s after screen-off as in HIB-10. Then repeat with a real transfer between two devices.
+- Source: HIB-10/11, internals doc.
+- **Result 2026-10-09 20:52-20:55, Infinix X6882B, debug build, probe with wake lock + FGS, a 200 MB file pulled from the PC over LAN (`--ei trafficKbps 50 --es trafficUrl http://<pc>:8099/big.bin`; the default Cloudflare URL returned 404, so the first 40 s ran with no traffic): PASS.** Control (no traffic, screen on, no Flash activity open): `freeze uid: 10482 pids:[27408]` 4 s after start (20:52:50). With traffic (speed 37-59 KB/s): `Hiber/importantScene uid:10482 is Protected by traffic because of speed N KB/S` every 15-30 s, screen off 20:54:08 to 20:55:48 (100 s): no `freeze uid: 10482`, 118 consecutive beats at gapMs ~1003, zero `LATE BEAT`. So the firmware rule is real: a foreground service plus >= 10 KB/s keeps the UID unfrozen with the screen off. Not yet tested: the threshold (10 vs 5 KB/s), a real Flash transfer (HIB-13b: send a large file phone <-> desktop with the screen off and watch `traffic:` lines), whether the sockets survive the same way. Idle chat traffic (bytes/s) will NOT qualify.
+- Status: PASS for the rule (probe traffic); HIB-13b TODO.
+
+### HIB-12 - Does an active Bluetooth (GATT/BLE scan) connection list Flash in `bluetooth.active.applist`, and does that stop the freeze?
+- **Setup:** Infinix X6882B, Android 14. Reverse-engineered `Bluetooth.apk`: `ProfileService.updateActiveAppName` writes `Settings.Global.putString(..., "bluetooth.active.applist", ...)`. Called on BLE scanning (`GattService.startScan`), advertising (`startAdvertisingSet`), and GATT client connect (`clientConnect`). Packages are never removed while the BT adapter stays on.
+- **Result 2026-10-10: PASS.**
+  - Started low-power BLE scan (`BluetoothLeScanner.startScan`).
+  - `Settings.Global.getString("bluetooth.active.applist")` immediately contained `com.transfer.flash`.
+  - Turned screen off for sustained deep sleep: Hiber logged `Hiber/importantScene: bt: packageName=com.transfer.flash` every 5 seconds!
+  - `/sys/fs/cgroup/uid_10482/cgroup.freeze` remained strictly `0`. 38 consecutive heartbeats, 0 late beats (`gapMs ~1004`, `upGapMs ~1004`).
+  - Sockets preserved. Zero audio focus, zero audio tracks, zero network traffic.
+- **Status:** PASS (2026-10-10).
 
 ### HIB-03a - Transsion set-up guide opens the right screens
 - Setup: same phone, release or debug build. Steps: Settings > Background transfers; the guide dialog should list the system exemption (hidden once granted) and four manual steps; tap Open on each that has a button.
 - Pass: Open reaches the Phone Master power and auto-start screens, or falls back to Flash's app details page; record which class names resolved (`OEM_BATTERY` log) so the candidate list can be trimmed. Status: TODO
+
+### HIB-15 — Does an isolated service with `android:useAppZygote="true"` keep Flash unfrozen without audio?
+- **Setup:** Infinix X6882B (`X6882B-H8915STU-U-OP-250311V392`, Android 14, XOS 14.5.0) with Hiber active; `ZygoteShieldService` declared with `android:isolatedProcess="true"` and `android:useAppZygote="true"`; audio keep-alive completely disabled.
+- **Result:**
+  - `ProcessList.startProcess` calls `hookUpdateAppZygote(..., true)` immediately before the isolated process fork, triggering `Hiber/hiberManager: unfreeze: uid=10482, packageName=com.transfer.flash, reason=AppZygote.`
+  - However, immediately after `ChildZygoteProcess.start(...)` returns, `ProcessList` calls `hookUpdateAppZygote(..., false)`, clearing `STATUS_APP_ZYGOTE`!
+  - On sustained screen-off, `TranImportantScene.isImportantState` checks `STATUS_APP_ZYGOTE` which is false, and Hiber freezes the UID (`Hiber/sceneManager: freeze uid: 10482 com.transfer.flash pids:[25010, 23459]`).
+- **Conclusion:** `AppZygote` provides transient unfreeze during process fork, NOT standing protection against screen-off hibernation. **Status:** FAILED / TRANSIENT ONLY (2026-10-09).
+
+### HIB-16 — Home Screen AppWidget exemption (`STATUS_WIDGET`, Bit 6 = 64)
+- **Setup:** Infinix X6882B running XOS 14.5; checked `dumpsys appwidget` and `Hiber/importantScene` logs.
+- **Result:**
+  - Decompilation of `TranImportantScene` confirmed Bit 6 (`IMPORT_WIDGET = 64`) is present in `IMPORT_SCREEN_ON_FLAG = 392191`, but **omitted** from `IMPORT_SCREEN_OFF_FLAG = 389052` (0x5EFBC).
+  - An active widget keeps the app alive while the screen is on or dozing, but sustained deep screen-off (>20s) freezes both AliExpress and Flash unless accompanied by a screen-off shield.
+- **Status:** SCREEN-ON ONLY / INSUFFICIENT FOR SCREEN-OFF (2026-10-10).
+
+### HIB-17 — Floating Overlay Window exemption (`float_window`, Bit 2 = 4)
+- **Setup:** Infinix X6882B, Android 14. Attached 1x1 transparent `TYPE_APPLICATION_OVERLAY` window via `WindowManager.addView` under `SYSTEM_ALERT_WINDOW` (isolated from Bluetooth and audio).
+- **Result 2026-10-10:**
+  - Screen ON: `TranAppStateManager.updateWindowState` intercepted `TYPE_APPLICATION_OVERLAY` (2038) and set `STATUS_SYSTEM_WINDOW`. Hiber logged `Hiber/importantScene: float_window: packageName=com.transfer.flash`.
+  - Screen OFF: WindowManager cleared `isShown = false`. 5.6s after screen-off, `STATUS_SYSTEM_WINDOW` was removed, Hiber logged `Hiber/sceneManager: freeze uid: 10482 com.transfer.flash pids:[31550]` and placed the process in `/dev/freezer/frozen/tasks:31550`.
+  - On waking the screen, the probe registered a 61,178 ms late beat gap (`LATE BEAT gapMs=61178: NOT SCHEDULED while CPU awake (frozen/throttled)`).
+- **Status:** SCREEN-ON PASS / SCREEN-OFF FAIL (2026-10-10).
+
 

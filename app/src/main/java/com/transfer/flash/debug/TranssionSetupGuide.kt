@@ -16,7 +16,7 @@ package com.transfer.flash.debug
 object TranssionSetupGuide {
 
     /** Where "Open" takes the user, resolved by [OemBatteryOptimizationHelper]. */
-    enum class Target { BATTERY_EXEMPTION, AUTO_START, POWER_SETTINGS, APP_DETAILS, NONE }
+    enum class Target { BATTERY_EXEMPTION, WIDGET_PIN, AUTO_START, POWER_SETTINGS, LOCK_SCREEN_CLEANUP, APP_DETAILS, NONE }
 
     data class Step(
         val id: String,
@@ -28,9 +28,17 @@ object TranssionSetupGuide {
     )
 
     const val AOSP_EXEMPTION_STEP_ID: String = "aosp-exemption"
+    const val WIDGET_STEP_ID: String = "home-screen-widget"
 
-    /** The ordered steps. Android's own battery exemption comes first because it is checkable. */
+    /** The ordered steps. The Home Screen Widget comes first because it permanently bypasses Hiber (Bit 6 = 64). */
     val steps: List<Step> = listOf(
+        Step(
+            id = WIDGET_STEP_ID,
+            title = "Add Flash Widget to Home Screen (Recommended)",
+            body = "Tap \"Add\" to place the Flash widget on your home screen. On Transsion phones (Infinix, Tecno, itel), this permanently exempts Flash from the background freezer.",
+            target = Target.WIDGET_PIN,
+            detectable = true,
+        ),
         Step(
             id = AOSP_EXEMPTION_STEP_ID,
             title = "Allow Flash to run without battery limits",
@@ -49,15 +57,22 @@ object TranssionSetupGuide {
         Step(
             id = "auto-start",
             title = "Turn on Auto-start for Flash",
-            body = "In Phone Master > Auto-start management, switch Flash on.",
+            body = "In Phone Master > Toolbox > Auto-start management (the screen is titled \"App Launch\"), switch Flash on.",
             target = Target.AUTO_START,
             detectable = false,
         ),
         Step(
+            id = "lock-screen-cleanup",
+            title = "Keep Flash out of Lock screen cleanup",
+            body = "In Phone Master > Lock screen cleanup, switch Flash off so it is not cleaned when the screen locks.",
+            target = Target.LOCK_SCREEN_CLEANUP,
+            detectable = false,
+        ),
+        Step(
             id = "freezer",
-            title = "Take Flash out of the Freezer",
+            title = "Take Flash out of the Freezer (if your phone has it)",
             body = "Long-press the home screen > Desktop settings > Other settings > Freezer, and make " +
-                "sure Flash is not in the list.",
+                "sure Flash is not in the list. Newer firmware (XOS 14.5) no longer shows this menu.",
             target = Target.NONE,
             detectable = false,
         ),
@@ -74,7 +89,10 @@ object TranssionSetupGuide {
     fun appliesTo(brand: OemBatteryOptimizationHelper.OemBrand): Boolean =
         brand == OemBatteryOptimizationHelper.OemBrand.TRANSSION
 
-    /** The steps still worth showing: the detectable step drops out once it is done. */
-    fun pending(ignoringBatteryOptimizations: Boolean): List<Step> =
-        steps.filterNot { it.id == AOSP_EXEMPTION_STEP_ID && ignoringBatteryOptimizations }
+    /** The steps still worth showing: detectable steps drop out once completed. */
+    fun pending(ignoringBatteryOptimizations: Boolean, hasActiveWidget: Boolean = false): List<Step> =
+        steps.filterNot {
+            (it.id == AOSP_EXEMPTION_STEP_ID && ignoringBatteryOptimizations) ||
+            (it.id == WIDGET_STEP_ID && hasActiveWidget)
+        }
 }

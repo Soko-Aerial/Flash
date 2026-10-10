@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.FlowPreview::class)
+
 package com.transfer.flash.ptt
 
 import android.annotation.SuppressLint
@@ -79,9 +81,19 @@ public class PttSessionService : Service() {
         }
         if (stateJob?.isActive != true) {
             stateJob = scope.launch {
-                combine(engine.state, engine.stats.sample(STATS_SAMPLE_MS)) { state, stats ->
-                    state to stats
-                }.collectLatest { (state, stats) -> render(state, stats) }
+                var latestStats: PttSessionStats? = engine.stats.value
+                launch {
+                    engine.stats.sample(STATS_SAMPLE_MS).collectLatest { stats ->
+                        latestStats = stats
+                        val currentState = engine.state.value
+                        if (currentState !is PttFloorState.Idle) {
+                            render(currentState, stats)
+                        }
+                    }
+                }
+                engine.state.collectLatest { state ->
+                    render(state, latestStats)
+                }
             }
         }
         return START_NOT_STICKY
@@ -90,6 +102,8 @@ public class PttSessionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        runCatching { notifications.cancel(NOTIFICATION_ID) }
         scope.cancel()
         super.onDestroy()
     }
@@ -99,6 +113,7 @@ public class PttSessionService : Service() {
     private fun render(state: PttFloorState, stats: PttSessionStats?) {
         if (state is PttFloorState.Idle) {
             stopForeground(STOP_FOREGROUND_REMOVE)
+            runCatching { notifications.cancel(NOTIFICATION_ID) }
             stopSelf()
             return
         }
@@ -116,14 +131,17 @@ public class PttSessionService : Service() {
         val stopIntent = PendingIntent.getBroadcast(
             this,
             REQUEST_STOP,
-            Intent(PttSessionActionReceiver.ACTION_STOP).setPackage(packageName),
-            PendingIntent.FLAG_IMMUTABLE,
+            Intent(this, PttSessionActionReceiver::class.java).apply {
+                action = PttSessionActionReceiver.ACTION_STOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val tapIntent = PendingIntent.getActivity(
             this,
             NOTIFICATION_ID,
             Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra(com.transfer.flash.core.ptt.PttSessionEngine.EXTRA_PTT_PRESS, true)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -134,7 +152,7 @@ public class PttSessionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setWhen(startedAtMs)
+            .setWhen(if (startedAtMs > 0L) startedAtMs else System.currentTimeMillis())
             .setUsesChronometer(true)
             .setShowWhen(true)
             .setContentIntent(tapIntent)
@@ -150,18 +168,18 @@ public class PttSessionService : Service() {
         runCatching { notifications.notify(NOTIFICATION_ID, notification) }
             .onFailure { Log.w(TAG, "notify failed", it) }
 
-        promoteToForeground(notification, talking != null)
+        promoteToForeground(notification)
     }
 
     /**
-     * Enters (or upgrades) the foreground state with a service type the platform will
-     * actually accept. Talker claims `microphone` only while RECORD_AUDIO is granted;
-     * listener claims `mediaPlayback` (no runtime grant needed for the type); anything
-     * else falls back exactly like the call service.
+     * Enters the foreground state once with stable service types the platform permits.
+     * Declares the union of granted roles (mediaPlayback + microphone if RECORD_AUDIO granted)
+     * so subsequent floor-direction switches update notification content without crashing
+     * Android 14+ FGS type downgrade checks.
      */
-    private fun promoteToForeground(notification: Notification, talking: Boolean) {
-        val desiredType = grantedForegroundServiceType(talking)
-        if (startForegroundCalled && desiredType == currentFgsType) return
+    private fun promoteToForeground(notification: Notification) {
+        if (startForegroundCalled) return
+        val desiredType = grantedForegroundServiceType()
         if (tryStartForeground(notification, desiredType)) {
             startForegroundCalled = true
             currentFgsType = desiredType
@@ -192,20 +210,16 @@ public class PttSessionService : Service() {
         }
     }
 
-    private fun grantedForegroundServiceType(talking: Boolean): Int {
+    private fun grantedForegroundServiceType(): Int {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return FGS_TYPE_NONE
-        var type = FGS_TYPE_NONE
-        if (talking &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+        var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             hasPermission(Manifest.permission.RECORD_AUDIO)
         ) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
-        if (!talking) {
-            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-        }
-        if (type == FGS_TYPE_NONE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         }
         return type
     }
@@ -236,7 +250,7 @@ public class PttSessionService : Service() {
     public companion object {
         private const val TAG = "PTTSVC"
         private const val CHANNEL_ID = "flash_ptt"
-        private const val NOTIFICATION_ID = 43
+        public const val NOTIFICATION_ID: Int = 43
         private const val REQUEST_STOP = 2001
         private const val STATS_SAMPLE_MS = 1000L
 
@@ -257,6 +271,9 @@ public class PttSessionService : Service() {
         }
 
         public fun stop(context: Context) {
+            runCatching {
+                NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
+            }
             context.stopService(Intent(context, PttSessionService::class.java))
         }
     }

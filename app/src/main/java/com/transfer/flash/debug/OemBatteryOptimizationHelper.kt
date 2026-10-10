@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import com.transfer.flash.widget.FlashAppWidgetProvider
 
 /**
  * Resolves OEM-specific battery manager and autostart configuration intents across
@@ -118,12 +119,20 @@ object OemBatteryOptimizationHelper {
      * main screen is the last resort and the AOSP fallbacks follow it.
      */
     internal fun transsionClassNames(target: TranssionSetupGuide.Target): List<String> = when (target) {
+        // Verified on an Infinix X6882B, XOS 14.5, Phone Master 6.3.3 (2026-10-09, `pm dump`): the real classes
+        // live under com.cyin.himgr; the com.transsion.phonemaster.* names listed first before were wrong there.
         TranssionSetupGuide.Target.AUTO_START -> listOf(
+            "com.cyin.himgr.autostart.AutoStartActivity",
             "com.transsion.phonemaster.autostart.AutoStartActivity",
             "com.transsion.phonemaster.autostart.AutoStartManageActivity",
         )
         TranssionSetupGuide.Target.POWER_SETTINGS -> listOf(
+            "com.cyin.himgr.powermanager.views.activity.OsPowerActivity",
+            "com.cyin.himgr.powermanager.views.activity.PowerManagerActivity",
             "com.transsion.phonemaster.power.activity.PowerSettingsActivity",
+        )
+        TranssionSetupGuide.Target.LOCK_SCREEN_CLEANUP -> listOf(
+            "com.cyin.himgr.applicationmanager.view.activities.LockScreenCleanupActivity",
         )
         else -> emptyList()
     } + "com.transsion.phonemaster.MainActivity"
@@ -147,6 +156,9 @@ object OemBatteryOptimizationHelper {
 
     /** Opens the screen behind a guide step; falls back to the app's own details page. False if nothing launched. */
     fun openTarget(context: Context, target: TranssionSetupGuide.Target): Boolean {
+        if (target == TranssionSetupGuide.Target.WIDGET_PIN) {
+            return FlashAppWidgetProvider.requestPinWidget(context)
+        }
         val details = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))
         val intent = when (target) {
             TranssionSetupGuide.Target.BATTERY_EXEMPTION ->
@@ -155,8 +167,10 @@ object OemBatteryOptimizationHelper {
                 } else {
                     null
                 }
+            TranssionSetupGuide.Target.WIDGET_PIN -> null
             TranssionSetupGuide.Target.AUTO_START,
-            TranssionSetupGuide.Target.POWER_SETTINGS -> resolveTranssionIntent(context, target)
+            TranssionSetupGuide.Target.POWER_SETTINGS,
+            TranssionSetupGuide.Target.LOCK_SCREEN_CLEANUP -> resolveTranssionIntent(context, target)
             TranssionSetupGuide.Target.APP_DETAILS -> details
             TranssionSetupGuide.Target.NONE -> null
         }

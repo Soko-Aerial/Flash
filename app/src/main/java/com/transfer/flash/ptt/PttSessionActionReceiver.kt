@@ -22,6 +22,7 @@ public class PttSessionActionReceiver : BroadcastReceiver() {
             Log.w(TAG, "Unknown PTT action ${intent.action}")
             return
         }
+        PttSessionService.stop(context)
         val engine: FlashPtt? = DiscoveryEngineHolder.currentPttSession()
         if (engine == null) {
             Log.w(TAG, "No PTT engine — ignoring stop")

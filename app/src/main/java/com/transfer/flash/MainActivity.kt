@@ -256,6 +256,7 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
+        FlashNotificationManager.initChannels(this)
         // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
         // start) — consume the launch intent here too.
         pendingNotificationConversation.value =
@@ -313,6 +314,7 @@ class MainActivity : ComponentActivity() {
         // OEM battery screen), so re-read it here — this is what makes the Settings row reflect
         // reality instead of whatever was true at launch.
         refreshBatteryOptimizationState()
+        FlashBackgroundService.reevaluateKeepAlive()
     }
 
     override fun onStart() {
@@ -324,6 +326,8 @@ class MainActivity : ComponentActivity() {
         // Bug 7: notifications must be suppressed only while we're genuinely on screen — not
         // merely while the process lives (the service keeps the process alive across onStop).
         FlashNotificationManager.appForeground = true
+        FlashNotificationManager.clearPairingRequest(this)
+        FlashNotificationManager.clearPttPing(this)
         DiscoveryEngineHolder.setUiStarted(true)
     }
 
@@ -431,11 +435,30 @@ class MainActivity : ComponentActivity() {
             }
             "com.transfer.flash.action.SHORTCUT_SEND",
             "com.transfer.flash.action.SHORTCUT_NEARBY",
-            "android.service.quicksettings.action.QS_TILE_PREFERENCES" -> {
+            "android.service.quicksettings.action.QS_TILE_PREFERENCES",
+            FlashNotificationManager.ACTION_VIEW_NEARBY -> {
                 pendingShortcutTab.value = FlashDestination.NearbyDevices
             }
             "com.transfer.flash.action.SHORTCUT_CHATS" -> {
                 pendingShortcutTab.value = FlashDestination.ChatList
+            }
+            FlashNotificationManager.ACTION_VIEW_TRANSFERS -> {
+                val transferId = intent.getStringExtra(FlashNotificationManager.EXTRA_TRANSFER_ID)
+                if (transferId != null) {
+                    FlashNotificationManager.clearTransfer(this, transferId)
+                }
+                pendingShortcutTab.value = FlashDestination.Transfers
+            }
+            FlashNotificationManager.ACTION_OPEN_FILE -> {
+                val transferId = intent.getStringExtra(FlashNotificationManager.EXTRA_TRANSFER_ID)
+                if (transferId != null) {
+                    FlashNotificationManager.clearTransfer(this, transferId)
+                }
+                val path = intent.getStringExtra(FlashNotificationManager.EXTRA_FILE_PATH)
+                if (path != null) {
+                    openAttachment(this, path, guessMimeType(path, path, this))
+                }
+                pendingShortcutTab.value = FlashDestination.Transfers
             }
         }
     }
@@ -2335,6 +2358,7 @@ private fun FlashShell(
             onClearHistory = {
                 selectedTransferItem = null
                 engine.transfers?.clearFinishedHistory()
+                FlashNotificationManager.clearAllTransfers(toastContext)
             },
             modifier = Modifier.fillMaxSize(),
             listState = transfersScroll,

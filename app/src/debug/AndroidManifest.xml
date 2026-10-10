@@ -5,11 +5,17 @@
          measure whether a second process of the same app survives the Transsion Hiber freezer
          (which freezes by UID, ERROR-074). exported so `adb shell am start-foreground-service` can
          start it; it does nothing but log. See docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md. -->
-    <application>
+    <!-- HIB-12 (GATT server) and HIB-13 (LAN download over plain HTTP) probes; debug builds only. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application android:usesCleartextTraffic="true">
         <service
             android:name="com.transfer.flash.debug.DaemonProbeService"
             android:process=":lan_daemon"
             android:exported="true"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice|mediaPlayback" />
     </application>
 </manifest>
