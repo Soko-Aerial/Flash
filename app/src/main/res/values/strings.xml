@@ -7,4 +7,8 @@
     <string name="shortcut_chats">Chats</string>
     <string name="shortcut_chats_long">Open recent conversations</string>
     <string name="quick_settings_tile_label">Flash Share</string>
+    <string name="widget_name">Flash Quick Share</string>
+    <string name="widget_description">Quick access to Flash file sharing and keepalive</string>
+    <string name="widget_status_idle">Flash Ready</string>
+    <string name="widget_pin_success">Widget added to Home Screen</string>
 </resources>

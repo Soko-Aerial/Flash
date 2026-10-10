@@ -118,6 +118,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -193,6 +195,8 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var transferRepo: FlashTransferRepository? = null
+    private val _transfersFlow = MutableStateFlow<FlashTransferRepository?>(null)
+    val transfersFlow: StateFlow<FlashTransferRepository?> = _transfersFlow.asStateFlow()
 
     @Volatile
     private var chatRepo: FlashChatRepository? = null
@@ -1735,11 +1739,22 @@ object DiscoveryEngineHolder {
         composite = engine
         network = networkImpl
         transferRepo = transferImpl
+        _transfersFlow.value = transferImpl
         chatRepo = chatImpl
         if (groupSwarmEnabled) {
             attachSwarm()
         }
         pairing = pairingCoordinator
+        appScope.launch {
+            pairingCoordinator.pairing.collect { model ->
+                val ctx = appContextRef ?: return@collect
+                if (model != null && model.phase == com.transfer.flash.ui.chat.FlashPairingPhase.RequestReceived && !FlashNotificationManager.appForeground) {
+                    FlashNotificationManager.showPairingRequest(ctx, model.request.peerName)
+                } else if (model == null || model.phase != com.transfer.flash.ui.chat.FlashPairingPhase.RequestReceived) {
+                    FlashNotificationManager.clearPairingRequest(ctx)
+                }
+            }
+        }
         this.calling = callCoordinator
         // PTT voice session (ADR-032 Phase 1): all transport access is lazy lambdas over
         // holder fields, so construction order within this function does not matter.
@@ -1801,8 +1816,10 @@ object DiscoveryEngineHolder {
         appScope.launch {
             ptt.state.collect { sessionState ->
                 val ctx = appContextRef ?: return@collect
-                if (sessionState is PttFloorState.Idle) PttSessionService.stop(ctx)
-                else {
+                if (sessionState is PttFloorState.Idle) {
+                    PttSessionService.stop(ctx)
+                } else {
+                    FlashNotificationManager.clearPttPing(ctx)
                     FlashNotificationManager.clearPttTapToTalk(ctx)
                     PttSessionService.start(ctx)
                 }
@@ -2773,6 +2790,7 @@ object DiscoveryEngineHolder {
             composite = null
             network = null
             transferRepo = null
+            _transfersFlow.value = null
             chatRepo = null
             pairing = null
             trustStoreRef = null

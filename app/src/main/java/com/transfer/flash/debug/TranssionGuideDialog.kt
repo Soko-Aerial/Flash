@@ -29,7 +29,9 @@ fun TranssionGuideDialog(
     onOpen: (TranssionSetupGuide.Target) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val steps = TranssionSetupGuide.pending(ignoringBatteryOptimizations)
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val hasWidget = com.transfer.flash.widget.FlashAppWidgetProvider.hasActiveWidget(context)
+    val steps = TranssionSetupGuide.pending(ignoringBatteryOptimizations, hasWidget)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -49,7 +51,8 @@ fun TranssionGuideDialog(
                         Text("${index + 1}. ${step.title}", style = MaterialTheme.typography.titleSmall)
                         Text(step.body, style = MaterialTheme.typography.bodySmall)
                         if (step.target != TranssionSetupGuide.Target.NONE) {
-                            TextButton(onClick = { onOpen(step.target) }) { Text("Open") }
+                            val buttonLabel = if (step.target == TranssionSetupGuide.Target.WIDGET_PIN) "Add" else "Open"
+                            TextButton(onClick = { onOpen(step.target) }) { Text(buttonLabel) }
                         }
                     }
                 }

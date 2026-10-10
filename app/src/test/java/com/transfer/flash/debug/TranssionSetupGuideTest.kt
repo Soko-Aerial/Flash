@@ -29,27 +29,30 @@ class TranssionSetupGuideTest {
     }
 
     @Test
-    fun `guide lists the system exemption plus the four manual overrides`() {
-        assertEquals(5, TranssionSetupGuide.steps.size)
-        assertEquals(1, TranssionSetupGuide.steps.count { it.detectable })
-        assertEquals(4, TranssionSetupGuide.steps.count { !it.detectable })
+    fun `guide lists the system exemption and widget pin plus the five manual overrides`() {
+        assertEquals(7, TranssionSetupGuide.steps.size)
+        assertEquals(2, TranssionSetupGuide.steps.count { it.detectable })
+        assertEquals(5, TranssionSetupGuide.steps.count { !it.detectable })
     }
 
     @Test
-    fun `the detected step drops out once the exemption is held, the manual ones stay`() {
-        val before = TranssionSetupGuide.pending(ignoringBatteryOptimizations = false)
-        val after = TranssionSetupGuide.pending(ignoringBatteryOptimizations = true)
-        assertEquals(5, before.size)
-        assertEquals(4, after.size)
-        assertTrue(after.none { it.id == TranssionSetupGuide.AOSP_EXEMPTION_STEP_ID })
+    fun `the detected steps drop out once completed, the manual ones stay`() {
+        val before = TranssionSetupGuide.pending(ignoringBatteryOptimizations = false, hasActiveWidget = false)
+        val afterAosp = TranssionSetupGuide.pending(ignoringBatteryOptimizations = true, hasActiveWidget = false)
+        val afterBoth = TranssionSetupGuide.pending(ignoringBatteryOptimizations = true, hasActiveWidget = true)
+        assertEquals(7, before.size)
+        assertEquals(6, afterAosp.size)
+        assertTrue(afterAosp.none { it.id == TranssionSetupGuide.AOSP_EXEMPTION_STEP_ID })
+        assertEquals(5, afterBoth.size)
+        assertTrue(afterBoth.none { it.id == TranssionSetupGuide.AOSP_EXEMPTION_STEP_ID || it.id == TranssionSetupGuide.WIDGET_STEP_ID })
     }
 
     @Test
     fun `Phone Master candidates always end with the main screen and keep their order`() {
         val auto = OemBatteryOptimizationHelper.transsionClassNames(TranssionSetupGuide.Target.AUTO_START)
-        assertEquals("com.transsion.phonemaster.autostart.AutoStartActivity", auto.first())
+        assertEquals("com.cyin.himgr.autostart.AutoStartActivity", auto.first())
         assertEquals("com.transsion.phonemaster.MainActivity", auto.last())
         val power = OemBatteryOptimizationHelper.transsionClassNames(TranssionSetupGuide.Target.POWER_SETTINGS)
-        assertEquals("com.transsion.phonemaster.power.activity.PowerSettingsActivity", power.first())
+        assertEquals("com.cyin.himgr.powermanager.views.activity.OsPowerActivity", power.first())
     }
 }
