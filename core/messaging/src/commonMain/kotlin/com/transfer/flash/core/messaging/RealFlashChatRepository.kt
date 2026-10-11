@@ -9,8 +9,14 @@ import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
+import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
+import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember
+import com.transfer.flash.core.network.relay.FlashRelayClient
+import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import kotlin.math.abs
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashCallEventKind
@@ -326,6 +332,9 @@ public class RealFlashChatRepository(
      * and delta suppression according to the active hardware capability tier.
      */
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
+    private val enterpriseTrustStore: EnterpriseTrustStore? = null,
+    private val relayClient: FlashRelayClient? = null,
+    private val enterpriseDirectoryClient: EnterpriseDirectoryClient? = null,
 ) : FlashChatRepository, AutoCloseable {
 
     override fun close() {
@@ -886,6 +895,41 @@ public class RealFlashChatRepository(
         // subscribed — a Room Flow only invalidates for as long as something is collecting it.
         scope.launch(ioDispatcher) {
             outboxDao.observeCount().collect { notifyOutboxDrain() }
+        }
+
+        // Enterprise relay inbound message dispatcher (E4).
+        // Idempotent: duplicates from LAN and Relay are safely absorbed via Room unique keys.
+        if (relayClient != null) {
+            scope.launch(ioDispatcher) {
+                relayClient.incomingEnvelopes.collect { env ->
+                    runCatching {
+                        when (env.type) {
+                            "MSG_TEXT" -> {
+                                val frame = MessageWireFrame.TextMessage(
+                                    localId = env.id,
+                                    conversationId = env.senderId,
+                                    senderId = env.senderId,
+                                    senderName = peerNameResolver(env.senderId) ?: env.senderId,
+                                    text = env.payloadJson,
+                                    sentAt = env.sentAt,
+                                )
+                                onInboundWireFrame(frame, env.senderId)
+                            }
+                            "GROUP_MSG" -> {
+                                val frame = GroupWireFrame.Message(
+                                    groupId = env.id,
+                                    messageId = env.id,
+                                    from = env.senderId,
+                                    senderName = peerNameResolver(env.senderId) ?: env.senderId,
+                                    sentAt = env.sentAt,
+                                    text = env.payloadJson,
+                                )
+                                onInboundGroupWireFrame(env.senderId, frame)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Stamp the on-disk path of every finished attachment onto its row. Live progress is
@@ -5458,7 +5502,23 @@ public class RealFlashChatRepository(
                 continue
             }
             val success = sendWithTimeout(wireFrame.localId, wireFrame.conversationId) {
-                transportSink?.send(wireFrame.conversationId, wireFrame) == true
+                if (relayClient != null && enterpriseTrustStore?.isEnrolled == true) {
+                    raceTransports(
+                        lanAction = { transportSink?.send(wireFrame.conversationId, wireFrame) == true },
+                        relayAction = {
+                            val envelope = FlashEnvelope(
+                                id = wireFrame.localId,
+                                type = "MSG_TEXT",
+                                payloadJson = message.text,
+                                senderId = localDeviceId,
+                                sentAt = message.sentAt,
+                            )
+                            relayClient.sendEnvelope(wireFrame.conversationId, envelope)
+                        }
+                    )
+                } else {
+                    transportSink?.send(wireFrame.conversationId, wireFrame) == true
+                }
             }
             if (success) {
                 // Single tick, unchanged — the bytes are on the wire. The row itself survives
@@ -5523,11 +5583,28 @@ public class RealFlashChatRepository(
             replyToPreview = message.replyToPreview,
             signature = message.groupSig,
         )
+        val isLinkedToHub = enterpriseTrustStore?.isGroupLinkedToHub(message.conversationId) == true
         val results = coroutineScope {
             pending.map { delivery ->
                 async {
                     val sent = sendWithTimeout(item.localId, delivery.memberId) {
-                        sink.send(delivery.memberId, frame)
+                        if (isLinkedToHub && relayClient != null) {
+                            raceTransports(
+                                lanAction = { sink.send(delivery.memberId, frame) },
+                                relayAction = {
+                                    val envelope = FlashEnvelope(
+                                        id = item.localId,
+                                        type = "GROUP_MSG",
+                                        payloadJson = message.text,
+                                        senderId = localDeviceId,
+                                        sentAt = message.sentAt,
+                                    )
+                                    relayClient.sendEnvelope(delivery.memberId, envelope)
+                                }
+                            )
+                        } else {
+                            sink.send(delivery.memberId, frame)
+                        }
                     }
                     delivery.memberId to sent
                 }
@@ -6438,6 +6515,78 @@ public class RealFlashChatRepository(
         // Ephemeral typing indicator TTL. If no heartbeat arrives within this window,
         // typing automatically clears so an inactive or disconnected peer is not stuck typing.
         const val TYPING_EXPIRY_MS = 6_000L
+    }
+
+    /**
+     * Races direct LAN transport against Enterprise Hub Relay concurrently (P-REF-3).
+     * The first transport to report success immediately returns, while the second is cancelled.
+     */
+    private suspend fun raceTransports(
+        lanAction: suspend () -> Boolean,
+        relayAction: suspend () -> Boolean,
+    ): Boolean = coroutineScope {
+        val channel = kotlinx.coroutines.channels.Channel<Boolean>(2)
+        val j1 = launch { channel.send(try { lanAction() } catch (_: Throwable) { false }) }
+        val j2 = launch { channel.send(try { relayAction() } catch (_: Throwable) { false }) }
+        repeat(2) {
+            val result = channel.receive()
+            if (result) {
+                j1.cancel()
+                j2.cancel()
+                return@coroutineScope true
+            }
+        }
+        false
+    }
+
+    override suspend fun linkGroupToHub(groupId: String, hubUrl: String?): FlashResult<Unit> {
+        val trust = enterpriseTrustStore
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
+        if (!trust.isEnrolled) {
+            return FlashResult.Failure(FlashError.Unknown("Device is not enrolled in an enterprise hub"))
+        }
+        val conversation = conversationDao.get(groupId)
+            ?: return FlashResult.Failure(FlashError.Unknown("Group does not exist: $groupId"))
+        if (!conversation.isGroup) {
+            return FlashResult.Failure(FlashError.Unknown("Conversation is not a group: $groupId"))
+        }
+
+        // Strictly adhere to Zero Cloud Dump Invariant:
+        // Linking NEVER reads past rows from messageDao or uploads historical messages.
+        trust.linkGroupToHub(groupId)
+        return FlashResult.Success(Unit)
+    }
+
+    override fun isGroupLinkedToHub(groupId: String): Boolean {
+        return enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true
+    }
+
+    override suspend fun unlinkGroupFromHub(groupId: String): FlashResult<Unit> {
+        val trust = enterpriseTrustStore
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
+        trust.unlinkGroupFromHub(groupId)
+        return FlashResult.Success(Unit)
+    }
+
+    override suspend fun fetchEnterpriseDirectoryMembers(departmentId: String?): FlashResult<List<EnterpriseDirectoryMember>> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+        val credentials = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
+        val targetDept = departmentId ?: credentials.department.orEmpty()
+        if (targetDept.isBlank()) {
+            return FlashResult.Failure(FlashError.Unknown("No department specified"))
+        }
+        return client.fetchDepartmentMembers(credentials.hubUrl, targetDept)
+    }
+
+    override suspend fun fetchEnterpriseDirectoryGroups(department: String?): FlashResult<List<EnterpriseDirectoryGroup>> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+        val credentials = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
+        val targetDept = department ?: credentials.department
+        return client.fetchVisibleGroups(credentials.hubUrl, credentials.deviceId, targetDept)
     }
 
     internal fun signedGroupsForTesting(): SignedGroups? = signedGroups

@@ -85,17 +85,11 @@ kotlin {
             implementation(project(":core:persistence"))
             implementation(project(":core:transfer"))
             implementation(project(":core:security"))
+            implementation(project(":core:network"))
         }
         androidMain.dependencies {
             // The SQLCipher open path, the settings DataStore tier and room-ktx stay here: all
             // Android-only. The repository itself no longer is.
-            // TODO(cleanup): `:core:network` and both androidx entries are dead
-            // — grep finds zero references to any of them in this module's main and test sources.
-            // Parked here rather than deleted so core-messaging-android's POM keeps the four
-            // runtime-scope entries 1.1.0 consumers resolve today; deleting them is a
-            // consumer-visible resolution change that should be made repo-wide at once
-            // (Phase 10 precedent, which parked three the same way).
-            implementation(project(":core:network"))
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.lifecycle.runtime.ktx)
         }
@@ -106,6 +100,7 @@ kotlin {
         // the module, so it is the one thing that must be executed on both platforms.
         commonTest.dependencies {
             implementation(kotlin("test"))
+            implementation(libs.kotlinx.coroutines.test)
         }
         // The 4 pre-existing suites are JUnit 4; RealFlashChatRepositoryTest and PresenceHoldTest
         // exercise androidMain types. Unchanged by the conversion.

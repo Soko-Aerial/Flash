@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.result.FlashResult
@@ -449,4 +451,34 @@ public interface FlashChatRepository {
 
     /** Updates the local display name used for outbound chat messages and signed groups. */
     public suspend fun updateLocalDisplayName(newName: String) {}
+
+    /**
+     * Links an existing or new group to the enterprise relay hub (E2c).
+     * Strictly adheres to the Zero Cloud Dump Invariant: past messages stored locally are NEVER uploaded.
+     */
+    public suspend fun linkGroupToHub(groupId: String, hubUrl: String? = null): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise hub linking unavailable"))
+
+    /**
+     * Returns true if [groupId] is currently linked to an enterprise relay hub.
+     */
+    public fun isGroupLinkedToHub(groupId: String): Boolean = false
+
+    /**
+     * Unlinks [groupId] from the enterprise relay hub.
+     */
+    public suspend fun unlinkGroupFromHub(groupId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise hub unlinking unavailable"))
+
+    /**
+     * Queries enrolled organization members from the enterprise directory (E2c).
+     */
+    public suspend fun fetchEnterpriseDirectoryMembers(departmentId: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember>> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
+    /**
+     * Queries visible organization groups from the enterprise directory (E2c).
+     */
+    public suspend fun fetchEnterpriseDirectoryGroups(department: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup>> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 }
