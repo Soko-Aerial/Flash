@@ -1,5 +1,24 @@
 # Current Handoff
 
+## 2026-10-11 — Full-Subsystem Bug & Concurrency Audit Across All Modules
+- **Status:** Complete. Audit report written to docs/audit/2026-10-11-full-subsystem-audit.md.
+- **Top Prioritized Bugs Identified:**
+  1. **BUG-01 (Critical, :app):** Transsion Hiber keep-alive chicken-and-egg check in canUseBluetoothTier unconditionally falling back to Audio.
+  2. **BUG-02 (High, :core:calling):** WebRTC media thread A-B / B-A deadlock between mediaLifecycleMutex and callMediaDispatcher across 1:1 and group calls.
+  3. **BUG-03 (High, :core:network):** WebSocket read loop backpressure watchdog silence timeout during transfers to slow storage.
+  4. **BUG-04 (High, :app):** Android 14/15 FGS type dataSync unconditional startup claim exhausting 6h daily quota while idle.
+  5. **BUG-05 (High, :core:messaging):** RealFlashChatRepository unmanaged SupervisorJob() leaking jobs and DAOs across engine restarts.
+  6. **BUG-06 (Medium, :ui:platform-shims / :desktop):** POSIX path truncation in desktop URI regex fallback.
+  7. **BUG-07 (Medium, :core:network):** Non-atomic 
+econnectJobs replace race and unqualified 
+emove(deviceId) leaking reconnect loops.
+  8. **BUG-08 (Medium, :core:swarm):** SwarmCommand.WritePiece opening and closing PartialHandle on every 64 KB piece without caching.
+  9. **BUG-09 (Medium, :ui:chat):** Compose LazyRow throwing IllegalArgumentException on duplicate attachment URIs in attachment tray.
+  10. **BUG-10 (Medium, :core:ptt):** Native race in PttPlayout.stop() releasing AudioTrack before joining worker thread.
+- **Recommended Next Task:** Implement Sprint 1 remediations (BUG-01, BUG-04 in :app; BUG-02 in :core:calling; BUG-03 in :core:network).
+
+---
+
 ## 2026-10-10 — Swarm File Transfer Subsystem: Audit, Functional Bug Fixes & Performance Optimization
 - **Status:** Complete, all unit tests 100% green in `:core:swarm:jvmTest` (frame codecs, step tests, recipient views, wait recovery, first contact, cancellation) and `:core:engine:jvmTest` (148 tests, 0 failures, including `SwarmInteropTest` 3-node origin drop and rejoin).
 - **Audit & Remediations Completed:**

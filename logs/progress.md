@@ -1,5 +1,32 @@
 # Progress Log
 
+## 2026-10-11 — Full-Subsystem Bug & Concurrency Audit Across All Modules
+
+### Worked on
+- Executed an exhaustive multi-pass audit of all modules (`:app`, `:desktop`, `:core:*`, `:ui:*`) covering threading, coroutine lifecycles, memory leaks, platform API traps, state-machine deadlocks, and edge cases.
+- Generated full report in `docs/audit/2026-10-11-full-subsystem-audit.md`.
+- Identified 12 verified bugs:
+  1. **BUG-01 (Critical):** Transsion Hiber keep-alive chicken-and-egg dead code in `canUseBluetoothTier` (always falls back to Audio focus).
+  2. **BUG-02 (High):** WebRTC media thread A-B / B-A deadlock between `mediaLifecycleMutex` and `callMediaDispatcher` across both 1:1 and group calls.
+  3. **BUG-03 (High):** WebSocket read loop backpressure watchdog silence timeout during high-speed transfers to slow storage.
+  4. **BUG-04 (High):** Android 14/15 FGS type `dataSync` unconditional startup claim exhausting the 6-hour daily quota while idle.
+  5. **BUG-05 (High):** `RealFlashChatRepository` unmanaged `SupervisorJob()` leaking jobs and Room DAOs across engine restarts.
+  6. **BUG-06 (Medium):** Stripping `file:/{1,3}` converts POSIX URIs into relative paths for URIs requiring fallback on Linux/macOS.
+  7. **BUG-07 (Medium):** Non-atomic `reconnectJobs` replace race and unqualified `remove(deviceId)` leaking reconnect coroutines.
+  8. **BUG-08 (Medium):** `SwarmCommand.WritePiece` opening and closing `PartialHandle` for every piece write without caching.
+  9. **BUG-09 (Medium):** Compose `LazyRow` throwing `IllegalArgumentException` on duplicate attachment URIs in attachment tray.
+  10. **BUG-10 (Medium):** Native race in `PttPlayout.stop()` releasing `AudioTrack` before joining the worker thread.
+  11. **BUG-11 (Low):** `DatabaseTrimRegistration` never unregisters from `MemoryGovernor` on database close.
+  12. **BUG-12 (Low):** `LinuxNotifier.notifySend` synchronously blocking caller, failing to drain stream, and leaking timed-out child process.
+
+### Next AI
+Proceed with Sprint 1 remediations:
+1. Fix BUG-01 (Transsion keep-alive BLE scan check) and BUG-04 (`dataSync` FGS 6h timeout) in `:app`.
+2. Fix BUG-02 (Calling media thread lock inversion deadlock) in `:core:calling`.
+3. Fix BUG-03 (WebSocket watchdog keepalive backpressure trap) in `:core:network`.
+
+---
+
 ## 2026-10-10 — Swarm File Transfer Subsystem: Audit, Functional Bug Fixes & Performance Optimization
 
 ### Worked on
