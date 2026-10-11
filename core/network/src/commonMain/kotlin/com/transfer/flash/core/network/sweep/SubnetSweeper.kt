@@ -1,8 +1,10 @@
 package com.transfer.flash.core.network.sweep
 
+import com.transfer.flash.core.common.perf.UiScrollGovernor
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
@@ -24,6 +26,7 @@ internal class SubnetSweeper(
     private val probe: HostProbe,
     private val concurrency: Int = SweepController.DEFAULT_CONCURRENCY,
     private val timeoutMs: Int = SweepController.DEFAULT_TIMEOUT_MS,
+    private val isUltraLow: () -> Boolean = { false },
 ) {
     init {
         require(concurrency > 0) { "concurrency must be positive" }
@@ -39,12 +42,21 @@ internal class SubnetSweeper(
         for (host in hosts) queue.trySend(host)
         queue.close()
 
+        val effectiveConcurrency = if (isUltraLow()) {
+            minOf(concurrency, SweepController.ULTRA_LOW_CONCURRENCY)
+        } else {
+            concurrency
+        }
+
         val answered = MutableStateFlow<Set<String>>(emptySet())
         val finished = MutableStateFlow(0)
         coroutineScope {
-            List(minOf(concurrency, hosts.size)) {
+            List(minOf(effectiveConcurrency, hosts.size)) {
                 launch {
                     for (host in queue) {
+                        if (UiScrollGovernor.isScrolling.value) {
+                            delay(16L)
+                        }
                         val open = try {
                             probe.isOpen(host, port, timeoutMs)
                         } catch (cancelled: CancellationException) {

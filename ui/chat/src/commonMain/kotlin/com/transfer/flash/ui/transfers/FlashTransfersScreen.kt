@@ -470,7 +470,7 @@ private fun PopulatedSections(
         item(key = "header") { HeaderWithChips(state) }
         if (state.offers.isNotEmpty()) {
             item(key = "label-offers") { SectionLabel("INCOMING OFFERS") }
-            items(state.offers, key = { it.id }) { item ->
+            items(state.offers, key = { it.id }, contentType = { "offer" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
@@ -528,7 +528,7 @@ private fun PopulatedSections(
                     }
                 }
             }
-            items(state.active, key = { it.id }) { item ->
+            items(state.active, key = { it.id }, contentType = { "active" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
@@ -556,7 +556,7 @@ private fun PopulatedSections(
         }
         if (retryableFailed.isNotEmpty()) {
             item(key = "label-failed") { SectionLabel("FAILED") }
-            items(retryableFailed, key = { it.id }) { item ->
+            items(retryableFailed, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
@@ -572,7 +572,7 @@ private fun PopulatedSections(
         }
         if (cancelledOrDeclined.isNotEmpty()) {
             item(key = "label-cancelled") { SectionLabel("CANCELLED / DECLINED") }
-            items(cancelledOrDeclined, key = { it.id }) { item ->
+            items(cancelledOrDeclined, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
@@ -609,7 +609,7 @@ private fun PopulatedSections(
                     }
                 }
             }
-            items(state.history, key = { it.id }) { item ->
+            items(state.history, key = { it.id }, contentType = { "history" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
@@ -833,11 +833,14 @@ internal fun TransferProgressBar(
     modifier: Modifier = Modifier,
     barHeight: Dp = FlashDimensions.borderHairline * 4,
 ) {
-    val durationMillis = remember(speedBytesPerSec) {
-        FlashTransfersMath.shimmerDurationMillis(speedBytesPerSec)
-    }
-    val transition = rememberInfiniteTransition(label = "transferShimmer")
-    val shimmerProgress = if (isActive && speedBytesPerSec > 0 && !reduceMotion) {
+    val ultraLow = FlashTheme.ultraLowUi
+    val skipShimmer = ultraLow || reduceMotion
+
+    val shimmerProgress = if (isActive && speedBytesPerSec > 0 && !skipShimmer) {
+        val durationMillis = remember(speedBytesPerSec) {
+            FlashTransfersMath.shimmerDurationMillis(speedBytesPerSec)
+        }
+        val transition = rememberInfiniteTransition(label = "transferShimmer")
         transition.animateFloat(
             initialValue = -0.5f,
             targetValue = 1.5f,
@@ -858,48 +861,51 @@ internal fun TransferProgressBar(
             .clip(FlashShapes.bubbleGrouped)
             .background(FlashTheme.colors.backgroundSurfaceSubtle),
     ) {
-        Box(
-            Modifier
-                // Mirrors `fillMaxWidth(fraction)` exactly — same `roundToInt`, same
-                // `coerceIn(minWidth, maxWidth)` as Compose's own FillNode — but in the
-                // layout phase, so the progress tween never touches composition (EXP-013).
-                .layout { measurable, constraints ->
-                    val width = FlashTransfersMath.progressBarWidthPx(
-                        minWidthPx = constraints.minWidth,
-                        maxWidthPx = constraints.maxWidth,
-                        fraction = fraction.value,
+        val baseBarModifier = Modifier
+            // Mirrors `fillMaxWidth(fraction)` exactly — same `roundToInt`, same
+            // `coerceIn(minWidth, maxWidth)` as Compose's own FillNode — but in the
+            // layout phase, so the progress tween never touches composition (EXP-013).
+            .layout { measurable, constraints ->
+                val width = FlashTransfersMath.progressBarWidthPx(
+                    minWidthPx = constraints.minWidth,
+                    maxWidthPx = constraints.maxWidth,
+                    fraction = fraction.value,
+                )
+                val placeable = measurable.measure(
+                    constraints.copy(minWidth = width, maxWidth = width),
+                )
+                layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+            }
+            .fillMaxSize()
+            .clip(FlashShapes.bubbleGrouped)
+            .background(fillTint)
+
+        val fillModifier = if (skipShimmer || shimmerProgress == null) {
+            baseBarModifier
+        } else {
+            baseBarModifier.drawWithContent {
+                drawContent()
+                val progress = shimmerProgress.value
+                val barWidth = size.width
+                if (barWidth > 0f) {
+                    val sweepX = barWidth * progress
+                    val shimmerWidth = (barWidth * 0.45f).coerceAtLeast(40f)
+                    drawRect(
+                        brush = Brush.linearGradient(
+                            colors = listOf(
+                                Color.Transparent,
+                                Color.White.copy(alpha = 0.35f),
+                                Color.Transparent,
+                            ),
+                            start = Offset(sweepX - shimmerWidth, 0f),
+                            end = Offset(sweepX + shimmerWidth, size.height),
+                        ),
                     )
-                    val placeable = measurable.measure(
-                        constraints.copy(minWidth = width, maxWidth = width),
-                    )
-                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
                 }
-                .fillMaxSize()
-                .clip(FlashShapes.bubbleGrouped)
-                .background(fillTint)
-                .drawWithContent {
-                    drawContent()
-                    val progress = shimmerProgress?.value
-                    if (progress != null) {
-                        val barWidth = size.width
-                        if (barWidth > 0f) {
-                            val sweepX = barWidth * progress
-                            val shimmerWidth = (barWidth * 0.45f).coerceAtLeast(40f)
-                            drawRect(
-                                brush = Brush.linearGradient(
-                                    colors = listOf(
-                                        Color.Transparent,
-                                        Color.White.copy(alpha = 0.35f),
-                                        Color.Transparent,
-                                    ),
-                                    start = Offset(sweepX - shimmerWidth, 0f),
-                                    end = Offset(sweepX + shimmerWidth, size.height),
-                                ),
-                            )
-                        }
-                    }
-                },
-        )
+            }
+        }
+
+        Box(fillModifier)
     }
 }
 

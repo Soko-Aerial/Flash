@@ -31,6 +31,21 @@ public data class FlashTransferProfile(
 ) {
     public companion object {
         /**
+         * Severely constrained hardware: 16KB chunk size to stay out of ART LOS, 512KB SQLite cache,
+         * single stream, tiny 2-frame queues, no video thumbs, 256px max preview.
+         */
+        public val ULTRA_LOW: FlashTransferProfile = FlashTransferProfile(
+            streamCount = 1,
+            chunkSizeBytes = 16 * 1024, // 16 KB
+            feedBufferFrames = 2,
+            sharedBufferFrames = 2,
+            maxAdaptiveChunkSizeBytes = 32 * 1024,
+            allowVideoThumbnails = false,
+            maxImagePreviewDimension = 256,
+            sqliteCacheSizeKb = 512, // 512 KB
+        )
+
+        /**
          * Ultra-low / low resource constraints: single-stream, 32KB chunks, tiny queues, no video thumbs.
          */
         public val LOW: FlashTransferProfile = FlashTransferProfile(

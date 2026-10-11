@@ -71,6 +71,16 @@ public data class FlashVoiceProfile(
         private const val PACKET_OVERHEAD_BYTES = 50
 
         /**
+         * 60 ms packets, 12 kbit/s ceiling, DTX on. ~16 pps instead of 100.
+         * Minimal bitrate and packetization overhead for 2.4 GHz contended radio.
+         */
+        public val ULTRA_LOW: FlashVoiceProfile = FlashVoiceProfile(
+            ptimeMs = 60,
+            maxBitrateBps = 12_000,
+            useDtx = true,
+        )
+
+        /**
          * 60 ms packets, 16 kbit/s ceiling, DTX on. ~16 pps instead of 100.
          *
          * 60 ms is Opus's longest single frame, so this is the cheapest the codec can be without

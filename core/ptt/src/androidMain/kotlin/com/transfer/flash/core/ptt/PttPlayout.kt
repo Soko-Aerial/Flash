@@ -65,14 +65,18 @@ internal class PttPlayout(
     /** Stops playout and frees the track. Safe from any thread, never reports loss. */
     override fun stop() {
         running.set(false)
-        val track = audioTrack
-        runCatching { track?.pause() }
-        runCatching { track?.flush() }
-        runCatching { track?.stop() }
-        runCatching { track?.release() }
-        if (audioTrack === track) audioTrack = null
-        runCatching { worker?.join(1000L) }
+        val thread = worker
         worker = null
+        runCatching { thread?.interrupt() }
+        runCatching { thread?.join(1000L) }
+        val track = audioTrack
+        if (track != null) {
+            audioTrack = null
+            runCatching { track.pause() }
+            runCatching { track.flush() }
+            runCatching { track.stop() }
+            runCatching { track.release() }
+        }
     }
 
     private fun openTrack(): AudioTrack? {

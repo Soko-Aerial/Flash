@@ -47,6 +47,19 @@ public data class FlashVideoProfile(
 
     public companion object {
         /**
+         * 240p10 at 180 kbit/s. Lowest possible capture resolution and frame rate
+         * to avoid saturating software video converters or memory bus.
+         */
+        public val ULTRA_LOW: FlashVideoProfile = FlashVideoProfile(
+            captureWidth = 320,
+            captureHeight = 240,
+            captureFps = 10,
+            maxBitrateKbps = 180,
+            minBitrateKbps = 64,
+            startBitrateKbps = 120,
+        )
+
+        /**
          * 360p15 at 350 kbit/s.
          *
          * Below the 540p the field report asked for, on purpose: this tier covers hardware with

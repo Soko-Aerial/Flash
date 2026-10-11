@@ -1,10 +1,10 @@
 package com.transfer.flash.core.ptt
 
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttPingFrame
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionFrame
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
+import com.transfer.flash.core.ptt.protocol.PttFrameCodec
+import com.transfer.flash.core.ptt.protocol.PttPingFrame
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttSessionFrame
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher

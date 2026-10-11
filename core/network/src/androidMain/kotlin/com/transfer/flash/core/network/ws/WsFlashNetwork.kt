@@ -946,48 +946,51 @@ public class WsFlashNetwork(
         // Read when the loop is scheduled: a storm that has ended must not delay a later loop.
         val staggerMs = synchronized(registryLock) { reconnectStagger.firstAttemptDelayMs(deviceId, nowMs()) }
         val job = scope.launch {
-            var first = true
-            // ERROR-031: the exit condition is a LIVE session, not a session-shaped map entry. A
-            // socket that died without the watchdog noticing used to end this loop on its first
-            // iteration, and [registerSession]'s same-direction supersede — the thing that would
-            // have replaced it — was never reached.
-            while (isActive &&
-                running.get() &&
-                redialTargetOf(deviceId, backup) != null &&
-                !hasLiveSession(deviceId)
-            ) {
-                val policy = reconnectPolicies.getOrPut(deviceId) {
-                    ReconnectPolicy(
-                        // PC5: the connection mode sets the dialer's floor (ECO 2 s, BOOST 250 ms).
-                        baseMs = if (backup) backupRedialBaseMs else transportProfile().reconnectBaseMs,
-                        // ERROR-033: the single most load-bearing number for "does this device come
-                        // back". A device that needs seconds to reassociate on a mesh roam is
-                        // exactly the device that must not then wait out a 30 s ceiling before its
-                        // next attempt — two seconds of radio outage used to become half a minute
-                        // of "offline". Read at loop start, so a tier pinned mid-outage applies to
-                        // the loop that is still running.
-                        capMs = transportProfile().reconnectCapMs,
-                        random01 = { ThreadLocalRandom.current().nextDouble() },
-                    )
-                }
-                if (!(first && immediate)) {
-                    delay(policy.nextDelay() + if (first) staggerMs else 0L)
-                } else if (staggerMs > 0L) {
-                    delay(staggerMs)
-                }
-                first = false
+            try {
+                var first = true
+                // ERROR-031: the exit condition is a LIVE session, not a session-shaped map entry. A
+                // socket that died without the watchdog noticing used to end this loop on its first
+                // iteration, and [registerSession]'s same-direction supersede — the thing that would
+                // have replaced it — was never reached.
+                while (isActive &&
+                    running.get() &&
+                    redialTargetOf(deviceId, backup) != null &&
+                    !hasLiveSession(deviceId)
+                ) {
+                    val policy = reconnectPolicies.getOrPut(deviceId) {
+                        ReconnectPolicy(
+                            // PC5: the connection mode sets the dialer's floor (ECO 2 s, BOOST 250 ms).
+                            baseMs = if (backup) backupRedialBaseMs else transportProfile().reconnectBaseMs,
+                            // ERROR-033: the single most load-bearing number for "does this device come
+                            // back". A device that needs seconds to reassociate on a mesh roam is
+                            // exactly the device that must not then wait out a 30 s ceiling before its
+                            // next attempt — two seconds of radio outage used to become half a minute
+                            // of "offline". Read at loop start, so a tier pinned mid-outage applies to
+                            // the loop that is still running.
+                            capMs = transportProfile().reconnectCapMs,
+                            random01 = { ThreadLocalRandom.current().nextDouble() },
+                        )
+                    }
+                    if (!(first && immediate)) {
+                        delay(policy.nextDelay() + if (first) staggerMs else 0L)
+                    } else if (staggerMs > 0L) {
+                        delay(staggerMs)
+                    }
+                    first = false
 
-                // Re-check after the sleep: state may have changed while we backed off.
-                if (!running.get() || hasLiveSession(deviceId)) break
-                val target = redialTargetOf(deviceId, backup) ?: break
+                    // Re-check after the sleep: state may have changed while we backed off.
+                    if (!running.get() || hasLiveSession(deviceId)) break
+                    val target = redialTargetOf(deviceId, backup) ?: break
 
-                val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
-                if (result is FlashResult.Success) {
-                    // connectManual already reset the policy on success; nothing more to do.
-                    break
+                    val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
+                    if (result is FlashResult.Success) {
+                        // connectManual already reset the policy on success; nothing more to do.
+                        break
+                    }
                 }
+            } finally {
+                coroutineContext[Job]?.let { thisJob -> reconnectJobs.remove(deviceId, thisJob) }
             }
-            reconnectJobs.remove(deviceId)
         }
         reconnectJobs[deviceId] = job
     }

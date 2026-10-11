@@ -64,7 +64,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDi
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.ui.adaptive.FlashAdaptiveMath
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.ui.calling.FlashCallScreen
 import com.transfer.flash.ui.calling.FlashCallShareHost
 import com.transfer.flash.ui.calling.PttSessionOverlayContent

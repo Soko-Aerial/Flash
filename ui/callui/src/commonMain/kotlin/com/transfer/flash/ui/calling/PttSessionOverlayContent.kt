@@ -26,7 +26,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.ptt.PttPressOutcome
 import com.transfer.flash.core.ptt.pttElapsedRealtimeMs

@@ -8,8 +8,10 @@ import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
+import kotlin.math.abs
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
 import com.transfer.flash.core.messaging.model.FlashCallEventKind
 import com.transfer.flash.core.messaging.model.FlashCallEventUi
@@ -141,6 +143,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -318,7 +321,16 @@ public class RealFlashChatRepository(
      * behaviour exactly: no join card, no deferral, and catch-up requests carry no window.
      */
     private val groupHistoryDao: GroupHistoryDao? = null,
-) : FlashChatRepository {
+    /**
+     * Optional performance mode getter. Allows tuning progress throttle intervals
+     * and delta suppression according to the active hardware capability tier.
+     */
+    private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
+) : FlashChatRepository, AutoCloseable {
+
+    override fun close() {
+        scope.cancel()
+    }
 
     /**
      * The name this device stamps on what it sends. A var because the owner can rename the device while the
@@ -687,8 +699,35 @@ public class RealFlashChatRepository(
     /** Device id -> display name for the members of the open group; read when a sent file's recipient list is drawn. */
     private var openGroupMemberNames: Map<String, String> = emptyMap()
 
-    private val pacedAttachmentProgress: Flow<Map<String, FlashAttachmentProgress>> =
-        attachmentProgress.throttleLatest(ATTACHMENT_PROGRESS_THROTTLE_MS)
+    private val pacedAttachmentProgress: Flow<Map<String, FlashAttachmentProgress>> = flow {
+        var lastEmitted: Map<String, FlashAttachmentProgress>? = null
+        attachmentProgress.collect { current ->
+            val mode = performanceMode()
+            val throttleMs = attachmentProgressThrottleMs(mode)
+
+            if (mode == FlashPerformanceMode.ULTRA_LOW && lastEmitted != null) {
+                val prev = lastEmitted!!
+                val canSuppress = current.keys == prev.keys && current.all { (key, currProg) ->
+                    val prevProg = prev[key]
+                    if (prevProg == null) false
+                    else {
+                        val statusUnchanged = currProg.status == prevProg.status
+                        val deltaSmall = abs(currProg.progress - prevProg.progress) < 0.05f
+                        statusUnchanged && deltaSmall
+                    }
+                }
+                if (canSuppress) {
+                    return@collect
+                }
+            }
+
+            emit(current)
+            lastEmitted = current
+            if (throttleMs > 0L) {
+                delay(throttleMs)
+            }
+        }
+    }
 
     init {
         // GM-4: Load accepted invite group IDs to restore charter trust roots.
@@ -6381,12 +6420,20 @@ public class RealFlashChatRepository(
         // A peer that really left shows Offline this much later, which is fine for a LAN mesh.
         const val OFFLINE_HOLD_MS = 6_000L
 
-        // Minimum gap between attachment-progress values reaching the conversation mapper; see
-        // [pacedAttachmentProgress] for why this is 10× the transfer layer's 10 ms watcher tick and
-        // why it is not tiered. Ten updates a second is above what a text label can be read at and
-        // the progress bar is animated independently, so this is a pure work reduction: it buys a
-        // 10× cut in whole-thread re-derivations during a transfer with nothing given up on screen.
+        // Mode-aware gap between attachment-progress values reaching the conversation mapper; see
+        // [pacedAttachmentProgress] for tiering policy and delta suppression under ULTRA_LOW.
         const val ATTACHMENT_PROGRESS_THROTTLE_MS = 100L
+        const val ATTACHMENT_PROGRESS_THROTTLE_ULTRA_LOW_MS = 1000L
+        const val ATTACHMENT_PROGRESS_THROTTLE_LOW_MS = 500L
+        const val ATTACHMENT_PROGRESS_THROTTLE_MEDIUM_MS = 250L
+        const val ATTACHMENT_PROGRESS_THROTTLE_HIGH_MS = 100L
+
+        fun attachmentProgressThrottleMs(mode: FlashPerformanceMode): Long = when (mode) {
+            FlashPerformanceMode.ULTRA_LOW -> ATTACHMENT_PROGRESS_THROTTLE_ULTRA_LOW_MS
+            FlashPerformanceMode.LOW -> ATTACHMENT_PROGRESS_THROTTLE_LOW_MS
+            FlashPerformanceMode.MEDIUM -> ATTACHMENT_PROGRESS_THROTTLE_MEDIUM_MS
+            FlashPerformanceMode.HIGH -> ATTACHMENT_PROGRESS_THROTTLE_HIGH_MS
+        }
 
         // Ephemeral typing indicator TTL. If no heartbeat arrives within this window,
         // typing automatically clears so an inactive or disconnected peer is not stuck typing.

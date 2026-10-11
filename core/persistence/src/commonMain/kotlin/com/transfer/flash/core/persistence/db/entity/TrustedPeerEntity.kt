@@ -8,6 +8,7 @@ import androidx.room.PrimaryKey
  * A paired/trusted device (TOFU pin record, consumed by C2). [fingerprintHex] is part of the
  * pin: `isPinned(deviceId, fingerprintHex)` fails closed when the peer's key changes.
  */
+@Deprecated("Superseded by FlashTrustStore in :core:security. Do not use Room for peer identity or trust pairing.")
 @Entity(tableName = "trusted_peers", indices = [Index(value = ["trustedAt"])])
 public data class TrustedPeerEntity(
     @PrimaryKey val deviceId: String,

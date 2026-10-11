@@ -21,10 +21,10 @@ import com.transfer.flash.core.messaging.EmptyFlashChatRepository
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttPingFrame
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionFrame
+import com.transfer.flash.core.ptt.protocol.PttFrameCodec
+import com.transfer.flash.core.ptt.protocol.PttPingFrame
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttSessionFrame
 import com.transfer.flash.core.network.FlashConnectionHealth
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.FlashNetworkState

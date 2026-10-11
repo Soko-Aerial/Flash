@@ -77,6 +77,7 @@ public object FlashPerformanceClassifier {
 
     /** Classifies [profile], with the deciding evidence in [FlashPerformanceVerdict.reason]. */
     public fun classify(profile: FlashDeviceProfile): FlashPerformanceVerdict {
+        ultraLowGate(profile)?.let { return FlashPerformanceVerdict(FlashPerformanceMode.ULTRA_LOW, it) }
         gate(profile)?.let { return FlashPerformanceVerdict(FlashPerformanceMode.LOW, it) }
         val concerns = concerns(profile)
         return if (concerns.size >= MEDIUM_CONCERN_THRESHOLD) {
@@ -85,6 +86,14 @@ public object FlashPerformanceClassifier {
             val detail = if (concerns.isEmpty()) "no concerns" else concerns.joinToString(", ")
             FlashPerformanceVerdict(FlashPerformanceMode.HIGH, detail)
         }
+    }
+
+    /** The first conclusive reason to force [FlashPerformanceMode.ULTRA_LOW], or null if there is none. */
+    private fun ultraLowGate(profile: FlashDeviceProfile): String? = when {
+        // BelFone SCP810 and ultra-constrained devices: 2GB RAM or less combined with Android 8.1 or older
+        profile.totalRamMb.known() && profile.totalRamMb <= 2_048 && profile.apiLevel.known() && profile.apiLevel <= 27 ->
+            "BelFone-class: RAM ${profile.totalRamMb}MB <= 2048 & API ${profile.apiLevel} <= 27"
+        else -> null
     }
 
     /** The first conclusive reason to force [FlashPerformanceMode.LOW], or null if there is none. */

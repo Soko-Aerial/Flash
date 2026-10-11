@@ -231,6 +231,7 @@ object FlashSettingsMath {
     /** Segment labels for the performance picker. Null is the Auto segment (ERROR-033). */
     fun performanceModeLabel(mode: FlashPerformanceMode?): String = when (mode) {
         null -> "Auto"
+        FlashPerformanceMode.ULTRA_LOW -> "Ultra Low"
         FlashPerformanceMode.LOW -> "Low"
         FlashPerformanceMode.MEDIUM -> "Medium"
         FlashPerformanceMode.HIGH -> "High"
@@ -480,7 +481,7 @@ fun FlashSettingsScreen(
         ),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
     ) {
-        item(key = "header") {
+        item(key = "header", contentType = "header") {
             StaggerIn(0) {
                 FlashText(
                     text = "Settings",
@@ -489,17 +490,17 @@ fun FlashSettingsScreen(
                 )
             }
         }
-        item(key = "search") {
+        item(key = "search", contentType = "search") {
             StaggerIn(1) { SettingsSearchField(query = query, onQueryChange = { query = it }) }
         }
         if (FlashSettingsMath.matches(query, "Display name", model.displayName, "Name")) {
-            item(key = "identity") {
+            item(key = "identity", contentType = "identity") {
                 StaggerIn(1) { IdentityRow(model.displayName, onEditDisplayName) }
             }
         }
 
         // 1. Appearance & Feedback
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.APPEARANCE)) item(key = "section-appearance") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.APPEARANCE)) item(key = "section-appearance", contentType = "section_appearance") {
             StaggerIn(2) {
                 ExpandableSettingsSection(
                     title = "Appearance & Feedback",
@@ -537,7 +538,7 @@ fun FlashSettingsScreen(
         }
 
         // 2. Storage & Downloads
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.STORAGE)) item(key = "section-storage") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.STORAGE)) item(key = "section-storage", contentType = "section_storage") {
             StaggerIn(3) {
                 ExpandableSettingsSection(
                     title = "Storage & Downloads",
@@ -587,7 +588,7 @@ fun FlashSettingsScreen(
         }
 
         // 3. Network & Discovery
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.NETWORK)) item(key = "section-network") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.NETWORK)) item(key = "section-network", contentType = "section_network") {
             StaggerIn(4) {
                 ExpandableSettingsSection(
                     title = "Network & Discovery",
@@ -628,7 +629,7 @@ fun FlashSettingsScreen(
         }
 
         // 4. Calling & Video
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.CALLING)) item(key = "section-calling") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.CALLING)) item(key = "section-calling", contentType = "section_calling") {
             StaggerIn(5) {
                 ExpandableSettingsSection(
                     title = "Calling & Video",
@@ -654,7 +655,7 @@ fun FlashSettingsScreen(
         }
 
         // 5. Security & Trusted Devices
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SECURITY)) item(key = "section-security") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SECURITY)) item(key = "section-security", contentType = "section_security") {
             StaggerIn(6) {
                 ExpandableSettingsSection(
                     title = "Security & Trusted Devices",
@@ -682,7 +683,7 @@ fun FlashSettingsScreen(
         }
 
         // 6. Performance & Engine Tuning
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.PERFORMANCE)) item(key = "section-performance") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.PERFORMANCE)) item(key = "section-performance", contentType = "section_performance") {
             StaggerIn(7) {
                 ExpandableSettingsSection(
                     title = "Performance Tuning",
@@ -703,7 +704,7 @@ fun FlashSettingsScreen(
         }
 
         // 7. Group File Sharing (Swarm) & Diagnostics
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SWARM)) item(key = "section-swarm") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.SWARM)) item(key = "section-swarm", contentType = "section_swarm") {
             StaggerIn(8) {
                 ExpandableSettingsSection(
                     title = "Group File Sharing & Diagnostics",
@@ -751,7 +752,7 @@ fun FlashSettingsScreen(
         if (searching && !anySection && !showAbout &&
             !FlashSettingsMath.matches(query, "Display name", model.displayName, "Name")
         ) {
-            item(key = "no-results") {
+            item(key = "no-results", contentType = "no_results") {
                 FlashText(
                     text = "No settings match \"${query.trim()}\"",
                     style = FlashTheme.typography.bodyDefault,
@@ -761,7 +762,7 @@ fun FlashSettingsScreen(
             }
         }
         if (!searching) {
-            item(key = "reset-defaults") {
+            item(key = "reset-defaults", contentType = "reset_defaults") {
                 StaggerIn(9) {
                     ResetDefaultsRow(
                         enabled = !FlashSettingsMath.isAtDefaults(model),
@@ -770,7 +771,7 @@ fun FlashSettingsScreen(
                 }
             }
         }
-        if (showAbout) item(key = "about") { StaggerIn(10) { AboutCard(model) } }
+        if (showAbout) item(key = "about", contentType = "about") { StaggerIn(10) { AboutCard(model) } }
     }
 }
 
@@ -789,9 +790,10 @@ private fun ExpandableSettingsSection(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
+    val reduceMotion = motion.reduceMotion || FlashTheme.ultraLowUi
     val rotation by animateFloatAsState(
         targetValue = if (expanded) 180f else 0f,
-        animationSpec = if (motion.reduceMotion) androidx.compose.animation.core.snap() else motion.tweenNormalSpec(),
+        animationSpec = if (reduceMotion) androidx.compose.animation.core.snap() else motion.tweenNormalSpec(),
         label = "expandChevronRotation",
     )
 
@@ -852,16 +854,27 @@ private fun ExpandableSettingsSection(
             )
         }
 
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut(),
-        ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+        if (reduceMotion) {
+            if (expanded) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    content()
+                }
+            }
+        } else {
+            AnimatedVisibility(
+                visible = expanded,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
             ) {
-                content()
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    content()
+                }
             }
         }
     }
@@ -873,6 +886,10 @@ private fun ExpandableSettingsSection(
  */
 @Composable
 private fun StaggerIn(index: Int, content: @Composable () -> Unit) {
+    if (FlashTheme.ultraLowUi || FlashTheme.motion.reduceMotion) {
+        content()
+        return
+    }
     val progress = FlashTheme.motion.rememberStaggerProgress(index = index, key = Unit)
     Box(
         Modifier.graphicsLayer {
@@ -1041,7 +1058,7 @@ private fun PerformanceModeSegmented(
     val colors = FlashTheme.colors
     val haptics = rememberFlashHaptics()
     val options: List<FlashPerformanceMode?> =
-        listOf(null, FlashPerformanceMode.LOW, FlashPerformanceMode.MEDIUM, FlashPerformanceMode.HIGH)
+        listOf(null, FlashPerformanceMode.ULTRA_LOW, FlashPerformanceMode.LOW, FlashPerformanceMode.MEDIUM, FlashPerformanceMode.HIGH)
 
     Column(Modifier.fillMaxWidth()) {
         Row(

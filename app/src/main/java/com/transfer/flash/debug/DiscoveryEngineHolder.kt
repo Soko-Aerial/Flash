@@ -30,9 +30,9 @@ import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttFrameCodec
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.network.bridge.DiscoveryRouteBinder
 import com.transfer.flash.core.network.mode.ConnectionModeController
@@ -85,7 +85,7 @@ import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.ptt.PttPressOutcome
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.ptt.PttSessionService
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
 import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
@@ -1115,6 +1115,7 @@ object DiscoveryEngineHolder {
         modeController = modes
 
         val chatImpl = RealFlashChatRepository(
+            scope = appScope,
             localDeviceId = identity.deviceId.value,
             localDisplayName = identity.friendlyName,
             conversationDao = db.conversationDao(),
@@ -1740,6 +1741,11 @@ object DiscoveryEngineHolder {
         network = networkImpl
         transferRepo = transferImpl
         _transfersFlow.value = transferImpl
+        appScope.launch {
+            transferImpl.activeTransfers.collect {
+                updateWifiLockState()
+            }
+        }
         chatRepo = chatImpl
         if (groupSwarmEnabled) {
             attachSwarm()
@@ -1897,6 +1903,7 @@ object DiscoveryEngineHolder {
                 )
             },
             log = { Log.i(TAG_WS, it) },
+            isUltraLow = { performanceMode == FlashPerformanceMode.ULTRA_LOW },
         )
 
         val connector = AutoConnector(
@@ -1977,6 +1984,7 @@ object DiscoveryEngineHolder {
                 val callOwnsAudio = state != null && state.state != FlashCallState.ENDED
                 busyPeerIds = state?.busyPeerIds.orEmpty()
                 setCallActive(callOwnsAudio, engine)
+                updateWifiLockState()
             }
         }
 
@@ -2000,6 +2008,7 @@ object DiscoveryEngineHolder {
     private suspend fun setCallActive(active: Boolean, engine: CompositeDiscovery) {
         if (active == callActive) return
         callActive = active
+        updateWifiLockState()
         // Mic exclusivity (ADR-032): a starting call tears any PTT session down; the press
         // path refuses while a call is active, so the floor can never fight the call for
         // the mic. Voice-message capture uses the same engine-owned gate in MainActivity.
@@ -2587,9 +2596,11 @@ object DiscoveryEngineHolder {
     }
 
     /**
-     * Acquires the CPU + Wi-Fi power locks for the engine's lifetime. Idempotent: both locks are
-     * non-reference-counted, and an already-held lock is left alone, so a second [ensureStarted]
-     * (or a service restart) cannot stack acquisitions. See [wakeLock] / [wifiLock].
+     * Acquires the CPU power lock and initializes the Wi-Fi power lock for the engine's lifetime.
+     * The CPU wake lock is held to ensure keepalive pings are scheduled.
+     * The Wi-Fi high-performance lock is held dynamically: released during idle mesh states
+     * to save battery and reduce radio wake-lock contention, and acquired only during active file
+     * transfers or active calls (see [updateWifiLockState]).
      */
     private fun acquirePowerLocks(context: Context) {
         if (wakeLock?.isHeld != true) {
@@ -2602,7 +2613,7 @@ object DiscoveryEngineHolder {
                     }
             }.onFailure { Log.w(TAG_WS, "Wake lock unavailable", it) }.getOrNull()
         }
-        if (wifiLock?.isHeld != true) {
+        if (wifiLock == null) {
             val wifiMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 WifiManager.WIFI_MODE_FULL_LOW_LATENCY
             } else {
@@ -2614,11 +2625,40 @@ object DiscoveryEngineHolder {
                     .createWifiLock(wifiMode, WIFI_LOCK_TAG)
                     .apply {
                         setReferenceCounted(false)
-                        acquire()
                     }
             }.onFailure { Log.w(TAG_WS, "Wi-Fi lock unavailable", it) }.getOrNull()
         }
-        Log.i(TAG_WS, "Power locks held for mesh: wake=${wakeLock?.isHeld == true} wifi=${wifiLock?.isHeld == true}")
+        updateWifiLockState()
+        Log.i(TAG_WS, "Power locks initialized: wake=${wakeLock?.isHeld == true} wifiHeld=${wifiLock?.isHeld == true}")
+    }
+
+    /**
+     * Evaluates active transfers and active call states to dynamically acquire or release
+     * the Wi-Fi high-perf lock. During idle mesh periods, releasing the lock allows the
+     * 2.4 GHz radio (BelFone SCP810) to enter low-power beacon sleep and prevents battery drain.
+     */
+    private fun updateWifiLockState() {
+        val hasActiveTransfer = transferRepo?.activeTransfers?.value?.any {
+            it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+        } == true
+        val hasActiveCall = calling?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
+        val needsHighPerf = hasActiveTransfer || hasActiveCall
+
+        synchronized(this) {
+            val lock = wifiLock ?: return
+            if (needsHighPerf) {
+                if (!lock.isHeld) {
+                    runCatching { lock.acquire() }
+                    Log.i(TAG_WS, "Acquired Wi-Fi high-perf lock (activeTransfer=$hasActiveTransfer, activeCall=$hasActiveCall)")
+                }
+            } else {
+                if (lock.isHeld) {
+                    runCatching { lock.release() }
+                    Log.i(TAG_WS, "Released Wi-Fi high-perf lock (mesh idle)")
+                }
+            }
+        }
     }
 
     /** Releases both power locks. Only [stopAll] calls this — a stopping service must not. */
@@ -2784,6 +2824,7 @@ object DiscoveryEngineHolder {
     suspend fun stopAll() = lifecycleMutex.withLock {
         val currentEngine: CompositeDiscovery?
         val currentNetwork: WsFlashNetwork?
+        val currentChat: FlashChatRepository?
         synchronized(this) {
             currentEngine = composite
             currentNetwork = network
@@ -2791,11 +2832,13 @@ object DiscoveryEngineHolder {
             network = null
             transferRepo = null
             _transfersFlow.value = null
+            currentChat = chatRepo
             chatRepo = null
             pairing = null
             trustStoreRef = null
             calling = null
         }
+        runCatching { (currentChat as? AutoCloseable)?.close() }
         binderJob?.cancel()
         binderJob = null
         autoConnectJob?.cancel()

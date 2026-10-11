@@ -1,7 +1,7 @@
 package com.transfer.flash.core.ptt
 
-import com.transfer.flash.core.messaging.protocol.PttPingFrame
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
+import com.transfer.flash.core.ptt.protocol.PttPingFrame
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow

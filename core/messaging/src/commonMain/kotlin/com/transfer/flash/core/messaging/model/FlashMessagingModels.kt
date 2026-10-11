@@ -41,6 +41,24 @@ public enum class FlashNetworkTransport {
     Unknown,
 }
 
+/**
+ * Stability and immutability marker for Compose and UI layer virtualization.
+ * Marks that a class produces immutable instances and property access is deterministic.
+ */
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.BINARY)
+public annotation class Immutable
+
+public enum class FlashFileTransferStatus {
+    NotDownloaded,
+    AwaitingAcceptance,
+    Transferring,
+    Paused,
+    Downloaded,
+    Failed,
+}
+
+@Immutable
 public data class FlashAttachment(
     val id: String,
     val name: String,
@@ -49,6 +67,7 @@ public data class FlashAttachment(
     val uri: String? = null,
 )
 
+@Immutable
 public data class FlashMessage(
     val id: FlashMessageId,
     val conversationId: FlashConversationId,
@@ -67,6 +86,7 @@ public data class FlashMessage(
  * One entry per unique emoji. [isSelfReacted] indicates whether the local
  * user contributed to this reaction.
  */
+@Immutable
 public data class FlashReaction(
     val emoji: String,
     val count: Int,
@@ -77,6 +97,7 @@ public data class FlashReaction(
 /**
  * In-bubble reference to a previous quoted message (UI-010).
  */
+@Immutable
 public data class FlashQuotedReplyUi(
     val messageId: String,
     val senderName: String,
@@ -85,22 +106,11 @@ public data class FlashQuotedReplyUi(
 )
 
 /**
- * Transfer state for file attachments (UI-016).
- */
-public enum class FlashFileTransferStatus {
-    NotDownloaded,
-    AwaitingAcceptance,
-    Transferring,
-    Paused,
-    Downloaded,
-    Failed,
-}
-
-/**
  * Live transfer progress for a chat attachment, keyed by transferId, injected from the transfer
  * layer so a chat bubble can render inline send/receive progress alongside the Transfers tab (B4).
  * Pure data (no Android types) → the join between chat rows and live transfers stays testable.
  */
+@Immutable
 public data class FlashAttachmentProgress(
     /** 0f..1f fraction of bytes moved. */
     val progress: Float,
@@ -122,6 +132,7 @@ public data class FlashAttachmentProgress(
 )
 
 /** One member's progress on a file this device is sending to a group (by device id; the repository adds the name). */
+@Immutable
 public data class FlashRecipientProgress(
     val peerId: String,
     /** 0f..1f share of the file this member holds. */
@@ -132,6 +143,7 @@ public data class FlashRecipientProgress(
 )
 
 /** One row of the sender's "who has the file" list in a bubble. */
+@Immutable
 public data class FlashFileRecipientUi(
     val id: String,
     val name: String,
@@ -144,6 +156,7 @@ public data class FlashFileRecipientUi(
 /**
  * File attachment representation for conversation UI (UI-016).
  */
+@Immutable
 public data class FlashFileAttachmentUi(
     val id: String,
     val name: String,
@@ -169,6 +182,7 @@ public data class FlashFileAttachmentUi(
 /**
  * Image attachment representation for conversation photo messages and grids (UI-017).
  */
+@Immutable
 public data class FlashImageAttachmentUi(
     val id: String,
     val uri: String? = null,
@@ -188,6 +202,7 @@ public data class FlashImageAttachmentUi(
  * [amplitudes] are pre-computed normalized loudness samples (0..100) captured at
  * record/send time; playback cards resample them into waveform bars.
  */
+@Immutable
 public data class FlashVoiceAttachmentUi(
     val id: String,
     val uri: String? = null,
@@ -223,6 +238,7 @@ public enum class FlashCallEventKind {
  * Attached to a [FlashMessageUi] rather than being a message type of its own so a call row
  * inherits bubble selection, long-press and timestamps for free.
  */
+@Immutable
 public data class FlashCallEventUi(
     val kind: FlashCallEventKind,
     val video: Boolean,
@@ -249,6 +265,7 @@ public data class FlashCallEventUi(
         }
 }
 
+@Immutable
 public data class FlashMessageUi(
     val id: String,
     val senderName: String,
@@ -274,6 +291,7 @@ public data class FlashMessageUi(
     val callEvent: FlashCallEventUi? = null,
 )
 
+@Immutable
 public data class FlashChatListItemUi(
     val id: String,
     val title: String,
@@ -295,6 +313,7 @@ public data class FlashChatListItemUi(
     val isArchived: Boolean = false,
 )
 
+@Immutable
 public data class FlashChatListUiState(
     val items: List<FlashChatListItemUi> = emptyList(),
     val archivedItems: List<FlashChatListItemUi> = emptyList(),
@@ -314,6 +333,7 @@ public data class FlashChatListUiState(
     val hasLoaded: Boolean = false,
 )
 
+@Immutable
 public data class FlashChatHeaderUiState(
     val title: String,
     val avatarInitials: String,
@@ -338,6 +358,7 @@ public data class FlashChatHeaderUiState(
 public enum class FlashMemberRole { Owner, Admin, Member }
 
 /** One member row of a group conversation (UI-029). */
+@Immutable
 public data class FlashGroupMemberUi(
     val id: String,
     val name: String,
@@ -366,6 +387,7 @@ public enum class FlashWaitingReason {
 }
 
 /** One recipient of a message in the Message Info sheet. */
+@Immutable
 public data class FlashMessageRecipientUi(
     val id: String,
     val name: String,
@@ -383,6 +405,7 @@ public data class FlashMessageRecipientUi(
  * The Message Info sheet's content (UI-051): one message the user sent and who has read it, received it, or not yet.
  * [recipients] is already ordered: read, then delivered (earliest first), then waiting.
  */
+@Immutable
 public data class FlashMessageInfoUi(
     val messageId: String,
     val preview: String,
@@ -394,6 +417,7 @@ public data class FlashMessageInfoUi(
     val waiting: List<FlashMessageRecipientUi> get() = recipients.filter { it.state == FlashRecipientState.Waiting }
 }
 
+@Immutable
 public data class FlashActiveGroupCallBarUi(
     val callId: String,
     val callerName: String,
@@ -408,6 +432,7 @@ public data class FlashActiveGroupCallBarUi(
  */
 public enum class FlashSelfMembership { Active, Left, Removed }
 
+@Immutable
 public data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
@@ -461,6 +486,7 @@ public data class FlashConversationUiState(
 /**
  * A pending join request for this group (GM-10).
  */
+@Immutable
 public data class FlashGroupJoinRequestUi(
     val subjectId: String,
     val subjectKey: String,
@@ -478,14 +504,17 @@ public data class FlashGroupJoinRequestUi(
  * Earlier messages of this group are arriving (catch-up, UI-052). [receivedCount] is how many new ones have landed since
  * the banner appeared. There is deliberately no total: the requester cannot know how many holders will push.
  */
+@Immutable
 public data class FlashGroupSyncUi(val receivedCount: Int, val expectedCount: Int? = null)
 
 /**
  * ADR-100 / UI-057: this member has not yet chosen how much earlier history to load, so the screen shows the join card.
  * [ceiling] is the group's signed limit; every choice the card offers is inside it.
  */
+@Immutable
 public data class FlashGroupHistoryUi(val ceiling: com.transfer.flash.core.messaging.protocol.GroupHistoryCeiling)
 
+@Immutable
 public data class FlashConversation(
     val id: FlashConversationId,
     val title: String,
@@ -497,6 +526,7 @@ public data class FlashConversation(
     val presence: FlashPeerPresence = FlashPeerPresence.Offline,
 )
 
+@Immutable
 public data class FlashConversationDetail(
     val conversation: FlashConversation,
     val messages: List<FlashMessage> = emptyList(),

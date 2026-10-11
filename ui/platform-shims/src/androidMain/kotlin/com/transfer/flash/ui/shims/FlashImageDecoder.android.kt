@@ -81,6 +81,12 @@ private class AndroidImageDecoder(private val context: Context) : FlashImageDeco
  */
 internal object FlashMediaDecoder {
 
+    /** Long-edge budget for in-bubble tiles in ULTRA_LOW mode (e.g. BelFone SCP810 480x640). */
+    const val TILE_LONG_EDGE_ULTRA_LOW_PX: Int = 160
+
+    /** Long-edge budget for full viewer on constrained devices in ULTRA_LOW mode. */
+    const val VIEWER_LONG_EDGE_ULTRA_LOW_PX: Int = 480
+
     /**
      * Tile budget on a device the performance classifier put below HIGH (ERROR-033).
      *
@@ -138,7 +144,9 @@ internal object FlashMediaDecoder {
     ): ImageBitmap? {
         if (source.isNullOrBlank()) return null
         ensureTrimCallbacks(context)
-        val key = "$source|$isVideo|$maxLongEdge|$lowColorDepth"
+        val isUltraLow = maxLongEdge <= TILE_LONG_EDGE_ULTRA_LOW_PX || maxLongEdge <= VIEWER_LONG_EDGE_ULTRA_LOW_PX
+        val effectiveLowColorDepth = lowColorDepth || isUltraLow
+        val key = "$source|$isVideo|$maxLongEdge|$effectiveLowColorDepth"
         if (memoize) cache.get(key)?.let { return it }
         // Catches Throwable on purpose: a decode can still fail on an OEM codec or a truncated file,
         // and every caller's contract is "no thumbnail" rather than a crashed composition.
@@ -146,7 +154,7 @@ internal object FlashMediaDecoder {
             if (isVideo) {
                 decodeVideoFrame(context, source, maxLongEdge)
             } else {
-                decodeImage(context, source, maxLongEdge, lowColorDepth, computeInSampleSize)
+                decodeImage(context, source, maxLongEdge, effectiveLowColorDepth, computeInSampleSize)
             }
         }.onFailure { e ->
             android.util.Log.w("FlashMediaDecoder", "Decode failed for source: $source, isVideo: $isVideo", e)

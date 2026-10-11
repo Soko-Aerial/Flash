@@ -62,7 +62,7 @@ internal data class GroupVideoLimits(
                 band == FlashNetworkBand.WIFI_6GHZ
             val tall = sendHeightFor(tier)
             val base = when (tier) {
-                FlashPerformanceMode.LOW -> GroupVideoLimits(receive = 1, send = 1, quality = tall, maxSendHeight = tall)
+                FlashPerformanceMode.ULTRA_LOW, FlashPerformanceMode.LOW -> GroupVideoLimits(receive = 1, send = 1, quality = tall, maxSendHeight = tall)
                 FlashPerformanceMode.MEDIUM -> GroupVideoLimits(receive = 2, send = 2, quality = tall, maxSendHeight = tall)
                 FlashPerformanceMode.HIGH -> GroupVideoLimits(
                     receive = if (slow) 3 else 5,
@@ -93,7 +93,7 @@ internal data class GroupVideoLimits(
          */
         fun sendHeightFor(tier: FlashPerformanceMode): Int = when (tier) {
             FlashPerformanceMode.HIGH -> HEIGHT_540
-            FlashPerformanceMode.MEDIUM, FlashPerformanceMode.LOW -> HEIGHT_360
+            FlashPerformanceMode.MEDIUM, FlashPerformanceMode.LOW, FlashPerformanceMode.ULTRA_LOW -> HEIGHT_360
         }
 
         /**

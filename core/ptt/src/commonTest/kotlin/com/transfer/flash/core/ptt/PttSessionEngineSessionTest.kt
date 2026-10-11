@@ -1,9 +1,9 @@
 package com.transfer.flash.core.ptt
 
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionFrame
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttSessionFrame
 import kotlin.concurrent.Volatile
 import kotlin.test.Test
 import kotlin.test.assertContentEquals

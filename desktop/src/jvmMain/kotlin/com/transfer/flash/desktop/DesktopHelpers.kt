@@ -35,8 +35,17 @@ internal object DesktopHelpers {
                         try {
                             File(URI(path.replace(" ", "%20")))
                         } catch (_: Exception) {
-                            val clean = path.replaceFirst(Regex("^file:/{1,3}", RegexOption.IGNORE_CASE), "")
-                            File(clean)
+                            var clean = path.replaceFirst(Regex("^file:", RegexOption.IGNORE_CASE), "")
+                            if (clean.startsWith("///")) {
+                                clean = clean.substring(2)
+                            } else if (clean.startsWith("//")) {
+                                clean = clean.substring(1)
+                            }
+                            if (clean.matches(Regex("^/[A-Za-z]:.*"))) {
+                                clean = clean.substring(1)
+                            }
+                            val decoded = runCatching { java.net.URLDecoder.decode(clean, "UTF-8") }.getOrDefault(clean)
+                            File(decoded)
                         }
                     }
                 }

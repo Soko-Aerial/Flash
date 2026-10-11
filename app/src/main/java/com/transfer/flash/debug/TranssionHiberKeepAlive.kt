@@ -65,6 +65,7 @@ class TranssionHiberKeepAlive(
     private val bluetoothChecker: (() -> Boolean)? = null,
     private val overlayChecker: (() -> Boolean)? = null,
     private val sessionActiveChecker: (() -> Boolean)? = null,
+    private val activeListResolver: (() -> String)? = null,
     private val onTierChanged: ((oldTier: KeepAliveTier, newTier: KeepAliveTier) -> Unit)? = null,
 ) {
     enum class KeepAliveTier {
@@ -75,6 +76,7 @@ class TranssionHiberKeepAlive(
     }
 
     private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var verificationRunnable: Runnable? = null
 
     @Volatile
     var currentTier: KeepAliveTier = KeepAliveTier.NONE
@@ -204,6 +206,11 @@ class TranssionHiberKeepAlive(
             receiverRegistered = false
         }
 
+        verificationRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            verificationRunnable = null
+        }
+
         val old = currentTier
         teardownTier(currentTier)
         currentTier = KeepAliveTier.NONE
@@ -292,13 +299,7 @@ class TranssionHiberKeepAlive(
                     Manifest.permission.BLUETOOTH,
                 ) == PackageManager.PERMISSION_GRANTED
             }
-            if (!hasPermission) return false
-
-            // On Transsion devices, Bit 15 ("bt") screen-off exemption strictly requires that
-            // Settings.Global "bluetooth.active.applist" contains the package name.
-            // If the package is not on the list, Bluetooth cannot protect Flash from Hiber.
-            val activeList = Settings.Global.getString(context.contentResolver, "bluetooth.active.applist") ?: ""
-            activeList.contains(context.packageName)
+            hasPermission
         } catch (t: Throwable) {
             Log.w(TAG, "Error checking Bluetooth tier eligibility: ${t.message}")
             false
@@ -356,15 +357,38 @@ class TranssionHiberKeepAlive(
             bleScanCallback = cb
             isBleScanning = true
 
-            val activeList = Settings.Global.getString(context.contentResolver, "bluetooth.active.applist") ?: ""
-            val registered = activeList.contains(context.packageName)
-            if (registered) {
-                Log.i(TAG, "Tier 1 (BLUETOOTH) started: verified in bluetooth.active.applist")
-                true
-            } else {
-                Log.w(TAG, "Tier 1 (BLUETOOTH) BLE scan started, but package not present in bluetooth.active.applist; cascading to fallback")
-                false
+            // Schedule asynchronous verification check (750ms later) to verify that Settings.Global reflects package name.
+            // If the package fails to appear after the timeout, fallback to Audio focus.
+            verificationRunnable?.let { mainHandler.removeCallbacks(it) }
+            val checkRunnable = Runnable {
+                synchronized(this@TranssionHiberKeepAlive) {
+                    if (!isStarted || currentTier != KeepAliveTier.BLUETOOTH || !isBleScanning) return@Runnable
+                    val activeList = activeListResolver?.invoke()
+                        ?: Settings.Global.getString(context.contentResolver, "bluetooth.active.applist")
+                        ?: ""
+                    val registered = activeList.contains(context.packageName)
+                    if (registered) {
+                        Log.i(TAG, "Tier 1 (BLUETOOTH) verified asynchronously in bluetooth.active.applist")
+                    } else {
+                        Log.w(TAG, "Tier 1 (BLUETOOTH) BLE scan running, but package not present in bluetooth.active.applist after timeout; falling back to AUDIO")
+                        if (isSessionActive) {
+                            val old = currentTier
+                            teardownTier(currentTier)
+                            if (activateTier(KeepAliveTier.AUDIO)) {
+                                currentTier = KeepAliveTier.AUDIO
+                                onTierChanged?.invoke(old, KeepAliveTier.AUDIO)
+                            } else {
+                                currentTier = KeepAliveTier.NONE
+                                onTierChanged?.invoke(old, KeepAliveTier.NONE)
+                            }
+                        }
+                    }
+                }
             }
+            verificationRunnable = checkRunnable
+            mainHandler.postDelayed(checkRunnable, 750L)
+            Log.i(TAG, "Tier 1 (BLUETOOTH) started optimistically; scheduled async active.applist verification")
+            true
         } catch (e: SecurityException) {
             Log.w(TAG, "SecurityException starting BLE scan: ${e.message}")
             false
@@ -374,8 +398,17 @@ class TranssionHiberKeepAlive(
         }
     }
 
+    @VisibleForTesting
+    fun runVerificationCheckForTesting() {
+        verificationRunnable?.run()
+    }
+
     @SuppressLint("MissingPermission")
     private fun stopBluetooth() {
+        verificationRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            verificationRunnable = null
+        }
         if (isBleScanning && bleScanCallback != null) {
             runCatching {
                 val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
