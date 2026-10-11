@@ -71,6 +71,9 @@ public fun FlashGroupSettingsSheet(
     onUpdateHistoryCeiling: (GroupHistoryCeiling) -> Unit = {},
     /** ADR-100 / UI-057: "Load older messages" for a member; null hides the row (not a group member, or no sync). */
     onLoadOlderHistory: ((windowMs: Long) -> Unit)? = null,
+    isEnterpriseEnrolled: Boolean = false,
+    isLinkedToHub: Boolean = false,
+    onToggleLinkToHub: ((Boolean) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val canEdit = remember(isOwner, isAdmin) { FlashGroupSettingsMath.canEditGroupRules(isOwner, isAdmin) }
@@ -415,6 +418,28 @@ public fun FlashGroupSettingsSheet(
                         onClick = { showRotateConfirm = true },
                     )
                 }
+            }
+
+            if (isEnterpriseEnrolled) {
+                Spacer(modifier = Modifier.height(FlashSpacing.space24))
+                SectionHeader(
+                    title = "Organization Relay (E2c)",
+                    subtitle = "Relay new messages through corporate hub for remote and offline members",
+                )
+
+                SettingsSwitchRow(
+                    title = if (isLinkedToHub) "Linked to Corporate Hub" else "Link to Corporate Hub",
+                    description = if (isLinkedToHub) {
+                        "Active: new messages relay through the hub. Past messages remain local (Zero Cloud Dump)."
+                    } else {
+                        "Enable relay delivery for offline members. Zero Cloud Dump: past messages are NEVER uploaded."
+                    },
+                    checked = isLinkedToHub,
+                    enabled = canEdit && onToggleLinkToHub != null,
+                    onCheckedChange = { checked ->
+                        onToggleLinkToHub?.invoke(checked)
+                    },
+                )
             }
         }
     }

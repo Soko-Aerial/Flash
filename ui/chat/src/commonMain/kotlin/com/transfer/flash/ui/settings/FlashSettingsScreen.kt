@@ -152,6 +152,11 @@ data class FlashSettingsModel(
     val swarmEnabled: Boolean = false,
     /** UI-056 / ADR-080: the handwritten launch animation on a cold start. Default TRUE. */
     val launchAnimation: Boolean = true,
+    val isEnterpriseEnrolled: Boolean = false,
+    val enterpriseHubUrl: String? = null,
+    val enterpriseDepartment: String? = null,
+    val enterpriseRole: String? = null,
+    val enterpriseRootFingerprint: String? = null,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -300,6 +305,10 @@ object FlashSettingsMath {
                 "Help share group files", "Keep finished files available for others",
                 "Group file sharing", "Swarm", "Export logs",
             ),
+        ),
+        ENTERPRISE(
+            "Enterprise & Organization", "Corporate hub relay, enrollment, and department directory",
+            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory"),
         ),
     }
 
@@ -741,6 +750,57 @@ fun FlashSettingsScreen(
                             subtitle = "Share Flash's recent log to help find a problem. It holds no message text or keys",
                             value = null,
                             onClick = onExportLogs,
+                        )
+                    }
+                }
+            }
+        }
+
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.ENTERPRISE)) item(key = "section-enterprise", contentType = "section_enterprise") {
+            StaggerIn(9) {
+                ExpandableSettingsSection(
+                    title = "Enterprise & Organization",
+                    subtitle = "Corporate hub relay, enrollment, and department directory",
+                    iconSpec = FlashIcons.Relay,
+                    initiallyExpanded = false,
+                    forceExpanded = searching,
+                ) {
+                    if (model.isEnterpriseEnrolled) {
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Organization hub")) ValueRow(
+                            iconSpec = FlashIcons.Relay,
+                            title = "Organization hub",
+                            subtitle = "Connected to corporate relay for remote & offline messaging",
+                            value = model.enterpriseHubUrl.orEmpty(),
+                            onClick = {},
+                        )
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Department")) ValueRow(
+                            iconSpec = FlashIcons.Device,
+                            title = "Department",
+                            subtitle = "Authorized organization directory scope",
+                            value = model.enterpriseDepartment ?: "None",
+                            onClick = {},
+                        )
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Role")) ValueRow(
+                            iconSpec = FlashIcons.Verified,
+                            title = "Role",
+                            subtitle = "Delegated permission level inside company",
+                            value = model.enterpriseRole ?: "Member",
+                            onClick = {},
+                        )
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Root fingerprint")) ValueRow(
+                            iconSpec = FlashIcons.Check,
+                            title = "Root fingerprint",
+                            subtitle = "Cryptographic root trust anchor",
+                            value = model.enterpriseRootFingerprint?.take(12)?.plus("...") ?: "Pinned",
+                            onClick = {},
+                        )
+                    } else {
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Organization hub")) ValueRow(
+                            iconSpec = FlashIcons.Relay,
+                            title = "Organization hub",
+                            subtitle = "Enrol with an invitation link (flash://enroll) from your admin",
+                            value = "Not enrolled",
+                            onClick = {},
                         )
                     }
                 }
