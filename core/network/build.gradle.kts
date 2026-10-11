@@ -77,6 +77,10 @@ kotlin {
             // Real edge: bridge/DiscoveryRouteBinder.kt uses FlashDiscoveredEndpoint, which is
             // commonMain in :core:discovery since Phase 08.
             implementation(project(":core:discovery"))
+            implementation(project(":core:security"))
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.ktor.client.websockets)
         }
         androidMain.dependencies {
             // TODO(cleanup): all three are dead — grep finds zero references in main and test.
