@@ -1,5 +1,26 @@
 # Current Handoff
 
+## 2026-10-11 — Step 1: Outbound WebSocket Relay Client (:core:network commonMain)
+- **Status:** Complete & 100% Verified.
+- **Implemented:**
+  - Added Ktor Client (`ktor-client-core`, `ktor-client-cio`, `ktor-client-websockets`) and `:core:security` to `:core:network` `commonMain.dependencies`.
+  - Implemented `RelayFrame.kt`: sealed hierarchy for all protocol frames (`Hello`, `Welcome`, `Data`, `Ack`, `Ping`, `Pong`, `Meta`, `Error`).
+  - Implemented `RelayFrameCodec.kt`: wire serialization with `FlashTextFraming`, JSON fallback, `P-REF-1` wire padding (256 B / 512 B boundaries), and `P-REF-2` MTU bounds ($\le 1200$ B control frames, $\le 32$ KB payload chunks).
+  - Implemented `RelaySessionState.kt`: connection lifecycle state machine (`DISCONNECTED`, `CONNECTING`, `AUTHENTICATING`, `CONNECTED`, `SUSPENDED`, `REVOKED`).
+  - Implemented `RelayTransport.kt` & `KtorRelayTransport.kt`: pure KMP production transport using Ktor Client WebSockets.
+  - Implemented `FlashRelayClient.kt`: high-level client handling connection lifecycle, keepalive watchdog, envelope routing, delivery ACK demuxing, and typing/presence debouncing (`P-REF-4`).
+- **Verification:**
+  - `:core:network:jvmTest --tests "com.transfer.flash.core.network.relay.*"`: 15/15 unit tests PASSED (100% clean).
+  - `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL (0 errors).
+- **Recommended Next Task:**
+  - Proceed to **Step 2: Directory & Enrolment Client in `:core:security` (`commonMain`)** (`flash://enroll` token redemption and `/api/v1/directory` querying).
+- **Relevant Files for Next Task:**
+  - `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/auth/`
+  - `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`
+  - `server/src/main/kotlin/com/transfer/flash/server/directory/DirectoryRoutes.kt`
+
+---
+
 ## 2026-10-11 — Enterprise Hybrid Plan: Open-Source Corporate Profile & Plan Refinement
 - **Status:** Complete & Verified. Re-anchored `docs/ENTERPRISE-HYBRID-PLAN.md` to an open-source corporate and enterprise profile (Engineering, Operations, Sales, Legal, HR, Healthcare, Distributed/Hybrid Work).
 - **Plan Refinements Incorporated (`docs/ENTERPRISE-HYBRID-PLAN.md`):**

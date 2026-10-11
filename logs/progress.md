@@ -1,6 +1,34 @@
 # Progress Log
 
-## 2026-10-11 — Enterprise Hybrid Plan: Open-Source Corporate Profile & 100 Corporate Scenarios Audit
+## 2026-10-11 — Step 1: Outbound WebSocket Relay Client (:core:network commonMain)
+
+### Worked on
+- Implemented the client-side outbound WebSocket Relay Client in `:core:network` (`commonMain`) adhering to Kotlin Multiplatform (Android + Desktop JVM) and `explicitApi()` requirements.
+- Configured KMP dependencies for Ktor Client (Core, CIO engine, WebSockets) and linked `:core:security` in `commonMain.dependencies`.
+- Implemented protocol models, framing, wire padding (`P-REF-1`), MTU bounds validation (`P-REF-2`), session lifecycle state machine, pluggable transport abstraction, and high-level relay client with keepalive watchdog.
+
+### Changed
+- `gradle/libs.versions.toml`: Added `ktor-client-core`, `ktor-client-cio`, `ktor-client-websockets` catalog entries at version `3.0.3`.
+- `core/network/build.gradle.kts`: Added `:core:security` and the Ktor client libraries to `commonMain.dependencies`.
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/relay/`:
+  - `RelayFrame.kt`: Sealed hierarchy of protocol frames (`Hello`, `Welcome`, `Data`, `Ack`, `Ping`, `Pong`, `Meta`, `Error`). Converts cleanly to/from [FlashEnvelope].
+  - `RelayFrameCodec.kt`: Wire encoder/decoder using `FlashTextFraming` and JSON envelope fallback. Enforces `P-REF-1` wire-level padding (padding ephemeral metadata to 256 B / 512 B boundaries) and `P-REF-2` MTU bounds (control frames $\le 1200$ bytes, payload chunks $\le 32$ KB).
+  - `RelaySessionState.kt`: Connection lifecycle state machine (`DISCONNECTED`, `CONNECTING`, `AUTHENTICATING`, `CONNECTED`, `SUSPENDED`, `REVOKED`).
+  - `RelayTransport.kt`: Pluggable transport interface for outbound WebSocket connection.
+  - `KtorRelayTransport.kt`: Pure KMP production implementation using Ktor Client WebSockets with CIO engine and URL normalization (`ws://`, `wss://`, `/flash-relay`).
+  - `FlashRelayClient.kt`: Enterprise Outbound Relay Client coordinating persistent connection, exponential backoff reconnection, 15s keepalive ping watchdog, envelope send/receive routing, delivery ACK demuxing, and typing/presence debouncing (`P-REF-4`).
+- `core/network/src/commonTest/kotlin/com/transfer/flash/core/network/relay/`:
+  - `RelayFrameCodecTest.kt`: Unit tests for frame serialization, roundtrip encoding, `P-REF-1` wire padding, `P-REF-2` MTU bounds, and JSON fallback parsing.
+  - `FlashRelayClientTest.kt`: Unit tests for client envelope routing, incoming envelope flows, delivery ACKs, typing metadata, and revocation enforcement.
+
+### Verification
+- Ran `./gradlew.bat :core:network:jvmTest --tests "com.transfer.flash.core.network.relay.*"`: 15/15 unit tests passed (100% clean).
+- Ran `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+### Next AI
+Proceed to Step 2: Directory & Enrolment Client in `:core:security` (`commonMain`) to implement `flash://enroll` token redemption and `/api/v1/directory` querying.
+
+---
 
 ### Worked on
 - Re-anchored the deployment context of `docs/ENTERPRISE-HYBRID-PLAN.md` to open-source corporate and enterprise teams (Engineering, Sales, Operations, HR, Legal, Healthcare, Logistics) across distributed hybrid/remote work and branch office LANs.
