@@ -1,5 +1,80 @@
 # Progress Log
 
+## 2026-10-11 — Step 4: Enterprise UI Integration (:ui:chat commonMain)
+
+### Worked on
+- Implemented client-side enterprise UI components in `:ui:chat` across group creation (`FlashCreateGroupSheet`), group settings (`FlashGroupSettingsSheet`), and app settings (`FlashSettingsScreen`).
+- Added department badges and enterprise directory member indicators to peer selection rows.
+- Added corporate organization hub routing toggles for new group creation and existing group settings.
+- Explicitly surfaced and communicated the Zero Cloud Dump Invariant to users when linking pre-existing groups to the corporate hub.
+- Added Enterprise Organization card in `FlashSettingsScreen` displaying server hub URL, department, role, and root key fingerprint.
+
+### Changed
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashCreateGroupSheet.kt`:
+  - Added `department` and `isDirectoryMember` to `FlashCreateGroupPeerUi`.
+  - Added `isEnterpriseEnrolled`, `initialUseHub`, and `onCreateWithHub` parameters to `FlashCreateGroupSheet`.
+  - Added Organization Hub toggle and department subtitle badges for coworkers.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashGroupSettingsSheet.kt`:
+  - Added `isEnterpriseEnrolled`, `isLinkedToHub`, and `onToggleLinkToHub` parameters.
+  - Added "Organization Relay (E2c)" settings section with link/unlink switch and explicit Zero Cloud Dump user notification ("Linking routes future messages via the corporate server for offline members. Past chats are never uploaded.").
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashSettingsScreen.kt`:
+  - Added enterprise enrollment fields (`isEnterpriseEnrolled`, `enterpriseHubUrl`, `enterpriseDepartment`, `enterpriseRole`, `enterpriseRootFingerprint`) to `FlashSettingsModel`.
+  - Added `ENTERPRISE` to `FlashSettingsMath.Section`.
+  - Rendered `section-enterprise` expandable card showing Hub URL, Department, Role, and Root fingerprint.
+
+### Verification
+- Ran `./gradlew.bat :ui:chat:jvmTest`: ALL TESTS PASSED.
+- Ran `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+---
+
+## 2026-10-11 — Step 3: Multi-Path Outbox Racing & Group Hub Link (:core:messaging commonMain)
+
+### Worked on
+- Implemented multi-path outbox racing (`P-REF-3`) across direct LAN sockets and the corporate relay client.
+- Implemented Zero Cloud Dump Invariant for pre-existing group migration and new group creation.
+- Implemented group hub linking state and methods in `EnterpriseTrustStore`, `FlashChatRepository`, and `RealFlashChatRepository`.
+- Bound directory search queries for enterprise colleagues and groups through repository interfaces.
+
+### Changed
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/auth/EnterpriseTrustStore.kt`:
+  - Added `linkedHubGroups` set tracking groups linked to corporate hub.
+  - Added `linkGroupToHub(groupId)`, `unlinkGroupFromHub(groupId)`, `isGroupLinkedToHub(groupId)` with thread-safe persistence.
+- `core/messaging/build.gradle.kts`:
+  - Added `:core:network` to `commonMain.dependencies`.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`:
+  - Added `linkGroupToHub`, `isGroupLinkedToHub`, `unlinkGroupFromHub`, `fetchEnterpriseDirectoryMembers`, `fetchEnterpriseDirectoryGroups`.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`:
+  - Added `enterpriseTrustStore`, `relayClient`, `directoryClient` dependencies.
+  - Implemented `raceTransports()` concurrent multi-path racing (`P-REF-3`): concurrent LAN socket and relay dispatch with fastest-wins resolution.
+  - Wired direct outbox drain and group outbox drain through multi-path racing.
+  - Implemented Zero Cloud Dump Invariant: linking pre-existing groups never queries or uploads historical messages from Room `MessageDao`.
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/enterprise/EnterpriseGroupLinkAndMultiPathTest.kt`:
+  - Unit tests verifying Zero Cloud Dump Invariant, group link toggle, multi-path racing with relay fallback, and directory queries.
+
+### Verification
+- Ran `./gradlew.bat :core:messaging:jvmTest --tests "com.transfer.flash.core.messaging.enterprise.*"`: 100% PASSED.
+- Ran `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+---
+
+## 2026-10-11 — Step 2: Directory & Enrolment Client (:core:network, :core:security commonMain)
+
+### Worked on
+- Implemented client-side cryptographic models and network clients for Stage E2b / E2c:
+  - `DeviceCert.kt`: X.509/ECDSA P-256 device certificate validation.
+  - `DelegationCert.kt`: E2b Root-to-Server delegated authority validation.
+  - `EnrollmentCredentials.kt`: parsing and token management for `flash://enroll` links.
+  - `EnterpriseTrustStore.kt`: local vault for enrolled certificates and pinned root fingerprints.
+  - `EnterpriseEnrollmentClient.kt`: token redemption, challenge-response device key proof, and cert acquisition.
+  - `EnterpriseDirectoryClient.kt`: authenticated querying of colleagues and groups with scoped visibility.
+
+### Verification
+- Ran `./gradlew.bat :core:security:jvmTest` and `:core:network:jvmTest`: ALL PASSED.
+- Ran `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+---
+
 ## 2026-10-11 — Step 1: Outbound WebSocket Relay Client (:core:network commonMain)
 
 ### Worked on

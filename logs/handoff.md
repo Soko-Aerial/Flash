@@ -1,23 +1,33 @@
 # Current Handoff
 
-## 2026-10-11 — Step 1: Outbound WebSocket Relay Client (:core:network commonMain)
-- **Status:** Complete & 100% Verified.
-- **Implemented:**
-  - Added Ktor Client (`ktor-client-core`, `ktor-client-cio`, `ktor-client-websockets`) and `:core:security` to `:core:network` `commonMain.dependencies`.
-  - Implemented `RelayFrame.kt`: sealed hierarchy for all protocol frames (`Hello`, `Welcome`, `Data`, `Ack`, `Ping`, `Pong`, `Meta`, `Error`).
-  - Implemented `RelayFrameCodec.kt`: wire serialization with `FlashTextFraming`, JSON fallback, `P-REF-1` wire padding (256 B / 512 B boundaries), and `P-REF-2` MTU bounds ($\le 1200$ B control frames, $\le 32$ KB payload chunks).
-  - Implemented `RelaySessionState.kt`: connection lifecycle state machine (`DISCONNECTED`, `CONNECTING`, `AUTHENTICATING`, `CONNECTED`, `SUSPENDED`, `REVOKED`).
-  - Implemented `RelayTransport.kt` & `KtorRelayTransport.kt`: pure KMP production transport using Ktor Client WebSockets.
-  - Implemented `FlashRelayClient.kt`: high-level client handling connection lifecycle, keepalive watchdog, envelope routing, delivery ACK demuxing, and typing/presence debouncing (`P-REF-4`).
-- **Verification:**
-  - `:core:network:jvmTest --tests "com.transfer.flash.core.network.relay.*"`: 15/15 unit tests PASSED (100% clean).
-  - `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL (0 errors).
+## 2026-10-11 — Enterprise Hybrid Client-Side Implementation (Steps 1–4 Complete)
+- **Current Branch:** `dev`
+- **Last Verified Commits:**
+  - `e137c4a7`: Step 1 — Outbound WebSocket Relay Client (`:core:network`)
+  - `5c7b8c62`: Step 2 — Directory & Enrolment Client (`:core:network`, `:core:security`)
+  - `5658c2b8`: Step 3 — Multi-Path Outbox Racing & Group Hub Link (`:core:messaging`, `:core:security`)
+  - `c483d349`: Step 4 — UI Integration for Enterprise Hub & Groups (`:ui:chat`)
+- **Status:** All 4 client steps completed, unit-tested, and verified on Android and Desktop JVM compilations.
+- **Completed Capabilities:**
+  1. **Outbound WebSocket Relay Client (`:core:network`):** Ktor Client 3.0.3 WebSockets (`commonMain`), sealed `RelayFrame` hierarchy, `P-REF-1` wire padding (256B/512B), `P-REF-2` MTU safety ($\le 1200$B control, $\le 32$KB data chunks), connection watchdog with 15s keepalive ping, and typing/presence debouncing (`P-REF-4`).
+  2. **Directory & Enrolment Client (`:core:security`, `:core:network`):** Cryptographic verification of X.509/ECDSA P-256 device certificates and E2b root-to-server delegation chains. Token redemption for `flash://enroll` URLs, challenge-response proof, and scoped `/api/v1/directory` querying of colleagues and groups.
+  3. **Multi-Path Outbox Racing & Group Hub Link (`:core:messaging`):**
+     - Outbox concurrent multi-path racing (`P-REF-3`): races direct LAN socket and corporate relay simultaneously, fastest-wins, with deduplication.
+     - Group Hub Link: creator/admin can toggle linking a group to the hub relay for remote/offline delivery.
+     - **Zero Cloud Dump Invariant:** Linking pre-existing groups never queries or uploads historical messages from Room `MessageDao`.
+     - Enterprise Directory member & group queries exposed through repository.
+  4. **UI Integration (`:ui:chat`):**
+     - `FlashCreateGroupSheet`: department badges for coworkers, enterprise hub routing toggle.
+     - `FlashGroupSettingsSheet`: organization relay link/unlink switch with clear user-facing Zero Cloud Dump notification.
+     - `FlashSettingsScreen`: enterprise organization info card showing server hub URL, department, role, and root fingerprint.
+- **Verification Summary:**
+  - `:core:network:jvmTest`: 15/15 passed.
+  - `:core:security:jvmTest`: 100% green.
+  - `:core:messaging:jvmTest`: 100% green (including `EnterpriseGroupLinkAndMultiPathTest`).
+  - `:ui:chat:jvmTest`: 100% green.
+  - `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
 - **Recommended Next Task:**
-  - Proceed to **Step 2: Directory & Enrolment Client in `:core:security` (`commonMain`)** (`flash://enroll` token redemption and `/api/v1/directory` querying).
-- **Relevant Files for Next Task:**
-  - `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/auth/`
-  - `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`
-  - `server/src/main/kotlin/com/transfer/flash/server/directory/DirectoryRoutes.kt`
+  - End-to-end integration test with local `:server` daemon running and mobile/desktop clients connected.
 
 ---
 
