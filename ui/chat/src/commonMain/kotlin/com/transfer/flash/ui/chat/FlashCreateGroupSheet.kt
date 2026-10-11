@@ -37,6 +37,8 @@ public data class FlashCreateGroupPeerUi(
     val id: String,
     val name: String,
     val initials: String,
+    val department: String? = null,
+    val isDirectoryMember: Boolean = false,
 )
 
 /**
@@ -76,10 +78,14 @@ public fun FlashCreateGroupSheet(
     onDismiss: () -> Unit,
     onCreate: (title: String, memberIds: Set<String>) -> Unit,
     modifier: Modifier = Modifier,
+    isEnterpriseEnrolled: Boolean = false,
+    initialUseHub: Boolean = false,
+    onCreateWithHub: ((title: String, memberIds: Set<String>, linkToHub: Boolean) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     var title by rememberSaveable { mutableStateOf("") }
     var selected by remember { mutableStateOf(emptySet<String>()) }
+    var linkToHub by rememberSaveable { mutableStateOf(initialUseHub) }
     val canCreate = FlashCreateGroupMath.canCreate(title, selected)
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -102,6 +108,33 @@ public fun FlashCreateGroupSheet(
                 label = { Text("Group name") },
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            if (isEnterpriseEnrolled) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { linkToHub = !linkToHub }
+                        .padding(vertical = FlashSpacing.space4),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        FlashText(
+                            text = "Link to Organization Hub",
+                            style = FlashTheme.typography.bodyDefault,
+                        )
+                        FlashText(
+                            text = "Relays new messages to remote & offline coworkers",
+                            style = FlashTheme.typography.metadataDefault,
+                            color = colors.textSecondary,
+                        )
+                    }
+                    androidx.compose.material3.Switch(
+                        checked = linkToHub,
+                        onCheckedChange = { linkToHub = it },
+                    )
+                }
+            }
 
             FlashText(
                 text = FlashCreateGroupMath.countLabel(selected.size),
@@ -135,12 +168,20 @@ public fun FlashCreateGroupSheet(
                                 seed = peer.name,
                                 size = FlashDimensions.avatarSm,
                             )
-                            FlashText(
-                                text = peer.name,
-                                style = FlashTheme.typography.bodyDefault,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                            )
+                            Column(modifier = Modifier.weight(1f)) {
+                                FlashText(
+                                    text = peer.name,
+                                    style = FlashTheme.typography.bodyDefault,
+                                    maxLines = 1,
+                                )
+                                if (peer.department != null) {
+                                    FlashText(
+                                        text = peer.department,
+                                        style = FlashTheme.typography.metadataDefault,
+                                        color = colors.accentPrimary,
+                                    )
+                                }
+                            }
                             if (isSelected) {
                                 FlashIcon(icon = FlashIcons.Check, contentDescription = "Selected")
                             }
@@ -161,7 +202,11 @@ public fun FlashCreateGroupSheet(
                     enabled = canCreate,
                     onClick = {
                         FlashCreateGroupMath.normalizedTitle(title)?.let { normalized ->
-                            onCreate(normalized, selected)
+                            if (onCreateWithHub != null) {
+                                onCreateWithHub(normalized, selected, linkToHub)
+                            } else {
+                                onCreate(normalized, selected)
+                            }
                         }
                     },
                 ) {
