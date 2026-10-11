@@ -1,7 +1,7 @@
 package com.transfer.flash.core.ptt
 
-import com.transfer.flash.core.messaging.ptt.PttAudioLevel
-import com.transfer.flash.core.messaging.ptt.PttJitterBuffer
+import com.transfer.flash.core.ptt.floor.PttAudioLevel
+import com.transfer.flash.core.ptt.floor.PttJitterBuffer
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel

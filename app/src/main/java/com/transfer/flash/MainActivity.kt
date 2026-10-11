@@ -72,6 +72,7 @@ import com.transfer.flash.core.network.sweep.SweepRefusal
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.core.common.perf.FlashMotionPolicy
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.core.common.perf.UiScrollGovernor
 import com.transfer.flash.core.common.result.getOrNull
 import com.transfer.flash.core.discovery.FlashDiscoveredEndpoint
 import com.transfer.flash.core.discovery.FlashDiscoveryState
@@ -860,6 +861,7 @@ fun FlashApp(
             dynamicAccent = settings.dynamicAccent,
             hapticsEnabled = settings.hapticsEnabled,
             minimalChrome = effectivePerformanceMode.minimalChrome,
+            ultraLowUi = effectivePerformanceMode.ultraLowUi,
             motion = rememberFlashMotion(reduceMotionResolved),
         ) {
             // UI-056 / ADR-080: the Ink launch splash. It plays only when the process-wide gate says so
@@ -1080,6 +1082,19 @@ private fun FlashShell(
     val transfersScroll = rememberLazyListState()
     val nearbyScroll = rememberLazyListState()
     val settingsScroll = rememberLazyListState()
+
+    val isAnyListScrolling by remember {
+        derivedStateOf {
+            chatListScroll.isScrollInProgress ||
+                transfersScroll.isScrollInProgress ||
+                nearbyScroll.isScrollInProgress ||
+                settingsScroll.isScrollInProgress
+        }
+    }
+    LaunchedEffect(isAnyListScrolling) {
+        UiScrollGovernor.onScrollChanged(isAnyListScrolling)
+    }
+
     val scope = rememberCoroutineScope()
     val reduceMotion = FlashTheme.motion.reduceMotion
     // C7: CAMERA runtime permission launcher for video calls. webrtc-kmp's getUserMedia

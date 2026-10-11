@@ -152,12 +152,8 @@ fun FlashMessageBubble(
             FlashMessageSenderHeader(message = message)
         }
 
-        FlashSwipeToReplyContainer(
-            onReply = onReplySwipe,
-            enabled = !inSelectionMode,
-            isMine = message.isMine,
-        ) {
-            FlashBubbleSurface(
+        if (FlashTheme.ultraLowUi) {
+            FlashMessageBubbleUltraLow(
                 message = message,
                 onOpenActions = onOpenActions,
                 isSelected = isSelected,
@@ -178,6 +174,34 @@ fun FlashMessageBubble(
                 onRetryMessage = onRetryMessage,
                 onJoinInvite = onJoinInvite,
             )
+        } else {
+            FlashSwipeToReplyContainer(
+                onReply = onReplySwipe,
+                enabled = !inSelectionMode,
+                isMine = message.isMine,
+            ) {
+                FlashBubbleSurface(
+                    message = message,
+                    onOpenActions = onOpenActions,
+                    isSelected = isSelected,
+                    inSelectionMode = inSelectionMode,
+                    onSelectToggle = onSelectToggle,
+                    onJumpToMessage = onJumpToMessage,
+                    onImageClick = onImageClick,
+                    onFileClick = onFileClick,
+                    onAcceptOffer = onAcceptOffer,
+                    onDeclineOffer = onDeclineOffer,
+                    onPauseTransfer = onPauseTransfer,
+                    onResumeTransfer = onResumeTransfer,
+                    onCancelTransfer = onCancelTransfer,
+                    isHighlighted = isHighlighted,
+                    deliveryStatus = deliveryStatus,
+                    searchQuery = searchQuery,
+                    onOpenMessageInfo = onOpenMessageInfo,
+                    onRetryMessage = onRetryMessage,
+                    onJoinInvite = onJoinInvite,
+                )
+            }
         }
 
         if (message.reactions.isNotEmpty()) {
@@ -187,6 +211,210 @@ fun FlashMessageBubble(
                 onToggleReaction = onToggleReaction,
                 modifier = Modifier.padding(top = FlashSpacing.space4),
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FlashMessageBubbleUltraLow(
+    message: FlashMessageUi,
+    onOpenActions: () -> Unit,
+    isSelected: Boolean,
+    inSelectionMode: Boolean,
+    onSelectToggle: () -> Unit,
+    onJumpToMessage: (String) -> Unit,
+    onImageClick: (index: Int, image: com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit,
+    onFileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onDeclineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onPauseTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onCancelTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    isHighlighted: Boolean,
+    deliveryStatus: (@Composable () -> Unit)?,
+    searchQuery: String?,
+    onOpenMessageInfo: (() -> Unit)?,
+    onRetryMessage: ((String) -> Unit)? = null,
+    onJoinInvite: ((String) -> Unit)? = null,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val haptics = rememberFlashHaptics()
+
+    val selectionBorder = if (isHighlighted || isSelected) {
+        BorderStroke(1.5.dp, colors.accentPrimary)
+    } else if (!message.isMine) {
+        BorderStroke(FlashDimensions.borderHairline, colors.chatBorderIncoming)
+    } else {
+        null
+    }
+
+    // Direct rectangular Box — zero clip, zero graphicsLayer, zero offscreen buffers
+    Box(
+        modifier = Modifier
+            .bubbleWidthCap()
+            .background(if (message.isMine) colors.chatBgOutgoing else colors.chatBgIncoming)
+            .then(
+                if (selectionBorder != null) {
+                    Modifier.border(selectionBorder)
+                } else {
+                    Modifier
+                }
+            )
+            .combinedClickable(
+                onClick = {
+                    if (inSelectionMode) {
+                        onSelectToggle()
+                    }
+                },
+                onLongClick = {
+                    haptics(FlashHaptic.Confirm)
+                    onOpenActions()
+                },
+            )
+            .semantics(mergeDescendants = true) {
+                if (isHighlighted || isSelected) {
+                    stateDescription = "Selected"
+                }
+            },
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = FlashSpacing.space12,
+                vertical = FlashSpacing.space8,
+            ),
+        ) {
+            message.replyTo?.let { reply ->
+                FlashQuotedReplyCard(
+                    quotedReply = reply,
+                    isParentOutgoing = message.isMine,
+                    onJumpToMessage = { onJumpToMessage(reply.messageId) },
+                )
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
+            if (message.images.isNotEmpty()) {
+                FlashImageGrid(
+                    images = message.images,
+                    isMine = message.isMine,
+                    onImageClick = onImageClick,
+                    onLongPress = {
+                        haptics(FlashHaptic.Confirm)
+                        onOpenActions()
+                    },
+                )
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
+            if (message.fileAttachments.isNotEmpty()) {
+                message.fileAttachments.forEach { file ->
+                    FlashFileMessageCard(
+                        attachment = file,
+                        isParentOutgoing = message.isMine,
+                        onCardClick = { onFileClick(file) },
+                        onActionClick = {
+                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
+                                onPauseTransfer(file)
+                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
+                                onResumeTransfer(file)
+                            } else {
+                                onFileClick(file)
+                            }
+                        },
+                        onLongPress = {
+                            haptics(FlashHaptic.Confirm)
+                            onOpenActions()
+                        },
+                        onAccept = { onAcceptOffer(file) },
+                        onDecline = { onDeclineOffer(file) },
+                        onPause = { onPauseTransfer(file) },
+                        onResume = { onResumeTransfer(file) },
+                        onCancel = { onCancelTransfer(file) },
+                    )
+                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                }
+            }
+            if (message.voiceAttachments.isNotEmpty()) {
+                message.voiceAttachments.forEach { voice ->
+                    FlashVoiceMessageCard(
+                        attachment = voice,
+                        isParentOutgoing = message.isMine,
+                        onCardClick = {},
+                        onActionClick = {},
+                        onLongPress = {
+                            haptics(FlashHaptic.Confirm)
+                            onOpenActions()
+                        },
+                    )
+                    Spacer(modifier = Modifier.height(FlashSpacing.space4))
+                }
+            }
+            message.callEvent?.let { call ->
+                FlashCallEventRow(
+                    event = call,
+                    isParentOutgoing = message.isMine,
+                )
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
+            if (message.text.isNotBlank()) {
+                val bodyColor = if (message.isMine) colors.chatTextOutgoing else colors.chatTextIncoming
+                FlashText(
+                    text = message.text,
+                    style = typography.bodyDefault,
+                    color = bodyColor,
+                )
+                val inviteUrl = remember(message.text) { FlashGroupInviteJoinMath.extractInviteUrl(message.text) }
+                if (inviteUrl != null) {
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    FlashInlineInviteCard(
+                        inviteUrl = inviteUrl,
+                        onJoinInvite = { onJoinInvite?.invoke(it) },
+                    )
+                }
+                Spacer(modifier = Modifier.height(FlashSpacing.space4))
+            }
+            FlashMessageTimestampRowUltraLow(
+                message = message,
+                deliveryStatus = deliveryStatus,
+                onRetryMessage = onRetryMessage,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FlashMessageTimestampRowUltraLow(
+    message: FlashMessageUi,
+    modifier: Modifier = Modifier,
+    deliveryStatus: (@Composable () -> Unit)? = null,
+    onRetryMessage: ((String) -> Unit)? = null,
+) {
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    val timestampColor = if (message.isMine) colors.chatTextTimestampOutgoing else colors.chatTextTimestamp
+
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlashText(
+            text = message.timeLabel,
+            style = typography.metadataDefault,
+            color = timestampColor,
+        )
+        if (message.isMine) {
+            Spacer(modifier = Modifier.width(FlashSpacing.space4))
+            if (deliveryStatus != null) {
+                deliveryStatus()
+            } else {
+                val status = message.deliveryStatus ?: com.transfer.flash.core.messaging.model.FlashMessageStatus.Read
+                FlashDeliveryStatusIcon(
+                    status = status,
+                    onRetry = if (status == com.transfer.flash.core.messaging.model.FlashMessageStatus.Failed && onRetryMessage != null) {
+                        { onRetryMessage(message.id) }
+                    } else null,
+                )
+            }
         }
     }
 }

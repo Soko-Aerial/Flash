@@ -478,6 +478,7 @@ private class Wiring(
             log = { Log.i(TAG, it) },
         )
         val chatImpl = RealFlashChatRepository(
+            scope = scope,
             localDeviceId = localId,
             localDisplayName = identity.friendlyName,
             conversationDao = db.conversationDao(),
@@ -848,12 +849,13 @@ private class Wiring(
                 }
             },
             onClose = {
+                runCatching { (chatImpl as? AutoCloseable)?.close() }
                 runCatching { dcServer.stop() }
                 kotlinx.coroutines.runBlocking {
                     runCatching { engine.stopAll() }
                     runCatching { networkImpl.stop() }
                 }
-                runCatching { db.close() }
+                runCatching { db.closeWithTrim() }
                 scope.cancel()
             },
         )

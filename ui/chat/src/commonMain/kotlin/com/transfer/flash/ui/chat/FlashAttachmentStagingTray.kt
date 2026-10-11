@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
@@ -90,7 +91,10 @@ fun FlashAttachmentStagingTray(
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            items(stagedAttachments, key = { it.uri }) { item ->
+            itemsIndexed(
+                items = stagedAttachments,
+                key = { index, item -> "${item.uri}_$index" },
+            ) { _, item ->
                 StagedAttachmentCard(
                     item = item,
                     onRemove = { onRemove(item) },

@@ -1,6 +1,7 @@
 package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.perf.ByteArrayPool
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
@@ -198,6 +199,7 @@ public object WebSocketCodec {
                         } else {
                             ""
                         }
+                        ByteArrayPool.release(payload)
                         return Message.Close(code, reason)
                     }
 
@@ -208,10 +210,12 @@ public object WebSocketCodec {
                         if (header.opcode != OPCODE_CONTINUATION) {
                             if (messageOpcode != -1) {
                                 reset()
+                                ByteArrayPool.release(payload)
                                 throw IOException("New WebSocket message started before previous one finished")
                             }
                             messageOpcode = header.opcode
                         } else if (messageOpcode == -1) {
+                            ByteArrayPool.release(payload)
                             throw IOException("Continuation frame without a started message")
                         }
                         // Outbound messages are never fragmented, so nearly every message completes in
@@ -221,7 +225,9 @@ public object WebSocketCodec {
                             val opcode = messageOpcode
                             reset()
                             return if (opcode == OPCODE_TEXT) {
-                                Message.Text(String(payload, Charsets.UTF_8))
+                                val text = String(payload, Charsets.UTF_8)
+                                ByteArrayPool.release(payload)
+                                Message.Text(text)
                             } else {
                                 Message.Binary(payload)
                             }
@@ -229,9 +235,11 @@ public object WebSocketCodec {
                         // Checked BEFORE the write, so a fragmented message cannot grow past the cap.
                         if (messageBuffer.size().toLong() + payload.size > maxMessageBytes) {
                             reset()
+                            ByteArrayPool.release(payload)
                             throw IOException("WebSocket message exceeds size guard ($maxMessageBytes bytes)")
                         }
                         messageBuffer.write(payload)
+                        ByteArrayPool.release(payload)
                         if (header.fin) {
                             val data = messageBuffer.toByteArray()
                             val opcode = messageOpcode
@@ -349,25 +357,49 @@ public object WebSocketCodec {
     }
 
     private fun readFramePayload(input: InputStream, header: FrameHeader): ByteArray {
+        val length = header.length.toInt()
         val maskKey = if (header.masked) readFully(input, 4) else null
-        val payload = readFully(input, header.length.toInt())
-        if (maskKey != null) {
-            for (index in payload.indices) {
-                payload[index] = (payload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+        val payload = if (length <= ByteArrayPool.SIZE_32KB) {
+            val pooled = ByteArrayPool.acquire(length)
+            readFullyInto(input, pooled, 0, length)
+            if (maskKey != null) {
+                for (index in 0 until length) {
+                    pooled[index] = (pooled[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+                }
             }
+            if (pooled.size == length) {
+                pooled
+            } else {
+                val exact = pooled.copyOf(length)
+                ByteArrayPool.release(pooled)
+                exact
+            }
+        } else {
+            val buffer = ByteArray(length)
+            readFullyInto(input, buffer, 0, length)
+            if (maskKey != null) {
+                for (index in 0 until length) {
+                    buffer[index] = (buffer[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+                }
+            }
+            buffer
         }
         return payload
     }
 
     private fun readFully(input: InputStream, size: Int): ByteArray {
         val buffer = ByteArray(size)
-        var offset = 0
-        while (offset < size) {
-            val read = input.read(buffer, offset, size - offset)
-            if (read < 0) throw EOFException("Stream closed mid-frame")
-            offset += read
-        }
+        readFullyInto(input, buffer, 0, size)
         return buffer
+    }
+
+    private fun readFullyInto(input: InputStream, buffer: ByteArray, offset: Int, size: Int) {
+        var readTotal = 0
+        while (readTotal < size) {
+            val read = input.read(buffer, offset + readTotal, size - readTotal)
+            if (read < 0) throw EOFException("Stream closed mid-frame")
+            readTotal += read
+        }
     }
 
     private fun readByte(input: InputStream): Int {

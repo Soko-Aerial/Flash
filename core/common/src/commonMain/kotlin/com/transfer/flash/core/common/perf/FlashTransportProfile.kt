@@ -64,6 +64,21 @@ public data class FlashTransportProfile(
         public const val DEFAULT_RECONNECT_BASE_MS: Long = 1_000L
 
         /**
+          * Severely constrained radio: relaxed keepalives (25s ping) to allow 2.4 GHz radio sleep,
+          * 3s stats polling.
+          */
+        public val ULTRA_LOW: FlashTransportProfile = FlashTransportProfile(
+            pingIntervalMs = 25_000L,
+            livenessTimeoutMs = 65_000L,
+            reconnectCapMs = 12_000L,
+            linkChangeProbeMs = 5_000L,
+            callDisconnectGraceMs = 30_000L,
+            callConnectTimeoutMs = 45_000L,
+            callStatsIntervalMs = 3_000L,
+            iceRestartMinIntervalMs = 5_000L,
+        )
+
+        /**
          * Slow radio, slow scheduler, long roams.
          *
          * The backoff ceiling drops to 8 s — a device that takes this long to reassociate is

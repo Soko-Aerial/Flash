@@ -95,6 +95,10 @@ jetbrainsCompose = "1.9.3"
 # Its Gradle metadata publishes `native` and `wasm` variants alongside `jvm`, so the
 # Kotlin/Native target CONVENTIONS.md R6.1 has recommended since Phase 07 is not foreclosed.
 okio = "3.4.0"
+# Stage E4 / ENTERPRISE-HYBRID-PLAN: Ktor Netty server engine, WebSockets, HikariCP and logback for :server JVM module.
+ktor = "3.0.3"
+logback = "1.5.16"
+hikaricp = "5.1.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -176,8 +180,18 @@ dbus-java-transport-native-unixsocket = { group = "com.github.hypfvieh", name = 
 # `okio.FileHandle` appear in public signatures (ChunkSource, FileSourceOpener,
 # RandomAccessSinkHandle) — `implementation` would keep them off a consumer's classpath.
 okio = { group = "com.squareup.okio", name = "okio", version.ref = "okio" }
+# Stage E4: Ktor server libraries for :server JVM module
+ktor-server-core = { group = "io.ktor", name = "ktor-server-core-jvm", version.ref = "ktor" }
+ktor-server-netty = { group = "io.ktor", name = "ktor-server-netty-jvm", version.ref = "ktor" }
+ktor-server-websockets = { group = "io.ktor", name = "ktor-server-websockets-jvm", version.ref = "ktor" }
+ktor-server-auth = { group = "io.ktor", name = "ktor-server-auth-jvm", version.ref = "ktor" }
+ktor-server-status-pages = { group = "io.ktor", name = "ktor-server-status-pages-jvm", version.ref = "ktor" }
+ktor-server-test-host = { group = "io.ktor", name = "ktor-server-test-host-jvm", version.ref = "ktor" }
+hikaricp = { group = "com.zaxxer", name = "HikariCP", version.ref = "hikaricp" }
+logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
 
 [plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 # Phase 09B-1. The Room Gradle plugin, at the SAME 2.8.4 as the runtime and compiler (R10 — a new
 # alias at an existing version ref, not a version change). It exists so each KMP target gets its own

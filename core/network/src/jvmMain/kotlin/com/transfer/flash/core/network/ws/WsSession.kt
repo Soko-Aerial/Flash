@@ -125,9 +125,21 @@ public class WsSession(
     }
 
     public fun onBinaryReceived(data: ByteArray) {
-        val result = binaryChannel.trySendBlocking(data)
-        if (result.isFailure && !result.isClosed) {
-            FlashLog.w(logTag, "WS binary frame dropped (buffer full) peer=${peer.friendlyName}")
+        while (_connectionState.value != FlashConnectionState.Disconnected) {
+            val result = binaryChannel.trySend(data)
+            if (result.isSuccess || result.isClosed) {
+                return
+            }
+            // Buffer full (backpressure from disk/consumer).
+            // Refresh connection watchdog timestamps so backpressure does not trigger
+            // a false "watchdog silence timeout" (BUG-03).
+            connection.touchLiveness()
+            try {
+                Thread.sleep(25)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
         }
     }
 

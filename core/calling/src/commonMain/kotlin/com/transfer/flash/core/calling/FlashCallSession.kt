@@ -558,10 +558,10 @@ public class FlashCallSession(
      * renegotiation, the peer's video m-line is unchanged). Any failure leaves the problem on screen.
      */
     private suspend fun restartCamera() {
-        val opened = onMediaThread {
-            mediaLifecycleMutex.withLock {
-                if (ended) return@withLock false
-                val sender = videoSender ?: return@withLock false
+        val opened = mediaLifecycleMutex.withLock {
+            onMediaThread {
+                if (ended) return@onMediaThread false
+                val sender = videoSender ?: return@onMediaThread false
                 val profile = performanceMode().video
                 try {
                     val temporary = MediaDevices.getUserMedia {
@@ -574,7 +574,7 @@ public class FlashCallSession(
                     val fresh = temporary.videoTracks.firstOrNull()
                     if (fresh == null) {
                         temporary.release()
-                        return@withLock false
+                        return@onMediaThread false
                     }
                     // The track moves to the call's own stream; the temporary one is only a container.
                     temporary.removeTrack(fresh)
@@ -658,7 +658,7 @@ public class FlashCallSession(
         }
         var cancelled: CancellationException? = null
         val opened = try {
-            onMediaThread { mediaLifecycleMutex.withLock { openShareLocked(source) } }
+            mediaLifecycleMutex.withLock { onMediaThread { openShareLocked(source) } }
         } catch (e: CancellationException) {
             // The caller's scope ended mid-open (S4): the rollback below still runs, on the media thread, then this rethrows.
             cancelled = e
@@ -673,7 +673,7 @@ public class FlashCallSession(
             withContext(NonCancellable) {
                 shareRun.machine.fail()
                 shareArbiter.setLocal(null)
-                onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                mediaLifecycleMutex.withLock { onMediaThread { closeShareLocked() } }
                 shareRun.machine.finished()
                 updateState {
                     it.copy(
@@ -760,7 +760,7 @@ public class FlashCallSession(
             // stop and the machine must reach IDLE, or the share is stuck in STOPPING for the rest of the call.
             try {
                 withContext(NonCancellable) {
-                    onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                    mediaLifecycleMutex.withLock { onMediaThread { closeShareLocked() } }
                 }
             } catch (t: Throwable) {
                 FlashLog.e("CALL", "share: stop failed call=$callId", t)
@@ -935,11 +935,11 @@ public class FlashCallSession(
      */
     public suspend fun upgradeToVideo(): Boolean {
         if (!_state.value.canUpgradeToVideo) return false
-        val opened = onMediaThread {
-            mediaLifecycleMutex.withLock {
+        val opened = mediaLifecycleMutex.withLock {
+            onMediaThread {
                 val pc = peerConnection
                 val stream = localStream
-                if (ended || pc == null || stream == null || _localVideoStreamTrack.value != null) return@withLock false
+                if (ended || pc == null || stream == null || _localVideoStreamTrack.value != null) return@onMediaThread false
                 val profile = performanceMode().video
                 try {
                     val temporary = MediaDevices.getUserMedia {
@@ -952,7 +952,7 @@ public class FlashCallSession(
                     val fresh = temporary.videoTracks.firstOrNull()
                     if (fresh == null) {
                         temporary.release()
-                        return@withLock false
+                        return@onMediaThread false
                     }
                     // The track moves to the call's own stream; the temporary one is only a container.
                     temporary.removeTrack(fresh)
@@ -1406,8 +1406,8 @@ public class FlashCallSession(
         // Pinned: factory init, ADM device select, PeerConnection(), addTrack and the sender
         // tuning all touch native audio from here. Lifecycle-locked against teardown (see
         // mediaLifecycleMutex): the ended-path unwind uses the Locked variant (no re-lock).
-        return onMediaThread {
-            mediaLifecycleMutex.withLock {
+        return mediaLifecycleMutex.withLock {
+            onMediaThread {
             try {
             FlashLog.i(
                 "CALL",

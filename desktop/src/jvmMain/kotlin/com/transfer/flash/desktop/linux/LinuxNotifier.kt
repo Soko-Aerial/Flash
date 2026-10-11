@@ -69,11 +69,29 @@ internal class LinuxNotifier(
             text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         private fun notifySend(summary: String, body: String, critical: Boolean): Boolean {
-            val process = ProcessBuilder(
-                "notify-send", "-a", APP_NAME, "-i", ICON_NAME, "-u", if (critical) "critical" else "normal",
-                "--", summary, body,
-            ).redirectErrorStream(true).start()
-            return process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS) && process.exitValue() == 0
+            val process = runCatching {
+                ProcessBuilder(
+                    "notify-send", "-a", APP_NAME, "-i", ICON_NAME, "-u", if (critical) "critical" else "normal",
+                    "--", summary, body,
+                )
+                    .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start()
+            }.getOrNull() ?: return false
+
+            val finished = try {
+                process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                false
+            }
+
+            if (!finished) {
+                runCatching { process.destroyForcibly() }
+                FlashLog.w(TAG, "notify-send timed out after 5s and was destroyed")
+                return false
+            }
+            return process.exitValue() == 0
         }
     }
 }

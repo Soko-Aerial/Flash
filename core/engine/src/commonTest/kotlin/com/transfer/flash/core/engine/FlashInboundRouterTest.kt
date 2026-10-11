@@ -5,8 +5,8 @@ package com.transfer.flash.core.engine
 import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.ptt.PttPingEvent
 import com.transfer.flash.core.ptt.PttPressOutcome

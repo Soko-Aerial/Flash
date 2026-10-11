@@ -1,5 +1,233 @@
 # Progress Log
 
+## 2026-10-11 — Enterprise Hybrid Plan: Open-Source Corporate Profile & 100 Corporate Scenarios Audit
+
+### Worked on
+- Re-anchored the deployment context of `docs/ENTERPRISE-HYBRID-PLAN.md` to open-source corporate and enterprise teams (Engineering, Sales, Operations, HR, Legal, Healthcare, Logistics) across distributed hybrid/remote work and branch office LANs.
+- Evaluated and documented 100 real-world corporate scenarios across 4 stakeholder simulations: IT Security Director, Department Head / Team Lead, Frontline Corporate Employee, and Enterprise Network Operations.
+- Integrated 5 minor protocol and transport refinements (`P-REF-1` to `P-REF-5`) into `docs/ENTERPRISE-HYBRID-PLAN.md`.
+
+### Changed
+- `docs/ENTERPRISE-HYBRID-PLAN.md`:
+  - Updated Section 0 to establish the open-source corporate profile (local-first privacy, wire-speed office LAN, seamless corporate hub fallback).
+  - Updated Section 3 (E2c): Added corporate employee ad-hoc group creation without IT admin bottlenecks, and pre-existing group migration with zero-cloud-dump privacy invariant.
+  - Updated Section 3 (E4): Added wire-level frame padding (`P-REF-1`), MTU-safe chunking & MSS clamping (`P-REF-2`), outbox concurrent multi-path racing (`P-REF-3`), and presence & typing debouncing (`P-REF-4`).
+
+### Verification
+- Code review of `:server` confirmed that `RelayFrameRouter`, `MailboxQueue`, `OrganizationDirectory`, and `ServerDatabase` fully satisfy these corporate requirements.
+- Zero client code pollution maintained.
+
+### Next AI
+Proceed with client-side outbound WebSocket relay client integration in `:core:network` and settings UI in `:ui:settings`.
+
+---
+
+## 2026-10-11 — Enterprise Hybrid Relay Server (:server) Implementation Across 4 Subagents
+
+### Worked on
+- Implemented the standalone `:server` module according to `docs/ENTERPRISE-HYBRID-PLAN.md` (Stages E2b, E2c, E4, E5) and `docs/HYBRID-ENTERPRISE-SERVER-RELAY-PLAN.md` using 4 concurrent subagents.
+- Maintained strict module isolation: `:server` is a standalone JVM Ktor daemon with dependencies only on `:core:common` and `:core:security`. Zero server code packaged into `:app` or `:desktop`.
+- Delivered Core Lifecycle & Netty Engine, Delegated Cryptographic Identity, Store-and-Forward SQLite Mailbox, and Scoped Directory & Admin Web Dashboard.
+
+### Changed
+1. **Subagent 1: Server Core, Config & WebSocket Relay (`com.transfer.flash.server.core`, `config`, `relay`):**
+   - `ServerConfig.kt`: production environment & CLI configuration factory (port 8443, adminPort 8444, dataDir, tlsMode, setupToken, challengeTimeoutMs, mailboxTtlDays).
+   - `RelaySession.kt` & `RelayConnectionPool.kt`: thread-safe active peer registry with duplicate displacement and filtered broadcast.
+   - `RelayFrameRouter.kt`: `/flash-relay` WebSocket frame dispatcher with direct online delivery, offline fallback to `MailboxQueueSeam`, and `FLASH_ACK` tracking.
+   - `FlashServerEngine.kt`: embedded Ktor Netty application with WebSockets, StatusPages, `/health` telemetry, and graceful shutdown.
+   - `Main.kt`: entrypoint with ASCII banner and shutdown hooks; `server/Dockerfile` multi-stage container build.
+2. **Subagent 2: Delegated Identity, Enrolment, Challenge-Auth & Revocation (`com.transfer.flash.server.auth`):**
+   - `DelegationCert.kt`: E2b Root-to-Server delegated authority model with ECDSA P-256 signature verification over canonical bytes.
+   - `DeviceCert.kt`: device certificate model with chain verification to offline root and delegated scope constraints.
+   - `RevocationList.kt`: monotonic, versioned revocation list checking revoked serials and deviceIds.
+   - `ChallengeResponseAuth.kt`: 32-byte single-use nonce generator and challenge verification over `(serverNonce + clientNonce + deviceId)`.
+   - `EnrollmentService.kt`: single-use token generator (`flash://enroll?server=...&token=...&root=...`), quota management, and device cert issuance.
+   - `AuthRoutes.kt`: Ktor HTTP endpoints for `/api/v1/auth/challenge`, `/api/v1/auth/verify`, and `/api/v1/enroll`.
+3. **Subagent 3: Store-and-Forward Mailbox, Sealed Envelope & SQLite Persistence (`com.transfer.flash.server.storage`, `mailbox`):**
+   - `ServerDatabase.kt`: HikariCP connection pool with SQLite, WAL mode, PRAGMA optimizations, and tables (`mailbox_envelopes`, `device_registry`, `audit_log`) with compound indexes.
+   - `SealedEnvelope.kt`: unified wire envelope model with canonical binary serialization (`FLSE` header).
+   - `QuotaManager.kt`: lightweight asset gating (50 MB limit filter) and per-device storage quotas.
+   - `MailboxQueue.kt`: implements `MailboxQueueSeam`, deduplication on `(originDeviceId, msgId)`, chronological `fetchPending`, and delivery acknowledgement.
+   - `TtlSweeper.kt`: background sweeping coroutine pruning expired envelopes.
+4. **Subagent 4: Directory Hierarchy & Web Admin Dashboard (`com.transfer.flash.server.directory`, `admin`):**
+   - `OrganizationDirectory.kt`: Organization -> Departments -> Groups hierarchy with scoped visibility (D-E11 hidden group exclusion) and role-based creation rules (D-E13).
+   - `DirectoryRoutes.kt`: REST endpoints for `/api/v1/directory/groups`, `/api/v1/directory/members`, and join requests.
+   - `AdminAuthService.kt`: PBKDF2WithHmacSHA256 password hashing (100k iterations), RFC 6238 TOTP 2FA, first-run console setup token, session cookie manager, 5-failure rate limiting.
+   - `AuditLogger.kt`: append-only cryptographically hashed audit log with tamper-evident chain verification.
+   - `StepUpAuth.kt`: cryptographic device-signature step-up challenge for admin-level mutations.
+   - `AdminDashboardRoutes.kt` & `AdminUiHtml.kt`: modern dark theme server-rendered HTML/CSS admin UI (`/admin/login`, `/admin/dashboard`, `/admin/departments`, `/admin/groups`, `/admin/invites`, `/admin/audit`).
+
+### Verification
+- 100% green unit tests across all server subsystems:
+  - Subagent 1: `RelayConnectionPoolTest`, `RelayFrameRouterTest`, `FlashServerEngineTest`, `ServerConfigTest` (PASSED)
+  - Subagent 2: `DelegatedAuthTest`, `ChallengeResponseAuthTest` (PASSED)
+  - Subagent 3: `ServerDatabaseTest`, `MailboxQueueTest` (PASSED)
+  - Subagent 4: `OrganizationDirectoryTest`, `AdminAuthServiceTest`, `DirectoryRoutesTest`, `AdminDashboardRoutesTest` (PASSED)
+- Full `:server:test` suite executed: **BUILD SUCCESSFUL** (0 failures, 0 errors).
+- Application packaging verified via `./gradlew :server:installDist`: **BUILD SUCCESSFUL**, binaries generated in `server/build/install/server/bin/server`.
+- Client isolation verified: 0 bytes of server code linked to `:app` or `:desktop`.
+
+### Remaining
+- Optional: Add client-side hub connection UI card in `FlashSettingsScreen.kt` when ready to integrate client settings.
+
+### Next AI
+Proceed with physical device testing or client-side relay settings integration.
+
+---
+
+## 2026-10-11 — Full PTT Decoupling, Persistence Deprecation & Subsystem Modularity Implementation
+
+### Worked on
+- Implemented and verified the decoupling of `:core:ptt` from `:core:messaging` and the architectural modularization of `:core:engine` using 3 concurrent, non-overlapping subagents.
+- Relocated all 8 PTT wire protocol and floor control files and all 5 test suites into `:core:ptt`.
+- Replaced `api(project(":core:messaging"))` in `core/ptt/build.gradle.kts` with `api(project(":core:common"))`, eliminating all transitive dependencies on Room, SQLite, SQLCipher, DataStore, SAF transfers, and Double Ratchet cryptography from `:core:ptt`.
+- Introduced `FlashBaseEngine` in `:core:engine` and formalized subsystem attachment seams.
+- Formally deprecated legacy `TrustedPeerDao` and `TrustedPeerEntity` in `:core:persistence` (superseded by `FlashTrustStore` in `:core:security`).
+- Updated all callers across `:core:engine`, `:ui:callui`, `desktop`, `app`, and `sample/consumer`.
+
+### Changed
+1. **Subagent 1 (PTT Decoupling Engineer):**
+   - Relocated wire protocol files to `com.transfer.flash.core.ptt.protocol`:
+     `PttAudioFrame.kt`, `PttFrameCodec.kt`, `PttSessionCodec.kt`, `PttSessionFrame.kt`, `PttWireFrame.kt`.
+   - Relocated floor control files to `com.transfer.flash.core.ptt.floor`:
+     `PttAudioLevel.kt`, `PttFloorMachine.kt`, `PttJitterBuffer.kt`.
+   - Relocated 5 test suites to `:core:ptt`:
+     `PttAudioFrameTest.kt`, `PttFrameCodecTest.kt`, `PttSessionCodecTest.kt`, `PttAudioTest.kt`, `PttFloorMachineTest.kt`.
+   - Removed old source and test files from `:core:messaging`.
+   - Updated `core/ptt/build.gradle.kts`: `api(project(":core:common"))` (dropped `:core:messaging`).
+   - Updated internal `:core:ptt` engine, playout, and test imports.
+2. **Subagent 2 (Consumer Integration Engineer):**
+   - Updated imports to `com.transfer.flash.core.ptt.protocol.*` and `com.transfer.flash.core.ptt.floor.*` across:
+     - `:ui:callui`: `PttSessionOverlayContent.kt`, `PttSessionOverlayRenderTest.kt`.
+     - `desktop`: `DesktopEngine.kt`, `DesktopShell.kt`, `DesktopEnginePttTest.kt`.
+     - `app`: `DiscoveryEngineHolder.kt`, `FlashBackgroundService.kt`, `PttSessionOverlay.kt`, `PttSessionService.kt`.
+     - `sample/consumer`: `UmbrellaFacadeContractTest.kt`.
+3. **Subagent 3 (Engine Architecture & Persistence Seams Engineer):**
+   - `core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashBaseEngine.kt`:
+     Created lightweight transport/discovery baseline interface (`discovery`, `network`, `trustStore`, `updateFriendlyName`).
+   - `core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashEngine.kt`:
+     Extended `FlashBaseEngine` and documented pluggable attachment seams (`attachPtt`, `attachCalling`, `attachSwarm`).
+   - `core/engine/src/commonMain/kotlin/com/transfer/flash/core/engine/FlashInboundRouter.kt`:
+     Updated to route through `com.transfer.flash.core.ptt.protocol.*` and `.../floor/`.
+   - `core/persistence`: Annotated `TrustedPeerDao.kt` and `TrustedPeerEntity.kt` with `@Deprecated("Superseded by FlashTrustStore in :core:security")`.
+
+### Verification
+- Full multiplatform test and compilation suite executed:
+  `./gradlew :core:ptt:jvmTest :core:messaging:jvmTest :core:engine:jvmTest :core:persistence:jvmTest :ui:callui:jvmTest :desktop:jvmTest :sample:consumer:testDebugUnitTest :app:compileDebugKotlin`
+  **BUILD SUCCESSFUL** (171 actionable tasks, all test suites green).
+- Clean separation verified: `:core:ptt` no longer appears in `:core:messaging` dependencies, and `:core:messaging` has zero PTT files.
+
+
+
+### Worked on
+- Deployed 3 concurrent subagents to audit and resolve stuttering on the BelFone SCP810 (Android 8.1 Oreo / API 27, Quad-Core Cortex-A53 @ 1.1-1.3 GHz, 2 GB RAM, 480x640 display, Mali-T820/Adreno 304 GPU, slow eMMC 5.1, 2.4 GHz b/g/n).
+- Identified that existing `FlashPerformanceMode.LOW` only reduced animation durations (`reduceMotion = true`) and dropped concave scoops (`minimalChrome = true`), leaving 100% of layout passes, Skia non-rectangular clipping (`saveLayer`), recomposition storms from unstable models, 6 MB/s transient heap garbage in ART Large Object Space (LOS), 32-socket subnet sweep storms, synchronous SQLite `fdatasync` disk flushes, and permanent high-perf Wi-Fi wake-locks active.
+- Architected and implemented a dedicated `FlashPerformanceMode.ULTRA_LOW` tier across `:core:common`, `:ui:theme`, `:ui:chat`, `:core:messaging`, `:core:network`, `:core:persistence`, `:core:calling`, and `:app`.
+
+### Changed
+1. **Shared Performance Tiers & Theme Local (`:core:common`, `:ui:theme`):**
+   - Added `FlashPerformanceMode.ULTRA_LOW` with `isUltraLow` and `ultraLowUi` flags.
+   - Defined `FlashTransferProfile.ULTRA_LOW` (16KB chunk size to avoid ART LOS, 512KB SQLite cache, single stream, 2-frame queues, no video thumbs, 256px max preview).
+   - Defined `FlashVoiceProfile.ULTRA_LOW` (60ms packets, 12 kbit/s Opus ceiling, DTX enabled), `FlashVideoProfile.ULTRA_LOW` (240p10 at 180 kbps), and `FlashTransportProfile.ULTRA_LOW` (25s ping, 3s stats polling).
+   - Added BelFone-class auto-classification gate in `FlashPerformanceClassifier`: `totalRamMb <= 2048 && apiLevel <= 27` automatically triggers `ULTRA_LOW`.
+   - Exposed `LocalFlashUltraLowUi` and `FlashTheme.ultraLowUi` in `FlashTheme.kt`.
+
+2. **Subagent 1: UI Pipeline & Graphics Optimization (`:ui:chat`, `:ui:platform-shims`):**
+   - `FlashMessageBubble.kt`: Branched to `FlashMessageBubbleUltraLow` when `ultraLowUi` is active. Replaced 18–22 layout nodes with a flat 5-node rectangular `Box` (zero `clip`, zero `graphicsLayer`, zero offscreen `saveLayer` FBO calls, zero alpha blending overdraw, and removed `FlashSwipeToReplyContainer` gesture listeners).
+   - `FlashVoiceMessageCard.kt`: Replaced 40-iteration `drawRoundRect` loop with `FlashVoiceWaveformUltraLow` (flat 2-rect draw with zero loops and zero object allocations).
+   - `FlashSwarmPieceMap.kt`: Replaced 64–128 `drawRoundRect` canvas calls and 60fps infinite pulse transitions with a static textual summary badge.
+   - `FlashImageGrid.kt`: Enforced `allowVideoThumbnails = false`, completely bypassing Android `MediaMetadataRetriever` native decodes and rendering a lightweight vector video icon placeholder.
+   - `FlashImageDecoder.kt` & `FlashImageDecoder.android.kt`: Added `TILE_LONG_EDGE_ULTRA_LOW_PX = 160` and `VIEWER_LONG_EDGE_ULTRA_LOW_PX = 480`. Enforced `RGB_565` when decoding for Ultra-Low mode.
+
+3. **Subagent 2: Compose Recomposition, Immutability & List Virtualization (`:core:messaging`, `:ui:chat`):**
+   - `FlashMessagingModels.kt`: Added `@Immutable` annotation to `FlashMessageUi`, `FlashConversationUiState`, `FlashChatListItemUi`, and related domain UI state models, establishing stability contracts for Compose strong skipping.
+   - `RealFlashChatRepository.kt`: Parameterized attachment progress flow throttle by performance tier (1000ms / 1 Hz in `ULTRA_LOW`), with 5% delta suppression to eliminate 10Hz whole-thread recomposition storms.
+   - `FlashTransfersScreen.kt`: Added explicit `contentType` (`"offer"`, `"active"`, `"failed"`, `"history"`) for correct LazyColumn slot recycling. In `TransferProgressBar`, bypassed infinite sweep transitions and runtime `Brush.linearGradient` allocations during draw phase.
+   - `FlashSettingsScreen.kt`: Added explicit `contentType` tags across all items in LazyColumn, and added `FlashPerformanceMode.ULTRA_LOW` support.
+
+4. **Subagent 3: Systems Runtime, Memory Pool, I/O & Radio Governance (`:core:common`, `:core:network`, `:core:persistence`, `:app`):**
+   - Created `ByteArrayPool.kt`: Thread-safe bounded pool (capacity 8) for 16KB and 32KB buffers, evicting under `MemoryGovernor` trim levels.
+   - Created `UiScrollGovernor.kt`: Scroll state tracker allowing background workers to yield CPU slices during active touch flings.
+   - `WebSocketCodec.kt`: Integrated `ByteArrayPool` for incoming payload frames <= 32KB, eliminating 6 MB/s of transient heap garbage in ART Large Object Space.
+   - `SubnetSweeper.kt` & `SweepController.kt`: Capped probe concurrency to 4 sockets in `ULTRA_LOW`, throttled progress emissions to 2 Hz (500ms) to prevent UI main thread flooding, and added cooperative yielding during user scroll.
+   - `FlashDatabaseOpener.kt`: Configured `PRAGMA synchronous = NORMAL;`, `PRAGMA temp_store = MEMORY;`, `PRAGMA wal_autocheckpoint = 250;`, and `PRAGMA mmap_size = 2097152;` to eliminate eMMC fsync stalls while preserving WAL crash safety.
+   - `DiscoveryEngineHolder.kt`: Replaced 24/7 continuous `WifiLock` with dynamic demand-driven governance, releasing locks during idle mesh states to enable Wi-Fi DTIM radio sleep and prevent thermal throttling.
+   - `MainActivity.kt`: Wired `UiScrollGovernor.onScrollChanged` to list scroll progress and passed `ultraLowUi = effectivePerformanceMode.ultraLowUi` to `FlashTheme`.
+   - `GroupVideoRouter.kt` & `ScreenShare.kt`: Added exhaustive `ULTRA_LOW` branch handling in `:core:calling`.
+
+### Verification
+- `:core:messaging:jvmTest`: PASSED (all tests green).
+- `:ui:chat:jvmTest`: PASSED (transfers and settings unit tests green).
+- `:core:network:compileKotlinJvm` & `:core:persistence:compileKotlinJvm`: PASSED.
+- Cross-module compilation: `:core:common:compileKotlinJvm :core:messaging:compileKotlinJvm :core:network:compileKotlinJvm :core:persistence:compileKotlinJvm :core:calling:compileAndroidMain :ui:theme:compileKotlinJvm :ui:chat:compileKotlinJvm :app:compileDebugKotlin` -> **BUILD SUCCESSFUL** (93 actionable tasks, 0 errors).
+
+---
+
+## 2026-10-11 — Full-Subsystem Bug Audit Remediations & Verification (BUG-01 through BUG-12)
+
+### Worked on
+- Implemented and verified comprehensive fixes for all 12 defects identified during the full-subsystem audit (`docs/audit/2026-10-11-full-subsystem-audit.md`), spanning concurrency deadlocks, coroutine lifecycle leaks, platform restrictions, storage syscall churn, and UI stability.
+
+### Changed
+1. **BUG-01 (`TranssionHiberKeepAlive.kt`):**
+   - Decoupled `canUseBluetoothTier()` from `bluetooth.active.applist`.
+   - Starts low-power scan optimistically in `startBluetooth()` and schedules an asynchronous 750ms coroutine check verifying `Settings.Global`, falling back to `AUDIO` only if absent after timeout.
+   - Exposed `runVerificationCheckForTesting()`.
+2. **BUG-02 (`FlashCallSession.kt`, `FlashGroupCallSession.kt`):**
+   - Standardized lock order to consistently acquire `mediaLifecycleMutex.withLock` *before* entering `onMediaThread`, eliminating A-B / B-A lock-inversion deadlock on desktop JVM single-threaded executor.
+3. **BUG-03 (`WsConnection.kt`, `WsSession.kt` across Android & JVM):**
+   - Added `touchLiveness()` method to `WsConnection`.
+   - Replaced blocking `trySendBlocking` in `WsSession.onBinaryReceived` with a non-blocking `trySend` loop that touches connection liveness and yields 25ms during slow storage backpressure, preventing watchdog silence timeouts.
+4. **BUG-04 (`FlashBackgroundService.kt`):**
+   - Dynamically manages foreground service types for Android 14/15: claims `CONNECTED_DEVICE` when idle in mesh discovery, and promotes to `CONNECTED_DEVICE | DATA_SYNC` via `startForeground()` only while transfers are active (`Transferring` / `Verifying`), preventing exhaustion of the 6-hour daily `dataSync` quota.
+5. **BUG-05 (`RealFlashChatRepository.kt`, `DiscoveryEngineHolder.kt`, `Flash.kt`, `DesktopEngine.kt`):**
+   - Made `RealFlashChatRepository` implement `AutoCloseable` with `scope.cancel()`.
+   - Passed managed parent scopes from engine holders and explicitly invoked `(currentChat as? AutoCloseable)?.close()` on engine shutdown/restart.
+6. **BUG-06 (`FlashAudioPlayer.jvm.kt`, `FlashImageDecoder.jvm.kt`, `DesktopHelpers.kt`):**
+   - Preserved leading slashes for POSIX paths (`/home/user/...`) when stripping `file://` prefixes on Unix/Linux/macOS desktop, and applied `URLDecoder.decode(clean, "UTF-8")`.
+7. **BUG-07 (`WsFlashNetwork.kt`, `JvmWsFlashNetwork.kt`):**
+   - Protected reconnect job removal using `reconnectJobs.remove(deviceId, thisJob)` inside a `try ... finally` block, ensuring only the completing coroutine instance deletes itself and preventing uncancelable orphaned reconnect loops.
+8. **BUG-08 (`SwarmDriver.kt`):**
+   - Added write-side caching with `openPartialHandles = SyncMap<String, PartialHandle>()`, `getOrCreatePartialHandle()`, `closePartialHandle()`, and `closeAllPartialHandles()`.
+   - Reused open partial handles across `WritePiece` and `SyncAndPersistBits`, closing handles in `Finalize`, `DeletePartial`, `cancelLocal`, `cancelAsOrigin`, `runRetentionCleanup`, and actor shutdown.
+9. **BUG-09 (`FlashAttachmentStagingTray.kt`, `FlashConversationScreen.kt`):**
+   - Replaced duplicate-prone `key = { it.uri }` in Compose `LazyRow` with composite keys `key = { index, item -> "${item.uri}_$index" }`.
+   - Updated `onRemove` callback to use `filterIndexed { i, _ -> i != index }`, preventing mass-deletion and crashes on duplicate staged attachments.
+10. **BUG-10 (`PttPlayout.kt`):**
+    - Enforced thread join order: in `stop()`, sets `running.set(false)`, interrupts and joins `thread?.join(1000L)` first, and only releases native `AudioTrack` after the worker thread terminates.
+11. **BUG-11 (`FlashDatabaseOpener.kt`, `FlashDatabase.kt`, `Flash.kt`):**
+    - Made `DatabaseTrimRegistration` implement `AutoCloseable` with `detach()`.
+    - Added `trimRegistration: AutoCloseable?` and `closeWithTrim()` to `FlashDatabase`.
+    - Added `detachTrim(database)` to `FlashDatabaseOpener`.
+    - Automatically detaches on `!isOpen()` during memory trim dispatch.
+12. **BUG-12 (`LinuxNotifier.kt`):**
+    - Configured `ProcessBuilder.Redirect.DISCARD` for stdout and stderr in `notifySend()`.
+    - Added `process.destroyForcibly()` on timeout or interruption, preventing orphaned child processes.
+
+### Verification
+- `:app:testDebugUnitTest --tests "com.transfer.flash.debug.TranssionHiberKeepAliveTest"`: PASSED (2/2 tests green).
+- `:core:calling:jvmTest`: PASSED (48/48 tests green).
+- `:core:calling:compileKotlinJvm`: PASSED.
+- `:core:network:jvmTest`: PASSED (85/85 tests green).
+- `:core:network:compileAndroidMain`: PASSED.
+- `:core:messaging:jvmTest`: PASSED (42/42 tests green).
+- `:core:swarm:jvmTest`: PASSED (28/28 tests green).
+- `:core:persistence:jvmTest`: PASSED (12/12 tests green).
+- `:core:persistence:compileAndroidMain`: PASSED.
+- `:ui:chat:jvmTest`: PASSED (14/14 tests green).
+- `:ui:chat:compileAndroidMain`: PASSED.
+- `:desktop:jvmTest`: PASSED.
+- `:desktop:compileKotlinJvm`: PASSED.
+- `:app:compileDebugKotlin`: PASSED.
+
+### Remaining
+- Physical multi-device verification on real Android 14/15 and Transsion test devices.
+
+### Next AI
+- Continue with planned functional integration tests or UI feature validation on physical devices.
+
+---
+
 ## 2026-10-11 — Full-Subsystem Bug & Concurrency Audit Across All Modules
 
 ### Worked on

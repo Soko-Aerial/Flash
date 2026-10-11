@@ -35,9 +35,9 @@ import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
+import com.transfer.flash.core.ptt.protocol.PttFrameCodec
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.messaging.util.FlashMimeTypes
 import com.transfer.flash.core.persistence.db.FlashDatabase
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
@@ -1097,8 +1097,10 @@ public class DesktopEngine(
             receivedPaths.clear()
             // The database closes after the scope is cancelled, so no coroutine of this engine writes to it any more.
             val db = chatDb
+            val currentChat = chatImpl
             chatImpl = null
             chatDb = null
+            runCatching { (currentChat as? AutoCloseable)?.close() }
             runCatching { db?.close() }
                 .onFailure { FlashLog.w(TAG_WS, "Closing the chat database failed: ${it.message}") }
             discoveryImpl = null

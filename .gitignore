@@ -1,4 +1,4 @@
-﻿build/
+build/
 *.hprof
 *.hprof.p*
 .gradle/
@@ -28,3 +28,6 @@ keystore.properties
 *.keystore
 # PC0 and later device measurement dumps (tools/pc0); summaries go to logs/experiments.md
 measurements/
+
+# Server runtime state and local database
+data/

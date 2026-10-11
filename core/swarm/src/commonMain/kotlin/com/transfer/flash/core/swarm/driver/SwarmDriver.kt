@@ -21,6 +21,7 @@ import com.transfer.flash.core.swarm.engine.SwarmEvent
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceMath
 import com.transfer.flash.core.swarm.model.PieceReadStatus
+import com.transfer.flash.core.swarm.model.PartialHandle
 import com.transfer.flash.core.swarm.model.PieceStorage
 import com.transfer.flash.core.swarm.model.SourceHandle
 import com.transfer.flash.core.swarm.model.StorageFinalizeResult
@@ -108,6 +109,25 @@ public class SwarmDriver(
         }
     }
 
+    private val openPartialHandles = SyncMap<String, PartialHandle>()
+
+    private suspend fun getOrCreatePartialHandle(key: String, totalBytes: Long): PartialHandle? {
+        openPartialHandles[key]?.let { return it }
+        val handle = storage.openPartial(key, totalBytes) ?: return null
+        openPartialHandles[key] = handle
+        return handle
+    }
+
+    private fun closePartialHandle(key: String) {
+        openPartialHandles.remove(key)?.close()
+    }
+
+    private fun closeAllPartialHandles() {
+        for (key in openPartialHandles.keysSnapshot()) {
+            openPartialHandles.remove(key)?.close()
+        }
+    }
+
     /** Groups this device holds swarm content for; the gate is asked about each before a peer is told anything. */
     private val knownGroups = SyncSet<String>()
 
@@ -135,18 +155,23 @@ public class SwarmDriver(
     init {
         // 1. Start single-coroutine actor consumer
         scope.launch {
-            for (event in eventChannel) {
-                try {
-                    val commands = engine.handle(event)
-                    for (cmd in commands) {
-                        executeCommand(cmd)
+            try {
+                for (event in eventChannel) {
+                    try {
+                        val commands = engine.handle(event)
+                        for (cmd in commands) {
+                            executeCommand(cmd)
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (t: Throwable) {
+                        // One bad event must not stop the whole swarm.
+                        FlashLog.e("SWARM", "engine event failed event=${event::class.simpleName}: ${t.message}", t)
                     }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (t: Throwable) {
-                    // One bad event must not stop the whole swarm.
-                    FlashLog.e("SWARM", "engine event failed event=${event::class.simpleName}: ${t.message}", t)
                 }
+            } finally {
+                closeAllSourceHandles()
+                closeAllPartialHandles()
             }
         }
 
@@ -160,7 +185,12 @@ public class SwarmDriver(
                         is SwarmCommand.SyncAndPersistBits -> {
                             val key = partialKeyFor(cmd.root, cmd.groupId)
                             val expectedSize = if (cmd.totalSize > 0L) cmd.totalSize else (contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone)
-                            storage.openPartial(key, expectedSize)?.use { it.sync() }
+                            val cached = openPartialHandles[key]
+                            if (cached != null) {
+                                runCatching { cached.sync() }
+                            } else {
+                                storage.openPartial(key, expectedSize)?.use { it.sync() }
+                            }
                             stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
                         }
                         is SwarmCommand.PersistRecord -> {
@@ -470,15 +500,14 @@ public class SwarmDriver(
                     val offset = PieceMath.pieceOffset(cmd.index, pieceSize)
                     val key = partialKeyFor(cmd.root, cmd.groupId)
 
-                    val handle = storage.openPartial(key, totalSize)
+                    val handle = getOrCreatePartialHandle(key, totalSize)
                     if (handle != null) {
                         try {
                             handle.writeAt(offset, cmd.bytes, cmd.bytes.size)
                             eventChannel.send(SwarmEvent.PieceStored(cmd.groupId, cmd.root, cmd.index, now()))
                         } catch (e: Exception) {
+                            closePartialHandle(key)
                             eventChannel.send(SwarmEvent.PieceStoreFailed(cmd.groupId, cmd.root, cmd.index, e.message ?: "Write failed", now()))
-                        } finally {
-                            handle.close()
                         }
                     } else {
                         eventChannel.send(SwarmEvent.PieceStoreFailed(cmd.groupId, cmd.root, cmd.index, "Cannot open partial storage", now()))
@@ -493,6 +522,7 @@ public class SwarmDriver(
                     val record = contentRecords[cmd.groupId to cmd.root]
                     val manifest = cachedManifests[cmd.root]
                     val key = partialKeyFor(cmd.root, cmd.groupId)
+                    closePartialHandle(key)
                     if (record != null && manifest != null) {
                         val res = storage.finalize(key, record.fileName, record.mime, manifest.fileSha256)
                         FlashLog.i("SWARM", "finalize root=${cmd.root.hex.take(8)} ok=${res.ok} badPieces=${res.badPieces.size}")
@@ -523,7 +553,9 @@ public class SwarmDriver(
             }
             is SwarmCommand.DeletePartial -> {
                 scope.launch(workerDispatcher) {
-                    storage.deletePartial(partialKeyFor(cmd.root, cmd.groupId))
+                    val key = partialKeyFor(cmd.root, cmd.groupId)
+                    closePartialHandle(key)
+                    storage.deletePartial(key)
                 }
             }
             is SwarmCommand.PersistRecord -> {
@@ -825,6 +857,7 @@ public class SwarmDriver(
 
     override suspend fun cancelLocal(transferId: String) {
         val key = findKey(transferId) ?: return
+        closePartialHandle(partialKeyFor(key.second, key.first))
         contentRecords[key]?.let { rec ->
             rec.sourceUri?.let { closeSourceHandle(it) }
             rec.finalPath?.let { closeSourceHandle(it) }
@@ -837,6 +870,7 @@ public class SwarmDriver(
         reason: SwarmTombstoneReason,
     ) {
         val key = findKey(transferId) ?: return
+        closePartialHandle(partialKeyFor(key.second, key.first))
         contentRecords[key]?.let { rec ->
             rec.sourceUri?.let { closeSourceHandle(it) }
             rec.finalPath?.let { closeSourceHandle(it) }
@@ -864,6 +898,7 @@ public class SwarmDriver(
         val activeKeys = activeRecords.map { partialKeyFor(it.root, it.groupId) }.toSet()
         storage.purgeOrphanedPartials(activeKeys)
         closeAllSourceHandles()
+        closeAllPartialHandles()
         eventChannel.send(SwarmEvent.Tick(nowMs))
     }
 

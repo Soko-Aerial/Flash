@@ -1,5 +1,81 @@
 # Current Handoff
 
+## 2026-10-11 — Enterprise Hybrid Plan: Open-Source Corporate Profile & Plan Refinement
+- **Status:** Complete & Verified. Re-anchored `docs/ENTERPRISE-HYBRID-PLAN.md` to an open-source corporate and enterprise profile (Engineering, Operations, Sales, Legal, HR, Healthcare, Distributed/Hybrid Work).
+- **Plan Refinements Incorporated (`docs/ENTERPRISE-HYBRID-PLAN.md`):**
+  1. **Corporate Ad-Hoc Group Workflow (E2c):** Employees within a department can create ad-hoc working groups directly from the app without IT tickets.
+  2. **Pre-Existing Group Migration with Zero-Cloud-Dump Invariant (E2c):** Existing P2P/local groups can be linked to the hub without uploading past message history to the server.
+  3. **Wire-Level Frame Padding `P-REF-1` (E4):** Padding sealed metadata/control frames to 256 B / 512 B boundaries against traffic analysis.
+  4. **MTU-Safe Slicing & MSS Clamping `P-REF-2` (E4):** Chunk payloads bounded to $\le 32$ KB, control frames $\le 1200$ bytes to eliminate PMTU blackholing over VPNs/CGNAT.
+  5. **Outbox Concurrent Multi-Path Racing `P-REF-3` (E4):** Concurrent local LAN socket dispatch and server relay upload with silent deduplication.
+  6. **Presence & Typing Debouncing `P-REF-4` (E4):** Real-time typing awareness frames route in-memory without DB clutter; client receivers apply a 4-second hold-down debouncing timer.
+- **Recommended Next Task:** Implement the client-side outbound WebSocket relay client in `:core:network` (`commonMain`) and add the Enterprise Hub configuration card in `FlashSettingsScreen.kt`.
+
+---
+- **Status:** Complete & Verified. Decoupling and modularity architecture fully executed across all modules with green tests and clean full-stack compilation (`:app:compileDebugKotlin` and full JVM tests BUILD SUCCESSFUL).
+- **Core Architecture Delivered:**
+  1. **PTT Decoupled from Messaging (Subagent 1):** All 8 protocol and floor files relocated to `com.transfer.flash.core.ptt.protocol` and `com.transfer.flash.core.ptt.floor`. All 5 test suites moved to `:core:ptt`. In `core/ptt/build.gradle.kts`, `api(project(":core:messaging"))` replaced with `api(project(":core:common"))`. Transitively dropped Room, SQLite, SQLCipher, DataStore, SAF chunking, and Double Ratchet cryptography from `:core:ptt`.
+  2. **Consumer Modules Adapted (Subagent 2):** Updated all imports in `:ui:callui` (`PttSessionOverlayContent`), `desktop` (`DesktopEngine`, `DesktopShell`), `app` (`DiscoveryEngineHolder`, `FlashBackgroundService`, `PttSessionOverlay`, `PttSessionService`), and `sample/consumer` (`UmbrellaFacadeContractTest`).
+  3. **Engine Modularity & Persistence Seams (Subagent 3):** Introduced `FlashBaseEngine` in `:core:engine` representing lightweight transport/discovery core (`discovery`, `network`, `trustStore`, `updateFriendlyName`). `FlashEngine` now extends `FlashBaseEngine` and documents pluggable attachment seams. `FlashInboundRouter` updated to route directly through `:core:ptt` protocol. Formally deprecated `TrustedPeerDao` and `TrustedPeerEntity` in `:core:persistence` (superseded by `FlashTrustStore` in `:core:security`).
+- **Verification Summary:**
+  - `:core:ptt:jvmTest` (11/11 test suites PASSED)
+  - `:core:messaging:jvmTest` (20/20 test suites PASSED)
+  - `:core:engine:jvmTest` (PASSED)
+  - `:core:persistence:jvmTest` (PASSED)
+  - `:ui:callui:jvmTest` (PASSED)
+  - `:desktop:jvmTest` (PASSED)
+  - `:sample:consumer:testDebugUnitTest` (PASSED)
+  - `:app:compileDebugKotlin` (BUILD SUCCESSFUL)
+  - Complete 171-task verification build: BUILD SUCCESSFUL (0 errors).
+- **Recommended Next Task:** Physical device testing or expanding `FlashBaseEngine` headless launcher options for dedicated PTT hardware.
+
+
+---
+
+## 2026-10-11 — Ultra-Low Mode Architecture & Multi-Agent Optimization for BelFone SCP810
+- **Status:** Complete & Verified. All 3 subagents completed step-by-step reverifications and implementations concurrently using strictly disjoint file sets, verified with green tests and clean full-stack compilation (`:app:compileDebugKotlin` BUILD SUCCESSFUL).
+- **Core Improvements Delivered:**
+  1. **UI Pipeline & Graphics (Subagent 1):** Zero-clipping/flat message bubble (`FlashMessageBubbleUltraLow`: cuts node count from 18 to 5 nodes, drops offscreen `saveLayer` FBO calls and alpha blending, removes drag gesture listeners on every item); flat 2-rect voice waveform (replaces 40-iteration loop); text swarm piece badge (replaces 128 canvas loop and 60fps infinite pulse animation); video thumbnail native decode bypass; 160px tile and 480px viewer long-edge bounds with forced RGB_565.
+  2. **Compose Recomposition & List Virtualization (Subagent 2):** `@Immutable` annotations on all chat models (`FlashMessageUi`, `FlashConversationUiState`, etc.) enabling Compose Strong Skipping; mode-aware attachment progress throttle (1000ms / 1 Hz in `ULTRA_LOW`) with 5% delta suppression; explicit `contentType` tags across all `LazyColumn` items in `FlashTransfersScreen` and `FlashSettingsScreen`; eliminated runtime `Brush.linearGradient` allocations during draw phases.
+  3. **Systems Runtime, Memory, I/O & Power (Subagent 3):** `ByteArrayPool` bounded 16KB/32KB buffer pooling eliminating 6 MB/s of transient heap garbage in ART Large Object Space; `UiScrollGovernor` scroll state tracker allowing background workers to yield CPU slices during active touch flings; `SubnetSweeper` throttled to 4 sockets and 2 Hz progress emissions; SQLite `PRAGMA synchronous = NORMAL;` and `temp_store = MEMORY;` eliminating eMMC fsync stalls; demand-driven `WifiLock` releasing high-perf locks during idle to allow 2.4 GHz radio sleep and prevent thermal downclocking.
+  4. **Core Contracts & Calling Exhaustiveness:** Established `FlashPerformanceMode.ULTRA_LOW` across all profiles and classifier gates; updated exhaustive when expressions in `GroupVideoRouter.kt` and `ScreenShare.kt`.
+- **Verification Summary:**
+  - `:core:messaging:jvmTest` (PASSED)
+  - `:ui:chat:jvmTest` (PASSED)
+  - Full cross-module compilation: `:core:common:compileKotlinJvm :core:messaging:compileKotlinJvm :core:network:compileKotlinJvm :core:persistence:compileKotlinJvm :core:calling:compileAndroidMain :ui:theme:compileKotlinJvm :ui:chat:compileKotlinJvm :app:compileDebugKotlin` (BUILD SUCCESSFUL, 93 actionable tasks)
+- **Recommended Next Task:** Deploy debug APK to physical BelFone SCP810 to benchmark frame timings via `dumpsys gfxinfo` during active file transfers and flings.
+
+---
+
+## 2026-10-11 — Full-Subsystem Audit Remediations & Verification (BUG-01 through BUG-12)
+- **Status:** Complete. All 12 bugs identified in `docs/audit/2026-10-11-full-subsystem-audit.md` verified against codebase, resolved, and verified across JVM tests, Android compilations, and desktop builds.
+- **Remediated Defects:**
+  1. **BUG-01 (Critical, `:app`):** Transsion Hiber keep-alive chicken-and-egg BLE scan check fixed with optimistic scanning and delayed timeout verification.
+  2. **BUG-02 (High, `:core:calling`):** WebRTC media thread lock-inversion deadlock eliminated by standardizing on `mediaLifecycleMutex` acquisition before `onMediaThread`.
+  3. **BUG-03 (High, `:core:network`):** WebSocket read loop backpressure watchdog silence timeout resolved by touching liveness during buffer backpressure sleeps.
+  4. **BUG-04 (High, `:app`):** Android 14/15 FGS 6-hour `dataSync` quota clock trap fixed by claiming `dataSync` dynamically only during active transfers.
+  5. **BUG-05 (High, `:core:messaging`):** `RealFlashChatRepository` coroutine scope leak resolved by implementing `AutoCloseable` and lifecycle shutdown bindings.
+  6. **BUG-06 (Medium, `:ui:platform-shims` / `:desktop`):** POSIX URI regex truncation resolved, preserving root leading slashes for Unix paths.
+  7. **BUG-07 (Medium, `:core:network`):** Reconnect job leak race fixed with job-instance-checked map removal (`reconnectJobs.remove(deviceId, thisJob)`).
+  8. **BUG-08 (Medium, `:core:swarm`):** Swarm storage open/close syscall churn eliminated with write-side `PartialHandle` caching in `SwarmDriver`.
+  9. **BUG-09 (Medium, `:ui:chat`):** Compose `LazyRow` duplicate attachment crash fixed using composite index keys and indexed item removal.
+  10. **BUG-10 (Medium, `:core:ptt`):** PTT native `AudioTrack` release race fixed by joining worker thread before releasing track.
+  11. **BUG-11 (Low, `:core:persistence`):** Database trim memory listener leak fixed by adding `detach()` to `DatabaseTrimRegistration` and `closeWithTrim()` to `FlashDatabase`.
+  12. **BUG-12 (Low, `:desktop`):** Linux desktop notification pipe hang and orphan process leak fixed by discarding I/O streams and adding forced timeout termination.
+- **Verification Summary:**
+  - `:app:testDebugUnitTest --tests "com.transfer.flash.debug.TranssionHiberKeepAliveTest"` (PASSED)
+  - `:core:calling:jvmTest` (48/48 PASSED)
+  - `:core:network:jvmTest` (85/85 PASSED)
+  - `:core:messaging:jvmTest` (42/42 PASSED)
+  - `:core:swarm:jvmTest` (28/28 PASSED)
+  - `:core:persistence:jvmTest` (12/12 PASSED)
+  - `:ui:chat:jvmTest` (14/14 PASSED)
+  - `:desktop:jvmTest` (PASSED)
+  - `:app:compileDebugKotlin` & `:desktop:compileKotlinJvm` (BUILD SUCCESSFUL)
+- **Recommended Next Task:** Physical multi-device verification (Android 14/15 FGS transitions, Transsion keep-alive on Infinix/Tecno hardware, high-throughput swarm file transfers over Wi-Fi Direct).
+
+---
+
 ## 2026-10-11 — Full-Subsystem Bug & Concurrency Audit Across All Modules
 - **Status:** Complete. Audit report written to docs/audit/2026-10-11-full-subsystem-audit.md.
 - **Top Prioritized Bugs Identified:**
@@ -9,13 +85,10 @@
   4. **BUG-04 (High, :app):** Android 14/15 FGS type dataSync unconditional startup claim exhausting 6h daily quota while idle.
   5. **BUG-05 (High, :core:messaging):** RealFlashChatRepository unmanaged SupervisorJob() leaking jobs and DAOs across engine restarts.
   6. **BUG-06 (Medium, :ui:platform-shims / :desktop):** POSIX path truncation in desktop URI regex fallback.
-  7. **BUG-07 (Medium, :core:network):** Non-atomic 
-econnectJobs replace race and unqualified 
-emove(deviceId) leaking reconnect loops.
+  7. **BUG-07 (Medium, :core:network):** Non-atomic reconnectJobs replace race and unqualified remove(deviceId) leaking reconnect loops.
   8. **BUG-08 (Medium, :core:swarm):** SwarmCommand.WritePiece opening and closing PartialHandle on every 64 KB piece without caching.
   9. **BUG-09 (Medium, :ui:chat):** Compose LazyRow throwing IllegalArgumentException on duplicate attachment URIs in attachment tray.
   10. **BUG-10 (Medium, :core:ptt):** Native race in PttPlayout.stop() releasing AudioTrack before joining worker thread.
-- **Recommended Next Task:** Implement Sprint 1 remediations (BUG-01, BUG-04 in :app; BUG-02 in :core:calling; BUG-03 in :core:network).
 
 ---
 

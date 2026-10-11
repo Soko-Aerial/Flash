@@ -13,6 +13,7 @@ private val LocalFlashColors = compositionLocalOf { FlashColors.light() }
 private val LocalFlashTypography = compositionLocalOf { FlashTypography.default() }
 private val LocalFlashMotion = compositionLocalOf { FlashMotion(reduceMotion = false) }
 private val LocalFlashMinimalChrome = compositionLocalOf { false }
+private val LocalFlashUltraLowUi = compositionLocalOf { false }
 
 /**
  * Access Flash chat design tokens. Do not use MaterialTheme.colorScheme for chat-visible styling.
@@ -46,6 +47,16 @@ object FlashTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalFlashMinimalChrome.current
+
+    /**
+     * True on severely constrained hardware (BelFone SCP810, Android <= 8.1, <= 2GB RAM).
+     * Bypasses offscreen buffers (saveLayer), non-rectangular clipping, graphics layers,
+     * gradient shaders, and loop-based canvas drawing.
+     */
+    val ultraLowUi: Boolean
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalFlashUltraLowUi.current
 }
 
 /**
@@ -69,6 +80,7 @@ fun FlashTheme(
     dynamicAccent: Boolean = false,
     hapticsEnabled: Boolean = true,
     minimalChrome: Boolean = false,
+    ultraLowUi: Boolean = false,
     colors: FlashColors = if (darkTheme) FlashColors.dark() else FlashColors.light(),
     typography: FlashTypography = FlashTypography.default(),
     motion: FlashMotion = rememberFlashMotion(),
@@ -97,6 +109,7 @@ fun FlashTheme(
         LocalFlashTypography provides rememberedTypography,
         LocalFlashMotion provides rememberedMotion,
         LocalFlashMinimalChrome provides minimalChrome,
+        LocalFlashUltraLowUi provides ultraLowUi,
         LocalFlashHapticsEnabled provides hapticsEnabled,
         content = content,
     )

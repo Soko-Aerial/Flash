@@ -16,7 +16,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.transfer.flash.core.calling.model.FlashCallState
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.model.FlashTransfer
@@ -61,6 +61,7 @@ class FlashBackgroundService : Service() {
     private var lastDiscoveryMode: com.transfer.flash.core.discovery.core.FlashDiscoveryMode? = null
     private var isFirstTransferCollection = true
     private var isForeground = false
+    private var currentFgsTypes = 0
 
     override fun onCreate() {
         super.onCreate()
@@ -202,10 +203,13 @@ class FlashBackgroundService : Service() {
             .build()
     }
 
-    private fun startAsForeground(): Boolean {
+    private fun startAsForeground(transfers: List<FlashTransfer> = emptyList()): Boolean {
         FlashNotificationManager.initChannels(this)
-        val notification: Notification = buildIdleNotification()
-        val fgsType = resolveForegroundServiceType()
+        val activeCount = transfers.count {
+            it.state == FlashTransferState.Transferring || it.state == FlashTransferState.Verifying
+        }
+        val notification: Notification = buildIdleNotification(activeTransfersCount = activeCount)
+        val fgsType = resolveForegroundServiceType(transfers)
         Log.i(TAG, "Calling startForeground with NOTIFICATION_ID=$NOTIFICATION_ID, fgsType=$fgsType")
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -213,6 +217,7 @@ class FlashBackgroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            currentFgsTypes = fgsType
             isForeground = true
             true
         } catch (error: Exception) {
@@ -256,17 +261,22 @@ class FlashBackgroundService : Service() {
         }
     }
 
-    private fun resolveForegroundServiceType(): Int {
+    private fun resolveForegroundServiceType(transfers: List<FlashTransfer> = emptyList()): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        val hasActiveTransfers = transfers.any {
+            it.state == FlashTransferState.Transferring || it.state == FlashTransferState.Verifying
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            if (hasActiveTransfers) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            }
         }
         if (keepAlive?.currentTier == TranssionHiberKeepAlive.KeepAliveTier.AUDIO &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE
         ) {
             types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         }
-        Log.i(TAG, "resolveForegroundServiceType: SDK_INT=${Build.VERSION.SDK_INT}, types=$types, tier=${keepAlive?.currentTier}")
+        Log.i(TAG, "resolveForegroundServiceType: SDK_INT=${Build.VERSION.SDK_INT}, types=$types, activeTransfers=$hasActiveTransfers, tier=${keepAlive?.currentTier}")
         return types
     }
 
@@ -380,7 +390,8 @@ class FlashBackgroundService : Service() {
             it.state == FlashTransferState.Transferring || it.state == FlashTransferState.Verifying
         }
         val currentMode = DiscoveryEngineHolder.currentDiscoveryMode()
-        if (active.size == lastActiveTransfersCount && currentMode == lastDiscoveryMode && isForeground) {
+        val neededTypes = resolveForegroundServiceType(transfers)
+        if (active.size == lastActiveTransfersCount && currentMode == lastDiscoveryMode && isForeground && neededTypes == currentFgsTypes) {
             return
         }
         lastActiveTransfersCount = active.size
@@ -389,9 +400,22 @@ class FlashBackgroundService : Service() {
         val manager = getSystemService(NotificationManager::class.java) ?: return
         val notification = buildIdleNotification(activeTransfersCount = active.size)
         if (isForeground) {
-            manager.notify(NOTIFICATION_ID, notification)
+            if (neededTypes != currentFgsTypes) {
+                runCatching {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(NOTIFICATION_ID, notification, neededTypes)
+                    } else {
+                        startForeground(NOTIFICATION_ID, notification)
+                    }
+                    currentFgsTypes = neededTypes
+                }.onFailure {
+                    manager.notify(NOTIFICATION_ID, notification)
+                }
+            } else {
+                manager.notify(NOTIFICATION_ID, notification)
+            }
         } else {
-            if (startAsForeground()) {
+            if (startAsForeground(transfers)) {
                 promotionRefused.set(false)
             } else {
                 manager.notify(NOTIFICATION_ID, notification)

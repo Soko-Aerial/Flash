@@ -1,7 +1,7 @@
 package com.transfer.flash.desktop
 
 import com.transfer.flash.core.common.model.FlashDeviceId
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.PttPressOutcome
 import com.transfer.flash.core.security.pairing.PairingPhase
 import java.io.File

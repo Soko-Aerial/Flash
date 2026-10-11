@@ -64,9 +64,8 @@ kotlin {
 
     sourceSets {
         commonMain.dependencies {
-            // The wire frames, the floor state machine and the jitter buffer live in
-            // :core:messaging's commonMain; this module is the driver that executes them.
-            api(project(":core:messaging"))
+            // Decoupled from :core:messaging: wire frames and floor control now live in :core:ptt.
+            api(project(":core:common"))
             // Public API exposes Flow/StateFlow.
             api(libs.kotlinx.coroutines.core)
         }

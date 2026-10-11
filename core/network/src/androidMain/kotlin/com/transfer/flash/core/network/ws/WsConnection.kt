@@ -294,6 +294,16 @@ public class WsConnection(
     }
 
     /**
+     * Refreshes the watchdog inbound and user traffic timestamps during backpressure pauses,
+     * preventing a slow consumer/storage write from falsely triggering a silence timeout (BUG-03).
+     */
+    public fun touchLiveness() {
+        val now = nowMs()
+        keepalive.onInbound(now)
+        keepalive.onUserTraffic(now)
+    }
+
+    /**
      * Closes the connection. The close frame and socket close run on the connection scope
      * so this is safe to call from any thread (StrictMode forbids network writes on main).
      * The listener callback fires immediately; the peer observes the close frame or EOF.

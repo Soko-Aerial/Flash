@@ -59,8 +59,17 @@ import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashMotion
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
+import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+private val FlashTheme.performanceMode: FlashPerformanceMode
+    @Composable
+    get() = when {
+        ultraLowUi -> FlashPerformanceMode.ULTRA_LOW
+        minimalChrome -> FlashPerformanceMode.LOW
+        else -> FlashPerformanceMode.HIGH
+    }
 
 /**
  * Adaptive collage and grid presentation for single and multi-photo messages in chat (UI-017).
@@ -447,24 +456,34 @@ fun FlashImageTile(
     // too, not a value captured behind the decoder's back, so a tier that resolves after first
     // composition re-decodes instead of leaving a stale bitmap on screen.
     val minimalChrome = FlashTheme.minimalChrome
+    val ultraLowUi = FlashTheme.ultraLowUi
+    val allowVideoThumbnails = FlashTheme.performanceMode.transfer.allowVideoThumbnails
+    val skipVideoThumbnail = image.isVideo && !allowVideoThumbnails
     val bitmapState = produceState<ImageBitmap?>(
         null,
         image.uri,
         image.thumbUri,
         image.isVideo,
         minimalChrome,
+        ultraLowUi,
+        skipVideoThumbnail,
     ) {
+        if (skipVideoThumbnail) {
+            value = null
+            return@produceState
+        }
         val source = image.uri ?: image.thumbUri
+        val maxLongEdge = when {
+            ultraLowUi -> FlashImageDecoder.TILE_LONG_EDGE_ULTRA_LOW_PX
+            minimalChrome -> FlashImageDecoder.TILE_LONG_EDGE_MINIMAL_PX
+            else -> FlashImageDecoder.TILE_LONG_EDGE_PX
+        }
         value = withContext(Dispatchers.IO) {
             imageDecoder.decode(
                 source = source,
                 isVideo = image.isVideo,
-                maxLongEdge = if (minimalChrome) {
-                    FlashImageDecoder.TILE_LONG_EDGE_MINIMAL_PX
-                } else {
-                    FlashImageDecoder.TILE_LONG_EDGE_PX
-                },
-                lowColorDepth = minimalChrome,
+                maxLongEdge = maxLongEdge,
+                lowColorDepth = minimalChrome || ultraLowUi,
                 computeInSampleSize = FlashMediaViewerMath::computeInSampleSize,
             )
         }
@@ -488,13 +507,19 @@ fun FlashImageTile(
         }
     }
 
-    Box(
-        modifier = modifier
+    val tileModifier = if (ultraLowUi) {
+        modifier
+    } else {
+        modifier
             .graphicsLayer {
                 scaleX = scale
                 scaleY = scale
             }
             .clip(shape)
+    }
+
+    Box(
+        modifier = tileModifier
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -529,16 +554,22 @@ fun FlashImageTile(
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
-            // Stylized generative gradient photo placeholder
+            // Stylized generative gradient photo placeholder or direct vector video icon placeholder
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Brush.linearGradient(gradientColors)),
+                    .then(
+                        if (ultraLowUi) {
+                            Modifier.background(Color(0xFF262626))
+                        } else {
+                            Modifier.background(Brush.linearGradient(gradientColors))
+                        }
+                    ),
             ) {
                 FlashIcon(
                     icon = if (image.isVideo) FlashIcons.Play else FlashIcons.Gallery,
-                    tint = Color.White.copy(alpha = 0.5f),
+                    tint = Color.White.copy(alpha = if (ultraLowUi) 0.9f else 0.5f),
                     size = FlashDimensions.iconLg,
                 )
             }

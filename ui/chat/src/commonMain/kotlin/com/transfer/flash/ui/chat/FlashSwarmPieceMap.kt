@@ -62,6 +62,31 @@ public fun FlashSwarmPieceMap(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
 
+    if (FlashTheme.ultraLowUi) {
+        val verifiedCount = remember(blocks) { blocks.count { it == 3 } }
+        val totalCount = blocks.size
+        val percent = if (totalCount > 0) (verifiedCount * 100) / totalCount else 0
+        val text = "[Swarm Pieces: $verifiedCount/$totalCount ($percent%) • $holdersOnline peers]"
+
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .background(colors.backgroundSurfaceSubtle)
+                .border(FlashDimensions.borderHairline, colors.borderSubtle)
+                .padding(FlashSpacing.space8)
+                .semantics(mergeDescendants = true) {
+                    contentDescription = text
+                },
+        ) {
+            FlashText(
+                text = text,
+                style = FlashTheme.typography.metadataEmphasis,
+                color = colors.textSecondary,
+            )
+        }
+        return
+    }
+
     val statuses = remember(blocks) { FlashSwarmPieceMapMath.statusesFromBlocks(blocks) }
     val totalBlocks = statuses.size
 

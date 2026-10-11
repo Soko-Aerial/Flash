@@ -102,6 +102,15 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 @ConstructedBy(FlashDatabaseConstructor::class)
 public abstract class FlashDatabase : RoomDatabase() {
 
+    public var trimRegistration: AutoCloseable? = null
+
+    /** Closes the database and unregisters any active memory-trim listener. */
+    public fun closeWithTrim() {
+        trimRegistration?.close()
+        trimRegistration = null
+        close()
+    }
+
     public abstract fun messageDao(): MessageDao
 
     public abstract fun conversationDao(): ConversationDao

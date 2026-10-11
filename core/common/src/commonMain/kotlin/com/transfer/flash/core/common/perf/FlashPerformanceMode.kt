@@ -38,6 +38,14 @@ package com.transfer.flash.core.common.perf
  */
 public enum class FlashPerformanceMode {
     /**
+     * Severely constrained hardware: BelFone SCP810, 2GB RAM, Android <= 8.1,
+     * low-clock Cortex-A53, slow eMMC, 2.4 GHz b/g/n only.
+     * Enforces: zero video thumbnail decoding, 256px max image preview, pooled buffers,
+     * throttled subnet scanning, cooperative scroll-priority CPU scheduling, and tuned SQLite.
+     */
+    ULTRA_LOW,
+
+    /**
      * Rugged/PTT handsets, 2 GB-class devices, wearables, anything the platform itself calls
      * low-RAM. Extreme minimalism: no animation, 360p video, 60 ms voice packets with DTX.
      */
@@ -57,6 +65,9 @@ public enum class FlashPerformanceMode {
     HIGH,
     ;
 
+    /** Whether this is the ultra-low performance tier. */
+    public val isUltraLow: Boolean get() = this == ULTRA_LOW
+
     /**
      * Whether the UI must render without animation — the same switch the accessibility
      * reduce-motion setting drives, reused rather than duplicated so all existing
@@ -71,9 +82,16 @@ public enum class FlashPerformanceMode {
      */
     public val minimalChrome: Boolean get() = this != HIGH
 
+    /**
+     * Radical optimization: disables all non-rectangular clipping, graphicsLayer allocations,
+     * canvas loops, alpha blending, and gradient shaders.
+     */
+    public val ultraLowUi: Boolean get() = this == ULTRA_LOW
+
     /** Camera capture + video encode envelope for a call placed on this tier. */
     public val video: FlashVideoProfile
         get() = when (this) {
+            ULTRA_LOW -> FlashVideoProfile.ULTRA_LOW
             LOW -> FlashVideoProfile.LOW
             MEDIUM -> FlashVideoProfile.MEDIUM
             HIGH -> FlashVideoProfile.HIGH
@@ -82,6 +100,7 @@ public enum class FlashPerformanceMode {
     /** Opus packetization + bitrate envelope for a call placed on this tier. */
     public val voice: FlashVoiceProfile
         get() = when (this) {
+            ULTRA_LOW -> FlashVoiceProfile.ULTRA_LOW
             LOW -> FlashVoiceProfile.LOW
             MEDIUM -> FlashVoiceProfile.MEDIUM
             HIGH -> FlashVoiceProfile.HIGH
@@ -90,6 +109,7 @@ public enum class FlashPerformanceMode {
     /** Signaling keepalive + reconnect envelope for this tier. */
     public val transport: FlashTransportProfile
         get() = when (this) {
+            ULTRA_LOW -> FlashTransportProfile.ULTRA_LOW
             LOW -> FlashTransportProfile.LOW
             MEDIUM -> FlashTransportProfile.MEDIUM
             HIGH -> FlashTransportProfile.HIGH
@@ -98,6 +118,7 @@ public enum class FlashPerformanceMode {
     /** File-transfer chunking, concurrency, and buffer envelope for this tier. */
     public val transfer: FlashTransferProfile
         get() = when (this) {
+            ULTRA_LOW -> FlashTransferProfile.ULTRA_LOW
             LOW -> FlashTransferProfile.LOW
             MEDIUM -> FlashTransferProfile.MEDIUM
             HIGH -> FlashTransferProfile.HIGH
@@ -106,6 +127,7 @@ public enum class FlashPerformanceMode {
     /** Stable persistence token. Never derived from [name] — see [Keys]. */
     public val key: String
         get() = when (this) {
+            ULTRA_LOW -> Keys.ULTRA_LOW
             LOW -> Keys.LOW
             MEDIUM -> Keys.MEDIUM
             HIGH -> Keys.HIGH
@@ -125,6 +147,7 @@ public enum class FlashPerformanceMode {
          * unset preference *is* auto, and auto is resolved on every boot.
          */
         public const val AUTO: String = "auto"
+        public const val ULTRA_LOW: String = "ultra_low"
         public const val LOW: String = "low"
         public const val MEDIUM: String = "medium"
         public const val HIGH: String = "high"
@@ -140,6 +163,7 @@ public enum class FlashPerformanceMode {
          * written by a newer build re-detects instead of guessing a tier.
          */
         public fun fromKey(value: String?): FlashPerformanceMode? = when (value?.lowercase()) {
+            Keys.ULTRA_LOW -> ULTRA_LOW
             Keys.LOW -> LOW
             Keys.MEDIUM -> MEDIUM
             Keys.HIGH -> HIGH

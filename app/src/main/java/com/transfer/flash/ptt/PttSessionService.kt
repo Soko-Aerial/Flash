@@ -21,7 +21,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.transfer.flash.MainActivity
 import com.transfer.flash.R
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.PttSessionStats
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope

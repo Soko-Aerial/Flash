@@ -124,6 +124,7 @@ internal object ShareLadder {
         FlashPerformanceMode.HIGH -> 4
         FlashPerformanceMode.MEDIUM -> 3
         FlashPerformanceMode.LOW -> 2
+        FlashPerformanceMode.ULTRA_LOW -> 1
     }
 
     /**

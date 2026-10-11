@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.Flow
  * TOFU pin store backing C2. `isPinned` matches on both device id AND fingerprint, so a peer
  * presenting a different key is no longer trusted (fail closed).
  */
+@Deprecated("Superseded by FlashTrustStore in :core:security. Do not use Room for peer identity or trust pairing.")
 @Dao
 public interface TrustedPeerDao {
 

@@ -39,6 +39,12 @@ public interface FlashImageDecoder {
     ): ImageBitmap?
 
     public companion object {
+        /** Ultra-low long-edge budget for in-bubble tiles in ULTRA_LOW mode (e.g. BelFone SCP810 480x640). */
+        public const val TILE_LONG_EDGE_ULTRA_LOW_PX: Int = 160
+
+        /** Ultra-low long-edge budget for full viewer on constrained devices in ULTRA_LOW mode. */
+        public const val VIEWER_LONG_EDGE_ULTRA_LOW_PX: Int = 480
+
         /** Long-edge budget for an in-bubble tile below the HIGH performance tier. */
         public const val TILE_LONG_EDGE_MINIMAL_PX: Int = 480
 

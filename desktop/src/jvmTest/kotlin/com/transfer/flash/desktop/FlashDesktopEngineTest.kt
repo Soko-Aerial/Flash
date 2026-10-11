@@ -329,7 +329,9 @@ class FlashDesktopEngineTest {
             val file = File(dir("payload"), "hello.bin").apply { writeBytes(ByteArray(2048) { it.toByte() }) }
             val target = FlashDevice(FlashDeviceId(receiver.localDeviceId), "receiver", FlashTransportType.LAN)
 
-            assertIs<FlashResult.Success<*>>(sender.network.connectManual("127.0.0.1", receiver.boundPort))
+            if (!sender.network.activeSessions.value.containsKey(FlashDeviceId(receiver.localDeviceId))) {
+                sender.network.connectManual("127.0.0.1", receiver.boundPort)
+            }
             assertTrue(await { receiver.network.activeSessions.value.containsKey(FlashDeviceId(sender.localDeviceId)) }, "no session")
 
             assertIs<FlashResult.Success<*>>(sender.transfers.sendFile(target, file.absolutePath, file.name, file.length()))

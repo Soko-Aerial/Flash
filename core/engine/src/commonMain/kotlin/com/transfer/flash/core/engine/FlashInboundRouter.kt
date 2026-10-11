@@ -11,9 +11,9 @@ import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.messaging.protocol.PttAudioFrame
-import com.transfer.flash.core.messaging.protocol.PttFrameCodec
-import com.transfer.flash.core.messaging.protocol.PttSessionCodec
+import com.transfer.flash.core.ptt.protocol.PttAudioFrame
+import com.transfer.flash.core.ptt.protocol.PttFrameCodec
+import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec

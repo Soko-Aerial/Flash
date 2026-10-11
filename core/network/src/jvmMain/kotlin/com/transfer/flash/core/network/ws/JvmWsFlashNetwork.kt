@@ -741,36 +741,39 @@ public class JvmWsFlashNetwork(
         // Read when the loop is scheduled: a storm that has ended must not delay a later loop.
         val staggerMs = synchronized(registryLock) { reconnectStagger.firstAttemptDelayMs(deviceId, nowMs()) }
         val job = scope.launch {
-            var first = true
-            while (isActive &&
-                running.get() &&
-                redialTargetOf(deviceId, backup) != null &&
-                !hasLiveSession(deviceId)
-            ) {
-                val policy = reconnectPolicies.getOrPut(deviceId) {
-                    ReconnectPolicy(
-                        // PC5: the connection mode sets the dialer's floor (ECO 2 s, BOOST 250 ms).
-                        baseMs = if (backup) backupRedialBaseMs else transportProfile().reconnectBaseMs,
-                        capMs = transportProfile().reconnectCapMs,
-                        random01 = { ThreadLocalRandom.current().nextDouble() },
-                    )
-                }
-                if (!(first && immediate)) {
-                    delay(policy.nextDelay() + if (first) staggerMs else 0L)
-                } else if (staggerMs > 0L) {
-                    delay(staggerMs)
-                }
-                first = false
+            try {
+                var first = true
+                while (isActive &&
+                    running.get() &&
+                    redialTargetOf(deviceId, backup) != null &&
+                    !hasLiveSession(deviceId)
+                ) {
+                    val policy = reconnectPolicies.getOrPut(deviceId) {
+                        ReconnectPolicy(
+                            // PC5: the connection mode sets the dialer's floor (ECO 2 s, BOOST 250 ms).
+                            baseMs = if (backup) backupRedialBaseMs else transportProfile().reconnectBaseMs,
+                            capMs = transportProfile().reconnectCapMs,
+                            random01 = { ThreadLocalRandom.current().nextDouble() },
+                        )
+                    }
+                    if (!(first && immediate)) {
+                        delay(policy.nextDelay() + if (first) staggerMs else 0L)
+                    } else if (staggerMs > 0L) {
+                        delay(staggerMs)
+                    }
+                    first = false
 
-                if (!running.get() || hasLiveSession(deviceId)) break
-                val target = redialTargetOf(deviceId, backup) ?: break
+                    if (!running.get() || hasLiveSession(deviceId)) break
+                    val target = redialTargetOf(deviceId, backup) ?: break
 
-                val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
-                if (result is FlashResult.Success) {
-                    break
+                    val result = runSuspendCatching { connectManual(target.host, target.port, deviceId) }.getOrNull()
+                    if (result is FlashResult.Success) {
+                        break
+                    }
                 }
+            } finally {
+                coroutineContext[Job]?.let { thisJob -> reconnectJobs.remove(deviceId, thisJob) }
             }
-            reconnectJobs.remove(deviceId)
         }
         reconnectJobs[deviceId] = job
     }

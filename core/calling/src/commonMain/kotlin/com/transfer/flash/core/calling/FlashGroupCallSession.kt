@@ -2038,10 +2038,10 @@ public class FlashGroupCallSession(
      * problem on screen.
      */
     private suspend fun restartCamera() {
-        val opened = onMediaThread {
-            mediaLifecycleMutex.withLock {
-                if (isEnded) return@withLock false
-                val stream = localStream ?: return@withLock false
+        val opened = mediaLifecycleMutex.withLock {
+            onMediaThread {
+                if (isEnded) return@onMediaThread false
+                val stream = localStream ?: return@onMediaThread false
                 val capture = captureProfile ?: groupCaptureProfile()
                 try {
                     val temporary = MediaDevices.getUserMedia {
@@ -2054,7 +2054,7 @@ public class FlashGroupCallSession(
                     val fresh = temporary.videoTracks.firstOrNull()
                     if (fresh == null) {
                         temporary.release()
-                        return@withLock false
+                        return@onMediaThread false
                     }
                     // The track moves to the call's own stream; the temporary one is only a container.
                     temporary.removeTrack(fresh)
@@ -2141,7 +2141,7 @@ public class FlashGroupCallSession(
         }
         var cancelled: CancellationException? = null
         val opened = try {
-            onMediaThread { mediaLifecycleMutex.withLock { openShareLocked(source) } }
+            mediaLifecycleMutex.withLock { onMediaThread { openShareLocked(source) } }
         } catch (e: CancellationException) {
             // The caller's scope ended mid-open (S4): the rollback below still runs, on the media thread, then this rethrows.
             cancelled = e
@@ -2155,7 +2155,7 @@ public class FlashGroupCallSession(
             withContext(NonCancellable) {
                 shareRun.machine.fail()
                 shareArbiter.setLocal(null)
-                onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                mediaLifecycleMutex.withLock { onMediaThread { closeShareLocked() } }
                 shareRun.machine.finished()
                 updateUi {
                     it.copy(
@@ -2254,7 +2254,7 @@ public class FlashGroupCallSession(
             // stop and the machine must reach IDLE, or the share is stuck in STOPPING for the rest of the call.
             try {
                 withContext(NonCancellable) {
-                    onMediaThread { mediaLifecycleMutex.withLock { closeShareLocked() } }
+                    mediaLifecycleMutex.withLock { onMediaThread { closeShareLocked() } }
                 }
             } catch (t: Throwable) {
                 FlashLog.e("GROUP_CALL", "share: stop failed call=$callId", t)
@@ -2564,11 +2564,11 @@ public class FlashGroupCallSession(
         if (isMediaAcquired) return null
         // Pinned: getUserMedia drives ADM device select + factory init. Lifecycle-locked
         // against endSession's teardown (see mediaLifecycleMutex).
-        return onMediaThread {
-            mediaLifecycleMutex.withLock {
+        return mediaLifecycleMutex.withLock {
+            onMediaThread {
         // The call may have ended while this acquire waited for the lifecycle lock; opening the
         // camera now would leak it, because the teardown has already run (or is waiting behind us).
-        if (isEnded) return@withLock FlashCallEndReason.ERROR
+        if (isEnded) return@onMediaThread FlashCallEndReason.ERROR
         try {
             // Same explicit voice processing as 1:1 startMedia: bare audio(true) leaves
             // AEC/NS/AGC null, which the JVM backend maps to off (desktop howls).
@@ -2600,7 +2600,7 @@ public class FlashGroupCallSession(
             val stream = when (acquired) {
                 is MediaAcquire.Failed -> {
                     FlashLog.e("GROUP_CALL", "media not available for call $callId reason=${acquired.reason}")
-                    return@withLock acquired.reason
+                    return@onMediaThread acquired.reason
                 }
                 is MediaAcquire.Ready -> acquired.stream
             }
@@ -2731,8 +2731,8 @@ public class FlashGroupCallSession(
         }
         // Pinned: stream release is native. Lifecycle-locked: an acquire that is still running
         // finishes first and its stream is released here.
-        onMediaThread {
-            mediaLifecycleMutex.withLock {
+        mediaLifecycleMutex.withLock {
+            onMediaThread {
                 legs.clear()
                 try {
                     localStream?.release()

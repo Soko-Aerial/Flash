@@ -68,8 +68,9 @@ public class SweepController(
     private val nowMs: () -> Long = TimeSource.Monotonic.markNow().let { origin -> { origin.elapsedNow().inWholeMilliseconds } },
     concurrency: Int = DEFAULT_CONCURRENCY,
     timeoutMs: Int = DEFAULT_TIMEOUT_MS,
+    private val isUltraLow: () -> Boolean = { false },
 ) {
-    private val sweeper = SubnetSweeper(probe, concurrency, timeoutMs)
+    private val sweeper = SubnetSweeper(probe, concurrency, timeoutMs, isUltraLow)
     private val running = MutableStateFlow(false)
     private val mutableState = MutableStateFlow<SweepState>(SweepState.Idle)
 
@@ -155,9 +156,14 @@ public class SweepController(
 
             log("Sweep started hosts=${targets.size} networks=${swept.joinToString()} manual=$manual narrowed=$narrowed")
             mutableState.value = SweepState.Scanning(0, targets.size, automatic = !manual)
+            var lastProgressEmitMs = 0L
             val answered = try {
                 sweeper.sweep(targets.toList(), port) { scanned ->
-                    mutableState.value = SweepState.Scanning(scanned, targets.size, automatic = !manual)
+                    val nowTime = nowMs()
+                    if (scanned == targets.size || nowTime - lastProgressEmitMs >= PROGRESS_THROTTLE_MS) {
+                        lastProgressEmitMs = nowTime
+                        mutableState.value = SweepState.Scanning(scanned, targets.size, automatic = !manual)
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 mutableState.value = SweepState.Idle
@@ -177,6 +183,12 @@ public class SweepController(
     public companion object {
         /** Plan §3.3 C. */
         public const val DEFAULT_CONCURRENCY: Int = 32
+
+        /** Capped concurrency for severely constrained hardware (BelFone SCP810). */
+        public const val ULTRA_LOW_CONCURRENCY: Int = 4
+
+        /** Max 2Hz throttling interval for progress updates to protect the UI thread. */
+        public const val PROGRESS_THROTTLE_MS: Long = 500L
 
         /** Plan §3.3 C. A LAN host answers a SYN in single-digit milliseconds; this only bounds silent hosts. */
         public const val DEFAULT_TIMEOUT_MS: Int = 300

@@ -452,8 +452,9 @@ private fun FlashVoiceWaveform(
     onScrubEnd: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val isUltraLow = FlashTheme.ultraLowUi
     val barCount = FlashVoiceMath.WAVEFORM_BAR_COUNT
-    val buckets = remember(amplitudes, barCount) {
+    val buckets = if (isUltraLow) FloatArray(0) else remember(amplitudes, barCount) {
         FlashVoiceMath.bucketAmplitudes(amplitudes, barCount)
     }
     var isScrubbing by remember { mutableStateOf(false) }
@@ -488,6 +489,27 @@ private fun FlashVoiceWaveform(
                 }
             },
     ) {
+        if (isUltraLow) {
+            val trackHeight = 4.dp.toPx()
+            val y = (size.height - trackHeight) / 2f
+            // Unplayed background rect (full width)
+            drawRect(
+                color = unplayedColor,
+                topLeft = Offset(0f, y),
+                size = Size(size.width, trackHeight),
+            )
+            // Played foreground rect
+            val progress = (playedBarCount.toFloat() / barCount.toFloat()).coerceIn(0f, 1f)
+            if (progress > 0f) {
+                drawRect(
+                    color = playedColor,
+                    topLeft = Offset(0f, y),
+                    size = Size(size.width * progress, trackHeight),
+                )
+            }
+            return@Canvas
+        }
+
         val gap = 2.dp.toPx()
         val barWidth = 3.dp.toPx()
         val slot = barWidth + gap

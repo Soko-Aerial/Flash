@@ -16,11 +16,20 @@ import kotlin.concurrent.Volatile
  * Top-level facade contract unifying all Flash core subsystems across platforms (C7.0 / ADR-010).
  * Exposes clean domain repository and service accessors for application ViewModels and UI layers.
  *
- * Implements [AutoCloseable]: an engine built by platform factories ([Flash.create] on Android,
+ * Extends [FlashBaseEngine] which provides the core identity, discovery, network transport,
+ * and trust store capabilities. Higher-level subsystems are attached via pluggable attachment seams:
+ * - Push-to-Talk (PTT): [attachPtt] / [detachPtt] (optional half-duplex voice floor subsystem)
+ * - Calling: [attachCalling] / [detachCalling] (optional real-time voice/video subsystem)
+ * - Swarm Transfer: [attachSwarm] / [detachSwarm] (optional BitTorrent-style piece distribution)
+ * - Future Pluggable Seams: `attachChat` (messaging/conversations) and `attachTransfer` (chunked file transfer)
+ *   to allow headless transport nodes or lightweight appliances to run purely on [FlashBaseEngine]
+ *   without bundling full database persistence or UI repositories.
+ *
+ * Implements [AutoCloseable] (via [FlashBaseEngine]): an engine built by platform factories ([Flash.create] on Android,
  * [FlashDesktop.create] on JVM) owns shared coroutine scopes and transport resources, so [close]
  * must be called to cancel all coroutines and release those resources. [close] is idempotent.
  */
-public interface FlashEngine : AutoCloseable {
+public interface FlashEngine : FlashBaseEngine {
     /** Real messaging repository managing chats, outbox, read receipts, and drafts. */
     public val chats: FlashChatRepository
 
@@ -28,13 +37,13 @@ public interface FlashEngine : AutoCloseable {
     public val transfers: FlashTransferRepository
 
     /** Continuous local peer discovery and service advertising across radios. */
-    public val discovery: FlashDiscovery
+    override val discovery: FlashDiscovery
 
     /** Network connection manager, active sessions, and resilience engine. */
-    public val network: FlashNetwork
+    override val network: FlashNetwork
 
     /** Cryptographic trust store tracking verified and paired devices. */
-    public val trustStore: FlashTrustStore
+    override val trustStore: FlashTrustStore
 
     /**
      * The attached push-to-talk engine, or null when none is attached.
@@ -68,7 +77,7 @@ public interface FlashEngine : AutoCloseable {
      * Updates the local device friendly name across the network transport, chat repository, and discovery.
      * Returns false when the name is blank or the operation fails.
      */
-    public fun updateFriendlyName(name: String): Boolean = false
+    override fun updateFriendlyName(name: String): Boolean = false
 
     /**
      * The attached voice/video calling engine (ADR-025), or null when none is attached.

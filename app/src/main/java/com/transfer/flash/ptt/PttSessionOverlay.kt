@@ -5,7 +5,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
-import com.transfer.flash.core.messaging.ptt.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.notifications.FlashNotificationManager
 import com.transfer.flash.ui.calling.PttSessionOverlayContent

@@ -64,9 +64,13 @@ public object FlashDatabaseOpener {
                     super.onOpen(db)
                     try {
                         db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
-                        FlashLog.i("DATABASE", "Configured SQLite cache_size = -$cacheSizeKb KiB for mode ${mode.key}")
+                        db.execSQL("PRAGMA synchronous = NORMAL;")
+                        db.execSQL("PRAGMA temp_store = MEMORY;")
+                        db.execSQL("PRAGMA wal_autocheckpoint = 250;")
+                        db.execSQL("PRAGMA mmap_size = 2097152;")
+                        FlashLog.i("DATABASE", "Configured SQLite pragmas (cache_size = -$cacheSizeKb KiB, synchronous = NORMAL, temp_store = MEMORY, wal_autocheckpoint = 250, mmap_size = 2097152) for mode ${mode.key}")
                     } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to set PRAGMA cache_size: ${e.message}")
+                        FlashLog.w("DATABASE", "Failed to set SQLite PRAGMAs: ${e.message}")
                     }
 
                     trim.attach(isOpen = { db.isOpen }, shrink = {
@@ -76,6 +80,7 @@ public object FlashDatabaseOpener {
                 }
             })
             .build()
+            .also { it.trimRegistration = trim }
     }
 
     /**
@@ -96,11 +101,22 @@ public object FlashDatabaseOpener {
                     super.onOpen(db)
                     try {
                         db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
+                        db.execSQL("PRAGMA synchronous = NORMAL;")
+                        db.execSQL("PRAGMA temp_store = MEMORY;")
+                        db.execSQL("PRAGMA wal_autocheckpoint = 250;")
+                        db.execSQL("PRAGMA mmap_size = 2097152;")
                     } catch (_: Throwable) {}
                     trim.attach(isOpen = { db.isOpen }, shrink = { db.execSQL("PRAGMA shrink_memory;") })
                 }
             })
             .build()
+            .also { it.trimRegistration = trim }
+    }
+
+    /** Manually detaches the memory trim registration from a database. */
+    public fun detachTrim(database: FlashDatabase) {
+        database.trimRegistration?.close()
+        database.trimRegistration = null
     }
 }
 
@@ -115,7 +131,7 @@ public object FlashDatabaseOpener {
 internal class DatabaseTrimRegistration(
     private val register: (MemoryTrimListener) -> Unit = MemoryGovernor::registerListener,
     private val unregister: (MemoryTrimListener) -> Unit = MemoryGovernor::unregisterListener,
-) {
+) : AutoCloseable {
     private var current: MemoryTrimListener? = null
 
     @Synchronized
@@ -127,7 +143,11 @@ internal class DatabaseTrimRegistration(
                 level == MemoryTrimLevel.COMPLETE
             ) {
                 try {
-                    if (isOpen()) shrink()
+                    if (isOpen()) {
+                        shrink()
+                    } else {
+                        detach()
+                    }
                 } catch (e: Throwable) {
                     FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory: ${e.message}")
                 }
@@ -135,5 +155,15 @@ internal class DatabaseTrimRegistration(
         }
         current = listener
         register(listener)
+    }
+
+    @Synchronized
+    fun detach() {
+        current?.let(unregister)
+        current = null
+    }
+
+    override fun close() {
+        detach()
     }
 }
