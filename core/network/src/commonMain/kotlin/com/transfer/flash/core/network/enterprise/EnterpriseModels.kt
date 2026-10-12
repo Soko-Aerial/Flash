@@ -29,13 +29,13 @@ public data class EnrollmentInvite(
                 }
             }
 
-            val server = params["server"] ?: params["host"] ?: params["hub"] ?: return null
-            val token = params["token"] ?: return null
-            val root = params["root"] ?: params["fingerprint"] ?: ""
+            val rawServer = decodePercent(params["server"] ?: params["host"] ?: params["hub"] ?: return null)
+            val token = decodePercent(params["token"] ?: return null)
+            val root = decodePercent(params["root"] ?: params["fingerprint"] ?: "")
 
             val normalizedServer = when {
-                server.startsWith("http://") || server.startsWith("https://") -> server
-                else -> "http://$server"
+                rawServer.startsWith("http://", ignoreCase = true) || rawServer.startsWith("https://", ignoreCase = true) -> rawServer
+                else -> "http://$rawServer"
             }
 
             return EnrollmentInvite(
@@ -43,6 +43,39 @@ public data class EnrollmentInvite(
                 token = token,
                 rootFingerprint = root.uppercase(),
             )
+        }
+
+        private fun decodePercent(input: String): String {
+            if (!input.contains('%') && !input.contains('+')) return input
+            val bytes = ArrayList<Byte>()
+            var i = 0
+            while (i < input.length) {
+                val c = input[i]
+                when {
+                    c == '+' -> {
+                        bytes.add(' '.code.toByte())
+                        i++
+                    }
+                    c == '%' && i + 2 < input.length -> {
+                        val hex = input.substring(i + 1, i + 3)
+                        val byteVal = hex.toIntOrNull(16)
+                        if (byteVal != null) {
+                            bytes.add(byteVal.toByte())
+                            i += 3
+                        } else {
+                            val enc = c.toString().encodeToByteArray()
+                            for (b in enc) bytes.add(b)
+                            i++
+                        }
+                    }
+                    else -> {
+                        val enc = c.toString().encodeToByteArray()
+                        for (b in enc) bytes.add(b)
+                        i++
+                    }
+                }
+            }
+            return bytes.toByteArray().decodeToString()
         }
     }
 }

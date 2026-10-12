@@ -19,7 +19,40 @@ import io.ktor.server.routing.route
 fun Route.authRoutes(
     challengeAuth: ChallengeResponseAuth,
     enrollmentService: EnrollmentService,
+    serverExternalUrl: String = "http://localhost:8443",
 ) {
+    // GET /enroll: Web browser landing page for invitation links
+    route("/enroll") {
+        get {
+            val token = call.request.queryParameters["token"] ?: ""
+            val record = if (token.isNotBlank()) enrollmentService.getTokenRecord(token) else null
+            val now = System.currentTimeMillis()
+            val isExpired = record != null && now > record.scope.expiry
+            val isUsed = record != null && record.remainingUses.get() <= 0
+            val isValid = record != null && !isExpired && !isUsed
+
+            val rootFp = com.transfer.flash.core.security.crypto.FlashCrypto.sha256FingerprintHex(enrollmentService.rootPublicKey)
+            val hubUrl = call.request.queryParameters["server"]?.ifBlank { null }
+                ?: serverExternalUrl
+            val deepLink = if (isValid) {
+                "flash://enroll?server=${java.net.URLEncoder.encode(hubUrl, "UTF-8")}&token=$token&root=$rootFp"
+            } else ""
+
+            val html = com.transfer.flash.server.admin.AdminUiHtml.webEnrollmentLandingPage(
+                token = token,
+                department = record?.scope?.department,
+                role = record?.scope?.role ?: "MEMBER",
+                deepLink = deepLink,
+                hubUrl = hubUrl,
+                isValid = isValid,
+                isExpired = isExpired,
+                isUsed = isUsed,
+            )
+            val status = if (isValid) HttpStatusCode.OK else HttpStatusCode.BadRequest
+            call.respondText(html, ContentType.Text.Html, status)
+        }
+    }
+
     route("/api/v1") {
         route("/auth") {
             // GET /api/v1/auth/challenge

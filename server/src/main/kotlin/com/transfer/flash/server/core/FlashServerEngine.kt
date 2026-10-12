@@ -174,7 +174,11 @@ public class FlashServerEngine(
             val auth = challengeAuth
             val enroll = enrollmentService
             if (auth != null && enroll != null) {
-                authRoutes(challengeAuth = auth, enrollmentService = enroll)
+                authRoutes(
+                    challengeAuth = auth,
+                    enrollmentService = enroll,
+                    serverExternalUrl = config.externalUrl,
+                )
             }
         }
     }
