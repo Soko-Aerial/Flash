@@ -1,5 +1,34 @@
 # Current Handoff
 
+## 2026-10-12 — Offline Vector SVG QR Generator, Web Enrollment Landing Page & Percent-Decoding Complete
+- **Current Branch:** `dev`
+- **Last Verified Commit:** `5b496344`
+- **Status:** Complete & verified across `:server:test` (58/58 tests passed), `:core:network:jvmTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, and clean compilation on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+- **Completed Capabilities & Fixes:**
+  1. **100% Offline Vector SVG QR Code Generator:**
+     - Replaced brittle third-party `api.qrserver.com` dependency with `QrCodeGenerator.kt` powered by Google ZXing core.
+     - Produces crisp, inline SVG QR codes that work in completely air-gapped or offline networks with zero latency and zero external dependencies.
+  2. **Browser-Friendly Web Enrolment Landing Page:**
+     - Added `GET /enroll?token=...` web route in `AuthRoutes.kt`.
+     - When opened in mobile or desktop browsers, displays organization status, offline SVG QR code, 1-tap "Launch Flash App to Enrol" button (`flash://enroll?...`), and one-click copy actions.
+     - Resolves the issue where pasting `flash://` links into web browsers failed.
+  3. **Dual Link Presentation in Web Admin Dashboard:**
+     - `/admin/invites` now surfaces both:
+       - **Flash App Deep Link (`flash://enroll?...`)**: for pasting in Flash Settings > Enrol in Organization.
+       - **Web Browser URL (`http://<LAN_IP>:8443/enroll?token=...`)**: for sharing via messaging/email.
+  4. **Robust URL Percent-Decoding:**
+     - Added `decodePercent()` to `EnrollmentInvite.parseOrNull` and `FlashEnrollMath.parseInvite`.
+     - Prevents malformed host connection attempts when server URLs are encoded as `http%3A%2F%2F...`.
+- **Verification Summary:**
+  - `:server:test`: 58/58 tests green.
+  - `:core:network:jvmTest`: 100% green.
+  - `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+  - `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+- **Recommended Next Task:**
+  - Start server locally (`.\gradlew.bat :server:run`) and guide user through first-time admin setup and client device enrollment.
+
+---
+
 ## 2026-10-12 — Client App Enterprise Wiring & State Persistence Complete (:app, :desktop, :core)
 - **Current Branch:** `dev`
 - **Status:** Complete & verified across `:server:test`, `:core:messaging:jvmTest`, `:core:network:jvmTest`, `:ui:chat:jvmTest`, and full clean build on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
