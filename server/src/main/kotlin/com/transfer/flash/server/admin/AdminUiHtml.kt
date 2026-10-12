@@ -500,11 +500,51 @@ object AdminUiHtml {
         }
 
         val inviteBanner = if (newInviteLink != null) {
+            val encodedLink = java.net.URLEncoder.encode(newInviteLink, "UTF-8")
+            val escapedJsLink = newInviteLink.replace("\\", "\\\\").replace("'", "\\'")
             """
-            <div class="card" style="border-color: #10B981; background-color: rgba(16, 185, 129, 0.05);">
-                <div class="card-header" style="color: #10B981;">✓ Single-Use Enrolment Link Generated</div>
-                <p style="color: #CBD5E1; font-size: 0.9rem;">Share this link securely with the employee. It grants scoped access and expires after use.</p>
-                <div class="link-box">$newInviteLink</div>
+            <div class="card" style="border-color: #10B981; background-color: rgba(16, 185, 129, 0.05); padding: 1.5rem;">
+                <div class="card-header" style="color: #10B981; font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem;">✓ Single-Use Enrolment Link & QR Code Generated</div>
+                <p style="color: #CBD5E1; font-size: 0.9rem; margin-bottom: 1.25rem;">
+                    Share this link or QR code securely with the employee. It grants scoped organization access and expires after use.
+                </p>
+                <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; justify-content: flex-start; margin-bottom: 1.25rem;">
+                    <div style="text-align: center; background: #0F172A; padding: 12px; border-radius: 12px; border: 1px solid #334155;">
+                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=8&data=$encodedLink" alt="Enrolment QR Code" style="width: 200px; height: 200px; background: white; border-radius: 8px; display: block;" onerror="this.style.display='none'" />
+                        <div style="margin-top: 8px; font-size: 0.8rem; color: #94A3B8; font-weight: 500;">Scan with Flash or Camera</div>
+                    </div>
+                    <div style="flex: 1; min-width: 280px;">
+                        <label style="font-size: 0.85rem; color: #94A3B8; font-weight: 600; display: block; margin-bottom: 6px;">Enrolment Deep Link (flash://):</label>
+                        <div class="link-box" id="invite-link-text" style="word-break: break-all; user-select: all; font-size: 0.85rem; margin-bottom: 0.75rem;">${escapeHtml(newInviteLink)}</div>
+                        <button type="button" class="btn btn-indigo" id="copy-invite-btn" onclick="copyInviteLink()" style="display: inline-flex; align-items: center; gap: 6px;">
+                            <span>📋 Copy Link</span>
+                        </button>
+                    </div>
+                </div>
+                <script>
+                    function copyInviteLink() {
+                        const link = '$escapedJsLink';
+                        navigator.clipboard.writeText(link).then(() => {
+                            const btn = document.getElementById('copy-invite-btn');
+                            btn.innerHTML = '<span>✓ Copied to Clipboard!</span>';
+                            btn.style.backgroundColor = '#10B981';
+                            setTimeout(() => {
+                                btn.innerHTML = '<span>📋 Copy Link</span>';
+                                btn.style.backgroundColor = '';
+                            }, 3000);
+                        }).catch(() => {
+                            prompt('Copy link:', link);
+                        });
+                    }
+                </script>
+                <div style="padding: 1rem; background: rgba(15, 23, 42, 0.7); border: 1px solid #334155; border-radius: 8px;">
+                    <div style="font-weight: 600; color: #38BDF8; margin-bottom: 0.5rem;">📱 How to Use This Invite on Android or Desktop:</div>
+                    <ul style="margin: 0; padding-left: 1.25rem; color: #CBD5E1; font-size: 0.85rem; line-height: 1.6;">
+                        <li><strong>Option A (Scan QR):</strong> Open Flash app on the phone or PC, tap Scan, and point camera at the QR code.</li>
+                        <li><strong>Option B (Paste in Flash):</strong> Open Flash app ➔ <strong>Settings</strong> ➔ <strong>Enterprise & Organization</strong> ➔ tap <strong>"Enrol in Organization"</strong> and paste this link.</li>
+                        <li style="color: #F87171; margin-top: 0.25rem;"><em>⚠️ Note: Do NOT paste this link into a web browser (Chrome, Edge, Safari). It starts with <code>flash://</code> because it is an app deep-link meant exclusively for the Flash application, not a web page.</em></li>
+                    </ul>
+                </div>
             </div>
             """.trimIndent()
         } else ""

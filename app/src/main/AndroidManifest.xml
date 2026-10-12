@@ -139,6 +139,13 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="flash" android:host="g" />
             </intent-filter>
+            <!-- Enterprise Enrollment Deep Link (flash://enroll) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="flash" android:host="enroll" />
+            </intent-filter>
             <!-- Static App Shortcuts -->
             <meta-data
                 android:name="android.app.shortcuts"
