@@ -3,6 +3,7 @@ package com.transfer.flash.core.network.enterprise
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.security.enterprise.DelegationCert
 import com.transfer.flash.core.security.enterprise.DeviceCert
+import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 
 @FlashInternalApi
 public object EnterpriseJsonHelper {
@@ -209,5 +210,60 @@ public object EnterpriseJsonHelper {
             }
         }
         return objects
+    }
+
+    public fun serializeCredentials(credentials: EnrollmentCredentials): String = buildString {
+        append("{")
+        append(""""hubUrl":"${escape(credentials.hubUrl)}",""")
+        append(""""rootFingerprint":"${escape(credentials.rootFingerprint)}",""")
+        append(""""rootPublicKey":"${escape(credentials.rootPublicKey)}",""")
+        append(""""enrolledAtMs":${credentials.enrolledAtMs},""")
+        append(""""deviceCert":{""")
+        append(""""deviceId":"${escape(credentials.deviceCert.deviceId)}",""")
+        append(""""subjectPublicKey":"${escape(credentials.deviceCert.subjectPublicKey)}",""")
+        append(""""role":"${escape(credentials.deviceCert.role)}",""")
+        val dept = credentials.deviceCert.department
+        if (dept != null) {
+            append(""""department":"${escape(dept)}",""")
+        }
+        append(""""validFrom":${credentials.deviceCert.validFrom},""")
+        append(""""validTo":${credentials.deviceCert.validTo},""")
+        append(""""serial":${credentials.deviceCert.serial},""")
+        append(""""issuerPublicKey":"${escape(credentials.deviceCert.issuerPublicKey)}",""")
+        append(""""issuerSignature":"${escape(credentials.deviceCert.issuerSignature)}"""")
+        append("},")
+        append(""""delegationChain":[""")
+        credentials.delegationChain.forEachIndexed { idx, d ->
+            if (idx > 0) append(",")
+            append("{")
+            append(""""rootPublicKey":"${escape(d.rootPublicKey)}",""")
+            append(""""delegatePublicKey":"${escape(d.delegatePublicKey)}",""")
+            append(""""scopes":[${d.scopes.joinToString(",") { """"${escape(it)}"""" }}],""")
+            append(""""validFrom":${d.validFrom},""")
+            append(""""validTo":${d.validTo},""")
+            append(""""maxDevices":${d.maxDevices},""")
+            append(""""serial":${d.serial},""")
+            append(""""signature":"${escape(d.signature)}"""")
+            append("}")
+        }
+        append("]")
+        append("}")
+    }
+
+    public fun parseEnrollmentCredentials(json: String): EnrollmentCredentials? {
+        val hubUrl = extractField(json, "hubUrl") ?: return null
+        val rootFingerprint = extractField(json, "rootFingerprint").orEmpty()
+        val rootPublicKey = extractField(json, "rootPublicKey") ?: return null
+        val deviceCert = parseDeviceCert(json) ?: return null
+        val delegationChain = parseDelegationChain(json)
+        val enrolledAtMs = extractField(json, "enrolledAtMs")?.toLongOrNull() ?: deviceCert.validFrom
+        return EnrollmentCredentials(
+            hubUrl = hubUrl,
+            rootFingerprint = rootFingerprint,
+            rootPublicKey = rootPublicKey,
+            deviceCert = deviceCert,
+            delegationChain = delegationChain,
+            enrolledAtMs = enrolledAtMs,
+        )
     }
 }

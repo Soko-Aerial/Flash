@@ -1,5 +1,35 @@
 # Current Handoff
 
+## 2026-10-12 — Client App Enterprise Wiring & State Persistence Complete (:app, :desktop, :core)
+- **Current Branch:** `dev`
+- **Status:** Complete & verified across `:server:test`, `:core:messaging:jvmTest`, `:core:network:jvmTest`, `:ui:chat:jvmTest`, and full clean build on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+- **Completed Capabilities & Fixes:**
+  1. **Persistent EnterpriseTrustStore:**
+     - Android: `AndroidPreferencesEnterpriseTrustStore` persists credentials, role, department, root fingerprint, and linked groups across app restarts.
+     - Desktop: `JvmFileEnterpriseTrustStore` persists credentials and linked groups under `<stateDir>/enterprise/enterprise_trust.properties`.
+  2. **End-to-End Enrollment Wiring:**
+     - `MainActivity.kt` and `DesktopShell.kt` wire `onEnrollDeviceAction` to redeem `flash://enroll` links and challenge tokens via `EnterpriseEnrollmentClient`.
+     - In-dialog loading indicator (`CircularProgressIndicator`) and inline error feedback displayed in `FlashEnrollDialog`.
+     - Toasts (Android) and Snackbars (Desktop) inform user on success or failure.
+  3. **Relay Frame Codec Bug Fixed:**
+     - Fixed `RealFlashChatRepository.kt` where relayed group frames previously had their `groupId` overwritten by the outer message envelope ID. Frames are now cleanly encoded and decoded via `GroupFrameCodec`.
+  4. **Relay Lifecycle & Multi-Path Racing:**
+     - `FlashRelayClient` dynamically starts and stops based on enrollment credentials in `EnterpriseTrustStore`.
+     - `RealFlashChatRepository` receives `enterpriseTrustStore`, `relayClient`, and `enterpriseDirectoryClient`, enabling concurrent LAN + Relay multi-path racing (`P-REF-3`).
+  5. **Group Hub Linking & Zero Cloud Dump Invariant:**
+     - Android and Desktop both support linking/unlinking groups to the corporate hub in `FlashCreateGroupSheet` and `FlashConversationScreen`, while preserving local message history.
+- **Verification Summary:**
+  - `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
+  - `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+  - `:server:test`: 57/57 tests passed.
+  - `:core:network:jvmTest`: 100% green.
+  - `:core:messaging:jvmTest`: 100% green.
+  - `:ui:chat:jvmTest`: 100% green.
+- **Recommended Next Task:**
+  - Run server (`./gradlew :server:run`) and test end-to-end enrollment via invite link or QR code from Android and Desktop clients.
+
+---
+
 ## 2026-10-12 — Standalone Enterprise Hub Server Audit & Remediations Complete (:server)
 - **Current Branch:** `dev`
 - **Status:** Complete & 100% verified across `:server:test` (57 tests passing across 12 suites), `:core:security:jvmTest`, and `:core:network:jvmTest`.

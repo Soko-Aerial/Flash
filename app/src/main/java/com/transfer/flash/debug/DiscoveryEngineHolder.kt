@@ -63,10 +63,15 @@ import com.transfer.flash.core.engine.swarm.AndroidPieceStorage
 import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore
 import com.transfer.flash.core.swarm.model.SwarmManifest
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
+import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
+import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import com.transfer.flash.core.network.enterprise.AndroidPreferencesEnterpriseTrustStore
+import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
+import com.transfer.flash.core.network.relay.FlashRelayClient
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
@@ -209,6 +214,15 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var trustStoreRef: AndroidPreferencesTrustStore? = null
+
+    @Volatile
+    private var enterpriseTrustStoreRef: EnterpriseTrustStore? = null
+
+    @Volatile
+    private var enterpriseDirectoryClientRef: EnterpriseDirectoryClient? = null
+
+    @Volatile
+    private var relayClientRef: FlashRelayClient? = null
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -565,6 +579,14 @@ object DiscoveryEngineHolder {
     fun currentTransfers(): FlashTransferRepository? = transferRepo
 
     fun currentChats(): FlashChatRepository? = chatRepo
+
+    fun currentEnterpriseTrustStore(): EnterpriseTrustStore? = enterpriseTrustStoreRef
+
+    fun currentEnterpriseDirectoryClient(): EnterpriseDirectoryClient? = enterpriseDirectoryClientRef
+
+    fun currentRelayClient(): FlashRelayClient? = relayClientRef
+
+    fun currentCrypto(): FlashCrypto? = cryptoRef
 
     fun currentPairing(): PairingCoordinator? = pairing
 
@@ -1114,6 +1136,32 @@ object DiscoveryEngineHolder {
         )
         modeController = modes
 
+        val enterpriseTrustStore = AndroidPreferencesEnterpriseTrustStore(appContext)
+        enterpriseTrustStoreRef = enterpriseTrustStore
+
+        val directoryClient = EnterpriseDirectoryClient()
+        enterpriseDirectoryClientRef = directoryClient
+
+        val initialCreds = enterpriseTrustStore.getCredentials()
+        val relayClient = FlashRelayClient(
+            deviceId = identity.deviceId.value,
+            friendlyName = identity.friendlyName,
+            role = initialCreds?.role ?: "member",
+            hubUrl = initialCreds?.hubUrl.orEmpty(),
+        )
+        relayClientRef = relayClient
+
+        appScope.launch {
+            enterpriseTrustStore.credentials.collect { creds ->
+                if (creds != null) {
+                    relayClient.hubUrl = creds.hubUrl
+                    relayClient.start()
+                } else {
+                    relayClient.stop()
+                }
+            }
+        }
+
         val chatImpl = RealFlashChatRepository(
             scope = appScope,
             localDeviceId = identity.deviceId.value,
@@ -1304,6 +1352,9 @@ object DiscoveryEngineHolder {
                     if (res is com.transfer.flash.core.common.result.FlashResult.Success) break
                 }
             },
+            enterpriseTrustStore = enterpriseTrustStore,
+            relayClient = relayClient,
+            enterpriseDirectoryClient = directoryClient,
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
@@ -2872,6 +2923,10 @@ object DiscoveryEngineHolder {
         onIncomingOffer = null
         dataServer?.stop()
         dataServer = null
+        relayClientRef?.stop()
+        relayClientRef = null
+        enterpriseTrustStoreRef = null
+        enterpriseDirectoryClientRef = null
         currentEngine?.stopAll()
         currentNetwork?.stop()
         // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,

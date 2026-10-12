@@ -308,7 +308,7 @@ object FlashSettingsMath {
         ),
         ENTERPRISE(
             "Enterprise & Organization", "Corporate hub relay, enrollment, and department directory",
-            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory"),
+            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect"),
         ),
     }
 
@@ -420,6 +420,12 @@ fun FlashSettingsScreen(
     onExportLogs: (() -> Unit)? = null,
     /** Enrolls device into an enterprise hub using a flash://enroll link. */
     onEnrollDevice: ((String) -> Unit)? = null,
+    /** Disconnects/un-enrolls device from enterprise hub. */
+    onDisconnectEnterprise: (() -> Unit)? = null,
+    /** Live indicator whether enrollment is in progress. */
+    isEnrollingDevice: Boolean = false,
+    /** Error message to display in the enrollment dialog. */
+    enrollDeviceError: String? = null,
 ) {
     var query by remember { mutableStateOf("") }
     var showResetConfirmation by remember { mutableStateOf(false) }
@@ -427,6 +433,13 @@ fun FlashSettingsScreen(
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
     var showRestartPrompt by remember { mutableStateOf(false) }
     var showEnrollDialog by remember { mutableStateOf(false) }
+    var showDisconnectEnterpriseConfirmation by remember { mutableStateOf(false) }
+
+    androidx.compose.runtime.LaunchedEffect(model.isEnterpriseEnrolled) {
+        if (model.isEnterpriseEnrolled) {
+            showEnrollDialog = false
+        }
+    }
 
     if (showRestartPrompt && onRestartApp != null) {
         RestartForSwarmDialog(
@@ -486,8 +499,44 @@ fun FlashSettingsScreen(
         FlashEnrollDialog(
             onDismiss = { showEnrollDialog = false },
             onEnroll = { link ->
-                showEnrollDialog = false
                 onEnrollDevice?.invoke(link)
+            },
+            isEnrolling = isEnrollingDevice,
+            enrollError = enrollDeviceError,
+        )
+    }
+
+    if (showDisconnectEnterpriseConfirmation && onDisconnectEnterprise != null) {
+        val colors = FlashTheme.colors
+        FlashConfirmHost(
+            onDismiss = { showDisconnectEnterpriseConfirmation = false },
+            containerColor = colors.backgroundSurface,
+            title = {
+                FlashText(
+                    text = "Disconnect from Organization?",
+                    style = FlashTheme.typography.headingMedium,
+                    color = colors.textPrimary,
+                )
+            },
+            text = {
+                FlashText(
+                    text = "This will remove corporate certificates and stop hub relay messaging.",
+                    style = FlashTheme.typography.bodyDefault,
+                    color = colors.textSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDisconnectEnterpriseConfirmation = false
+                    onDisconnectEnterprise()
+                }) {
+                    Text("Disconnect", color = colors.textError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDisconnectEnterpriseConfirmation = false }) {
+                    Text("Cancel", color = colors.textSecondary)
+                }
             },
         )
     }
@@ -806,6 +855,13 @@ fun FlashSettingsScreen(
                             subtitle = "Cryptographic root trust anchor",
                             value = model.enterpriseRootFingerprint?.take(12)?.plus("...") ?: "Pinned",
                             onClick = {},
+                        )
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Disconnect from Organization")) ValueRow(
+                            iconSpec = FlashIcons.Close,
+                            title = "Disconnect from Organization",
+                            subtitle = "Remove corporate certificates and stop hub relay",
+                            value = "Disconnect",
+                            onClick = { showDisconnectEnterpriseConfirmation = true },
                         )
                     } else {
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Organization hub")) ValueRow(
