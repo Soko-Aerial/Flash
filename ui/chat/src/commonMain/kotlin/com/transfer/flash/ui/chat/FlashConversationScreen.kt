@@ -223,6 +223,14 @@ fun FlashConversationScreen(
      */
     forwardRecipients: List<FlashShareRecipientUi> = emptyList(),
     /**
+     * Optional separate list of recent chats for the in-app forward sheet. When empty, derived from [forwardRecipients].
+     */
+    forwardRecentChats: List<FlashShareRecipientUi> = emptyList(),
+    /**
+     * Optional separate list of paired devices for the in-app forward sheet. When empty, derived from [forwardRecipients].
+     */
+    forwardPairedDevices: List<FlashShareRecipientUi> = emptyList(),
+    /**
      * Host callback when forwarding a payload to selected in-app recipients.
      */
     onForwardToRecipients: (recipients: List<FlashShareRecipientUi>, payload: FlashSharePayloadUi) -> Unit = { _, _ -> },
@@ -592,7 +600,7 @@ fun FlashConversationScreen(
                                 } else {
                                     val text = selectedTexts.joinToString("\n")
                                     val payload = FlashSharePayloadUi(text = text)
-                                    if (forwardRecipients.isNotEmpty()) {
+                                    if (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty()) {
                                         pendingForwardPayload = payload
                                     } else {
                                         onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
@@ -1049,7 +1057,7 @@ fun FlashConversationScreen(
                     )
                     else -> null
                 }
-                if (payload != null && forwardRecipients.isNotEmpty()) {
+                if (payload != null && (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty())) {
                     pendingForwardPayload = payload
                 } else {
                     when {
@@ -1450,7 +1458,7 @@ fun FlashConversationScreen(
                         val payload = FlashSharePayloadUi(
                             items = listOf(FlashShareItemUi(uri = imgUri, name = "Media", mimeType = image.mimeType)),
                         )
-                        if (forwardRecipients.isNotEmpty()) {
+                        if (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty()) {
                             pendingForwardPayload = payload
                         } else {
                             onShareImage(imgUri, image.mimeType)
@@ -1477,14 +1485,25 @@ fun FlashConversationScreen(
 
     // Task 3.1: Native In-App Forwarding Sheet
     pendingForwardPayload?.let { payload ->
-        val (paired, others) = remember(forwardRecipients) {
-            forwardRecipients.partition { it.isPaired && !it.isGroup }
+        val effectiveRecentChats = remember(forwardRecentChats, forwardRecipients) {
+            if (forwardRecentChats.isNotEmpty()) {
+                forwardRecentChats.distinctBy { it.id }
+            } else {
+                forwardRecipients.filter { it.isGroup || !it.isPaired }.distinctBy { it.id }
+            }
+        }
+        val effectivePairedDevices = remember(forwardPairedDevices, forwardRecipients) {
+            if (forwardPairedDevices.isNotEmpty()) {
+                forwardPairedDevices.distinctBy { it.id }
+            } else {
+                forwardRecipients.filter { it.isPaired && !it.isGroup }.distinctBy { it.id }
+            }
         }
         FlashShareTargetSheet(
             payload = payload,
             title = "Forward message",
-            pairedDevices = paired,
-            recentChats = others,
+            pairedDevices = effectivePairedDevices,
+            recentChats = effectiveRecentChats,
             nearbyDevices = emptyList(),
             isScanning = false,
             onSelectRecipient = { recipient ->

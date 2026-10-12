@@ -6606,5 +6606,22 @@ public class RealFlashChatRepository(
         return client.fetchVisibleGroups(credentials.hubUrl, credentials.deviceId, targetDept)
     }
 
+    override suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<Unit> =
+        withContext(ioDispatcher) {
+            val now = timeSource.nowMs()
+            runInTransaction {
+                upsertLegacyGroupConversation(
+                    groupId = groupId,
+                    title = groupName,
+                    sortOrder = now,
+                    createdBy = localDeviceId,
+                    createdAt = now,
+                )
+            }
+            enterpriseTrustStore?.linkGroupToHub(groupId)
+            touchConversationRefresh()
+            FlashResult.Success(Unit)
+        }
+
     internal fun signedGroupsForTesting(): SignedGroups? = signedGroups
 }

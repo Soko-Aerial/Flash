@@ -31,6 +31,8 @@ fun FlashChatListTopBar(
     onNewGroupClick: (() -> Unit)? = null,
     /** GM-10: opens join-group-with-link dialog; null hides the action. */
     onJoinWithLinkClick: (() -> Unit)? = null,
+    /** Browse department groups on the enterprise hub; null hides the action. */
+    onBrowseOrgGroupsClick: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -56,6 +58,14 @@ fun FlashChatListTopBar(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
+            if (onBrowseOrgGroupsClick != null) {
+                IconButton(
+                    onClick = onBrowseOrgGroupsClick,
+                    modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                ) {
+                    FlashIcon(icon = FlashIcons.Relay, contentDescription = "Browse department groups")
+                }
+            }
             if (onJoinWithLinkClick != null) {
                 IconButton(
                     onClick = onJoinWithLinkClick,

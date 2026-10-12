@@ -8133,3 +8133,47 @@ NOT PROVEN. Suspect: a native webrtc thread blocked while (re)starting audio or 
 ### Next
 Reproduce on the Linux laptop with the new build: join, leave, rejoin. Capture (1) the console stdout (`[webrtc-jvm]` lines), (2) `CALL_STALL` lines, (3) during the stall `eu-stack -p <pid>` or `gdb -p <pid> -batch -ex "thread apply all bt"` to see the blocked native frame, (4) `pactl info` and `pactl list short sources sinks` (is libpulse/PipeWire present at all, see ERROR-167). Not yet checked: whether the 1:1 session rejoin stalls too (it uses the same dispatcher).
 Status: OPEN.
+
+## ERROR-169 - App crashes when forwarding a message: duplicate key in LazyColumn
+
+### Date
+2026-10-12
+
+### Area
+UI / In-App Message Forwarding (`FlashConversationScreen.kt`, `FlashShareTargetSheet.kt`, `MainActivity.kt`)
+
+### Symptoms
+When attempting to forward a message in `FlashConversationScreen`, the app crashes immediately with:
+`java.lang.IllegalArgumentException: Key "paired_<deviceId>" was already used. If you are using LazyColumn/Row please make sure you provide a unique key for each item.`
+
+### Environment
+- Android version: 13 (API 33)
+- Device: V760
+- App version: 2.1.0-beta
+
+### Root cause
+1. `MainActivity.kt` passed `forwardRecipients = recentChatRecipients + pairedRecipients` to `FlashConversationScreen` without deduplicating by recipient ID.
+2. For a 1:1 active chat with a paired peer, that peer was present in both `recentChatRecipients` and `pairedRecipients`. Both entries had `isPaired = true` and `isGroup = false`.
+3. `FlashConversationScreen` partitioned `forwardRecipients` using `forwardRecipients.partition { it.isPaired && !it.isGroup }`. Because both duplicate entries satisfied this condition, both were placed into `pairedDevices`.
+4. In `FlashShareTargetSheet`, `filteredPaired` retained the duplicates, and `items(filteredPaired, key = { "paired_${it.id}" })` registered the exact same key twice in the `LazyColumn`, throwing an `IllegalArgumentException`.
+
+### Working fix
+1. Updated `FlashShareTargetMath.filterRecipients` to always deduplicate matching items by `it.id`.
+2. Updated `FlashShareTargetSheet` to enforce `.distinctBy { it.id }` on `filteredPaired`, `filteredChats`, and `filteredNearby`.
+3. Added `forwardRecentChats` and `forwardPairedDevices` parameters to `FlashConversationScreen`, ensuring both sections are populated with their distinct lists.
+4. Deduplicated `forwardRecipients = (recentChatRecipients + pairedRecipients).distinctBy { it.id }` and `nearbyRecipients` in `MainActivity.kt` and `DesktopShell.kt`.
+5. Added unit test `filter_recipients_deduplicates_by_id` in `FlashShareTargetMathTest.kt`.
+
+### Verification
+- Unit test passed in `:ui:chat:jvmTest`.
+- Clean compilation for `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+
+### Related files
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashShareTargetSheet.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`
+- `ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/chat/FlashShareTargetMathTest.kt`
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`
+
+### Status
+RESOLVED in code, unit-tested.
