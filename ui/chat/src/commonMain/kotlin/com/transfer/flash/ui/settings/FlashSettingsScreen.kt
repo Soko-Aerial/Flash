@@ -418,12 +418,15 @@ fun FlashSettingsScreen(
     onRestartApp: (() -> Unit)? = null,
     /** Shares Flash's own log file(s). Null hides the row (a host with no persistent log). */
     onExportLogs: (() -> Unit)? = null,
+    /** Enrolls device into an enterprise hub using a flash://enroll link. */
+    onEnrollDevice: ((String) -> Unit)? = null,
 ) {
     var query by remember { mutableStateOf("") }
     var showResetConfirmation by remember { mutableStateOf(false) }
     val searching = query.isNotBlank()
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
     var showRestartPrompt by remember { mutableStateOf(false) }
+    var showEnrollDialog by remember { mutableStateOf(false) }
 
     if (showRestartPrompt && onRestartApp != null) {
         RestartForSwarmDialog(
@@ -476,6 +479,16 @@ fun FlashSettingsScreen(
                 onClearReceivedFiles()
             },
             onDismiss = { showClearStorageConfirmation = false },
+        )
+    }
+
+    if (showEnrollDialog) {
+        FlashEnrollDialog(
+            onDismiss = { showEnrollDialog = false },
+            onEnroll = { link ->
+                showEnrollDialog = false
+                onEnrollDevice?.invoke(link)
+            },
         )
     }
 
@@ -799,8 +812,8 @@ fun FlashSettingsScreen(
                             iconSpec = FlashIcons.Relay,
                             title = "Organization hub",
                             subtitle = "Enrol with an invitation link (flash://enroll) from your admin",
-                            value = "Not enrolled",
-                            onClick = {},
+                            value = "Enrol",
+                            onClick = { showEnrollDialog = true },
                         )
                     }
                 }
