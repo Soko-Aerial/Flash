@@ -45,6 +45,7 @@ dependencies {
     // 4. Logging & Utilities
     implementation(libs.logback.classic)
     implementation(libs.kotlinx.coroutines.core)
+    implementation("com.google.zxing:core:3.5.3")
 
     // 5. Test suite
     testImplementation(kotlin("test"))

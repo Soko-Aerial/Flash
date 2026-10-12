@@ -500,49 +500,59 @@ object AdminUiHtml {
         }
 
         val inviteBanner = if (newInviteLink != null) {
-            val encodedLink = java.net.URLEncoder.encode(newInviteLink, "UTF-8")
-            val escapedJsLink = newInviteLink.replace("\\", "\\\\").replace("'", "\\'")
+            val token = newInviteLink.substringAfter("token=").substringBefore("&")
+            val webEnrollUrl = "$serverExternalUrl/enroll?token=$token"
+            val qrSvg = QrCodeGenerator.generateSvg(newInviteLink, sizePx = 200, margin = 2)
+            val escapedDeepLink = newInviteLink.replace("\\", "\\\\").replace("'", "\\'")
+            val escapedWebLink = webEnrollUrl.replace("\\", "\\\\").replace("'", "\\'")
             """
             <div class="card" style="border-color: #10B981; background-color: rgba(16, 185, 129, 0.05); padding: 1.5rem;">
-                <div class="card-header" style="color: #10B981; font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem;">✓ Single-Use Enrolment Link & QR Code Generated</div>
+                <div class="card-header" style="color: #10B981; font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem;">✓ Single-Use Enrolment Link & Offline QR Code Generated</div>
                 <p style="color: #CBD5E1; font-size: 0.9rem; margin-bottom: 1.25rem;">
-                    Share this link or QR code securely with the employee. It grants scoped organization access and expires after use.
+                    Share this invitation securely with the employee. It grants scoped organization access and expires after use.
                 </p>
                 <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; align-items: center; justify-content: flex-start; margin-bottom: 1.25rem;">
                     <div style="text-align: center; background: #0F172A; padding: 12px; border-radius: 12px; border: 1px solid #334155;">
-                        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&margin=8&data=$encodedLink" alt="Enrolment QR Code" style="width: 200px; height: 200px; background: white; border-radius: 8px; display: block;" onerror="this.style.display='none'" />
-                        <div style="margin-top: 8px; font-size: 0.8rem; color: #94A3B8; font-weight: 500;">Scan with Flash or Camera</div>
+                        $qrSvg
+                        <div style="margin-top: 8px; font-size: 0.8rem; color: #10B981; font-weight: 600;">✓ Offline Vector QR Code</div>
                     </div>
                     <div style="flex: 1; min-width: 280px;">
-                        <label style="font-size: 0.85rem; color: #94A3B8; font-weight: 600; display: block; margin-bottom: 6px;">Enrolment Deep Link (flash://):</label>
-                        <div class="link-box" id="invite-link-text" style="word-break: break-all; user-select: all; font-size: 0.85rem; margin-bottom: 0.75rem;">${escapeHtml(newInviteLink)}</div>
-                        <button type="button" class="btn btn-indigo" id="copy-invite-btn" onclick="copyInviteLink()" style="display: inline-flex; align-items: center; gap: 6px;">
-                            <span>📋 Copy Link</span>
-                        </button>
+                        <div style="margin-bottom: 1rem;">
+                            <label style="font-size: 0.85rem; color: #10B981; font-weight: 600; display: block; margin-bottom: 4px;">Option 1: Flash App Deep Link (flash://):</label>
+                            <div class="link-box" id="invite-deep-text" style="word-break: break-all; user-select: all; font-size: 0.85rem; margin-bottom: 0.5rem;">${escapeHtml(newInviteLink)}</div>
+                            <button type="button" class="btn btn-indigo" id="copy-deep-btn" onclick="copyInviteText('$escapedDeepLink', 'copy-deep-btn')">
+                                <span>📋 Copy App Link</span>
+                            </button>
+                            <span style="font-size: 0.8rem; color: #94A3B8; margin-left: 0.5rem;">For Flash Settings > Enrol in Organization</span>
+                        </div>
+                        <div>
+                            <label style="font-size: 0.85rem; color: #38BDF8; font-weight: 600; display: block; margin-bottom: 4px;">Option 2: Web Browser URL (http://):</label>
+                            <div class="link-box" id="invite-web-text" style="word-break: break-all; user-select: all; font-size: 0.85rem; margin-bottom: 0.5rem; border-color: #38BDF8; color: #7DD3FC;">${escapeHtml(webEnrollUrl)}</div>
+                            <button type="button" class="btn" id="copy-web-btn" onclick="copyInviteText('$escapedWebLink', 'copy-web-btn')" style="background-color: #0284C7; color: white;">
+                                <span>🌐 Copy Browser URL</span>
+                            </button>
+                            <span style="font-size: 0.8rem; color: #94A3B8; margin-left: 0.5rem;">Send to phone/browser for 1-tap enrolment</span>
+                        </div>
                     </div>
                 </div>
                 <script>
-                    function copyInviteLink() {
-                        const link = '$escapedJsLink';
-                        navigator.clipboard.writeText(link).then(() => {
-                            const btn = document.getElementById('copy-invite-btn');
-                            btn.innerHTML = '<span>✓ Copied to Clipboard!</span>';
-                            btn.style.backgroundColor = '#10B981';
-                            setTimeout(() => {
-                                btn.innerHTML = '<span>📋 Copy Link</span>';
-                                btn.style.backgroundColor = '';
-                            }, 3000);
+                    function copyInviteText(text, btnId) {
+                        navigator.clipboard.writeText(text).then(() => {
+                            const btn = document.getElementById(btnId);
+                            const orig = btn.innerHTML;
+                            btn.innerHTML = '<span>✓ Copied!</span>';
+                            setTimeout(() => { btn.innerHTML = orig; }, 3000);
                         }).catch(() => {
-                            prompt('Copy link:', link);
+                            prompt('Copy link:', text);
                         });
                     }
                 </script>
                 <div style="padding: 1rem; background: rgba(15, 23, 42, 0.7); border: 1px solid #334155; border-radius: 8px;">
                     <div style="font-weight: 600; color: #38BDF8; margin-bottom: 0.5rem;">📱 How to Use This Invite on Android or Desktop:</div>
                     <ul style="margin: 0; padding-left: 1.25rem; color: #CBD5E1; font-size: 0.85rem; line-height: 1.6;">
-                        <li><strong>Option A (Scan QR):</strong> Open Flash app on the phone or PC, tap Scan, and point camera at the QR code.</li>
-                        <li><strong>Option B (Paste in Flash):</strong> Open Flash app ➔ <strong>Settings</strong> ➔ <strong>Enterprise & Organization</strong> ➔ tap <strong>"Enrol in Organization"</strong> and paste this link.</li>
-                        <li style="color: #F87171; margin-top: 0.25rem;"><em>⚠️ Note: Do NOT paste this link into a web browser (Chrome, Edge, Safari). It starts with <code>flash://</code> because it is an app deep-link meant exclusively for the Flash application, not a web page.</em></li>
+                        <li><strong>In Flash App:</strong> Open Flash ➔ <strong>Settings</strong> ➔ <strong>Enterprise & Organization</strong> ➔ tap <strong>"Enrol in Organization"</strong> and paste the <code>flash://</code> link.</li>
+                        <li><strong>In Phone Browser:</strong> Open the <strong>Web Browser URL</strong> on the phone and tap <strong>"Launch Flash App to Enrol"</strong>.</li>
+                        <li style="color: #94A3B8; margin-top: 0.25rem;"><em>ℹ️ Note: Pasting a <code>flash://</code> link directly into a web browser address bar will not work because web browsers require <code>http://</code> links. Use the Web Browser URL above for browser sharing.</em></li>
                     </ul>
                 </div>
             </div>
@@ -699,6 +709,115 @@ object AdminUiHtml {
         </div>
         """.trimIndent()
         return layout("Audit Log", "audit", username, content)
+    }
+
+    fun webEnrollmentLandingPage(
+        token: String,
+        department: String?,
+        role: String,
+        deepLink: String,
+        hubUrl: String,
+        isValid: Boolean,
+        isExpired: Boolean = false,
+        isUsed: Boolean = false,
+    ): String {
+        val qrSvg = if (isValid && deepLink.isNotBlank()) {
+            QrCodeGenerator.generateSvg(deepLink, sizePx = 220, margin = 2)
+        } else ""
+
+        val escapedDeepLink = deepLink.replace("\\", "\\\\").replace("'", "\\'")
+
+        val bodyContent = if (isValid) {
+            """
+            <div class="login-card" style="max-width: 520px; text-align: center; margin: 2rem auto;">
+                <div style="font-size: 2.25rem; margin-bottom: 0.5rem;">⚡</div>
+                <h1 style="font-size: 1.5rem; font-weight: 700; color: #F8FAFC; margin-bottom: 0.25rem;">Enterprise Enrolment</h1>
+                <p style="color: #94A3B8; font-size: 0.85rem; margin-bottom: 1.5rem;">You have been invited to join the corporate network</p>
+
+                <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid #10B981; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; text-align: left;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 0.25rem;">
+                        <span style="color: #94A3B8; font-size: 0.8rem;">DEPARTMENT:</span>
+                        <span style="color: #10B981; font-weight: 600; font-size: 0.85rem;">${escapeHtml(department ?: "Organization-wide")}</span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: #94A3B8; font-size: 0.8rem;">ASSIGNED ROLE:</span>
+                        <span style="color: #F8FAFC; font-weight: 600; font-size: 0.85rem;">${escapeHtml(role.uppercase())}</span>
+                    </div>
+                </div>
+
+                <div style="display: flex; justify-content: center; margin-bottom: 1.5rem;">
+                    <div style="background: #0F172A; padding: 12px; border-radius: 12px; border: 1px solid #334155;">
+                        $qrSvg
+                        <div style="margin-top: 8px; font-size: 0.8rem; color: #10B981; font-weight: 600;">✓ Scan with Camera or Flash</div>
+                    </div>
+                </div>
+
+                <a href="$deepLink" class="btn" style="display: flex; width: 100%; font-size: 1.05rem; padding: 0.85rem; margin-bottom: 0.75rem; text-decoration: none; border-radius: 0.5rem;">
+                    ⚡ Launch Flash App to Enrol
+                </a>
+
+                <button type="button" class="btn btn-indigo" id="copy-enroll-btn" onclick="copyDeepLink()" style="width: 100%; padding: 0.75rem; border-radius: 0.5rem; margin-bottom: 1.5rem;">
+                    <span>📋 Copy Enrolment Link (flash://)</span>
+                </button>
+
+                <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 1rem; text-align: left;">
+                    <div style="font-weight: 600; color: #38BDF8; font-size: 0.85rem; margin-bottom: 0.5rem;">📱 Instructions:</div>
+                    <ol style="margin: 0; padding-left: 1.25rem; color: #CBD5E1; font-size: 0.8rem; line-height: 1.6;">
+                        <li><strong>On Android:</strong> Tap <em>Launch Flash App to Enrol</em> above to automatically open Flash.</li>
+                        <li><strong>Manual / Desktop:</strong> In Flash ➔ <strong>Settings</strong> ➔ <strong>Enterprise & Organization</strong> ➔ tap <strong>Enrol in Organization</strong> and paste this link.</li>
+                    </ol>
+                </div>
+
+                <script>
+                    function copyDeepLink() {
+                        const link = '$escapedDeepLink';
+                        navigator.clipboard.writeText(link).then(() => {
+                            const btn = document.getElementById('copy-enroll-btn');
+                            btn.innerHTML = '<span>✓ Copied to Clipboard!</span>';
+                            btn.style.backgroundColor = '#10B981';
+                            setTimeout(() => {
+                                btn.innerHTML = '<span>📋 Copy Enrolment Link (flash://)</span>';
+                                btn.style.backgroundColor = '';
+                            }, 3000);
+                        }).catch(() => {
+                            prompt('Copy link:', link);
+                        });
+                    }
+                </script>
+            </div>
+            """.trimIndent()
+        } else {
+            val reason = if (isUsed) "This single-use invitation has already been redeemed."
+            else if (isExpired) "This invitation has expired."
+            else "This invitation token is not recognized."
+            """
+            <div class="login-card" style="max-width: 480px; text-align: center; margin: 2rem auto;">
+                <div style="font-size: 2.25rem; margin-bottom: 0.5rem; color: #EF4444;">⚠</div>
+                <h1 style="font-size: 1.5rem; font-weight: 700; color: #F8FAFC; margin-bottom: 0.5rem;">Invitation Expired or Invalid</h1>
+                <p style="color: #FCA5A5; font-size: 0.9rem; margin-bottom: 1.5rem;">$reason</p>
+                <p style="color: #94A3B8; font-size: 0.85rem; margin-bottom: 1.5rem;">
+                    Enterprise invitation tokens are cryptographically pinned, single-use, and time-bounded.
+                    Please contact your organization administrator to request a new invitation.
+                </p>
+                <a href="/admin/login" class="btn btn-indigo" style="display: inline-block; text-decoration: none;">Go to Admin Portal</a>
+            </div>
+            """.trimIndent()
+        }
+
+        return """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Device Enrolment — Flash Enterprise</title>
+            <style>${baseStyles()}</style>
+        </head>
+        <body style="display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem;">
+            $bodyContent
+        </body>
+        </html>
+        """.trimIndent()
     }
 
     private fun buildAlertHtml(error: String?, success: String?): String {

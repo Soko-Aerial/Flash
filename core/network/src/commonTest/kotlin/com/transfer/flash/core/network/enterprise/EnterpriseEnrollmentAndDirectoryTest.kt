@@ -37,6 +37,17 @@ class EnterpriseEnrollmentAndDirectoryTest {
     }
 
     @Test
+    fun testParseEnrollmentInviteUriPercentEncoded() {
+        val uri = "flash://enroll?server=http%3A%2F%2F10.129.215.82%3A8443&token=tok%2D123&root=EEFF0011"
+        val invite = EnrollmentInvite.parseOrNull(uri)
+
+        assertNotNull(invite)
+        assertEquals("http://10.129.215.82:8443", invite.serverUrl)
+        assertEquals("tok-123", invite.token)
+        assertEquals("EEFF0011", invite.rootFingerprint)
+    }
+
+    @Test
     fun testParseDeviceCertFromJson() {
         val json = """
             {
