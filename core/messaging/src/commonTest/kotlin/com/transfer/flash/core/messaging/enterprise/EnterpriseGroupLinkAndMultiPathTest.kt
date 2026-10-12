@@ -118,4 +118,30 @@ class EnterpriseGroupLinkAndMultiPathTest {
         assertEquals("dept-sec", dept.departmentId)
         assertEquals(15, dept.memberCount)
     }
+
+    @Test
+    fun testGroupMessageRelayFrameRoundTrip() {
+        val originalFrame = com.transfer.flash.core.messaging.protocol.GroupWireFrame.Message(
+            groupId = "grp-finance-2026",
+            messageId = "msg-12345",
+            from = "dev-alice-01",
+            senderName = "Alice",
+            sentAt = 1728600000000L,
+            text = "Budget approved",
+        )
+        val encodedPayload = com.transfer.flash.core.messaging.protocol.GroupFrameCodec.encode(originalFrame)
+        val envelope = FlashEnvelope(
+            id = originalFrame.messageId,
+            type = "GROUP_MSG",
+            payloadJson = encodedPayload,
+            senderId = originalFrame.from,
+            sentAt = originalFrame.sentAt,
+        )
+
+        val decoded = com.transfer.flash.core.messaging.protocol.GroupFrameCodec.decode(envelope.payloadJson)
+        assertTrue(decoded is com.transfer.flash.core.messaging.protocol.GroupWireFrame.Message)
+        assertEquals("grp-finance-2026", decoded.groupId)
+        assertEquals("msg-12345", decoded.messageId)
+        assertEquals("Budget approved", decoded.text)
+    }
 }

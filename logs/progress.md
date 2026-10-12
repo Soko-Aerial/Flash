@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-10-12 — Client App Enterprise Wiring, State Persistence & Protocol Remediation (:app, :desktop, :core:network, :core:messaging, :ui:chat)
+
+### Worked on
+- Triaged root causes for user report where tapping "Confirm & Enrol" in `FlashEnrollDialog` yielded no action or feedback.
+- Completed multi-agent audit across the client codebase (`:app`, `:desktop`, `:core:messaging`, `:core:network`, `:ui:chat`) identifying missing wiring, absent state persistence, dead UI actions, and corrupted relay frame IDs.
+- Implemented persistent `EnterpriseTrustStore` implementations for both Android (`SharedPreferences`) and Desktop/JVM (`stateDir` properties file).
+- Fixed critical relay group frame codec bug where relayed group messages had their group ID overwritten by envelope message ID.
+- Wired end-to-end enrollment, disconnect, enterprise state observation, relay client lifecycle, and group hub linking across `MainActivity.kt` and `DesktopShell.kt`.
+- Verified compilation and test suites across all affected modules.
+
+### Changed
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/EnterpriseJsonHelper.kt`:
+  - Added JSON serialization and deserialization for `EnrollmentCredentials`, `DeviceCert`, and `DelegationCert`.
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/enterprise/AndroidPreferencesEnterpriseTrustStore.kt`:
+  - Implemented persistent SharedPreferences-backed `EnterpriseTrustStore` for Android with reactive StateFlow credentials and hub-linked group set.
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/enterprise/JvmFileEnterpriseTrustStore.kt`:
+  - Implemented persistent File/Properties-backed `EnterpriseTrustStore` for Desktop JVM under `<stateDir>/enterprise/enterprise_trust.properties`.
+- `core/network/src/jvmTest/kotlin/com/transfer/flash/core/network/enterprise/JvmFileEnterpriseTrustStoreTest.kt`:
+  - Added unit tests verifying credential persistence, reload, group link/unlink, and clear operations across store instances.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`:
+  - Fixed relay group message routing: outbound group frames are now encoded via `GroupFrameCodec.encode(frame)` and inbound frames decoded via `GroupFrameCodec.decode(env.payloadJson)`, preserving real group ID, message ID, sender, and text.
+  - Enhanced `fetchEnterpriseDirectoryMembers` to query all departments if no department was specified.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashEnrollDialog.kt` & `FlashSettingsScreen.kt`:
+  - Added `isEnrolling` loading indicator (`CircularProgressIndicator`) and inline error banner to `FlashEnrollDialog`.
+  - Added "Disconnect from Organization" row and confirmation dialog to `FlashSettingsScreen`.
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` & `AppEngine.kt`:
+  - Instantiated `AndroidPreferencesEnterpriseTrustStore`, `EnterpriseDirectoryClient`, and `FlashRelayClient`.
+  - Added reactive credential collector to start/stop `FlashRelayClient` when enrolled/unenrolled.
+  - Injected enterprise stores and clients into `RealFlashChatRepository`.
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`:
+  - Wired deep-link intent handling for `flash://enroll` URLs.
+  - Connected `onEnrollDeviceAction` with loading indicators, error banners, and success toasts.
+  - Wired `onDisconnectEnterprise`, `FlashCreateGroupSheet` (`onCreateWithHub`), and `FlashConversationScreen` (`isLinkedToHub`, `onToggleLinkToHub`).
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt` & `DesktopShell.kt`:
+  - Instantiated `JvmFileEnterpriseTrustStore`, `EnterpriseDirectoryClient`, and `FlashRelayClient`.
+  - Injected them into `RealFlashChatRepository` in `DesktopEngine`.
+  - Wired settings observation, `onEnrollDeviceAction`, `onDisconnectEnterprise`, `FlashCreateGroupSheet`, and `FlashConversationScreen` in `DesktopShell.kt`.
+
+### Verification
+- Unit test suites:
+  - `:core:network:jvmTest` (including `JvmFileEnterpriseTrustStoreTest` and `EnterpriseEnrollmentAndDirectoryTest`): PASSED.
+  - `:core:messaging:jvmTest` (including `EnterpriseGroupLinkAndMultiPathTest`): PASSED.
+  - `:ui:chat:jvmTest`: PASSED.
+  - `:server:test`: ALL 57 TESTS PASSED.
+- Build compilation:
+  - `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+
+---
+
 ## 2026-10-12 — Standalone Enterprise Server Remediations & Architectural Hardening (:server)
 
 ### Worked on

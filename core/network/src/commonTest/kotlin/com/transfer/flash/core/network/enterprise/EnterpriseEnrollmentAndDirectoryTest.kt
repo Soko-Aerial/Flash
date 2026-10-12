@@ -203,4 +203,39 @@ class EnterpriseEnrollmentAndDirectoryTest {
         store.clearCredentials()
         assertFalse(store.isEnrolled)
     }
+
+    @Test
+    fun testCredentialsSerializationAndDeserialization() {
+        val cert = DeviceCert(
+            deviceId = "dev-charlie-03",
+            subjectPublicKey = "pubKey",
+            role = DeviceCert.ROLE_MEMBER,
+            department = "Sales",
+            validFrom = 1000L,
+            validTo = 10000L,
+            serial = 1L,
+            issuerPublicKey = "issuerKey",
+            issuerSignature = "sig",
+        )
+
+        val credentials = EnrollmentCredentials(
+            hubUrl = "http://192.168.1.10:8443",
+            rootFingerprint = "ROOT123456",
+            rootPublicKey = "rootKey",
+            deviceCert = cert,
+            enrolledAtMs = 2000L,
+        )
+
+        val json = EnterpriseJsonHelper.serializeCredentials(credentials)
+        val parsed = EnterpriseJsonHelper.parseEnrollmentCredentials(json)
+
+        assertNotNull(parsed)
+        assertEquals("http://192.168.1.10:8443", parsed.hubUrl)
+        assertEquals("ROOT123456", parsed.rootFingerprint)
+        assertEquals("rootKey", parsed.rootPublicKey)
+        assertEquals(2000L, parsed.enrolledAtMs)
+        assertEquals("dev-charlie-03", parsed.deviceCert.deviceId)
+        assertEquals("Sales", parsed.deviceCert.department)
+        assertEquals(DeviceCert.ROLE_MEMBER, parsed.deviceCert.role)
+    }
 }

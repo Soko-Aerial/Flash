@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.di
 
 import android.content.Context
@@ -93,6 +95,22 @@ class AppEngine @Inject constructor(
 
     /** Group swarm file transfer facade (SW-8), or null when not attached. */
     val swarm: com.transfer.flash.core.swarm.api.FlashSwarm? get() = DiscoveryEngineHolder.currentSwarm()
+
+    /** Enterprise trust store managing device credentials and pinned root certificates. */
+    val enterpriseTrustStore: com.transfer.flash.core.security.enterprise.EnterpriseTrustStore?
+        get() = DiscoveryEngineHolder.currentEnterpriseTrustStore()
+
+    /** Enterprise directory HTTP client for queries. */
+    val enterpriseDirectory: com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient?
+        get() = DiscoveryEngineHolder.currentEnterpriseDirectoryClient()
+
+    /** Enterprise WebSocket relay client for outbox and mailbox transport. */
+    val relayClient: com.transfer.flash.core.network.relay.FlashRelayClient?
+        get() = DiscoveryEngineHolder.currentRelayClient()
+
+    /** Device hardware cryptographic provider. */
+    val crypto: com.transfer.flash.core.security.crypto.FlashCrypto?
+        get() = DiscoveryEngineHolder.currentCrypto()
 
     /** Prepares a local file for swarm streaming, or null if swarm is disabled or preparation fails. */
     suspend fun prepareSwarmOrigin(

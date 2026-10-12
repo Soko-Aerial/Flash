@@ -62,6 +62,7 @@ import com.transfer.flash.core.messaging.protocol.GroupSyncPolicy
 import com.transfer.flash.core.messaging.protocol.GroupSyncRoundState
 import com.transfer.flash.core.messaging.protocol.GroupSyncTier
 import com.transfer.flash.core.messaging.protocol.GroupVouching
+import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.messaging.protocol.OutgoingSyncRequest
@@ -916,15 +917,20 @@ public class RealFlashChatRepository(
                                 onInboundWireFrame(frame, env.senderId)
                             }
                             "GROUP_MSG" -> {
-                                val frame = GroupWireFrame.Message(
-                                    groupId = env.id,
-                                    messageId = env.id,
-                                    from = env.senderId,
-                                    senderName = peerNameResolver(env.senderId) ?: env.senderId,
-                                    sentAt = env.sentAt,
-                                    text = env.payloadJson,
-                                )
-                                onInboundGroupWireFrame(env.senderId, frame)
+                                val decoded = GroupFrameCodec.decode(env.payloadJson)
+                                if (decoded is GroupWireFrame.Message) {
+                                    onInboundGroupWireFrame(env.senderId, decoded)
+                                } else {
+                                    val frame = GroupWireFrame.Message(
+                                        groupId = env.id,
+                                        messageId = env.id,
+                                        from = env.senderId,
+                                        senderName = peerNameResolver(env.senderId) ?: env.senderId,
+                                        sentAt = env.sentAt,
+                                        text = env.payloadJson,
+                                    )
+                                    onInboundGroupWireFrame(env.senderId, frame)
+                                }
                             }
                         }
                     }
@@ -5595,7 +5601,7 @@ public class RealFlashChatRepository(
                                     val envelope = FlashEnvelope(
                                         id = item.localId,
                                         type = "GROUP_MSG",
-                                        payloadJson = message.text,
+                                        payloadJson = GroupFrameCodec.encode(frame),
                                         senderId = localDeviceId,
                                         sentAt = message.sentAt,
                                     )
@@ -6573,8 +6579,19 @@ public class RealFlashChatRepository(
             ?: return FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
         val credentials = enterpriseTrustStore?.getCredentials()
             ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
-        val targetDept = departmentId ?: credentials.department.orEmpty()
-        if (targetDept.isBlank()) {
+        val targetDept = departmentId ?: credentials.department?.takeIf { it.isNotBlank() }
+        if (targetDept == null) {
+            val deptsResult = client.fetchDepartments(credentials.hubUrl)
+            if (deptsResult is FlashResult.Success && deptsResult.value.isNotEmpty()) {
+                val allMembers = mutableListOf<EnterpriseDirectoryMember>()
+                for (d in deptsResult.value) {
+                    val mResult = client.fetchDepartmentMembers(credentials.hubUrl, d.departmentId)
+                    if (mResult is FlashResult.Success) {
+                        allMembers.addAll(mResult.value)
+                    }
+                }
+                return FlashResult.Success(allMembers.distinctBy { it.deviceId })
+            }
             return FlashResult.Failure(FlashError.Unknown("No department specified"))
         }
         return client.fetchDepartmentMembers(credentials.hubUrl, targetDept)

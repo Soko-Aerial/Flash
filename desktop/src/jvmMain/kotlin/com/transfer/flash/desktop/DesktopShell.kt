@@ -972,10 +972,13 @@ public fun DesktopShell(
     val desktopSettings by engine.settings.collectAsState()
     var showRenameDialog by remember { mutableStateOf(false) }
     var receivedBytes by remember { mutableStateOf<Long?>(null) }
+    val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
+    var isEnrollingDevice by remember { mutableStateOf(false) }
+    var enrollDeviceError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName) {
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials) {
         FlashSettingsModel(
             displayName = localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
@@ -1001,7 +1004,52 @@ public fun DesktopShell(
             swarmKeepFinishedFiles = desktopSettings.swarmKeepFinishedFiles,
             swarmEnabled = desktopSettings.groupSwarmEnabled,
             launchAnimation = desktopSettings.launchAnimation,
+            isEnterpriseEnrolled = enterpriseCredentials != null,
+            enterpriseHubUrl = enterpriseCredentials?.hubUrl.orEmpty(),
+            enterpriseDepartment = enterpriseCredentials?.department.orEmpty(),
+            enterpriseRole = enterpriseCredentials?.role ?: "member",
+            enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
         )
+    }
+
+    val onEnrollDeviceAction: (String) -> Unit = { link ->
+        val invite = com.transfer.flash.core.network.enterprise.EnrollmentInvite.parseOrNull(link)
+        if (invite == null) {
+            enrollDeviceError = "Invalid enrollment invitation link format"
+            scope.launch { snackbarHostState.showSnackbar("Invalid invitation link", duration = SnackbarDuration.Short) }
+        } else {
+            val crypto = engine.crypto
+            val trustStore = engine.enterpriseTrustStore
+            isEnrollingDevice = true
+            enrollDeviceError = null
+            scope.launch {
+                snackbarHostState.showSnackbar("Enrolling in ${invite.serverUrl}...", duration = SnackbarDuration.Short)
+                val client = com.transfer.flash.core.network.enterprise.EnterpriseEnrollmentClient(trustStore = trustStore)
+                val result = client.enrollDevice(
+                    invite = invite,
+                    deviceId = engine.localDeviceId,
+                    friendlyName = localFriendlyName,
+                    crypto = crypto,
+                    nowMs = System.currentTimeMillis(),
+                )
+                isEnrollingDevice = false
+                when (result) {
+                    is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                        enrollDeviceError = null
+                        snackbarHostState.showSnackbar(
+                            "Enrolled as ${result.value.role} (${result.value.department ?: "All"})",
+                            duration = SnackbarDuration.Long,
+                        )
+                    }
+                    is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                        val errMsg = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            ?: result.error.toString()
+                        enrollDeviceError = errMsg
+                        snackbarHostState.showSnackbar("Enrollment failed: $errMsg", duration = SnackbarDuration.Long)
+                    }
+                }
+            }
+        }
     }
 
     // UI-046: per-tab scroll state, like the app shell.
@@ -1519,6 +1567,19 @@ public fun DesktopShell(
                 activeJoinLink = inviteUrl
                 showJoinGroupDialog = true
             },
+            isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+            isLinkedToHub = nav.current.conversationId?.let { chatRepository.isGroupLinkedToHub(it) } ?: false,
+            onToggleLinkToHub = { link ->
+                nav.current.conversationId?.let { gid ->
+                    scope.launch {
+                        if (link) {
+                            chatRepository.linkGroupToHub(gid)
+                        } else {
+                            chatRepository.unlinkGroupFromHub(gid)
+                        }
+                    }
+                }
+            },
         )
     }
 
@@ -1779,6 +1840,15 @@ public fun DesktopShell(
                                 }
                             }
                         },
+                        onEnrollDevice = onEnrollDeviceAction,
+                        onDisconnectEnterprise = {
+                            scope.launch {
+                                engine.enterpriseTrustStore.clearCredentials()
+                                snackbarHostState.showSnackbar("Disconnected from organization", duration = SnackbarDuration.Short)
+                            }
+                        },
+                        isEnrollingDevice = isEnrollingDevice,
+                        enrollDeviceError = enrollDeviceError,
                         modifier = Modifier.fillMaxSize(),
                         listState = settingsScroll,
                         bottomInset = tabBottomInset,
@@ -1959,6 +2029,7 @@ public fun DesktopShell(
             FlashCreateGroupSheet(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
+                isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
                 onCreate = { title, memberIds ->
                     scope.launch {
                         val result = chatRepository.createGroup(title, memberIds)
@@ -1969,6 +2040,27 @@ public fun DesktopShell(
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
                             // The repository's own reason when it has one (ERROR-095: a member that is offline).
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            snackbarHostState.showSnackbar(
+                                message = reason ?: "Couldn't create the group — check that every member is paired",
+                                duration = SnackbarDuration.Long,
+                            )
+                        }
+                    }
+                },
+                onCreateWithHub = { title, memberIds, linkToHub ->
+                    scope.launch {
+                        val result = chatRepository.createGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            if (linkToHub) {
+                                chatRepository.linkGroupToHub(groupId)
+                            }
+                            showCreateGroup = false
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
                             val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
                                 as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
                             snackbarHostState.showSnackbar(

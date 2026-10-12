@@ -102,6 +102,10 @@ import com.transfer.flash.core.engine.FlashPathSanitizer
 import com.transfer.flash.core.engine.FlashSessionCoordinator
 import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashReadiness
+import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
+import com.transfer.flash.core.network.enterprise.JvmFileEnterpriseTrustStore
+import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
+import com.transfer.flash.core.network.relay.FlashRelayClient
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
 import java.security.SecureRandom
@@ -237,6 +241,14 @@ public class DesktopEngine(
     }
 
     private val trustStoreImpl = DesktopTrustStore(stateDir)
+    public val enterpriseTrustStore: EnterpriseTrustStore =
+        JvmFileEnterpriseTrustStore(stateDir)
+    public val enterpriseDirectoryClient: EnterpriseDirectoryClient =
+        EnterpriseDirectoryClient()
+    @Volatile
+    private var relayClientRef: FlashRelayClient? = null
+    public val relayClient: FlashRelayClient?
+        get() = relayClientRef
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
@@ -1075,6 +1087,8 @@ public class DesktopEngine(
     private fun releaseSubsystems() {
         synchronized(teardownLock) {
             runCatching { networkWatcher.stop() }
+            relayClientRef?.stop()
+            relayClientRef = null
             // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
             detachPtt()
             detachSwarm()
@@ -1293,6 +1307,27 @@ public class DesktopEngine(
         runCatching {
             val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
             chatDb = db
+
+            val initialCreds = enterpriseTrustStore.getCredentials()
+            val relay = FlashRelayClient(
+                deviceId = localId,
+                friendlyName = friendlyName,
+                role = initialCreds?.role ?: "member",
+                hubUrl = initialCreds?.hubUrl.orEmpty(),
+            )
+            relayClientRef = relay
+
+            scope.launch {
+                enterpriseTrustStore.credentials.collect { creds ->
+                    if (creds != null) {
+                        relay.hubUrl = creds.hubUrl
+                        relay.start()
+                    } else {
+                        relay.stop()
+                    }
+                }
+            }
+
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,
                 localDisplayName = friendlyName,
@@ -1440,6 +1475,9 @@ public class DesktopEngine(
                     onInboundAttachmentNotification?.invoke(conversationId, senderName, fileName, mimeType, groupTitle)
                 },
                 scope = scope,
+                enterpriseTrustStore = enterpriseTrustStore,
+                relayClient = relay,
+                enterpriseDirectoryClient = enterpriseDirectoryClient,
             )
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
                 FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")

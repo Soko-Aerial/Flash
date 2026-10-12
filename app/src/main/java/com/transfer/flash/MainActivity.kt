@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash
 
 import android.annotation.SuppressLint
@@ -207,6 +209,7 @@ class MainActivity : ComponentActivity() {
     private val pendingShare = MutableStateFlow<FlashSharePayloadUi?>(null)
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
     private val pendingJoinLink = MutableStateFlow<String?>(null)
+    private val pendingEnrollLink = MutableStateFlow<String?>(null)
 
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
     private var receivedStorageJob: Job? = null
@@ -270,8 +273,11 @@ class MainActivity : ComponentActivity() {
         }
         if (intent?.action == Intent.ACTION_VIEW && intent?.data != null) {
             val data = intent.data
-            if (data?.scheme == "flash" && data?.host == "g") {
-                pendingJoinLink.value = data.toString()
+            if (data?.scheme == "flash") {
+                when (data.host) {
+                    "g" -> pendingJoinLink.value = data.toString()
+                    "enroll" -> pendingEnrollLink.value = data.toString()
+                }
             }
         }
         handleIncomingIntent(intent)
@@ -288,6 +294,7 @@ class MainActivity : ComponentActivity() {
                 pendingShare = pendingShare,
                 pendingShortcutTab = pendingShortcutTab,
                 pendingJoinLink = pendingJoinLink,
+                pendingEnrollLink = pendingEnrollLink,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -351,8 +358,11 @@ class MainActivity : ComponentActivity() {
         }
         if (intent.action == Intent.ACTION_VIEW && intent.data != null) {
             val data = intent.data
-            if (data?.scheme == "flash" && data?.host == "g") {
-                pendingJoinLink.value = data.toString()
+            if (data?.scheme == "flash") {
+                when (data.host) {
+                    "g" -> pendingJoinLink.value = data.toString()
+                    "enroll" -> pendingEnrollLink.value = data.toString()
+                }
             }
         }
         handleIncomingIntent(intent)
@@ -416,8 +426,11 @@ class MainActivity : ComponentActivity() {
         when (intent.action) {
             Intent.ACTION_VIEW -> {
                 val data = intent.data
-                if (data != null && data.scheme == "flash" && data.host == "g") {
-                    pendingJoinLink.value = data.toString()
+                if (data != null && data.scheme == "flash") {
+                    when (data.host) {
+                        "g" -> pendingJoinLink.value = data.toString()
+                        "enroll" -> pendingEnrollLink.value = data.toString()
+                    }
                 }
             }
             Intent.ACTION_SEND -> {
@@ -702,6 +715,7 @@ fun FlashApp(
     /** Pending static app shortcut navigation target. */
     pendingShortcutTab: MutableStateFlow<FlashDestination?> = MutableStateFlow(null),
     pendingJoinLink: MutableStateFlow<String?> = MutableStateFlow(null),
+    pendingEnrollLink: MutableStateFlow<String?> = MutableStateFlow(null),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -756,6 +770,8 @@ fun FlashApp(
     val trustedFallback = remember { MutableStateFlow(emptyList<NearbyTrustedPeerUi>()) }
     val trustedPeers by (engine.pairing?.trustedPeers ?: trustedFallback).collectAsState()
     val currentDiscoveryMode by DiscoveryEngineHolder.discoveryMode.collectAsState()
+    val enterpriseCredsFallback = remember { MutableStateFlow<com.transfer.flash.core.security.enterprise.EnrollmentCredentials?>(null) }
+    val enterpriseCreds by (engine.enterpriseTrustStore?.credentials ?: enterpriseCredsFallback).collectAsState()
 
     val settings = FlashSettingsModel(
         // ERROR-034: no `if (ready)` gate. Identity comes from a self-healing prefs store that
@@ -791,6 +807,11 @@ fun FlashApp(
         swarmKeepFinishedFiles = swarmKeepFinishedFiles,
         swarmEnabled = swarmEnabled,
         launchAnimation = launchAnimation,
+        isEnterpriseEnrolled = enterpriseCreds != null,
+        enterpriseHubUrl = enterpriseCreds?.hubUrl,
+        enterpriseDepartment = enterpriseCreds?.department,
+        enterpriseRole = enterpriseCreds?.role,
+        enterpriseRootFingerprint = enterpriseCreds?.rootFingerprint,
     )
     // Captured here (composable scope) so the non-composable lambda below can construct an
     // AndroidPreferencesIdentityStore when the display name changes.
@@ -879,6 +900,7 @@ fun FlashApp(
                     pendingShare = pendingShare,
                     pendingShortcutTab = pendingShortcutTab,
                     pendingJoinLink = pendingJoinLink,
+                    pendingEnrollLink = pendingEnrollLink,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
@@ -921,6 +943,7 @@ private fun FlashShell(
     pendingShare: MutableStateFlow<PendingSharePayload?>,
     pendingShortcutTab: MutableStateFlow<FlashDestination?>,
     pendingJoinLink: MutableStateFlow<String?>,
+    pendingEnrollLink: MutableStateFlow<String?>,
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
@@ -1049,6 +1072,91 @@ private fun FlashShell(
             showJoinGroupDialog = true
             pendingJoinLink.value = null
         }
+    }
+
+    val initialEnrollLink by pendingEnrollLink.collectAsState()
+    var showDeepLinkEnrollDialog by remember { mutableStateOf(false) }
+    var activeEnrollLink by remember { mutableStateOf("") }
+    var isEnrollingDevice by remember { mutableStateOf(false) }
+    var enrollDeviceError by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(initialEnrollLink) {
+        val link = initialEnrollLink
+        if (!link.isNullOrBlank()) {
+            activeEnrollLink = link
+            enrollDeviceError = null
+            showDeepLinkEnrollDialog = true
+            pendingEnrollLink.value = null
+        }
+    }
+
+    val toastContext = LocalContext.current
+    val shellScope = rememberCoroutineScope()
+
+    val onEnrollDeviceAction: (String) -> Unit = { link ->
+        val invite = com.transfer.flash.core.network.enterprise.EnrollmentInvite.parseOrNull(link)
+        if (invite == null) {
+            enrollDeviceError = "Invalid enrollment invitation link format"
+            Toast.makeText(toastContext, "Invalid invitation link", Toast.LENGTH_SHORT).show()
+        } else {
+            val crypto = engine.crypto
+            val trustStore = engine.enterpriseTrustStore
+            if (crypto == null || trustStore == null) {
+                enrollDeviceError = "Device security subsystem not ready"
+                Toast.makeText(toastContext, "Security subsystem not ready", Toast.LENGTH_SHORT).show()
+            } else {
+                isEnrollingDevice = true
+                enrollDeviceError = null
+                Toast.makeText(toastContext, "Enrolling in ${invite.serverUrl}...", Toast.LENGTH_SHORT).show()
+                shellScope.launch {
+                    val client = com.transfer.flash.core.network.enterprise.EnterpriseEnrollmentClient(trustStore = trustStore)
+                    val result = client.enrollDevice(
+                        invite = invite,
+                        deviceId = engine.localDeviceId,
+                        friendlyName = engine.localFriendlyName,
+                        crypto = crypto,
+                        nowMs = System.currentTimeMillis(),
+                    )
+                    withContext(Dispatchers.Main) {
+                        isEnrollingDevice = false
+                        when (result) {
+                            is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                                enrollDeviceError = null
+                                showDeepLinkEnrollDialog = false
+                                Toast.makeText(
+                                    toastContext,
+                                    "Enrolled as ${result.value.role} (${result.value.department ?: "All"})",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                            is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                                val errMsg = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                    ?: result.error.toString()
+                                enrollDeviceError = errMsg
+                                Toast.makeText(
+                                    toastContext,
+                                    "Enrollment failed: $errMsg",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDeepLinkEnrollDialog) {
+        com.transfer.flash.ui.settings.FlashEnrollDialog(
+            initialLink = activeEnrollLink,
+            onDismiss = {
+                showDeepLinkEnrollDialog = false
+                enrollDeviceError = null
+            },
+            onEnroll = onEnrollDeviceAction,
+            isEnrolling = isEnrollingDevice,
+            enrollError = enrollDeviceError,
+        )
     }
 
     // #14: display-name edit sheet. The identity row's tap now opens a rename dialog whose result is
@@ -1290,7 +1398,6 @@ private fun FlashShell(
     // Surface the coordinator's transient status lines (e.g. "Connecting…", "Couldn't reach …") as
     // toasts so tapping Pair always gives feedback instead of silently doing nothing. Keyed on the
     // coordinator instance so collection (re)starts once the engine boots.
-    val toastContext = LocalContext.current
     LaunchedEffect(engine.pairing) {
         engine.pairing?.messages?.collect { message ->
             Toast.makeText(toastContext, message, Toast.LENGTH_SHORT).show()
@@ -2324,6 +2431,29 @@ private fun FlashShell(
                 activeJoinLink = inviteUrl
                 showJoinGroupDialog = true
             },
+            isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+            isLinkedToHub = conversationId?.let { engine.enterpriseTrustStore?.isGroupLinkedToHub(it) } ?: false,
+            onToggleLinkToHub = { link ->
+                conversationId?.let { gid ->
+                    scope.launch {
+                        if (link) {
+                            val res = chatRepository.linkGroupToHub(gid)
+                            withContext(Dispatchers.Main) {
+                                if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
+                                    Toast.makeText(toastContext, "Linked to corporate hub (Zero Cloud Dump: past messages remain local)", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(toastContext, "Failed to link group to hub", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } else {
+                            chatRepository.unlinkGroupFromHub(gid)
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(toastContext, "Unlinked from corporate hub", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            },
         )
     }
 
@@ -2522,6 +2652,17 @@ private fun FlashShell(
             onSwarmEnabledChanged = {
                 onSettingsChange(settings.copy(swarmEnabled = it))
             },
+            onEnrollDevice = onEnrollDeviceAction,
+            onDisconnectEnterprise = {
+                scope.launch {
+                    engine.enterpriseTrustStore?.clearCredentials()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(toastContext, "Disconnected from enterprise hub", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            isEnrollingDevice = isEnrollingDevice,
+            enrollDeviceError = enrollDeviceError,
             modifier = Modifier.fillMaxSize(),
             listState = settingsScroll,
             bottomInset = tabBottomInset,
@@ -2782,6 +2923,7 @@ private fun FlashShell(
             com.transfer.flash.ui.chat.FlashCreateGroupSheet(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
+                isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
                 onCreate = { title, memberIds ->
                     scope.launch {
                         val result = chatRepository.createGroup(title, memberIds)
@@ -2792,6 +2934,28 @@ private fun FlashShell(
                             nav.navigate(FlashDestination.Conversation, conversationId = groupId)
                         } else {
                             // The repository's own reason when it has one (ERROR-095: a member that is offline).
+                            val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
+                                as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                            Toast.makeText(
+                                toastContext,
+                                reason ?: "Couldn't create the group — check that every member is paired",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                },
+                onCreateWithHub = { title, memberIds, linkToHub ->
+                    scope.launch {
+                        val result = chatRepository.createGroup(title, memberIds)
+                        val groupId = result.getOrNull()
+                        if (groupId != null) {
+                            if (linkToHub) {
+                                chatRepository.linkGroupToHub(groupId)
+                            }
+                            showCreateGroup = false
+                            chatRepository.openConversation(groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                        } else {
                             val reason = ((result as? com.transfer.flash.core.common.result.FlashResult.Failure)?.error
                                 as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
                             Toast.makeText(

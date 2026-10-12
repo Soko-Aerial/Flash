@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,6 +43,8 @@ public fun FlashEnrollDialog(
     onEnroll: (String) -> Unit,
     modifier: Modifier = Modifier,
     initialLink: String = "",
+    isEnrolling: Boolean = false,
+    enrollError: String? = null,
 ) {
     val colors = FlashTheme.colors
     val clipboardManager = LocalClipboardManager.current
@@ -141,17 +147,49 @@ public fun FlashEnrollDialog(
                         color = colors.textError,
                     )
                 }
+
+                if (enrollError != null) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(colors.backgroundSurfaceSubtle)
+                            .padding(FlashSpacing.space12),
+                    ) {
+                        FlashText(
+                            text = "⚠ $enrollError",
+                            style = FlashTheme.typography.metadataEmphasis,
+                            color = colors.textError,
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             if (parsed != null) {
-                TextButton(onClick = { onEnroll(inputLink.trim()) }) {
-                    Text("Confirm & Enrol", color = colors.accentPrimary)
+                TextButton(
+                    enabled = !isEnrolling,
+                    onClick = { onEnroll(inputLink.trim()) },
+                ) {
+                    if (isEnrolling) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = colors.accentPrimary,
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Enrolling...", color = colors.accentPrimary)
+                    } else {
+                        Text("Confirm & Enrol", color = colors.accentPrimary)
+                    }
                 }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(
+                enabled = !isEnrolling,
+                onClick = onDismiss,
+            ) {
                 Text("Cancel", color = colors.textSecondary)
             }
         },

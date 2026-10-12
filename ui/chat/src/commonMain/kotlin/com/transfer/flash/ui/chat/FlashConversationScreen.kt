@@ -303,6 +303,9 @@ fun FlashConversationScreen(
      * actions (add members / leave) to address the right group; null keeps previews inert.
      */
     conversationId: String? = null,
+    isEnterpriseEnrolled: Boolean = false,
+    isLinkedToHub: Boolean = false,
+    onToggleLinkToHub: ((Boolean) -> Unit)? = null,
 ) {
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
@@ -1256,6 +1259,9 @@ fun FlashConversationScreen(
             onLoadOlderHistory = if (onLoadOlderGroupHistory != null && state.isGroupV2) {
                 { windowMs -> onLoadOlderGroupHistory.invoke(conversationId, windowMs) }
             } else null,
+            isEnterpriseEnrolled = isEnterpriseEnrolled,
+            isLinkedToHub = isLinkedToHub,
+            onToggleLinkToHub = onToggleLinkToHub,
         )
     }
 
