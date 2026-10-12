@@ -395,8 +395,14 @@ public class JvmWsFlashNetwork(
                 )
             }
 
-            reconnectTargets[peerDevice.id.value] = Endpoint(host, actualPort)
-            reconnectPolicies.remove(peerDevice.id.value)
+            val peerIdVal = peerDevice.id.value
+            reconnectTargets[peerIdVal] = Endpoint(host, actualPort)
+            scope.launch {
+                delay(STABLE_CONNECTION_RESET_MS)
+                if (hasLiveSession(peerIdVal)) {
+                    reconnectPolicies.remove(peerIdVal)
+                }
+            }
 
             FlashResult.Success(session)
         } finally {
@@ -909,6 +915,7 @@ public class JvmWsFlashNetwork(
         private const val TAG = "WS"
         private const val HELLO_PREFIX = "FLASH_WS_HELLO"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000L
+        private const val STABLE_CONNECTION_RESET_MS = 10_000L
         private const val BACKUP_REDIAL_BASE_MS = 4_000L
         private const val STALE_SESSION_AFTER_MS = 45_000L
 

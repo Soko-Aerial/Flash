@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-10-12 — Fix Rapid Connect/Disconnect Loop, SO_REUSEADDR Port Hopping, and Android SQLite PRAGMAs
+
+### Worked on
+- Analyzed 6,381-line Android 14 log (`flash-log-1791808254153.txt`) exhibiting rapid connecting/disconnecting oscillation (1,286 `session.up` and 1,275 `session.down` events with code 1000 / "Superseded by a newer connection").
+- Diagnosed root causes:
+  1. Redundant concurrent dials in `ConnectionPlanner`: sweep hits and sightings for the same host were both scheduled simultaneously because neither was connected yet, causing two outbound dials to collide and immediately supersede/tear each other down.
+  2. Missing `SO_REUSEADDR` before socket bind in `WsTransferServer` and `DataChannelServer`: socket rebounds during rapid reconnects encountered `BindException: Address already in use` (TIME_WAIT), falling back to `ServerSocket(0)` and hopping to arbitrary ephemeral ports (37111, 46297, etc.).
+  3. Immediate backoff policy reset on connect in `WsFlashNetwork` and `JvmWsFlashNetwork`: flapping links wiped `reconnectPolicies` on connect, causing drops within milliseconds to restart backoff at 1.0s attempt 0 instead of exponential backoff.
+  4. SQLite PRAGMA execution in `FlashDatabaseOpener.kt`: PRAGMAs that return a result set (`wal_autocheckpoint`, `mmap_size`) threw `IllegalArgumentException` ("Queries can be performed using SQLiteDatabase query or rawQuery methods only") under Android's SQLite/SQLCipher `execSQL()`, causing PRAGMA configuration to abort.
+  5. `DatabaseTrimRegistrationTest`: verified closed database handle behavior during memory trim events.
+
+### Changed
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/planner/ConnectionPlanner.kt`:
+  - Filtered `sweepHosts` and `gatewayHosts` against `sightingHosts` (hosts known from sightings or local device), preventing redundant concurrent dials to the same peer.
+- `core/network/src/commonTest/kotlin/com/transfer/flash/core/network/planner/ConnectionPlannerTest.kt`:
+  - Added unit tests: `rule 9 - sweep hit and gateway probe are skipped when a sighting already exists for that host` and `rule 9 - sweep hit is skipped when host belongs to local device`.
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsTransferServer.kt`:
+  - Set `reuseAddress = true` on `ServerSocket()` prior to `bind(InetSocketAddress(PREFERRED_PORT))`.
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/WsTransferServer.kt`:
+  - Maintained cross-platform parity with `androidMain` by adding `reuseAddress = true` before bind.
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/datachannel/DataChannelServer.kt`:
+  - Set `reuseAddress = true` on `ServerSocket()` prior to `bind(InetSocketAddress(preferredPort + offset))`.
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt` & `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/JvmWsFlashNetwork.kt`:
+  - Added `STABLE_CONNECTION_RESET_MS = 10_000L` stability check before resetting `reconnectPolicies`, ensuring flapping connections back off exponentially rather than looping every second.
+- `core/persistence/src/androidMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabaseOpener.kt`:
+  - Updated PRAGMA execution in `openEncrypted` and `openInMemory` to safely consume statements returning result rows via `db.query(pragma).use { it.moveToFirst() }` with fallback to `db.execSQL()`.
+  - Preserved registration for closed database handles in `DatabaseTrimRegistration.onTrimMemory`.
+
+### Verification
+- `:core:network:jvmTest` passed (including all ConnectionPlanner and WsServer tests).
+- `:core:persistence:jvmTest` and `:core:persistence:testAndroidHostTest` passed (52/52 tests green).
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` built cleanly.
+
+### Next AI
+All 4 identified networking and persistence issues resolved and verified. Code is ready for device deployment and verification on physical Android 14+ hardware.
+
 ## 2026-10-12 — Enterprise Department Group Discovery & Join Sheet and Client Subsystems Architecture Audit (:ui:chat, :core:messaging, :app, :desktop)
 
 ### Worked on

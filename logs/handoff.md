@@ -1,29 +1,25 @@
 # Current Handoff
 
-## 2026-10-12 — Enterprise Department Group Discovery & Join Sheet and Client Subsystems Architecture Audit
+## 2026-10-12 — Fix Rapid Connect/Disconnect Loop, SO_REUSEADDR Port Hopping, and Android SQLite PRAGMAs
 - **Current Branch:** `dev`
-- **Status:** Complete & verified across `:server:test`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, and clean compilation on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
-- **Completed Capabilities & Fixes:**
-  1. **Multi-Agent Enterprise Client Audit:**
-     - Identified root cause of silent enrollment inaction: `onEnrollDevice` was unpassed/null in `MainActivity.kt` and `DesktopShell.kt`.
-     - Audited runtime wiring in `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` for `enterpriseTrustStore`, `relayClient`, and `directoryClient`.
-     - Caught relayed group message `groupId` assignment corruption bug.
-  2. **Enterprise Department Group Discovery & Join Sheet (`FlashBrowseOrgGroupsSheet`):**
-     - Enrolled members can now tap the Relay icon in `FlashChatListTopBar` to browse departmental groups on the Enterprise Hub.
-     - Displays member counts, approval requirements, search filtering, and 1-tap Join or Request Access.
-     - Decoupled via `FlashBrowseOrgGroupUi` to maintain clean KMP architecture without leaking `:core:network` into `:ui:chat`.
-  3. **Zero Cloud Dump Group Joining (`joinEnterpriseGroup`):**
-     - Implemented in `RealFlashChatRepository` with atomic Room conversation upsert, local device provenance, and hub relay linking.
-     - Strictly preserves the Zero Cloud Dump Invariant (linking groups never uploads pre-existing local chat history to the hub/relay).
-  4. **Message Forwarding LazyColumn Duplicate Key Crash (ERROR-169):**
-     - Fixed duplicate recipient key crash when forwarding messages by enforcing recipient ID deduplication across `FlashShareTargetSheet`, `FlashConversationScreen`, `MainActivity`, and `DesktopShell`.
+- **Last Verified Build / Commit:** `1b2eb12d`
+- **Status:** Complete & verified across `:core:network:jvmTest`, `:core:persistence:jvmTest`, `:core:persistence:testAndroidHostTest`, `:app:compileDebugKotlin`, and `:desktop:compileKotlinJvm`.
+- **Completed Fixes (ERROR-126):**
+  1. **Redundant Concurrent Dials in `ConnectionPlanner`:**
+     - De-duplicated `sweepHosts` and `gatewayHosts` against active `sightingHosts` to prevent simultaneous outbound dials to the same peer. Added unit tests for sweep and gateway de-duplication.
+  2. **Socket Port Hopping on Rapid Restarts:**
+     - Added `reuseAddress = true` before bind in `WsTransferServer.kt` (`androidMain` and `jvmMain`) and `DataChannelServer.kt`, preventing `BindException` under TCP `TIME_WAIT` and eliminating ephemeral port flapping.
+  3. **Reconnect Backoff Reset Flapping:**
+     - Replaced immediate `reconnectPolicies.remove()` on connect in `WsFlashNetwork.kt` and `JvmWsFlashNetwork.kt` with a 10s stability check (`STABLE_CONNECTION_RESET_MS = 10_000L`). Unstable connections that drop within seconds now back off exponentially rather than spamming reconnects every second.
+  4. **SQLite PRAGMAs Execution under Android/SQLCipher:**
+     - Fixed `FlashDatabaseOpener.kt` to execute statements that return result rows (`wal_autocheckpoint`, `mmap_size`) via `db.query(pragma).use { it.moveToFirst() }` with fallback to `db.execSQL()`, avoiding `IllegalArgumentException: Queries can be performed using SQLiteDatabase query or rawQuery methods only`.
+     - Preserved registration for closed database handles in `DatabaseTrimRegistration.onTrimMemory`.
 - **Verification Summary:**
-  - `:core:messaging:jvmTest`: Passed.
-  - `:ui:chat:jvmTest`: Passed.
-  - `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
-  - `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
+  - `:core:network:jvmTest`: BUILD SUCCESSFUL (all planner and server tests green).
+  - `:core:persistence:jvmTest` & `:core:persistence:testAndroidHostTest`: BUILD SUCCESSFUL (52/52 tests green).
+  - `:app:compileDebugKotlin` & `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
 - **Recommended Next Task:**
-  - Connect enrollment dialog and persistent trust store wiring into `MainActivity.kt` and `DesktopShell.kt` based on auditor recommendations.
+  - Deploy debug APK to test on physical Android 14+ devices (e.g. Infinix X6882B) and verify stability on LAN transfers.
 
 ---
 

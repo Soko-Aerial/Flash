@@ -5,6 +5,7 @@ package com.transfer.flash.core.network.ws
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.IOException
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import kotlin.concurrent.Volatile
@@ -72,7 +73,12 @@ public class WsTransferServer(
     @Synchronized
     public fun start(): Int {
         if (isRunning) return listenPort
-        val socket = runCatching { ServerSocket(PREFERRED_PORT) }.getOrElse { ServerSocket(0) }
+        val socket = runCatching {
+            ServerSocket().apply {
+                reuseAddress = true
+                bind(InetSocketAddress(PREFERRED_PORT))
+            }
+        }.getOrElse { ServerSocket(0) }
         serverSocket = socket
         listenPort = socket.localPort
         acceptJob = scope.launch { acceptLoop(socket) }

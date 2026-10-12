@@ -62,19 +62,11 @@ public object FlashDatabaseOpener {
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
-                    try {
-                        db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
-                        db.execSQL("PRAGMA synchronous = NORMAL;")
-                        db.execSQL("PRAGMA temp_store = MEMORY;")
-                        db.execSQL("PRAGMA wal_autocheckpoint = 250;")
-                        db.execSQL("PRAGMA mmap_size = 2097152;")
-                        FlashLog.i("DATABASE", "Configured SQLite pragmas (cache_size = -$cacheSizeKb KiB, synchronous = NORMAL, temp_store = MEMORY, wal_autocheckpoint = 250, mmap_size = 2097152) for mode ${mode.key}")
-                    } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to set SQLite PRAGMAs: ${e.message}")
-                    }
+                    applyPragmas(db, cacheSizeKb, mode.key)
 
                     trim.attach(isOpen = { db.isOpen }, shrink = {
-                        db.execSQL("PRAGMA shrink_memory;")
+                        runCatching { db.query("PRAGMA shrink_memory;").use { it.moveToFirst() } }
+                            .recoverCatching { db.execSQL("PRAGMA shrink_memory;") }
                         FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory")
                     })
                 }
@@ -99,18 +91,41 @@ public object FlashDatabaseOpener {
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
-                    try {
-                        db.execSQL("PRAGMA cache_size = -$cacheSizeKb;")
-                        db.execSQL("PRAGMA synchronous = NORMAL;")
-                        db.execSQL("PRAGMA temp_store = MEMORY;")
-                        db.execSQL("PRAGMA wal_autocheckpoint = 250;")
-                        db.execSQL("PRAGMA mmap_size = 2097152;")
-                    } catch (_: Throwable) {}
-                    trim.attach(isOpen = { db.isOpen }, shrink = { db.execSQL("PRAGMA shrink_memory;") })
+                    applyPragmas(db, cacheSizeKb, mode.key)
+                    trim.attach(isOpen = { db.isOpen }, shrink = {
+                        runCatching { db.query("PRAGMA shrink_memory;").use { it.moveToFirst() } }
+                            .recoverCatching { db.execSQL("PRAGMA shrink_memory;") }
+                    })
                 }
             })
             .build()
             .also { it.trimRegistration = trim }
+    }
+
+    private fun applyPragmas(db: SupportSQLiteDatabase, cacheSizeKb: Int, modeKey: String) {
+        val pragmas = listOf(
+            "PRAGMA cache_size = -$cacheSizeKb;",
+            "PRAGMA synchronous = NORMAL;",
+            "PRAGMA temp_store = MEMORY;",
+            "PRAGMA wal_autocheckpoint = 250;",
+            "PRAGMA mmap_size = 2097152;",
+        )
+        for (pragma in pragmas) {
+            try {
+                // Statements that return a result row (e.g. wal_autocheckpoint, mmap_size) throw
+                // IllegalArgumentException on Android when executed with execSQL.
+                // Execute via query with cursor consumption first, falling back to execSQL.
+                val cursor = runCatching { db.query(pragma) }.getOrNull()
+                if (cursor != null) {
+                    cursor.use { it.moveToFirst() }
+                } else {
+                    db.execSQL(pragma)
+                }
+            } catch (e: Throwable) {
+                FlashLog.w("DATABASE", "Failed to set SQLite pragma '$pragma': ${e.message}")
+            }
+        }
+        FlashLog.i("DATABASE", "Configured SQLite pragmas (cache_size = -$cacheSizeKb KiB, synchronous = NORMAL, temp_store = MEMORY, wal_autocheckpoint = 250, mmap_size = 2097152) for mode $modeKey")
     }
 
     /** Manually detaches the memory trim registration from a database. */
@@ -143,11 +158,7 @@ internal class DatabaseTrimRegistration(
                 level == MemoryTrimLevel.COMPLETE
             ) {
                 try {
-                    if (isOpen()) {
-                        shrink()
-                    } else {
-                        detach()
-                    }
+                    if (isOpen()) shrink()
                 } catch (e: Throwable) {
                     FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory: ${e.message}")
                 }

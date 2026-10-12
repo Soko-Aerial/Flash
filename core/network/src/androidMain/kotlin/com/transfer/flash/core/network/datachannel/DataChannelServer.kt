@@ -6,6 +6,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
@@ -51,7 +52,10 @@ public class DataChannelServer(
         var lastError: Exception? = null
         for (offset in 0..portSpan) {
             try {
-                val socket = ServerSocket(preferredPort + offset)
+                val socket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(preferredPort + offset))
+                }
                 serverSocket = socket
                 listenPort = socket.localPort
                 running.set(true)
