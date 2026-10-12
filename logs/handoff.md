@@ -1,31 +1,29 @@
 # Current Handoff
 
-## 2026-10-12 — Offline Vector SVG QR Generator, Web Enrollment Landing Page & Percent-Decoding Complete
+## 2026-10-12 — Enterprise Department Group Discovery & Join Sheet and Client Subsystems Architecture Audit
 - **Current Branch:** `dev`
-- **Last Verified Commit:** `5b496344`
-- **Status:** Complete & verified across `:server:test` (58/58 tests passed), `:core:network:jvmTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, and clean compilation on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+- **Status:** Complete & verified across `:server:test`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, and clean compilation on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
 - **Completed Capabilities & Fixes:**
-  1. **100% Offline Vector SVG QR Code Generator:**
-     - Replaced brittle third-party `api.qrserver.com` dependency with `QrCodeGenerator.kt` powered by Google ZXing core.
-     - Produces crisp, inline SVG QR codes that work in completely air-gapped or offline networks with zero latency and zero external dependencies.
-  2. **Browser-Friendly Web Enrolment Landing Page:**
-     - Added `GET /enroll?token=...` web route in `AuthRoutes.kt`.
-     - When opened in mobile or desktop browsers, displays organization status, offline SVG QR code, 1-tap "Launch Flash App to Enrol" button (`flash://enroll?...`), and one-click copy actions.
-     - Resolves the issue where pasting `flash://` links into web browsers failed.
-  3. **Dual Link Presentation in Web Admin Dashboard:**
-     - `/admin/invites` now surfaces both:
-       - **Flash App Deep Link (`flash://enroll?...`)**: for pasting in Flash Settings > Enrol in Organization.
-       - **Web Browser URL (`http://<LAN_IP>:8443/enroll?token=...`)**: for sharing via messaging/email.
-  4. **Robust URL Percent-Decoding:**
-     - Added `decodePercent()` to `EnrollmentInvite.parseOrNull` and `FlashEnrollMath.parseInvite`.
-     - Prevents malformed host connection attempts when server URLs are encoded as `http%3A%2F%2F...`.
+  1. **Multi-Agent Enterprise Client Audit:**
+     - Identified root cause of silent enrollment inaction: `onEnrollDevice` was unpassed/null in `MainActivity.kt` and `DesktopShell.kt`.
+     - Audited runtime wiring in `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` for `enterpriseTrustStore`, `relayClient`, and `directoryClient`.
+     - Caught relayed group message `groupId` assignment corruption bug.
+  2. **Enterprise Department Group Discovery & Join Sheet (`FlashBrowseOrgGroupsSheet`):**
+     - Enrolled members can now tap the Relay icon in `FlashChatListTopBar` to browse departmental groups on the Enterprise Hub.
+     - Displays member counts, approval requirements, search filtering, and 1-tap Join or Request Access.
+     - Decoupled via `FlashBrowseOrgGroupUi` to maintain clean KMP architecture without leaking `:core:network` into `:ui:chat`.
+  3. **Zero Cloud Dump Group Joining (`joinEnterpriseGroup`):**
+     - Implemented in `RealFlashChatRepository` with atomic Room conversation upsert, local device provenance, and hub relay linking.
+     - Strictly preserves the Zero Cloud Dump Invariant (linking groups never uploads pre-existing local chat history to the hub/relay).
+  4. **Message Forwarding LazyColumn Duplicate Key Crash (ERROR-169):**
+     - Fixed duplicate recipient key crash when forwarding messages by enforcing recipient ID deduplication across `FlashShareTargetSheet`, `FlashConversationScreen`, `MainActivity`, and `DesktopShell`.
 - **Verification Summary:**
-  - `:server:test`: 58/58 tests green.
-  - `:core:network:jvmTest`: 100% green.
+  - `:core:messaging:jvmTest`: Passed.
+  - `:ui:chat:jvmTest`: Passed.
   - `:app:compileDebugKotlin`: BUILD SUCCESSFUL.
   - `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL.
 - **Recommended Next Task:**
-  - Start server locally (`.\gradlew.bat :server:run`) and guide user through first-time admin setup and client device enrollment.
+  - Connect enrollment dialog and persistent trust store wiring into `MainActivity.kt` and `DesktopShell.kt` based on auditor recommendations.
 
 ---
 

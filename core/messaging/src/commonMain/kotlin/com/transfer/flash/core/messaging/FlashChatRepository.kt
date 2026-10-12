@@ -52,6 +52,13 @@ public interface FlashChatRepository {
     public suspend fun acceptInvite(inviteUri: String): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
+    /**
+     * Joins an enterprise directory group discovered on the organization hub.
+     * Creates the local conversation record and links it to the hub relay for synchronization.
+     */
+    public suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
     /** Approves a pending join request for [groupId] and issues a certificate (GM-4). Admin-only. */
     public suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))

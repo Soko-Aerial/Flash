@@ -1,5 +1,73 @@
 # Progress Log
 
+## 2026-10-12 — Enterprise Department Group Discovery & Join Sheet and Client Subsystems Architecture Audit (:ui:chat, :core:messaging, :app, :desktop)
+
+### Worked on
+- Conducted a multi-agent architectural & bug audit across Enterprise Client Subsystems, identifying:
+  1. Unwired `onEnrollDevice` in `MainActivity.kt` and `DesktopShell.kt` resulting in silent no-op when clicking 'Confirm & Enrol'.
+  2. Runtime dependency disconnections in `DiscoveryEngineHolder.kt` and `DesktopEngine.kt` where `RealFlashChatRepository` was instantiated with null `enterpriseTrustStore`, `relayClient`, and `directoryClient`.
+  3. Relayed group message ID corruption bug where `env.id` was assigned to `groupId`.
+  4. Ephemeral in-memory enterprise credentials needing persistence.
+- Addressed user workflow requirement where newly enrolled organization members had no way to discover existing department groups on the hub and choose to join them.
+- Designed and implemented `FlashBrowseOrgGroupsSheet` and `FlashBrowseOrgGroupUi` bottom sheet in `:ui:chat` enabling enrolled members to browse scoped department groups, view membership counts and approval modes, search channels, and join or request access.
+- Implemented `joinEnterpriseGroup(groupId, groupName)` in `RealFlashChatRepository` and `FlashChatRepository`, creating the local legacy group conversation entity and linking it to the enterprise hub relay while strictly adhering to the Zero Cloud Dump Invariant.
+- Wired `onBrowseOrgGroupsClick` into `FlashChatListTopBar`, `FlashChatListScreen`, `MainActivity.kt`, and `DesktopShell.kt` with live hub group querying, local conversation opening, and user toast/snackbar feedback.
+
+### Changed
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashBrowseOrgGroupsSheet.kt`:
+  - Added new bottom sheet component with search, loading states, approval indicators, and join/request actions.
+  - Defined decoupled UI model `FlashBrowseOrgGroupUi` preserving module boundaries.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListTopBar.kt`:
+  - Added `onBrowseOrgGroupsClick` parameter rendering `FlashIcons.Relay` when non-null.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListScreen.kt`:
+  - Forwarded `onBrowseOrgGroupsClick` to top bar.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`:
+  - Added `joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<Unit>` interface method.
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`:
+  - Implemented `joinEnterpriseGroup` with Room transaction upsert, hub relay linking, and UI flow refreshing.
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`:
+  - Added `showBrowseOrgGroups` state, top bar wiring for enrolled devices, and sheet rendering with toast feedback.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`:
+  - Added `showBrowseOrgGroups` state, top bar wiring for enrolled devices, and sheet rendering with snackbar feedback.
+
+### Verification
+- `:core:messaging:jvmTest`: Passed.
+- `:ui:chat:jvmTest`: Passed.
+- `:desktop:compileKotlinJvm`: Clean compilation.
+- `:app:compileDebugKotlin`: Clean compilation.
+
+---
+
+## 2026-10-12 — Fix message forwarding LazyColumn duplicate key crash (ERROR-169) (:ui:chat, :app, :desktop)
+
+### Worked on
+- Analyzed crash log `flash-log-1791804628373.txt` where the Android app crashed immediately with `IllegalArgumentException: Key "paired_5b5b5d00-3339-42f6-95ca-9b36a11b9fcc" was already used` whenever attempting to forward a message from within a conversation.
+- Identified that `MainActivity.kt` passed `forwardRecipients = recentChatRecipients + pairedRecipients` to `FlashConversationScreen` without deduplicating by recipient ID. Because an active 1:1 chat peer ("Flash Deer") existed in both lists with `isPaired = true` and `isGroup = false`, both duplicates were partitioned into `pairedDevices`.
+- Inside `FlashShareTargetSheet`, `items(filteredPaired, key = { "paired_${it.id}" })` evaluated duplicate keys for the two identical recipient entries, crashing Compose's `LazyColumn`.
+
+### Changed
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashShareTargetSheet.kt`:
+  - `FlashShareTargetMath.filterRecipients`: Now automatically deduplicates matching candidates with `.distinctBy { it.id }`.
+  - `FlashShareTargetSheet`: Enforced `.distinctBy { it.id }` when remembering `filteredPaired`, `filteredChats`, and `filteredNearby`.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashConversationScreen.kt`:
+  - Added optional separate parameters `forwardRecentChats: List<FlashShareRecipientUi> = emptyList()` and `forwardPairedDevices: List<FlashShareRecipientUi> = emptyList()`.
+  - Deduplicated `effectiveRecentChats` and `effectivePairedDevices` using `.distinctBy { it.id }`.
+  - Updated forward availability guards to check all forward target lists.
+- `app/src/main/java/com/transfer/flash/MainActivity.kt`:
+  - Passed `forwardRecipients = (recentChatRecipients + pairedRecipients).distinctBy { it.id }`, `forwardRecentChats = recentChatRecipients`, and `forwardPairedDevices = pairedRecipients`.
+  - Added `.distinctBy { it.id }` to `nearbyRecipients` to prevent duplicate endpoint beacons from multi-interface discovery.
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`:
+  - Passed `forwardRecentChats` and `forwardPairedDevices` alongside `forwardRecipients`.
+  - Added `.distinctBy { it.id }` to `desktopNearbyRecipients`.
+- `ui/chat/src/commonTest/kotlin/com/transfer/flash/ui/chat/FlashShareTargetMathTest.kt`:
+  - Added `filter_recipients_deduplicates_by_id` unit test.
+
+### Verification
+- `:ui:chat:jvmTest`: Passed all tests including the new `filter_recipients_deduplicates_by_id`.
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`: Clean compilation.
+
+---
+
 ## 2026-10-12 — Offline Vector SVG QR Generator, Web Enrollment Landing Page & Percent-Decoding Remediation (:server, :core:network, :ui:chat)
 
 ### Worked on

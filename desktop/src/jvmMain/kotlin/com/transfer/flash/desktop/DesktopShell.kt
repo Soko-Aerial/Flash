@@ -72,6 +72,7 @@ import com.transfer.flash.ui.calling.pttPressOutcomeMessage
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
+import com.transfer.flash.ui.chat.FlashBrowseOrgGroupsSheet
 import com.transfer.flash.ui.chat.FlashCreateGroupSheet
 import com.transfer.flash.ui.chat.FlashCreateGroupPeerUi
 import com.transfer.flash.ui.chat.FlashPairingPhase
@@ -205,6 +206,7 @@ public fun DesktopShell(
 
     // ── Group creation (Item 3) ──
     var showCreateGroup by remember { mutableStateOf(false) }
+    var showBrowseOrgGroups by remember { mutableStateOf(false) }
     var showJoinGroupDialog by remember { mutableStateOf(false) }
     var activeJoinLink by remember { mutableStateOf<String?>(null) }
 
@@ -469,6 +471,7 @@ public fun DesktopShell(
                     subtitle = "Available nearby",
                 )
             }
+            .distinctBy { it.id }
     }
 
     val desktopRecentChatRecipients = remember(chatListState.items) {
@@ -1117,6 +1120,7 @@ public fun DesktopShell(
                 activeJoinLink = null
                 showJoinGroupDialog = true
             },
+            onBrowseOrgGroupsClick = if (settings.isEnterpriseEnrolled) { { showBrowseOrgGroups = true } } else null,
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
             bottomInset = tabBottomInset,
@@ -1140,6 +1144,8 @@ public fun DesktopShell(
             // Task 3.1: the in-app Forward sheet. Without these the conversation screen had no
             // recipients and Forward did nothing on desktop.
             forwardRecipients = (desktopRecentChatRecipients + desktopPairedRecipients).distinctBy { it.id },
+            forwardRecentChats = desktopRecentChatRecipients,
+            forwardPairedDevices = desktopPairedRecipients,
             onForwardToRecipients = { targets, payload -> forwardToChats(targets, payload) },
             // Whether this peer is in the trust store, from the same list the Nearby
             // screen's rows and this screen's header already read.
@@ -2070,6 +2076,47 @@ public fun DesktopShell(
                         }
                     }
                 },
+            )
+        }
+        if (showBrowseOrgGroups) {
+            FlashBrowseOrgGroupsSheet(
+                departmentName = settings.enterpriseDepartment,
+                onDismiss = { showBrowseOrgGroups = false },
+                onLoadGroups = {
+                    val res = chatRepository.fetchEnterpriseDirectoryGroups(settings.enterpriseDepartment)
+                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        res.value.map { g ->
+                            com.transfer.flash.ui.chat.FlashBrowseOrgGroupUi(
+                                groupId = g.groupId,
+                                name = g.name,
+                                department = g.department,
+                                memberCount = g.memberCount,
+                                requiresApproval = g.requiresApproval,
+                                description = g.description,
+                            )
+                        }
+                    } else emptyList()
+                },
+                onJoinGroup = { group ->
+                    scope.launch {
+                        val joinRes = chatRepository.joinEnterpriseGroup(group.groupId, group.name)
+                        if (joinRes is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            showBrowseOrgGroups = false
+                            chatRepository.openConversation(group.groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
+                            snackbarHostState.showSnackbar(
+                                message = "Joined ${group.name}",
+                                duration = SnackbarDuration.Short,
+                            )
+                        } else {
+                            snackbarHostState.showSnackbar(
+                                message = "Couldn't join group",
+                                duration = SnackbarDuration.Long,
+                            )
+                        }
+                    }
+                },
+                joinedGroupIds = chatListState.items.map { it.id }.toSet(),
             )
         }
         if (showJoinGroupDialog) {

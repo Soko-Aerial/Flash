@@ -1381,6 +1381,7 @@ private fun FlashShell(
     // Group Phase 1A: the create-group sheet opens from the chat list's top bar; its roster comes
     // from the pairing coordinator's trusted peers only (fail-closed membership by construction).
     var showCreateGroup by remember { mutableStateOf(false) }
+    var showBrowseOrgGroups by remember { mutableStateOf(false) }
     val trustedPeerRoster = trustedPeers.map { trusted ->
         // Initials mirror the repository's rule: first letters of the first two words, uppercased.
         val initials = trusted.name.trim().split("\\s+".toRegex())
@@ -1776,6 +1777,7 @@ private fun FlashShell(
                     subtitle = "Available nearby",
                 )
             }
+            .distinctBy { it.id }
     }
 
     val recentChatRecipients = remember(chatListState.items) {
@@ -2175,7 +2177,9 @@ private fun FlashShell(
             // is the one case where the banner should say "try again in a moment".
             onRetryConnection = { engine.reconnectNow() },
             onShareText = { text -> shareText(toastContext, text) },
-            forwardRecipients = recentChatRecipients + pairedRecipients,
+            forwardRecipients = (recentChatRecipients + pairedRecipients).distinctBy { it.id },
+            forwardRecentChats = recentChatRecipients,
+            forwardPairedDevices = pairedRecipients,
             onForwardToRecipients = { targets, payload -> forwardPayloadToChats(targets, payload) },
             // Group Phase D: conversationId + menu actions.
             conversationId = conversationId,
@@ -2739,6 +2743,7 @@ private fun FlashShell(
                 activeJoinLink = null
                 showJoinGroupDialog = true
             },
+            onBrowseOrgGroupsClick = if (settings.isEnterpriseEnrolled) { { showBrowseOrgGroups = true } } else null,
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
             bottomInset = tabBottomInset,
@@ -2966,6 +2971,42 @@ private fun FlashShell(
                         }
                     }
                 },
+            )
+        }
+
+        if (showBrowseOrgGroups) {
+            com.transfer.flash.ui.chat.FlashBrowseOrgGroupsSheet(
+                departmentName = settings.enterpriseDepartment,
+                onDismiss = { showBrowseOrgGroups = false },
+                onLoadGroups = {
+                    val res = chatRepository.fetchEnterpriseDirectoryGroups(settings.enterpriseDepartment)
+                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
+                        res.value.map { g ->
+                            com.transfer.flash.ui.chat.FlashBrowseOrgGroupUi(
+                                groupId = g.groupId,
+                                name = g.name,
+                                department = g.department,
+                                memberCount = g.memberCount,
+                                requiresApproval = g.requiresApproval,
+                                description = g.description,
+                            )
+                        }
+                    } else emptyList()
+                },
+                onJoinGroup = { group ->
+                    scope.launch {
+                        val joinRes = chatRepository.joinEnterpriseGroup(group.groupId, group.name)
+                        if (joinRes is com.transfer.flash.core.common.result.FlashResult.Success) {
+                            showBrowseOrgGroups = false
+                            chatRepository.openConversation(group.groupId)
+                            nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
+                            Toast.makeText(toastContext, "Joined ${group.name}", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(toastContext, "Couldn't join group", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                joinedGroupIds = chatListState.items.map { it.id }.toSet(),
             )
         }
 

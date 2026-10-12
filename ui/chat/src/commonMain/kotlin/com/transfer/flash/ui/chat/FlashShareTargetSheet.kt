@@ -96,11 +96,11 @@ object FlashShareTargetMath {
 
     fun filterRecipients(recipients: List<FlashShareRecipientUi>, query: String): List<FlashShareRecipientUi> {
         val q = query.trim()
-        if (q.isEmpty()) return recipients
-        return recipients.filter {
+        val matching = if (q.isEmpty()) recipients else recipients.filter {
             it.name.contains(q, ignoreCase = true) ||
                 it.subtitle?.contains(q, ignoreCase = true) == true
         }
+        return matching.distinctBy { it.id }
     }
 
     fun toggleSelection(current: Set<String>, id: String, maxLimit: Int = MAX_FORWARD_TARGETS): Set<String> {
@@ -206,13 +206,13 @@ fun FlashShareTargetSheet(
     val isMultiSelect = onForward != null
 
     val filteredPaired = remember(pairedDevices, searchQuery) {
-        FlashShareTargetMath.filterRecipients(pairedDevices, searchQuery)
+        FlashShareTargetMath.filterRecipients(pairedDevices, searchQuery).distinctBy { it.id }
     }
     val filteredChats = remember(recentChats, searchQuery) {
-        FlashShareTargetMath.filterRecipients(recentChats, searchQuery)
+        FlashShareTargetMath.filterRecipients(recentChats, searchQuery).distinctBy { it.id }
     }
     val filteredNearby = remember(nearbyDevices, searchQuery) {
-        FlashShareTargetMath.filterRecipients(nearbyDevices, searchQuery)
+        FlashShareTargetMath.filterRecipients(nearbyDevices, searchQuery).distinctBy { it.id }
     }
 
     fun handleRecipientClick(recipient: FlashShareRecipientUi) {

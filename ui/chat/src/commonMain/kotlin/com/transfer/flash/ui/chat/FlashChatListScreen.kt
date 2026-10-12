@@ -97,6 +97,8 @@ fun FlashChatListScreen(
     onNewGroupClick: (() -> Unit)? = null,
     /** GM-10: opens join-group-with-link dialog; null hides the action. */
     onJoinWithLinkClick: (() -> Unit)? = null,
+    /** Browse department groups on the enterprise hub; null hides the action. */
+    onBrowseOrgGroupsClick: (() -> Unit)? = null,
     /** Active conversation id in two-pane mode to highlight the currently open chat. */
     activeConversationId: String? = null,
 ) {
@@ -151,6 +153,7 @@ fun FlashChatListScreen(
                     onLanClick = onLanClick,
                     onNewGroupClick = onNewGroupClick,
                     onJoinWithLinkClick = onJoinWithLinkClick,
+                    onBrowseOrgGroupsClick = onBrowseOrgGroupsClick,
                 )
             }
         },

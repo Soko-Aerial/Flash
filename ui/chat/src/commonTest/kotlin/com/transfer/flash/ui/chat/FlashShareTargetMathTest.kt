@@ -107,6 +107,22 @@ class FlashShareTargetMathTest {
     }
 
     @Test
+    fun filter_recipients_deduplicates_by_id() {
+        val r1 = FlashShareRecipientUi("1", "Alice", "AL")
+        val r1Dup = FlashShareRecipientUi("1", "Alice Duplicate", "AL")
+        val r2 = FlashShareRecipientUi("2", "Bob", "BO")
+        val list = listOf(r1, r1Dup, r2)
+
+        val filteredEmptyQuery = FlashShareTargetMath.filterRecipients(list, "")
+        assertEquals(2, filteredEmptyQuery.size)
+        assertEquals(listOf("1", "2"), filteredEmptyQuery.map { it.id })
+
+        val filteredWithQuery = FlashShareTargetMath.filterRecipients(list, "ali")
+        assertEquals(1, filteredWithQuery.size)
+        assertEquals("1", filteredWithQuery.first().id)
+    }
+
+    @Test
     fun toggle_selection_enforces_max_limit() {
         var selected = emptySet<String>()
 
