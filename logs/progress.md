@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-10-12 — Standalone Enterprise Server Remediations & Architectural Hardening (:server)
+
+### Worked on
+- Complete architectural review and audit of `:server` against `docs/ENTERPRISE-HYBRID-PLAN.md`.
+- Remediated 7 audit findings across certificate validation, mailbox draining, metadata routing, admin invite issuance, key persistence, background TTL cleanup, and revocation checking.
+- Implemented automatic LAN IPv4 detection and configurable external URL (`--external-url`, `FLASH_EXTERNAL_URL`) for physical device and local Wi-Fi testing.
+- Added Hub Server URL field to the Web Admin Dashboard invite generation form to avoid hardcoded `localhost` or non-routable `0.0.0.0` addresses.
+
+### Changed
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/enterprise/DeviceCert.kt` & `server/src/main/kotlin/com/transfer/flash/server/auth/DeviceCert.kt`:
+  - Added `DEFAULT_CLOCK_SKEW_MS = 60_000L` tolerance to `isValidAt`.
+  - Added 10-second backdating to default `validFrom` on issuance, eliminating false-rejections and clock skew races.
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`:
+  - Added `fetchPendingEnvelopes` and `markEnvelopesDelivered` to `MailboxQueueSeam`.
+  - Implemented `drainMailboxForDevice(session)` to fetch and dispatch queued offline envelopes immediately upon peer connection.
+  - Implemented `handleInboundMeta` for `FLASH_META` frames (direct peer routing and group broadcast via `OrganizationDirectory`).
+  - Added revocation check during session connection, rejecting revoked devices with `FLASH_ERROR code=ERR_REVOKED`.
+- `server/src/main/kotlin/com/transfer/flash/server/mailbox/MailboxQueue.kt`:
+  - Implemented `fetchPendingEnvelopes` and `markEnvelopesDelivered` bridging database storage to `FlashEnvelope`.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminDashboardRoutes.kt`:
+  - Wired `/admin/invites` to `EnrollmentService.generateInviteLink`, using the true root public key SHA-256 fingerprint.
+- `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt`:
+  - Wired `directory`, `enrollmentService`, `rootFingerprint`, and `revocationListProvider` into `RelayFrameRouter` and `adminDashboardRoutes`.
+  - Wired `TtlSweeper` lifecycle (`start()` on server start, `stop()` on server stop).
+- `server/src/main/kotlin/com/transfer/flash/server/Main.kt`:
+  - Implemented persistent EC key pair storage (`root-identity.pk8`/`.pub`, `server-identity.pk8`/`.pub`) in `config.dataDir` so server restarts maintain certificate and invite validity.
+- `server/src/test/kotlin/com/transfer/flash/server/relay/RelayFrameRouterTest.kt` & `server/src/test/kotlin/com/transfer/flash/server/admin/AdminDashboardRoutesTest.kt`:
+  - Added unit tests for mailbox draining on reconnect, direct & group metadata routing, and admin invite generation & enrollment.
+
+### Verification
+- Ran `./gradlew.bat :server:test`: ALL 57 TESTS PASSED (0 failures, 0 errors across 12 test suites).
+- Ran `./gradlew.bat :core:security:jvmTest :core:network:jvmTest`: ALL TESTS PASSED.
+
+---
+
 ## 2026-10-11 — Step 4: Enterprise UI Integration (:ui:chat commonMain)
 
 ### Worked on
