@@ -155,7 +155,7 @@ class EnrollmentService(
 
         // 7. Issue new DeviceCert signed by server delegated private key
         val serial = deviceSerialSeq.incrementAndGet()
-        val validFrom = currentTimeMs
+        val validFrom = currentTimeMs - 10_000L
         val validTo = currentTimeMs + DeviceCert.DEFAULT_VALIDITY_MS
 
         val cert = DeviceCert.issue(

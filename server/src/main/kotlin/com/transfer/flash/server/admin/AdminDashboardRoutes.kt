@@ -1,5 +1,8 @@
 package com.transfer.flash.server.admin
 
+import com.transfer.flash.server.auth.DeviceCert
+import com.transfer.flash.server.auth.EnrollmentService
+import com.transfer.flash.server.auth.InviteScope
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
 import com.transfer.flash.server.directory.OrganizationDirectory
@@ -36,7 +39,8 @@ fun Route.adminDashboardRoutes(
     directory: OrganizationDirectory,
     auditLogger: AuditLogger,
     serverExternalUrl: String = "http://localhost:8080",
-    rootFingerprint: String = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    rootFingerprint: String = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    enrollmentService: EnrollmentService? = null,
 ) {
     val invites = ConcurrentHashMap<String, EnrolmentInvite>()
     val secureRandom = SecureRandom()
@@ -307,7 +311,13 @@ fun Route.adminDashboardRoutes(
             val allInvites = invites.values.toList()
             val depts = directory.listDepartments()
             val groups = directory.listGroups()
-            val html = AdminUiHtml.invitesPage(session.username, allInvites, depts, groups)
+            val html = AdminUiHtml.invitesPage(
+                username = session.username,
+                invites = allInvites,
+                departments = depts,
+                groups = groups,
+                serverExternalUrl = serverExternalUrl,
+            )
             call.respondText(html, ContentType.Text.Html, HttpStatusCode.OK)
         }
 
@@ -319,16 +329,34 @@ fun Route.adminDashboardRoutes(
             val ttlMinutes = (params["ttlMinutes"]?.toLongOrNull() ?: 60L).coerceIn(5L, 10080L)
             val allowedGroupsRaw = params["allowedGroups"] ?: ""
             val autoJoinGroupsRaw = params["autoJoinGroups"] ?: ""
+            val hubUrl = params["serverUrl"]?.trim()?.takeIf { it.isNotBlank() } ?: serverExternalUrl
 
             val allowedGroups = allowedGroupsRaw.split(",").map { it.trim() }.filter { it.isNotBlank() }
             val autoJoinGroups = autoJoinGroupsRaw.split(",").map { it.trim() }.filter { it.isNotBlank() }
 
-            val tokenBytes = ByteArray(16)
-            secureRandom.nextBytes(tokenBytes)
-            val token = tokenBytes.toHex()
-
-            val link = "flash://enroll?server=${serverExternalUrl}&token=${token}&root=${rootFingerprint}"
             val expiresAtMs = System.currentTimeMillis() + (ttlMinutes * 60 * 1000L)
+            val token: String
+            val link: String
+
+            if (enrollmentService != null) {
+                val scope = InviteScope(
+                    department = deptId.ifBlank { null },
+                    allowedGroups = allowedGroups.toSet(),
+                    role = DeviceCert.ROLE_MEMBER,
+                    expiry = expiresAtMs,
+                    maxUses = 1,
+                )
+                link = enrollmentService.generateInviteLink(
+                    serverUrl = hubUrl,
+                    scope = scope,
+                )
+                token = link.substringAfter("token=").substringBefore("&")
+            } else {
+                val tokenBytes = ByteArray(16)
+                secureRandom.nextBytes(tokenBytes)
+                token = tokenBytes.toHex()
+                link = "flash://enroll?server=${hubUrl}&token=${token}&root=${rootFingerprint}"
+            }
 
             val invite = EnrolmentInvite(
                 token = token,
@@ -356,7 +384,8 @@ fun Route.adminDashboardRoutes(
                 invites = allInvites,
                 departments = depts,
                 groups = groups,
-                newInviteLink = link
+                newInviteLink = link,
+                serverExternalUrl = hubUrl,
             )
             call.respondText(html, ContentType.Text.Html, HttpStatusCode.OK)
         }

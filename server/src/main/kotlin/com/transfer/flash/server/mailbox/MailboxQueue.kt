@@ -195,6 +195,22 @@ class MailboxQueue(
     }
 
     /**
+     * Implements [com.transfer.flash.server.relay.MailboxQueueSeam] to fetch pending FlashEnvelopes.
+     */
+    override suspend fun fetchPendingEnvelopes(targetDeviceId: String, limit: Int): List<FlashEnvelope> {
+        val pending = fetchPending(targetDeviceId, limit)
+        return pending.map { sealed ->
+            FlashEnvelope(
+                id = sealed.msgId,
+                type = sealed.kind,
+                payloadJson = sealed.payload.decodeToString(),
+                senderId = sealed.originDeviceId,
+                sentAt = sealed.timestamp,
+            )
+        }
+    }
+
+    /**
      * Fetches undelivered, non-expired envelopes with internal IDs and timestamps.
      */
     override fun fetchPendingWithMetadata(targetDeviceId: String, limit: Int): List<QueuedEnvelope> {
@@ -272,6 +288,24 @@ class MailboxQueue(
                 stmt.setString(1, targetDeviceId)
                 stmt.setString(2, msgId)
                 stmt.executeUpdate() > 0
+            }
+        }
+    }
+
+    /**
+     * Implements [com.transfer.flash.server.relay.MailboxQueueSeam] to mark envelopes delivered by msgId list.
+     */
+    override suspend fun markEnvelopesDelivered(targetDeviceId: String, msgIds: List<String>): Int {
+        if (msgIds.isEmpty()) return 0
+        return database.withConnection { conn ->
+            val placeholders = msgIds.joinToString(",") { "?" }
+            val sql = "UPDATE mailbox_envelopes SET delivered = 1 WHERE target_device_id = ? AND msg_id IN ($placeholders)"
+            conn.prepareStatement(sql).use { stmt ->
+                stmt.setString(1, targetDeviceId)
+                msgIds.forEachIndexed { index, id ->
+                    stmt.setString(index + 2, id)
+                }
+                stmt.executeUpdate()
             }
         }
     }

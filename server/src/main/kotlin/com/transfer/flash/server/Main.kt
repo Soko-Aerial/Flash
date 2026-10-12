@@ -7,6 +7,7 @@ import com.transfer.flash.server.auth.ChallengeResponseAuth
 import com.transfer.flash.server.auth.DelegationCert
 import com.transfer.flash.server.auth.EnrollmentService
 import com.transfer.flash.server.auth.generateEcKeyPair
+import com.transfer.flash.server.auth.toBase64Pkcs8
 import com.transfer.flash.server.auth.toBase64Spki
 import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.core.FlashServerEngine
@@ -14,6 +15,11 @@ import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.mailbox.MailboxQueue
 import com.transfer.flash.server.storage.ServerDatabase
 import java.io.File
+import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
 import org.slf4j.LoggerFactory
 
 private val logger = LoggerFactory.getLogger("FlashEnterpriseHub")
@@ -26,6 +32,8 @@ public fun main(args: Array<String>) {
     logger.info("==================================================================")
     logger.info("Flash Enterprise Hub - Hybrid Directory & Relay Engine")
     logger.info("Listening Address      : http://{}:{}", config.host, config.port)
+    logger.info("External / LAN URL     : {}", config.externalUrl)
+    logger.info("Admin Setup URL        : {}/admin/setup", config.externalUrl)
     logger.info("Admin Port             : {}", config.adminPort)
     logger.info("TLS Termination Mode   : {}", config.tlsMode)
     logger.info("Data Storage Directory : {}", config.dataDir)
@@ -43,10 +51,18 @@ public fun main(args: Array<String>) {
     val mailboxQueue = MailboxQueue(database = db)
     val directory = OrganizationDirectory()
     val auditLogger = AuditLogger()
-    val adminAuthService = AdminAuthService(printSetupTokenToConsole = true)
+    val adminAuthService = AdminAuthService(
+        printSetupTokenToConsole = true,
+        setupUrl = "${config.externalUrl}/admin/setup",
+    )
 
-    val rootKeyPair = FlashCrypto.generateEcKeyPair()
-    val serverKeyPair = FlashCrypto.generateEcKeyPair()
+    val rootPrivFile = File(dataDirFile, "root-identity.pk8")
+    val rootPubFile = File(dataDirFile, "root-identity.pub")
+    val serverPrivFile = File(dataDirFile, "server-identity.pk8")
+    val serverPubFile = File(dataDirFile, "server-identity.pub")
+
+    val rootKeyPair = loadOrGenerateKeyPair(rootPrivFile, rootPubFile)
+    val serverKeyPair = loadOrGenerateKeyPair(serverPrivFile, serverPubFile)
     val rootPubKey = rootKeyPair.toBase64Spki()
     val serverPubKey = serverKeyPair.toBase64Spki()
 
@@ -109,4 +125,29 @@ private fun printBanner() {
          Local-First Secure Relay & Mailbox Daemon
     """.trimIndent()
     println(banner)
+}
+
+private fun loadOrGenerateKeyPair(privFile: File, pubFile: File): KeyPair {
+    val keyFactory = KeyFactory.getInstance("EC")
+    return if (privFile.exists() && pubFile.exists()) {
+        try {
+            val privBytes = Base64.getDecoder().decode(privFile.readText().trim())
+            val pubBytes = Base64.getDecoder().decode(pubFile.readText().trim())
+            val privKey = keyFactory.generatePrivate(PKCS8EncodedKeySpec(privBytes))
+            val pubKey = keyFactory.generatePublic(X509EncodedKeySpec(pubBytes))
+            KeyPair(pubKey, privKey)
+        } catch (e: Exception) {
+            logger.warn("Failed loading persisted EC key pair from {}, regenerating: {}", privFile.name, e.message)
+            generateAndPersistKeyPair(privFile, pubFile)
+        }
+    } else {
+        generateAndPersistKeyPair(privFile, pubFile)
+    }
+}
+
+private fun generateAndPersistKeyPair(privFile: File, pubFile: File): KeyPair {
+    val pair = FlashCrypto.generateEcKeyPair()
+    privFile.writeText(pair.private.toBase64Pkcs8())
+    pubFile.writeText(pair.public.toBase64Spki())
+    return pair
 }

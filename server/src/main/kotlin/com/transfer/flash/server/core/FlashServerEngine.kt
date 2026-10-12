@@ -20,18 +20,24 @@ import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
-import kotlinx.coroutines.runBlocking
-import org.slf4j.LoggerFactory
-import kotlin.time.Duration.Companion.seconds
-
+import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.server.admin.AdminAuthService
 import com.transfer.flash.server.admin.AuditLogger
 import com.transfer.flash.server.admin.adminDashboardRoutes
 import com.transfer.flash.server.auth.ChallengeResponseAuth
 import com.transfer.flash.server.auth.EnrollmentService
+import com.transfer.flash.server.auth.RevocationList
 import com.transfer.flash.server.auth.authRoutes
+import com.transfer.flash.server.auth.sha256FingerprintHex
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.directory.directoryRoutes
+import com.transfer.flash.server.mailbox.TtlSweeper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import org.slf4j.LoggerFactory
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Embedded Ktor Netty application engine managing the Flash Enterprise Hub.
@@ -52,6 +58,7 @@ public class FlashServerEngine(
     public val adminAuthService: AdminAuthService = AdminAuthService(printSetupTokenToConsole = true),
     public val challengeAuth: ChallengeResponseAuth? = null,
     public val enrollmentService: EnrollmentService? = null,
+    public val revocationListProvider: (() -> RevocationList?)? = null,
 ) {
 
     private val logger = LoggerFactory.getLogger(FlashServerEngine::class.java)
@@ -60,7 +67,17 @@ public class FlashServerEngine(
     public val relayFrameRouter: RelayFrameRouter = RelayFrameRouter(
         connectionPool = connectionPool,
         mailboxQueue = mailboxQueue,
+        directory = directory,
+        revocationListProvider = revocationListProvider,
     )
+
+    public val ttlSweeper: TtlSweeper? =
+        (mailboxQueue as? com.transfer.flash.server.mailbox.MailboxQueueSeam)?.let {
+            TtlSweeper(
+                mailboxQueue = it,
+                coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob()),
+            )
+        }
 
     private val engine: EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> = embeddedServer(
         factory = Netty,
@@ -137,11 +154,17 @@ public class FlashServerEngine(
             relayFrameRouter.registerRoute(this)
 
             // Admin Dashboard routes (/admin/login, /admin/dashboard, etc.)
+            val rootFp = enrollmentService?.rootPublicKey?.let {
+                FlashCrypto.sha256FingerprintHex(it)
+            } ?: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
             adminDashboardRoutes(
                 adminAuthService = adminAuthService,
                 directory = directory,
                 auditLogger = auditLogger,
-                serverExternalUrl = "http://${config.host}:${config.port}",
+                serverExternalUrl = config.externalUrl,
+                rootFingerprint = rootFp,
+                enrollmentService = enrollmentService,
             )
 
             // Organization Directory REST routes (/api/v1/directory/*)
@@ -169,6 +192,7 @@ public class FlashServerEngine(
             config.adminPort,
             config.tlsMode,
         )
+        ttlSweeper?.start()
         engine.start(wait = wait)
     }
 
@@ -177,6 +201,7 @@ public class FlashServerEngine(
      */
     public fun stop(gracePeriodMillis: Long = 1000, timeoutMillis: Long = 5000) {
         logger.info("Initiating graceful shutdown for Flash Enterprise Hub...")
+        ttlSweeper?.stop()
         runBlocking {
             connectionPool.closeAll("Server shutting down")
         }

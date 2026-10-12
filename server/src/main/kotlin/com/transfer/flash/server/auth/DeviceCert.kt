@@ -58,9 +58,14 @@ data class DeviceCert(
 
     /**
      * Checks if this certificate is within its validity window at [timestamp].
+     * Includes a default [clockSkewToleranceMs] window (default 60s) to prevent rejected
+     * handshakes on freshly minted certificates or slight client/server clock drifts.
      */
-    fun isValidAt(timestamp: Long = System.currentTimeMillis()): Boolean {
-        return timestamp in validFrom..validTo
+    fun isValidAt(
+        timestamp: Long = System.currentTimeMillis(),
+        clockSkewToleranceMs: Long = DEFAULT_CLOCK_SKEW_MS,
+    ): Boolean {
+        return timestamp in (validFrom - clockSkewToleranceMs)..validTo
     }
 
     /**
@@ -112,6 +117,9 @@ data class DeviceCert(
         /** Default validity for client device certificates: 7 days (D-E9). */
         const val DEFAULT_VALIDITY_MS: Long = 7L * 24 * 60 * 60 * 1000
 
+        /** Default clock skew tolerance buffer: 60 seconds. */
+        const val DEFAULT_CLOCK_SKEW_MS: Long = 60_000L
+
         /**
          * Helper to issue and sign a new [DeviceCert] with an issuer private key.
          */
@@ -122,7 +130,7 @@ data class DeviceCert(
             subjectPublicKey: String,
             role: String = ROLE_MEMBER,
             department: String? = null,
-            validFrom: Long = System.currentTimeMillis(),
+            validFrom: Long = System.currentTimeMillis() - 10_000L,
             validTo: Long = System.currentTimeMillis() + DEFAULT_VALIDITY_MS,
             serial: Long,
         ): DeviceCert {
