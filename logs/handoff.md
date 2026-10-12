@@ -1,5 +1,24 @@
 # Current Handoff
 
+## 2026-10-12 — Standalone Enterprise Hub Server Audit & Remediations Complete (:server)
+- **Current Branch:** `dev`
+- **Status:** Complete & 100% verified across `:server:test` (57 tests passing across 12 suites), `:core:security:jvmTest`, and `:core:network:jvmTest`.
+- **Completed Capabilities & Fixes:**
+  1. **Clock Skew Tolerance & Cert Validity:** `DEFAULT_CLOCK_SKEW_MS = 60_000L` added to `DeviceCert.isValidAt`, with 10s default issuance backdating on `validFrom` in `server` and `core:security`, resolving race conditions on rapid handshake checks.
+  2. **Offline Mailbox Draining:** `RelayFrameRouter` now fetches undelivered offline envelopes from `MailboxQueue` upon peer connection, encodes and delivers them over `/flash-relay` via `drainMailboxForDevice`, and marks them delivered.
+  3. **Ephemeral Metadata Routing (`FLASH_META`):** Full routing implemented in `RelayFrameRouter` for typing indicators and presence, supporting direct peer routing and group broadcasts via `OrganizationDirectory`.
+  4. **Admin Dashboard Invites Linked to Enrollment:** `/admin/invites` now delegates link creation to `EnrollmentService.generateInviteLink`, using the true root public key SHA-256 fingerprint, enabling immediate client enrollment via `POST /api/v1/enroll`.
+  5. **Background Sweeper & Revocation Lifecycle:** `TtlSweeper` wired into `FlashServerEngine` startup/shutdown lifecycle. Inbound connection revocation checks implemented with `FLASH_ERROR code=ERR_REVOKED`.
+  6. **Persistent Server Identity:** `Main.kt` loads and persists `root-identity.pk8`/`.pub` and `server-identity.pk8`/`.pub` in `config.dataDir`, ensuring issued device certs and invite links persist across server daemon restarts.
+- **Verification Summary:**
+  - `:server:test`: 57/57 tests passed (0 failures, 0 errors).
+  - `:core:security:jvmTest`: 100% green.
+  - `:core:network:jvmTest`: 100% green.
+- **Recommended Next Task:**
+  - Launch `:server` locally with `flash-hub.db` and perform end-to-end enrollment and relay messaging test with mobile/desktop client instances.
+
+---
+
 ## 2026-10-11 — Enterprise Hybrid Client-Side Implementation (Steps 1–4 Complete)
 - **Current Branch:** `dev`
 - **Last Verified Commits:**
