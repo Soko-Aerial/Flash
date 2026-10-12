@@ -292,6 +292,28 @@ class ConnectionPlannerTest {
         assertEquals(listOf("gateway:192.168.43.1", "sweep:192.168.43.1"), plan.dials.map { it.key })
     }
 
+    @Test
+    fun `rule 9 - sweep hit and gateway probe are skipped when a sighting already exists for that host`() {
+        val sighting = Sighting(deviceId = "c", host = "192.168.1.50", port = 52525, name = "P-c")
+        val plan = planner().plan(
+            0, listOf(sighting), links,
+            gatewayHosts = listOf("192.168.1.50"),
+            sweepHosts = listOf("192.168.1.50", "192.168.1.60"),
+        )
+        // "c" is dialed via sighting; gateway:192.168.1.50 and sweep:192.168.1.50 are skipped; sweep:192.168.1.60 is dialed.
+        assertEquals(listOf("c", "sweep:192.168.1.60"), plan.dials.map { it.key })
+    }
+
+    @Test
+    fun `rule 9 - sweep hit is skipped when host belongs to local device`() {
+        val localSighting = Sighting(deviceId = "b", host = "192.168.1.99", port = 52525, name = "P-b")
+        val plan = planner().plan(
+            0, listOf(localSighting), links,
+            sweepHosts = listOf("192.168.1.99"),
+        )
+        assertEquals(emptyList(), plan.dials)
+    }
+
     // --- endpoint-aware suppression ---
 
     @Test

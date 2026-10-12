@@ -1,5 +1,55 @@
 # Error Log
 
+## ERROR-126 — Rapid Reconnect/Disconnect Loop, Port Hopping via ServerSocket TIME_WAIT, and SQLite PRAGMA Failure
+
+### Date
+2026-10-12
+
+### Area
+Network connection planning, WebSocket session lifecycle, TCP port binding, Android Room/SQLite
+
+### Symptoms
+In log `flash-log-1791808254153.txt` from INFINIX X6882B (Android 14, API 34):
+- 1,286 `session.up` and 1,275 `session.down` events in a rapid infinite reconnect loop.
+- 1,037 disconnects with WebSocket Close 1000 and 216 disconnects with "Superseded by a newer connection".
+- Server sockets hopping from default port 52525 to ephemeral ports (37111, 46297, etc.).
+- SQLite log error: `DATABASE: Failed to set SQLite PRAGMAs: Queries can be performed using SQLiteDatabase query or rawQuery methods only.`
+
+### Environment
+- Device: INFINIX Infinix X6882B
+- Android version: Android 14 (API 34)
+- Network: Local Wi-Fi LAN
+
+### Root cause
+1. In `ConnectionPlanner.kt`: when a host had both an active discovery sighting and a sweep hit (from subnet sweep), two dials were launched concurrently (`devId` and `sweep:host`). Dial #2 arrived immediately after Dial #1, superseding Dial #1 and closing it with Close 1000.
+2. In `WsFlashNetwork.kt`: `reconnectPolicies.remove(peerDevice.id.value)` was executed immediately on connection handshake completion. When the connection dropped milliseconds later, `scheduleReconnect` reset the backoff to 1.0s attempt 0 instead of exponential backoff.
+3. In `WsTransferServer.kt` and `DataChannelServer.kt`: `ServerSocket(port)` was called without setting `reuseAddress = true` before binding. Sockets in TIME_WAIT threw `BindException: Address already in use`, falling back to `ServerSocket(0)` and causing ephemeral port flapping.
+4. In `FlashDatabaseOpener.kt`: `PRAGMA wal_autocheckpoint` and `PRAGMA mmap_size` return a result row. Android SQLite/SQLCipher's `execSQL()` forbids statements that return rows, throwing `IllegalArgumentException`.
+
+### Working fix
+1. `ConnectionPlanner.kt`: Filtered `sweepHosts` and `gatewayHosts` against `sightingHosts` to eliminate redundant dials to known sighting hosts.
+2. `WsTransferServer.kt` and `DataChannelServer.kt`: Created `ServerSocket().apply { reuseAddress = true; bind(...) }` before fallback.
+3. `WsFlashNetwork.kt` & `JvmWsFlashNetwork.kt`: Delayed backoff reset by `STABLE_CONNECTION_RESET_MS = 10_000L` with `hasLiveSession()` check so flapping connections back off exponentially.
+4. `FlashDatabaseOpener.kt`: Used `db.query(pragma).use { it.moveToFirst() }` with fallback to `db.execSQL()` for PRAGMA statements.
+
+### Verification
+- `:core:network:jvmTest` (including new ConnectionPlanner de-duplication tests) passed.
+- `:core:persistence:jvmTest` and `:core:persistence:testAndroidHostTest` passed.
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` passed cleanly.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/planner/ConnectionPlanner.kt`
+- `core/network/src/commonTest/kotlin/com/transfer/flash/core/network/planner/ConnectionPlannerTest.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsTransferServer.kt`
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/WsTransferServer.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/datachannel/DataChannelServer.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/JvmWsFlashNetwork.kt`
+- `core/persistence/src/androidMain/kotlin/com/transfer/flash/core/persistence/db/FlashDatabaseOpener.kt`
+
+### Status
+RESOLVED
+
 ## ERROR-106 - `DesktopEngineGroupSessionUpTest` fails: group creation refuses an offline invitee (found, not investigated)
 
 ### Date

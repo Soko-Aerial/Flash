@@ -478,11 +478,17 @@ public class WsFlashNetwork(
                 )
             }
 
-            // #18: remember the route WE dialed so an unexpected drop can be auto-redialed, and reset
-            // the peer's backoff counter now that we have a stable connect. Only outbound dials get a
-            // reconnect target; inbound peers reconnect from their side.
-            reconnectTargets[peerDevice.id.value] = Endpoint(host, actualPort)
-            reconnectPolicies.remove(peerDevice.id.value)
+            // #18: remember the route WE dialed so an unexpected drop can be auto-redialed.
+            // Reset the peer's backoff counter only after the connection proves stable,
+            // so flapping or immediate disconnects back off exponentially instead of restarting from base.
+            val peerIdVal = peerDevice.id.value
+            reconnectTargets[peerIdVal] = Endpoint(host, actualPort)
+            scope.launch {
+                delay(STABLE_CONNECTION_RESET_MS)
+                if (hasLiveSession(peerIdVal)) {
+                    reconnectPolicies.remove(peerIdVal)
+                }
+            }
 
             FlashResult.Success(session)
         } finally {
@@ -1258,6 +1264,7 @@ public class WsFlashNetwork(
         private const val TAG = "WS"
         private const val HELLO_PREFIX = "FLASH_WS_HELLO"
         private const val HANDSHAKE_TIMEOUT_MS = 6_000L
+        private const val STABLE_CONNECTION_RESET_MS = 10_000L
 
         /**
          * Backoff floor for the accepting side's backup redial (ERROR-026). Above the primary loop's

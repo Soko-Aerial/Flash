@@ -140,8 +140,14 @@ public class ConnectionPlanner(
         // its suppression window the next is tried (ERROR-085 follow-up), and once one is dialed the
         // device is in flight, so the others wait. Only an exact repeat of an endpoint is dropped.
         val seenEndpoints = HashSet<EndpointKey>()
+        val sightingHosts = HashSet<String>()
         for (s in sightings) {
-            if (s.deviceId == localDeviceId || (allowed != null && s.deviceId !in allowed)) continue
+            if (s.deviceId == localDeviceId) {
+                sightingHosts += s.host
+                continue
+            }
+            if (allowed != null && s.deviceId !in allowed) continue
+            sightingHosts += s.host
             if (!seenEndpoints.add(EndpointKey(key = s.deviceId, host = s.host, port = s.port))) continue
             candidates += Candidate(
                 dial = Dial(key = s.deviceId, host = s.host, port = s.port, peerDeviceId = s.deviceId, name = s.name),
@@ -151,6 +157,7 @@ public class ConnectionPlanner(
             )
         }
         for (host in gatewayHosts) {
+            if (host in sightingHosts) continue
             val key = GATEWAY_KEY_PREFIX + host
             if (!seen.add(key)) continue
             candidates += Candidate(
@@ -161,6 +168,7 @@ public class ConnectionPlanner(
             )
         }
         for (host in sweepHosts) {
+            if (host in sightingHosts) continue
             val key = SWEEP_KEY_PREFIX + host
             if (!seen.add(key)) continue
             candidates += Candidate(
