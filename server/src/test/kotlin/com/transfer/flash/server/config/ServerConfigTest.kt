@@ -19,6 +19,7 @@ class ServerConfigTest {
         assertTrue(config.setupToken.isNotEmpty())
         assertEquals(60000L, config.challengeTimeoutMs)
         assertEquals(7, config.mailboxTtlDays)
+        assertTrue(config.externalUrl.startsWith("http://"))
     }
 
     @Test
@@ -32,6 +33,7 @@ class ServerConfigTest {
             "--setup-token=secret-token",
             "--challenge-timeout-ms=30000",
             "--mailbox-ttl-days=14",
+            "--external-url=http://192.168.1.150:9000",
         )
         val config = ServerConfig.fromEnvironment(args = args, env = emptyMap())
         assertEquals(9000, config.port)
@@ -42,6 +44,7 @@ class ServerConfigTest {
         assertEquals("secret-token", config.setupToken)
         assertEquals(30000L, config.challengeTimeoutMs)
         assertEquals(14, config.mailboxTtlDays)
+        assertEquals("http://192.168.1.150:9000", config.externalUrl)
     }
 
     @Test
@@ -55,6 +58,7 @@ class ServerConfigTest {
             "FLASH_SETUP_TOKEN" to "env-token",
             "FLASH_CHALLENGE_TIMEOUT_MS" to "45000",
             "FLASH_MAILBOX_TTL_DAYS" to "3",
+            "FLASH_EXTERNAL_URL" to "http://10.0.0.5:8080",
         )
         val config = ServerConfig.fromEnvironment(args = emptyArray(), env = env)
         assertEquals(8080, config.port)
@@ -63,5 +67,12 @@ class ServerConfigTest {
         assertEquals("env-token", config.setupToken)
         assertEquals(45000L, config.challengeTimeoutMs)
         assertEquals(3, config.mailboxTtlDays)
+        assertEquals("http://10.0.0.5:8080", config.externalUrl)
+    }
+
+    @Test
+    fun testLanIpResolutionFallback() {
+        val resolved = ServerConfig.resolveDefaultExternalUrl("192.168.1.99", 8443)
+        assertEquals("http://192.168.1.99:8443", resolved)
     }
 }

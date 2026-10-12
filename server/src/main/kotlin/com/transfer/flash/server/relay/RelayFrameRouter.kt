@@ -5,6 +5,8 @@ package com.transfer.flash.server.relay
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.server.auth.RevocationList
+import com.transfer.flash.server.directory.OrganizationDirectory
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.plugins.origin
 import io.ktor.server.routing.Route
@@ -19,8 +21,8 @@ import org.slf4j.LoggerFactory
 /**
  * Seam interface for persistent offline mailbox storage.
  *
- * Implemented by the mailbox subsystem (Subagent 3) to persist encrypted frames
- * when the intended recipient is not currently connected to the hub.
+ * Implemented by the mailbox subsystem to persist and drain encrypted frames
+ * when peers connect or disconnect from the hub.
  */
 public interface MailboxQueueSeam {
     /**
@@ -34,6 +36,16 @@ public interface MailboxQueueSeam {
      * Optional raw frame enqueue fallback.
      */
     public suspend fun enqueueRaw(recipientId: String, rawFrame: String): Boolean = false
+
+    /**
+     * Fetches pending stored envelopes for [targetDeviceId].
+     */
+    public suspend fun fetchPendingEnvelopes(targetDeviceId: String, limit: Int = 100): List<FlashEnvelope> = emptyList()
+
+    /**
+     * Marks envelopes as delivered for [targetDeviceId] by their message IDs.
+     */
+    public suspend fun markEnvelopesDelivered(targetDeviceId: String, msgIds: List<String>): Int = 0
 }
 
 /**
@@ -42,6 +54,8 @@ public interface MailboxQueueSeam {
 public object NoOpMailboxQueueSeam : MailboxQueueSeam {
     override suspend fun enqueue(recipientId: String, envelope: FlashEnvelope): Boolean = false
     override suspend fun enqueueRaw(recipientId: String, rawFrame: String): Boolean = false
+    override suspend fun fetchPendingEnvelopes(targetDeviceId: String, limit: Int): List<FlashEnvelope> = emptyList()
+    override suspend fun markEnvelopesDelivered(targetDeviceId: String, msgIds: List<String>): Int = 0
 }
 
 /**
@@ -54,6 +68,8 @@ public object NoOpMailboxQueueSeam : MailboxQueueSeam {
 public class RelayFrameRouter(
     public val connectionPool: RelayConnectionPool,
     public var mailboxQueue: MailboxQueueSeam = NoOpMailboxQueueSeam,
+    public val directory: OrganizationDirectory? = null,
+    public val revocationListProvider: (() -> RevocationList?)? = null,
 ) {
 
     private val logger = LoggerFactory.getLogger(RelayFrameRouter::class.java)
@@ -87,7 +103,14 @@ public class RelayFrameRouter(
             return
         }
 
-        // 3. Parse Envelope (FlashTextFraming or JSON)
+        // 3. Check for Ephemeral Metadata (typing / presence: P-REF-1 / P-REF-4)
+        val metaFields = FlashTextFraming.parseFields(trimmed, "FLASH_META")
+        if (metaFields != null) {
+            handleInboundMeta(originSession, metaFields, trimmed)
+            return
+        }
+
+        // 4. Parse Envelope (FlashTextFraming or JSON)
         val parsed = parseRelayMessage(trimmed)
         if (parsed == null) {
             logger.warn("Unrecognized or malformed frame from device '{}': {}", originSession.deviceId, trimmed.take(100))
@@ -183,6 +206,55 @@ public class RelayFrameRouter(
             if (target != null) {
                 target.sendText(rawText)
                 logger.debug("Forwarded FLASH_ACK from '{}' to '{}'", originSession.deviceId, targetRecipient)
+            }
+        }
+    }
+
+    private suspend fun handleInboundMeta(
+        originSession: RelaySession,
+        fields: Map<String, String>,
+        rawText: String,
+    ) {
+        val directRecipient = fields["recipient"] ?: fields["to"] ?: fields["target"] ?: fields["targetDeviceId"]
+        if (directRecipient != null) {
+            val target = connectionPool.get(directRecipient)
+            if (target != null) {
+                target.sendText(rawText)
+                logger.trace("Forwarded direct FLASH_META from '{}' to '{}'", originSession.deviceId, directRecipient)
+            }
+            return
+        }
+
+        val groupId = fields["group"] ?: fields["groupId"]
+        if (groupId != null && directory != null) {
+            val group = directory.getGroup(groupId)
+            if (group != null) {
+                for (memberId in group.memberDeviceIds) {
+                    if (memberId != originSession.deviceId) {
+                        connectionPool.get(memberId)?.sendText(rawText)
+                    }
+                }
+                logger.trace("Broadcast FLASH_META for group '{}' from '{}'", groupId, originSession.deviceId)
+                return
+            }
+        }
+
+        val convId = fields["conversationId"]
+        if (convId != null) {
+            val group = directory?.getGroup(convId)
+            if (group != null) {
+                for (memberId in group.memberDeviceIds) {
+                    if (memberId != originSession.deviceId) {
+                        connectionPool.get(memberId)?.sendText(rawText)
+                    }
+                }
+                logger.trace("Broadcast FLASH_META for group conv '{}' from '{}'", convId, originSession.deviceId)
+                return
+            }
+            val peer = connectionPool.get(convId)
+            if (peer != null) {
+                peer.sendText(rawText)
+                logger.trace("Forwarded FLASH_META for convId peer '{}' from '{}'", convId, originSession.deviceId)
             }
         }
     }
@@ -300,6 +372,39 @@ public class RelayFrameRouter(
     /**
      * Installs the `/flash-relay` WebSocket endpoint onto the Ktor routing hierarchy.
      */
+    /**
+     * Drains pending offline envelopes for [session] from [mailboxQueue] and forwards them.
+     *
+     * @return count of successfully delivered envelopes.
+     */
+    public suspend fun drainMailboxForDevice(session: RelaySession, limit: Int = 100): Int {
+        val pending = mailboxQueue.fetchPendingEnvelopes(session.deviceId, limit)
+        if (pending.isEmpty()) return 0
+
+        logger.info("Draining {} pending mailbox envelopes for reconnected device '{}'", pending.size, session.deviceId)
+        val deliveredIds = mutableListOf<String>()
+
+        for (envelope in pending) {
+            try {
+                val wireFrame = encodeRelayFrame(session.deviceId, envelope)
+                session.sendText(wireFrame)
+                deliveredIds.add(envelope.id)
+            } catch (e: Throwable) {
+                logger.warn("Failed delivering drained envelope '{}' to device '{}': {}", envelope.id, session.deviceId, e.message)
+                break
+            }
+        }
+
+        if (deliveredIds.isNotEmpty()) {
+            mailboxQueue.markEnvelopesDelivered(session.deviceId, deliveredIds)
+        }
+
+        return deliveredIds.size
+    }
+
+    /**
+     * Installs the `/flash-relay` WebSocket endpoint onto the Ktor routing hierarchy.
+     */
     public fun registerRoute(route: Route) {
         route.webSocket("/flash-relay") {
             handleSession(this, call)
@@ -337,6 +442,20 @@ public class RelayFrameRouter(
             return
         }
 
+        // Check if device is revoked
+        val revList = revocationListProvider?.invoke()
+        if (revList != null && revList.isRevoked(-1L, deviceId)) {
+            logger.warn("Rejecting connection from revoked device '{}' from {}", deviceId, remoteAddress)
+            val errFrame = FlashTextFraming.encodeFields(
+                "FLASH_ERROR",
+                "code" to "ERR_REVOKED",
+                "message" to "Device $deviceId is revoked",
+            )
+            session.send(Frame.Text(errFrame))
+            session.close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Device revoked"))
+            return
+        }
+
         val relaySession = RelaySession(
             deviceId = deviceId,
             friendlyName = friendlyName,
@@ -356,6 +475,9 @@ public class RelayFrameRouter(
                 "timestamp" to System.currentTimeMillis().toString(),
             )
             relaySession.sendText(welcome)
+
+            // Drain any pending offline envelopes queued for this reconnected device
+            drainMailboxForDevice(relaySession)
 
             for (frame in session.incoming) {
                 if (frame is Frame.Text) {

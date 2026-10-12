@@ -49,7 +49,8 @@ sealed interface AuthResult {
  * - Brute-force rate limiting: 5 failed attempts locks IP/account for 15 minutes.
  */
 class AdminAuthService(
-    private val printSetupTokenToConsole: Boolean = true
+    private val printSetupTokenToConsole: Boolean = true,
+    private val setupUrl: String? = null,
 ) {
     companion object {
         const val PBKDF2_ITERATIONS: Int = 100_000
@@ -80,10 +81,11 @@ class AdminAuthService(
             val token = tokenBytes.toHex()
             activeSetupToken = token
             if (printSetupTokenToConsole) {
+                val targetUrl = setupUrl ?: "http://localhost:8443/admin/setup"
                 println("=".repeat(78))
                 println("[FLASH ADMIN] First-run setup required!")
                 println("[FLASH ADMIN] One-time setup token: $token")
-                println("[FLASH ADMIN] Navigate to http://localhost:8080/admin/setup to initialize org admin.")
+                println("[FLASH ADMIN] Navigate to $targetUrl to initialize org admin.")
                 println("=".repeat(78))
             }
         }

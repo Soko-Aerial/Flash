@@ -490,6 +490,7 @@ object AdminUiHtml {
         departments: List<Department>,
         groups: List<GroupCharter>,
         newInviteLink: String? = null,
+        serverExternalUrl: String = "http://localhost:8443",
         error: String? = null,
         success: String? = null
     ): String {
@@ -566,6 +567,12 @@ object AdminUiHtml {
                     <div class="form-group">
                         <label for="autoJoinGroups">Auto-Join Group IDs (comma-separated)</label>
                         <input type="text" id="autoJoinGroups" name="autoJoinGroups" placeholder="e.g. grp-hq">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="serverUrl">Hub Server URL (for mobile & LAN devices)</label>
+                        <input type="text" id="serverUrl" name="serverUrl" value="${escapeHtml(serverExternalUrl)}" placeholder="e.g. http://192.168.1.106:8443" required>
                     </div>
                 </div>
                 <button type="submit" class="btn btn-indigo">Generate flash:// Link</button>

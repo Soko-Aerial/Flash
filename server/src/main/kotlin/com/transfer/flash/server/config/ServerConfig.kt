@@ -18,6 +18,7 @@ import java.util.Base64
  * @property setupToken Secret one-time token for initial administrator onboarding (generated if not provided).
  * @property challengeTimeoutMs Nonce challenge validity timeout in milliseconds (default: 60000 or FLASH_CHALLENGE_TIMEOUT_MS).
  * @property mailboxTtlDays Store-and-forward mailbox message retention period in days (default: 7 or FLASH_MAILBOX_TTL_DAYS).
+ * @property externalUrl Public or LAN-reachable URL for clients and invites (default: auto-detected LAN IP or FLASH_EXTERNAL_URL).
  */
 public data class ServerConfig(
     val port: Int = DEFAULT_PORT,
@@ -28,6 +29,7 @@ public data class ServerConfig(
     val setupToken: String = generateOrLoadSetupToken(DEFAULT_DATA_DIR),
     val challengeTimeoutMs: Long = DEFAULT_CHALLENGE_TIMEOUT_MS,
     val mailboxTtlDays: Int = DEFAULT_MAILBOX_TTL_DAYS,
+    val externalUrl: String = resolveDefaultExternalUrl(host, port),
 ) {
 
     init {
@@ -39,6 +41,7 @@ public data class ServerConfig(
         require(setupToken.isNotBlank()) { "setupToken must not be blank" }
         require(challengeTimeoutMs > 0) { "challengeTimeoutMs must be positive, was: $challengeTimeoutMs" }
         require(mailboxTtlDays > 0) { "mailboxTtlDays must be positive, was: $mailboxTtlDays" }
+        require(externalUrl.isNotBlank()) { "externalUrl must not be blank" }
     }
 
     public companion object {
@@ -83,6 +86,10 @@ public data class ServerConfig(
             val mailboxTtlDays = (cliMap["mailbox-ttl-days"]
                 ?: cliMap["mailboxTtlDays"]
                 ?: env["FLASH_MAILBOX_TTL_DAYS"])?.toIntOrNull() ?: DEFAULT_MAILBOX_TTL_DAYS
+            val externalUrl = cliMap["external-url"]
+                ?: cliMap["externalUrl"]
+                ?: env["FLASH_EXTERNAL_URL"]
+                ?: resolveDefaultExternalUrl(host, port)
 
             return ServerConfig(
                 port = port,
@@ -93,7 +100,49 @@ public data class ServerConfig(
                 setupToken = setupToken,
                 challengeTimeoutMs = challengeTimeoutMs,
                 mailboxTtlDays = mailboxTtlDays,
+                externalUrl = externalUrl,
             )
+        }
+
+        /**
+         * Resolves the default external URL.
+         * If host is a routable IP/hostname other than 0.0.0.0, 127.0.0.1, or localhost, uses that.
+         * Otherwise, attempts to detect the local LAN IPv4 address (e.g. 192.168.x.x, 10.x.x.x)
+         * so mobile clients and devices on the same Wi-Fi/LAN can reach the server.
+         */
+        public fun resolveDefaultExternalUrl(host: String, port: Int): String {
+            if (host != "0.0.0.0" && host != "127.0.0.1" && host != "localhost") {
+                return "http://$host:$port"
+            }
+            val lanIp = detectLanIpv4()
+            return if (lanIp != null) {
+                "http://$lanIp:$port"
+            } else {
+                "http://localhost:$port"
+            }
+        }
+
+        /**
+         * Detects the non-loopback IPv4 address for local LAN testing.
+         */
+        public fun detectLanIpv4(): String? {
+            return runCatching {
+                val interfaces = java.net.NetworkInterface.getNetworkInterfaces() ?: return null
+                val candidates = mutableListOf<String>()
+                for (iface in interfaces) {
+                    if (iface.isLoopback || !iface.isUp) continue
+                    for (addr in iface.inetAddresses) {
+                        if (addr is java.net.Inet4Address && !addr.isLoopbackAddress && !addr.isLinkLocalAddress) {
+                            val ip = addr.hostAddress ?: continue
+                            if (ip.startsWith("192.168.") || ip.startsWith("10.") || ip.startsWith("172.")) {
+                                return ip
+                            }
+                            candidates.add(ip)
+                        }
+                    }
+                }
+                candidates.firstOrNull()
+            }.getOrNull()
         }
 
         /**

@@ -5,6 +5,10 @@ package com.transfer.flash.server.relay
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.server.auth.RevocationList
+import com.transfer.flash.server.directory.GroupVisibility
+import com.transfer.flash.server.directory.JoinMode
+import com.transfer.flash.server.directory.OrganizationDirectory
 import io.ktor.websocket.Frame
 import io.ktor.websocket.WebSocketExtension
 import io.ktor.websocket.WebSocketSession
@@ -47,9 +51,22 @@ class RelayFrameRouterTest {
 
     private class RecordingMailboxSeam : MailboxQueueSeam {
         val enqueued = mutableListOf<Pair<String, FlashEnvelope>>()
+        val pendingEnvelopes = mutableMapOf<String, MutableList<FlashEnvelope>>()
+        val deliveredMarked = mutableListOf<Pair<String, List<String>>>()
+
         override suspend fun enqueue(recipientId: String, envelope: FlashEnvelope): Boolean {
             enqueued.add(recipientId to envelope)
             return true
+        }
+
+        override suspend fun fetchPendingEnvelopes(targetDeviceId: String, limit: Int): List<FlashEnvelope> {
+            return pendingEnvelopes[targetDeviceId]?.take(limit) ?: emptyList()
+        }
+
+        override suspend fun markEnvelopesDelivered(targetDeviceId: String, msgIds: List<String>): Int {
+            deliveredMarked.add(targetDeviceId to msgIds)
+            pendingEnvelopes[targetDeviceId]?.removeAll { it.id in msgIds }
+            return msgIds.size
         }
     }
 
@@ -178,5 +195,107 @@ class RelayFrameRouterTest {
         val pongFields = FlashTextFraming.parseFields(response.readText(), "FLASH_PONG")
         assertNotNull(pongFields)
         assertNotNull(pongFields["timestamp"])
+    }
+
+    @Test
+    fun testDrainMailboxOnReconnect() = runTest {
+        val pool = RelayConnectionPool()
+        val mailbox = RecordingMailboxSeam()
+        val router = RelayFrameRouter(pool, mailboxQueue = mailbox)
+
+        // Queue 2 offline messages for bob
+        val pending1 = FlashEnvelope(id = "msg-offline-1", type = "MSG_TEXT", payloadJson = "{\"text\":\"1\"}", senderId = "alice", sentAt = 1000L)
+        val pending2 = FlashEnvelope(id = "msg-offline-2", type = "MSG_TEXT", payloadJson = "{\"text\":\"2\"}", senderId = "alice", sentAt = 2000L)
+        mailbox.pendingEnvelopes["bob"] = mutableListOf(pending1, pending2)
+
+        val (bobSession, bobWs) = createSession("bob")
+        pool.register(bobSession)
+
+        // Drain mailbox
+        val drainedCount = router.drainMailboxForDevice(bobSession)
+        assertEquals(2, drainedCount)
+
+        // Bob should have received both frames on wire
+        val frame1 = bobWs.outgoingChannel.receive() as Frame.Text
+        assertTrue(frame1.readText().contains("id=msg-offline-1"))
+
+        val frame2 = bobWs.outgoingChannel.receive() as Frame.Text
+        assertTrue(frame2.readText().contains("id=msg-offline-2"))
+
+        // Both marked delivered
+        assertEquals(1, mailbox.deliveredMarked.size)
+        assertEquals("bob", mailbox.deliveredMarked.first().first)
+        assertEquals(listOf("msg-offline-1", "msg-offline-2"), mailbox.deliveredMarked.first().second)
+    }
+
+    @Test
+    fun testDirectMetadataRouting() = runTest {
+        val pool = RelayConnectionPool()
+        val router = RelayFrameRouter(pool)
+
+        val (aliceSession, _) = createSession("alice")
+        val (bobSession, bobWs) = createSession("bob")
+        pool.register(aliceSession)
+        pool.register(bobSession)
+
+        val metaFrame = FlashTextFraming.encodeFields(
+            "FLASH_META",
+            "action" to "typing",
+            "conversationId" to "conv-1",
+            "recipient" to "bob",
+            "sender" to "alice",
+        )
+
+        router.processFrame(aliceSession, metaFrame)
+
+        val bobReceived = bobWs.outgoingChannel.receive() as Frame.Text
+        val parsed = FlashTextFraming.parseFields(bobReceived.readText(), "FLASH_META")
+        assertNotNull(parsed)
+        assertEquals("typing", parsed["action"])
+        assertEquals("conv-1", parsed["conversationId"])
+        assertEquals("alice", parsed["sender"])
+    }
+
+    @Test
+    fun testGroupMetadataRouting() = runTest {
+        val pool = RelayConnectionPool()
+        val directory = OrganizationDirectory()
+        directory.createDepartment("eng", "Engineering", isOrgAdmin = true)
+        directory.createGroup(
+            id = "grp-dev",
+            name = "Developers",
+            departmentId = "eng",
+            visibility = GroupVisibility.LISTED,
+            joinMode = JoinMode.OPEN_IN_SCOPE,
+            callerDeviceId = "alice",
+            isOrgAdmin = true,
+        )
+        directory.addMemberToGroup("grp-dev", "bob", isOrgAdmin = true)
+        directory.addMemberToGroup("grp-dev", "charlie", isOrgAdmin = true)
+
+        val router = RelayFrameRouter(pool, directory = directory)
+
+        val (aliceSession, _) = createSession("alice")
+        val (bobSession, bobWs) = createSession("bob")
+        val (charlieSession, charlieWs) = createSession("charlie")
+
+        pool.register(aliceSession)
+        pool.register(bobSession)
+        pool.register(charlieSession)
+
+        val metaFrame = FlashTextFraming.encodeFields(
+            "FLASH_META",
+            "action" to "presence",
+            "group" to "grp-dev",
+            "sender" to "alice",
+        )
+
+        router.processFrame(aliceSession, metaFrame)
+
+        val bobReceived = bobWs.outgoingChannel.receive() as Frame.Text
+        assertTrue(bobReceived.readText().contains("action=presence"))
+
+        val charlieReceived = charlieWs.outgoingChannel.receive() as Frame.Text
+        assertTrue(charlieReceived.readText().contains("action=presence"))
     }
 }
