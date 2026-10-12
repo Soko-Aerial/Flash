@@ -1,5 +1,42 @@
 # Progress Log
 
+## 2026-10-12 — Offline Vector SVG QR Generator, Web Enrollment Landing Page & Percent-Decoding Remediation (:server, :core:network, :ui:chat)
+
+### Worked on
+- Triaged and resolved user issues regarding setup workflow, LAN IP usage, missing QR codes in offline/local environments, browser paste failures, and URL decoding errors during device enrollment.
+- Implemented a 100% offline, zero-network, air-gapped vector SVG QR Code Generator (`QrCodeGenerator.kt`) in the standalone server using Google ZXing core, completely replacing vulnerable third-party external CDN image generation (`api.qrserver.com`).
+- Added a dedicated browser-friendly web enrollment landing page at `GET /enroll?token=...` in `AuthRoutes.kt` with mobile deep-link redirection (`flash://enroll?...`), one-click link copying, offline vector SVG QR display, and token validity / expiration status badges.
+- Updated the Web Admin Dashboard (`AdminUiHtml.kt`) to display both the primary application deep link (`flash://enroll?...`) and the web browser URL (`http://<LAN_IP>:8443/enroll?token=...`), along with inline offline SVG QR rendering and clear usage instructions.
+- Implemented robust percent-decoding math in both `EnrollmentInvite.parseOrNull` (`:core:network`) and `FlashEnrollMath.parseInvite` (`:ui:chat`) to safely parse URL-encoded server URLs (e.g. `http%3A%2F%2F10.129.215.82%3A8443`), preventing malformed host connections.
+- Verified test suites in `:server:test` and `:core:network:jvmTest`, along with compilation on `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm`.
+
+### Changed
+- `server/build.gradle.kts`: Added `com.google.zxing:core:3.5.3` for offline vector QR generation.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/QrCodeGenerator.kt`: Added pure vector SVG QR code generator with crisp edges and configurable dimensions.
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminUiHtml.kt`:
+  - Replaced external image generator with inline SVG QR rendering.
+  - Added Web Browser URL alongside Flash App Deep Link in the invitation generator banner.
+  - Added `webEnrollmentLandingPage()` template for direct browser visits to `/enroll?token=...`.
+- `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`:
+  - Added `GET /enroll` route serving `webEnrollmentLandingPage` with token validation, expiry checking, and one-tap app launching.
+- `server/src/main/kotlin/com/transfer/flash/server/core/FlashServerEngine.kt`:
+  - Wired `serverExternalUrl = config.externalUrl` into `authRoutes()`.
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/EnterpriseModels.kt`:
+  - Added `decodePercent()` to `EnrollmentInvite.parseOrNull()`.
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashEnrollMath.kt`:
+  - Added `decodePercent()` to `FlashEnrollMath.parseInvite()`.
+- `core/network/src/commonTest/kotlin/com/transfer/flash/core/network/enterprise/EnterpriseEnrollmentAndDirectoryTest.kt`:
+  - Added `testParseEnrollmentInviteUriPercentEncoded()` unit test.
+- `server/src/test/kotlin/com/transfer/flash/server/admin/AdminDashboardRoutesTest.kt`:
+  - Added unit tests for inline SVG QR rendering in dashboard and `testWebEnrollmentLandingPage()`.
+
+### Verification
+- `:server:test`: ALL 58 TESTS PASSED (including `testWebEnrollmentLandingPage` and `testAdminDashboardRoutes`).
+- `:core:network:jvmTest`: ALL TESTS PASSED (including percent decoding test).
+- Compilation: `./gradlew.bat :app:compileDebugKotlin :desktop:compileKotlinJvm` -> BUILD SUCCESSFUL.
+
+---
+
 ## 2026-10-12 — Client App Enterprise Wiring, State Persistence & Protocol Remediation (:app, :desktop, :core:network, :core:messaging, :ui:chat)
 
 ### Worked on
