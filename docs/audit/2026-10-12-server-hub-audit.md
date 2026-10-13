@@ -121,7 +121,7 @@ An independent adversarial review (agent a45d6a47517265147) rated the following 
 | SEC-16 | PARTIAL: headers on every response, data at rest, log hygiene | REV-02, REV-03, REV-13 | FIXED-IN-CODE; whole-database encryption open (P-4) |
 | REL-04 | PARTIAL: per-IP cap behind a proxy | REV-01 | FIXED-IN-CODE |
 | REL-11 | PARTIAL: delivered-row privacy | REV-03 (secrets sealed) | PARTIAL: payload rows are not encrypted at rest (P-4) |
-| REL-13 | PARTIAL: shutdown and health details | REV-05, REV-12, REV-13 | PARTIAL: see handoff for what remains |
+| REL-13 | PARTIAL: shutdown and health details | REV-05, REV-12, REV-13 | FIXED-IN-CODE, re-tested 2026-10-13: `FlashServerEngineTest` 10/10 (minimal `/health`, 503 on DB failure, guarded `/health/detail` and `/metrics`, idempotent stop closes the DB, failed bind cleanup), `RelayDeliveryContractTest` 18/18 (shutdown kicks every session), `LogHygieneTest` 1/1. Nothing remains in code; operational behaviour on a real host is `HUBR-07`. |
 
 | ID | P | Finding | Status |
 |---|---|---|---|
