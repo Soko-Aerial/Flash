@@ -35,10 +35,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinResult
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
+import com.transfer.flash.core.enterprise.EnterpriseJoinRequest
+import com.transfer.flash.core.enterprise.EnterpriseJoinResult
+import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.settings.FlashHubStatusMath
 import com.transfer.flash.ui.icons.FlashIcon

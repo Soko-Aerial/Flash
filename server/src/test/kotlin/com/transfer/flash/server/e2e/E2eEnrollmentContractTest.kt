@@ -4,8 +4,8 @@ package com.transfer.flash.server.e2e
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
-import com.transfer.flash.core.network.enterprise.EnrollFailureReason
-import com.transfer.flash.core.network.enterprise.EnrollmentOutcome
+import com.transfer.flash.core.enterprise.EnrollFailureReason
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
 import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test

@@ -86,6 +86,7 @@ kotlin {
             implementation(project(":core:transfer"))
             implementation(project(":core:security"))
             implementation(project(":core:network"))
+            implementation(project(":core:enterprise"))
         }
         androidMain.dependencies {
             // The SQLCipher open path, the settings DataStore tier and room-ktx stay here: all

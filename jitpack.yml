@@ -2,7 +2,7 @@
 # JitPack's default JDK is too old for AGP 9.3.1 — pin JDK 17 (the AGP floor).
 # Android SDK + ANDROID_HOME are provided by JitPack; no signing / no publish repo needed.
 #
-# Publish every module the README lists in "Published modules" — all fifteen. The set has to
+# Publish every module the README lists in "Published modules" — all sixteen. The set has to
 # be dependency-closed, not just "the ones a consumer names": core:engine api-depends on
 # every other core module (including core:ptt and core:swarm), ui:callui api-depends on core:calling and
 # uses ui:theme, ui:chat uses core:messaging + ui:theme AND publishes an
@@ -13,6 +13,7 @@
 # 1.1.0 added four (core:calling, ui:theme, ui:chat, ui:callui); the current dev tree adds
 # core:ptt (artifact `core-ptt`, api-depended on by core:engine and, since ADR-058, ui:callui), ui:platform-shims
 # (artifact `ui-platform-shims`, a runtime dependency of ui-chat), and core:swarm (artifact `core-swarm`).
+# `core:enterprise` (artifact `core-enterprise`, ADR-128) holds the hub client; `core:engine` api-depends on it.
 # The ui:* modules build against compileSdk 37 while core:* stay on 35, so they are the ones to look at first if a
 # JitPack build starts failing on an SDK platform it cannot install.
 #
@@ -34,4 +35,4 @@ before_install:
 jdk:
   - openjdk17
 install:
-  - ./gradlew :webrtc-kmp:webrtc-kmp:publishToMavenLocal :core:common:publishToMavenLocal :core:hub-protocol:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:swarm:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint
+  - ./gradlew :webrtc-kmp:webrtc-kmp:publishToMavenLocal :core:common:publishToMavenLocal :core:hub-protocol:publishToMavenLocal :core:security:publishToMavenLocal :core:discovery:publishToMavenLocal :core:network:publishToMavenLocal :core:enterprise:publishToMavenLocal :core:transfer:publishToMavenLocal :core:persistence:publishToMavenLocal :core:messaging:publishToMavenLocal :core:calling:publishToMavenLocal :core:ptt:publishToMavenLocal :core:swarm:publishToMavenLocal :core:engine:publishToMavenLocal :ui:theme:publishToMavenLocal :ui:platform-shims:publishToMavenLocal :ui:chat:publishToMavenLocal :ui:callui:publishToMavenLocal -x test -x lint

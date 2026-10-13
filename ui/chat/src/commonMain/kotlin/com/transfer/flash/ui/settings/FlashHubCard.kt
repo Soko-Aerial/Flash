@@ -33,7 +33,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.time.SystemTimeSource
-import com.transfer.flash.core.network.enterprise.HubStatus
+import com.transfer.flash.core.enterprise.HubStatus
 import com.transfer.flash.ui.chat.FlashConfirmHost
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -109,7 +109,7 @@ internal fun FlashHubBannerCard(
     onDismiss: () -> Unit,
 ) {
     val colors = FlashTheme.colors
-    val severe = banner.kind != com.transfer.flash.core.network.enterprise.HubLinkState.OFFLINE
+    val severe = banner.kind != com.transfer.flash.core.enterprise.HubLinkState.OFFLINE
     Column(
         Modifier
             .fillMaxWidth()

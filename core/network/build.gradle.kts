@@ -70,8 +70,6 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":core:common"))
-            // Relay/enterprise wire types (RelayFrame, DTOs, certs) appear in public signatures: ADR-107.
-            api(project(":core:hub-protocol"))
             // FlashSession.connectionState/frameAcks and FlashNetwork's flows are public
             // signatures, so coroutines must be `api` — `implementation` keeps StateFlow/Flow
             // off a downstream consumer's compile classpath.

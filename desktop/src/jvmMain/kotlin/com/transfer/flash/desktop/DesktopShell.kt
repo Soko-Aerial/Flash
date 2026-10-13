@@ -979,11 +979,11 @@ public fun DesktopShell(
     // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
     val hubObject = remember(ready) { engine.enterpriseHub }
     val hubStatusFlow = remember(hubObject) {
-        hubObject?.status ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.network.enterprise.HubStatus?>(null)
+        hubObject?.status ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.HubStatus?>(null)
     }
     val hubStatus by hubStatusFlow.collectAsState(initial = null)
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
-    val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.network.enterprise.HubSealingKeyState.IDLE) }
+    val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
     val hubDroppedFlow = remember(engine, ready) { if (ready) engine.chats?.hubDropped else null }
     val hubDroppedFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
@@ -1053,14 +1053,14 @@ public fun DesktopShell(
                 val outcome = hub.enroll(invite)
                 isEnrollingDevice = false
                 when (outcome) {
-                    is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Enrolled -> {
+                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Enrolled -> {
                         enrollDeviceError = null
                         snackbarHostState.showSnackbar(
                             "You joined ${outcome.credentials.hubName.ifBlank { "your organisation" }}",
                             duration = SnackbarDuration.Long,
                         )
                     }
-                    is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Failed -> {
+                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Failed -> {
                         enrollDeviceError = com.transfer.flash.ui.settings.FlashHubStatusMath.enrollFailureText(outcome.reason)
                     }
                 }

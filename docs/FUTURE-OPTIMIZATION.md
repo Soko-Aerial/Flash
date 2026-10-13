@@ -342,7 +342,7 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 
 **Bring it back when.** A pilot needs a phone and a desktop for one person. Write a design first (ADR) before touching `:core:enterprise` classes.
 
-**Read first.** ADR-127 P-5, ADR-124, ADR-126, `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md` (do the extraction first).
+**Read first.** ADR-127 P-5, ADR-124, ADR-126, `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md` (extraction done 2026-10-13, ADR-128).
 
 ---
 

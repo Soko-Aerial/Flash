@@ -38,6 +38,7 @@ kotlin {
                 implementation(project(":core:security"))
                 implementation(project(":core:discovery"))
                 implementation(project(":core:network"))
+                implementation(project(":core:enterprise"))
                 implementation(project(":core:transfer"))
                 implementation(project(":core:messaging"))
                 // Phase 2 slice 4: the chat repository's DAOs + the encrypted database open

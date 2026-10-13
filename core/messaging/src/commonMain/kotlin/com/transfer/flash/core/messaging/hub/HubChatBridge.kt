@@ -11,7 +11,7 @@ import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.network.enterprise.HubPeerStanding
+import com.transfer.flash.core.enterprise.HubPeerStanding
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingPin
 import kotlinx.coroutines.flow.MutableStateFlow

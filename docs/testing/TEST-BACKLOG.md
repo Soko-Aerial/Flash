@@ -3586,3 +3586,4 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Steps:** run the acceptance checklist of the plan (builds, tests, `:server:installDist`, jitpack install line dry run); install the app; enrol a device against a hub and exchange a message.
 - **Pass:** every command of the plan's section "Verification" passes with the same test counts as before the move (plus none lost); enrolment, directory and relay chat work on a phone as before.
 - **Source:** ADR-128. **Status:** TODO
+- Automated part done 2026-10-13: tests, compiles and publish dry run green (see ADR-128 Result). The phone enrolment and chat exchange are still owed.

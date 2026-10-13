@@ -8,8 +8,8 @@ import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec
-import com.transfer.flash.core.network.relay.KtorRelayTransport
-import com.transfer.flash.core.network.relay.RelaySessionState
+import com.transfer.flash.core.enterprise.relay.KtorRelayTransport
+import com.transfer.flash.core.enterprise.relay.RelaySessionState
 import com.transfer.flash.server.admin.AdminAuthService
 import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.issue

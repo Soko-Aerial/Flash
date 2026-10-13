@@ -136,7 +136,7 @@ public fun FlashEnrollDialog(
                         )
                         if (parsed.rootFingerprint.isNotBlank()) {
                             FlashText(
-                                text = "Organisation key: ${com.transfer.flash.core.network.enterprise.HubStatusMath.shortFingerprint(parsed.rootFingerprint)}",
+                                text = "Organisation key: ${com.transfer.flash.core.enterprise.HubStatusMath.shortFingerprint(parsed.rootFingerprint)}",
                                 style = FlashTheme.typography.metadataDefault,
                                 color = colors.textSecondary,
                             )
@@ -144,7 +144,7 @@ public fun FlashEnrollDialog(
                             // CLI-01: a link without the organisation key cannot be trusted; say so before the tap.
                             FlashText(
                                 text = FlashHubStatusMath.enrollFailureText(
-                                    com.transfer.flash.core.network.enterprise.EnrollFailureReason.INVITE_NOT_PINNED,
+                                    com.transfer.flash.core.enterprise.EnrollFailureReason.INVITE_NOT_PINNED,
                                 ),
                                 style = FlashTheme.typography.metadataEmphasis,
                                 color = colors.textError,

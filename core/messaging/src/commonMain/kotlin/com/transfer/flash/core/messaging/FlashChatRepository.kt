@@ -58,7 +58,7 @@ public interface FlashChatRepository {
      * conversation and links it to the hub; PENDING records a "waiting for approval" row ([pendingEnterpriseJoins]);
      * REJECTED changes nothing. A hub or network failure is a [FlashResult.Failure] with a sentence for people.
      */
-    public suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> =
+    public suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<com.transfer.flash.core.enterprise.EnterpriseJoinResult> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 
     /** Groups this device asked to join that no admin has decided yet: group id to name. Empty without a hub. */
@@ -66,14 +66,14 @@ public interface FlashChatRepository {
         get() = EMPTY_PENDING_JOINS
 
     /** Asks the hub again about every pending join; returns the ones that were decided (JOINED or REJECTED). */
-    public suspend fun refreshPendingEnterpriseJoins(): List<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> = emptyList()
+    public suspend fun refreshPendingEnterpriseJoins(): List<com.transfer.flash.core.enterprise.EnterpriseJoinResult> = emptyList()
 
     /** Join requests waiting for this device's decision as a group admin (optionally for one group). */
-    public suspend fun fetchEnterpriseJoinRequests(groupId: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest>> =
+    public suspend fun fetchEnterpriseJoinRequests(groupId: String? = null): FlashResult<List<com.transfer.flash.core.enterprise.EnterpriseJoinRequest>> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 
     /** Approves or declines a join request as a group admin. */
-    public suspend fun decideEnterpriseJoinRequest(requestId: String, approve: Boolean, reason: String? = null): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> =
+    public suspend fun decideEnterpriseJoinRequest(requestId: String, approve: Boolean, reason: String? = null): FlashResult<com.transfer.flash.core.enterprise.EnterpriseJoinResult> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 
     /** What the organization hub said about messages this device sent through it, by message id (bubble notes). */
@@ -511,13 +511,13 @@ public interface FlashChatRepository {
     /**
      * Queries enrolled organization members from the enterprise directory (E2c).
      */
-    public suspend fun fetchEnterpriseDirectoryMembers(departmentId: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember>> =
+    public suspend fun fetchEnterpriseDirectoryMembers(departmentId: String? = null): FlashResult<List<com.transfer.flash.core.enterprise.EnterpriseDirectoryMember>> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 
     /**
      * Queries visible organization groups from the enterprise directory (E2c).
      */
-    public suspend fun fetchEnterpriseDirectoryGroups(department: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup>> =
+    public suspend fun fetchEnterpriseDirectoryGroups(department: String? = null): FlashResult<List<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 }
 

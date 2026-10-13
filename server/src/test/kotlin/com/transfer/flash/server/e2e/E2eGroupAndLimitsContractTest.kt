@@ -8,8 +8,8 @@ import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus
-import com.transfer.flash.core.network.relay.RelaySessionState
+import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
+import com.transfer.flash.core.enterprise.relay.RelaySessionState
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode

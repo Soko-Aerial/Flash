@@ -3514,33 +3514,33 @@ class RealFlashChatRepositoryTest {
     // ===================== Organisation hub (ADR-120..123, HUBC) =====================
 
     private class FakeDirectoryApi(
-        var members: List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember> = emptyList(),
-        var joinAnswer: com.transfer.flash.core.network.enterprise.EnterpriseJoinResult? = null,
-    ) : com.transfer.flash.core.network.enterprise.HubDirectoryApi {
+        var members: List<com.transfer.flash.core.enterprise.EnterpriseDirectoryMember> = emptyList(),
+        var joinAnswer: com.transfer.flash.core.enterprise.EnterpriseJoinResult? = null,
+    ) : com.transfer.flash.core.enterprise.HubDirectoryApi {
         var joinCalls = 0
 
         override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?) =
-            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup>())
+            FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>())
 
         override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String) = FlashResult.Success(members)
 
         override suspend fun fetchDepartments(hubUrl: String) =
-            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseDepartment>())
+            FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseDepartment>())
 
-        override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> {
+        override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?): FlashResult<com.transfer.flash.core.enterprise.EnterpriseJoinResult> {
             joinCalls++
             return FlashResult.Success(joinAnswer ?: error("no scripted answer"))
         }
 
         override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?) =
-            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest>())
+            FlashResult.Success(emptyList<com.transfer.flash.core.enterprise.EnterpriseJoinRequest>())
 
         override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?) =
-            FlashResult.Success(com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g"))
+            FlashResult.Success(com.transfer.flash.core.enterprise.EnterpriseJoinResult(com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED, "g"))
     }
 
     private fun member(id: String) =
-        com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember(deviceId = id, friendlyName = id, department = "Ops")
+        com.transfer.flash.core.enterprise.EnterpriseDirectoryMember(deviceId = id, friendlyName = id, department = "Ops")
 
     private fun enrolledStore(): com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore =
         com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore(
@@ -3585,7 +3585,7 @@ class RealFlashChatRepositoryTest {
         val outbox = FakeOutboxDao()
         val directory = FakeDirectoryApi(members = members.map { member(it) })
         val trust = enrolledStore()
-        val peers = com.transfer.flash.core.network.enterprise.HubPeerDirectory(directory, hubUrl = { "https://hub.example.test" }, minRefreshMs = 0L)
+        val peers = com.transfer.flash.core.enterprise.HubPeerDirectory(directory, hubUrl = { "https://hub.example.test" }, minRefreshMs = 0L)
         val repository = RealFlashChatRepository(
             localDeviceId = "my-device-id",
             localDisplayName = "Kali",
@@ -3769,15 +3769,15 @@ class RealFlashChatRepositoryTest {
     @Test
     fun `HUBC joining a group with approval records a pending row and a later answer decides it`() = runBlocking {
         val rig = hubRig()
-        val pending = com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.PENDING
-        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(pending, "g-ops", name = "Ops")
+        val pending = com.transfer.flash.core.enterprise.EnterpriseJoinStatus.PENDING
+        rig.directory.joinAnswer = com.transfer.flash.core.enterprise.EnterpriseJoinResult(pending, "g-ops", name = "Ops")
         val first = rig.repository.joinEnterpriseGroup("g-ops", "Ops") as FlashResult.Success
         assertEquals(pending, first.value.status)
         assertEquals(mapOf("g-ops" to "Ops"), rig.repository.pendingEnterpriseJoins.value)
         assertFalse("pending must not link or create the group", rig.trust.isGroupLinkedToHub("g-ops"))
 
-        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
-            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g-ops", name = "Ops",
+        rig.directory.joinAnswer = com.transfer.flash.core.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED, "g-ops", name = "Ops",
         )
         val decided = rig.repository.refreshPendingEnterpriseJoins()
         assertEquals(1, decided.size)
@@ -3788,16 +3788,16 @@ class RealFlashChatRepositoryTest {
     @Test
     fun `HUBC a refused join creates nothing and clears the pending row`() = runBlocking {
         val rig = hubRig()
-        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
-            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.PENDING, "g-x", name = "X",
+        rig.directory.joinAnswer = com.transfer.flash.core.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.enterprise.EnterpriseJoinStatus.PENDING, "g-x", name = "X",
         )
         rig.repository.joinEnterpriseGroup("g-x", "X")
-        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
-            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.REJECTED, "g-x", reason = "Not for your team",
+        rig.directory.joinAnswer = com.transfer.flash.core.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.enterprise.EnterpriseJoinStatus.REJECTED, "g-x", reason = "Not for your team",
         )
         val decided = rig.repository.refreshPendingEnterpriseJoins()
 
-        assertEquals(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.REJECTED, decided.single().status)
+        assertEquals(com.transfer.flash.core.enterprise.EnterpriseJoinStatus.REJECTED, decided.single().status)
         assertTrue(rig.repository.pendingEnterpriseJoins.value.isEmpty())
         assertFalse(rig.trust.isGroupLinkedToHub("g-x"))
     }
@@ -3805,12 +3805,12 @@ class RealFlashChatRepositoryTest {
     @Test
     fun `HUBC joining an open group creates the conversation and links it only after the hub says joined`() = runBlocking {
         val rig = hubRig()
-        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
-            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g-open", name = "Open team",
+        rig.directory.joinAnswer = com.transfer.flash.core.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED, "g-open", name = "Open team",
         )
         val answer = rig.repository.joinEnterpriseGroup("g-open", "Open team") as FlashResult.Success
 
-        assertEquals(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, answer.value.status)
+        assertEquals(com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED, answer.value.status)
         assertEquals(1, rig.directory.joinCalls)
         assertTrue(rig.trust.isGroupLinkedToHub("g-open"))
     }

@@ -774,12 +774,12 @@ fun FlashApp(
     val enterpriseCreds by (engine.enterpriseTrustStore?.credentials ?: enterpriseCredsFallback).collectAsState()
     // The organisation hub (ADR-120): live status, the content opt-in and the groups an earlier enrolment had linked.
     val hubObject = remember(ready) { engine.enterpriseHub }
-    val hubStatusFallback = remember { MutableStateFlow<com.transfer.flash.core.network.enterprise.HubStatus?>(null) }
+    val hubStatusFallback = remember { MutableStateFlow<com.transfer.flash.core.enterprise.HubStatus?>(null) }
     val hubStatusFlow = remember(hubObject) { hubObject?.status ?: hubStatusFallback }
     val hubStatus by hubStatusFlow.collectAsState(initial = null)
     val hubContentViaHub by engine.hubContentViaHub.collectAsState()
     // ADR-126: the sealing key state and the dropped-message counts for the connection details.
-    val hubSealingKeyFallback = remember { MutableStateFlow(com.transfer.flash.core.network.enterprise.HubSealingKeyState.IDLE) }
+    val hubSealingKeyFallback = remember { MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
     val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
     val hubDroppedFlow = remember(ready) { if (ready) engine.chats?.hubDropped else null }
     val hubDroppedFallback = remember { MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
@@ -1131,7 +1131,7 @@ private fun FlashShell(
                 withContext(Dispatchers.Main) {
                     isEnrollingDevice = false
                     when (outcome) {
-                        is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Enrolled -> {
+                        is com.transfer.flash.core.enterprise.EnrollmentOutcome.Enrolled -> {
                             enrollDeviceError = null
                             showDeepLinkEnrollDialog = false
                             Toast.makeText(
@@ -1140,7 +1140,7 @@ private fun FlashShell(
                                 Toast.LENGTH_LONG,
                             ).show()
                         }
-                        is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Failed -> {
+                        is com.transfer.flash.core.enterprise.EnrollmentOutcome.Failed -> {
                             enrollDeviceError = com.transfer.flash.ui.settings.FlashHubStatusMath.enrollFailureText(outcome.reason)
                         }
                     }

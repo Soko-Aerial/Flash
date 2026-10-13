@@ -5,7 +5,7 @@
 - Owner answers to ADR-127 P-1..P-6 are in `docs/decisions.md` (ADR-127 addendum). Direct META/Send stay UNSCOPED (inter-department messaging is wanted); one device per member (FO-16); hub-only group roster/secret (FO-17) is a chosen direction and is NOT implemented.
 - The Docker image now defaults `FLASH_REQUIRE_ROOT_PIN=true` (set `FLASH_ROOT_FINGERPRINT`, or pass `-e FLASH_REQUIRE_ROOT_PIN=false` for a trial).
 - `HubChatBridge` acknowledges with the sender (`from`). Open: ERROR-396 (duplicate set keyed by id only).
-- **Next task:** extract `:core:enterprise` (ADR-128) following `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`.
+- **ADR-128 done:** `:core:enterprise` was extracted (see `logs/progress.md` 2026-10-13 and the ADR "Result"), verified and committed; device check `EXTR-01` owed. No code task is queued; the open items are owner decisions (FO-13..FO-17) and device checks.
 - Owed tests: `HUBR-09`, `HUBR-10`, `EXTR-01` (+ `HUBR-01`..`HUBR-08`).
 - Committed 2026-10-13 on `dev`: `f6161567` (hub protocol, client, host wiring), `fd4cdb88` (server; includes another session's `MigratorTest.kt` / `ServerDatabaseTest.kt`), `12c8b231` (docs and logs). The tree was clean after these, so the extraction plan can start at its step 0.
 

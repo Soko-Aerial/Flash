@@ -6,12 +6,12 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
-import com.transfer.flash.core.network.enterprise.EnrollmentOutcome
-import com.transfer.flash.core.network.enterprise.EnterpriseHub
-import com.transfer.flash.core.network.enterprise.HubSealingKeyState
-import com.transfer.flash.core.network.enterprise.UnenrolResult
-import com.transfer.flash.core.network.relay.FlashRelayClient
-import com.transfer.flash.core.network.relay.KtorRelayTransport
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
+import com.transfer.flash.core.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.HubSealingKeyState
+import com.transfer.flash.core.enterprise.UnenrolResult
+import com.transfer.flash.core.enterprise.relay.FlashRelayClient
+import com.transfer.flash.core.enterprise.relay.KtorRelayTransport
 import com.transfer.flash.core.security.enterprise.HubKeyVerdict
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingFingerprint
@@ -93,7 +93,7 @@ class E2eHostSealingLifecycleTest {
         suspend fun enrol(): KeyedDevice {
             val outcome = client.enroll(hub.invite())
             check(outcome is EnrollmentOutcome.Enrolled) { "enrol failed: $outcome" }
-            check(eventually(10_000L) { client.relay.state.value == com.transfer.flash.core.network.relay.RelaySessionState.CONNECTED }) { "relay of $id did not connect" }
+            check(eventually(10_000L) { client.relay.state.value == com.transfer.flash.core.enterprise.relay.RelaySessionState.CONNECTED }) { "relay of $id did not connect" }
             return this
         }
 
@@ -175,8 +175,8 @@ class E2eHostSealingLifecycleTest {
         assertTrue(!pins.isBlocked("dev-a"))
     }
 
-    private suspend fun eventuallyEntry(viewer: KeyedDevice, id: String, ok: (com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember?) -> Boolean): com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember? {
-        var last: com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember? = null
+    private suspend fun eventuallyEntry(viewer: KeyedDevice, id: String, ok: (com.transfer.flash.core.enterprise.EnterpriseDirectoryMember?) -> Boolean): com.transfer.flash.core.enterprise.EnterpriseDirectoryMember? {
+        var last: com.transfer.flash.core.enterprise.EnterpriseDirectoryMember? = null
         eventually(10_000L) {
             last = viewer.directoryEntry(id)
             ok(last)

@@ -62,6 +62,7 @@ dependencies {
     // Contract test (RelayHandshakeContractTest): the REAL client transport against the REAL server handshake.
     // testImplementation ONLY: the server never depends on a client module at runtime (ADR-107).
     testImplementation(project(":core:network"))
+    testImplementation(project(":core:enterprise"))
     testImplementation(libs.ktor.client.core)
     testImplementation(libs.ktor.client.websockets)
     // The e2e contract tests (`server/src/test/.../e2e`) open real sockets with the same engine the apps use (CIO); the

@@ -26,6 +26,7 @@ Core Engine Libraries (Headless / Zero-UI, compileSdk 35):
   :core:messaging   (Chat repository, Outbox, Receipts, Drafts, Reactions)
   :core:transfer    (SAF File Streaming, Chunking, Reassembly, Checksums)
   :core:network     (RFC 6455 WebSocket sessions over pinned TLS, mesh of paired peers; the TCP probe server is legacy)
+  :core:enterprise  (enterprise hub client: enrolment, directory, relay client, trust stores; depends on hub-protocol + security, not on network)
   :core:discovery   (NSD / mDNS on Android, JmDNS on desktop, manual IP, remembered routes and the DR1-DR5 resilience sources; no Wi-Fi Direct code exists)
   :core:security    (Identity, ECDSA/ECDH Crypto, TOFU Trust Store, Pairing)
   :core:persistence (Room + SQLCipher, DataStore Settings, Retention Policy)

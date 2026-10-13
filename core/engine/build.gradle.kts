@@ -108,6 +108,7 @@ kotlin {
             api(project(":core:security"))
             api(project(":core:discovery"))
             api(project(":core:network"))
+            api(project(":core:enterprise"))
             api(project(":core:transfer"))
             api(project(":core:messaging"))
             api(project(":core:persistence"))

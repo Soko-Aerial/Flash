@@ -5,15 +5,15 @@ package com.transfer.flash.ui.settings
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.network.enterprise.EnrollFailureReason
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinResult
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus
-import com.transfer.flash.core.network.enterprise.HubLinkState
-import com.transfer.flash.core.network.enterprise.HubOfflineReason
-import com.transfer.flash.core.network.enterprise.HubSealingKeyState
-import com.transfer.flash.core.network.enterprise.HubStatus
-import com.transfer.flash.core.network.enterprise.UnenrolResult
+import com.transfer.flash.core.enterprise.EnrollFailureReason
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
+import com.transfer.flash.core.enterprise.EnterpriseJoinResult
+import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
+import com.transfer.flash.core.enterprise.HubLinkState
+import com.transfer.flash.core.enterprise.HubOfflineReason
+import com.transfer.flash.core.enterprise.HubSealingKeyState
+import com.transfer.flash.core.enterprise.HubStatus
+import com.transfer.flash.core.enterprise.UnenrolResult
 
 /** Colour family of the status dot in Settings. The UI maps each to a Flash colour token. */
 public enum class FlashHubDot { GOOD, PROGRESS, WARNING, BAD, NEUTRAL }
