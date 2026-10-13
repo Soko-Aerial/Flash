@@ -5163,7 +5163,7 @@ Status of the "Proposed" list above. The owner answered on 2026-10-13; the answe
 | (CLI-16) | Hub-only group roster and secret | **Direction A is chosen** (the hub is the only holder of a group's roster and secret; members fetch them sealed). **NOT built**: ADR-123 is still PROPOSED and A waits for group sealing; until then the current behaviour (option C) stays. | FO-17, ADR-123 |
 
 ### Known issue found while doing P-6 (NOT fixed)
-`HubChatBridge` keeps a `seen` set keyed by message id only. A second sender that reuses an id already seen is treated as a duplicate and dropped (id squatting: an enrolled device that predicts or copies another device's message id can suppress that message at a receiver). The hub side already scopes acknowledgements by sender (REV-08); the client side has to key `seen` by `(from, id)`. Recorded as ERROR-396 (OPEN). Fix with a test before the bridge is used outside a trusted organisation.
+`HubChatBridge` keeps a `seen` set keyed by message id only. A second sender that reuses an id already seen is treated as a duplicate and dropped (id squatting: an enrolled device that predicts or copies another device's message id can suppress that message at a receiver). The hub side already scopes acknowledgements by sender (REV-08); the client side has to key `seen` by `(from, id)`. Recorded as ERROR-396 and FIXED the same day: `seen` is keyed by `(from, id)`.
 
 ## ADR-128 — Extract the enterprise hub client into `:core:enterprise`
 

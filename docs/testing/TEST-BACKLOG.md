@@ -3578,7 +3578,7 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 #### HUBR-10 — A device's acknowledgement deletes only the named sender's mailbox row
 - **Setup:** hub plus devices A, B (senders) and C (recipient, offline). A and B each queue a message with the same id for C.
 - **Steps:** C connects, receives both, acknowledges each.
-- **Pass:** each acknowledgement carries `from`; the hub deletes the row of that sender only (check the mailbox count after the first acknowledgement is 1, after the second 0). NOTE: with the open ERROR-396 the second message may be dropped by the bridge as a duplicate; the test records which happens.
+- **Pass:** each acknowledgement carries `from`; the hub deletes the row of that sender only (check the mailbox count after the first acknowledgement is 1, after the second 0). ERROR-396 is fixed in code (the bridge keys duplicates by sender and id): BOTH messages must appear in the chat.
 - **Source:** ADR-127 P-6, ERROR-396. **Status:** TODO
 
 #### EXTR-01 — After the `:core:enterprise` extraction nothing behaves differently
