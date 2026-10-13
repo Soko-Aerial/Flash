@@ -1,0 +1,182 @@
+/* Design tokens of the hub console (docs/ui/hub-admin-console.md section 6). Components use only these variables.
+   Themes: light (default), dark (prefers-color-scheme or data-theme="dark"), and a stronger-contrast variant for prefers-contrast: more. */
+
+:root {
+  color-scheme: light dark;
+
+  --c-bg: #f4f3ef;
+  --c-surface: #ffffff;
+  --c-sunken: #eceae4;
+  --c-text: #1b1a17;
+  --c-muted: #57554c;
+  --c-border: #8b887c;
+  --c-line: #d9d6cc;
+  --c-accent: #3a3fcb;
+  --c-on-accent: #ffffff;
+  --c-accent-text: #2b2fa8;
+  --c-accent-soft: #e7e8fa;
+  --c-ok: #14702f;
+  --c-ok-soft: #e1f2e6;
+  --c-warn: #835000;
+  --c-warn-soft: #faebcf;
+  --c-bad: #b0231b;
+  --c-bad-soft: #fbe3e0;
+  --c-focus: #3a3fcb;
+  --c-scrim: rgb(20 20 18 / 0.5);
+  --c-hover: rgb(27 26 23 / 0.06);
+  --c-press: rgb(27 26 23 / 0.12);
+  --c-row-hover: #f8f7f3;
+  --c-row-selected: #eceefb;
+
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --fs-xs: 0.75rem;
+  --fs-sm: 0.8125rem;
+  --fs-base: 0.875rem;
+  --fs-md: 1rem;
+  --fs-lg: 1.25rem;
+  --fs-xl: 1.5rem;
+  --fs-2xl: 2rem;
+  --lh-body: 1.45;
+  --lh-head: 1.2;
+
+  --s-0: 2px;
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  --r-control: 4px;
+  --r-card: 8px;
+  --r-dialog: 12px;
+  --r-pill: 999px;
+
+  --shadow-pop: 0 4px 16px rgb(0 0 0 / 0.12);
+  --shadow-dialog: 0 12px 40px rgb(0 0 0 / 0.24);
+
+  --t-fast: 120ms;
+  --t-panel: 180ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --gutter: 16px;
+  --content-max: 1440px;
+  --rail-w: 232px;
+  --topbar-h: 56px;
+  --bottom-h: 60px;
+  --row-h: 52px;
+  --control-h: 36px;
+}
+
+@media (min-width: 600px) {
+  :root { --gutter: 24px; }
+}
+@media (min-width: 1200px) {
+  :root { --gutter: 32px; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --c-bg: #121211;
+    --c-surface: #1b1b19;
+    --c-sunken: #0d0d0c;
+    --c-text: #ecebe5;
+    --c-muted: #a9a79d;
+    --c-border: #7a786e;
+    --c-line: #2e2d29;
+    --c-accent: #8e94ff;
+    --c-on-accent: #0b0b1a;
+    --c-accent-text: #b5b9ff;
+    --c-accent-soft: #26284f;
+    --c-ok: #63d18a;
+    --c-ok-soft: #16301e;
+    --c-warn: #f0b04b;
+    --c-warn-soft: #3a2a0c;
+    --c-bad: #ff8c84;
+    --c-bad-soft: #401614;
+    --c-focus: #b5b9ff;
+    --c-scrim: rgb(0 0 0 / 0.62);
+    --c-hover: rgb(236 235 229 / 0.07);
+    --c-press: rgb(236 235 229 / 0.14);
+    --c-row-hover: #20201d;
+    --c-row-selected: #22244a;
+    --shadow-pop: 0 4px 16px rgb(0 0 0 / 0.5);
+    --shadow-dialog: 0 12px 40px rgb(0 0 0 / 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --c-bg: #121211;
+  --c-surface: #1b1b19;
+  --c-sunken: #0d0d0c;
+  --c-text: #ecebe5;
+  --c-muted: #a9a79d;
+  --c-border: #7a786e;
+  --c-line: #2e2d29;
+  --c-accent: #8e94ff;
+  --c-on-accent: #0b0b1a;
+  --c-accent-text: #b5b9ff;
+  --c-accent-soft: #26284f;
+  --c-ok: #63d18a;
+  --c-ok-soft: #16301e;
+  --c-warn: #f0b04b;
+  --c-warn-soft: #3a2a0c;
+  --c-bad: #ff8c84;
+  --c-bad-soft: #401614;
+  --c-focus: #b5b9ff;
+  --c-scrim: rgb(0 0 0 / 0.62);
+  --c-hover: rgb(236 235 229 / 0.07);
+  --c-press: rgb(236 235 229 / 0.14);
+  --c-row-hover: #20201d;
+  --c-row-selected: #22244a;
+  --shadow-pop: 0 4px 16px rgb(0 0 0 / 0.5);
+  --shadow-dialog: 0 12px 40px rgb(0 0 0 / 0.6);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+/* Stronger contrast when the system asks for it: black on white / white on black, darker control borders. */
+@media (prefers-contrast: more) {
+  :root:not([data-theme="dark"]) {
+    --c-text: #000000;
+    --c-muted: #33322c;
+    --c-border: #4a483f;
+    --c-line: #8b887c;
+    --c-accent: #1f23a0;
+    --c-accent-text: #1f23a0;
+    --c-ok: #0b4d1f;
+    --c-warn: #5e3900;
+    --c-bad: #7d140e;
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --c-bg: #000000;
+    --c-surface: #000000;
+    --c-text: #ffffff;
+    --c-muted: #d6d4cb;
+    --c-border: #c9c7bd;
+    --c-line: #6b695f;
+    --c-accent: #c2c6ff;
+    --c-accent-text: #c2c6ff;
+    --c-on-accent: #000000;
+  }
+}
+@media (prefers-contrast: more) {
+  :root[data-theme="dark"] {
+    --c-bg: #000000;
+    --c-surface: #000000;
+    --c-text: #ffffff;
+    --c-muted: #d6d4cb;
+    --c-border: #c9c7bd;
+    --c-line: #6b695f;
+    --c-accent: #c2c6ff;
+    --c-accent-text: #c2c6ff;
+    --c-on-accent: #000000;
+  }
+}

@@ -1,139 +1,151 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.server.relay
 
-import io.ktor.websocket.Frame
-import io.ktor.websocket.WebSocketExtension
-import io.ktor.websocket.WebSocketSession
-import io.ktor.websocket.readText
-import kotlinx.coroutines.Job
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.server.testsupport.fakeSession
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ReceiveChannel
-import kotlinx.coroutines.channels.SendChannel
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.coroutines.CoroutineContext
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
+import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class RelayConnectionPoolTest {
 
-    private class FakeWebSocketSession(
-        override val coroutineContext: CoroutineContext = Job(),
-    ) : WebSocketSession {
-        val incomingChannel = Channel<Frame>(Channel.UNLIMITED)
-        val outgoingChannel = Channel<Frame>(Channel.UNLIMITED)
-        val isClosed = AtomicBoolean(false)
-
-        override val incoming: ReceiveChannel<Frame> = incomingChannel
-        override val outgoing: SendChannel<Frame> = outgoingChannel
-        override var maxFrameSize: Long = Long.MAX_VALUE
-        override val extensions: List<WebSocketExtension<*>> = emptyList()
-        override var masking: Boolean = false
-
-        override suspend fun flush() {}
-        @Deprecated("Use cancel instead")
-        override fun terminate() {
-            isClosed.set(true)
-            incomingChannel.close()
-            outgoingChannel.close()
-        }
-    }
-
-    private fun createSession(deviceId: String, name: String = "Device-$deviceId"): Pair<RelaySession, FakeWebSocketSession> {
-        val fakeWs = FakeWebSocketSession()
-        val session = RelaySession(
-            deviceId = deviceId,
-            friendlyName = name,
-            remoteAddress = "127.0.0.1:50000",
-            websocketSession = fakeWs,
-        )
-        return session to fakeWs
-    }
-
     @Test
-    fun testRegisterAndGet() = runTest {
+    fun registerAndGet() = runBlocking<Unit> {
         val pool = RelayConnectionPool()
         assertEquals(0, pool.activeCount)
 
-        val (session1, _) = createSession("dev-1", "Alice")
-        val displaced = pool.register(session1)
+        val (session1, _) = fakeSession("dev-1")
+        assertNull(pool.register(session1))
 
-        assertNull(displaced)
         assertEquals(1, pool.activeCount)
         assertTrue(pool.isConnected("dev-1"))
-        assertEquals("Alice", pool.get("dev-1")?.friendlyName)
+        assertTrue(pool.isOnline("dev-1"))
+        assertEquals(setOf("dev-1"), pool.onlineDeviceIds())
+        assertSame(session1, pool.get("dev-1"))
     }
 
     @Test
-    fun testUnregister() = runTest {
+    fun unregisterRemovesOnlyTheSessionItWasGiven() = runBlocking<Unit> {
         val pool = RelayConnectionPool()
-        val (session1, fakeWs) = createSession("dev-1")
+        val (session1, _) = fakeSession("dev-1")
         pool.register(session1)
 
-        val unregistered = pool.unregister("dev-1")
-        assertNotNull(unregistered)
-        assertEquals("dev-1", unregistered.deviceId)
+        assertTrue(pool.unregister(session1))
         assertEquals(0, pool.activeCount)
         assertFalse(pool.isConnected("dev-1"))
-        assertNull(pool.get("dev-1"))
+        assertFalse(pool.unregister(session1), "a second unregister is a no-op")
+    }
+
+    /** REL-01: the old session's delayed cleanup must not remove the connection that replaced it. */
+    @Test
+    fun aDisplacedSessionsCleanupCanNotDeregisterItsReplacement() = runBlocking<Unit> {
+        val pool = RelayConnectionPool()
+        val (a1, _) = fakeSession("dev-1")
+        val (a2, _) = fakeSession("dev-1")
+        pool.register(a1)
+        val displaced = pool.register(a2)
+        assertSame(a1, displaced)
+
+        assertFalse(pool.unregister(a1), "A1's cleanup runs late and must find A2 in its place")
+        assertSame(a2, pool.get("dev-1"))
+        assertTrue(pool.isConnected("dev-1"))
+        assertEquals(1, pool.activeCount)
     }
 
     @Test
-    fun testDuplicateSessionDisplacement() = runTest {
+    fun theDisplacedSessionIsToldItWasSupersededAndClosed() = runBlocking<Unit> {
         val pool = RelayConnectionPool()
-        val (sessionA, fakeWsA) = createSession("dev-duplicate", "Device-Old")
-        val (sessionB, fakeWsB) = createSession("dev-duplicate", "Device-New")
+        val (a1, ws1) = fakeSession("dev-1")
+        val (a2, _) = fakeSession("dev-1")
+        pool.register(a1)
+        pool.register(a2)
 
-        val displacedFirst = pool.register(sessionA)
-        assertNull(displacedFirst)
-        assertEquals(1, pool.activeCount)
-        assertEquals("Device-Old", pool.get("dev-duplicate")?.friendlyName)
-
-        // Register second session with same deviceId
-        val displacedSecond = pool.register(sessionB)
-        assertNotNull(displacedSecond)
-        assertEquals("Device-Old", displacedSecond.friendlyName)
-        assertEquals(1, pool.activeCount)
-        assertEquals("Device-New", pool.get("dev-duplicate")?.friendlyName)
+        val kick = ws1.nextOf<RelayFrame.Kick>()
+        assertEquals(RelayConnectionPool.KICK_SUPERSEDED, kick.reason)
+        val deadline = System.nanoTime() + 5_000_000_000L
+        while (a1.isOpen && System.nanoTime() < deadline) Thread.sleep(10)
+        assertFalse(a1.isOpen)
+        assertTrue(a2.isOpen, "the new connection is untouched")
     }
 
     @Test
-    fun testBroadcast() = runTest {
+    fun broadcastQueuesWithoutWaitingAndHonoursTheFilter() = runBlocking<Unit> {
         val pool = RelayConnectionPool()
-        val (session1, fakeWs1) = createSession("dev-1", "Alice")
-        val (session2, fakeWs2) = createSession("dev-2", "Bob")
-        val (session3, fakeWs3) = createSession("dev-3", "Charlie")
+        val (s1, ws1) = fakeSession("dev-1")
+        val (s2, ws2) = fakeSession("dev-2")
+        val (s3, ws3) = fakeSession("dev-3")
+        pool.register(s1); pool.register(s2); pool.register(s3)
 
-        pool.register(session1)
-        pool.register(session2)
-        pool.register(session3)
+        val ping = com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec.encode(RelayFrame.Ping(ts = 1))
+        assertEquals(3, pool.broadcastText(ping))
+        assertEquals(2, pool.broadcastText(ping, filter = { it.deviceId != "dev-2" }))
 
-        assertEquals(3, pool.activeCount)
+        assertIs<RelayFrame.Ping>(ws1.next())
+        assertIs<RelayFrame.Ping>(ws1.next())
+        assertIs<RelayFrame.Ping>(ws2.next())
+        assertIs<RelayFrame.Ping>(ws3.next())
+        assertIs<RelayFrame.Ping>(ws3.next())
+    }
 
-        // Broadcast to all
-        val delivered = pool.broadcastText("FLASH_ANNOUNCEMENT text=Hello")
-        assertEquals(3, delivered)
+    /** REL-05: one stuck client must not block a broadcast; it is cut off instead. */
+    @Test
+    fun aStalledClientIsFailedNotWaitedFor() = runBlocking<Unit> {
+        val pool = RelayConnectionPool()
+        val (stuck, _) = fakeSession("stuck", outgoingCapacity = Channel.RENDEZVOUS, outboundQueue = 2, sendTimeoutMs = 60_000)
+        val (healthy, healthyWs) = fakeSession("healthy")
+        pool.register(stuck); pool.register(healthy)
 
-        val frame1 = fakeWs1.outgoingChannel.receive() as Frame.Text
-        assertEquals("FLASH_ANNOUNCEMENT text=Hello", frame1.readText())
+        val ping = com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec.encode(RelayFrame.Ping(ts = 1))
+        val started = System.nanoTime()
+        repeat(10) { pool.broadcastText(ping) }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
 
-        val frame2 = fakeWs2.outgoingChannel.receive() as Frame.Text
-        assertEquals("FLASH_ANNOUNCEMENT text=Hello", frame2.readText())
+        assertTrue(tookMs < 2_000, "broadcast must not wait for the stuck client (took $tookMs ms)")
+        assertFalse(stuck.isOpen, "a full outbound queue closes the slow consumer")
+        assertEquals("slow_consumer", stuck.reasonClosed)
+        assertTrue(healthy.isOpen)
+        repeat(10) { assertIs<RelayFrame.Ping>(healthyWs.next()) }
+    }
 
-        val frame3 = fakeWs3.outgoingChannel.receive() as Frame.Text
-        assertEquals("FLASH_ANNOUNCEMENT text=Hello", frame3.readText())
+    @Test
+    fun closeAllKicksEveryoneInParallelAndEmptiesThePool() = runBlocking<Unit> {
+        val pool = RelayConnectionPool()
+        val sessions = (1..20).map { fakeSession("dev-$it") }
+        sessions.forEach { pool.register(it.first) }
 
-        // Broadcast with filter (exclude dev-2)
-        val filteredCount = pool.broadcastText("FLASH_PING", filter = { it.deviceId != "dev-2" })
-        assertEquals(2, filteredCount)
+        val started = System.nanoTime()
+        pool.closeAll("server_shutdown", timeoutMs = 5_000)
+        val tookMs = (System.nanoTime() - started) / 1_000_000
 
-        val frame1Second = fakeWs1.outgoingChannel.receive() as Frame.Text
-        assertEquals("FLASH_PING", frame1Second.readText())
+        assertEquals(0, pool.activeCount)
+        assertTrue(sessions.all { !it.first.isOpen })
+        sessions.forEach { (_, ws) -> assertEquals("server_shutdown", ws.nextOf<RelayFrame.Kick>().reason) }
+        assertTrue(tookMs < 4_000, "took $tookMs ms")
+    }
 
-        val frameCharlie = fakeWs3.outgoingChannel.receive() as Frame.Text
-        assertEquals("FLASH_PING", frameCharlie.readText())
+    @Test
+    fun closeAllGivesUpOnAStuckSocketAfterTheTimeoutAndStillClosesTheRest() = runBlocking<Unit> {
+        val pool = RelayConnectionPool()
+        val (stuck, _) = fakeSession("stuck", outgoingCapacity = Channel.RENDEZVOUS, sendTimeoutMs = 60_000)
+        val (fine, fineWs) = fakeSession("fine")
+        pool.register(stuck); pool.register(fine)
+
+        val started = System.nanoTime()
+        pool.closeAll("server_shutdown", timeoutMs = 400)
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+
+        assertTrue(tookMs < 3_000, "must not wait the stuck client's 60 s send timeout (took $tookMs ms)")
+        assertEquals(0, pool.activeCount)
+        assertFalse(stuck.isOpen)
+        assertFalse(fine.isOpen)
+        assertEquals("server_shutdown", fineWs.nextOf<RelayFrame.Kick>().reason)
     }
 }

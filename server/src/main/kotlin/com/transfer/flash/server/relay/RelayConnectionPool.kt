@@ -1,136 +1,132 @@
+@file:OptIn(FlashInternalApi::class)
+
 package com.transfer.flash.server.relay
 
-import io.ktor.websocket.Frame
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec
+import com.transfer.flash.server.observability.PresenceView
+import io.ktor.websocket.CloseReason
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Thread-safe registry and lifecycle manager for all active peer WebSocket connections
- * on the Flash Relay hub.
+ * Thread-safe registry of the active, authenticated relay sessions.
  *
- * Provides duplicate session displacement (so re-connecting devices take over cleanly),
- * targeted frame dispatch, filtered broadcasting, and disconnection cleanup.
+ * **Identity-safe removal (REL-01).** A device that reconnects registers a NEW [RelaySession] under the same id and the
+ * old one is displaced. The old session's own cleanup later calls [unregister] with the OLD session object, and the
+ * pool removes an entry only if it is still that very object (`ConcurrentHashMap.remove(key, value)`), so a delayed
+ * cleanup can never close or deregister the connection that replaced it. There is deliberately no "unregister by
+ * device id" any more.
  */
-public class RelayConnectionPool {
+class RelayConnectionPool : PresenceView {
 
     private val logger = LoggerFactory.getLogger(RelayConnectionPool::class.java)
     private val sessions = ConcurrentHashMap<String, RelaySession>()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /**
-     * Total number of currently connected authenticated devices.
-     */
-    public val activeCount: Int
+    /** Total number of currently connected authenticated devices. */
+    val activeCount: Int
         get() = sessions.size
 
     /**
-     * Registers a new authenticated [session].
-     *
-     * If an existing session for [RelaySession.deviceId] is already active, it is
-     * displaced and terminated cleanly to ensure idempotency and prevent duplicate sockets.
+     * Registers [session]. A session already registered for the same device is displaced: it is told `FLASH_KICK
+     * superseded` and closed in the background (never blocking the new connection).
      *
      * @return The displaced session if one was replaced, or null.
      */
-    public suspend fun register(session: RelaySession): RelaySession? {
-        val oldSession = sessions.put(session.deviceId, session)
-        if (oldSession != null) {
+    fun register(session: RelaySession): RelaySession? {
+        val old = sessions.put(session.deviceId, session)
+        if (old != null && old !== session) {
             logger.info(
-                "Displacing prior connection for device '{}' (remote: {}) with new connection (remote: {})",
-                session.deviceId,
-                oldSession.remoteAddress,
+                "Displacing prior connection for device (remote {}) with a new connection (remote {})",
+                old.remoteAddress,
                 session.remoteAddress,
             )
-            oldSession.close("Displaced by newer connection from same deviceId")
+            scope.launch {
+                old.offer(RelayFrameCodec.encode(RelayFrame.Kick(reason = KICK_SUPERSEDED)))
+                old.closeGracefully("superseded", CloseReason.Codes.NORMAL)
+            }
         } else {
-            logger.info(
-                "Registered new relay connection for device '{}' ('{}', role: {}, remote: {})",
-                session.deviceId,
-                session.friendlyName,
-                session.role,
-                session.remoteAddress,
-            )
+            logger.info("Registered relay connection for role {} from {}", session.role, session.remoteAddress)
         }
-        return oldSession
+        return old
     }
 
     /**
-     * Unregisters a device session by [deviceId] and closes its resources.
+     * Removes [session] from the pool IF it is still the registered one. The session is NOT closed here (its owner
+     * does that); the result says whether anything was removed.
+     */
+    fun unregister(session: RelaySession): Boolean = sessions.remove(session.deviceId, session)
+
+    /** The active session for [deviceId], if currently connected. */
+    fun get(deviceId: String): RelaySession? = sessions[deviceId]
+
+    /** A snapshot list of all currently active relay sessions. */
+    fun getAllActive(): List<RelaySession> = sessions.values.toList()
+
+    /** True when a device is currently connected. */
+    fun isConnected(deviceId: String): Boolean = sessions.containsKey(deviceId)
+
+    override fun isOnline(deviceId: String): Boolean = sessions.containsKey(deviceId)
+
+    override fun onlineDeviceIds(): Set<String> = sessions.keys.toSet()
+
+    /**
+     * Queues a text frame to every active session that satisfies [filter], without waiting for any of them.
      *
-     * @return The removed session if one was present, or null.
+     * @return Number of sessions the frame was queued for.
      */
-    public suspend fun unregister(deviceId: String): RelaySession? {
-        val removed = sessions.remove(deviceId)
-        if (removed != null) {
-            logger.info("Unregistered relay connection for device '{}'", deviceId)
-            removed.close("Unregistered from pool")
-        }
-        return removed
-    }
-
-    /**
-     * Retrieves the active session for [deviceId], if currently connected.
-     */
-    public fun get(deviceId: String): RelaySession? {
-        return sessions[deviceId]
-    }
-
-    /**
-     * Returns a snapshot list of all currently active relay sessions.
-     */
-    public fun getAllActive(): List<RelaySession> {
-        return sessions.values.toList()
-    }
-
-    /**
-     * Checks if a device is currently connected.
-     */
-    public fun isConnected(deviceId: String): Boolean {
-        return sessions.containsKey(deviceId)
-    }
-
-    /**
-     * Broadcasts a WebSocket [frame] to all active sessions that satisfy [filter].
-     *
-     * Automatically cleans up any broken connections encountered during transmission.
-     *
-     * @return Number of sessions that successfully received the frame.
-     */
-    public suspend fun broadcast(
-        frame: Frame,
-        filter: (RelaySession) -> Boolean = { true },
-    ): Int {
-        var delivered = 0
-        val targets = sessions.values.filter(filter)
-        for (target in targets) {
-            try {
-                target.send(frame)
-                delivered++
-            } catch (error: Throwable) {
-                logger.warn("Failed broadcasting to device '{}', removing from pool: {}", target.deviceId, error.message)
-                unregister(target.deviceId)
+    fun broadcastText(text: String, filter: (RelaySession) -> Boolean = { true }): Int {
+        var queued = 0
+        for (target in sessions.values) {
+            if (!filter(target)) continue
+            when (target.offer(text)) {
+                OfferResult.OK -> queued++
+                OfferResult.FULL -> target.fail("slow_consumer")
+                OfferResult.CLOSED -> Unit
             }
         }
-        return delivered
+        return queued
     }
 
     /**
-     * Broadcasts a plain text frame to all active sessions that satisfy [filter].
+     * Sends every session `FLASH_KICK` ([reason]) and closes them ALL IN PARALLEL, waiting at most [timeoutMs] for the
+     * whole group (REL-13: a sequential close let one stuck socket delay every other). Sessions that did not finish in
+     * time are failed (aborted). The pool is empty afterwards.
      */
-    public suspend fun broadcastText(
-        text: String,
-        filter: (RelaySession) -> Boolean = { true },
-    ): Int {
-        return broadcast(Frame.Text(text), filter)
-    }
-
-    /**
-     * Terminates all active connections and clears the pool.
-     */
-    public suspend fun closeAll(reason: String = "Server shutting down") {
-        logger.info("Closing all active relay connections (count: {}): {}", sessions.size, reason)
+    suspend fun closeAll(reason: String = "server_shutdown", timeoutMs: Long = 5_000L) {
         val snapshot = sessions.values.toList()
-        sessions.clear()
-        for (session in snapshot) {
-            session.close(reason)
+        logger.info("Closing all active relay connections (count: {}): {}", snapshot.size, reason)
+        val kick = RelayFrameCodec.encode(RelayFrame.Kick(reason = reason))
+        val finished = withTimeoutOrNull(timeoutMs) {
+            coroutineScope {
+                snapshot.map { s ->
+                    async {
+                        s.offer(kick)
+                        s.closeGracefully(reason, CloseReason.Codes.GOING_AWAY)
+                    }
+                }.awaitAll()
+            }
+            true
         }
+        if (finished == null) {
+            logger.warn("Shutdown timed out after {} ms; aborting the remaining sessions", timeoutMs)
+            snapshot.forEach { it.fail("shutdown_timeout", CloseReason.Codes.GOING_AWAY) }
+        }
+        snapshot.forEach { sessions.remove(it.deviceId, it) }
+    }
+
+    companion object {
+        /** `FLASH_KICK.reason` for a session replaced by a newer connection of the same device. */
+        const val KICK_SUPERSEDED: String = "superseded"
     }
 }

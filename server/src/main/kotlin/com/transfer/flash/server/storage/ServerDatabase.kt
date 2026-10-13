@@ -2,7 +2,14 @@ package com.transfer.flash.server.storage
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.transfer.flash.server.auth.SecureFiles
+import org.slf4j.LoggerFactory
+import java.io.File
 import java.sql.Connection
+import java.util.Properties
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Record representing an enrolled device in the enterprise hub directory.
@@ -31,15 +38,35 @@ data class AuditLogRecord(
     val entryHash: String,
 )
 
+/** Result of [ServerDatabase.probe] (`/health/detail`). */
+data class DatabaseProbe(
+    val ok: Boolean,
+    val latencyMs: Long,
+    /** Pages in the WAL file right after a passive checkpoint (null when the journal is not WAL or the probe failed). */
+    val walPages: Int?,
+    /** Pages of the WAL already copied into the database file. */
+    val walCheckpointedPages: Int?,
+    val error: String? = null,
+)
+
 /**
  * SQLite database initialization and connection pool management for the standalone server module.
  *
- * Configures HikariCP, WAL mode (`PRAGMA journal_mode=WAL`), `PRAGMA synchronous=NORMAL`,
- * and `PRAGMA busy_timeout=5000`. Initializes the tables:
- * - `mailbox_envelopes`
- * - `device_registry`
- * - `audit_log`
- * and corresponding indexes.
+ * Every pooled connection is opened with the same pragmas, passed to the driver as connection properties (REL-15:
+ * `connectionInitSql` runs a single statement on some drivers, so a two-statement init string was only partly applied;
+ * the properties path is applied by the driver on every `connect`, and `ServerDatabaseTest` reads each pragma back
+ * from several simultaneously open connections to prove it): `busy_timeout=5000`, `synchronous=NORMAL`,
+ * `foreign_keys=ON`, and, for a file database, `journal_mode=WAL`.
+ *
+ * The file is created with `auto_vacuum=INCREMENTAL` so [incrementalVacuum] can give back the pages of deleted
+ * mailbox rows (REL-11); an older file with `auto_vacuum=NONE` is converted once, at open, with a `VACUUM` when it is
+ * small enough to do so quickly.
+ *
+ * Schema: this class creates only the shared `device_registry` and `audit_log` tables (owned, and to be migrated, by
+ * the identity/audit components). The mailbox schema belongs to the `mailbox` migration component
+ * ([com.transfer.flash.server.mailbox.MailboxSchema]).
+ *
+ * Blocking JDBC must not run on a Ktor event-loop thread: use [io] / [ioTransaction] from coroutines (REL-11).
  */
 class ServerDatabase(
     val jdbcUrl: String = DEFAULT_JDBC_URL,
@@ -49,6 +76,11 @@ class ServerDatabase(
     companion object {
         const val DEFAULT_JDBC_URL = "jdbc:sqlite:mailbox.db"
         const val IN_MEMORY_JDBC_URL = "jdbc:sqlite::memory:"
+
+        /** An old file is converted to incremental auto-vacuum with a VACUUM only when it is smaller than this. */
+        const val VACUUM_CONVERSION_MAX_BYTES: Long = 256L * 1024 * 1024
+
+        private val logger = LoggerFactory.getLogger(ServerDatabase::class.java)
 
         /**
          * Resolves SQLite JDBC driver class name. Prefers Willena's encrypted fork driver
@@ -71,9 +103,20 @@ class ServerDatabase(
             val url = "jdbc:sqlite:file:memdb_${System.nanoTime()}?mode=memory&cache=shared"
             return ServerDatabase(jdbcUrl = url, maxPoolSize = poolSize)
         }
+
+        private fun isMemoryUrl(url: String): Boolean = url.contains(":memory:") || url.contains("mode=memory")
+
+        private fun filePathOf(url: String): File? {
+            if (isMemoryUrl(url)) return null
+            val raw = url.removePrefix("jdbc:sqlite:").substringBefore('?')
+            return File(raw.removePrefix("file:"))
+        }
     }
 
     val dataSource: HikariDataSource
+
+    private val isMemory: Boolean = isMemoryUrl(jdbcUrl)
+    private val closed = AtomicBoolean(false)
 
     init {
         val config = HikariConfig().apply {
@@ -92,46 +135,87 @@ class ServerDatabase(
             }
 
             connectionTestQuery = "SELECT 1"
-            connectionInitSql = "PRAGMA busy_timeout=5000; PRAGMA synchronous=NORMAL;"
             isAutoCommit = true
+
+            // Per-connection pragmas, applied by the driver on every connect (see the class comment).
+            val props = Properties()
+            props["busy_timeout"] = "5000"
+            props["synchronous"] = "NORMAL"
+            props["foreign_keys"] = "true"
+            if (!isMemory) props["journal_mode"] = "WAL"
+            dataSourceProperties = props
         }
+
+        // REV-03: the directory and the file are private to the hub's account BEFORE SQLite creates anything in them.
+        if (!isMemory) hardenFilesBeforeOpen()
+
+        // The auto_vacuum mode of a NEW file is fixed by its first table; set it before anything is created.
+        if (!isMemory) prepareFileForIncrementalVacuum()
 
         dataSource = HikariDataSource(config)
         initializeSchema()
+        if (!isMemory) verifyFilesPrivate()
+    }
+
+    /** The database, its `-wal` and its `-shm` (SQLite gives the side files the permissions of the main file). */
+    private fun databaseFiles(): List<java.nio.file.Path> {
+        val main = filePathOf(jdbcUrl)?.toPath()?.toAbsolutePath() ?: return emptyList()
+        return listOf(main, main.resolveSibling(main.fileName.toString() + "-wal"), main.resolveSibling(main.fileName.toString() + "-shm"))
+    }
+
+    private fun hardenFilesBeforeOpen() {
+        val files = databaseFiles()
+        val main = files.firstOrNull() ?: return
+        main.parent?.let { if (!SecureFiles.restrictDirectory(it)) logger.warn("Could not restrict the data directory {} to the hub's account; check its permissions by hand", it) }
+        try {
+            if (!java.nio.file.Files.exists(main)) java.nio.file.Files.createFile(main)
+        } catch (e: java.io.IOException) {
+            logger.warn("Could not pre-create {} owner-only: {}", main.fileName, e.message)
+        }
+        files.filter { java.nio.file.Files.exists(it) }.forEach { SecureFiles.restrictDataFile(it) }
+    }
+
+    private fun verifyFilesPrivate() {
+        for (f in databaseFiles().filter { java.nio.file.Files.exists(it) }) {
+            if (!SecureFiles.isPrivateToHubAccount(f) && !SecureFiles.restrictDataFile(f) || !SecureFiles.isPrivateToHubAccount(f)) {
+                logger.warn(
+                    "SECURITY: {} is readable by accounts other than the hub's. It holds password hashes, invite hashes and queued messages: " +
+                        "restrict it by hand (chmod 600 / an owner-only ACL).",
+                    f.fileName,
+                )
+            }
+        }
+    }
+
+    private fun prepareFileForIncrementalVacuum() {
+        val file = filePathOf(jdbcUrl) ?: return
+        val existed = file.exists() && file.length() > 0
+        try {
+            java.sql.DriverManager.getConnection(jdbcUrl).use { conn ->
+                val mode = conn.createStatement().use { st ->
+                    st.executeQuery("PRAGMA auto_vacuum").use { rs -> if (rs.next()) rs.getInt(1) else 0 }
+                }
+                if (mode == 2) return
+                conn.createStatement().use { it.execute("PRAGMA auto_vacuum=INCREMENTAL") }
+                if (existed) {
+                    if (file.length() <= VACUUM_CONVERSION_MAX_BYTES) {
+                        logger.info("Converting {} to auto_vacuum=INCREMENTAL (VACUUM, {} bytes)", file.name, file.length())
+                        conn.createStatement().use { it.execute("VACUUM") }
+                    } else {
+                        logger.warn("{} is large ({} bytes); not converting to auto_vacuum=INCREMENTAL at startup", file.name, file.length())
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            // Never block startup over a space optimisation.
+            logger.warn("Could not set auto_vacuum=INCREMENTAL on {}: {}", file.name, t.message)
+        }
     }
 
     private fun initializeSchema() {
         withConnection { conn ->
             conn.createStatement().use { stmt ->
-                if (!jdbcUrl.contains(":memory:")) {
-                    try {
-                        stmt.execute("PRAGMA journal_mode=WAL;")
-                    } catch (_: Exception) {
-                        // WAL may not be allowed on certain in-memory or read-only filesystems
-                    }
-                }
-                stmt.execute("PRAGMA synchronous=NORMAL;")
-                stmt.execute("PRAGMA busy_timeout=5000;")
-
-                // 1. mailbox_envelopes
-                stmt.execute("""
-                    CREATE TABLE IF NOT EXISTS mailbox_envelopes (
-                        id TEXT PRIMARY KEY,
-                        origin_device_id TEXT NOT NULL,
-                        target_device_id TEXT NOT NULL,
-                        msg_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        hops INTEGER NOT NULL DEFAULT 0,
-                        counter INTEGER NOT NULL DEFAULT 0,
-                        payload BLOB NOT NULL,
-                        auth_tag TEXT NOT NULL,
-                        created_at INTEGER NOT NULL,
-                        expires_at INTEGER NOT NULL,
-                        delivered INTEGER NOT NULL DEFAULT 0
-                    );
-                """.trimIndent())
-
-                // 2. device_registry
+                // device_registry
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS device_registry (
                         device_id TEXT PRIMARY KEY,
@@ -144,7 +228,7 @@ class ServerDatabase(
                     );
                 """.trimIndent())
 
-                // 3. audit_log
+                // audit_log
                 stmt.execute("""
                     CREATE TABLE IF NOT EXISTS audit_log (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,45 +241,103 @@ class ServerDatabase(
                         entry_hash TEXT NOT NULL
                     );
                 """.trimIndent())
-
-                // 4. Indexes
-                stmt.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_mailbox_target_delivered_expires 
-                    ON mailbox_envelopes(target_device_id, delivered, expires_at);
-                """.trimIndent())
-
-                stmt.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_mailbox_origin_msg 
-                    ON mailbox_envelopes(origin_device_id, msg_id);
-                """.trimIndent())
             }
         }
     }
 
     /**
      * Executes a block within a pooled JDBC Connection, safely returning it to HikariCP upon completion.
+     * BLOCKING: from a coroutine use [io].
      */
     fun <T> withConnection(block: (Connection) -> T): T {
         return dataSource.connection.use(block)
     }
 
     /**
-     * Executes a block within a transactional JDBC Connection, committing on success or rolling back on exception.
+     * Executes a block in a write transaction that takes the write lock up front (`BEGIN IMMEDIATE`), so a
+     * check-then-insert can not interleave with another writer and a writer never fails late with `SQLITE_BUSY` on
+     * lock upgrade (REL-15, REL-03). Commits on success, rolls back on any throwable. BLOCKING: use [ioTransaction].
      */
     fun <T> withTransaction(block: (Connection) -> T): T {
         return dataSource.connection.use { conn ->
-            val prevAutoCommit = conn.autoCommit
-            conn.autoCommit = false
+            val previous = conn.autoCommit
+            conn.autoCommit = true
+            conn.createStatement().use { it.execute("BEGIN IMMEDIATE") }
             try {
                 val result = block(conn)
-                conn.commit()
+                conn.createStatement().use { it.execute("COMMIT") }
                 result
             } catch (t: Throwable) {
-                conn.rollback()
+                try {
+                    conn.createStatement().use { it.execute("ROLLBACK") }
+                } catch (_: Throwable) {
+                    // The original failure is the one that matters.
+                }
                 throw t
             } finally {
-                conn.autoCommit = prevAutoCommit
+                conn.autoCommit = previous
             }
+        }
+    }
+
+    /** [withConnection] on the IO dispatcher. */
+    suspend fun <T> io(block: (Connection) -> T): T = withContext(Dispatchers.IO) { withConnection(block) }
+
+    /** [withTransaction] on the IO dispatcher. */
+    suspend fun <T> ioTransaction(block: (Connection) -> T): T = withContext(Dispatchers.IO) { withTransaction(block) }
+
+    /** The current value of a pragma on a pooled connection (diagnostics and tests). */
+    fun pragma(name: String): String? = withConnection { conn ->
+        conn.createStatement().use { st -> st.executeQuery("PRAGMA $name").use { rs -> if (rs.next()) rs.getString(1) else null } }
+    }
+
+    /**
+     * Cheap health probe for `/health/detail`: `SELECT 1` plus a passive WAL checkpoint (which reports the WAL size and
+     * how much of it has reached the main file). Never throws.
+     */
+    fun probe(): DatabaseProbe {
+        val started = System.nanoTime()
+        return try {
+            withConnection { conn ->
+                conn.createStatement().use { st -> st.executeQuery("SELECT 1").use { it.next() } }
+                var pages: Int? = null
+                var done: Int? = null
+                if (!isMemory) {
+                    conn.createStatement().use { st ->
+                        st.executeQuery("PRAGMA wal_checkpoint(PASSIVE)").use { rs ->
+                            if (rs.next()) {
+                                pages = rs.getInt(2).takeIf { it >= 0 }
+                                done = rs.getInt(3).takeIf { it >= 0 }
+                            }
+                        }
+                    }
+                }
+                DatabaseProbe(true, (System.nanoTime() - started) / 1_000_000, pages, done)
+            }
+        } catch (t: Throwable) {
+            DatabaseProbe(false, (System.nanoTime() - started) / 1_000_000, null, null, t.javaClass.simpleName)
+        }
+    }
+
+    /** Returns up to [pages] free pages to the filesystem (needs `auto_vacuum=INCREMENTAL`; a no-op otherwise). */
+    fun incrementalVacuum(pages: Int = 1000): Boolean = try {
+        // sqlite-jdbc: execute() steps the pragma ONCE (one page freed, measured 2450 -> 2449); executeUpdate() steps to the end.
+        withConnection { conn -> conn.createStatement().use { it.executeUpdate("PRAGMA incremental_vacuum($pages)") } }
+        true
+    } catch (t: Throwable) {
+        logger.warn("incremental_vacuum failed: {}", t.message)
+        false
+    }
+
+    /** Folds the whole WAL into the database file and truncates it. Best effort; used before close. */
+    fun checkpointTruncate(): Boolean {
+        if (isMemory || dataSource.isClosed) return false
+        return try {
+            withConnection { conn -> conn.createStatement().use { it.execute("PRAGMA wal_checkpoint(TRUNCATE)") } }
+            true
+        } catch (t: Throwable) {
+            logger.warn("wal_checkpoint(TRUNCATE) failed: {}", t.message)
+            false
         }
     }
 
@@ -306,7 +448,10 @@ class ServerDatabase(
         }
     }
 
+    /** Idempotent. Checkpoints the WAL (file databases) before the pool is closed so no `-wal` file is left behind. */
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        checkpointTruncate()
         if (!dataSource.isClosed) {
             dataSource.close()
         }

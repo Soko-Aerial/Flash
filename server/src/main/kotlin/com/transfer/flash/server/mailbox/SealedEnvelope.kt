@@ -23,11 +23,13 @@ object EnvelopeKind {
  * @property originDeviceId Cryptographic device ID of the sender.
  * @property msgId Globally unique message UUID.
  * @property hops Number of hops traversed across mesh/relays (decremented/incremented per relay policy).
- * @property counter Monotonically increasing counter per origin+recipient for replay protection.
+ * @property counter Reserved (REL-15 decision, ADR-112): replay protection is the recipient's msgId dedupe, the relay wire has
+ *   no counter and the mailbox table no longer stores one. Kept only so the binary format stays readable.
  * @property kind Payload category: "CHAT", "RECEIPT", "SMALL_FILE", or "META".
  * @property recipientDeviceIds List of intended recipient device IDs.
  * @property payload Sealed ciphertext payload or binary frame.
- * @property authTagOrSignature AEAD auth tag for pairwise sessions or ECDSA signature for broadcast frames.
+ * @property authTagOrSignature Reserved (REL-15 decision, ADR-112): the hub never sees or checks an AEAD tag (clients seal
+ *   the payload end to end) and the wire has no such field, so the mailbox does not store it.
  * @property timestamp Unix epoch timestamp in milliseconds when the envelope was minted.
  */
 data class SealedEnvelope(
@@ -49,6 +51,10 @@ data class SealedEnvelope(
         /**
          * Deserializes a canonical binary representation back into a [SealedEnvelope].
          */
+        /** Hard caps on what a header may claim, so a corrupt or hostile buffer can not make the parser allocate gigabytes (REL-15). */
+        const val MAX_RECIPIENTS: Int = 1_024
+        const val MAX_PAYLOAD_BYTES: Int = 4 * 1024 * 1024
+
         fun fromBinary(bytes: ByteArray): SealedEnvelope {
             DataInputStream(ByteArrayInputStream(bytes)).use { inp ->
                 val magic = inp.readInt()
@@ -62,12 +68,14 @@ data class SealedEnvelope(
                 val counter = inp.readLong()
                 val kind = inp.readUTF()
                 val recipientCount = inp.readInt()
+                require(recipientCount in 0..MAX_RECIPIENTS) { "Implausible recipient count in envelope: $recipientCount" }
                 val recipientDeviceIds = ArrayList<String>(recipientCount)
                 for (i in 0 until recipientCount) {
                     recipientDeviceIds.add(inp.readUTF())
                 }
                 val payloadSize = inp.readInt()
-                require(payloadSize >= 0) { "Negative payload length in envelope" }
+                require(payloadSize in 0..MAX_PAYLOAD_BYTES) { "Implausible payload length in envelope: $payloadSize" }
+                require(payloadSize <= bytes.size) { "Payload length $payloadSize exceeds the buffer (${bytes.size} bytes)" }
                 val payload = ByteArray(payloadSize)
                 inp.readFully(payload)
                 val authTagOrSignature = inp.readUTF()
