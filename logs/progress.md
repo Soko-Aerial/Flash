@@ -3,6 +3,24 @@
 
 
 
+
+## 2026-10-13 - ERROR-397 fixed: intermittent reconnect-storm failure was a real race in `FlashRelayClient`
+
+### Worked on
+The one intermittent test failure left after the extraction (`E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`), which had been written off as flaky.
+
+### Changed
+- `FlashRelayClient`: the connection loop waits for the disconnect launched by the preceding `stop()` (ERROR-397). New regression test in `FlashRelayClientStartRaceTest`.
+
+### Verification
+`:core:enterprise:jvmTest` and `testAndroidHostTest` green, mutation check kills the new test, e2e storm test 5/5 (was failing about 2 of 5). Not device-verified.
+
+### Remaining
+`HUBR-10` / `EXTR-01` on devices. Note: an edit made during this work was reverted in the working tree by another session once; the fix was committed immediately after being re-applied.
+
+### Next AI
+Before treating a test as "known flaky", look at the failing assertion: this one was a product race.
+
 ## 2026-10-13 - `:core:enterprise` extracted from `:core:network` (ADR-128), verified and committed
 
 ### Worked on
