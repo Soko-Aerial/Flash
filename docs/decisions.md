@@ -4476,3 +4476,715 @@ library version; bumping `flashLibraryVersion` bumps both.
 
 ### Revisit when
 Upstream gains a jvm target (drop the fork) or the fork is split into its own repository.
+
+
+## ADR-107 - `:core:hub-protocol`: the one definition of the enterprise-hub wire contract
+
+### Date
+2026-10-12
+
+### Decision
+A new Kotlin Multiplatform library `:core:hub-protocol` (package root `com.transfer.flash.core.hubprotocol`, Android + JVM, explicit API,
+`@FlashInternalApi`) holds everything both ends of the hub link must agree on:
+
+- `HubContract` (paths, headers, versions, timing, size limits) and `HubErrorCodes`;
+- `certs/`: `DeviceCert`, `DelegationCert`, `RevocationList` (tag `flash-revocation-v2`), `AuthCanonicalWriter`, `HubAuth` (the three signing
+  tags), `HubRoles` / `HubScopes` (closed role set, one wildcard rule), `RenewalPolicy`, `EnrollmentInvite`, and the `EcdsaVerifier` seam;
+- `relay/`: the `RelayFrame` sealed model and `RelayFrameCodec` ("Hub relay wire v2", ADR-109);
+- `rest/`: every REST DTO (`ErrorBody`, `AuthChallengeResponse`, `AuthVerifyRequest/Response`, `EnrollRequest/Response`, `RenewRequest`, the
+  directory DTOs, `HubInfo`, `StoredEnrollment`) and `HubRestCodec`;
+- `HubJson`: the two `Json` configurations (frames, REST).
+
+It depends on `:core:common` and `kotlinx-serialization-json` only: no Ktor, no coroutines, no Room, and NOT `:core:security`. Signature
+checks go through the `EcdsaVerifier` fun interface, which the server implements with `java.security` (`JvmEcdsaVerifier`) and the clients
+with `FlashCrypto` (`FlashCryptoEcdsaVerifier`). `:server`, `:core:security`, `:core:network` and (through them) the hosts depend on it;
+`:server` never depends on a client module at runtime (the contract test uses `:core:network` as `testImplementation` only).
+
+The old copies are deleted, not wrapped: `server/.../auth/{DeviceCert,DelegationCert,RevocationList}.kt` and `AuthCanonicalWriter` in
+`CryptoSupport.kt`; `core/security/.../enterprise/{AuthCanonicalWriter,DeviceCert,DelegationCert}.kt`;
+`core/network/.../relay/{RelayFrame,RelayFrameCodec}.kt` and `enterprise/EnterpriseJsonHelper.kt`; the `:ui:chat` invite parser now calls
+`EnrollmentInvite.parseOrNull`.
+
+### Context
+`docs/audit/2026-10-12-server-hub-audit.md` found the server and the clients each carried their own certificate types, canonical bytes,
+frame parsers and JSON readers, and that they disagreed (CLI-03 field names, CLI-02 delegation slicing, SEC-18 scope wildcard and time rules,
+SEC-14 payload, CLI-17 duplicated invite parser). Two implementations of a security contract drift; the audit's own review recommended one module.
+
+### Alternatives considered
+- Put the contract in `:core:network` (rejected): `:server` would depend on a client networking module that pulls discovery, TLS and sockets,
+  and the server is a standalone JVM app that must stay headless.
+- Put it in `:core:engine` or `:core:messaging` (rejected): the NET-1 / ENG-1 / MSG-2 refactors were already rejected (AGENTS.md section 29);
+  the engine is the wrong direction for a server to depend on.
+- Make `:core:security` own it (rejected): `:core:security` carries platform keystore code and an Android target; the server would inherit it,
+  and the audit review asked that the contract not depend on it. Direction used: `:core:security` depends on `:core:hub-protocol` (it must,
+  because `EnterpriseTrustStore` / `EnrollmentCredentials` hold `DeviceCert`), never the reverse.
+- A separate `:core:enterprise` client module (recommended by the audit review) is NOT part of this ADR; it is later client work and does
+  not change this module's shape.
+
+### Consequences
+`publishToMavenLocal` for `:core:hub-protocol` is the first library publish in `jitpack.yml` (before `:core:security`). Golden vectors pin the
+canonical bytes (`CertGoldenVectorTest`), and one REAL P-256 signature is verified by three independent verifiers (shared module JVM test,
+client `FlashCrypto` in `:core:security` `HubSignedVectorTest`, server `java.security` in `:server` `HubSignedVectorServerTest`).
+
+### Revisit when
+A non-JVM client (iOS, Rust) needs the contract: the module is already Kotlin Multiplatform common code; add a target, or generate the
+schema from `docs/protocol.md`.
+
+## ADR-108 - `kotlinx-serialization-json` 1.9.0 as the JSON implementation for the hub contract
+
+### Date
+2026-10-12
+
+### Decision
+`:core:hub-protocol` uses the Kotlin serialization compiler plugin and `org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0`
+(Apache-2.0, JetBrains). It is declared in `gradle/libs.versions.toml` (`kotlinxSerialization = "1.9.0"`) and is an `api` dependency of the
+module only where a public signature exposes it. Every frame and DTO is `@Serializable` and is read or written only through `HubJson` /
+`RelayFrameCodec` / `HubRestCodec`. `ignoreUnknownKeys = true` (forward compatibility), `encodeDefaults = true`, `explicitNulls = false`,
+`isLenient = false`; relay frames use `coerceInputValues = true` so a newer server's unknown enum value does not drop a frame.
+
+### Context
+SEC-15 and REL-12: regex "JSON" in `AuthRoutes`, `RelayFrameRouter.parseRelayMessage`, `DirectoryRoutes` and `EnterpriseJsonHelper` took the
+first match anywhere in the text (field confusion, payloads cut at the first escaped quote, certificate blocks cut at the first `}`).
+
+### Alternatives considered
+- Keep hand-rolled parsers (rejected: this is exactly SEC-15).
+- Moshi or Gson (rejected: JVM-only, reflection or codegen per platform; the contract is common code).
+- `ktor-serialization-kotlinx-json` (rejected for the shared module: it pulls Ktor into a module that must not have it; it still wraps this same library).
+- Hand-written minimal strict parser in `:core:common` (rejected: more code to audit than adopting a maintained library; the project rule is
+  "every dependency has a reason", and this one is the reason for deleting four regex parsers).
+
+### Consequences
+One new runtime dependency (about 600 KB on Android, no reflection, R8-safe through the generated serializers; `proguard-rules.pro` /
+`consumer-rules.pro` are provided). The licence is in `NOTICE` and flows into `THIRD_PARTY_NOTICES.txt` from the shipped dependency graph.
+
+### Revisit when
+A schema-first approach (generated from a protobuf or JSON-schema file) is wanted for non-Kotlin clients.
+
+## ADR-109 - "Hub relay wire v2": authenticated relay handshake, REST bearer, certificate renewal, enrolment proof of possession
+
+### Date
+2026-10-12
+
+### Decision
+1. **Relay handshake (replaces the unauthenticated query-string wire; SEC-01, SEC-02, SEC-14, CLI-10).** On accept the hub sends
+   `FLASH_HUB_CHALLENGE {serverId, serverNonce, issuedAt}` (realm = upper-case hex SHA-256 of the organisation root key; nonce 32 random bytes,
+   single use because it belongs to one socket). The client answers within 10 s with `FLASH_HUB_HELLO {deviceId, clientNonce, name, deviceCert,
+   delegationChain, signature}`, where `signature` is ECDSA over `HubAuth.authSigningBytes(serverId, serverNonce, clientNonce, deviceId,
+   certSerial)` (length-prefixed, domain tag `flash-hub-auth-v1`). The hub verifies the chain against the pinned root, revocation, the closed
+   role set, the validity windows (skew at both ends) and the signature, then sends `FLASH_HUB_WELCOME {principal, serverTime, limits}`;
+   otherwise `FLASH_ERROR {code, message}` with a fixed sentence and a close. Both sides time out after `HANDSHAKE_TIMEOUT_MS` = 10 s. The
+   client refuses to answer a challenge whose `serverId` is not its pinned realm. No identity travels in the URL.
+2. **Sender stamping.** `FLASH_RELAY` has no sender field; the hub stamps `FLASH_DELIVER.from` and `FLASH_META.from` from the authenticated
+   principal. A `from` or `sender` member in a client frame is not read.
+3. **Receipts.** `FLASH_RECV_ACK {msgId}` is the client's statement that it durably stored a message; it is the only thing that may delete a
+   mailbox row (REL-02). `FLASH_ACK` carries `AckStatus` (`DELIVERED`, `QUEUED`, `OFFLINE_UNDELIVERABLE`, `DUPLICATE_QUEUED`, `QUOTA_EXCEEDED`,
+   `REJECTED`, `ERROR`) with `to` = the recipient the send was addressed to. `FLASH_QUEUE_STATE` reports a later state of a queued message.
+   `FLASH_REVOKED` and `FLASH_KICK` end a connection with a reason.
+4. **REST bearer.** `GET|POST /api/v1/auth/challenge` returns `{serverId, serverNonce, issuedAt, ttlSeconds}`; `POST /api/v1/auth/verify` takes the
+   same signed form as HELLO and returns a 15 minute opaque bearer token (32 random bytes, only its SHA-256 is kept by the hub) with the
+   principal. Directory routes resolve the caller from `Authorization: Bearer`; the REST nonce store is separate from the relay's.
+5. **Renewal.** `POST /api/v1/enroll/renew` (`RenewRequest`, tag `flash-hub-renew-v1`) is open from 24 h before `validTo` to 72 h after, and
+   issues a certificate with a NEW serial and a window clamped to the delegation (SEC-18). The contract (path, DTO, signing bytes,
+   `RenewalPolicy`) exists in `:core:hub-protocol`; the hub route and the client caller are later phases.
+6. **Enrolment proof of possession (SEC-07 part).** `EnrollRequest.proof` is the device's signature over
+   `HubAuth.enrollProofBytes(token, deviceId, subjectPublicKey, serverId)` (tag `flash-hub-enroll-v1`). The hub verifies it before consuming the
+   token or a quota slot, so a token holder cannot certify a key it does not hold.
+7. **Errors and limits.** Every REST error is `ErrorBody {code, message, correlationId}`; `code` is from the closed `HubErrorCodes` set and
+   `message` a fixed sentence (never exception text, SEC-16). Relay frames are limited to 256 KiB (16 KiB before WELCOME), payloads to 64 KiB,
+   REST bodies to 64 KiB.
+
+### Context
+The audit (SEC-01, SEC-02, SEC-14, SEC-15, CLI-10) found `/flash-relay` accepted any `deviceId` from the query string, signed bytes had no
+domain tag, no audience and no length prefix, and `/auth/verify` returned a status but no credential.
+
+### Alternatives considered
+- mTLS between device and hub (rejected for now: TLS termination is not implemented on the hub, SEC-06, and the device keys are signing keys
+  of a pinned certificate model, not TLS leaf keys; a challenge in the application layer works behind any proxy).
+- A signed JWT bearer (rejected: needs a verification key distribution and clock trust; an opaque server-side token can be revoked by deleting it).
+- Keep identity in the URL and sign the URL (rejected: replayable and logged by proxies).
+- Authenticate only after the first frame (rejected: the first frame must already be bounded; the explicit challenge fixes the audience and the nonce).
+
+### Consequences
+v1 clients cannot connect to a v2 hub and vice versa: this is a breaking wire change. The hub is not yet deployed to the field, so no
+compatibility shim was written. `docs/protocol.md` "Hub relay wire v2" is the specification; `RelayHandshakeContractTest` runs the real client
+transport against the real server handshake.
+
+### Revisit when
+TLS termination (SEC-06) lands and channel binding of the signature to the TLS session becomes possible, or when the `resumeToken` field of
+WELCOME is used for fast resume.
+
+## ADR-110 - Revocation model: signed monotonic list with certificate, device and delegation entries
+
+### Date
+2026-10-12
+
+### Decision
+`RevocationList` (tag `flash-revocation-v2`) is signed and monotonic (`version` strictly increases). It lists revoked device-certificate
+serials, revoked device ids (revokes every certificate that id ever held) and, new in v2, revoked delegation serials
+(`revokedDelegationSerials`). A delegation serial on the list invalidates every device certificate issued under it, which is how a
+compromised hub signing key is cut off without re-enrolling the organisation root. Rules:
+
+- `DeviceCert.checkChain` consults the list after the signature/issuer/scope checks and before the time checks, so a revoked certificate
+  reports `REVOKED` even when it is also expired.
+- A list is acceptable only through `RevocationList.verifyTrusted`: signed by the ROOT (may carry anything), or by a delegate that holds the
+  `revoke:member` scope and whose own delegation is valid (such a list may revoke devices but never delegations: a server may not revoke the
+  authority above itself).
+- `ChallengeResponseAuth` takes an ALREADY trusted list from a provider; installing, signing and persisting the list is the hub's job.
+- `RelayFrameRouter` accepts a `revocationListProvider`: a connected device on the list gets `FLASH_REVOKED` and is closed on its NEXT frame (built and unit-tested). Nothing builds, signs or supplies a list in the running hub yet, and there is no active kick without a frame (Phase 2, SEC-05).
+
+The v1 tag (`flash-revocation-v1`, no delegation set) was never produced by any shipped hub (SEC-05: the hub had no list at all), so no v1
+list exists in the field and v1 is not verified.
+
+### Context
+SEC-05: revocation was never enforced (no list built, signed, stored or served; the relay compared a hard-coded serial of -1; no model for
+revoking the server key itself). SEC-18 asked for one consistent time/role/scope rule on both sides.
+
+### Alternatives considered
+- Online revocation only (a database flag the hub checks): rejected, an offline organisation root and the clients' need to verify peers
+  without the hub argue for a signed artifact that can be distributed over any channel.
+- Certificate short lifetimes only (7 days, renewal required): kept as a complement (D-E9), not a replacement: a stolen device must be
+  cut off within minutes, not days.
+- Revoking a delegation by letting it expire: rejected, a compromised hub key must stop working immediately.
+
+### Consequences
+Phase 2 owns the hub side: build, root-sign, persist and serve the list (`GET /api/v1/revocations`), active kick of connected sessions,
+and a revoke action in the admin UI (SEC-05, CLI-07). The client side (fetch, verify with `verifyTrusted`, honour on peer checks) is a client
+phase.
+
+### Revisit when
+The list grows large enough that a delta format is needed (it is a set of numbers and ids; fine to a few thousand entries).
+
+
+## ADR-112 - Hub relay: acknowledgement-driven at-least-once delivery, a bounded mailbox, server-side group fan-out, observability (2026-10-12)
+
+Status: ACCEPTED in code 2026-10-12 (phase 2 of the hub fix effort, SERVER-B), not device-verified (`HUBB-01`..`HUBB-12`,
+`docs/testing/TEST-BACKLOG.md`). Audit rows: `docs/audit/2026-10-12-server-hub-audit.md` REL-01..REL-15, SEC-02, SEC-16.
+(ADR-111 is the schema migrator and identity store of the same phase, written by SERVER-A.)
+
+### Decision
+1. **Delivery is at-least-once and driven by the recipient.** A message leaves the hub only when the recipient sends `FLASH_RECV_ACK`
+   after it has stored the message. Writing to a socket proves nothing (half-open sockets, Transsion/Hiber freezes), so:
+   - a message handed to a live session is entered in that session's **in-flight table**; if the session ends before the RECV_ACK, the entries
+     are spilled into the mailbox (REL-02);
+   - a message for an offline or draining device is stored in the mailbox and **stays there until acknowledged**; on every connect the whole
+     mailbox is replayed (`replay=true`), in arrival order (`seq`), in pages of `RelayPolicy.drainPageSize` (100), with a per-connection cursor;
+   - the sender hears `FLASH_ACK` (`DELIVERED` = handed to the recipient's bounded queue, `QUEUED`, `DUPLICATE_QUEUED`, `QUOTA_EXCEEDED`,
+     `REJECTED`, `OFFLINE_UNDELIVERABLE`) and later `FLASH_QUEUE_STATE` (`DELIVERED` on the recipient's RECV_ACK, `EXPIRED`, `DROPPED`).
+   **Clients must deduplicate by `msgId` and send RECV_ACK only after a durable store.** Exactly-once is not claimed.
+2. **Ordering.** A session is `draining` from connect until its mailbox is empty. While it drains, live frames go through the mailbox. The
+   check "caught up?" and the live hand-off are one atomic step (`RelaySession.handOffLive` / `finishDrain`), so a live frame cannot overtake
+   a stored row and a message arriving during the last page cannot be lost (no lost wake-up).
+3. **The mailbox is a table with limits, not a queue object** (`mailbox_envelopes`, schema component `mailbox` v2, REL-03/08/09): `seq` =
+   arrival order, `UNIQUE(origin, target, msg_id)` with `ON CONFLICT DO NOTHING` (concurrent duplicates become `DUPLICATE_QUEUED`), quotas checked
+   and the row inserted in one `BEGIN IMMEDIATE` transaction (per recipient rows and bytes, per sender rows and bytes, global rows and bytes,
+   payload cap, `maxMessages`), the recipient must exist in the `DeviceRegistry` (else `ERR_UNKNOWN_RECIPIENT`), the **server** clock stamps
+   `created_at`/`expires_at` (client `sentAt` is clamped to +-`maxClockSkewMs` and never decides expiry), TTL from `ServerConfig.mailboxTtlDays`,
+   `idx_mailbox_expires` for the sweeper, `auto_vacuum=INCREMENTAL`, JDBC on `Dispatchers.IO`. Payloads are opaque UTF-8 text, stored as BLOB.
+   `SealedEnvelope.counter` / `authTagOrSignature` are RESERVED: the hub neither stores nor checks them (replay defence is the recipient's msgId
+   dedupe; the AEAD tag lives inside the opaque payload).
+4. **The relay is hardened per connection and per frame** (REL-04/05/06, SEC-02): handshake deadline, frame and payload caps, a global and a
+   per-IP connection cap (counted before the handshake), a token bucket per session, a bounded outbound queue with one writer coroutine per
+   session (a slow consumer is closed, never waited for), an in-flight cap, heartbeat (`ping`/pong timeout), identity-safe unregister (the old
+   connection's cleanup can no longer remove its replacement, REL-01), the sender is **always the authenticated device** (client-sent
+   ACK/DELIVER/QUEUE_STATE/KICK/REVOKED are `ERR_PROTOCOL`), revocation is checked at the handshake (serial AND deviceId) and on every frame, and
+   `kick(deviceId, reason)` closes a live connection when `RevocationService.onRevoked` fires.
+5. **Group messages fan out on the server** (REL-14): `FLASH_RELAY.group` + `to` blank; the hub resolves members through `GroupMembershipView`
+   (directory), sends to every member except the sender, answers one aggregate `FLASH_ACK` (`to` = group id, `delivered/queued/failed`). A
+   non-member and a nonexistent group get the same `REJECTED / ERR_NOT_MEMBER` answer (no group-existence oracle).
+6. **Operations:** `/health` is public and minimal (`{"status":"ok|degraded|down"}`, 503 when the database probe fails); `/health/detail` and
+   `/metrics` (Prometheus text) sit behind `ManagementGuard` (bearer token, or loopback without proxy headers). Errors answer a fixed sentence plus
+   a correlation id; the real cause goes to the log only. Shutdown is graceful and idempotent: new connections refused, every session gets
+   `FLASH_KICK server_shutdown`, in-flight messages spill to the mailbox, the sweeper stops, the database is checkpointed and closed; a failed
+   bind cleans up. The TTL sweeper counts and logs failures, vacuums incrementally and tells an online sender `QUEUE_STATE EXPIRED`.
+
+### Alternatives considered
+- **Mark delivered when the frame is written** (the old behaviour): loses a message whenever the socket was already dead. Rejected.
+- **Exactly-once with a server-side per-recipient cursor acknowledged by sequence number:** needs per-device state clients do not have and a new
+  wire field; the msgId dedupe the clients already need for retries is enough. Revisit if clients cannot dedupe cheaply.
+- **Group fan-out on the client** (sender sends N relay frames): N times the uplink, and the hub cannot enforce membership. Rejected.
+- **Redis/Kafka-style queue:** an extra moving part for a single-node hub; SQLite WAL on one file is enough at the target scale (hundreds of
+  devices). Revisit with the measurements `HUBB-01`..`HUBB-04`.
+- **Hub-side per-message encryption / AEAD verification:** the hub is meant to be blind to content; the tag stays inside the payload.
+
+### Consequences
+- Wire additions are backward compatible by defaults (`group` null, `Ack` counts 0): see `docs/protocol.md` "Hub relay delivery semantics".
+- A reconnecting device sees redeliveries (`replay=true`) until it acknowledges; clients that do not dedupe will show duplicates.
+- `DeviceRegistry.AcceptAll` is a test default: production wiring MUST pass a registry (`DatabaseDeviceRegistry` or the enrolment registry).
+- Residual risk, OPEN: Ktor accumulates fragmented WebSocket messages before `maxFrameSize` applies; a malicious client can still make the hub
+  buffer one oversized fragmented message (bounded by the engine's limit, to be measured). Behind a reverse proxy the per-IP cap sees the proxy
+  address unless `RelayPolicy.trustForwardedFor` is set and the proxy is trusted.
+
+### Revisit when
+Measured queue depth, drain latency or database contention (`HUBB-01`..`HUBB-05`) show SQLite as the bottleneck, or clients need exactly-once.
+
+
+## ADR-120 - The device trusts the hub only through the pinned organisation key: enrolment, session, status and renewal (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13 (phase 2 of the hub fix effort, CLIENT agent), not device-verified (`HUBC-01`..`HUBC-08`,
+`docs/testing/TEST-BACKLOG.md`). Audit rows: `docs/audit/2026-10-12-server-hub-audit.md` CLI-01, CLI-07, CLI-08, CLI-09, CLI-12, CLI-13.
+Wire contract: ADR-107 / ADR-109 / ADR-110 (shared with the server).
+
+### Decision
+1. **Trust is decided before anything is stored (CLI-01).** `EnterpriseEnrollmentClient.enroll` refuses an invite without a root pin
+   (`INVITE_NOT_PINNED`), refuses plain `http`/`ws` unless the host passes the debug-only cleartext switch (`HubUrlPolicy`), and refuses a response whose
+   root key does not match the invite's pin (`WRONG_ORGANISATION`), whose certificate is for another device or key (`WRONG_DEVICE`), or whose chain does
+   not verify with the shared rules of `:core:hub-protocol` (`CERTIFICATE_INVALID`). Credentials are written in **one atomic save**
+   (`EnterpriseTrustStore.saveCredentials`: a single properties file replaced by move on the desktop, one `commit()` on Android). A failed save stores
+   nothing (`STORAGE_FAILED`). The old "trust on first use of whoever answered" path is gone.
+2. **One object owns the hub on a device: `EnterpriseHub`** (`:core:network`). It holds one shared HTTP client (closed in `shutdown`, CLI-12; the former
+   per-tap client leaked a connection pool each time), the `HubSession` (bearer from the challenge/verify exchange, renewed before it ends; a 401 refreshes
+   once), the directory client, the `HubPeerDirectory` standing cache, the relay client and the live `HubStatus`. Hosts create it once, call `start()` and
+   `shutdown()`, and use `enroll`, `unenrol`, `retryNow`, `dismissRevokedNotice`, `relinkPreviousGroups`.
+3. **The relay is connected through the session, not through a stored string (CLI-08).** `RelayTransport` surfaces a typed `RelayFailure`
+   (`NETWORK`, `HANDSHAKE_TIMEOUT`, `KEEPALIVE_TIMEOUT`, `AUTH_REJECTED`, `REVOKED`, `SERVER_MISMATCH`, `CERT_EXPIRED`, `KICKED`, `UNSUPPORTED_VERSION`, ...).
+   Retries use a jittered, capped backoff (so a hub restart does not receive every phone in the same second); `REVOKED`, `SERVER_MISMATCH` and `CERT_EXPIRED`
+   **stop** retrying. A slow collector never blocks ping/pong: inbound deliveries are buffered in a bounded channel in front of the collector, and a full
+   channel is a visible overflow (the connection restarts and the hub replays what was not acknowledged), never silent loss.
+4. **Revocation is confirmed, never taken from one frame (CLI-07).** A `FLASH_REVOKED` frame only triggers `confirmRevocation()`: the root-signed
+   `GET /api/v1/revocations` list must contain this device's serial or id. Only then are the credentials cleared, the linked groups remembered
+   (`previousHubLinks`, same organisation only) and `HubStatus.state = REVOKED` kept until the user dismisses it or enrols again. An unconfirmed revoke keeps
+   the credentials and waits for "Retry now" (a hub that lies about revocation cannot sign a device out).
+5. **Renewal (CLI-13).** `renewIfDue` runs from `maintenanceOnce` when the certificate is inside its renewal window (`EnrollmentCredentials.needsRenewalAt`),
+   through `POST /api/v1/enroll/renew`; the answer must carry the same root key and device key and a later `validTo`. A failing renewal shows
+   `CERT_EXPIRING`, then `CERT_EXPIRED` (not retried silently for ever).
+6. **Leaving is explicit and atomic (CLI-09).** `unenrol()` tells the hub (`POST /api/v1/device/unenroll`; 404 counts as already removed), keeps a
+   `pendingUnenrol` notice if the hub is unreachable (retried by maintenance), and clears credentials, session and join state in one write. The groups that
+   were linked are remembered for "Restore N groups" after enrolling again with the same organisation.
+7. **The live state is one value (`HubStatus`, derived by `HubStatusMath`).** Precedence: revoked notice, server mismatch, expired, then relay state.
+   `FlashHubStatusMath` (`:ui:chat`) turns it into the dot, one line, the banner, the detail sheet and the plain-language enrolment failures; nothing
+   protocol-shaped reaches the normal UI (AGENTS.md section 22).
+
+### Alternatives considered
+- Keep trust-on-first-use and show a fingerprint to compare by eye: users do not compare. Rejected (CLI-01 is P0).
+- Treat `FLASH_REVOKED` as authoritative: the hub (or a MITM that got past TLS) could sign any device out. Rejected; the root-signed list costs one GET.
+- A status string stored by the relay client: not testable and mixes four causes. Rejected for the typed failure + pure derivation.
+
+### Consequences
+- `EnterpriseTrustStore` gained `previousHubLinks`, `pendingUnenrol`, `pendingJoins`, `storageError` and atomic multi-field saves; both stores and the
+  in-memory test store implement them. Existing installs read their old properties unchanged (no migration).
+- Hosts no longer build `EnterpriseEnrollmentClient`, `EnterpriseDirectoryClient` or `FlashRelayClient` themselves.
+- Extraction note for a future `:core:enterprise` module: `EnterpriseTrustStore`/`EnrollmentCredentials` live in `:core:security`, `HubSealing` uses that
+  module's internal crypto seams, and `:ui:chat` now depends on `:core:network` for `HubStatus`. See `logs/handoff.md` (CLIENT section).
+
+### Revisit when
+A device test shows the confirmation GET is blocked by the same network problem that cuts the relay (`HUBC-03`), or the owner wants the hub URL changeable
+without re-enrolling.
+
+## ADR-121 - End-to-end sealing of hub content exists, but readable content through the hub is an explicit opt-in until the hub publishes sealing keys (CLI-05) (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13, **gated: sealing is implemented and tested, but no hub serves sealing keys yet, so in practice the opt-in path is the
+one that runs.** Not device-verified (`HUBC-05`, `HUBC-06`). Audit row CLI-05 stays **PARTIAL** (see below).
+
+### Context
+Chat frames sent through the hub were plaintext to the hub and to anyone with the mailbox database. The documented design is a blind hub.
+
+### Decision
+1. **Format** (`HubSealing` in `:core:security`): envelope type `SEALED_V1`. Per message an ephemeral P-256 key, ECDH with the recipient's *sealing public
+   key*, HKDF-SHA256, AES-256-GCM. The associated data binds sender id, recipient id, message id and the envelope type, so a ciphertext cannot be re-sent
+   under another sender, to another recipient or under another message id (tests: tampered, other sender, other recipient).
+2. **The sealing key is a separate software P-256 key per device**, bound to the device identity by an identity-key signature over
+   `(deviceId, sealingPublicKey)`. Sealing to the certificate key was rejected: the Android Keystore identity key is SIGN/VERIFY only (key agreement needs
+   API 31, minSdk is 24), and the desktop key would have to leave its keystore to be used for agreement. The recipient's key is accepted only if
+   `HubSealingKeyPair.verifyBinding` verifies against the recipient's **certified** device key from the directory (`DirectoryHubSealing`); a hub that swaps in
+   its own key cannot forge the binding (test: forged sealing key never used).
+3. **Policy in `HubChatBridge.canCarry`:** the hub carries chat content for a recipient only if the relay is usable, the recipient is a directory MEMBER, and
+   either a verified sealing key exists or the user turned on **"Messages through the hub"** (default OFF, stored per device, never reset by "Reset to
+   defaults", disclosure dialog before it turns on: "the hub can read these messages"). With the setting OFF and no sealing key the hub path is simply not
+   used and the message waits for the LAN, which is what happened before the hub existed. Inbound: a sealed envelope is always opened (sender-bound);
+   inbound plaintext through the hub is stored only when the opt-in is ON, else it is dropped, acknowledged and counted (`droppedPlain`).
+4. **Metadata-only traffic needs no content opt-in:** typing indicators relayed by the hub carry no text.
+
+### What is open (for the server owner, and why CLI-05 is not FIXED)
+The hub does not publish sealing keys. For sealing to be the default path the server must (a) accept `PUT /api/v1/device/sealing-key`
+(bearer; body = sealing public key + identity signature), and (b) return `sealingPublicKey` and `sealingSignature` on every `MemberDto` (the optional fields
+already exist in `core/hub-protocol`, see `clientAdditionsToTheContractDecodeAndStayOptional`). Until then every device has `hubSealing = null`.
+The client side of (a) (publishing the key at enrolment) is not written either, on purpose: it needs the route first.
+
+### Alternatives considered
+- Plaintext by default, document it: contradicts the product promise. Rejected.
+- Seal to the certificate key: not possible on the Android Keystore at minSdk 24 (above).
+- Group sealing with a per-group key: needs member key distribution and removal rekeying; out of scope (see ADR-123 / CLI-16).
+
+### Revisit when
+The server publishes sealing keys: then flip the default (content opt-in becomes "also allow readable fallback") and run `HUBC-05` on two phones.
+
+Addendum (2026-10-13, after the mutation check): the sealed payload also carries the SENDER's identity-key signature over (AAD, epk, nonce, ciphertext), format `SEALED_V1.<epk>.<nonce>.<ciphertext>.<signature>`; a receiver opens it only after the signature verifies, so a message cannot be re-sent under another sender. See `docs/protocol.md` "Hub client behaviour and sealed payloads".
+
+## ADR-122 - Hub delivery is acknowledged, LAN is tried first, and a hub-held message is not a failed message (CLI-06, CLI-14, CLI-15) (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13, not device-verified (`HUBC-04`, `HUBC-07`, `HUBC-08`). Mirrors ADR-112 on the receiving side.
+
+### Decision
+1. **Receive path.** `HubChatBridge.handleInbound`: duplicate (LRU of 2048 message ids) -> sender trust (a paired peer or a directory MEMBER; directory
+   unavailable -> `RETRY_LATER`, no acknowledgement so the hub replays it; unknown sender -> rejected and acknowledged) -> unseal, or plaintext only under the
+   opt-in -> decode (`CHAT_FRAME`, legacy `MSG_TEXT`, `GROUP_FRAME`; the legacy `GROUP_MSG` fallback that stored a group message under the envelope id is
+   removed, CLI-15) -> the frame's author must equal the hub-stamped `Deliver.from` (no impersonation by a member) -> the repository **stores it durably**
+   -> only then `FLASH_RECV_ACK`. `RealFlashChatRepository` is the only place that decides "stored"; the bridge never acknowledges earlier.
+2. **No loss before a collector exists.** Deliveries are buffered in the relay client until the repository collects; a slow collector cannot stall the
+   socket (ADR-120 item 3).
+3. **Send path (LAN first, hub as fallback).** The old `raceTransports` sent on LAN and hub at once. It is replaced: a LAN attempt first; if it succeeds and
+   the recipient's receipt arrives, the hub is never used; if LAN fails, the hub is used immediately; if LAN reports success but no receipt arrives within
+   `HUB_FALLBACK_GRACE_MS` (2 s), the hub also receives it (the recipient dedupes by message id). Receipts, reactions, reads, deletes and typing fall back the
+   same way. Group chat-level frames go through the hub only for hub-linked groups.
+4. **Outbox semantics.** `FLASH_ACK` kinds: `DELIVERED` and `HELD` (queued) keep the message `SENT`; `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED`
+   fail it with a friendly sentence (`HubDeliveryText`, shown through `hubDeliveryNotes`). A message the hub accepted is **not** failed by the old 30 minute
+   timer: the give-up budget is 8 days (`HUB_GIVE_UP_AFTER_MS`, just above the hub's default TTL) and the resend spacing 15 minutes (`HUB_RESEND_MS`).
+5. **Sender must be a known colleague to send through the hub (`standing = MEMBER`).** Otherwise a hub failure would wrongly fail a message that a
+   LAN-only peer would have received.
+
+### Known limitations
+- `hubAccepted` is in memory: after a process restart a resend gets `DUPLICATE_QUEUED` from the hub, which counts as accepted.
+- Presence is not surfaced through the hub (a colleague reachable only through the hub shows no online dot).
+- Group messages from a hub-only (unpaired) member are rejected by the repository's own group gate: see ADR-123.
+
+### Revisit when
+`HUBC-04` shows the 2 s grace is too long or too short on a real Wi-Fi.
+
+## ADR-123 - Joining a department group asks the hub and says what happened; group crypto is not changed (CLI-04, CLI-16) (2026-10-13)
+
+Status: join flow ACCEPTED in code 2026-10-13 (not device-verified, `HUBC-09`..`HUBC-11`); the CLI-16 design note is **PROPOSED** and nothing in it is built.
+
+### Decision (CLI-04)
+`joinEnterpriseGroup` calls `POST /api/v1/groups/join-request` and acts on the answer: `JOINED` creates the conversation and links it to the hub;
+`PENDING` records "waiting for approval" in the trust store (`pendingJoins`) and shows a row at the top of the chat list; `REJECTED` clears it with the hub's
+sentence. A pending request is polled every 60 s (`PENDING_JOIN_POLL_MS`) with the same call (the hub answers `PENDING` until decided, then `JOINED` or
+`REJECTED`). Admins review requests from the group row ("N requests waiting" -> Approve / Decline, `GET /api/v1/groups/join-requests`,
+`POST /api/v1/groups/join-requests/decision`). Rows show member count, "Needs approval" and a foreign department badge.
+
+### Design note (CLI-16, PROPOSED, not built)
+Members who are in a hub group but not paired with each other cannot read each other's group frames: Flash group frames are authenticated by the pairwise
+session, and the group roster/vouching model (ADR-044) is pairing-based. The client therefore states the limitation in the UI
+(`FlashHubStatusMath.GROUP_LIMITATION_TEXT`) instead of silently dropping. Possible fixes, none chosen: (a) vouched introductions through the hub directory
+(a member's certified device key lets two members pin each other without a pairing code), (b) a per-group sender key distributed through sealed hub
+messages, (c) accept hub-certified identity as sufficient for group frames. (a) fits ADR-044's vouching with the least new cryptography. **The owner decides;
+write no group crypto before that** (same rule as the owner-loss audit).
+
+### Consequences
+`FlashChatRepository.joinEnterpriseGroup` now returns `FlashResult<EnterpriseJoinResult>`; the interface exposes `pendingEnterpriseJoins`,
+`fetchEnterpriseJoinRequests`, `decideEnterpriseJoinRequest`.
+
+### Revisit when
+The owner picks a CLI-16 option, or a device test shows members cannot read each other in a hub-linked group (`HUBC-11`).
+
+
+## ADR-111 - The organisation root key is OFFLINE: keytool, delegation lifecycle, awaiting-delegation mode, and persisted hub state (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13 (phase 2 of the hub fix effort, SERVER-A), unit-tested, not device-verified (`HUBA-01`..`HUBA-06`, `docs/testing/TEST-BACKLOG.md`).
+Audit rows: `docs/audit/2026-10-12-server-hub-audit.md` SEC-04, SEC-07, SEC-08, SEC-18 (hub part), REL-10. (Numbering: ADR-112 was written by SERVER-B first; ADR-111 was reserved for this decision.)
+
+### Decision
+1. **The organisation root private key never lives on the hub.** `server keytool init-root --out DIR` (run on an OFFLINE machine) writes `root-identity.pk8`
+   (encrypted: PBKDF2-HMAC-SHA256 + AES-GCM, pass-phrase from the console or `FLASH_ROOT_PASSPHRASE`; `--no-passphrase` is explicit and loud), `root-identity.pub` and prints the
+   root fingerprint (never the private key), all owner-only (0600 / owner ACL). It refuses to overwrite and never prints the private key. `keytool issue-delegation` signs a
+   delegation certificate (`DelegationCert`) for the hub's PUBLIC delegate key with explicit scopes (`enrol:member`, `revoke:member`, ...), a device limit
+   and a validity window (default 90 days), with a monotonic `--serial`. `keytool rotate` prints the rotation procedure (new delegation, same root); the serial is remembered next to the root key (`delegation-serial.txt`).
+2. **The hub owns only a delegate key** (`<data>/server-identity.pk8` + `.pub`, owner-only), created once. A file that exists but does not parse, a public/private
+   mismatch or a half-written pair is a startup error: the key is NEVER regenerated silently (that was the SEC-04 failure, it breaks every client pin).
+3. **Delegation lifecycle.** `DelegationManager` loads `data/delegation.cert` (or `FLASH_DELEGATION_FILE`), verifies it against the pinned root
+   (`FLASH_ROOT_FINGERPRINT`, else the fingerprint adopted at the first installation and stored in `meta`), requires it to be for THIS hub's delegate key,
+   and accepts a replacement only with a strictly higher serial. A file change is picked up by the 60 s housekeeping (hot reload) or
+   `POST /admin/api/v1/delegation/reload` (step-up gated); an admin may also upload one (`.../delegation/install`, step-up gated). Expiry warnings are logged and shown in
+   the console at 14 and at 3 days; an expired delegation stops enrolment and renewal (never silently re-issued).
+4. **Awaiting-delegation mode.** With no valid delegation the hub still starts: `/health` and the admin console work, enrolment and auth routes are not mounted (404), the relay
+   refuses, and the log prints the delegate PUBLIC key plus the exact `keytool issue-delegation` command. (A first delegation
+   needs a restart to activate the enrolment services; a replacement hot-reloads.)
+5. **A root key found in the hub's data directory refuses the start** (`misplacedRootKey`), because an operator who copied it there defeats the model.
+   `--dev-embedded-root` (needs `--allow-insecure`) keeps the old embedded root for development only and logs an error line at startup; it is the only path
+   where a root key exists on the hub.
+6. **State is persisted and migrated.** `storage/Migrations.kt`: per-component versioned steps in `schema_migrations(component, version)`, each step in one
+   transaction, a failing step stops the hub (fail closed). Persisted: invites (secrets stored as SHA-256 only), the device-serial counter (monotonic
+   across restarts), enrolled devices/identities (`IdentityStore`), the enrolment quota, the directory (`OrganizationDirectory` on SQLite, REL-10), admins,
+   sessions, lockouts, TOTP replay step, revocations and the audit chain. `/admin/setup` stays closed after a restart once an admin exists.
+7. **Enrolment is validated and atomic** (SEC-07): proof of possession and P-256 SPKI parse before anything is spent; deviceId format; duplicate or revoked
+   id refused without burning the invite; token use, quota and serial are consumed in one transaction (an 8-thread race on a single-use token yields exactly
+   one device); a renewal endpoint re-issues a certificate inside the delegation window for a device that is not revoked.
+
+### Alternatives considered
+- Keep an encrypted root on the server unlocked by an env pass-phrase: rejected, the pass-phrase sits next to the ciphertext, and the hub is the most attackable host.
+- Hardware token / HSM only: not rejected, but too heavy for the first release; `keytool` keeps the file format simple so a later HSM signer can replace it.
+- Auto-generating a fresh root when none exists: rejected (breaks pins, silent trust reset).
+
+### Consequences
+An operator needs a second, offline step to bring a hub into service (`HUBA-01`). The hub cannot mint a delegation for itself; losing the root key means
+re-enrolling the organisation (documented in `docs/security.md`).
+
+### Revisit when
+An HSM / smart-card signer is wanted, or `keytool` is asked to produce QR delegation hand-over for hubs without file access.
+
+## ADR-113 - Revocation is a persisted, signed, monotonic list served at `GET /api/v1/revocations`; revoking a device kills its bearer, kicks its socket and removes it from the directory (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13, unit-tested, not device-verified (`HUBA-07`, `HUBA-14`). Audit rows: SEC-05, SEC-08 (part). Builds on ADR-110 (the list format).
+
+### Decision
+1. `RevocationService` (interface in `auth/`): `isRevoked(serial?, deviceId)`, `current()` (the latest signed list), `onRevoked(listener)`.
+   `SqliteRevocationService` implements it and adds `revokeDevice`, `revokeSerial`, `unrevokeDevice`, `revokeSelf`, `installRootSigned`, `listAt`, `status`,
+   `entries`. Every change is one transaction that updates the tables, bumps `version` strictly, signs the new list with the delegate key
+   (`RevocationSigner`, needs the `revoke:member` scope) and stores it; `isRevoked` is two hash lookups, so the relay (SERVER-B), the bearer store and the
+   directory call it on every request.
+2. **By serial AND by device id.** Revoking a device revokes the id (every certificate it ever held) and the serials issued so far. An id that is revoked
+   cannot re-enrol (the invite is not burned). `unrevoke` returns the device to UNENROLLED and the OLD serials stay revoked, so a stolen old certificate stays dead
+   while the owner can enrol again with a fresh invite. `unenroll` (device-initiated leave) frees the id and the quota slot.
+3. **A hub that cannot sign still protects.** Without the signing right the hub stores the entry and answers `isRevoked` correctly, but
+   `/api/v1/revocations` reports `needsSignedList`; a root-signed list can be installed with `installRootSigned` (version must exceed the current one).
+4. **Effect is immediate**, not at the next token expiry: `BearerTokenStore.resolve` re-checks `isRevoked` on every use (test
+   `aBearerTokenDiesTheMomentItsDeviceIsRevokedEvenWithoutAKick`, mutation-checked), the admin route and `HubServices` call `bearerTokens.revokeDevice`,
+   `directory.removeDevice` and the engine's relay `kick` through `onRevoked`.
+5. `GET /api/v1/revocations` needs a bearer (any enrolled device); the list is signed so it is also verifiable by a client that got it through a peer.
+6. Revoke / unrevoke from the console need a step-up confirmation (ADR-115) and are audited with actor, target, reason and published version.
+
+### Alternatives considered
+- A database flag only: rejected, clients must verify peers offline (ADR-110).
+- Revoking by serial only: rejected, a device could re-enrol under the same id and the operator would chase serials.
+
+### Revisit when
+The list grows to thousands of entries (delta format), or the client needs push of the list over the relay.
+
+## ADR-114 - TLS modes, listeners, trusted proxies and strict configuration (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13, unit-tested (`AbuseControlsTest`, `ServerConfigTest`, `HubServicesTest`, `MainCommandsTest`); Docker image not built in this session (`HUBA-10`). Audit rows: SEC-06, SEC-09 (part), SEC-10 (part), SEC-16 (part).
+
+### Decision
+1. `FLASH_TLS_MODE` is one of `proxy` (default; the hub speaks plain HTTP behind a TLS-terminating reverse proxy on a private network), `self` (the hub terminates TLS itself,
+   self-signed P-256 certificate created once under `data/tls/`, owner-only, 365 days, renewed within 30 days of expiry, SAN from the external URL; its SHA-256
+   fingerprint is logged and shown in the console so clients can pin it; or a supplied PKCS12 via `FLASH_TLS_KEYSTORE` + `_PASSWORD`) or `none` (plain HTTP,
+   only with `--allow-insecure`).
+2. **The external URL (invite and QR links) must be `https://`** unless `FLASH_ALLOW_INSECURE=true`; the enrolment service additionally refuses to create
+   a plain-http invite (`requireHttpsInvites`). The default external URL is `https://<lan-ip>:<port>`.
+3. **Two listeners.** Public (`FLASH_PORT`, 8443): enrol, auth, `/api/v1`, relay, `/health`. Management (`FLASH_ADMIN_PORT`, 8444, bound to `FLASH_ADMIN_HOST`,
+   default `127.0.0.1`): the admin console and API. `AdminListenerPolicy` makes `/admin` answer 404 on the public listener unless
+   `FLASH_ADMIN_ON_PUBLIC_PORT=true` (single-port setups). The Dockerfile `EXPOSE`s only 8443; inside a container the management listener binds all interfaces so publish it to host loopback only (`-p 127.0.0.1:8444:8444`).
+4. **Cookies.** Admin session cookie is `__Host-flash_admin_session` (Secure, HttpOnly, SameSite=Strict, Path=/, no Domain) over https and `flash_admin_session`
+   (HttpOnly, SameSite=Strict, Path=/admin) only when the hub is explicitly insecure.
+5. **Client address.** `X-Forwarded-For` / `-Proto` are believed only from `FLASH_TRUSTED_PROXIES` (CIDR list; malformed entries refuse the start); the
+   rightmost untrusted entry wins, so a prepended forged address does nothing.
+6. **Strict config.** A malformed or out-of-range number, an unknown mode, a short setup token or a root fingerprint that is not 64 hex digits is an error
+   that names the variable (exit code 2), never a silent default. Dev switches (`--allow-insecure`, `--dev-embedded-root`) log loudly at startup.
+7. **Setup token.** Generated into `data/setup-token.txt` (0600), reused until used, never printed to the console in production (only the path); printed only
+   with `--dev-embedded-root` or when `FLASH_SETUP_TOKEN` is supplied by the operator.
+8. **Docker.** Base images pinned to a release tag (digest pinning documented in the Dockerfile), non-root user (uid 10001), `HEALTHCHECK` through `server healthcheck`, `.dockerignore` excluding keys,
+   keystores, `tools/.tavily_api_key`, `.git`, build output; no `EXPOSE 8444`.
+9. **Abuse limits** (`RateLimiter`, `HubRateLimits`): token buckets per client address for enrol, auth challenge/verify, directory, admin login, with a
+   bounded key map; bodies over 64 KiB answer 413; no regex JSON anywhere in these paths (SEC-15).
+
+### Alternatives considered
+- Always terminate TLS in the hub: rejected, most deployments already have a proxy and certificate automation.
+- Admin console on the public port by default: rejected, a management surface must not be internet-reachable by accident.
+
+### Revisit when
+ACME in the hub is wanted, or `HUBA-10` shows the Docker HEALTHCHECK is unreliable on a slow disk.
+
+## ADR-115 - Admin authentication, step-up confirmation, CSRF, audit chain and the JSON admin API (2026-10-13)
+
+Status: ACCEPTED in code 2026-10-13, unit-tested (`AdminApiTest` 30 cases, `AbuseControlsTest`, `AdminAuthServiceTest`, `StepUpAuthTest`, `AuditLoggerTest`), mutation-checked on CSRF and step-up; the HTML console is replaced in a later phase. Not device-verified (`HUBA-11`..`HUBA-13`). Audit rows: SEC-09, SEC-10, SEC-12, SEC-13, SEC-17, REL-16.
+
+### Decision
+1. **Login.** Username + password (PBKDF2-HMAC-SHA256, 600 000 iterations, per-user salt; older 100k hashes are upgraded on login) + TOTP. The attempt counter is
+   RESERVED before the password is verified (atomic, so a parallel burst cannot exceed the budget), unknown users take the same time as known ones
+   (dummy hash), lockouts are persisted and keyed by user and by client address, TOTP steps are single-use (`last_totp_step`, replay refused), recovery codes
+   (hashed, single-use) replace a lost authenticator, `admin-recovery --username` (console only) resets an admin and ends its sessions.
+2. **Setup.** First admin is created only with the setup token (constant-time compare, one-shot, persisted so it stays closed after a restart); the server
+   generates the TOTP secret, the client must confirm a code before the admin is activated.
+3. **Sessions** are random 256-bit tokens, stored hashed, idle timeout 30 min / absolute 2 h, swept by housekeeping, at most 5 per admin, revocable from `/sessions`.
+4. **CSRF.** Every state-changing admin API call needs the header `X-CSRF-Token` equal to the session's token AND a same-origin `Origin` / `Sec-Fetch-Site`
+   (`CsrfGuard`, also checked on the legacy HTML forms with origin + SameSite).
+5. **Step-up.** Dangerous actions (device revoke / unrevoke, revoke by serial, delegation install / reload, create or reset an admin, disable an admin, change a
+   setting, invite for a non-member role) require a fresh confirmation signed by the ADMIN'S OWN enrolled device key: `POST /stepup/challenge` returns a
+   challenge bound to (admin, action, target), the device signs `HubStepUp.proofBytes(...)` (shared in `core/hub-protocol`), `POST /stepup/verify` checks it
+   against the key stored for THAT admin on the server (never one supplied by the caller), the call carries `X-Step-Up: <challengeId>`. A challenge is single-use,
+   expires in 5 minutes and is refused when the device was revoked.
+6. **Audit.** `AuditLogger`: hash chain, each entry signed by the delegate key and persisted; `/audit/verify` recomputes the chain; `/audit/head` and
+   `/audit/export` (CSV) support off-box anchoring; failed logins, setup attempts, enrolments, revocations, key loads and delegation changes are logged.
+7. **Invites** use the real `EnrollmentService` registry (the dashboard-only map and the SHA-256("") fingerprint fallback were removed, REL-16): create, bulk
+   create, revoke, list with state (`ACTIVE|USED|EXPIRED|REVOKED`), `/enroll` landing page no longer reveals more than validity.
+8. **JSON admin API** (`/admin/api/v1`, session cookie + CSRF, errors `{code,message,correlationId}`): setup (`status|begin|complete`), `login`, `logout`,
+   `session`, `overview`, `devices` (+revoke/unrevoke), `invites` (+bulk, revoke), `revocations` (+serial), `delegation` (reload/install), `settings`,
+   `stepup/challenge|verify`, `departments`, `groups` (+members), `join-requests` (+approve/reject), `admins` (+password, disable/enable, `me/password`,
+   `me/recovery-codes`, `me/device`), `sessions`, `audit` (+head, verify, export). The HTML console is a thin layer to be replaced by a later phase; it is not
+   hardened here on purpose (SEC-11 stays OPEN until that phase).
+
+### Alternatives considered
+- WebAuthn for step-up: attractive, deferred; the enrolled Flash device key already exists and signs the same bytes on desktop and phone.
+- JWT sessions: rejected, revocation and idle timeout are simpler with server-side sessions.
+
+### Revisit when
+The new admin UI is built (it must use this API and keep CSRF), or an organisation needs more than one admin role.
+
+
+## ADR-124 - The hub publishes sealing keys after verifying their binding, and client and server are tested against each other (2026-10-13)
+
+### Decision
+1. **Sealing keys on the hub.** `PUT /api/v1/device/sealing-key` (bearer, body `SealingKeyRequest {sealingPublicKey, signature}`) stores the PUBLIC half of a device's end-to-end sealing key (ADR-121). `DELETE` on the same path removes it. The hub verifies, before it stores anything: the caller is the authenticated principal (the device id is the principal's, never the body's); the key is a canonical NIST P-256 SPKI (other curves, RSA, trailing bytes, off-curve points refused: `Spki.parseP256`); the signature is the device identity key's ECDSA signature over `HubAuth.sealingKeyBindingBytes(deviceId, spkiBytes)` (tag `flash-hub-sealkey-v1`, golden vector `SEALING_BINDING_HEX` in `CertGoldenVectorTest`, asserted by the client, the hub-protocol and the server tests); the device key used is the one in the registry (certified at enrolment), never a key the request carries; the key is not one this device retired earlier (a captured old binding cannot be put back: 409 `ERR_CONFLICT`).
+2. **Served** as `MemberDto.sealingPublicKey` + `sealingSignature`, only to authenticated callers in scope of the member (the same rule as `subjectPublicKey`). The client MUST verify the binding against the member's `subjectPublicKey` again; the hub's check is defence in depth, not the trust root.
+3. **Stored** in the identity store (`hub_sealing_keys`, `hub_sealing_retired`, identity schema step 2, migration tested from step 1). Public material only: no private key can reach the hub (the endpoint has no field for it; a test scans the hub's files for the PKCS#8 bytes). Revoking, unenrolling or deleting a device removes the key through triggers (so every code path is covered). Publish, rotate, refuse and remove are audited with a fingerprint prefix, never the key. Rate limit 5 burst then 1 per 30 s per device; bodies over 64 KiB are refused with 413.
+4. **Contract tests.** `:server` tests drive the REAL client classes (`EnterpriseHub`, `FlashRelayClient`, `KtorRelayTransport`, `HubSealing`) against the REAL `HubServices` on a temp database (`server/src/test/kotlin/com/transfer/flash/server/e2e/`). `:core:network` and `:core:security` are `testImplementation` only: no runtime dependency from the server on client modules. Test seams in production code, both documented: `HubServices.build(limits = ...)` (default unchanged) and the injected `clock` that the challenge nonce now honours (ERROR-337).
+5. **Mismatches fixed** (each with the side that was wrong in `logs/errors.md`): expired invite 410 `ERR_EXPIRED` and used invite 409 `ERR_CONFLICT` (ERROR-330, server); the join decision answers `JoinResponse` (ERROR-331, server); a rejected join is shown once to the requester (ERROR-332, server); concurrent `FlashRelayClient.start()` made two sockets that kicked each other (ERROR-333, client); the mailbox answered `ERR_UNKNOWN_RECIPIENT` for every enrolled offline device (ERROR-334, server); `GET /revocations` needed a bearer a revoked device cannot have, so a revoked phone never cleared itself (ERROR-335, server: now public and rate limited); the client rejected every list the hub signs because it did not offer the delegation (ERROR-336, client).
+
+### Alternatives considered
+- Trust the hub to say which sealing key belongs to whom: rejected (ADR-121); the identity-key binding makes a swapped key detectable by the client.
+- Put the sealing key in the enrolment certificate: rejected, it would force a re-enrolment to rotate a key and change the certificate wire format (ADR-109).
+- Keep `GET /revocations` behind a bearer and let the client accept `FLASH_REVOKED` plus a failed login: rejected, that is exactly the "a hub that merely says revoked can sign a device out" weakness the signed list exists to close.
+- Mock the hub in client tests / mock the client in server tests: rejected as the only coverage; both mocks were wrong in the same direction six times (see the errors above).
+
+### Consequences and open points
+- Revoked device ids (and serials) are readable by anyone who can reach the hub, at the unauthenticated rate limit. Owner may prefer a narrower list (serials only); the list format is signed, so a change needs a protocol revision.
+- The hosts (Android, Desktop) do not yet construct a `HubSealingPort`, store a sealing key pair or call `publishSealingKey`; until they do, `hubSealing = null` and the default stays "readable content through the hub is opt-in" (ADR-121). The server half and the contract are ready and tested. **UPDATE 2026-10-13 (ADR-126): the hosts now do all of this in code (key store, publication, `DirectoryHubSealing`); not device-verified. The sentence above is kept as the state when ADR-124 was written.**
+- Group messages are not sealed by this mechanism (one recipient key per message); group sealing is a separate design.
+
+### Revisit when
+The hosts publish keys (HUBE tests), or an organisation needs per-department narrowing of who may see a member's sealing key.
+
+
+## ADR-125 - The hub admin console is static, dependency-free files served by the hub, and its step-up key lives in the browser (2026-10-13)
+
+(Numbered 125 because ADR-124 was taken by the contract work the same day.)
+
+### Decision
+1. **Static console, no build step.** The console is plain ES modules, CSS and one HTML shell under `server/src/main/resources/admin-ui/` (about 45 files, 462 KB), served by `AdminConsoleWeb.kt` from the jar, talking to the existing `/admin/api/v1` JSON API. No framework, no bundler, no node at build time, no CDN, no web font, no analytics: it must work on a hub with no internet and nothing in it can change under a deployment. The old server-rendered `AdminUiHtml.kt` / `AdminDashboardRoutes.kt` are deleted (closes SEC-11).
+2. **Safe by construction.** One DOM helper (`dom.js`) creates elements with `textContent`, an attribute allow-list and `addEventListener`; `style`, `on*`, `srcdoc` and unsafe `href` values throw. A strict CSP (no `unsafe-inline`) and the other headers are set on every response under `/admin`, `/enroll` and `/enroll-assets/`, errors included. Tests scan every console file for forbidden patterns, so the rule survives later edits.
+3. **Step-up in the browser.** Dangerous actions are confirmed by a WebCrypto ECDSA P-256 key, `extractable: false`, kept in IndexedDB. The administrator registers it (`POST admins/me/console-key`, or during setup) with a proof over `flash-console-key-v1\n<username>\n<spki>` and a fresh authenticator code. The hub's step-up verifier accepts the signature as DER (phones) and as 64-byte P1363 `r||s` (browsers) by converting P1363 to DER (`ConsoleKeys`); the signed bytes are unchanged.
+4. **TOTP QR** is drawn by the hub as one SVG path (`QrCodeGenerator.generateSvg`); the console re-draws it from an allow-listed viewBox and path instead of inserting the string, so no network markup reaches the DOM.
+5. **Console additions to the API** are listed in `docs/protocol.md` "Hub administration" (console key, TOTP reset, metrics, audit order, reject reason, hub public key and session ids in DTOs, the landing page's own assets).
+
+### Alternatives considered
+- **Keep and patch the server-rendered HTML** (escape everything, add a CSP with nonces): rejected by the owner (the design is not professional) and every page would keep mixing markup, data and script in Kotlin strings.
+- **SPA framework with a build step (React, Vue, Svelte, Vite):** rejected: a toolchain and hundreds of transitive packages in a security product, a build artefact to keep in step with the jar, and no need for it at this size.
+- **Compose for Web / Wasm (shared with the apps):** rejected for now: multi-megabyte runtime, canvas rendering that breaks browser accessibility, text selection and zoom, and an administrator console needs those more than it needs code sharing.
+- **A CDN library (htmx, Alpine, chart or table libraries):** rejected: external request (breaks air-gapped installs and the CSP), supply-chain exposure; the needed pieces (windowed table, dialogs, sparkline, QR redraw) are small.
+- **Enrol the browser as an admin-role device through an invite:** rejected: it would mint a device certificate with the admin role for a browser profile, turn every browser into a directory member and mix two trust anchors; a console-only key bound to one administrator is narrower.
+- **Password-only re-authentication for dangerous actions:** rejected: it protects nothing against a session thief who already typed or captured the password path; a non-extractable key does protect against a stolen cookie.
+- **WebAuthn:** still attractive (see ADR-115); deferred because it needs relying-party configuration per hub address, and the non-extractable key gives the same cookie-theft protection today.
+
+### Consequences and open points
+- Step-up needs a secure context (https or localhost); plain-http hubs show this plainly.
+- A cleared browser profile loses the key; re-registration needs a TOTP code.
+- The console has English strings only (all text goes through `t()` and `strings/en.js`, ready for more).
+- The real-browser matrix (Chrome, Firefox, Safari), screen-reader and zoom checks are owed (`HUBU-*`).
+
+### Revisit when
+An organisation asks for WebAuthn or SSO, a second language is needed, or the console grows beyond what plain modules keep readable.
+
+
+## ADR-126 - Hosts own a software sealing key, publish it, pin colleagues' keys, and hold (never downgrade) on a changed key (2026-10-13)
+
+### Decision
+1. **A per-device software P-256 sealing key**, separate from the identity key, made on the first enrolment and used by `HubSealing` (ADR-121). Port: `HubSealingKeyStore` (`:core:security`, `load()` / `save()` / `clear()`); stored format `HubSealingKeyCodec` (version byte, public SPKI, private PKCS#8).
+2. **Key at rest, per platform.**
+   - Android: `AndroidHubSealingKeyStore`. An AES-GCM key that lives in the Android Keystore (`KeystoreSecretSealer`, alias `flash_hub_seal_wrap_v1`, not exportable) wraps the PKCS#8 bytes; the wrapped bytes are in app-private SharedPreferences `flash_hub_sealing`, written with `commit()`. The backup and data-extraction rules already exclude all shared preferences, so the key never reaches a cloud backup or a device transfer. A key that cannot be unwrapped (Keystore wiped, restored to another phone) reads as "no key" and a new one is made.
+   - Desktop: `FileHubSealingKeyStore` over `<stateDir>/hub/sealing.key`, protected by the same `IdentityKeyVault` as the identity key (DPAPI on Windows, Secret Service then an owner-only 0600 key file on Linux), written atomically (temp file and move).
+   - Why a software key wrapped by a hardware-backed one, not a Keystore EC key: sealing needs an ECDH agreement with an ephemeral key and a signature on the envelope with the identity key; the same code (`HubSealing`) must run on desktop where no Keystore exists. Wrapping keeps one format and one code path. (Whether the Android Keystore can do ECDH on every supported API level was not checked for this ADR; if it is later verified, an in-Keystore key may replace the wrapper without changing the wire format. Test `HUBH-04` checks the wrapper on a real device.)
+3. **Lifecycle** (`HubSealingKeyManager`, driven by `EnterpriseHub`): the key is stored BEFORE it is published, and a key that cannot be stored is never published. It is published (PUT, with the binding signature over the device id and the key made by the identity key) after enrolment and after every renewal or re-enrolment (idempotent on the hub). `409` (the hub remembers this key as retired) makes a NEW key; `429` waits 35 s; offline or a 5xx backs off from 15 s to 15 min; `404/405` (a hub that predates ADR-124) and a refusal retry every 30 min. Unenrol asks the hub to forget the key (DELETE, 5 s limit, best effort) and always deletes the local key; a confirmed revocation wipes the local key without calling the hub; enrolling into a different organisation forgets the old key. Only the short public fingerprint is ever logged.
+4. **Sealing in the bridge** (`HubChatBridge` + `DirectoryHubSealing`): a 1:1 message to a colleague with a verified published key is ALWAYS sealed, whatever the "Messages through the hub" switch says. A colleague without a published key gets a readable message only when the switch is ON; otherwise the message is held and the chat says "Waiting for <name> to update the app" (or, when this device cannot seal either, that the hub switch is off). There is no silent plaintext fallback.
+5. **Group frames are not sealed here** (the group design is open, ADR-123). They follow the same opt-in readable rule, and a hub-linked group says so in its own words ("the hub can read this group's messages" / "group messages through the hub are off").
+6. **Key-change detection** (`HubSealingPins`, pure rules in `HubSealingPinMath`): the fingerprint (SHA-256 of the SPKI) of a colleague's sealing key is pinned on first use. A different verified key for the same device id is `CHANGED`: nothing is sealed or sent to that colleague through the hub, sealed OR readable and even with the switch ON, until the user taps **Continue** in the chat (the calm inline notice also offers **Verify**, which opens the peer details). The pin and the pending change are persisted (`AndroidHubSealingPinStore`, `FileHubSealingPinStore`); a pending change keeps holding while the directory cannot be read; a failed pin write still protects the run. A message waiting for that decision is kept (`wouldHold`), not failed after the short budget.
+7. **Incoming sealed messages** are opened only when the sender's signature verifies against the identity key the hub certified for that sender. A failure is dropped, counted (`droppedUnverified`, shown as "Messages not opened" in the connection details, with "Messages not accepted" for readable messages refused while the switch is off) and never shown as message content. A sender the directory cannot be asked about right now is not treated as a forgery: the delivery is kept for later (`RETRY_LATER`).
+
+### Alternatives considered
+- **Seal to the identity key.** Rejected: the identity key is also the TLS and pairing identity; using it for static-ephemeral ECDH would couple two jobs, and a sealing key can be rotated (409, unenrol) without touching pairings.
+- **Auto-trust a changed key and show a banner afterwards.** Rejected: that is the exact moment a hub that swaps a key would win. The binding signature stops a hub minting a key for a device, but a device that really reinstalled and a stolen-then-re-enrolled device look the same to the sender; one explicit tap is cheap.
+- **Fall back to a readable message when the key changed (opt-in ON).** Rejected: a changed key is a reason to stop, not to downgrade.
+- **Block on key change with no way forward (strict TOFU).** Rejected: every reinstall would lock the chat for good; Continue is the escape hatch, Verify the careful path.
+- **Seal groups with the per-member keys now.** Rejected for this phase: group membership changes, ordering and per-recipient cost are an open design (ADR-123); doing it half-way would look secure and not be.
+- **Keep one wrapper-less file on Android.** Rejected: no hardware-backed protection, for no gain over the Keystore wrapper that already exists (`KeystoreSecretSealer`).
+- **Back the key up.** Rejected: a backed-up private key is a copied private key. A restored phone gets a new key and every colleague sees one key-change notice.
+
+### Consequences and open points
+- A reinstall or a new phone is always a key change for every colleague who had pinned the old key (one notice each, one tap). Two phones of one person have two keys; nothing synchronises them.
+- **Verify** opens the existing peer details; the notice itself shows the new and the old short codes so the two people can compare them out loud. A dedicated "compare sealing codes" screen is not built.
+- Pins are local to a device and are not part of any backup. Removing a colleague from the directory does not remove the pin.
+- The hub notice of a conversation is computed whenever the conversation state emits; a hub-linked group's notice can therefore be stale until the next emission after the "Messages through the hub" switch is flipped (accepted for now).
+- A message held for a changed key is retried at once when the user taps Continue (`confirmHubKeyChange` drains the outbox).
+- Not built: group sealing, sealing keys for the Desktop `Rejected` handlers, a key-transparency log. The hub-delivery notes (`hubDeliveryNotes`) are still not rendered anywhere in the chat UI (pre-existing gap, now partly covered by the inline notice).
+- Not device-verified: all of it. Tests `HUBH-01`..`HUBH-08`, `HUBC-05`, `HUBC-06`, `HUBE-05` in `docs/testing/TEST-BACKLOG.md`.
+
+### Revisit when
+Group sealing is designed (ADR-123), the Android Keystore is verified to do ECDH on every supported API level, a security review asks for a sealing-code comparison screen, or the owner wants the key to follow a person across devices.
+
+
+
+## ADR-127 - Second-pass hub review: what was fixed, what is decided, and what is left to the owner (REV-01..REV-16, 2026-10-13)
+
+### Decision
+An independent adversarial review of the Phase 2 server work (agent a45d6a47517265147) rated SEC-03, SEC-04, SEC-05, SEC-09, SEC-10, SEC-11, SEC-16, REL-04, REL-11 and REL-13 PARTIAL and found new problems (P1-1..3, P2-1..12). The coordinator fixed them in `:server` and `:core:hub-protocol` (IDs `REV-01`..`REV-16`, errors `ERROR-380`..`ERROR-395`). The choices that shape the system:
+
+1. **One client address, everywhere** (REV-01, REV-02). `ClientAddressResolver.clientKey` is the only source of "who is calling": the socket peer, or the rightmost untrusted `X-Forwarded-For` entry for a peer in `FLASH_TRUSTED_PROXIES`; IPv6 is keyed by /64. The relay's per-IP connection cap and every REST limiter use it. The old `trustForwardedFor` switch is removed. A `proxy` TLS mode with no trusted proxies is logged as a WARN, because every device would then share one proxy address.
+2. **Canonical request paths** (REV-02): `RequestPathGuard` rejects ambiguous paths with 400 before the API gate and routing, and adds baseline headers to every response.
+3. **Data at rest** (REV-03): `SecureFiles` sets owner-only permissions (POSIX, and ACLs on Windows) on the database, key and token files; secrets stored in the database (TOTP seeds) are sealed with AES-GCM under `data.key` (`enc1:` prefix; legacy plaintext values are sealed on start). `data.key` must be backed up **apart from** the database. Whole-database encryption is NOT done (see Proposed).
+4. **Delegation can be revoked** (REV-04): `keytool revoke` (root key, offline) signs a list naming delegation serials; `POST /admin/api/v1/revocations/install` (step-up `revocation.install`) installs it; the hub installs the dropped-in list at start; a revoked delegation revokes everything it issued, including the hub's own authority to serve.
+5. **A session may not outlive its certificate** (REV-05): the relay closes it with `ERR_EXPIRED` 60 s (`sessionExpirySkewMs`) after expiry; the device renews and reconnects.
+6. **Join requests are not an oracle** (REV-06): a missing, hidden or out-of-scope group answers one constant sentence.
+7. **Setup is not enumerable and not evictable** (REV-07): `setup/status` says only whether setup is open; `setup/begin` needs the setup token (with the same lockout) and refuses a 17th pending setup rather than evicting one.
+8. **Mailbox acknowledgements name the sender** (REV-08): `RecvAck.from` (additive). Without it the OLDEST row with that message id is deleted, never all rows. A live hand-off never overwrites another origin's in-flight entry.
+9. **META is silent and unscoped for direct recipients** (REV-09): the sender gets the same (no) answer whether the recipient is online, offline or unknown. Department scoping of direct META is NOT applied, because a direct `Send` between enrolled devices is not scoped either and a cross-department 1:1 chat has to work. Group META keeps its membership check. This closes P2-5 as PARTIAL by owner-visible decision, not as fixed.
+10. **Password changes are rate limited** (REV-10): a separate key `pw:<user>`, reserved before the check; 429 with `Retry-After`.
+11. **A signer cannot be silently replaced** (REV-11): the first signer needs a fresh authenticator code; replacing an existing one needs a recovery code (403 `ERR_SIGNER_EXISTS`); new recovery codes need step-up `recovery.regenerate`.
+12. **Secrets stay out of the Docker context and the log** (REV-12, REV-13): `.dockerignore` uses `**/` patterns, a compose example binds to loopback, and a `logback.xml` plus `LogHygieneTest` keep setup tokens, TOTP seeds, passwords, session tokens and recovery codes out of the log.
+13. **Step-up binds the value** (REV-14): `settings.change` signs `<key>=<value>`; a confirmation for another value is refused.
+14. **Audit chain v2** (REV-15): length-prefixed canonical fields; rows written before are still verified in the old form (`chain_ver` column). Unauthenticated audit budget lowered to 20 per minute.
+15. **Root trust and delegation order** (REV-16): the hub persists the highest delegation serial it ever accepted and refuses an older one after a restart; `FLASH_REQUIRE_ROOT_PIN=true` refuses the first delegation unless `FLASH_ROOT_FINGERPRINT` is set; adopting an unpinned root logs `TRUST ON FIRST USE`; `keytool issue-delegation` never reuses a serial even when its serial file is lost (it also reads the `*.cert` files next to the root key). The serial file is written BEFORE the certificate on purpose: a crash wastes a number, it never reuses one.
+16. **The REST surface is checked** (docs round): `docs/protocol-routes.txt` is the list of every route the running server answers; `RouteTableContractTest` fails when code and list differ, so a new route cannot be undocumented again.
+
+### Alternatives considered
+- **Scope direct META by department.** Rejected: it would be inconsistent with unscoped direct Send and break cross-department 1:1 chat.
+- **Trust `X-Forwarded-For` through a boolean.** Rejected (REV-01): a flag cannot say WHICH peer is a proxy; the allow-list can.
+- **Encrypt only secrets in the database (done) vs the whole database now.** The whole-database option needs a native sqlite-jdbc-crypt driver on every deployment target; deferred, see Proposed.
+- **Make the first delegation always require a pin.** Rejected as a default for now: it makes first-run provisioning harder; offered as `FLASH_REQUIRE_ROOT_PIN` and recommended for production.
+- **Writing the serial file after the certificate.** Rejected: a crash between the two would reuse a serial, which is worse than skipping one.
+
+### Proposed (awaiting the owner; nothing below is built)
+- **P-1 Public `/api/v1/revocations`** exposes every revoked device id to anyone who can reach the hub (rate limited per address). Option: serve `SHA-256(serverId | deviceId)` and let a device compare its own hash. Wanted before GA; changes the client and the list format (`docs/protocol.md`).
+- **P-2 The owner's phone as the step-up signer** for `delegation.install`, `admin.create`, `device.revoke` and signer replacement, so a stolen console session plus a stolen browser key is not enough.
+- **P-3 Default of `FLASH_REQUIRE_ROOT_PIN`** (false today) and whether the first delegation should also need a TOTP confirmation in the console.
+- **P-4 Whole-database encryption** through sqlite-jdbc-crypt (the willena driver is already preferred in `resolveDriverClass`): packaging, key hand-over and a migration of an existing database.
+- **P-5 META scope** (decision 9) and **multi-device per user** remain as they are until the owner decides.
+- **P-6 `core:messaging` callers** should pass `from` to `acknowledgeReceipt` (REV-08 is additive; today the client acknowledges without it, which is safe but deletes the oldest row, not the named one).
+
+### Consequences
+- Operators must back up `data.key` apart from the database, and set `FLASH_TRUSTED_PROXIES` when a proxy is used.
+- An administrator who loses the console key and the authenticator device needs a recovery code to install a new key.
+- Nothing here is device-verified; tests `HUBR-01`..`HUBR-08` in `docs/testing/TEST-BACKLOG.md` section 4zzzzzz.
+
+### Revisit when
+The owner answers P-1..P-6, a deployment behind a real proxy shows an address problem, or the audit chain needs a third hash version.
+
+
+## ADR-127 addendum — owner answers to P-1..P-6 (2026-10-13)
+
+Status of the "Proposed" list above. The owner answered on 2026-10-13; the answers are final until the owner reopens them.
+
+| # | Question | Owner answer | Where it went |
+|---|---|---|---|
+| P-1 | Public `/api/v1/revocations` lists revoked device ids | **Leave as it is.** Hashed ids (option B) is a later improvement. | `docs/FUTURE-OPTIMIZATION.md` FO-13 |
+| P-2 | Who may be the step-up signer | **Browser key only.** The phone as co-signer for delegation install, administrator creation and signer replacement (option C) is later. | FO-14 |
+| P-3 | Default of `FLASH_REQUIRE_ROOT_PIN` | **Recommendation accepted:** `true` in the production Docker image (`server/Dockerfile`), `false` for a bare `installDist` / `:server:run` start. In the image, enrolment stays closed until `FLASH_ROOT_FINGERPRINT` is set; a local trial uses `-e FLASH_REQUIRE_ROOT_PIN=false`. The compose example carries a `FLASH_ROOT_FINGERPRINT` placeholder. | `server/Dockerfile`, `server/docker-compose.example.yml`, `docs/security.md` |
+| P-4 | Whole-database encryption | **Not now** (implementation is long, and the owner wants to test). Sealed TOTP seeds stay. Small option (encrypt the mailbox payload column only) and the large one (sqlite-jdbc-crypt) are recorded. | FO-15 |
+| P-5a | Scope direct META by department | **No: leave it unscoped.** The owner wants inter-department messaging. A department boundary on direct `Send` or `Meta` would break it, so none is added. | this ADR, protocol.md REV section |
+| P-5b | Several devices per member | **Deferred.** One device per member stays. | FO-16 |
+| P-6 | `core:messaging` passes `from` to the acknowledgement | **Done 2026-10-13.** `HubRelayPort.recvAck(id, from)`; `HubChatBridge` passes the sender of the message it confirms. Test `theAcknowledgementNamesTheSenderOfTheMessageItConfirms`. | `core/messaging/.../hub/` |
+| (CLI-16) | Hub-only group roster and secret | **Direction A is chosen** (the hub is the only holder of a group's roster and secret; members fetch them sealed). **NOT built**: ADR-123 is still PROPOSED and A waits for group sealing; until then the current behaviour (option C) stays. | FO-17, ADR-123 |
+
+### Known issue found while doing P-6 (NOT fixed)
+`HubChatBridge` keeps a `seen` set keyed by message id only. A second sender that reuses an id already seen is treated as a duplicate and dropped (id squatting: an enrolled device that predicts or copies another device's message id can suppress that message at a receiver). The hub side already scopes acknowledgements by sender (REV-08); the client side has to key `seen` by `(from, id)`. Recorded as ERROR-396 (OPEN). Fix with a test before the bridge is used outside a trusted organisation.
+
+## ADR-128 — Extract the enterprise hub client into `:core:enterprise`
+
+### Status
+ACCEPTED by the owner on 2026-10-13 ("do be extract core enterprise"). The step-by-step plan for the implementer is `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`. Not started when this entry was written.
+
+### Context
+The hub client (enrolment, directory, relay client, trust stores, sealing key manager, hub session) lives in `:core:network` under the packages `com.transfer.flash.core.network.enterprise` and `...network.relay`: about 3,000 of 10,000 common lines. Every consumer of the LAN mesh (and the `consumer-granular` sample, which depends on `:core:network` alone) therefore carries the enterprise client, `:core:hub-protocol` and Ktor client relay code even when it never talks to a hub. The two halves have no code dependency on each other: nothing else in `:core:network` references the enterprise or relay packages, and the moved code references `:core:network` in ONE place only (an internal `withRadioLock` helper used by `FlashRelayClient`).
+
+### Decision
+Create the KMP module `:core:enterprise` (artifact `core-enterprise`, same plugin set, `explicitApi()`, android + jvm targets as `:core:network`) and move into it the hub client code and its tests. Rename the packages to `com.transfer.flash.core.enterprise` (+ `.relay`) so one package belongs to exactly one module. `:core:network` keeps the LAN mesh, radio and discovery transports and no longer depends on `:core:hub-protocol`. `:server` main must not depend on `:core:enterprise` (only its tests do, as they drive a real client against a real hub).
+
+### Alternatives considered
+- **Keep one module** and only document the boundary. Rejected: the boundary is already clean, and a consumer who wants only LAN pays for the hub client.
+- **Move only the relay client.** Rejected: enrolment and relay share the trust store, the credentials and the session state.
+- **Keep the old package names.** Rejected: a split package across two modules makes `internal` and `explicitApi` rules per module harder to read and hides which module owns a class.
+
+### Consequences
+- A mechanical import rewrite in app, desktop, `core:messaging`, `ui:chat`, `core:engine` (api re-export) and server tests; a published artifact and a line in `jitpack.yml` / README.
+- Do it BEFORE multi-device work (FO-16) so that work happens in the right module.
+- Acceptance and verification commands are in the plan; nothing is device-verified by this move, which changes no behaviour.
+
+### Revisit when
+A second client (for example a Linux or iOS host) wants the hub client without `:core:security`, or the hub protocol gets a v3.

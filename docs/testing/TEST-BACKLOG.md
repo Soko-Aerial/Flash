@@ -3125,3 +3125,464 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 - **Status:** SCREEN-ON PASS / SCREEN-OFF FAIL (2026-10-10).
 
 
+
+
+## 4zw. Enterprise hub: relay wire v2, bearer, enrolment proof (ADR-107..110, ERROR-170..174, 2026-10-12)
+
+All of this is unit and contract tested (`:server:test` 83 tests incl. the real client transport against the real hub) and NOT device-verified.
+Setup for every case: a hub built from this tree (`:server`), an organisation root (`Main` first-run), an enrolment invite, and the debug app on
+a phone and/or the desktop app of the same build. Older builds cannot connect to this hub (wire v1 is gone).
+
+### HUB-01 - A real phone completes the v2 relay handshake against a real hub
+- **Setup:** hub reachable on the LAN over `http://` (no TLS yet, SEC-06); phone enrolled through an invite.
+- **Steps:** start the hub with debug logging; open Flash on the phone; wait for the organisation tab to show connected; read the hub log and the phone log.
+- **Pass:** hub log shows CHALLENGE sent, HELLO verified and WELCOME for the phone's device id within about 1 s; phone log shows the WELCOME principal with its role; no `ERR_*` frame; the device id is NOT in any URL in the hub's access log.
+- **Source:** ERROR-170, ADR-109. **Status:** TODO
+
+### HUB-02 - Message relay between two enrolled devices, sender is stamped
+- **Setup:** two enrolled devices (phone + desktop) online at the hub.
+- **Steps:** send a chat message from the phone to the desktop through the hub (LAN path off, or the hub-only route).
+- **Pass:** the desktop shows the message from the phone's identity; the hub log's DELIVER names the phone's device id as `from`; the phone receives `DELIVERED`.
+- **Source:** ERROR-170 (SEC-02). **Status:** TODO
+
+### HUB-03 - Offline recipient is queued, then delivered after it reconnects
+- **Steps:** switch the desktop off; send 3 messages from the phone; start the desktop.
+- **Pass:** the phone saw `QUEUED` for each; the desktop receives all 3 in order after the handshake with `replay` set; the desktop log shows `FLASH_RECV_ACK` for each id. (Until Phase 2 the hub deletes rows on socket write: record whether any row was lost when the desktop is killed mid-drain, expect it may be, REL-02.)
+- **Source:** ERROR-170, REL-02. **Status:** TODO
+
+### HUB-04 - An expired or revoked device is refused with the right code
+- **Setup:** enrol a device, then (a) set the phone clock 8 days ahead, (b) separately add its serial to a revocation list (needs Phase 2 for a served list; until then use the unit-level `RevocationList` through a debug hub build).
+- **Pass:** (a) the hub answers `ERR_EXPIRED` and the app shows the organisation as "needs renewal / re-enrol", not a retry loop; (b) `ERR_REVOKED` and the client stops reconnecting (state REVOKED).
+- **Source:** ERROR-173, ADR-110. **Status:** TODO (revoked case BLOCKED on Phase 2)
+
+### HUB-05 - A client pinned to organisation A refuses hub B
+- **Steps:** enrol with hub A, then point the app at hub B (different root) by editing the stored hub URL.
+- **Pass:** the client never sends a HELLO to B (hub B log shows a CHALLENGE and then a client close/timeout); the client log says the serverId does not match the pinned realm. A v1 (older) build against the new hub fails to connect and the hub logs `ERR_HANDSHAKE_TIMEOUT`.
+- **Source:** ERROR-170, ADR-109. **Status:** TODO
+
+### HUB-06 - Directory browse over the bearer
+- **Steps:** from the enrolled phone open Browse organisation groups; watch the hub log.
+- **Pass:** one `/api/v1/auth/challenge` + `/api/v1/auth/verify`, then directory calls with `Authorization: Bearer`; groups visible are those of the phone's own department; a request with a forged `X-Device-Id` of another device and no bearer is not used when a bearer is present (check with `curl`).
+- **Source:** ERROR-171, SEC-14. **Status:** TODO (the app wiring of the bearer is a Phase 3 item; until then run the `curl` half only)
+
+### HUB-07 - Enrol through a QR/`flash://enroll` link with proof of possession
+- **Steps:** generate an invite in the admin UI; scan it with the phone (and paste it on the desktop); complete enrolment.
+- **Pass:** the hub log shows one `ENROLLED` with a certificate window of 7 days or shorter than the delegation; an invite with `root=` removed is refused by the app with a clear message; a second use of a single-use token fails and does not burn a different token.
+- **Source:** ERROR-174, SEC-07 (part). **Status:** TODO
+
+### HUB-08 - Certificate lifetime clamp
+- **Steps:** start the hub with a delegation window shorter than 7 days (debug option) and enrol.
+- **Pass:** the issued certificate's `validTo` equals the delegation's `validTo` and `validFrom` is not before the delegation's.
+- **Source:** ERROR-173, SEC-18. **Status:** TODO
+
+### HUB-09 - Directory shapes: counts and approval state show in the app
+- **Steps:** with a group that needs approval and one with 3 members, open the browse sheet on phone and desktop.
+- **Pass:** the approval-required state and the correct member counts and display names are shown (the old build showed 0 and no approval state).
+- **Source:** ERROR-174, CLI-03. **Status:** TODO
+
+### HUB-10 - Non-ASCII payload through the relay
+- **Steps:** send messages with emoji, CJK text and a 60 KiB text body through the hub between two devices.
+- **Pass:** identical text on arrival; the 60 KiB message arrives whole, a message above 64 KiB is refused by the sender with a sentence, not a crash.
+- **Source:** ERROR-172, REL-12, CLI-11. **Status:** TODO
+
+### HUB-11 - Silent socket is cut at the handshake deadline
+- **Steps:** `nc <hub> 8443` style raw WebSocket upgrade (or `websocat`) and send nothing.
+- **Pass:** the hub sends a CHALLENGE, then `ERR_HANDSHAKE_TIMEOUT` with a fixed sentence at about 10 s and closes; the hub log shows no stack trace and no exception text on the wire.
+- **Source:** ERROR-170, SEC-16 (part). **Status:** TODO
+
+### HUB-12 - Sustained background connection survives a bearer and certificate boundary
+- **Steps:** leave the enrolled phone connected for 20 minutes screen on, then 20 minutes screen off.
+- **Pass:** the session stays up (or reconnects within backoff and re-handshakes cleanly); no `ERR_AUTH`/`ERR_EXPIRED` appears in either log. Record the device (Transsion handsets freeze, HIB-10).
+- **Source:** ADR-109. **Status:** TODO
+
+
+## 4zx. Enterprise hub relay: delivery, mailbox, limits, operations (ADR-112, ERROR-230..237, 2026-10-12)
+
+All of these are owed: the code is unit and contract tested (real sockets in-JVM) but never run against real handsets, a real network cut, or
+real load. Numbers measured in the JVM (no sockets): 200 devices x 50 messages with random disconnects, 10,000 messages, all delivered at least
+once, mailbox empty, 3.1 s idle machine (9.5 s while three Gradle builds ran); that is the only load figure so far.
+
+### HUBB-01 - 500 simulated sessions
+- **Setup:** hub on the target machine (the real VPS or laptop), a load script (or `RelayLoadTest` with `FLASH_LOAD_DEVICES=500 FLASH_LOAD_MESSAGES=100` (environment) against real sockets via 500 `KtorRelayTransport` clients).
+- **Pass:** every message delivered at least once, `/metrics` `flash_mailbox_queued_rows` returns to 0, hub RSS and CPU recorded, `flash_relay_sessions` = 500 during the run, no `ERR_RATE_LIMIT` for well-behaved clients. Record p99 of `flash_relay_ack_latency_seconds` if exposed.
+- **Source:** ADR-112, REL-04/05. **Status:** TODO (measurement, backlog section 5 rule)
+
+### HUBB-02 - 100,000 queued rows
+- **Steps:** with `MailboxLimits` raised for the test, queue 100k small rows for one offline device, connect it, acknowledge everything.
+- **Pass:** drain completes in pages of 100 without the hub's heap growing with the queue (watch `/metrics` memory), the socket never stalls other sessions (a second pair keeps chatting with latency noted), the table is empty afterwards and `PRAGMA freelist_count` returns to near 0 after the next sweeper run (incremental vacuum).
+- **Source:** REL-02/07/11. **Status:** TODO
+
+### HUBB-03 - `kill -9` during a drain
+- **Steps:** queue 500 rows, connect the recipient, kill the hub process mid-drain, restart it, reconnect.
+- **Pass:** all 500 arrive (some twice with `replay=true`, deduplicated by the client), none lost; `PRAGMA integrity_check` is `ok`; the WAL is recovered.
+- **Source:** REL-02, REL-15. **Status:** TODO
+
+### HUBB-04 - Half-open socket by a real network cut
+- **Steps:** phone on Wi-Fi sends to a second device; cut the phone's route without closing the socket (airplane mode off-on is not enough: pull the router uplink or use a firewall DROP rule), send 10 messages to the phone from the other device, restore.
+- **Pass:** the hub closes the dead session on the pong timeout (<= 45 s), the 10 messages arrive after the phone reconnects, the senders see `DELIVERED` only when the phone acknowledged (`QUEUE_STATE DELIVERED` after the reconnect).
+- **Source:** REL-02, REL-05. **Status:** TODO
+
+### HUBB-05 - Transsion / Hiber reconnect (HIB-10 family)
+- **Steps:** Infinix handset enrolled, screen off 30 minutes with 20 messages sent to it from another device, screen on.
+- **Pass:** all 20 arrive, none lost, no duplicate shown to the user (client dedupe), hub log shows the session ending and a fresh handshake, `superseded` kick if the old socket had not died yet. Record device and build.
+- **Source:** REL-01/02, HIB-10. **Status:** TODO
+
+### HUBB-06 - Reconnect race on a real network switch
+- **Steps:** a phone switches Wi-Fi to mobile data and back five times in a minute while a second device sends every 2 s.
+- **Pass:** the phone is registered after each switch (hub `flash_relay_sessions` correct), no message lost, no session left dead after the last switch.
+- **Source:** ERROR-230, REL-01. **Status:** TODO
+
+### HUBB-07 - Revoke a connected device
+- **Steps:** revoke an online enrolled device from the admin console.
+- **Pass:** the device is disconnected within a second (client state REVOKED, no reconnect loop); a device revoked while offline is refused at the next handshake with `ERR_REVOKED`.
+- **Source:** ERROR-232, SEC-02/05. **Status:** TODO on a device (2026-10-13: the revoke wiring exists in `HubServices`; the real-client path, kick within the bound, REVOKED status, dead bearer and re-enrol is automated in `E2eLifecycleContractTest`; the phone-in-hand version is HUBE-04)
+
+### HUBB-08 - Group fan-out in a real department group
+- **Steps:** a group of 6 devices (2 offline); one member sends; a non-member tries to send to the group id.
+- **Pass:** 4 receive at once with `group` set, the 2 offline get it on reconnect, the sender sees one aggregate ACK `delivered=4 queued=2`; the non-member gets `REJECTED / ERR_NOT_MEMBER`. NOTE: the CLIENT app must consume `Send.group` first (not wired on 2026-10-12).
+- **Source:** ERROR-236, REL-14. **Status:** TODO (blocked on the client wiring; the server side with 4 members, one offline and a non-member is automated in `E2eGroupAndLimitsContractTest.aGroupMessageReachesLiveMembers...`: aggregate ACK `delivered=1 queued=1 failed=0`, replay carries `group`, non-member and unknown group both `ERR_NOT_MEMBER`)
+
+### HUBB-09 - Mailbox expiry notice
+- **Steps:** set `FLASH_MAILBOX_TTL_DAYS=1` (needs the `Main.kt` wiring), queue a message to an offline device, wait 25 hours or advance the hub clock in a debug build.
+- **Pass:** the row is gone, the online sender receives `QUEUE_STATE EXPIRED` and shows it, `/metrics` shows `flash_mailbox_expired_total` 1.
+- **Source:** REL-09/11. **Status:** TODO (2026-10-13: `HubServices` does wire `mailboxTtlDays` and the stored lifetime is checked in `E2eRelayContractTest.theMailboxLifetimeFollowsTheHubClock...`; the expiry sweep and `QUEUE_STATE EXPIRED` on a device are still owed)
+
+### HUBB-10 - Oversized and fragmented frames
+- **Steps:** with `websocat`, send a 300 KiB text frame, then a 300 KiB message split into 1 KiB fragments; watch hub memory.
+- **Pass:** the first closes the connection; for the second record whether the hub buffers the whole message before refusing it (known residual risk, ADR-112). If memory grows with the fragment count, open an ERROR and cap fragments.
+- **Source:** REL-04. **Status:** TODO
+
+### HUBB-11 - Management endpoints behind a reverse proxy
+- **Steps:** hub behind nginx/Caddy; call `/health`, `/health/detail`, `/metrics` from outside and from the proxy host.
+- **Pass:** `/health` answers `{"status":"ok"}` only; `/health/detail` and `/metrics` answer 403 without the management bearer token even from the proxy host (proxy headers are present); with the token they answer 200; per-IP connection limit counts real client addresses only if `trustForwardedFor` is set and the proxy is trusted.
+- **Source:** SEC-16, REL-13. **Status:** TODO
+
+### HUBB-12 - Graceful shutdown with live sessions
+- **Steps:** 20 devices connected, 5 messages unacknowledged, `docker stop` / SIGTERM the hub.
+- **Pass:** the hub exits within 10 s; every client got `FLASH_KICK server_shutdown` and reconnects after the restart; the 5 messages arrive after the restart; the database file has no `-wal` leftover.
+- **Source:** REL-13. **Status:** TODO
+
+## 4zy. Enterprise hub identity, revocation, TLS, admin (ADR-111, ADR-113..115, ERROR-200..212, 2026-10-13)
+
+Phase 2 SERVER-A. All of it is unit- and contract-tested (`:server:test`), none of it has run against a phone, a real authenticator app, a TLS proxy or Docker.
+Commands use `server` for the installed hub launcher (`server/build/install/server/bin/server`) or `java -jar`.
+
+### HUBA-01 - Offline root, keytool, delegation, first enrolment
+- **Setup:** an offline machine (or a separate directory) with the hub's installDist, and a clean hub data directory.
+- **Steps:** (1) `server keytool init-root --out ./root` (give a pass-phrase). (2) Start the hub with an empty data dir; read the log (awaiting-delegation banner prints the delegate public key). (3) `server keytool issue-delegation --root-key ./root/root-identity.pk8 --server-pub <data>/server-identity.pub --scopes enrol:member,revoke:member --out delegation.cert`. (4) Copy `delegation.cert` to `<data>/delegation.cert` and restart the hub. (5) Enrol a phone from an invite.
+- **Pass:** `ls -l` shows `root-identity.pk8` mode 0600 (owner-only ACL on Windows) and it is encrypted (no `BEGIN` or base64 PKCS8); the hub data dir never contains `root-identity.pk8`; the hub starts only after step 4 enrols; the phone enrols and `/health/detail` shows `delegationDaysRemaining`. Copying the root key into the data dir makes the hub refuse to start with a message naming it.
+- **Source:** ERROR-200, ADR-111, SEC-04. **Status:** TODO
+
+### HUBA-02 - Awaiting-delegation mode and hot reload of a replacement
+- **Steps:** start a hub with no delegation; open the admin console and `/health`; try to enrol and to open the relay; then install a first delegation and restart; later issue a second delegation with a higher serial and drop it into the data dir (or `POST /admin/api/v1/delegation/reload` with step-up).
+- **Pass:** enrol answers 404 and the relay refuses while awaiting; the log says to restart after the first delegation; the replacement is picked up within 60 s without a restart and an enrolled device keeps working; a delegation with the same or a lower serial, signed by another root, or for another hub key is refused and the log names why.
+- **Source:** ERROR-200, ADR-111. **Status:** TODO
+
+### HUBA-03 - Delegation expiry warnings and expiry
+- **Steps:** issue a delegation with `--valid-days 15`, then (clock or a 2-day delegation) wait for 14 and 3 days left; separately let one expire.
+- **Pass:** a WARN line at 14 days and another at 3 days left (and the console overview shows the days left); after expiry enrolment and renewal are refused with a sentence, existing relay sessions are not silently extended, and the hub does NOT re-issue a delegation itself.
+- **Source:** ERROR-200, SEC-04. **Status:** TODO
+
+### HUBA-04 - Real invites, duplicate ids, revocation of an invite
+- **Steps:** create an invite in the console (and a bulk of 5); enrol phone A; try to enrol phone B with the same invite; revoke an unused invite and open it; try to enrol under phone A's device id again; over `http://` try an invite while the hub is in strict mode.
+- **Pass:** each single-use invite works once; the second use and the revoked invite are refused with a clear sentence and the invite list shows USED / REVOKED; re-enrolling an existing id is refused WITHOUT burning the invite; the hub refuses to create a plain-http invite unless `--allow-insecure`; the QR from the console scans.
+- **Source:** ERROR-202, ERROR-211, SEC-07, REL-16. **Status:** TODO
+
+### HUBA-05 - Restart persistence
+- **Steps:** enrol 2 devices, create an admin, a department and a group, then `kill -9` the hub and start it again.
+- **Pass:** the next enrolled device gets a serial larger than every earlier one; the quota is not reset; `/admin/setup` stays closed; the admin can log in with the same password and authenticator; the directory still has the department, group and members; an unused invite still works once; `GET /api/v1/revocations` version did not go back.
+- **Source:** ERROR-203, ERROR-204, SEC-08, REL-10. **Status:** TODO
+
+### HUBA-06 - Directory over the bearer, scoped by the enrolled department
+- **Steps:** with `curl`, call `/api/v1/directory/me` and the groups routes without a bearer, with a bearer of device A while sending a forged `X-Device-Id` of B, and with a bearer of a device in another department.
+- **Pass:** 401 without a bearer; the principal is always the bearer's device (the forged header is ignored); the other department's groups are not listed and a hidden group answers like a missing one; `department=*` lists nothing extra; joining a group needing approval creates a request that an admin approves in the console.
+- **Source:** ERROR-204, SEC-03. **Status:** TODO
+
+### HUBA-07 - Revoke a connected phone from the console
+- **Steps:** phone connected to the relay, in a group, with a live bearer; revoke it from the admin API (needs the step-up confirmation, see HUBA-12 for the scripted flow); then try to reconnect and to call the directory; then unrevoke.
+- **Pass:** the live socket is closed with `FLASH_REVOKED` within one frame; the bearer stops working at once (401/403 `ERR_REVOKED`); the phone leaves the directory; reconnect with the old certificate is refused after unrevoke too (the old serial stays revoked), a fresh invite re-enrols the same id; the audit log has `device.revoke` and `device.unrevoke` with actor and reason.
+- **Source:** ERROR-201, ADR-113, SEC-05. **Status:** TODO
+
+### HUBA-08 - TLS `self` mode with a phone
+- **Steps:** run with `--tls-mode=self` and an https external URL; read the logged certificate fingerprint; enrol a phone that pins it; restart the hub; later fake the clock to within 30 days of expiry.
+- **Pass:** the certificate (and its fingerprint) is identical after a restart, `tls/` files are owner-only, the phone connects over wss and https; a new certificate is generated only inside the 30-day window and the log says the clients must re-pin; the console cookie is `__Host-flash_admin_session` with Secure, HttpOnly, SameSite=Strict.
+- **Source:** ERROR-205, ADR-114, SEC-06. **Status:** TODO
+
+### HUBA-09 - Behind a reverse proxy: forwarded headers, rate limits, management listener
+- **Steps:** nginx/Caddy in front with `FLASH_TRUSTED_PROXIES=<proxy ip>`; hammer `/api/v1/auth/challenge` and the enrol endpoint from one IP and from two; send a forged `X-Forwarded-For` straight to the hub port; reach the console only via `ssh -L 8444:127.0.0.1:8444`; call `/metrics` with and without `FLASH_MANAGEMENT_TOKEN`.
+- **Pass:** the limiter throttles per real client address (429 `ERR_RATE_LIMIT`), a forged header from a non-proxy peer changes nothing; `/admin` answers 404 on the public port and works on 8444; `/metrics` and `/health/detail` are 403 through the proxy without the token and 200 with `Authorization: Bearer <token>`.
+- **Source:** ERROR-205, ERROR-207, ADR-114. **Status:** TODO
+
+### HUBA-10 - Docker image
+- **Steps:** `docker build -f server/Dockerfile -t flash-hub:local .` from the repo root; inspect the build context and layers for `keystore.properties`, `*.jks`, `.git`, `tools/.tavily_api_key`; `docker run` with a volume; `docker inspect --format '{{.State.Health.Status}}'`.
+- **Pass:** none of those files is in any layer; the process runs as uid 10001 (`docker exec ... id`); `/data` is the only writable path; the container becomes `healthy` within 60 s, and `unhealthy` when the hub process is stopped inside; only 8443 is EXPOSEd. (The image has not been built by the author: record any Gradle or base-image problem as a new ERROR.)
+- **Source:** ERROR-206, ADR-114, SEC-16. **Status:** TODO
+
+### HUBA-11 - Admin login with a real authenticator
+- **Steps:** complete `/admin/setup` with the setup token from `<data>/setup-token.txt` (not on the console); log in with an authenticator app; reuse the same code twice; fail the password 5 times in a burst from two tabs; use a recovery code; run `server admin-recovery --username <name>` on the host.
+- **Pass:** the setup token is not printed in the container log (only its path); a code is refused the second time within its window; the lockout counts the burst exactly (no extra attempts through the race); a recovery code works once; admin-recovery prints a new password, ends the admin's sessions and writes `ADMIN_BREAK_GLASS` to the audit log; passwords hash with 600k PBKDF2 (the DB row starts with the versioned prefix).
+- **Source:** ERROR-208, ADR-115, SEC-10. **Status:** TODO
+
+### HUBA-12 - Step-up confirmation from the admin's enrolled device
+- **Steps:** needs the client or admin-UI phase that signs `HubStepUp.proofBytes`. Until then replay the flow with a script that holds the device key: `POST /admin/api/v1/stepup/challenge`, sign, `POST /stepup/verify`, then call revoke with `X-Step-Up`.
+- **Pass:** revoke, unrevoke, revoke-by-serial, delegation install/reload, create/reset/disable admin, settings change and a non-member invite all answer 403 `ERR_STEP_UP` without a confirmation; a confirmation is accepted once only, for its own action and target, and expires after 5 minutes; a signature from any other key (or from a revoked device) confirms nothing.
+- **Source:** ERROR-209, ADR-115, SEC-12. **Status:** BLOCKED (client/UI phase). 2026-10-13 UPDATE: the console now has a browser signer (ADR-125, ERROR-340); the real-browser flow signed and revoked serial 4242 (P1363 accepted). A PHONE as signer is not built: see HUBU-11. Re-test with the console in HUBU-09 and HUBU-05.
+
+### HUBA-13 - Audit chain survives a restart and detects tampering
+- **Steps:** perform 10 admin actions, restart, `GET /admin/api/v1/audit/verify`, export the CSV, then edit one row in `flash-hub.db` with `sqlite3` and verify again.
+- **Pass:** verify reports OK with the same head hash after the restart; after the manual edit (and after deleting a middle row) it reports the first broken index; the export contains actor, action and details for logins, setup attempts, enrolments, revocations and delegation loads.
+- **Source:** ERROR-210, SEC-13. **Status:** TODO
+
+### HUBA-14 - A phone fetches and honours the signed revocation list
+- **Steps:** revoke device B; on device A (client phase) fetch `GET /api/v1/revocations` with its bearer; try to open a chat with B; install a root-signed list with a higher version from the offline machine.
+- **Pass:** the list verifies against the pinned root or the hub's `revoke:member` delegation, its version only grows, A refuses B's certificate, and a list that is older or signed by a delegate lacking `revoke:member` is refused.
+- **Source:** ERROR-201, ADR-110, ADR-113. **Status:** BLOCKED (client phase consumes the list)
+
+## 4zz. Enterprise hub, phone and desktop client (ADR-120..123, ERROR-260..270, 2026-10-13)
+
+Phase 2 CLIENT. All of it is unit-tested (`:core:network`, `:core:security`, `:core:messaging`, `:ui:chat`); none of it has run against a real hub on a phone. Needs a hub from section 4zy (HUBA-01..) with a delegation, one invite, and two enrolled devices (a phone and the desktop, or two phones). The Compose rendering of the new Settings card and sheets has no automated test. Logs to read: tag `HUB`.
+
+### HUBC-01 - Enrol over wss, Settings card shows the live state
+- **Steps:** (1) Settings -> organisation: paste a link whose root pin is missing (an old link): the Join button stays off. (2) Paste a link with a pin for an `https` hub: join. (3) Watch the card; open the detail sheet (tap or long-press). (4) Paste a link for a hub with the wrong root; paste a plain `http://` hub address.
+- **Pass:** (2) card shows a green dot and "Connected to <hub>", the detail lines name the hub, the certificate end date and the organisation key; (4) both are refused with a plain sentence and nothing is stored (Settings still says "not part of an organisation"); no log line contains a token, a key or a full link.
+- **Source:** ERROR-260, ERROR-268, ADR-120, CLI-01. **Status:** TODO
+
+### HUBC-02 - Leave the organisation, offline leave, restore groups
+- **Steps:** (1) Leave while online; check the hub's device list. (2) Re-enrol; "Restore N groups" is offered; tap it. (3) Leave with the hub stopped; start the hub later.
+- **Pass:** (1) the hub no longer lists the device and Settings says so in plain words; (2) the previously joined groups reappear without a new approval; (3) the sentence says the hub could not be told, and the hub receives the unenrol once reachable (device disappears from its list within a few minutes). Pending "Waiting for approval" rows are gone after leaving.
+- **Source:** ERROR-267, ADR-120, CLI-09. **Status:** TODO
+
+### HUBC-03 - Hub restart, reconnect spread, revocation, renewal, slow collector
+- **Steps:** (1) With 2 devices online stop the hub, start it 30 s later; read the reconnect timestamps. (2) Revoke device A in the console; watch A. (3) Put A in airplane mode until its certificate is inside the renewal window (shorten the delegation lifetime for the test), then reconnect. (4) Receive a burst of 200 messages while the app is busy (open the debug log screen, scroll).
+- **Pass:** (1) retries are spread (not the same second on two devices) and capped, the status line says "Trying again in ..."; (2) A shows the revoked banner with Re-enrol only after the root-signed list names it, and does not retry meanwhile; (3) a new certificate (new serial) is installed without a user action; (4) the socket is not closed by the hub for a missed pong (no `1011` close in the hub log) and no message is lost (`KtorRelayTransport` pong behaviour is NOT unit-tested).
+- **Source:** ERROR-261, ADR-120, CLI-07, CLI-08, CLI-13. **Status:** TODO
+
+### HUBC-04 - LAN first with a 2 s grace, hub-only delivery, hub-held message
+- **Steps:** (1) A and B on the same Wi-Fi: send; check the logs. (2) Put B out of LAN reach but online to the hub: send. (3) Switch B off, send three messages from A, wait 40 minutes, switch B on. (4) Fill the hub mailbox quota (server setting) and send.
+- **Pass:** (1) the message goes over LAN only (no `HUB send` line unless the receipt is missing for 2 s); (2) it arrives through the hub with one tick; (3) A shows the messages as sent (not Failed) past 30 minutes and B gets all three once, in order; (4) the message becomes Failed with a friendly sentence (wording in `TransferFailureText` / hub notes), not an exception text.
+- **Source:** ERROR-263, ADR-122, CLI-06. **Status:** TODO
+
+### HUBC-05 - Sealed content once the hub publishes sealing keys
+- **Setup:** BLOCKED until the hub implements `PUT /api/v1/device/sealing-key` and returns `sealingPublicKey` / `sealingSignature` on directory members. Until then verify only the negative: with "Messages through the hub" OFF and no sealing key, a hub-only send is not sent as plaintext (it stays waiting or fails with a plain sentence; record which).
+- **Steps:** turn the setting on (disclosure dialog must appear first), send hub-only, capture the hub's mailbox row.
+- **Pass:** the stored payload starts with `SEALED_V1.`, contains no readable text, and the recipient shows the message; with the setting off on the recipient the sealed message is still opened (setting only governs plaintext).
+- **Source:** ERROR-264, ADR-121, ADR-124, CLI-05. **Status:** UNBLOCKED IN CODE 2026-10-13 (ADR-126): both hosts now generate, protect and publish a key and build a `HubSealingPort`; unit-tested, tested against the real hub in `E2eHostSealingLifecycleTest`, NOT device-verified: run HUBH-01 (and HUBE-05). History: was BLOCKED on the HOSTS, not on the hub (2026-10-13): the hub now serves sealing keys and the whole path (publish, verify binding, serve, seal, mailbox holds no plaintext, open) is automated in `E2eSealedMessageContractTest` / `E2eSealingKeyContractTest`; what is missing is a host that generates a key pair, publishes it (`publishSealingKey`) and builds a `HubSealingPort`. Device test is HUBE-05.
+
+### HUBC-06 - A sealed message that was changed or re-sent is refused
+- **Steps:** with HUBC-05 working, edit one byte of the mailbox row, and separately replay the same row under another sender id (needs a modified hub build).
+- **Pass:** the recipient shows nothing, logs a `HUB` line saying it was refused, and still acknowledges so the hub does not replay it for ever.
+- **Source:** ERROR-264, ADR-121, ADR-124. **Status:** UNBLOCKED IN CODE 2026-10-13 (ADR-126; the recipient counts a refused message in "Messages not opened", see HUBH-05); NOT device-verified. History: BLOCKED on the HOSTS (see HUBC-05); the byte-flip, re-id and impersonation refusals are automated in `E2eSealedMessageContractTest.aPayloadChangedInTransit...` and `aMaliciousEnrolledDevice...`. Device test is HUBE-05.
+
+### HUBC-07 - Acknowledge only after the message is stored (kill the app mid-delivery)
+- **Steps:** A sends 20 messages to B through the hub while B is online to the hub only; force-stop B during the burst; start B again.
+- **Pass:** after the restart B shows every message exactly once (no gap, no duplicate), the hub's queue for B is empty afterwards; the log shows `RECV_ACK` lines only after the matching `stored` lines.
+- **Source:** ERROR-262, ADR-122, CLI-14, CLI-15. **Status:** TODO
+
+### HUBC-08 - Screen-off redelivery on a Transsion / Samsung phone
+- **Steps:** enrol the phone, lock the screen for 20 minutes, have a colleague send three messages through the hub, unlock.
+- **Pass:** the messages arrive once on unlock or by the 15 minute wake-up (record which); no duplicates; the status card says "Offline" while frozen and returns to "Connected" without a manual step. Compare with HIB-* results before blaming the hub.
+- **Source:** ERROR-261, ADR-041, `docs/` Transsion research. **Status:** TODO
+
+### HUBC-09 - Join a group that needs approval
+- **Steps:** an admin makes a department group "approval required"; on a member phone open Browse groups and tap Join.
+- **Pass:** the button says "Waiting for approval", the chat list shows a "Waiting for approval" row at the top (no empty chat), the row disappears and the group opens within 60 s of the approval; a refusal shows a plain "declined" sentence and the row goes away.
+- **Source:** ERROR-265, ADR-123, CLI-04. **Status:** TODO
+
+### HUBC-10 - Admin approves and declines inside Flash
+- **Steps:** with two pending requests, the group admin opens Browse groups -> the group row -> requests.
+- **Pass:** both are listed with the applicant's name, Approve joins that person, Decline refuses; a non-admin never sees the panel; a failure (hub stopped) shows a plain sentence and keeps the row.
+- **Source:** ERROR-265, ADR-123. **Status:** TODO
+
+### HUBC-11 - Members who are not paired with each other (known limitation)
+- **Steps:** three people join one department group; A and B are paired, C is known to both only through the organisation; send from A and from C.
+- **Pass (documents the limit, ERROR-266 stays OPEN):** the Browse groups sheet shows the sentence "Group messages reach colleagues you are paired with ..." and the behaviour matches it (C does not read A's messages). A change of this result means someone changed group trust: read ADR-123 first.
+- **Source:** ERROR-266, ADR-123, CLI-16. **Status:** TODO
+
+## 4zzz. Real phone + real hub: the client/server contract on a device (ADR-124, ERROR-330..337, 2026-10-13)
+
+The automated contract tests (`server/src/test/kotlin/com/transfer/flash/server/e2e/`, about 40 tests) run the real client classes against the real hub on loopback with a shared test clock. They prove the two sides agree on the wire. They do not prove a phone on a Wi-Fi network behaves; these do.
+
+### HUBE-01 - Enrol on a phone, one connection, no kick loop
+- **Setup:** a hub with a delegation (HUBA-01), a phone on the same Wi-Fi, an invite link.
+- **Steps:** open the link, enrol, wait 60 s, then read the hub's `/health/detail` (connection count) and the phone's Hub log.
+- **Pass:** exactly one session for the phone; no `superseded` / `FLASH_KICK` lines in either log; Settings shows Online and stays Online. (ERROR-333: before the fix two loops fought for ever.)
+- **Source:** ERROR-333, CON-04. **Status:** TODO
+
+### HUBE-02 - Invite refusals and join workflow read correctly on the phone
+- **Steps:** (a) open an expired invite, (b) open a used invite, (c) fill the device quota and enrol one more, (d) ask to join an approval group, have an admin decline it in Flash, wait for the next 60 s poll.
+- **Pass:** (a) the sentence says the invite expired, (b) it says the invite was used, (c) it says the organisation is full, (d) the phone shows the request was declined once and offers to ask again; it does not keep saying "waiting".
+- **Source:** ERROR-330/331/332. **Status:** TODO
+
+### HUBE-03 - Send to a colleague who is offline, then bring them back
+- **Steps:** phone B off Wi-Fi; phone A sends 3 messages through the hub; B comes back.
+- **Pass:** A shows the messages as held by the hub (not failed), B receives them oldest first once, A shows delivered after B's receipt; the hub mailbox is empty afterwards (`flash_mailbox_*` metrics).
+- **Source:** ERROR-334, CON-05. **Status:** TODO
+
+### HUBE-04 - Revoke from the console and watch the phone
+- **Steps:** with a connected phone, revoke it from the admin console (step-up); note the time; watch the phone.
+- **Pass:** within about 10 s the phone shows the "removed from the organisation" notice, its Hub credentials are gone, the hub shows it offline; after an admin lifts the revocation the same install enrols again with a new invite. Record the seconds from revoke to notice.
+- **Source:** ERROR-335/336, CON-06. **Status:** TODO
+
+### HUBE-05 - Sealed message between two phones (needs a host that publishes keys)
+- **Setup:** UNBLOCKED IN CODE 2026-10-13 (ADR-126): both hosts publish their own key after enrolment; use HUBH-01 and HUBH-02 for the steps of a build with host sealing. (Was: BLOCKED until a host publishes a sealing key.)
+- **Steps:** both phones publish, A sends a sealed message to an offline B, read the hub's mailbox row, B comes back, flip one byte of a second stored row.
+- **Pass:** the row holds no readable text; B shows the first message; the tampered one is refused with a `HUB` log line.
+- **Source:** ADR-124, ADR-126, CLI-05. **Status:** TODO (was BLOCKED on host work; host work built 2026-10-13, see HUBH-01)
+
+### HUBE-06 - Hub restart with phones connected
+- **Steps:** stop the hub for 30 s with two phones online and one message held for an offline third, start it again.
+- **Pass:** both phones are Online again within about 40 s without opening the app, reconnects are spread (no simultaneous burst in the hub log), the held message arrives when the third phone returns, no phone has to re-enrol.
+- **Source:** E2eRestartContractTest, HUBC-03. **Status:** TODO
+
+### HUBE-07 - Certificate renewal window on a phone
+- **Steps:** with a hub whose device certificates live 7 days, move the PHONE's date forward to inside the last 24 hours (or wait 6 days); keep it online.
+- **Pass:** the phone renews by itself (new serial in Settings -> Connection details), the relay reconnects once on the new certificate, messages still flow; with the date moved more than 72 hours past the end the phone shows "certificate expired" and a fresh invite re-enrols it.
+- **Source:** E2eLifecycleContractTest, SEC-18. **Status:** TODO
+
+### HUBE-08 - Unenrol while the hub is unreachable, then reachable
+- **Steps:** turn the hub off, leave the organisation on the phone, turn the hub on, wait for the phone's maintenance round.
+- **Pass:** the phone leaves at once (credentials cleared), the hub removes its directory entry once told, a second "tell the hub" attempt is treated as done and nothing is retried for ever.
+- **Source:** CON-08, HUBC-02. **Status:** TODO
+
+
+
+## 4zzzz. Hub admin console (UI agent, 2026-10-13, ADR-125, `docs/ui/hub-admin-console.md`)
+
+Built and checked in headless Edge on localhost only (see section 14 of the design doc). Everything below is owed. Record results in the Results log.
+
+### HUBU-01 - Browser matrix
+- **Steps:** open `/admin/` on a hub in Chrome, Edge, Firefox and Safari (desktop) and Chrome on Android / Safari on iOS; sign in, visit every page.
+- **Pass:** no console errors, no layout break, no horizontal scroll at 390 and 1440 px, the step-up key can be registered and used (Safari: IndexedDB `CryptoKey` storage works in a normal window).
+- **Source:** ADR-125. **Status:** TODO
+
+### HUBU-02 - Keyboard-only and screen reader
+- **Steps:** use only the keyboard (Tab, Shift+Tab, Enter, Space, Esc, `?` for shortcuts) through sign-in, a device revoke and an invite creation; repeat with NVDA on Windows (and VoiceOver on macOS).
+- **Pass:** every control reachable and visible when focused, dialogs trap and restore focus, table sort state and row selection are announced, toasts are announced politely, the session-expiry warning is announced.
+- **Source:** design doc sections 8 and 9. **Status:** TODO
+
+### HUBU-03 - Zoom, text size and print
+- **Steps:** 200% browser zoom and 200% text size at 1440 and 390 px; print an invite card.
+- **Pass:** no clipped text or overlapping controls; the printed card shows the QR, the organisation name and the steps, and no navigation.
+- **Source:** design doc section 9. **Status:** TODO
+
+### HUBU-04 - Air-gapped load
+- **Steps:** hub on a machine with no route to the internet; browser devtools Network tab while loading every page.
+- **Pass:** every request is same-origin; no failed request; no CSP violation in the console.
+- **Source:** ADR-125, SEC-11. **Status:** TODO
+
+### HUBU-05 - Devices with data and 5,000 rows
+- **Steps:** enrol at least 3 real devices (phone and desktop), then fill the registry with 5,000 devices (script); open Devices; filter, sort, select all, bulk revoke 3, open the drawer of a device.
+- **Pass:** scrolling stays smooth (rows are windowed, under 100 DOM rows), filter result in under 200 ms, the real device shows online / offline correctly and a revoke ends its session (see HUBA-03 and HUBE-04).
+- **Source:** design doc section 5. **Status:** TODO
+
+### HUBU-06 - Invites in full
+- **Steps:** create single invites for every role, a bulk batch from a CSV with 5 good and 3 bad lines, print a card, use an invite from a phone, open the same link after use, revoke an unused one.
+- **Pass:** errors name the bad lines; the link is shown once; a used invite shows Used; the printed card is complete.
+- **Source:** design doc section 5. **Status:** TODO
+
+### HUBU-07 - Organization with data
+- **Steps:** create departments and groups, add and remove members, approve and reject join requests (with a reason).
+- **Pass:** lists update without reload; a rejection reason appears in the audit trail only.
+- **Source:** ADR-123, design doc. **Status:** TODO
+
+### HUBU-08 - Delegation install flow
+- **Steps:** hub started with `FLASH_DEV_EMBEDDED_ROOT` unset; follow the awaiting-delegation page (keytool command, copy public key), install the issued certificate in the console, reload.
+- **Pass:** state goes from Awaiting to Active, the days-left figure matches, a lower serial is refused with a plain sentence.
+- **Source:** ADR-125, SERVER-A. **Status:** TODO
+
+### HUBU-09 - Account flows
+- **Steps:** change own password, regenerate recovery codes, reset another administrator's authenticator, disable and enable an administrator, register the browser key again after clearing site data.
+- **Pass:** each needs the right step-up or code, shows the new secret / codes exactly once, and ends the affected sessions; the audit trail shows each.
+- **Source:** ADR-125. **Status:** TODO
+
+### HUBU-10 - Session expiry and idle
+- **Steps:** leave a console open past idle timeout and past the session lifetime; start an action just as the session ends.
+- **Pass:** a warning appears before the end, the countdown matches the server, an action that meets an expired session shows the sign-in dialog without losing the typed input, and sign-in returns to the same page.
+- **Source:** design doc section 5. **Status:** TODO
+
+### HUBU-11 - Phone as step-up signer (HUBA-12)
+- **Steps:** the console's key is the only signer today. Decide whether phones should also sign; if yes, build and test it.
+- **Pass:** n/a until decided.
+- **Source:** SEC-12. **Status:** BLOCKED (owner decision)
+
+
+## 4zzzzz. Hub host sealing: key store, publication, sealed chat, changed keys (ADR-126, ERROR-360..363, 2026-10-13)
+
+Built and unit-tested (plus three tests against the real hub in `E2eHostSealingLifecycleTest`); nothing here is device-verified. Needs two phones (or a phone and the Windows app) enrolled in one real hub, both on this build. Capture logcat / the desktop log with the `HUB` tag and the hub's mailbox rows as in HUBE-05.
+
+### HUBH-01 - Two devices exchange a sealed message, switch OFF
+- **Setup:** A and B enrolled in the same hub on this build; "Messages through the hub" OFF on both; B switched off or out of LAN reach.
+- **Steps:** wait 1 minute after enrolling (key publication), send "sealed test 1" from A to B, read the hub's mailbox row for B, switch B on.
+- **Pass:** the row starts with `SEALED_V1.` and contains no readable text; B shows "sealed test 1" from A once; A's bubble shows delivered, not Failed; Settings -> Connection details on both says "Private messages: Ready"; no "Waiting for ..." notice on either chat. Also check the HUB log has no private key material (only a 4x4 hex short fingerprint).
+- **Source:** ADR-126, CLI-05. **Status:** TODO
+
+### HUBH-02 - A colleague's key changes after a reinstall
+- **Steps:** A and B have exchanged one sealed message (HUBH-01). Uninstall and reinstall the app on B (or clear its data), enrol B again with a new invite under the same device id, wait for key publication. On A send "after reinstall".
+- **Pass:** A's chat with B shows the notice "B's security key changed" with a new and an old short code and the buttons Continue and Verify; "after reinstall" is NOT sent (hub mailbox for B stays empty, also with "Messages through the hub" ON on A) and stays waiting on A's phone; tapping Continue sends it sealed with the new key within a few seconds and B shows it; the notice disappears; restarting A's app and sending again shows no notice. Repeat once, tap Verify instead: the peer details open.
+- **Source:** ADR-126, ERROR-362. **Status:** TODO
+
+### HUBH-03 - Publication retries while offline and survives a rate limit
+- **Steps:** enrol a phone while its Wi-Fi and mobile data are off (use airplane mode right after the enrolment completes if the invite was redeemed in advance), wait 2 minutes, switch the network on; separately re-enrol the same install 6 times in a row quickly.
+- **Pass:** offline: Connection details says "Getting ready" and a colleague's directory entry has no key; within about 15 s to a few minutes after the network returns it says "Ready" and the colleague can send sealed messages (key shown in the hub's directory API). Rapid re-enrols: no crash, no error dialog, the state ends "Ready" within about a minute (the rate limit is waited out).
+- **Source:** ADR-126, ERROR-360. **Status:** TODO
+
+### HUBH-04 - The key is protected at rest (Android Keystore wrapper) and never backed up
+- **Steps:** on a debuggable build, with `adb shell run-as com.transfer.flash`, read `shared_prefs/flash_hub_sealing.xml`; run `adb backup`-style extraction or check the backup rules; move the app data to another phone is NOT possible, so instead clear the Keystore entry by uninstalling and restoring from a cloud backup if available.
+- **Pass:** the preference value is opaque (it is not plain PKCS#8 base64, which would start with `MIGH`); the key is absent from the backup / data-extraction output; after a restore the phone makes a NEW key (Connection details says Ready and colleagues see one key-change notice).
+- **Source:** ADR-126. **Status:** TODO
+
+### HUBH-05 - Notices read calmly and honestly
+- **Steps:** look at (a) a chat with a colleague whose app has not published a key while "Messages through the hub" is OFF and the colleague is offline; (b) the same with the switch ON; (c) a hub-linked group with the switch ON, then OFF; (d) Connection details after a sealed message was tampered with (needs a modified hub) and after a readable message arrived with the switch OFF.
+- **Pass:** (a) "Waiting for <name> to update the app", the message is held, not Failed; (b) the message goes out readable and there is no notice; (c) the group notice says the hub can read group messages (ON) or that group messages through the hub are off (OFF), neither says "sealed" or "encrypted"; (d) the counts "Messages not opened" / "Messages not accepted" show a number and no message content ever appears in a chat. No protocol words, codes or stack text in any of it.
+- **Source:** ADR-126, ERROR-363, AGENTS section 22. **Status:** TODO
+
+### HUBH-06 - Revoke and unenrol wipe the key
+- **Steps:** (a) unenrol a phone from Settings and then read its prefs / key file; check the hub's directory entry for it. (b) Revoke another phone in the admin console and wait for its "removed" notice; read its key store.
+- **Pass:** (a) the local sealing key is gone (a new enrolment makes a different key) and the directory shows no key for the device; (b) the revoked phone's key store is empty after it confirms the revocation and no sealing key is served for it.
+- **Source:** ADR-126, ADR-124. **Status:** TODO
+
+### HUBH-07 - Windows desktop key file and DPAPI
+- **Steps:** enrol the desktop app, wait for "Ready", close it, look at `%USERPROFILE%\.flash\hub\sealing.key` and `sealing-pins.txt` (name may differ on another state dir), copy the key file to another Windows user and try to start a second install with it.
+- **Pass:** the file is not readable text (no PKCS#8 header after the first bytes); the other Windows user cannot unprotect it (the second install makes a new key); on Linux (when run there) the file mode is 0600. Sealed messages between the desktop and a phone work as in HUBH-01.
+- **Source:** ADR-126. **Status:** TODO
+
+### HUBH-08 - A held message survives restart and is released by Continue
+- **Steps:** with a pending key change (HUBH-02) on A, send two messages to B, force-stop A's app, reopen it, open the chat; then tap Continue.
+- **Pass:** after the restart the notice is still there and neither message has been sent; both messages stay on one tick (not Failed) well beyond 15 minutes; after Continue both arrive on B, sealed, in order.
+- **Source:** ADR-126, ERROR-362. **Status:** TODO
+
+
+
+## 4zzzzzz. Hub second-pass review fixes (REV-01..REV-16, ADR-127, ERROR-380..395, 2026-10-13)
+
+| ID | Setup / steps | Pass | Source | Status |
+|---|---|---|---|---|
+| HUBR-01 | Real hub behind nginx or Caddy (`FLASH_TLS_MODE=proxy`, `FLASH_TRUSTED_PROXIES` = the proxy). Enrol and connect 150 devices (or a script) from different addresses. | No device refused by the per-IP cap; log shows distinct client addresses, no WARN about proxy misconfiguration. With the proxy removed from the trusted list, the WARN appears at start. | REV-01, ERROR-380 | TODO |
+| HUBR-02 | On Linux and on Windows: start the hub and inspect the permissions of `flash-hub.db*`, `data.key`, `server-identity.pk8`, `setup-token.txt`. | Only the hub's user can read them (mode 600 or an ACL without other principals). The database contains `enc1:` values for TOTP seeds, none in clear. | REV-03, ERROR-382 | TODO |
+| HUBR-03 | Delegation revocation drill with a real phone: issue delegation #2, `keytool revoke` serial 1, install via the console (step-up with the phone). | The phone enrolled under #1 is told it is revoked or renews under #2 as designed; the hub log names the revoked serial; the audit shows `revocation.install`. | REV-04, ERROR-383 | TODO |
+| HUBR-04 | Enrol a phone with a certificate that expires in a few minutes (short test delegation). Keep the app connected. | About 60 s after expiry the relay closes the session with `ERR_EXPIRED`; the app renews its certificate and reconnects without user action. | REV-05, ERROR-384 | TODO |
+| HUBR-05 | Administrator with a console key loses it: use a recovery code to register a new key; try the same with only an authenticator code. | Recovery code works once; the authenticator code alone answers `ERR_SIGNER_EXISTS` and the console says to use a recovery code. | REV-11, ERROR-390 | TODO |
+| HUBR-06 | First-run setup with the token typed at the beginning of setup (no token in the URL). | Setup opens only with the token; a second visitor cannot evict the first; `setup/status` reveals nothing else. | REV-07, ERROR-386 | TODO |
+| HUBR-07 | `docker compose -f server/docker-compose.example.yml up` with a local `keystore.properties` and a `data.key` in the build context. | Neither file appears in the image (`docker run --rm image ls -R /app`); the hub listens on 127.0.0.1 only. | REV-12, ERROR-391 | TODO |
+| HUBR-08 | Delegation hygiene: delete `delegation-serial.txt` and issue again; restart the hub with an older `delegation.cert` in place; start with `FLASH_REQUIRE_ROOT_PIN=true` and no fingerprint. | New serial is higher than any seen; the older file is refused with a log line; the pinless start is refused with a log line naming `FLASH_ROOT_FINGERPRINT`. | REV-16, ERROR-395 | TODO |
+
+
+### 4zzzzzzz. Owner decisions of 2026-10-13 (ADR-127 addendum, ADR-128)
+
+#### HUBR-09 — Docker image refuses a first delegation without a pin
+- **Setup:** build `server/Dockerfile`; start a container with an empty `/data` volume and NO `FLASH_ROOT_FINGERPRINT`; copy a valid `delegation.cert` into the volume.
+- **Steps:** start; read the log; try to enrol a device.
+- **Pass:** the log says the root pin is required and the first delegation is refused; enrolment stays closed. With `-e FLASH_ROOT_FINGERPRINT=<fingerprint from keytool init-root>` the same volume starts and enrols. With `-e FLASH_REQUIRE_ROOT_PIN=false` and no fingerprint it starts and logs `TRUST ON FIRST USE`.
+- **Source:** ADR-127 addendum P-3. **Status:** TODO
+
+#### HUBR-10 — A device's acknowledgement deletes only the named sender's mailbox row
+- **Setup:** hub plus devices A, B (senders) and C (recipient, offline). A and B each queue a message with the same id for C.
+- **Steps:** C connects, receives both, acknowledges each.
+- **Pass:** each acknowledgement carries `from`; the hub deletes the row of that sender only (check the mailbox count after the first acknowledgement is 1, after the second 0). NOTE: with the open ERROR-396 the second message may be dropped by the bridge as a duplicate; the test records which happens.
+- **Source:** ADR-127 P-6, ERROR-396. **Status:** TODO
+
+#### EXTR-01 — After the `:core:enterprise` extraction nothing behaves differently
+- **Setup:** the plan `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md` is done.
+- **Steps:** run the acceptance checklist of the plan (builds, tests, `:server:installDist`, jitpack install line dry run); install the app; enrol a device against a hub and exchange a message.
+- **Pass:** every command of the plan's section "Verification" passes with the same test counts as before the move (plus none lost); enrolment, directory and relay chat work on a phone as before.
+- **Source:** ADR-128. **Status:** TODO

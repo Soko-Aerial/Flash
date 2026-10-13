@@ -1166,3 +1166,316 @@ setOpId=<uuid> setSigner=<admin id> setSig=<b64>
   without `gs1` anyway.
 - An older member still trusts members who joined with the secret: their admin-signed certificates reach it as ordinary vouches (ADR-044 V2;
   test in GM-4, ripple 40).
+
+
+## Hub relay wire v2 and hub REST contract v1 (ADR-107, ADR-109, ADR-110; 2026-10-12)
+
+The enterprise hub (`:server`) and its clients share ONE definition of this contract: the Kotlin module `:core:hub-protocol`. This section
+is the human-readable form; the code (`HubContract`, `HubErrorCodes`, `RelayFrame`, `RelayFrameCodec`, `rest/RestDtos.kt`, `certs/HubAuth.kt`)
+and the golden vectors are authoritative if they ever disagree, and a disagreement is a bug to record in `logs/errors.md`.
+
+`RELAY_WIRE_VERSION = 2`, `REST_API_VERSION = 1`. The v1 relay (identity in the query string, no handshake) is gone; a v1 client cannot connect.
+
+### Canonical bytes (`AuthCanonicalWriter`)
+
+Every signed statement is a sequence of fields, each written as a 4-byte big-endian length followed by the bytes. The first field is always the
+domain tag (UTF-8). Text is UTF-8; `long` is 8 bytes big-endian; `int` is 4 bytes; `stringSet` / `longSet` are sorted, then a count field,
+then the members. The signature is ECDSA P-256 / SHA-256, DER encoded, base64 on the wire. The signature field is never part of the bytes it signs.
+
+| Statement | Tag | Fields in order | Signed by |
+|---|---|---|---|
+| Device certificate | `flash-device-cert-v1` | deviceId, subjectPublicKey, role, department, validFrom, validTo, serial, issuerPublicKey | the hub's delegated key |
+| Delegation | `flash-delegation-v1` | rootPublicKey, delegatePublicKey, scopes (set), validFrom, validTo, maxDevices (int), serial | the organisation root key |
+| Revocation list | `flash-revocation-v2` | version, revokedSerials (set), revokedDeviceIds (set), revokedDelegationSerials (set), issuerPublicKey | root, or a delegate with `revoke:member` |
+| Relay / REST authentication | `flash-hub-auth-v1` | serverId, serverNonce, clientNonce, deviceId, certSerial | the device key |
+| Enrolment proof of possession | `flash-hub-enroll-v1` | token, deviceId, subjectPublicKey, serverId | the device key |
+| Certificate renewal | `flash-hub-renew-v1` | serverId, serverNonce, clientNonce, deviceId, currentCertSerial, subjectPublicKey | the device key |
+
+`serverId` is the realm: the upper-case hex SHA-256 of the organisation ROOT public key (the same value as the invite's `root=`). It is the
+audience of every device signature, so a signature made for one organisation is useless at another. One real signed certificate is pinned as a
+golden vector and verified by the shared module, the client verifier and the server verifier.
+
+### Certificate rules (`DeviceCert.checkChain`)
+
+Chain: `DeviceCert` (issued by the delegate key) + `DelegationCert` list (root to delegate). Checked in this order, first failure wins:
+well-formed, role in the closed set `member` / `dept_admin` / `admin`, signatures, issuer equals the delegate key, delegation signed by the
+pinned root, delegation scope allows the role being issued, leaf window inside the delegation window, revocation list, validity windows
+(a clock-skew tolerance of 60 s applies at BOTH ends), then the expiry grace the caller passes. Scope rule (one wildcard rule): a scope
+matches exactly, or is `*`, or `prefix:*`; `admin` is never granted by a wildcard and needs an explicit `enrol:admin`. A leaf is issued
+with `validFrom = max(now - 10 s, delegation.validFrom)` and `validTo = min(now + 7 days, delegation.validTo)`.
+
+Chain failures map to wire codes: revoked -> `ERR_REVOKED`; expired, not yet valid, delegation expired -> `ERR_EXPIRED`; everything else -> `ERR_AUTH`.
+
+### Relay handshake (`GET /flash-relay`, WebSocket, no query string)
+
+```text
+client                                   hub
+  | ---- WebSocket upgrade (no identity) ---> |
+  | <--- FLASH_HUB_CHALLENGE {v, serverId, serverNonce, issuedAt}
+  | ---- FLASH_HUB_HELLO {v, deviceId, clientNonce, name, deviceCert, delegationChain, signature} (within 10 s)
+  | <--- FLASH_HUB_WELCOME {v, principal, serverTime, limits, resumeToken}      (success)
+  | <--- FLASH_ERROR {code, message} then close                                 (any failure)
+```
+
+- `signature` signs `flash-hub-auth-v1` over (serverId, serverNonce, clientNonce, deviceId, certSerial). The nonce is per socket and single use.
+- A client that has a pinned realm refuses to answer a CHALLENGE whose `serverId` differs.
+- Before WELCOME the hub accepts only a HELLO (16 KiB max); a silent client gets `ERR_HANDSHAKE_TIMEOUT` and a close at 10 s; a client that
+  never completes the handshake can send no application frame. If no authenticator is configured the hub refuses every connection (fail closed).
+- `HubPrincipal {deviceId, role, departmentId, certSerial}` in WELCOME is the identity the hub stamped on the session; `limits` carries
+  `maxFrameBytes`, `maxPayloadBytes`.
+
+### Relay frames after WELCOME
+
+Frames are JSON text objects with a discriminator member `"t"` (the `FLASH_*` name). Unknown members are ignored; an unknown `t` is dropped,
+not fatal. Limits: 256 KiB per frame, 64 KiB payload; larger frames are refused with `ERR_TOO_LARGE`.
+
+| Frame (`t`) | Direction | Members | Meaning |
+|---|---|---|---|
+| `FLASH_RELAY` | client -> hub | `to`, `id`, `type`, `sentAt`, `payload`, `group` (optional) | Send. There is NO sender member: the hub stamps it. With `group` set, `to` is blank and ignored and the hub fans out to the members (ADR-112). |
+| `FLASH_DELIVER` | hub -> client | `from`, `id`, `type`, `sentAt`, `payload`, `replay`, `group` (optional) | A message; `from` is the authenticated sender; `replay` marks a mailbox drain (a redelivery until the client acknowledges); `group` is set for a group message. |
+| `FLASH_RECV_ACK` | client -> hub | `msgId` | The client durably stored the message (only this may delete the mailbox row). |
+| `FLASH_ACK` | hub -> sender | `id`, `to`, `status`, `ts`, `reason`, `delivered`, `queued`, `failed` | For a group send `to` is the group id and the three counts are filled (old hubs send none: default 0). `status` is `DELIVERED`, `QUEUED`, `OFFLINE_UNDELIVERABLE`, `DUPLICATE_QUEUED`, `QUOTA_EXCEEDED`, `REJECTED`, `ERROR`. |
+| `FLASH_QUEUE_STATE` | hub -> sender | `id`, `to`, `state`, `ts` | Later state of a queued message: `DELIVERED`, `EXPIRED`, `DROPPED`, `UNKNOWN`. |
+| `FLASH_META` | both | `action`, `conversationId`, `to`, `from`, `ts`, `pad` | Typing / read style signals with padding; the hub overwrites `from`. |
+| `FLASH_PING` / `FLASH_PONG` | both | `ts` | Liveness. |
+| `FLASH_REVOKED` | hub -> client | `reason`, `serial` | Terminal: this certificate is revoked; the client must not reconnect with it. |
+| `FLASH_KICK` | hub -> client | `reason` | The hub is closing this session: `superseded` (the same device connected again), `server_shutdown`, `slow_consumer`, `mailbox_unavailable`, `revoked`. A `superseded` / `server_shutdown` kick is not an error: reconnect with back-off. |
+| `FLASH_ERROR` | hub -> client | `code`, `message` | Error with a code from the table below and a fixed sentence. |
+
+### Relay delivery semantics, limits and operations (ADR-112, 2026-10-12)
+
+**Delivery is at-least-once, recipient driven.** A stored message leaves the hub only on the recipient's `FLASH_RECV_ACK`.
+
+1. Recipient online and caught up: the hub hands `FLASH_DELIVER` (`replay=false`) to the session and keeps the message in the session's
+   in-flight table; the sender gets `FLASH_ACK DELIVERED` ("handed to the recipient's connection", NOT "stored by the recipient"). On
+   `FLASH_RECV_ACK` the hub tells the sender `FLASH_QUEUE_STATE DELIVERED`. If the session ends first, the in-flight messages go to the mailbox.
+2. Recipient offline, draining or over its in-flight cap (256): the message is stored (`FLASH_ACK QUEUED`), a duplicate of a stored
+   `(sender, recipient, id)` answers `DUPLICATE_QUEUED` and is not stored twice.
+3. On connect the hub replays the mailbox in arrival order, 100 per page, `replay=true`, and keeps replaying until each row is acknowledged;
+   a live message arriving meanwhile is queued behind the stored ones, so order is preserved.
+4. A message not acknowledged within `mailboxTtlDays` (server clock) expires: the row is deleted and an online sender gets
+   `FLASH_QUEUE_STATE EXPIRED`; a message dropped for another reason (storage failure after the ack) gets `DROPPED`.
+
+**Client obligations:** deduplicate by the message `id` (the same id arrives again after a lost RECV_ACK or a reconnect), send
+`FLASH_RECV_ACK` only after the message is durably stored, treat `DELIVERED` as a hint and `QUEUE_STATE DELIVERED` as the confirmation.
+
+**ACK reasons.** `REJECTED` + `reason` `ERR_UNKNOWN_RECIPIENT` (recipient not enrolled), `ERR_NOT_MEMBER` (group send by a non-member, or a group that
+does not exist: both answer identically), `ERR_PROTOCOL`; `QUOTA_EXCEEDED` + `reason` = which quota (recipient, sender, global, payload);
+`OFFLINE_UNDELIVERABLE` when the hub has no mailbox. Group send: `status QUEUED` with `reason "partial"` when only some members were reached,
+`delivered + queued + failed` = members other than the sender.
+
+**Group send.** `FLASH_RELAY {group: "<id>", to: "", ...}`: the sender must be a member (the hub checks the directory); each member except the sender
+gets `FLASH_DELIVER` with `group` set and `from` = the sender; there is ONE aggregate `FLASH_ACK` (`to` = group id). `FLASH_META` with a group
+is relayed only for a member (`ERR_NOT_MEMBER` otherwise).
+
+**Frames a client must never send** (hub-originated): `FLASH_ACK`, `FLASH_DELIVER`, `FLASH_QUEUE_STATE`, `FLASH_KICK`, `FLASH_REVOKED`,
+`FLASH_HUB_CHALLENGE`, `FLASH_HUB_WELCOME`: the hub answers `FLASH_ERROR ERR_PROTOCOL` ("Unexpected frame.") and does not forward them.
+
+**Limits (defaults, `RelayPolicy`, `MailboxLimits`).**
+
+| Limit | Default | Result when exceeded |
+|---|---|---|
+| Handshake | 10 s | `ERR_HANDSHAKE_TIMEOUT`, close |
+| Frame / payload | 256 KiB / 64 KiB | `ERR_TOO_LARGE` (a WebSocket frame above the engine limit closes the connection) |
+| Open connections, per IP | 5000 / 100 | `ERR_RATE_LIMIT`, close, before the handshake |
+| Frames per session | 60/s, burst 120 | `ERR_RATE_LIMIT`; after 200 rejected frames the session is closed |
+| Outbound queue per session | 256 frames, 10 s send timeout | the session is closed (`slow_consumer`), its messages go to the mailbox |
+| Unacknowledged live messages per session | 256 | further messages go through the mailbox |
+| Mailbox per recipient | 1000 rows / 50 MiB | `QUOTA_EXCEEDED` |
+| Mailbox per sender | 5000 rows / 100 MiB | `QUOTA_EXCEEDED` |
+| Mailbox global | 1,000,000 rows / 5 GiB | `QUOTA_EXCEEDED` |
+| Mailbox TTL | 7 days (`ServerConfig.mailboxTtlDays`) | expiry + `QUEUE_STATE EXPIRED` |
+| Client `sentAt` | clamped to +-5 min of the hub clock for ordering | never used for expiry |
+
+**Revocation of a live connection.** A device revoked by certificate serial OR by device id is refused at the handshake (`ERR_REVOKED`), is
+checked again before every inbound frame, and is cut at once when an admin revokes it (`FLASH_REVOKED`, then close).
+
+**One connection per device.** A second connection by the same device supersedes the first (`FLASH_KICK superseded` to the old one). The old
+connection's cleanup never removes the new registration.
+
+**Shutdown.** The hub stops accepting connections, sends `FLASH_KICK server_shutdown` to every session, moves unacknowledged live messages to the
+mailbox, then closes. A client treats it like any disconnect.
+
+**Operational endpoints.** `GET /health` is public and returns only `{"status":"ok"|"degraded"|"down"}` (HTTP 503 when the database does not
+answer). `GET /health/detail` (JSON) and `GET /metrics` (Prometheus text) require the management bearer token or a loopback caller without
+proxy headers; otherwise `403 ERR_FORBIDDEN`. Unhandled errors answer `500 ERR_INTERNAL` with a fixed sentence and a `correlationId`.
+
+### Hub REST contract (`/api/v1`)
+
+JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDtos.kt`; every error body is
+`{"code": "<ERR_*>", "message": "<fixed sentence>", "correlationId": "<id>"}` (`message` is never exception text, SEC-16), and the
+`X-Correlation-Id` header is echoed. Bearer: `Authorization: Bearer <token>`.
+
+| Method and path | Auth | Request | Response | State |
+|---|---|---|---|---|
+| `GET /health` | none | none | `HealthLite` (status only) | served (Phase 2 SERVER-B) |
+| `GET /health/detail`, `GET /metrics` | management guard | none | operational JSON / Prometheus text (see above) | served |
+| `GET /enroll` | none (rate limited) | `token` query (a `server` query is ignored) | browser landing page; unknown, expired, used and revoked tokens answer identically (SEC-17) | served |
+| `GET /api/v1/hub` | none | none | `HubInfo` | served (Phase 2 SERVER-A) |
+| `GET` or `POST /api/v1/auth/challenge` | none | none | `AuthChallengeResponse {serverId, serverNonce, issuedAt, ttlSeconds}` (TTL 60 s) | served |
+| `POST /api/v1/auth/verify` | signature | `AuthVerifyRequest {serverNonce, clientNonce, deviceId, deviceCert, delegationChain, signature}` | `AuthVerifyResponse {status, token, expiresAt, ttlSeconds, principal}` (token TTL 15 min) | served |
+| `POST /api/v1/enroll` | invite token + PoP | `EnrollRequest {token, deviceId, subjectPublicKey, friendlyName, proof}` | `EnrollResponse {status ENROLLED, serverId, rootFingerprint, rootPublicKey, deviceCert, delegationChain, hubName}` | served |
+| `POST /api/v1/enroll/renew` | signature | `RenewRequest {serverNonce, clientNonce, deviceId, deviceCert, delegationChain, signature}` | `EnrollResponse {status RENEWED, ...}` with a NEW serial | served (Phase 2 SERVER-A) |
+| `GET /api/v1/revocations` | none (rate limited per client address) | none | signed `RevocationList` (`version` only grows; signed by the hub's delegate key, which the client checks against the delegation certificate in its stored chain); `ERR_NOT_FOUND` until the first revocation has been signed. PUBLIC since ADR-124: a revoked device has no bearer and must still be able to confirm its own revocation | served (Phase 2 SERVER-A, ADR-113; public ADR-124) |
+| `POST /api/v1/device/unenroll` | bearer | none | the device revokes its own certificates and frees its id | served (Phase 2 SERVER-A) |
+| `GET /api/v1/directory/me` | bearer | none | the caller's own `MemberDto` and department | served |
+| `GET /api/v1/directory/departments` | bearer | none | list of `DepartmentDto` | served |
+| `GET /api/v1/directory/groups` | bearer | none (device and department come from the bearer's principal) | list of `GroupDto` | served |
+| `GET /api/v1/directory/members` | bearer | `departmentId` or `groupId` query optional | list of `MemberDto`; with `groupId` the members of that group, `404` when the caller may not see the group or its member list | served |
+| `POST /api/v1/groups/join-request` | bearer | `JoinRequestBody {groupId, message}` | `JoinResponse {status JOINED, PENDING or REJECTED, ...}`. A group that does not exist, is HIDDEN or is outside the caller's scope answers one constant sentence (`This group is not available to join.`), so the call is not an oracle for group ids (REV-06) | served |
+| `GET /api/v1/groups/join-requests` | bearer (group admin) | `groupId` query | list of `JoinRequestDto` | served (Phase 2 SERVER-A) |
+| `POST /api/v1/groups/join-requests/decision` | bearer (group admin) | `JoinDecisionBody {requestId, approve, reason}` | `JoinResponse {status JOINED on approve, REJECTED on refuse, groupId, name, requestId, reason}` (ADR-124; it used to be `OkResponse`) | served |
+| `PUT /api/v1/device/sealing-key` | bearer (the device itself) | `SealingKeyRequest {sealingPublicKey, signature}`: Base64 P-256 SPKI and the Base64 DER ECDSA signature of the device identity key over `HubAuth.sealingKeyBindingBytes(deviceId, spkiBytes)` | `OkResponse`. `400 ERR_BAD_REQUEST` for a malformed or non-P-256 key or a signature that is not this device's; `403 ERR_FORBIDDEN` when the device is not ACTIVE; `409 ERR_CONFLICT` for a key this device already retired; `429 ERR_RATE_LIMIT` (burst 5, then 1 per 30 s per device); `413 ERR_TOO_LARGE` over 64 KiB. Unchanged republish is `200`; a different key rotates (audited) | served (ADR-124) |
+| `DELETE /api/v1/device/sealing-key` | bearer (the device itself) | none | `OkResponse`; the key is also removed when the device is revoked, unenrolled or deleted | served (ADR-124) |
+| `POST /api/v1/departments` | bearer (organisation admin) | `CreateDepartmentBody {id, name, adminDeviceIds}` | `201` `DepartmentDto`; `400 ERR_BAD_REQUEST` for an invalid id; audited as `directory.department.create` | served (REV docs round) |
+| `POST /api/v1/groups` | bearer (organisation or department admin) | `CreateGroupBody {id, name, departmentId, visibility, joinMode, adminDeviceIds}` | `201` `GroupDto`; `400` for an invalid id, visibility or join mode; `403` outside the caller's scope | served |
+| `PUT /api/v1/groups/{id}` | bearer (group admin) | `UpdateGroupBody {name?, visibility?, joinMode?}` | `GroupDto`; a group the caller may not see answers `404` exactly like a missing one | served |
+| `DELETE /api/v1/groups/{id}` | bearer (group admin) | none | `OkResponse`; same `404` rule | served |
+| `POST /api/v1/groups/members` | bearer (group admin) | `GroupMemberBody {groupId, deviceId, add}` (`add` false removes) | `GroupDto`; audited `directory.group.member.add` / `.remove` | served |
+
+Since Phase 2 SERVER-A (SEC-03, ADR-111) EVERY `/api/v1` route except `enroll`, `enroll/renew`, `auth/challenge`, `auth/verify`, `hub` and `revocations` needs a
+bearer (`HubApiGate`, installed first in the engine; `GET revocations` joined the public list in ADR-124); the principal is the bearer's device and department, a claimed `X-Device-Id` or
+`department` is never read, and a missing or unresolvable bearer is `401 ERR_AUTH`. Bodies above 64 KiB are `413 ERR_TOO_LARGE`. The public
+endpoints are rate limited per client address (`429 ERR_RATE_LIMIT`); forwarded headers are believed only from `FLASH_TRUSTED_PROXIES`.
+
+Bearer token: 32 random bytes, base64url, opaque to the client; the hub stores only its SHA-256 and the principal; a token lives 15 minutes
+and is not renewable (re-run challenge/verify). The token is re-checked against the revocation service on EVERY use, so it dies the moment its
+device is revoked (ADR-113). Renewal window: from 24 h before `validTo` to 72 h after (`RenewalPolicy`); the new
+certificate has a new serial, so the revocation of the old serial does not revoke the new one unless the device id is revoked.
+
+### Error codes (`HubErrorCodes`)
+
+| Code | Used for | Terminal for the client |
+|---|---|---|
+| `ERR_AUTH` | handshake or bearer failed (bad signature, wrong root, malformed chain, unknown token) | no, may retry after fixing |
+| `ERR_REVOKED` | certificate or its delegation is revoked | yes |
+| `ERR_EXPIRED` | certificate not yet valid or expired | no: renew, then retry |
+| `ERR_RATE_LIMIT` | too many requests or rejected frames | no: back off |
+| `ERR_TOO_LARGE` | frame, payload or body above the limit | no |
+| `ERR_PROTOCOL` | malformed frame, frame out of order, unknown handshake state | no |
+| `ERR_UNSUPPORTED_VERSION` | `v` is not 2 | yes |
+| `ERR_HANDSHAKE_TIMEOUT` | no HELLO within 10 s | no |
+| `ERR_NOT_MEMBER` | not a member of the group addressed | no |
+| `ERR_UNKNOWN_RECIPIENT` | recipient id is not enrolled | no |
+| `ERR_QUOTA_EXCEEDED` | mailbox or device quota full | no |
+| `ERR_FORBIDDEN` | authenticated but not allowed | no |
+| `ERR_NOT_FOUND`, `ERR_CONFLICT`, `ERR_BAD_REQUEST` | REST resource or request problems | no |
+| `ERR_INTERNAL` | hub fault; the message is a fixed sentence, details only in the hub's log | no |
+
+Invite refusals on `POST /api/v1/enroll` (ADR-124, ERROR-330): an expired invite is `410 ERR_EXPIRED`, a used-up or revoked-after-use invite is `409 ERR_CONFLICT`, a full device quota is `429 ERR_QUOTA_EXCEEDED`, any other invalid request `400 ERR_BAD_REQUEST`, a forbidden one `403 ERR_FORBIDDEN`; the client maps them to `INVITE_EXPIRED`, `INVITE_USED`, `QUOTA_FULL`.
+
+HTTP mapping used by the hub (`statusFor`; `ERR_EXPIRED` is 410 on `POST /api/v1/enroll` and 401 elsewhere): `ERR_AUTH`/`ERR_EXPIRED` 401, `ERR_REVOKED`/`ERR_FORBIDDEN`/`ERR_NOT_MEMBER` 403,
+`ERR_NOT_FOUND`/`ERR_UNKNOWN_RECIPIENT` 404, `ERR_CONFLICT` 409, `ERR_TOO_LARGE` 413, `ERR_RATE_LIMIT`/`ERR_QUOTA_EXCEEDED` 429,
+`ERR_BAD_REQUEST`/`ERR_PROTOCOL`/`ERR_UNSUPPORTED_VERSION` 400, `ERR_INTERNAL` 500.
+
+### Enrolment invite link
+
+`flash://enroll?server=<percent-encoded URL>&token=<percent-encoded>&root=<percent-encoded upper-case hex SHA-256 of the root key>`.
+There is one parser (`EnrollmentInvite.parseOrNull`) used by Android, desktop and the chat UI; it never throws. A client refuses an invite
+whose `root` is blank (it would pin nothing), and, from Phase 3, an invite whose `server` is cleartext `http://` unless the user confirms.
+
+### Hub administration: JSON admin API, CLI and configuration (ADR-111, ADR-113, ADR-114, ADR-115; Phase 2 SERVER-A, 2026-10-13)
+
+The admin API is for the management listener (`FLASH_ADMIN_PORT`, default 8444, bound to `FLASH_ADMIN_HOST`, default `127.0.0.1`); `/admin` answers
+404 on the public port unless `FLASH_ADMIN_ON_PUBLIC_PORT=true`. All paths are under `/admin/api/v1`. Authentication is the admin session cookie
+(`__Host-flash_admin_session` over TLS, `flash_admin_session` Path=/admin only in insecure mode; Secure, HttpOnly, SameSite=Strict). Every POST, PUT and
+DELETE needs the header `X-CSRF-Token` equal to the session's token (returned by `login` and `session`) and a same-origin `Origin` / `Sec-Fetch-Site`.
+Errors are `{"code": "...", "message": "<fixed sentence>", "correlationId": "..."}` (codes: `ERR_AUTH`, `ERR_CSRF`, `ERR_STEP_UP` plus the shared `HubErrorCodes`: `ERR_FORBIDDEN`,
+`ERR_NOT_FOUND`, `ERR_BAD_REQUEST`, `ERR_RATE_LIMIT`, `ERR_TOO_LARGE`, `ERR_INTERNAL`). Bodies are at most 64 KiB.
+
+| Area | Paths (relative to `/admin/api/v1`) | Notes |
+|---|---|---|
+| Setup and session | `GET setup/status`, `POST setup/begin`, `POST setup/complete`, `POST login`, `POST logout`, `GET session` | setup needs the setup token (file `<data>/setup-token.txt`) and a confirmed TOTP code; login is username + password + TOTP or a recovery code; attempts are reserved before verification |
+| Overview | `GET overview` | device counts and online devices, delegation status and days left, revocation version, mailbox figures |
+| Devices | `GET devices`, `GET devices/{id}`, `PUT devices/{id}` (rename, move to a department), `POST devices/{id}/revoke`, `POST devices/{id}/unrevoke` | revoke and unrevoke need step-up; revoke also kills the bearer, removes the directory entry and kicks the socket |
+| Invites | `GET invites`, `POST invites`, `POST invites/bulk`, `POST invites/{id}/revoke` | real `EnrollmentService` registry; state `ACTIVE`, `USED`, `EXPIRED`, `REVOKED`; a non-member role needs step-up; the response carries the `flash://enroll` link and the QR as one SVG path |
+| Revocations | `GET revocations`, `POST revocations/serial`, `POST revocations/install` | the signed list state and entries; revoking a bare serial needs step-up; `install` takes a root-signed list from `keytool revoke` (step-up `revocation.install`, REV-04) |
+| Delegation | `GET delegation`, `POST delegation/reload`, `POST delegation` | install takes a delegation certificate, accepted only under the pinned root, for this hub's key, with a higher serial; both need step-up |
+| Settings | `GET settings`, `PUT settings` | a change needs step-up |
+| Step-up | `POST stepup/challenge`, `POST stepup/verify` | challenge bound to (admin, action, target); the admin's enrolled device signs `HubStepUp.proofBytes`; a verified challenge is used once as the header `X-Step-Up: <challengeId>` within 5 minutes |
+| Directory | `GET/POST departments`, `PUT/DELETE departments/{id}`, `GET/POST groups`, `PUT/DELETE groups/{id}`, `POST groups/{id}/members`, `DELETE groups/{id}/members/{deviceId}`, `GET join-requests`, `POST join-requests/{id}/approve`, `POST join-requests/{id}/reject` | department admins act only inside their department |
+| Admins | `GET/POST admins`, `POST admins/{name}/password`, `POST admins/{name}/disable`, `POST admins/{name}/enable`, `POST admins/me/password`, `POST admins/me/recovery-codes`, `POST admins/me/device` | create, reset and disable need step-up; `me/device` binds the admin to an enrolled device for step-up |
+| Sessions | `GET sessions`, `POST sessions/{id}/revoke` | |
+| Audit | `GET audit`, `GET audit/head`, `GET audit/verify`, `GET audit/export` (CSV) | signed hash chain |
+
+**Console additions (Phase 3 UI, ADR-125, 2026-10-13).** The static admin console (`docs/ui/hub-admin-console.md`) needed these, all under the rules above (cookie, CSRF, rate limits):
+
+| Path | Notes |
+|---|---|
+| `POST admins/me/console-key` | body `{spki, proof, totp}`: registers THIS browser's WebCrypto ECDSA P-256 key as the administrator's step-up signer. `proof` is the signature over `flash-console-key-v1\n<username>\n<spki base64>`; a fresh authenticator code is required. The key id is `console-` + the first 16 hex digits of SHA-256 over the `spki` string. One key per administrator; an older one is dropped. Audited as `admin.consolekey.enrol` |
+| `POST setup/complete` | takes an optional `consoleKey {spki, proof}`; a bad proof answers 400 without burning the setup token |
+| `POST admins/{name}/totp-reset` | step-up `admin.create` with target `totp:<name>`; answers new secret, `qrSvg` and ten recovery codes, ends the target's sessions |
+| `GET metrics` | the figures of `/metrics` for the console (session cookie instead of the management token) |
+| `GET audit?order=desc` | newest first; filters `action` (prefix), `actor`, `text`, `from`, `to`, `limit`, `offset` |
+| `POST join-requests/{id}/reject` | optional body `{"reason": "..."}`; kept in the audit trail only (the requester is not told the reason) |
+
+Step-up signatures: `stepup/verify` accepts the signature as DER (devices) or as 64-byte `r||s` (browsers; WebCrypto produces this form); the hub converts it (`ConsoleKeys`) and verifies the same bytes. Response fields added: `SessionDto.sessionId` and `serverTimeMs`, `DelegationDto.hubPublicKey`, `qrSvg` (one path, drawn by the hub) on `SetupBeginDto` and `AdminCredentialsDto`.
+
+Static routes (no cookie needed). Every response under `/admin`, `/enroll` and `/enroll-assets/` carries: CSP `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, COOP and CORP `same-origin`, a restrictive Permissions-Policy and `X-Frame-Options: DENY`. `GET /admin/` is the shell (`no-store`); `GET /admin/ui/*` are assets (`no-cache` plus ETag, 304 honoured); `GET /enroll-assets/*` are the invite landing page's own script and style. The old `/admin/login`, `/admin/setup`, `/admin/dashboard`, `/admin/departments`, `/admin/groups`, `/admin/invites` and `/admin/audit` pages answer 302 to the matching console route. When the listener policy closes `/admin` (public port without `FLASH_ADMIN_ON_PUBLIC_PORT`), all console routes answer 404.
+
+Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke`, `delegation.install`, `delegation.reload`, `admin.create`,
+`admin.disable`, `settings.change`, `revocation.install`, `recovery.regenerate`.
+
+**Command line** (`server <command>`, the launcher of `:server:installDist` or `java -jar`): `serve` (default); `keytool init-root --out DIR
+[--no-passphrase]`; `keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,revoke:member [--max-devices N]
+[--valid-days N] [--serial N] [--out FILE]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
+--username NAME` (console only, prints a new password, authenticator secret and recovery codes once). Exit codes: 0 ok, 1 refused to start or
+failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keytool pass-phrase non-interactively.
+
+**Configuration** (each is also a `--kebab-case=value` argument; a malformed value is an error naming the variable, never a default):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FLASH_PORT` / `FLASH_HOST` | 8443 / 0.0.0.0 | public listener (relay, REST, enrol, `/health`) |
+| `FLASH_ADMIN_PORT` / `FLASH_ADMIN_HOST` | 8444 / 127.0.0.1 | management listener (admin console and API) |
+| `FLASH_ADMIN_ON_PUBLIC_PORT` | false | also serve `/admin` on the public port (must be true when the two ports are equal) |
+| `FLASH_DATA_DIR` | `./data` | database `flash-hub.db`, `server-identity.pk8/.pub`, `delegation.cert`, `setup-token.txt`, `tls/` |
+| `FLASH_TLS_MODE` | proxy | `proxy` (plain HTTP behind a TLS proxy), `self` (the hub terminates TLS), `none` (needs `FLASH_ALLOW_INSECURE`) |
+| `FLASH_TLS_KEYSTORE`, `FLASH_TLS_KEYSTORE_PASSWORD` | unset | supply a PKCS12 instead of the generated self-signed certificate |
+| `FLASH_EXTERNAL_URL` | `https://<lan-ip>:<port>` | address placed in invites and QR codes; must be https unless insecure |
+| `FLASH_ALLOW_INSECURE` | false | permit `tls none`, an `http://` external URL and `--dev-embedded-root`; loud in the log |
+| `FLASH_DEV_EMBEDDED_ROOT` / `--dev-embedded-root` | false | DEVELOPMENT ONLY: the hub keeps its own root key |
+| `FLASH_DELEGATION_FILE` | `<data>/delegation.cert` | the root-signed delegation |
+| `FLASH_ROOT_FINGERPRINT` | adopted at the first delegation | 64 hex digits: pin the organisation root |
+| `FLASH_REQUIRE_ROOT_PIN` | false (the Docker image sets true) | refuse the first delegation unless `FLASH_ROOT_FINGERPRINT` is set (no trust on first use) |
+| `FLASH_TRUSTED_PROXIES` | none | comma-separated CIDRs or addresses whose `X-Forwarded-*` headers are believed |
+| `FLASH_SETUP_TOKEN` | generated file | explicit one-time setup token (at least 16 characters) |
+| `FLASH_MANAGEMENT_TOKEN` | none | bearer token for `/health/detail` and `/metrics` (otherwise only a direct loopback caller, no proxy headers) |
+| `FLASH_HUB_NAME`, `FLASH_DEVICE_QUOTA` | `Flash Hub`, from the delegation | name shown to devices; device cap (never above the delegation's) |
+| `FLASH_CHALLENGE_TIMEOUT_MS`, `FLASH_MAILBOX_TTL_DAYS` | 60000, 7 | challenge lifetime; mailbox TTL |
+
+### Hub review round REV-01..REV-16 (2026-10-13): contract changes
+
+The full list of routes the hub answers is `docs/protocol-routes.txt`; `RouteTableContractTest` fails when a route is added to the code and not to that file.
+
+- **Client address.** Per-IP limits use the address the hub believes (`ClientAddressResolver`): the socket peer, or the rightmost untrusted `X-Forwarded-For` entry when the peer is in `FLASH_TRUSTED_PROXIES`. IPv6 addresses are limited by their /64 prefix. The relay's per-IP connection cap uses the same address, so a reverse proxy does not make all devices one client (REV-01, REV-02). A hub with `FLASH_TLS_MODE=proxy` and no trusted proxies logs a WARN at start.
+- **Canonical paths.** A request path that is not canonical (encoded slashes or dots, `//`, a trailing dot segment) is refused with `400 ERR_BAD_REQUEST` before routing, and every response carries the baseline security headers (REV-02).
+- **`POST /admin/api/v1/setup/begin`** takes `{token}` (the setup token). `GET setup/status` answers only `{setupOpen}`. At most 16 setups are pending; more are refused with `409` instead of evicting an earlier one (REV-07).
+- **Session expiry.** The relay closes a session whose device certificate expired, with `ERR_EXPIRED`, `sessionExpirySkewMs` (60 s) after `notAfter`; the device renews through `POST /api/v1/enroll/renew` and reconnects (REV-05).
+- **Delegation revocation.** `keytool revoke` signs a revocation list that revokes delegation serials; `POST /admin/api/v1/revocations/install` (step-up `revocation.install`) installs it; a revoked delegation revokes every certificate it issued, and a hub whose own delegation is revoked refuses to serve (REV-04).
+- **Delegation rollback and trust on first use.** The hub persists the highest delegation serial it ever accepted (`delegation.highest-serial`) and refuses an older one after a restart. With `FLASH_REQUIRE_ROOT_PIN=true` the first delegation is refused unless `FLASH_ROOT_FINGERPRINT` is set; otherwise the first delegation is trusted and the hub logs `TRUST ON FIRST USE`. `keytool issue-delegation` takes the highest serial found in its serial file and in `*.cert` files beside the root key, so a lost serial file does not restart the numbering at 1 (REV-16).
+- **Mailbox acknowledgement.** `RecvAck {msgId, from?}`: `from` names the sender of the message being acknowledged. With it the hub deletes only that sender's row; without it only the OLDEST row with that id (two senders may reuse a message id). `from` is additive; an old client keeps working (REV-08).
+- **META frames.** A direct `Meta` to a device answers nothing whether the recipient is online, offline or unknown: the sender learns nothing about presence. META is not scoped to a department (the direct `Send` between enrolled devices is not either: a cross-department 1:1 chat must work); this is an owner decision recorded as PARTIAL in the audit (REV-09).
+- **Step-up.** `settings.change` binds the new value (`<key>=<value>` is the challenge target). A signer (browser key or bound device) is installed with a fresh authenticator code only while the administrator has none; once one exists, replacing it needs one of the administrator's recovery codes in `code` (else `403 ERR_SIGNER_EXISTS`). New recovery codes (`POST admins/me/recovery-codes`) need step-up `recovery.regenerate` when a signer exists (REV-11, REV-14).
+- **Own password.** `POST admins/me/password` is limited per administrator: after repeated wrong current passwords the answer is `429` with `Retry-After`, independent of the sign-in lock (REV-10).
+- **Audit chain.** Records written from schema step 2 are hashed length-prefixed (`flash-audit-chain-v2`); older rows verify with the original `a|b|c` form (REV-15).
+
+### Compatibility
+
+Wire v2 is a breaking change from the query-string relay: there is no negotiation. A v2 hub answers a v1 client's upgrade with a CHALLENGE it
+cannot answer and closes it on the handshake timeout; a v2 client against a v1 hub never receives a CHALLENGE and times out client-side.
+Within v2, members are added but not removed or retyped; receivers ignore unknown members and unknown frame names.
+
+
+### Hub client behaviour and sealed payloads (ADR-120..123; Phase 2 CLIENT, 2026-10-13)
+
+What a phone or desktop does with the relay wire above. Unit-tested, not device-verified (`HUBC-*` in `docs/testing/TEST-BACKLOG.md`).
+
+- **Enrolment.** The invite must carry the root pin (`rootFingerprint`); an invite without one is refused. A cleartext hub address is refused (a debug switch exists on desktop only: `-Dflash.allowCleartextHub=true`). The hub answers with a credential; the client accepts it only if the answered root's fingerprint equals the pin, the certificate subject is this device id and key, the chain verifies with the shared rules and the validity window holds. Then ONE atomic save of certificate, chain, root, hub URL and hub name.
+- **Relay link.** One connection per device. A failure is typed (`RelayFailure`): `REVOKED`, `SERVER_MISMATCH` and `CERT_EXPIRED` are not retried; the others use jittered, capped exponential backoff that resets only after a connection that stayed up. Deliveries reach the collector through a bounded channel; overflow closes the connection and the hub replays unacknowledged deliveries. `FLASH_REVOKED` is believed only when the root-signed revocation list (`GET /api/v1/revocations`) names this certificate. The certificate is renewed through `POST /api/v1/enroll/renew` inside the renewal window.
+- **Inbound.** Order is fixed: dedupe by delivery id (LRU 2048) -> sender trust (paired, or directory standing MEMBER; directory unreachable means retry later without acknowledging) -> decode -> the message author must equal the hub-stamped `from` -> durable store -> `RECV_ACK`. A rejected or untrusted delivery is acknowledged so the hub does not replay it for ever.
+- **Outbound.** LAN first; the hub path starts after `HUB_FALLBACK_GRACE_MS` (2 s) or at once when LAN fails. The hub is used only for recipients whose directory standing is MEMBER. `FLASH_ACK` / `FLASH_QUEUE_STATE` drive the outbox: `DELIVERED` / `HELD` keep the message SENT (give-up 8 days, `HUB_GIVE_UP_AFTER_MS`; resend 15 min); `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED` fail it.
+- **Sealed envelope `SEALED_V1`** (ADR-121), used for `payloadJson` of a hub message: `SEALED_V1.<epk>.<nonce>.<ciphertext>.<signature>`, each part Base64. `epk` is a fresh P-256 public key; the key is `HKDF(ECDH(epk, recipient sealing key), info = canon(epk, recipient sealing key))`; the cipher is AES-GCM with AAD = canon(`RELAY_WIRE_VERSION`, sender device id, recipient device id, message id, sentAt). The signature is the sender's identity-key signature over canon(AAD, epk, nonce, ciphertext). A receiver opens it only after the signature verifies. Sealing public keys are published with a binding signature by the device identity key over (deviceId, sealing key). **The hub serves sealing keys since ADR-124**: a device publishes with `PUT /api/v1/device/sealing-key` (the hub verifies the binding before it stores anything, see the endpoint table), and `GET /api/v1/directory/members` returns `sealingPublicKey` / `sealingSignature` on `MemberDto` to authenticated callers in scope of the member, null until the member published. The client MUST verify the binding against the member's `subjectPublicKey` itself. Binding bytes: tag `flash-hub-sealkey-v1`, then the device id, then the raw SPKI bytes (golden vector `SEALING_BINDING_HEX` in `CertGoldenVectorTest`). No version or serial is signed (ADR-121): a rotation is a new key, and the hub refuses to take back a key the device retired. The host apps do not publish a key yet, so plaintext through the hub is still sent only when the user turned "Messages through the hub" on.
+- **Frame limits.** A WebSocket frame over 256 KiB is closed by the WebSocket layer (close code 1009) with no error frame; a frame under that whose payload is over 64 KiB gets `FLASH_ERROR ERR_TOO_LARGE` and then the close; more than the frame budget (burst 120, 60 per second) per session gets `FLASH_ERROR ERR_RATE_LIMIT` for the excess frames (ADR-124 contract tests).
+- **Group join.** `POST /api/v1/groups/join-request` answers `JOINED`, `PENDING` or `REJECTED`; a repeated request answers `PENDING` until decided; after an admin REJECTED the request, the NEXT request from that device answers `REJECTED` once (status `REJECTED_SEEN` in the hub) and a request after that starts a new `PENDING` row (ADR-124, ERROR-332). Admins list with `GET /api/v1/groups/join-requests` and decide with `POST /api/v1/groups/join-requests/decision`. The client polls pending joins every 60 s.
+- **Unenrol.** `POST /api/v1/device/unenroll` with the bearer (`404` counts as already done); when the hub cannot be reached the intention is stored and retried.

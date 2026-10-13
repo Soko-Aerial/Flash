@@ -27,6 +27,11 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-10 | New-member history: ask before syncing, admin rule | 2026-10-07 | DESIGNED 2026-10-08, owner decisions taken (30 days default, no history = no files, returning member 7 days, any admin changes the ceiling): `docs/group/GROUP-SYNC-REVAMP-PLAN.md`. Not built |
 | FO-11 | Linux desktop as a committed target | 2026-10-07 | OPEN DECISION (owner, D-L1): `docs/LINUX-PORT-PLAN.md`; only Phase L0 (unbreak build/CI, audit `TASK-CORE-SEC-1`) is justified before it is answered |
 | FO-12 | Bluetooth direct transport and VHF/UHF radio (KISS TNC) bridge | 2026-10-07 | POSTPONED until the owner confirms it and hardware spike `BT-00` passes: `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`. Overlaps FO-02 (BLE discovery) and FO-03 (ADR-056 postponements) |
+| FO-13 | Hub revocation list served as hashed device ids (`SHA-256(serverId \| deviceId)`) | 2026-10-13 | POSTPONED (owner: leave the public list as is for now, ADR-127 P-1) |
+| FO-14 | Phone as co-signer for the most dangerous admin actions (delegation install, admin creation, signer replacement) | 2026-10-13 | POSTPONED (owner: browser key only for now, ADR-127 P-2) |
+| FO-15 | Hub database encryption (mailbox payload column, or the whole file) | 2026-10-13 | POSTPONED (owner: not now, ADR-127 P-4) |
+| FO-16 | Several devices per member on the hub | 2026-10-13 | POSTPONED (owner: one device per member, ADR-127 P-5) |
+| FO-17 | Hub-only members receive a group's roster and secret through sealed hub messages | 2026-10-13 | DECIDED DIRECTION, not built: waits for group sealing (ADR-123, ADR-127 P-7) |
 
 ---
 
@@ -281,3 +286,74 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 **Why not now.** Needs a decision on what "none" means for files already fetchable, and a wire-compatible setting. Built only when the owner asks.
 
 **Read first.** ADR-074 (signed group settings), ADR-090, ADR-091, `RealFlashChatRepository.handleSyncRequest`, `GroupPolicy.SYNC_TTL_MS`.
+
+
+---
+
+## FO-13 — Hub revocation list as hashed device ids
+
+**What.** `GET /api/v1/revocations` is public (rate limited per address) so a revoked device, which has no login, can still confirm its own revocation. It therefore lists every revoked device id in the clear. Option B of ADR-127 P-1: serve `SHA-256(serverId | deviceId)` per entry; a device hashes its own id and looks for it; outsiders learn nothing readable. The root signature still covers the whole list.
+
+**Why parked.** Owner decision 2026-10-13: leave it. Revoked ids are not secrets by themselves and the endpoint is rate limited.
+
+**What the project assumes meanwhile.** The list holds plain ids (`docs/protocol.md` "Hub REST contract", `docs/security.md` "Public information"). Do not publish the hub address where "which device ids were removed" matters.
+
+**Bring it back when.** Before a general release, or when a customer asks that revoked ids stay private. It changes the list format (a version bump of `RevocationList`), `SqliteRevocationService`, the client check in `HubCredentialVerifier`/`HubSession`, and the golden vectors in `:core:hub-protocol`.
+
+**Read first.** ADR-127 P-1, ERROR-335, ERROR-336, `core/hub-protocol/.../RevocationList.kt`.
+
+---
+
+## FO-14 — Phone as co-signer for the most dangerous admin actions
+
+**What.** Today a step-up confirmation (revoke a device, install a delegation, create an admin, replace the signer) is signed by a key in the administrator's browser. Option C of ADR-127 P-2: keep that for everyday actions, but require the administrator's enrolled phone (hardware-backed key, approval by QR or push) for `delegation.install`, `admin.create` and signer replacement.
+
+**Why parked.** Owner decision 2026-10-13: browser key only for now.
+
+**What the project assumes meanwhile.** A stolen browser key plus a stolen session can take over the hub. The recovery-code rule of REV-11 limits only signer replacement. Run the console only on a trusted workstation, over a tunnel or an authenticated proxy.
+
+**Bring it back when.** The hub holds a real organisation, or before general release. Needs an approval transport (QR first, no push dependency), a phone-side screen in the app, and a loss path (the recovery code).
+
+**Read first.** ADR-127 P-2, ERROR-390, `StepUpAuth.kt`, `docs/ui/hub-admin-console.md`.
+
+---
+
+## FO-15 — Hub database encryption
+
+**What.** Mailbox payloads and the directory sit readable in `flash-hub.db`; only TOTP seeds are sealed (`enc1:`, REV-03). Options: encrypt just the mailbox payload column (small), or the whole file with sqlite-jdbc-crypt (the willena driver is already preferred in `resolveDriverClass`; needs a native driver per target, key hand-over and migration).
+
+**Why parked.** Owner decision 2026-10-13: if it takes long, leave it; the owner wants to test first. Not started.
+
+**What the project assumes meanwhile.** The operator uses full-disk encryption and owner-only file permissions (REV-03). Sealed 1:1 messages (ADR-126) are ciphertext inside the row anyway; groups are not sealed yet.
+
+**Bring it back when.** A customer asks, or group sealing is still missing at release.
+
+**Read first.** ADR-127 P-4, `docs/security.md` "Hub review round", `SecretBox.kt`.
+
+---
+
+## FO-16 — Several devices per member
+
+**What.** The hub treats every enrolled device as its own member; a person with a phone and a desktop appears twice and has two sealing keys. A real account model touches the directory, group membership, mailbox fan-out, revocation and sealing.
+
+**Why parked.** Owner decision 2026-10-13: one device per member.
+
+**What the project assumes meanwhile.** One device per member everywhere (directory rows, group rosters, sealing pins). A second device must be enrolled as a second member.
+
+**Bring it back when.** A pilot needs a phone and a desktop for one person. Write a design first (ADR) before touching `:core:enterprise` classes.
+
+**Read first.** ADR-127 P-5, ADR-124, ADR-126, `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md` (do the extraction first).
+
+---
+
+## FO-17 — Group roster and secret for hub-only members
+
+**What.** Group membership frames (roster, group secret, join proofs) travel over the LAN mesh. A colleague reachable only through the hub never receives them (CLI-16, ADR-123). Decided direction (owner 2026-10-13, option A): members hand the roster and secret to a hub-only member as sealed hub messages (the hub cannot read them), built after group sealing exists. Until then hub-linked groups stay directory groups without the secret layer (option C).
+
+**Why parked.** It depends on group sealing, which has no design yet (ADR-126 "not built").
+
+**What the project assumes meanwhile.** A hub-only member sees the directory group and can chat in it only in the readable, opt-in form, and the app says the hub can read it.
+
+**Bring it back when.** Group sealing is designed.
+
+**Read first.** ADR-123, ADR-126, ADR-127 P-7, ERROR-266, ERROR-362.
