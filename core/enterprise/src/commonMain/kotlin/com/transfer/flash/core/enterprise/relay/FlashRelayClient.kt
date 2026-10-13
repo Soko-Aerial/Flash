@@ -124,6 +124,13 @@ public class FlashRelayClient(
     private var clientScope = CoroutineScope(clientJob + ioDispatcher)
     private var loopJob: Job? = null
 
+    /**
+     * The disconnect [stop] launched. The next connection loop waits for it before it dials, otherwise a stop() followed at
+     * once by start() (a reconnect storm, an address change) can run the old disconnect AFTER the new handshake and kill
+     * the fresh session (ERROR-397). Guarded by [lifecycleLock].
+     */
+    private var pendingDisconnect: Job? = null
+
     @kotlin.concurrent.Volatile
     private var lastInboundMs: Long = 0L
     private val sendLock = Mutex()
@@ -169,7 +176,7 @@ public class FlashRelayClient(
         loopJob = null
         _nextRetryAtMs.value = null
 
-        scope.launch {
+        pendingDisconnect = scope.launch {
             try {
                 transport.disconnect("Client stopped")
             } catch (_: Throwable) {
@@ -248,7 +255,15 @@ public class FlashRelayClient(
         withTimeoutOrNull(ms.coerceAtLeast(1L)) { wake.receive() }
     }
 
-    private fun startConnectionLoop(): Job = clientScope.launch {
+    private fun startConnectionLoop(): Job {
+        val priorDisconnect = pendingDisconnect
+        return clientScope.launch {
+            priorDisconnect?.join()
+            connectionLoop()
+        }
+    }
+
+    private suspend fun CoroutineScope.connectionLoop() {
         var backoffMs = INITIAL_BACKOFF_MS
         while (isActive && running) {
             val url = hubUrl
