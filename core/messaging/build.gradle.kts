@@ -107,6 +107,15 @@ kotlin {
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
         }
+        // ERROR-175: the public constructor of RealFlashChatRepository takes @FlashInternalApi collaborators
+        // (FlashRelayClient, EnterpriseTrustStore, EnterpriseDirectoryClient). K2 reports an opt-in violation at EVERY
+        // call of that constructor, including calls that leave those parameters at their defaults, so each test source
+        // set that builds a repository must opt in. A module-level setting replaces a per-file annotation that every
+        // new test would have had to remember (the commonTest file that had one compiled; the 30 androidHostTest
+        // call sites did not).
+        listOf("commonTest", "androidHostTest", "jvmTest").forEach { name ->
+            getByName(name).languageSettings.optIn("com.transfer.flash.core.common.annotation.FlashInternalApi")
+        }
         jvmTest.dependencies {
             implementation(libs.junit)
         }

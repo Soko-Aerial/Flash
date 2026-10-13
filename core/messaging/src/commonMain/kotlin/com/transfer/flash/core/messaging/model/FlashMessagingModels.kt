@@ -481,6 +481,39 @@ public data class FlashConversationUiState(
     val groupHistory: FlashGroupHistoryUi? = null,
     /** ADR-100: whether this device may change the group's history limit (the admin seam says so). */
     val canChangeHistoryCeiling: Boolean = false,
+    /** ADR-126: a calm notice about how this chat travels through the organisation hub (key changed, waiting for an update, group note). */
+    val hubNotice: FlashHubNoticeUi? = null,
+)
+
+/** What the hub notice of a conversation is about (ADR-126). */
+public enum class FlashHubNoticeKind {
+    /** The colleague's sealing key changed; hub messages to them wait for "Continue". */
+    KEY_CHANGED,
+
+    /** The colleague's app has not published a sealing key and readable content through the hub is off. */
+    PEER_NEEDS_UPDATE,
+
+    /** Readable content through the hub is off and this device cannot seal either. */
+    HUB_SWITCHED_OFF,
+
+    /** A hub-linked group, and readable group messages through the hub are switched on. */
+    GROUP_READABLE,
+
+    /** A hub-linked group, and readable group messages through the hub are switched off. */
+    GROUP_HUB_OFF,
+}
+
+/**
+ * One inline notice about the hub path of a conversation (ADR-126). [newCode] / [oldCode] are the short, speakable
+ * codes of the colleague's new and previous sealing key (only for [FlashHubNoticeKind.KEY_CHANGED]).
+ */
+@Immutable
+public data class FlashHubNoticeUi(
+    val kind: FlashHubNoticeKind,
+    val peerId: String,
+    val peerName: String,
+    val newCode: String? = null,
+    val oldCode: String? = null,
 )
 
 /**

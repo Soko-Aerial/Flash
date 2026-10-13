@@ -54,6 +54,8 @@ include(":app")
 include(":core:common")
 include(":core:persistence")
 include(":core:security")
+// ADR-107: the hub wire contract (certs, relay frames, REST DTOs) shared by :server and the clients. Pure KMP, no Ktor/coroutines.
+include(":core:hub-protocol")
 include(":core:discovery")
 include(":core:network")
 include(":core:transfer")

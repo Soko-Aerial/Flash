@@ -100,13 +100,15 @@ class AppEngine @Inject constructor(
     val enterpriseTrustStore: com.transfer.flash.core.security.enterprise.EnterpriseTrustStore?
         get() = DiscoveryEngineHolder.currentEnterpriseTrustStore()
 
-    /** Enterprise directory HTTP client for queries. */
-    val enterpriseDirectory: com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient?
-        get() = DiscoveryEngineHolder.currentEnterpriseDirectoryClient()
+    /** The organisation hub (enrolment, session, directory, relay, live status), or null while the engine is stopped. */
+    val enterpriseHub: com.transfer.flash.core.network.enterprise.EnterpriseHub?
+        get() = DiscoveryEngineHolder.currentEnterpriseHub()
 
-    /** Enterprise WebSocket relay client for outbox and mailbox transport. */
-    val relayClient: com.transfer.flash.core.network.relay.FlashRelayClient?
-        get() = DiscoveryEngineHolder.currentRelayClient()
+    /** The user's opt-in to let the hub carry readable chat content (default off). */
+    val hubContentViaHub: kotlinx.coroutines.flow.StateFlow<Boolean>
+        get() = DiscoveryEngineHolder.hubContentViaHub()
+
+    fun setHubContentViaHub(enabled: Boolean) = DiscoveryEngineHolder.setHubContentViaHub(enabled)
 
     /** Device hardware cryptographic provider. */
     val crypto: com.transfer.flash.core.security.crypto.FlashCrypto?

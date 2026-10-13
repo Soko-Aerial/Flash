@@ -104,8 +104,8 @@ import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashReadiness
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.network.enterprise.JvmFileEnterpriseTrustStore
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
-import com.transfer.flash.core.network.relay.FlashRelayClient
+import com.transfer.flash.core.network.enterprise.EnterpriseHub
+import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File
 import java.security.SecureRandom
@@ -222,6 +222,9 @@ public class DesktopEngine(
     // --- Identity (file-backed; see DesktopIdentityStores.kt) ---
     private val identityStore = DesktopIdentityStore(stateDir)
 
+    /** The same at-rest protection as the identity key (ADR-035) wraps the hub sealing key (ADR-126). */
+    private val hubSealingVault: com.transfer.flash.core.security.identity.IdentityKeyVault = identityVault
+
     /** The name this run presents to peers: the override when there is one, else the persisted name. */
     private fun effectiveFriendlyName(): String = nameOverride ?: identityStore.getIdentity().friendlyName
     private val settingsStore = DesktopSettingsStore(stateDir)
@@ -243,12 +246,12 @@ public class DesktopEngine(
     private val trustStoreImpl = DesktopTrustStore(stateDir)
     public val enterpriseTrustStore: EnterpriseTrustStore =
         JvmFileEnterpriseTrustStore(stateDir)
-    public val enterpriseDirectoryClient: EnterpriseDirectoryClient =
-        EnterpriseDirectoryClient()
+
+    /** The one object for everything about the organisation hub (ADR-120); null until the chat stack is up. */
     @Volatile
-    private var relayClientRef: FlashRelayClient? = null
-    public val relayClient: FlashRelayClient?
-        get() = relayClientRef
+    private var enterpriseHubRef: EnterpriseHub? = null
+    public val enterpriseHub: EnterpriseHub?
+        get() = enterpriseHubRef
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
@@ -1087,8 +1090,9 @@ public class DesktopEngine(
     private fun releaseSubsystems() {
         synchronized(teardownLock) {
             runCatching { networkWatcher.stop() }
-            relayClientRef?.stop()
-            relayClientRef = null
+            // Stops the relay and closes the shared HTTP client (CLI-12).
+            enterpriseHubRef?.shutdown()
+            enterpriseHubRef = null
             // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
             detachPtt()
             detachSwarm()
@@ -1308,25 +1312,34 @@ public class DesktopEngine(
             val db = openEncryptedFlashDatabase(File(File(stateDir, "chat"), FlashDatabase.DATABASE_NAME), chatDbKey())
             chatDb = db
 
-            val initialCreds = enterpriseTrustStore.getCredentials()
-            val relay = FlashRelayClient(
+            val hub = EnterpriseHub(
                 deviceId = localId,
                 friendlyName = friendlyName,
-                role = initialCreds?.role ?: "member",
-                hubUrl = initialCreds?.hubUrl.orEmpty(),
+                crypto = crypto,
+                trustStore = enterpriseTrustStore,
+                scope = scope,
+                // Plain http is for a development hub only; a release desktop never allows it.
+                allowCleartext = { System.getProperty("flash.allowCleartextHub") == "true" },
+                // ADR-126: this device's own sealing key, protected like the identity key, published to the hub after enrolment.
+                sealingKeyStore = com.transfer.flash.core.security.enterprise.FileHubSealingKeyStore(
+                    File(File(stateDir, "hub"), "sealing.key"), hubSealingVault,
+                ),
             )
-            relayClientRef = relay
+            enterpriseHubRef = hub
+            hub.start()
 
-            scope.launch {
-                enterpriseTrustStore.credentials.collect { creds ->
-                    if (creds != null) {
-                        relay.hubUrl = creds.hubUrl
-                        relay.start()
-                    } else {
-                        relay.stop()
-                    }
-                }
-            }
+            // ADR-126: end-to-end sealing of hub chat content, with the colleague key pins that notice a changed key.
+            val hubSealingPins = com.transfer.flash.core.security.enterprise.HubSealingPins(
+                com.transfer.flash.core.security.enterprise.FileHubSealingPinStore(File(File(stateDir, "hub"), "sealing-pins.txt")),
+            )
+            scope.launch { hubSealingPins.load() }
+            val hubSealingPort = com.transfer.flash.core.messaging.hub.DirectoryHubSealing(
+                crypto = crypto,
+                localDeviceId = localId,
+                ownKey = { hub.sealingKeys?.key() },
+                pins = hubSealingPins,
+                lookup = { hub.peers.lookup(it) },
+            )
 
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,
@@ -1476,8 +1489,11 @@ public class DesktopEngine(
                 },
                 scope = scope,
                 enterpriseTrustStore = enterpriseTrustStore,
-                relayClient = relay,
-                enterpriseDirectoryClient = enterpriseDirectoryClient,
+                hubRelay = FlashRelayHubPort(hub.relay) { enterpriseTrustStore.isEnrolled },
+                enterpriseDirectoryClient = hub.directory,
+                hubPeers = hub.peers,
+                hubContentViaHub = { _settings.value.hubContentViaHub },
+                hubSealing = hubSealingPort,
             )
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
                 FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")

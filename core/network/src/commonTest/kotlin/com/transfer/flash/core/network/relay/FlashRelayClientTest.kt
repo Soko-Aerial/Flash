@@ -4,6 +4,9 @@ package com.transfer.flash.core.network.relay
 
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.hubprotocol.relay.AckStatus
+import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
+import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,9 +37,9 @@ class FlashRelayClientTest {
         val sentFrames = mutableListOf<RelayFrame>()
         val sentRaw = mutableListOf<String>()
 
-        override suspend fun connect(hubUrl: String, deviceId: String, friendlyName: String, role: String): Boolean {
+        override suspend fun connect(hubUrl: String, identity: RelayIdentity): Boolean {
             _state.value = RelaySessionState.CONNECTED
-            _incomingFrames.emit(RelayFrame.Welcome(deviceId = deviceId, status = "CONNECTED", timestamp = 1000L))
+            _incomingFrames.emit(RelayFrame.Welcome(principal = HubPrincipal(identity.deviceId, "member"), serverTime = 1000L))
             return true
         }
 
@@ -89,8 +92,8 @@ class FlashRelayClientTest {
         assertTrue(sent)
 
         assertEquals(1, transport.sentFrames.size)
-        val dataFrame = transport.sentFrames[0] as RelayFrame.Data
-        assertEquals("dev-bob-002", dataFrame.recipientId)
+        val dataFrame = transport.sentFrames[0] as RelayFrame.Send
+        assertEquals("dev-bob-002", dataFrame.to)
         assertEquals("env-999", dataFrame.id)
         assertEquals(envelope.payloadJson, dataFrame.payload)
     }
@@ -109,11 +112,10 @@ class FlashRelayClientTest {
             timeSource = timeSource,
         )
 
-        val inboundData = RelayFrame.Data(
-            recipientId = "dev-alice-001",
+        val inboundData = RelayFrame.Deliver(
+            from = "dev-charlie-003",
             id = "msg-inbound-777",
             type = "MSG_TEXT",
-            senderId = "dev-charlie-003",
             sentAt = 15000L,
             payload = """{"text":"Welcome to the team!"}""",
         )
@@ -151,9 +153,9 @@ class FlashRelayClientTest {
 
         val ack = RelayFrame.Ack(
             id = "msg-888",
-            recipientId = "dev-bob-002",
-            status = RelayFrame.Ack.STATUS_QUEUED,
-            timestamp = 20000L,
+            to = "dev-bob-002",
+            status = AckStatus.QUEUED,
+            ts = 20000L,
         )
 
         val receivedAcks = mutableListOf<RelayFrame.Ack>()
@@ -169,7 +171,8 @@ class FlashRelayClientTest {
 
         assertEquals(1, receivedAcks.size)
         assertEquals("msg-888", receivedAcks[0].id)
-        assertTrue(receivedAcks[0].isQueued)
+        assertEquals(AckStatus.QUEUED, receivedAcks[0].status)
+        assertEquals("dev-bob-002", receivedAcks[0].to)
 
         ackJob.cancel()
     }
@@ -193,32 +196,43 @@ class FlashRelayClientTest {
         val meta = transport.sentFrames[0] as RelayFrame.Meta
         assertEquals(RelayFrame.Meta.ACTION_TYPING, meta.action)
         assertEquals("conv-eng-daily", meta.conversationId)
-        assertEquals("dev-alice-001", meta.senderId)
+        // The hub stamps the sender (SEC-02); the client carries no `from`.
+        assertEquals(null, meta.from)
     }
 
     @Test
-    fun testSendAckDispatchesAckFrame() = runTest {
+    fun testAcknowledgeReceiptSendsRecvAck() = runTest {
         val transport = FakeRelayTransport()
         transport.setState(RelaySessionState.CONNECTED)
-        val timeSource = FakeTimeSource(25000L)
 
         val client = FlashRelayClient(
             deviceId = "dev-alice-001",
             friendlyName = "Alice",
             hubUrl = "ws://127.0.0.1:8443/flash-relay",
             transport = transport,
-            timeSource = timeSource,
         )
 
-        val sent = client.sendAck("msg-1234", "dev-charlie-003", RelayFrame.Ack.STATUS_DELIVERED)
-        assertTrue(sent)
+        assertTrue(client.acknowledgeReceipt("msg-1234"))
 
         assertEquals(1, transport.sentFrames.size)
-        val ack = transport.sentFrames[0] as RelayFrame.Ack
-        assertEquals("msg-1234", ack.id)
-        assertEquals("dev-charlie-003", ack.recipientId)
-        assertEquals(RelayFrame.Ack.STATUS_DELIVERED, ack.status)
-        assertEquals(25000L, ack.timestamp)
+        val ack = transport.sentFrames[0] as RelayFrame.RecvAck
+        assertEquals("msg-1234", ack.msgId)
+    }
+
+    @Test
+    fun testAcknowledgeReceiptRefusedWhenNotConnected() = runTest {
+        val transport = FakeRelayTransport()
+        transport.setState(RelaySessionState.SUSPENDED)
+
+        val client = FlashRelayClient(
+            deviceId = "dev-alice-001",
+            friendlyName = "Alice",
+            hubUrl = "ws://127.0.0.1:8443/flash-relay",
+            transport = transport,
+        )
+
+        assertFalse(client.acknowledgeReceipt("msg-1234"))
+        assertTrue(transport.sentFrames.isEmpty())
     }
 
     @Test

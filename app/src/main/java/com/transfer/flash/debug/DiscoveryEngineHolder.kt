@@ -70,8 +70,8 @@ import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.network.enterprise.AndroidPreferencesEnterpriseTrustStore
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
-import com.transfer.flash.core.network.relay.FlashRelayClient
+import com.transfer.flash.core.network.enterprise.EnterpriseHub
+import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import java.security.KeyStore
 import java.security.SecureRandom
 import javax.net.ssl.KeyManagerFactory
@@ -218,11 +218,12 @@ object DiscoveryEngineHolder {
     @Volatile
     private var enterpriseTrustStoreRef: EnterpriseTrustStore? = null
 
+    /** The one object for everything about the organisation hub (ADR-120); null while the engine is stopped. */
     @Volatile
-    private var enterpriseDirectoryClientRef: EnterpriseDirectoryClient? = null
+    private var enterpriseHubRef: EnterpriseHub? = null
 
-    @Volatile
-    private var relayClientRef: FlashRelayClient? = null
+    /** User opt-in to let the hub carry readable chat content (ADR-121). Default OFF; stored in SharedPreferences. */
+    private val hubContentViaHubFlag = kotlinx.coroutines.flow.MutableStateFlow(false)
 
     /**
      * Live WebRTC calling engine (C7 / ADR-025). Constructed in [startEngineLocked], torn down in
@@ -582,9 +583,16 @@ object DiscoveryEngineHolder {
 
     fun currentEnterpriseTrustStore(): EnterpriseTrustStore? = enterpriseTrustStoreRef
 
-    fun currentEnterpriseDirectoryClient(): EnterpriseDirectoryClient? = enterpriseDirectoryClientRef
+    fun currentEnterpriseHub(): EnterpriseHub? = enterpriseHubRef
 
-    fun currentRelayClient(): FlashRelayClient? = relayClientRef
+    fun hubContentViaHub(): kotlinx.coroutines.flow.StateFlow<Boolean> = hubContentViaHubFlag
+
+    /** Persists the opt-in for readable hub content and applies it at once. */
+    fun setHubContentViaHub(enabled: Boolean) {
+        hubContentViaHubFlag.value = enabled
+        appContextRef?.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+            ?.edit()?.putBoolean("content_via_hub", enabled)?.apply()
+    }
 
     fun currentCrypto(): FlashCrypto? = cryptoRef
 
@@ -1139,28 +1147,36 @@ object DiscoveryEngineHolder {
         val enterpriseTrustStore = AndroidPreferencesEnterpriseTrustStore(appContext)
         enterpriseTrustStoreRef = enterpriseTrustStore
 
-        val directoryClient = EnterpriseDirectoryClient()
-        enterpriseDirectoryClientRef = directoryClient
-
-        val initialCreds = enterpriseTrustStore.getCredentials()
-        val relayClient = FlashRelayClient(
+        val debuggable = (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        hubContentViaHubFlag.value = appContext.getSharedPreferences("flash_hub_settings", android.content.Context.MODE_PRIVATE)
+            .getBoolean("content_via_hub", false)
+        appContextRef = appContext
+        val hub = EnterpriseHub(
             deviceId = identity.deviceId.value,
             friendlyName = identity.friendlyName,
-            role = initialCreds?.role ?: "member",
-            hubUrl = initialCreds?.hubUrl.orEmpty(),
+            crypto = crypto,
+            trustStore = enterpriseTrustStore,
+            scope = appScope,
+            // Plain http is for a development hub on a trusted network only; release builds never allow it.
+            allowCleartext = { debuggable },
+            // ADR-126: this device's own sealing key, wrapped by the Android Keystore, published to the hub after enrolment.
+            sealingKeyStore = com.transfer.flash.core.security.enterprise.AndroidHubSealingKeyStore(appContext),
         )
-        relayClientRef = relayClient
+        enterpriseHubRef = hub
+        hub.start()
 
-        appScope.launch {
-            enterpriseTrustStore.credentials.collect { creds ->
-                if (creds != null) {
-                    relayClient.hubUrl = creds.hubUrl
-                    relayClient.start()
-                } else {
-                    relayClient.stop()
-                }
-            }
-        }
+        // ADR-126: end-to-end sealing of hub chat content, with the colleague key pins that notice a changed key.
+        val hubSealingPins = com.transfer.flash.core.security.enterprise.HubSealingPins(
+            com.transfer.flash.core.security.enterprise.AndroidHubSealingPinStore(appContext),
+        )
+        appScope.launch { hubSealingPins.load() }
+        val hubSealingPort = com.transfer.flash.core.messaging.hub.DirectoryHubSealing(
+            crypto = crypto,
+            localDeviceId = identity.deviceId.value,
+            ownKey = { hub.sealingKeys?.key() },
+            pins = hubSealingPins,
+            lookup = { hub.peers.lookup(it) },
+        )
 
         val chatImpl = RealFlashChatRepository(
             scope = appScope,
@@ -1353,8 +1369,11 @@ object DiscoveryEngineHolder {
                 }
             },
             enterpriseTrustStore = enterpriseTrustStore,
-            relayClient = relayClient,
-            enterpriseDirectoryClient = directoryClient,
+            hubRelay = FlashRelayHubPort(hub.relay) { enterpriseTrustStore.isEnrolled },
+            enterpriseDirectoryClient = hub.directory,
+            hubPeers = hub.peers,
+            hubContentViaHub = { hubContentViaHubFlag.value },
+            hubSealing = hubSealingPort,
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
@@ -2923,10 +2942,10 @@ object DiscoveryEngineHolder {
         onIncomingOffer = null
         dataServer?.stop()
         dataServer = null
-        relayClientRef?.stop()
-        relayClientRef = null
+        // Closes the shared HTTP client and stops the relay (CLI-12).
+        enterpriseHubRef?.shutdown()
+        enterpriseHubRef = null
         enterpriseTrustStoreRef = null
-        enterpriseDirectoryClientRef = null
         currentEngine?.stopAll()
         currentNetwork?.stop()
         // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,

@@ -49,6 +49,9 @@ kotlin {
     sourceSets {
         commonMain.dependencies {
             api(project(":core:common"))
+            // ADR-107: the shared hub contract (certificates, delegation, revocation, relay frames, REST DTOs).
+            // `api`: EnrollmentCredentials and the trust store expose its types.
+            api(project(":core:hub-protocol"))
             // Public API returns kotlinx.coroutines Flow/StateFlow (FlashPairingProtocol/trust), so
             // coroutines must be `api` — an `implementation` scope keeps those return types off a
             // downstream consumer's classpath.
@@ -82,6 +85,8 @@ kotlin {
         // crypto/PlatformCryptoParityTest.kt.
         commonTest.dependencies {
             implementation(kotlin("test"))
+            // Hub sealing key store / pin tests are suspend (same catalog alias as the host-test tier).
+            implementation(libs.kotlinx.coroutines.test)
         }
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)

@@ -59,6 +59,7 @@ import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupHistoryUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
+import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
@@ -298,6 +299,8 @@ fun FlashConversationScreen(
     onChooseGroupHistory: ((groupId: String, windowMs: Long, includeFiles: Boolean) -> Unit)? = null,
     /** ADR-100 / UI-057: the join card's "Not now" / "OK". */
     onSkipGroupHistory: ((groupId: String) -> Unit)? = null,
+    /** ADR-126: the user chose Continue on a changed colleague key; the host confirms the new sealing key. Null hides the choice. */
+    onConfirmHubKeyChange: ((peerDeviceId: String) -> Unit)? = null,
     /** ADR-100 / UI-057: "Load older messages" in the group settings sheet. */
     onLoadOlderGroupHistory: ((groupId: String, windowMs: Long) -> Unit)? = null,
     /** ADR-100 / UI-057: an admin changes the signed history ceiling (a `GroupHistoryCeiling` name). */
@@ -766,6 +769,25 @@ fun FlashConversationScreen(
                                             onChooseGroupHistory?.invoke(conversationId, windowMs, includeFiles)
                                         },
                                         onSkip = { onSkipGroupHistory?.invoke(conversationId) },
+                                    )
+                                }
+                            }
+
+                            // ADR-126: how this chat travels through the organisation hub (changed key, waiting, group honesty).
+                            var lastHubNotice by remember { mutableStateOf<FlashHubNoticeUi?>(null) }
+                            if (state.hubNotice != null) {
+                                lastHubNotice = state.hubNotice
+                            }
+                            AnimatedVisibility(
+                                visible = state.hubNotice != null,
+                                enter = fadeIn(motion.tweenNormalSpec()) + expandVertically(motion.tweenNormalSpec()),
+                                exit = fadeOut(motion.tweenFastSpec()) + shrinkVertically(motion.tweenFastSpec()),
+                            ) {
+                                (state.hubNotice ?: lastHubNotice)?.let { notice ->
+                                    FlashHubNotice(
+                                        notice = notice,
+                                        onContinue = { onConfirmHubKeyChange?.invoke(notice.peerId) },
+                                        onVerify = { showPeerDetails = true },
                                     )
                                 }
                             }

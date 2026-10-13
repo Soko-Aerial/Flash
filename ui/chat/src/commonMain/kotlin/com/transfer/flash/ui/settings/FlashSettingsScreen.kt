@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.ui.settings
 
 import androidx.compose.animation.AnimatedVisibility
@@ -157,6 +159,14 @@ data class FlashSettingsModel(
     val enterpriseDepartment: String? = null,
     val enterpriseRole: String? = null,
     val enterpriseRootFingerprint: String? = null,
+    /** Live state of the organisation hub link (CLI-07). Null on a host that has no hub. */
+    val hubStatus: com.transfer.flash.core.network.enterprise.HubStatus? = null,
+    /** The user's opt-in to let the hub carry readable chat text (ADR-121). Off by default; never reset by "Reset to defaults". */
+    val hubContentViaHub: Boolean = false,
+    /** ADR-126: sealing key state and dropped-message counts for the connection details. Null on a host without a hub. */
+    val hubSealing: FlashHubSealingUi? = null,
+    /** Groups that were linked to this organisation before the last unenrol, restorable after enrolling again. */
+    val hubRelinkableGroups: Int = 0,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -308,7 +318,7 @@ object FlashSettingsMath {
         ),
         ENTERPRISE(
             "Enterprise & Organization", "Corporate hub relay, enrollment, and department directory",
-            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect"),
+            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect", "Messages through the hub", "Connection", "Status"),
         ),
     }
 
@@ -422,6 +432,16 @@ fun FlashSettingsScreen(
     onEnrollDevice: ((String) -> Unit)? = null,
     /** Disconnects/un-enrolls device from enterprise hub. */
     onDisconnectEnterprise: (() -> Unit)? = null,
+    /** Connects to the hub now ("Retry now" on a banner). */
+    onRetryHub: (() -> Unit)? = null,
+    /** Forgets the "your organisation removed this device" notice. */
+    onDismissHubRevoked: (() -> Unit)? = null,
+    /** Turns readable chat content through the hub on or off (the disclosure is shown here before it turns on). */
+    onSetHubContentViaHub: ((Boolean) -> Unit)? = null,
+    /** Links the groups remembered from the previous enrolment again. */
+    onRestoreHubGroups: (() -> Unit)? = null,
+    /** Throws the remembered groups away. */
+    onForgetHubGroups: (() -> Unit)? = null,
     /** Live indicator whether enrollment is in progress. */
     isEnrollingDevice: Boolean = false,
     /** Error message to display in the enrollment dialog. */
@@ -434,6 +454,11 @@ fun FlashSettingsScreen(
     var showRestartPrompt by remember { mutableStateOf(false) }
     var showEnrollDialog by remember { mutableStateOf(false) }
     var showDisconnectEnterpriseConfirmation by remember { mutableStateOf(false) }
+    var showHubDetails by remember { mutableStateOf(false) }
+    var showHubContentDisclosure by remember { mutableStateOf(false) }
+    val hubStatus = model.hubStatus
+    val hubNeedsClock = hubStatus != null && hubStatus.state != com.transfer.flash.core.network.enterprise.HubLinkState.NOT_ENROLLED
+    val hubNow by rememberHubNow(hubNeedsClock)
 
     androidx.compose.runtime.LaunchedEffect(model.isEnterpriseEnrolled) {
         if (model.isEnterpriseEnrolled) {
@@ -503,6 +528,19 @@ fun FlashSettingsScreen(
             },
             isEnrolling = isEnrollingDevice,
             enrollError = enrollDeviceError,
+        )
+    }
+
+    if (showHubDetails && hubStatus != null) {
+        FlashHubDetailDialog(status = hubStatus, nowMs = hubNow, onClose = { showHubDetails = false }, sealing = model.hubSealing)
+    }
+    if (showHubContentDisclosure) {
+        FlashHubContentDisclosureDialog(
+            onConfirm = {
+                showHubContentDisclosure = false
+                onSetHubContentViaHub?.invoke(true)
+            },
+            onCancel = { showHubContentDisclosure = false },
         )
     }
 
@@ -827,13 +865,48 @@ fun FlashSettingsScreen(
                     initiallyExpanded = false,
                     forceExpanded = searching,
                 ) {
+                    val hubBanner = hubStatus?.let { FlashHubStatusMath.banner(it, hubNow) }
+                    if (hubBanner != null) {
+                        FlashHubBannerCard(
+                            banner = hubBanner,
+                            onPrimary = {
+                                when (hubBanner.primary) {
+                                    FlashHubBannerAction.RETRY_NOW -> onRetryHub?.invoke()
+                                    FlashHubBannerAction.RE_ENROL -> {
+                                        onDismissHubRevoked?.invoke()
+                                        showEnrollDialog = true
+                                    }
+                                    FlashHubBannerAction.DISMISS -> onDismissHubRevoked?.invoke()
+                                    FlashHubBannerAction.NONE -> Unit
+                                }
+                            },
+                            onDismiss = { onDismissHubRevoked?.invoke() },
+                        )
+                    }
                     if (model.isEnterpriseEnrolled) {
-                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Organization hub")) ValueRow(
-                            iconSpec = FlashIcons.Relay,
-                            title = "Organization hub",
-                            subtitle = "Connected to corporate relay for remote & offline messaging",
-                            value = model.enterpriseHubUrl.orEmpty(),
-                            onClick = {},
+                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Organization hub")) {
+                            if (hubStatus != null) {
+                                FlashHubStatusRow(status = hubStatus, nowMs = hubNow, onOpenDetails = { showHubDetails = true })
+                            } else {
+                                ValueRow(
+                                    iconSpec = FlashIcons.Relay,
+                                    title = "Organization hub",
+                                    subtitle = "Connected to corporate relay for remote & offline messaging",
+                                    value = model.enterpriseHubUrl.orEmpty(),
+                                    onClick = {},
+                                )
+                            }
+                        }
+                        if (model.hubRelinkableGroups > 0 && onRestoreHubGroups != null && onForgetHubGroups != null) {
+                            FlashHubRelinkOffer(count = model.hubRelinkableGroups, onRestore = onRestoreHubGroups, onForget = onForgetHubGroups)
+                        }
+                        if (onSetHubContentViaHub != null && FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Messages through the hub")) SwitchRow(
+                            title = "Messages through the hub",
+                            subtitle = FlashHubStatusMath.CONTENT_VIA_HUB_SUBTITLE,
+                            checked = model.hubContentViaHub,
+                            onCheckedChange = { next ->
+                                if (next) showHubContentDisclosure = true else onSetHubContentViaHub(false)
+                            },
                         )
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Department")) ValueRow(
                             iconSpec = FlashIcons.Device,
@@ -847,13 +920,6 @@ fun FlashSettingsScreen(
                             title = "Role",
                             subtitle = "Delegated permission level inside company",
                             value = model.enterpriseRole ?: "Member",
-                            onClick = {},
-                        )
-                        if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Root fingerprint")) ValueRow(
-                            iconSpec = FlashIcons.Check,
-                            title = "Root fingerprint",
-                            subtitle = "Cryptographic root trust anchor",
-                            value = model.enterpriseRootFingerprint?.take(12)?.plus("...") ?: "Pinned",
                             onClick = {},
                         )
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Disconnect from Organization")) ValueRow(

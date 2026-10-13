@@ -7,7 +7,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.network.enterprise.EnterpriseDepartment
 import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
 import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember
-import com.transfer.flash.core.security.enterprise.DeviceCert
+import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
 import kotlinx.coroutines.flow.first

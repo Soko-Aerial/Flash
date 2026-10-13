@@ -1,10 +1,14 @@
-package com.transfer.flash.core.security.enterprise
+package com.transfer.flash.core.hubprotocol.certs
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 
 /**
- * Deterministic canonical byte serializer for enterprise certificates, delegations, and revocation lists.
- * Every field is written with a 4-byte big-endian length prefix followed by its payload.
+ * Deterministic canonical byte serializer for enterprise certificates, delegations, revocation lists and the
+ * handshake proofs. The first field is always the domain `tag`. Every field is written with a 4-byte big-endian
+ * length prefix followed by its payload, so concatenating fields can never be re-read as a different field split
+ * (SEC-14: no bare string concatenation of nonces and identifiers).
+ *
+ * Sets are written sorted (strings by natural order, longs ascending) preceded by their element count.
  */
 @FlashInternalApi
 public class AuthCanonicalWriter(tag: String) {
@@ -73,4 +77,16 @@ public class AuthCanonicalWriter(tag: String) {
         parts.add(part)
         total += part.size
     }
+}
+
+/** Lower-case hex of [this], used by golden-vector tests and diagnostics. */
+@FlashInternalApi
+public fun ByteArray.toHubHex(): String {
+    val digits = "0123456789abcdef"
+    val sb = StringBuilder(size * 2)
+    for (b in this) {
+        val v = b.toInt() and 0xFF
+        sb.append(digits[v ushr 4]).append(digits[v and 0x0F])
+    }
+    return sb.toString()
 }

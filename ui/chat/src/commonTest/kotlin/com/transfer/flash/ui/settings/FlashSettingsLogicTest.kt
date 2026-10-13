@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.ui.settings
 
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
