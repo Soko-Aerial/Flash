@@ -10395,3 +10395,34 @@ None yet.
 
 ### Status
 RESOLVED in code 2026-10-13 (unit-tested, mutation-checked; device check HUBR-10 still owed)
+
+
+## ERROR-397 — A `stop()` disconnect could kill the session of the next `start()` (reconnect storm)
+
+### Date
+2026-10-13
+
+### Area
+Enterprise hub client / `FlashRelayClient` (`:core:enterprise`)
+
+### Symptoms
+`E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` failed intermittently (about 2 runs in 5 under load, not at all in quiet runs): the message sent after 20 `stop()` + `start()` cycles was refused because the session had just been dropped. Earlier recorded as "known flaky".
+
+### Root cause
+`stop()` launched `transport.disconnect("Client stopped")` on a side scope and returned. A `start()` right after dials a new connection loop. If the old disconnect ran after the new handshake it closed the FRESH session, and the loop had to reconnect after its backoff. The same ordering problem exists for any caller that stops and starts at once (reconnect storm, a changed address, enrolment).
+
+### Failed attempts
+None. Not caused by the `:core:enterprise` extraction (the moved code was byte-identical apart from the package and lock helper name); the race existed before.
+
+### Working fix
+`FlashRelayClient` remembers the disconnect job of `stop()` (`pendingDisconnect`, guarded by `lifecycleLock`); the next connection loop `join()`s it before it connects.
+
+### Verification
+New test `FlashRelayClientStartRaceTest.aStopDisconnectNeverRunsAfterTheNextStartHasConnected` (slow disconnect; the old disconnect must finish before the new connect and the session stays CONNECTED). Mutation check: with the `join()` removed the test fails. `:core:enterprise:jvmTest` and `testAndroidHostTest` green; the e2e storm test passed 5 of 5 runs after the fix. Not device-verified (`HUBR-10` and `EXTR-01` exercise reconnects on a phone).
+
+### Related files
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/relay/FlashRelayClient.kt`
+- `core/enterprise/src/jvmTest/kotlin/com/transfer/flash/core/enterprise/relay/FlashRelayClientStartRaceTest.kt`
+
+### Status
+RESOLVED in code 2026-10-13 (unit-tested, mutation-checked; not device-verified)
