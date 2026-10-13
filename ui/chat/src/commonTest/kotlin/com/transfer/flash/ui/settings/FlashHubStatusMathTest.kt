@@ -2,13 +2,13 @@
 
 package com.transfer.flash.ui.settings
 
-import com.transfer.flash.core.network.enterprise.EnrollFailureReason
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
-import com.transfer.flash.core.network.enterprise.HubLinkState
-import com.transfer.flash.core.network.enterprise.HubOfflineReason
-import com.transfer.flash.core.network.enterprise.HubSealingKeyState
-import com.transfer.flash.core.network.enterprise.HubStatus
-import com.transfer.flash.core.network.enterprise.UnenrolResult
+import com.transfer.flash.core.enterprise.EnrollFailureReason
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
+import com.transfer.flash.core.enterprise.HubLinkState
+import com.transfer.flash.core.enterprise.HubOfflineReason
+import com.transfer.flash.core.enterprise.HubSealingKeyState
+import com.transfer.flash.core.enterprise.HubStatus
+import com.transfer.flash.core.enterprise.UnenrolResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

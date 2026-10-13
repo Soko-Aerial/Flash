@@ -91,6 +91,7 @@ kotlin {
             implementation(project(":core:security"))
             // Hub status types for the Settings organisation card (HubStatus, EnrollFailureReason, EnterpriseDirectoryGroup).
             implementation(project(":core:network"))
+            implementation(project(":core:enterprise"))
             implementation(project(":core:transfer"))
             implementation(project(":ui:theme"))
             implementation(project(":ui:platform-shims"))

@@ -2,6 +2,27 @@
 
 
 
+
+## 2026-10-13 - `:core:enterprise` extracted from `:core:network` (ADR-128), verified and committed
+
+### Worked on
+The extraction of the hub client, done in the working tree by another agent following `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`. This session verified it against the plan's acceptance criteria and committed it.
+
+### Changed
+- New KMP module `:core:enterprise` (35 files moved with their tests, `RelayLock` expect/actual, `consumer-rules.pro`), packages renamed to `com.transfer.flash.core.enterprise[.relay]`.
+- `:core:network` no longer depends on `:core:hub-protocol`; app, desktop, `core:messaging`, `ui:chat` depend on `:core:enterprise`, `core:engine` re-exports it (`api`), server tests only (`testImplementation`).
+- `jitpack.yml`, README module table, `docs/architecture.md`; `ModuleBoundaryTest` guards the dependency rules.
+- `RealFlashChatRepository.kt` shows as fully rewritten in this commit: it was committed with CRLF line endings earlier, `.gitattributes` (`eol=lf`) normalises it to LF on add. The real change is 8 lines.
+
+### Verification
+Test counts and compiles are recorded in ADR-128 "Result". Known flaky `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` fails intermittently under load (2 of 5 runs) and is unrelated to the move (the moved relay client differs from the original only by package line and the lock helper name). A Gradle daemon was stopped by another process during one run (`stop command received`), which also disturbed one earlier `:ui:chat` run; re-runs passed.
+
+### Remaining
+Device check `EXTR-01`. Plan step 11's last item (running the exact `jitpack.yml` install line) was not run; the publish dry run of the five directly affected modules was.
+
+### Next AI
+Nothing owed in code for ADR-128. Do not start multi-device work (FO-16) without the owner.
+
 ## 2026-10-13 - ERROR-396 fixed: hub chat bridge duplicate check keyed by (sender, id)
 
 ### Worked on

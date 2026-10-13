@@ -9,8 +9,8 @@ import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.hubprotocol.certs.HubAuth
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
-import com.transfer.flash.core.network.relay.RelayIdentity
-import com.transfer.flash.core.network.relay.RelaySigner
+import com.transfer.flash.core.enterprise.relay.RelayIdentity
+import com.transfer.flash.core.enterprise.relay.RelaySigner
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.server.auth.ChallengeResponseAuth
 import com.transfer.flash.server.auth.EnrollmentService

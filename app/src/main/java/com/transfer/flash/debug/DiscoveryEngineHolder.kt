@@ -69,8 +69,8 @@ import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
-import com.transfer.flash.core.network.enterprise.AndroidPreferencesEnterpriseTrustStore
-import com.transfer.flash.core.network.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore
+import com.transfer.flash.core.enterprise.EnterpriseHub
 import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import java.security.KeyStore
 import java.security.SecureRandom

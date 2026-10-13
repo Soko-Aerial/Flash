@@ -52,6 +52,7 @@ dependencies {
     implementation(project(":core:security"))
     implementation(project(":core:discovery"))
     implementation(project(":core:network"))
+    implementation(project(":core:enterprise"))
     implementation(project(":core:transfer"))
     implementation(project(":core:messaging"))
     implementation(project(":core:engine"))

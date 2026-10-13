@@ -9,7 +9,7 @@ import com.transfer.flash.core.hubprotocol.rest.ErrorBody
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.MemberDto
 import com.transfer.flash.core.hubprotocol.rest.SealingKeyRequest
-import com.transfer.flash.core.network.enterprise.EnrollmentOutcome
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
 import com.transfer.flash.core.security.enterprise.HubSealingKeyPair
 import com.transfer.flash.server.auth.HubRateLimits
 import io.ktor.client.HttpClient

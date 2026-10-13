@@ -7,7 +7,7 @@ import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
 import com.transfer.flash.core.hubprotocol.relay.QueueEvent
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
-import com.transfer.flash.core.network.relay.FlashRelayClient
+import com.transfer.flash.core.enterprise.relay.FlashRelayClient
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.mapNotNull
 

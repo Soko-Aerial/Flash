@@ -4,7 +4,7 @@ package com.transfer.flash.core.messaging.hub
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.Base64
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryMember
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingFingerprint

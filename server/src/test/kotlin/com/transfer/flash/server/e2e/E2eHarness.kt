@@ -5,9 +5,9 @@ package com.transfer.flash.server.e2e
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
-import com.transfer.flash.core.network.enterprise.EnterpriseHub
-import com.transfer.flash.core.network.relay.FlashRelayClient
-import com.transfer.flash.core.network.relay.KtorRelayTransport
+import com.transfer.flash.core.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.relay.FlashRelayClient
+import com.transfer.flash.core.enterprise.relay.KtorRelayTransport
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
@@ -276,13 +276,13 @@ class E2eDevice(
     suspend fun enrolAndConnect(department: String? = "eng", autoJoinGroups: Set<String> = emptySet()): E2eDevice {
         begin()
         val outcome = client.enroll(hub.invite(department = department, autoJoinGroups = autoJoinGroups))
-        check(outcome is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Enrolled) { "enrol failed: $outcome" }
+        check(outcome is com.transfer.flash.core.enterprise.EnrollmentOutcome.Enrolled) { "enrol failed: $outcome" }
         awaitConnected()
         return this
     }
 
     suspend fun awaitConnected(timeoutMs: Long = 10_000L) {
-        check(eventually(timeoutMs) { client.relay.state.value == com.transfer.flash.core.network.relay.RelaySessionState.CONNECTED }) {
+        check(eventually(timeoutMs) { client.relay.state.value == com.transfer.flash.core.enterprise.relay.RelaySessionState.CONNECTED }) {
             "relay of $id did not connect (state=${client.relay.state.value}, failure=${client.relay.failure.value})"
         }
     }

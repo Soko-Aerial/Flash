@@ -4,8 +4,8 @@ package com.transfer.flash.core.messaging.hub
 
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember
-import com.transfer.flash.core.network.enterprise.HubPeerStanding
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryMember
+import com.transfer.flash.core.enterprise.HubPeerStanding
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.enterprise.HubSealing

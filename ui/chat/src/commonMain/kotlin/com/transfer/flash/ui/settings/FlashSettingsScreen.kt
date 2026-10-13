@@ -160,7 +160,7 @@ data class FlashSettingsModel(
     val enterpriseRole: String? = null,
     val enterpriseRootFingerprint: String? = null,
     /** Live state of the organisation hub link (CLI-07). Null on a host that has no hub. */
-    val hubStatus: com.transfer.flash.core.network.enterprise.HubStatus? = null,
+    val hubStatus: com.transfer.flash.core.enterprise.HubStatus? = null,
     /** The user's opt-in to let the hub carry readable chat text (ADR-121). Off by default; never reset by "Reset to defaults". */
     val hubContentViaHub: Boolean = false,
     /** ADR-126: sealing key state and dropped-message counts for the connection details. Null on a host without a hub. */
@@ -457,7 +457,7 @@ fun FlashSettingsScreen(
     var showHubDetails by remember { mutableStateOf(false) }
     var showHubContentDisclosure by remember { mutableStateOf(false) }
     val hubStatus = model.hubStatus
-    val hubNeedsClock = hubStatus != null && hubStatus.state != com.transfer.flash.core.network.enterprise.HubLinkState.NOT_ENROLLED
+    val hubNeedsClock = hubStatus != null && hubStatus.state != com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED
     val hubNow by rememberHubNow(hubNeedsClock)
 
     androidx.compose.runtime.LaunchedEffect(model.isEnterpriseEnrolled) {

@@ -6,10 +6,10 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.relay.AckStatus
 import com.transfer.flash.core.common.protocol.FlashEnvelope
-import com.transfer.flash.core.network.enterprise.EnrollmentOutcome
-import com.transfer.flash.core.network.enterprise.HubLinkState
-import com.transfer.flash.core.network.enterprise.UnenrolResult
-import com.transfer.flash.core.network.enterprise.UnenrollOutcome
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
+import com.transfer.flash.core.enterprise.HubLinkState
+import com.transfer.flash.core.enterprise.UnenrolResult
+import com.transfer.flash.core.enterprise.UnenrollOutcome
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
@@ -159,7 +159,7 @@ class E2eLifecycleContractTest {
         dir.createGroup("g-open", "Open", "eng", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE, emptyList(), DirectoryActor.CONSOLE)
         val a = newDevice(hub, "dev-a").enrolAndConnect()
         val b = newDevice(hub, "dev-b").enrolAndConnect()
-        assertEquals(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, (b.client.directory.requestJoin(hub.url, "g-open") as com.transfer.flash.core.common.result.FlashResult.Success).value.status)
+        assertEquals(com.transfer.flash.core.enterprise.EnterpriseJoinStatus.JOINED, (b.client.directory.requestJoin(hub.url, "g-open") as com.transfer.flash.core.common.result.FlashResult.Success).value.status)
         assertTrue("dev-b" in dir.getGroup("g-open")!!.memberDeviceIds)
         val bCreds = assertNotNull(b.trust.credentials.value)
 

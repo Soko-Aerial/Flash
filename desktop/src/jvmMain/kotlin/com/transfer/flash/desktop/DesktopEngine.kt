@@ -103,8 +103,8 @@ import com.transfer.flash.core.engine.FlashSessionCoordinator
 import com.transfer.flash.core.engine.FlashConfig
 import com.transfer.flash.core.engine.FlashReadiness
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
-import com.transfer.flash.core.network.enterprise.JvmFileEnterpriseTrustStore
-import com.transfer.flash.core.network.enterprise.EnterpriseHub
+import com.transfer.flash.core.enterprise.JvmFileEnterpriseTrustStore
+import com.transfer.flash.core.enterprise.EnterpriseHub
 import com.transfer.flash.core.messaging.hub.FlashRelayHubPort
 import com.transfer.flash.ui.settings.FlashThemeMode
 import java.io.File

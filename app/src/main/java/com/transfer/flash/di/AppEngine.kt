@@ -101,7 +101,7 @@ class AppEngine @Inject constructor(
         get() = DiscoveryEngineHolder.currentEnterpriseTrustStore()
 
     /** The organisation hub (enrolment, session, directory, relay, live status), or null while the engine is stopped. */
-    val enterpriseHub: com.transfer.flash.core.network.enterprise.EnterpriseHub?
+    val enterpriseHub: com.transfer.flash.core.enterprise.EnterpriseHub?
         get() = DiscoveryEngineHolder.currentEnterpriseHub()
 
     /** The user's opt-in to let the hub carry readable chat content (default off). */

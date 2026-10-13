@@ -5,8 +5,8 @@ package com.transfer.flash.server.e2e
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.network.enterprise.EnrollmentOutcome
-import com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus
+import com.transfer.flash.core.enterprise.EnrollmentOutcome
+import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.server.directory.DirectoryActor
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
