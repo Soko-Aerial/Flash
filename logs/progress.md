@@ -1,6 +1,24 @@
 # Progress Log
 
 
+
+## 2026-10-13 - ERROR-396 fixed: hub chat bridge duplicate check keyed by (sender, id)
+
+### Worked on
+The bug found while passing `from` to the acknowledgement: a second sender reusing a message id was dropped as a duplicate.
+
+### Changed
+- `HubChatBridge`: `seen` holds `(from, id)` pairs. New test `twoSendersReusingOneMessageIdAreBothStored` in `HubChatBridgeTest`.
+
+### Verification
+`:core:messaging:jvmTest` green. Mutation check: restoring the id-only key fails the new test.
+
+### Remaining
+Device check `HUBR-10`. The chat repository below the bridge was not checked for dedupe by message id alone.
+
+### Next AI
+Extraction plan (ADR-128) is unchanged by this fix.
+
 ## 2026-10-13 — Owner decisions on ADR-127 P-1..P-6, `from` acknowledgements, extraction plan
 
 ### Worked on

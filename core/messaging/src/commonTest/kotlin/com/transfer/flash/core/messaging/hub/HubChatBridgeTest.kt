@@ -87,6 +87,19 @@ class HubChatBridgeTest {
     }
 
     @Test
+    fun twoSendersReusingOneMessageIdAreBothStored() = runTest {
+        // ERROR-396: the duplicate set was keyed by id alone, so bob's message was dropped as a duplicate of alice's.
+        val sink = RecordingSink(log)
+        val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER, "bob" to HubPeerStanding.MEMBER))
+        assertEquals(HubInboundOutcome.STORED, b.handleInbound(text("same-id", from = "alice"), sink))
+        assertEquals(HubInboundOutcome.STORED, b.handleInbound(text("same-id", from = "bob"), sink))
+        assertEquals(2, sink.direct.size, "both senders' messages are stored")
+        // ...while a real redelivery from the same sender is still a duplicate.
+        assertEquals(HubInboundOutcome.DUPLICATE, b.handleInbound(text("same-id", from = "bob"), sink))
+        assertEquals(2, sink.direct.size)
+    }
+
+    @Test
     fun aFailedStoreIsNotAcknowledgedSoTheHubRedelivers() = runTest {
         val sink = RecordingSink(log, failWith = IllegalStateException("disk full"))
         val outcome = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER)).handleInbound(text("m-2"), sink)

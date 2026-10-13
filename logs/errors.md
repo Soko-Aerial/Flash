@@ -10384,14 +10384,14 @@ The duplicate key does not include the sender. Message ids are chosen by the sen
 None yet.
 
 ### Working fix
-Not applied. Key `seen` by `(from, id)` (persist it the same way), and add a test where two senders use the same id and both messages are delivered.
+`HubChatBridge.seen` is now a set of `(from, id)` pairs; a redelivery from the SAME sender is still a duplicate. New test `twoSendersReusingOneMessageIdAreBothStored`. (The set is in memory only, as before; nothing was persisted.)
 
 ### Verification
-None yet.
+`:core:messaging:jvmTest` green (new test included). Mutation check: with the key put back to the id alone the new test fails (1 of 20 bridge tests). Not device-verified (`HUBR-10`). Note: the chat repository below the bridge was not examined for its own dedupe by message id.
 
 ### Related files
 - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/HubChatBridge.kt`
 - `docs/decisions.md` (ADR-127 addendum)
 
 ### Status
-OPEN
+RESOLVED in code 2026-10-13 (unit-tested, mutation-checked; device check HUBR-10 still owed)

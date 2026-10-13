@@ -149,7 +149,8 @@ public class HubChatBridge(
     private val groupLinked: (String) -> Boolean = { false },
 ) {
     private val seenLock = Mutex()
-    private val seen = LinkedHashSet<String>()
+    // Keyed by (sender, id): ids are chosen by the sender, so two senders may use the same one (ERROR-396, REV-08 on the hub side).
+    private val seen = LinkedHashSet<Pair<String, String>>()
 
     private val _notes = MutableStateFlow<Map<String, HubDeliveryNote>>(emptyMap())
 
@@ -313,14 +314,14 @@ public class HubChatBridge(
      * normally, so a crash between receiving and storing makes the hub redeliver instead of losing the message.
      */
     public suspend fun handleInbound(d: HubInbound, sink: HubInboundSink): HubInboundOutcome {
-        if (seenLock.withLock { d.id in seen }) {
+        if (seenLock.withLock { (d.from to d.id) in seen }) {
             port.recvAck(d.id, d.from)
             return HubInboundOutcome.DUPLICATE
         }
         val outcome = process(d, sink)
         when (outcome) {
             HubInboundOutcome.STORED -> {
-                remember(d.id)
+                remember(d.from, d.id)
                 port.recvAck(d.id, d.from)
             }
             HubInboundOutcome.REJECTED -> port.recvAck(d.id, d.from)
@@ -329,8 +330,8 @@ public class HubChatBridge(
         return outcome
     }
 
-    private suspend fun remember(id: String) = seenLock.withLock {
-        seen += id
+    private suspend fun remember(from: String, id: String) = seenLock.withLock {
+        seen += from to id
         while (seen.size > MAX_SEEN) seen.remove(seen.first())
     }
 
