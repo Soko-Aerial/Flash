@@ -11,6 +11,7 @@ import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
 import com.transfer.flash.core.messaging.protocol.GroupSettings
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flowOf
 
@@ -53,11 +54,41 @@ public interface FlashChatRepository {
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))
 
     /**
-     * Joins an enterprise directory group discovered on the organization hub.
-     * Creates the local conversation record and links it to the hub relay for synchronization.
+     * Asks the organization hub to let this device join a directory group (CLI-04). JOINED creates the local
+     * conversation and links it to the hub; PENDING records a "waiting for approval" row ([pendingEnterpriseJoins]);
+     * REJECTED changes nothing. A hub or network failure is a [FlashResult.Failure] with a sentence for people.
      */
-    public suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<Unit> =
+    public suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
+    /** Groups this device asked to join that no admin has decided yet: group id to name. Empty without a hub. */
+    public val pendingEnterpriseJoins: StateFlow<Map<String, String>>
+        get() = EMPTY_PENDING_JOINS
+
+    /** Asks the hub again about every pending join; returns the ones that were decided (JOINED or REJECTED). */
+    public suspend fun refreshPendingEnterpriseJoins(): List<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> = emptyList()
+
+    /** Join requests waiting for this device's decision as a group admin (optionally for one group). */
+    public suspend fun fetchEnterpriseJoinRequests(groupId: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest>> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
+    /** Approves or declines a join request as a group admin. */
+    public suspend fun decideEnterpriseJoinRequest(requestId: String, approve: Boolean, reason: String? = null): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
+    /** What the organization hub said about messages this device sent through it, by message id (bubble notes). */
+    public val hubDeliveryNotes: StateFlow<Map<String, com.transfer.flash.core.messaging.hub.HubDeliveryNote>>
+        get() = EMPTY_HUB_NOTES
+
+    /** Hub messages dropped instead of stored (did not verify, or readable content switched off), for the connection details (ADR-126). */
+    public val hubDropped: StateFlow<com.transfer.flash.core.messaging.hub.HubDropCounts>
+        get() = EMPTY_HUB_DROPPED
+
+    /**
+     * The user chose to continue sending to [peerDeviceId] through the hub after their sealing key changed (ADR-126).
+     * Returns false when nothing was waiting. Messages held back for that colleague are sent right away.
+     */
+    public suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean = false
 
     /** Approves a pending join request for [groupId] and issues a certificate (GM-4). Admin-only. */
     public suspend fun approveJoinRequest(groupId: String, subjectId: String): FlashResult<Unit> =
@@ -489,3 +520,8 @@ public interface FlashChatRepository {
     public suspend fun fetchEnterpriseDirectoryGroups(department: String? = null): FlashResult<List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup>> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
 }
+
+private val EMPTY_PENDING_JOINS: StateFlow<Map<String, String>> = MutableStateFlow(emptyMap())
+private val EMPTY_HUB_DROPPED: StateFlow<com.transfer.flash.core.messaging.hub.HubDropCounts> =
+    MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts())
+private val EMPTY_HUB_NOTES: StateFlow<Map<String, com.transfer.flash.core.messaging.hub.HubDeliveryNote>> = MutableStateFlow(emptyMap())

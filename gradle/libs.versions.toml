@@ -25,6 +25,10 @@ datastore = "1.1.7"
 work = "2.10.1"
 coroutinesTest = "1.10.2"
 coroutines = "1.10.2"
+# ADR-107: kotlinx.serialization (Apache-2.0) for :core:hub-protocol only. 1.9.0 is the release built against
+# Kotlin 2.2.0 (released 2025-06), i.e. well over two months old and binary-compatible with this build's Kotlin 2.2.10.
+# The compiler plugin (kotlin-serialization) is versioned with Kotlin itself.
+kotlinxSerialization = "1.9.0"
 robolectric = "4.16.1"
 hilt = "2.60.1"
 ksp = "2.3.11"
@@ -138,6 +142,7 @@ sqlcipher-android = { group = "net.zetetic", name = "sqlcipher-android", version
 sqlite-jdbc-crypt = { group = "io.github.willena", name = "sqlite-jdbc", version.ref = "sqliteJdbcCrypt" }
 androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version = "1.81" }
@@ -209,6 +214,7 @@ android-library = { id = "com.android.library", version.ref = "agp" }
 # instead of adding to them. `android-library` stays: nine modules still use it.
 android-kotlin-multiplatform-library = { id = "com.android.kotlin.multiplatform.library", version.ref = "agp" }
 kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 # Phase 17 (D3 = A). The Compose Multiplatform Gradle plugin. It is NOT a replacement for
 # `kotlin-compose` above: since CMP 1.6 the Compose compiler ships with Kotlin itself, so a

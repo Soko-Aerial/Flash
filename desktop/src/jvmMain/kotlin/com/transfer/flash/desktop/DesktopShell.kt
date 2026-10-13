@@ -976,12 +976,27 @@ public fun DesktopShell(
     var showRenameDialog by remember { mutableStateOf(false) }
     var receivedBytes by remember { mutableStateOf<Long?>(null) }
     val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
+    // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
+    val hubObject = remember(ready) { engine.enterpriseHub }
+    val hubStatusFlow = remember(hubObject) {
+        hubObject?.status ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.network.enterprise.HubStatus?>(null)
+    }
+    val hubStatus by hubStatusFlow.collectAsState(initial = null)
+    // ADR-126: the sealing key state and the dropped-message counts for the connection details.
+    val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.network.enterprise.HubSealingKeyState.IDLE) }
+    val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
+    val hubDroppedFlow = remember(engine, ready) { if (ready) engine.chats?.hubDropped else null }
+    val hubDroppedFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
+    val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
+    val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks
+        ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
+    val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCredentials) { hubObject?.relinkableGroups()?.size ?: 0 }
     var isEnrollingDevice by remember { mutableStateOf(false) }
     var enrollDeviceError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials) {
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped) {
         FlashSettingsModel(
             displayName = localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
@@ -1012,43 +1027,41 @@ public fun DesktopShell(
             enterpriseDepartment = enterpriseCredentials?.department.orEmpty(),
             enterpriseRole = enterpriseCredentials?.role ?: "member",
             enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
+            hubStatus = hubStatus,
+            hubContentViaHub = desktopSettings.hubContentViaHub,
+            hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
+                keyState = hubSealingKeyState,
+                unverified = hubDropped.unverified,
+                readableOff = hubDropped.readableOff,
+            ),
+            hubRelinkableGroups = hubRelinkable,
         )
     }
 
     val onEnrollDeviceAction: (String) -> Unit = { link ->
-        val invite = com.transfer.flash.core.network.enterprise.EnrollmentInvite.parseOrNull(link)
+        val invite = com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link)
+        val hub = engine.enterpriseHub
         if (invite == null) {
-            enrollDeviceError = "Invalid enrollment invitation link format"
-            scope.launch { snackbarHostState.showSnackbar("Invalid invitation link", duration = SnackbarDuration.Short) }
+            enrollDeviceError = "That is not an organisation link. Ask your administrator for a new one."
+        } else if (hub == null) {
+            enrollDeviceError = "Flash is still starting. Try again in a moment."
         } else {
-            val crypto = engine.crypto
-            val trustStore = engine.enterpriseTrustStore
             isEnrollingDevice = true
             enrollDeviceError = null
             scope.launch {
-                snackbarHostState.showSnackbar("Enrolling in ${invite.serverUrl}...", duration = SnackbarDuration.Short)
-                val client = com.transfer.flash.core.network.enterprise.EnterpriseEnrollmentClient(trustStore = trustStore)
-                val result = client.enrollDevice(
-                    invite = invite,
-                    deviceId = engine.localDeviceId,
-                    friendlyName = localFriendlyName,
-                    crypto = crypto,
-                    nowMs = System.currentTimeMillis(),
-                )
+                // One verified, atomic enrolment on the shared hub object (CLI-01).
+                val outcome = hub.enroll(invite)
                 isEnrollingDevice = false
-                when (result) {
-                    is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                when (outcome) {
+                    is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Enrolled -> {
                         enrollDeviceError = null
                         snackbarHostState.showSnackbar(
-                            "Enrolled as ${result.value.role} (${result.value.department ?: "All"})",
+                            "You joined ${outcome.credentials.hubName.ifBlank { "your organisation" }}",
                             duration = SnackbarDuration.Long,
                         )
                     }
-                    is com.transfer.flash.core.common.result.FlashResult.Failure -> {
-                        val errMsg = (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
-                            ?: result.error.toString()
-                        enrollDeviceError = errMsg
-                        snackbarHostState.showSnackbar("Enrollment failed: $errMsg", duration = SnackbarDuration.Long)
+                    is com.transfer.flash.core.network.enterprise.EnrollmentOutcome.Failed -> {
+                        enrollDeviceError = com.transfer.flash.ui.settings.FlashHubStatusMath.enrollFailureText(outcome.reason)
                     }
                 }
             }
@@ -1063,6 +1076,7 @@ public fun DesktopShell(
 
     val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
 
+    val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
     // Chat list content shared by listPaneContent in both single-pane and two-pane modes.
     val chatListPaneContent: @Composable () -> Unit = {
         FlashChatListScreen(
@@ -1121,6 +1135,7 @@ public fun DesktopShell(
                 showJoinGroupDialog = true
             },
             onBrowseOrgGroupsClick = if (settings.isEnterpriseEnrolled) { { showBrowseOrgGroups = true } } else null,
+            pendingApprovalGroupNames = hubPendingJoins.values.toList(),
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
             bottomInset = tabBottomInset,
@@ -1542,6 +1557,7 @@ public fun DesktopShell(
                     }
                 }
             },
+            onConfirmHubKeyChange = { peerId -> scope.launch { chatRepository.confirmHubKeyChange(peerId) } },
             onSkipGroupHistory = { gid ->
                 scope.launch {
                     val res = chatRepository.skipGroupHistory(gid)
@@ -1849,10 +1865,28 @@ public fun DesktopShell(
                         onEnrollDevice = onEnrollDeviceAction,
                         onDisconnectEnterprise = {
                             scope.launch {
-                                engine.enterpriseTrustStore.clearCredentials()
-                                snackbarHostState.showSnackbar("Disconnected from organization", duration = SnackbarDuration.Short)
+                                // CLI-09: tells the hub (or remembers to), clears everything atomically, keeps group links for a later re-enrolment.
+                                val result = engine.enterpriseHub?.unenrol()
+                                snackbarHostState.showSnackbar(
+                                    if (result == null) "Flash is still starting. Try again in a moment."
+                                    else com.transfer.flash.ui.settings.FlashHubStatusMath.unenrolText(result),
+                                    duration = SnackbarDuration.Short,
+                                )
                             }
                         },
+                        onRetryHub = { engine.enterpriseHub?.retryNow() },
+                        onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
+                        onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
+                        onRestoreHubGroups = {
+                            scope.launch {
+                                val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0
+                                snackbarHostState.showSnackbar(
+                                    if (restored == 1) "Restored 1 group" else "Restored $restored groups",
+                                    duration = SnackbarDuration.Short,
+                                )
+                            }
+                        },
+                        onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
                         isEnrollingDevice = isEnrollingDevice,
                         enrollDeviceError = enrollDeviceError,
                         modifier = Modifier.fillMaxSize(),
@@ -2079,44 +2113,21 @@ public fun DesktopShell(
             )
         }
         if (showBrowseOrgGroups) {
+            val pendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
             FlashBrowseOrgGroupsSheet(
                 departmentName = settings.enterpriseDepartment,
                 onDismiss = { showBrowseOrgGroups = false },
-                onLoadGroups = {
-                    val res = chatRepository.fetchEnterpriseDirectoryGroups(settings.enterpriseDepartment)
-                    if (res is com.transfer.flash.core.common.result.FlashResult.Success) {
-                        res.value.map { g ->
-                            com.transfer.flash.ui.chat.FlashBrowseOrgGroupUi(
-                                groupId = g.groupId,
-                                name = g.name,
-                                department = g.department,
-                                memberCount = g.memberCount,
-                                requiresApproval = g.requiresApproval,
-                                description = g.description,
-                            )
-                        }
-                    } else emptyList()
-                },
-                onJoinGroup = { group ->
-                    scope.launch {
-                        val joinRes = chatRepository.joinEnterpriseGroup(group.groupId, group.name)
-                        if (joinRes is com.transfer.flash.core.common.result.FlashResult.Success) {
-                            showBrowseOrgGroups = false
-                            chatRepository.openConversation(group.groupId)
-                            nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
-                            snackbarHostState.showSnackbar(
-                                message = "Joined ${group.name}",
-                                duration = SnackbarDuration.Short,
-                            )
-                        } else {
-                            snackbarHostState.showSnackbar(
-                                message = "Couldn't join group",
-                                duration = SnackbarDuration.Long,
-                            )
-                        }
-                    }
+                onLoadGroups = { chatRepository.fetchEnterpriseDirectoryGroups(settings.enterpriseDepartment) },
+                onJoinGroup = { group -> chatRepository.joinEnterpriseGroup(group.groupId, group.name) },
+                onJoined = { group ->
+                    showBrowseOrgGroups = false
+                    chatRepository.openConversation(group.groupId)
+                    nav.navigate(FlashDestination.Conversation, conversationId = group.groupId)
                 },
                 joinedGroupIds = chatListState.items.map { it.id }.toSet(),
+                pendingGroupIds = pendingJoins.keys,
+                onLoadJoinRequests = { groupId -> chatRepository.fetchEnterpriseJoinRequests(groupId) },
+                onDecideJoinRequest = { request, approve -> chatRepository.decideEnterpriseJoinRequest(request.requestId, approve) },
             )
         }
         if (showJoinGroupDialog) {

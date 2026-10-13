@@ -2,7 +2,7 @@
 
 package com.transfer.flash.core.network.enterprise
 
-import com.transfer.flash.core.security.enterprise.DeviceCert
+import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import kotlinx.coroutines.test.runTest
 import java.io.File

@@ -30,15 +30,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
+import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.shims.FlashBackHandler
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashSpacing
+import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.flashAnimateItem
 import org.jetbrains.compose.ui.tooling.preview.Preview
@@ -101,6 +105,11 @@ fun FlashChatListScreen(
     onBrowseOrgGroupsClick: (() -> Unit)? = null,
     /** Active conversation id in two-pane mode to highlight the currently open chat. */
     activeConversationId: String? = null,
+    /**
+     * Names of organisation groups this device asked to join and is waiting on (CLI-04). Each shows as a
+     * "Waiting for approval" row at the top; the row becomes a normal chat once an admin approves.
+     */
+    pendingApprovalGroupNames: List<String> = emptyList(),
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -118,7 +127,8 @@ fun FlashChatListScreen(
     }
     val searchActive = FlashChatListSearchMath.isSearchActive(searchQuery)
     val showRecents = isSearching && !searchActive && recentSearches.isNotEmpty()
-    val showEmptyState = !isLoading && errorMessage == null && activeItems.isEmpty() && !isSearching
+    val showPending = pendingApprovalGroupNames.isNotEmpty() && !viewingArchived && !isSearching
+    val showEmptyState = !isLoading && errorMessage == null && activeItems.isEmpty() && !isSearching && !showPending
 
     Scaffold(
         modifier = modifier,
@@ -210,6 +220,13 @@ fun FlashChatListScreen(
                         // clipped above it.
                         contentPadding = PaddingValues(bottom = bottomInset),
                     ) {
+                        if (showPending) {
+                            itemsIndexed(
+                                items = pendingApprovalGroupNames,
+                                key = { _, name -> "flash-pending-join-$name" },
+                                contentType = { _, _ -> "pending_join" },
+                            ) { _, name -> FlashPendingJoinRow(name) }
+                        }
                         if (showRecents) {
                             item(key = "flash-recent-searches") {
                                 FlashRecentSearchChips(
@@ -266,6 +283,34 @@ fun FlashChatListScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+/** A group the device asked to join that still needs an admin's approval. */
+@Composable
+private fun FlashPendingJoinRow(groupName: String) {
+    val colors = FlashTheme.colors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space12)
+            .semantics(mergeDescendants = true) { contentDescription = "$groupName, waiting for approval" },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        FlashAvatar(
+            initials = groupName.take(2).uppercase(),
+            seed = groupName,
+            size = FlashDimensions.avatarLg,
+        )
+        Column(Modifier.weight(1f)) {
+            FlashText(text = groupName, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1)
+            FlashText(
+                text = "Waiting for approval",
+                style = FlashTheme.typography.metadataDefault,
+                color = colors.textSecondary,
+            )
         }
     }
 }

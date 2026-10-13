@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.ui.settings
 
 import androidx.compose.foundation.background
@@ -134,9 +136,18 @@ public fun FlashEnrollDialog(
                         )
                         if (parsed.rootFingerprint.isNotBlank()) {
                             FlashText(
-                                text = "Root Fingerprint: ${parsed.rootFingerprint.take(16)}...",
+                                text = "Organisation key: ${com.transfer.flash.core.network.enterprise.HubStatusMath.shortFingerprint(parsed.rootFingerprint)}",
                                 style = FlashTheme.typography.metadataDefault,
                                 color = colors.textSecondary,
+                            )
+                        } else {
+                            // CLI-01: a link without the organisation key cannot be trusted; say so before the tap.
+                            FlashText(
+                                text = FlashHubStatusMath.enrollFailureText(
+                                    com.transfer.flash.core.network.enterprise.EnrollFailureReason.INVITE_NOT_PINNED,
+                                ),
+                                style = FlashTheme.typography.metadataEmphasis,
+                                color = colors.textError,
                             )
                         }
                     }
@@ -168,7 +179,7 @@ public fun FlashEnrollDialog(
         confirmButton = {
             if (parsed != null) {
                 TextButton(
-                    enabled = !isEnrolling,
+                    enabled = !isEnrolling && parsed.rootFingerprint.isNotBlank(),
                     onClick = { onEnroll(inputLink.trim()) },
                 ) {
                     if (isEnrolling) {

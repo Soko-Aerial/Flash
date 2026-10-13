@@ -43,6 +43,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -3509,6 +3510,310 @@ class RealFlashChatRepositoryTest {
         sentAt = System.currentTimeMillis(),
         status = "DELIVERED",
     )
+
+    // ===================== Organisation hub (ADR-120..123, HUBC) =====================
+
+    private class FakeDirectoryApi(
+        var members: List<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember> = emptyList(),
+        var joinAnswer: com.transfer.flash.core.network.enterprise.EnterpriseJoinResult? = null,
+    ) : com.transfer.flash.core.network.enterprise.HubDirectoryApi {
+        var joinCalls = 0
+
+        override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?) =
+            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup>())
+
+        override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String) = FlashResult.Success(members)
+
+        override suspend fun fetchDepartments(hubUrl: String) =
+            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseDepartment>())
+
+        override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?): FlashResult<com.transfer.flash.core.network.enterprise.EnterpriseJoinResult> {
+            joinCalls++
+            return FlashResult.Success(joinAnswer ?: error("no scripted answer"))
+        }
+
+        override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?) =
+            FlashResult.Success(emptyList<com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest>())
+
+        override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?) =
+            FlashResult.Success(com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g"))
+    }
+
+    private fun member(id: String) =
+        com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember(deviceId = id, friendlyName = id, department = "Ops")
+
+    private fun enrolledStore(): com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore =
+        com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore(
+            com.transfer.flash.core.security.enterprise.EnrollmentCredentials(
+                hubUrl = "https://hub.example.test",
+                rootFingerprint = "fp",
+                rootPublicKey = "root",
+                deviceCert = com.transfer.flash.core.hubprotocol.certs.DeviceCert(
+                    deviceId = "my-device-id", subjectPublicKey = "pk", role = "member", department = "Ops",
+                    validFrom = 1L, validTo = Long.MAX_VALUE / 2, serial = 1L, issuerPublicKey = "hub", issuerSignature = "sig",
+                ),
+            ),
+        )
+
+    private class HubRig(
+        val relay: com.transfer.flash.core.messaging.hub.FakeHubRelay,
+        val repository: RealFlashChatRepository,
+        val messages: FakeMessageDao,
+        val outbox: FakeOutboxDao,
+        val directory: FakeDirectoryApi,
+        val trust: com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore,
+        val log: MutableList<String>,
+    )
+
+    private fun hubRig(
+        members: Set<String> = setOf("colleague"),
+        lanUp: Boolean = false,
+        content: Boolean = true,
+        graceMs: Long = 250L,
+        paired: Set<String> = emptySet(),
+    ): HubRig {
+        val log = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val relay = com.transfer.flash.core.messaging.hub.FakeHubRelay(log)
+        val inner = FakeMessageDao()
+        val recording = object : MessageDao by inner {
+            override suspend fun insert(message: MessageEntity): Long {
+                val rowId = inner.insert(message)
+                log += "insert:${message.localId}"
+                return rowId
+            }
+        }
+        val outbox = FakeOutboxDao()
+        val directory = FakeDirectoryApi(members = members.map { member(it) })
+        val trust = enrolledStore()
+        val peers = com.transfer.flash.core.network.enterprise.HubPeerDirectory(directory, hubUrl = { "https://hub.example.test" }, minRefreshMs = 0L)
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = recording,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outbox,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            isTrustedPeer = { it in paired },
+            transportSink = MessageTransportSink { _, _ -> lanUp },
+            ioDispatcher = testDispatcher,
+            enterpriseTrustStore = trust,
+            hubRelay = relay,
+            enterpriseDirectoryClient = directory,
+            hubPeers = peers,
+            hubContentViaHub = { content },
+            hubFallbackGraceMs = graceMs,
+        )
+        return HubRig(relay, repository, inner, outbox, directory, trust, log)
+    }
+
+    private suspend fun awaitUntil(timeoutMs: Long = 4_000, check: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!check() && System.currentTimeMillis() < deadline) kotlinx.coroutines.delay(20)
+    }
+
+    private fun hubText(id: String, from: String = "colleague", body: String = "hello from the hub") =
+        com.transfer.flash.core.messaging.hub.HubInbound(
+            from = from,
+            id = id,
+            type = com.transfer.flash.core.messaging.hub.HubChatBridge.CHAT_FRAME,
+            sentAt = System.currentTimeMillis() - 1_000,
+            payload = com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec.encode(
+                MessageWireFrame.TextMessage(id, "my-device-id", from, "Colleague", body, System.currentTimeMillis() - 1_000),
+            )!!,
+        )
+
+    @Test
+    fun `HUBC a hub message is stored first and only then acknowledged to the hub`() = runBlocking {
+        val rig = hubRig()
+        rig.relay.deliver(hubText("hub-m1"))
+        awaitUntil { rig.relay.recvAcks.contains("hub-m1") }
+
+        assertNotNull(rig.messages.messages["hub-m1"])
+        assertEquals(listOf("insert:hub-m1", "recvAck:hub-m1"), rig.log.filter { it.endsWith("hub-m1") })
+    }
+
+    @Test
+    fun `HUBC a hub message from someone who is not in the directory is dropped but still acknowledged`() = runBlocking {
+        val rig = hubRig()
+        rig.relay.deliver(hubText("hub-m2", from = "stranger"))
+        awaitUntil { rig.relay.recvAcks.contains("hub-m2") }
+
+        assertNull(rig.messages.messages["hub-m2"])
+        assertTrue(rig.relay.recvAcks.contains("hub-m2"))
+    }
+
+    @Test
+    fun `HUBC the same hub delivery twice stores one message`() = runBlocking {
+        val rig = hubRig()
+        rig.relay.deliver(hubText("hub-m3"))
+        rig.relay.deliver(hubText("hub-m3"))
+        awaitUntil { rig.relay.recvAcks.count { it == "hub-m3" } >= 2 }
+
+        assertEquals(1, rig.log.count { it == "insert:hub-m3" })
+        assertEquals(2, rig.relay.recvAcks.count { it == "hub-m3" })
+    }
+
+    @Test
+    fun `HUBC a plain-text group message from the hub is not turned into a group message`() = runBlocking {
+        val rig = hubRig()
+        rig.trust.linkGroupToHub("hub-g1")
+        rig.relay.deliver(
+            com.transfer.flash.core.messaging.hub.HubInbound("colleague", "hub-g1", "GROUP_MSG", 1L, "free text"),
+        )
+        awaitUntil { rig.relay.recvAcks.contains("hub-g1") }
+
+        assertNull("the old fallback stored it with groupId = envelope id", rig.messages.messages["hub-g1"])
+        assertTrue(rig.relay.recvAcks.contains("hub-g1"))
+    }
+
+    @Test
+    fun `HUBC without a LAN session the message goes through the hub at once and stays sent while the hub holds it`() = runBlocking {
+        val rig = hubRig(lanUp = false)
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("see you at nine")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        val sent = rig.relay.sent.single()
+        assertEquals("colleague", sent.to)
+        assertEquals(com.transfer.flash.core.messaging.hub.HubChatBridge.CHAT_FRAME, sent.type)
+        awaitUntil { rig.messages.messages[sent.id]?.status == "SENT" }
+        assertEquals("SENT", rig.messages.messages[sent.id]!!.status)
+
+        // The hub keeps it for the offline colleague: not a failure, and the outbox row stays.
+        rig.relay.ackEvents.emit(com.transfer.flash.core.messaging.hub.HubAckEvent(sent.id, "colleague", com.transfer.flash.core.messaging.hub.HubAckKind.HELD))
+        awaitUntil { rig.repository.hubDeliveryNotes.value.containsKey(sent.id) }
+        assertEquals(false, rig.repository.hubDeliveryNotes.value[sent.id]?.failed)
+        assertEquals("SENT", rig.messages.messages[sent.id]!!.status)
+        assertTrue(rig.outbox.queue.containsKey(sent.id))
+    }
+
+    @Test
+    fun `HUBC a refusal from the hub fails the message with a sentence and ends its retries`() = runBlocking {
+        val rig = hubRig(lanUp = false)
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("will not arrive")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+        val id = rig.relay.sent.single().id
+
+        rig.relay.ackEvents.emit(com.transfer.flash.core.messaging.hub.HubAckEvent(id, "colleague", com.transfer.flash.core.messaging.hub.HubAckKind.QUOTA))
+        awaitUntil { rig.messages.messages[id]?.status == "FAILED" }
+
+        assertEquals("FAILED", rig.messages.messages[id]!!.status)
+        assertFalse(rig.outbox.queue.containsKey(id))
+        assertEquals(true, rig.repository.hubDeliveryNotes.value[id]?.failed)
+    }
+
+    @Test
+    fun `HUBC when the LAN delivers and the receipt comes the hub is never used`() = runBlocking {
+        val rig = hubRig(lanUp = true, graceMs = 300L)
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("over the LAN")
+        awaitUntil { rig.outbox.queue.isNotEmpty() }
+        val id = rig.outbox.queue.keys.single()
+
+        rig.repository.onInboundWireFrame(MessageWireFrame.DeliveryReceipt(id, "colleague", "colleague", System.currentTimeMillis()), "colleague")
+        kotlinx.coroutines.delay(700)
+
+        assertTrue("the hub must stay silent when the LAN already delivered", rig.relay.sent.isEmpty())
+    }
+
+    @Test
+    fun `HUBC when the LAN write gets no receipt within the grace the hub also gets the message`() = runBlocking {
+        val rig = hubRig(lanUp = true, graceMs = 300L)
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("lost on the LAN")
+        awaitUntil(timeoutMs = 3_000) { rig.relay.sent.isNotEmpty() }
+
+        assertEquals(1, rig.relay.sent.size)
+        assertEquals("colleague", rig.relay.sent.single().to)
+    }
+
+    @Test
+    fun `HUBC with the content setting off nothing readable reaches the hub and the message waits`() = runBlocking {
+        val rig = hubRig(lanUp = false, content = false)
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("private")
+        kotlinx.coroutines.delay(600)
+
+        assertTrue(rig.relay.sent.isEmpty())
+        assertEquals("it stays queued for the LAN", 1, rig.outbox.queue.size)
+    }
+
+    @Test
+    fun `HUBC a delivery receipt for a hub message goes back through the hub when there is no LAN session`() = runBlocking {
+        val rig = hubRig(lanUp = false)
+        rig.relay.deliver(hubText("hub-m9"))
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        val receipt = rig.relay.sent.single()
+        assertEquals("colleague", receipt.to)
+        assertTrue(receipt.payload.startsWith(com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec.RECEIPT_PREFIX))
+    }
+
+    @Test
+    fun `HUBC a message the hub holds is not failed after the thirty minute LAN budget`() = runBlocking {
+        val rig = hubRig(lanUp = false)
+        val now = System.currentTimeMillis()
+        rig.messages.insert(msg("held-old", "colleague", "old but held").copy(status = "PENDING", senderId = "my-device-id"))
+        rig.outbox.enqueue(OutboxEntity("held-old", attempts = 3, nextAttemptAt = now, payloadJson = "x", createdAt = now - OUTBOX_GIVE_UP_BUDGET_MS - 60_000))
+        rig.repository.notifyPeerSessionUp("colleague")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        assertNotEquals("FAILED", rig.messages.messages["held-old"]!!.status)
+        assertTrue(rig.outbox.queue.containsKey("held-old"))
+    }
+
+    @Test
+    fun `HUBC joining a group with approval records a pending row and a later answer decides it`() = runBlocking {
+        val rig = hubRig()
+        val pending = com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.PENDING
+        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(pending, "g-ops", name = "Ops")
+        val first = rig.repository.joinEnterpriseGroup("g-ops", "Ops") as FlashResult.Success
+        assertEquals(pending, first.value.status)
+        assertEquals(mapOf("g-ops" to "Ops"), rig.repository.pendingEnterpriseJoins.value)
+        assertFalse("pending must not link or create the group", rig.trust.isGroupLinkedToHub("g-ops"))
+
+        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g-ops", name = "Ops",
+        )
+        val decided = rig.repository.refreshPendingEnterpriseJoins()
+        assertEquals(1, decided.size)
+        assertTrue(rig.repository.pendingEnterpriseJoins.value.isEmpty())
+        assertTrue(rig.trust.isGroupLinkedToHub("g-ops"))
+    }
+
+    @Test
+    fun `HUBC a refused join creates nothing and clears the pending row`() = runBlocking {
+        val rig = hubRig()
+        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.PENDING, "g-x", name = "X",
+        )
+        rig.repository.joinEnterpriseGroup("g-x", "X")
+        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.REJECTED, "g-x", reason = "Not for your team",
+        )
+        val decided = rig.repository.refreshPendingEnterpriseJoins()
+
+        assertEquals(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.REJECTED, decided.single().status)
+        assertTrue(rig.repository.pendingEnterpriseJoins.value.isEmpty())
+        assertFalse(rig.trust.isGroupLinkedToHub("g-x"))
+    }
+
+    @Test
+    fun `HUBC joining an open group creates the conversation and links it only after the hub says joined`() = runBlocking {
+        val rig = hubRig()
+        rig.directory.joinAnswer = com.transfer.flash.core.network.enterprise.EnterpriseJoinResult(
+            com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, "g-open", name = "Open team",
+        )
+        val answer = rig.repository.joinEnterpriseGroup("g-open", "Open team") as FlashResult.Success
+
+        assertEquals(com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus.JOINED, answer.value.status)
+        assertEquals(1, rig.directory.joinCalls)
+        assertTrue(rig.trust.isGroupLinkedToHub("g-open"))
+    }
 
     private companion object {
         /** Mirrors `RealFlashChatRepository.OUTBOX_GIVE_UP_AFTER_MS` (private to the repository). */

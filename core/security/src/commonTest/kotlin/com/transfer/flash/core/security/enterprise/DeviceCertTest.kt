@@ -3,12 +3,19 @@
 package com.transfer.flash.core.security.enterprise
 
 import com.transfer.flash.core.common.protocol.Base64
+import com.transfer.flash.core.hubprotocol.certs.ChainStatus
+import com.transfer.flash.core.hubprotocol.certs.DelegationCert
+import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.security.crypto.SoftwareFlashCrypto
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
+/**
+ * The certificate model moved to `:core:hub-protocol` (ADR-107). These tests exercise it with the REAL client crypto
+ * ([SoftwareFlashCrypto] through [FlashCryptoEcdsaVerifier]); the pure logic is covered in hub-protocol's own tests.
+ */
 class DeviceCertTest {
 
     @Test
@@ -33,6 +40,7 @@ class DeviceCertTest {
     @Test
     fun testSignAndVerifyDirectRootIssuance() {
         val rootCrypto = SoftwareFlashCrypto()
+        val verifier = FlashCryptoEcdsaVerifier(rootCrypto)
         val rootPublicKeyBase64 = Base64.encode(rootCrypto.identityPublicKeyEncoded)
 
         val clientCrypto = SoftwareFlashCrypto()
@@ -53,21 +61,19 @@ class DeviceCertTest {
         val signatureBytes = rootCrypto.sign(unsigned.canonicalBytes())
         val signedCert = unsigned.copy(issuerSignature = Base64.encode(signatureBytes))
 
-        // Verify direct signature
-        assertTrue(signedCert.verifySignature(rootCrypto))
-        assertTrue(signedCert.isValidAt(2000L))
-        assertFalse(signedCert.isValidAt(6000L))
+        assertTrue(signedCert.verifySignature(verifier))
+        // Exact window: skew 0 (the default tolerates 60 s at both ends).
+        assertTrue(signedCert.isValidAt(2000L, 0L))
+        assertFalse(signedCert.isValidAt(6000L, 0L))
 
-        // Verify chain with direct root (delegation = null)
-        assertTrue(signedCert.verifyChain(delegation = null, rootPublicKey = rootPublicKeyBase64, crypto = rootCrypto, timestamp = 2000L))
-
-        // Wrong root fails
-        assertFalse(signedCert.verifyChain(delegation = null, rootPublicKey = "wrongRootKey", crypto = rootCrypto, timestamp = 2000L))
+        assertTrue(signedCert.verifyChain(delegation = null, rootPublicKey = rootPublicKeyBase64, verifier = verifier, timestamp = 2000L))
+        assertFalse(signedCert.verifyChain(delegation = null, rootPublicKey = "wrongRootKey", verifier = verifier, timestamp = 2000L))
     }
 
     @Test
     fun testDelegatedAuthorityChainVerification() {
         val rootCrypto = SoftwareFlashCrypto()
+        val verifier = FlashCryptoEcdsaVerifier(rootCrypto)
         val rootPublicKeyBase64 = Base64.encode(rootCrypto.identityPublicKeyEncoded)
 
         val serverCrypto = SoftwareFlashCrypto()
@@ -76,7 +82,6 @@ class DeviceCertTest {
         val clientCrypto = SoftwareFlashCrypto()
         val clientPublicKeyBase64 = Base64.encode(clientCrypto.identityPublicKeyEncoded)
 
-        // 1. Root delegates to Server
         val unsignedDelegation = DelegationCert(
             rootPublicKey = rootPublicKeyBase64,
             delegatePublicKey = serverPublicKeyBase64,
@@ -90,11 +95,10 @@ class DeviceCertTest {
         val delSig = rootCrypto.sign(unsignedDelegation.canonicalBytes())
         val delegation = unsignedDelegation.copy(signature = Base64.encode(delSig))
 
-        assertTrue(delegation.verifySignature(rootCrypto))
+        assertTrue(delegation.verifySignature(verifier))
         assertTrue(delegation.hasScope(DelegationCert.SCOPE_ENROL_MEMBER))
         assertFalse(delegation.hasScope(DelegationCert.SCOPE_ENROL_ADMIN))
 
-        // 2. Server issues member certificate to Client
         val unsignedDeviceCert = DeviceCert(
             deviceId = "dev-bob-02",
             subjectPublicKey = clientPublicKeyBase64,
@@ -109,29 +113,38 @@ class DeviceCertTest {
         val certSig = serverCrypto.sign(unsignedDeviceCert.canonicalBytes())
         val deviceCert = unsignedDeviceCert.copy(issuerSignature = Base64.encode(certSig))
 
-        // 3. Verify complete chain (DeviceCert -> DelegationCert -> Root)
         assertTrue(
-            deviceCert.verifyChain(
-                delegation = delegation,
-                rootPublicKey = rootPublicKeyBase64,
-                crypto = rootCrypto,
-                timestamp = 3000L,
-            )
+            deviceCert.verifyChain(delegation = delegation, rootPublicKey = rootPublicKeyBase64, verifier = verifier, timestamp = 3000L)
         )
 
-        // 4. Delegated server cannot issue admin role without SCOPE_ENROL_ADMIN
+        // A delegated server without the admin scope cannot issue admin certificates.
         val forgedAdminCert = deviceCert.copy(
             role = DeviceCert.ROLE_ADMIN,
             issuerSignature = Base64.encode(serverCrypto.sign(deviceCert.copy(role = DeviceCert.ROLE_ADMIN).canonicalBytes())),
         )
-        assertFalse(
-            forgedAdminCert.verifyChain(
-                delegation = delegation,
-                rootPublicKey = rootPublicKeyBase64,
-                crypto = rootCrypto,
-                timestamp = 3000L,
-            ),
-            "Delegated server without admin scope must not issue admin certificates"
+        assertEquals(
+            ChainStatus.SCOPE_DENIED,
+            forgedAdminCert.checkChain(delegation, rootPublicKeyBase64, verifier, 3000L),
+            "Delegated server without admin scope must not issue admin certificates",
         )
+
+        // SEC-18: the leaf must not outlive its delegation (delegation ends at 10000).
+        val unsignedLong = unsignedDeviceCert.copy(validTo = 20_000L)
+        val longCert = unsignedLong.copy(issuerSignature = Base64.encode(serverCrypto.sign(unsignedLong.canonicalBytes())))
+        assertEquals(ChainStatus.LEAF_OUTSIDE_DELEGATION, longCert.checkChain(delegation, rootPublicKeyBase64, verifier, 3000L, clockSkewToleranceMs = 0L))
+    }
+
+    @Test
+    fun credentialsExpiryIsComparedAgainstNowNotEnrolmentTime() {
+        val cert = DeviceCert("d", "k", DeviceCert.ROLE_MEMBER, null, 1_000L, 5_000L, 1L, "i", "s")
+        val creds = EnrollmentCredentials(
+            hubUrl = "https://h", rootFingerprint = "F", rootPublicKey = "r", deviceCert = cert, enrolledAtMs = 2_000L,
+        )
+        // enrolledAtMs (2000) is inside the window; the old implementation therefore reported "not expired" for ever.
+        assertFalse(creds.isExpiredAt(2_000L))
+        assertFalse(creds.isExpiredAt(5_000L))
+        assertTrue(creds.isExpiredAt(5_001L))
+        assertTrue(creds.isExpired, "the real clock is long past 1970-01-06")
+        assertTrue(creds.needsRenewalAt(5_001L))
     }
 }

@@ -12,10 +12,23 @@ import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
-import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryClient
+import com.transfer.flash.core.messaging.hub.HubAckEvent
+import com.transfer.flash.core.messaging.hub.HubChatBridge
+import com.transfer.flash.core.messaging.hub.HubDeliveryNote
+import com.transfer.flash.core.messaging.hub.HubDropCounts
+import com.transfer.flash.core.messaging.hub.HubNoticeMath
+import com.transfer.flash.core.messaging.hub.HubWaitReason
+import com.transfer.flash.core.messaging.hub.HubInboundSink
+import com.transfer.flash.core.messaging.hub.HubRelayPort
+import com.transfer.flash.core.messaging.hub.HubSealingPort
+import com.transfer.flash.core.network.enterprise.EnterpriseJoinResult
+import com.transfer.flash.core.network.enterprise.EnterpriseJoinRequest
+import com.transfer.flash.core.network.enterprise.EnterpriseJoinStatus
+import com.transfer.flash.core.network.enterprise.HubDirectoryApi
+import com.transfer.flash.core.network.enterprise.HubPeerDirectory
+import com.transfer.flash.core.network.enterprise.HubPeerStanding
 import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryGroup
 import com.transfer.flash.core.network.enterprise.EnterpriseDirectoryMember
-import com.transfer.flash.core.network.relay.FlashRelayClient
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
 import kotlin.math.abs
 import com.transfer.flash.core.messaging.model.FlashAttachmentProgress
@@ -25,6 +38,8 @@ import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
+import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
+import com.transfer.flash.core.security.enterprise.HubSealingPin
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
@@ -136,6 +151,8 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -196,8 +213,8 @@ public class RealFlashChatRepository(
     private val isTrustedPeer: (String) -> Boolean = { false },
     /** Checks whether E2E encryption is established with [conversationId]. */
     private val isChannelEncrypted: (String) -> Boolean = { false },
-    private val groupTransportSink: GroupTransportSink? = null,
-    private val transportSink: MessageTransportSink? = null,
+    groupTransportSink: GroupTransportSink? = null,
+    transportSink: MessageTransportSink? = null,
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     /**
@@ -334,9 +351,87 @@ public class RealFlashChatRepository(
      */
     private val performanceMode: () -> FlashPerformanceMode = { FlashPerformanceMode.HIGH },
     private val enterpriseTrustStore: EnterpriseTrustStore? = null,
-    private val relayClient: FlashRelayClient? = null,
-    private val enterpriseDirectoryClient: EnterpriseDirectoryClient? = null,
+    /** The organisation hub's relay as the chat sees it (ADR-122). Null when the host has no hub. */
+    hubRelay: HubRelayPort? = null,
+    private val enterpriseDirectoryClient: HubDirectoryApi? = null,
+    /** The hub directory's view of a device, for hub senders that are not paired (CLI-14). */
+    private val hubPeers: HubPeerDirectory? = null,
+    /** The user's opt-in to let the hub carry READABLE chat content. Default OFF (ADR-121). */
+    private val hubContentViaHub: () -> Boolean = { false },
+    /** End-to-end sealing of hub content (ADR-121, ADR-126). Null when the host has no sealing key store. */
+    private val hubSealing: HubSealingPort? = null,
+    /** After a LAN send succeeds, how long to wait for a delivery receipt before also sending through the hub. */
+    private val hubFallbackGraceMs: Long = HUB_FALLBACK_GRACE_MS,
 ) : FlashChatRepository, AutoCloseable {
+
+    /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
+    private val lanTransportSink: MessageTransportSink? = transportSink
+    private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink
+
+    /** The chat's whole relationship with the hub (null without a hub). */
+    private val hubBridge: HubChatBridge? = hubRelay?.let { relay ->
+        HubChatBridge(
+            localDeviceId = localDeviceId,
+            port = relay,
+            timeSource = timeSource,
+            contentViaHub = hubContentViaHub,
+            sealing = hubSealing,
+            standing = { id -> hubPeers?.standing(id) ?: HubPeerStanding.UNKNOWN },
+            isPaired = isTrustedPeer,
+            groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
+        )
+    }
+
+    /** What the hub said about each message this device sent through it (bubble notes). Empty without a hub. */
+    override val hubDeliveryNotes: StateFlow<Map<String, HubDeliveryNote>> =
+        hubBridge?.notes ?: MutableStateFlow(emptyMap())
+
+    /** Hub messages dropped instead of stored, as counts for the connection details (ADR-126). */
+    override val hubDropped: StateFlow<HubDropCounts> =
+        if (hubBridge == null) MutableStateFlow(HubDropCounts())
+        else combine(hubBridge.droppedUnverified, hubBridge.droppedPlain) { unverified, plain -> HubDropCounts(unverified, plain) }
+            .stateIn(scope, SharingStarted.Eagerly, HubDropCounts())
+
+    /** What the hub path of a chat needs the user to know: why messages are held, and changed keys (ADR-126). */
+    private class HubNoticeInputs(val waiting: Map<String, HubWaitReason>, val changed: Map<String, HubSealingPin>)
+
+    private val hubNoticeInputs: Flow<HubNoticeInputs> =
+        if (hubBridge == null) flowOf(HubNoticeInputs(emptyMap(), emptyMap()))
+        else combine(hubBridge.waiting, hubSealing?.pendingKeyChanges ?: flowOf(emptyMap())) { waiting, changed -> HubNoticeInputs(waiting, changed) }
+
+    override suspend fun confirmHubKeyChange(peerDeviceId: String): Boolean {
+        val bridge = hubBridge ?: return false
+        if (!bridge.confirmKeyChange(peerDeviceId)) return false
+        // Messages held back for this colleague are due again now, not at the next backoff step.
+        notifyOutboxDrain()
+        return true
+    }
+
+    /**
+     * Frames the outbox does not drive (receipts, reactions, deletes, reads) go LAN first and fall back to the hub when
+     * there is no LAN session. The outbox itself uses [lanTransportSink] and decides per message (see [sendDirectViaPaths]).
+     */
+    private val transportSink: MessageTransportSink? = if (hubBridge == null) transportSink else MessageTransportSink { target, frame ->
+        val lan = lanTransportSink?.send(target, frame) == true
+        if (lan) return@MessageTransportSink true
+        if (frame is MessageWireFrame.TypingFrame) {
+            return@MessageTransportSink frame.isTyping && hubBridge.canSignal(target) &&
+                hubBridge.sendTyping(frame.conversationId.ifBlank { localDeviceId }, target)
+        }
+        if (!hubBridge.canCarry(target)) return@MessageTransportSink false
+        hubBridge.sendDirect(target, hubFrameId(frame), timeSource.nowMs(), frame)
+    }
+
+    private val groupTransportSink: GroupTransportSink? = if (hubBridge == null) groupTransportSink else GroupTransportSink { target, frame ->
+        val lan = lanGroupTransportSink?.send(target, frame) == true
+        if (lan) return@GroupTransportSink true
+        val chatLevel = frame is GroupWireFrame.Message || frame is GroupWireFrame.Receipt ||
+            frame is GroupWireFrame.Read || frame is GroupWireFrame.DeleteForEveryone
+        if (!chatLevel || enterpriseTrustStore?.isGroupLinkedToHub(frame.groupId) != true || !hubBridge.canCarry(target, group = true)) {
+            return@GroupTransportSink false
+        }
+        hubBridge.sendGroup(target, hubGroupFrameId(frame), timeSource.nowMs(), frame)
+    }
 
     override fun close() {
         scope.cancel()
@@ -575,6 +670,22 @@ public class RealFlashChatRepository(
 
     /** What the catch-up banner needs: arrivals so far, and the holder's estimate of the total while a page chain continues (ADR-100). */
     private data class SyncBanner(val received: Int, val expected: Int?)
+
+    private class SyncAndHub(val sync: SyncBanner?, val hub: HubNoticeInputs)
+
+    private fun hubNoticeFor(conversationId: String, isGroup: Boolean, peerOnline: Boolean, inputs: HubNoticeInputs): FlashHubNoticeUi? {
+        if (hubBridge == null) return null
+        return HubNoticeMath.notice(
+            conversationId = conversationId,
+            isGroup = isGroup,
+            groupLinkedToHub = isGroup && enterpriseTrustStore?.isGroupLinkedToHub(conversationId) == true,
+            contentViaHub = hubContentViaHub(),
+            peerName = if (isGroup) "" else peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId,
+            peerOnline = peerOnline,
+            waiting = inputs.waiting[conversationId],
+            changedKey = inputs.changed[conversationId],
+        )
+    }
 
     private val groupSyncActivity = MutableStateFlow<Map<String, SyncActivity>>(emptyMap())
 
@@ -898,41 +1009,46 @@ public class RealFlashChatRepository(
             outboxDao.observeCount().collect { notifyOutboxDrain() }
         }
 
-        // Enterprise relay inbound message dispatcher (E4).
-        // Idempotent: duplicates from LAN and Relay are safely absorbed via Room unique keys.
-        if (relayClient != null) {
+        // Hub inbound (ADR-122). Deliveries are taken from the raw stream (not the envelope view), de-duplicated by id,
+        // checked for sender trust (CLI-14) and handed to the same handlers LAN frames use. The hub is told the
+        // message is stored (FLASH_RECV_ACK) only AFTER the handler returned, so a crash in between means redelivery.
+        if (hubBridge != null && hubRelay != null) {
+            val hubSink = object : HubInboundSink {
+                override suspend fun direct(frame: MessageWireFrame, from: String) = onInboundWireFrame(frame, from)
+                override suspend fun group(frame: GroupWireFrame, from: String) = onInboundGroupWireFrame(from, frame)
+            }
             scope.launch(ioDispatcher) {
-                relayClient.incomingEnvelopes.collect { env ->
+                hubRelay.deliveries.collect { delivery -> hubBridge.handleInbound(delivery, hubSink) }
+            }
+            scope.launch(ioDispatcher) {
+                hubRelay.acks.collect { event -> runCatching { onHubAck(event) } }
+            }
+            scope.launch(ioDispatcher) {
+                hubRelay.typing.collect { typing ->
                     runCatching {
-                        when (env.type) {
-                            "MSG_TEXT" -> {
-                                val frame = MessageWireFrame.TextMessage(
-                                    localId = env.id,
-                                    conversationId = env.senderId,
-                                    senderId = env.senderId,
-                                    senderName = peerNameResolver(env.senderId) ?: env.senderId,
-                                    text = env.payloadJson,
-                                    sentAt = env.sentAt,
-                                )
-                                onInboundWireFrame(frame, env.senderId)
-                            }
-                            "GROUP_MSG" -> {
-                                val decoded = GroupFrameCodec.decode(env.payloadJson)
-                                if (decoded is GroupWireFrame.Message) {
-                                    onInboundGroupWireFrame(env.senderId, decoded)
-                                } else {
-                                    val frame = GroupWireFrame.Message(
-                                        groupId = env.id,
-                                        messageId = env.id,
-                                        from = env.senderId,
-                                        senderName = peerNameResolver(env.senderId) ?: env.senderId,
-                                        sentAt = env.sentAt,
-                                        text = env.payloadJson,
-                                    )
-                                    onInboundGroupWireFrame(env.senderId, frame)
-                                }
-                            }
-                        }
+                        if (!hubBridge.isSenderAllowed(typing.from)) return@runCatching
+                        onInboundWireFrame(
+                            MessageWireFrame.TypingFrame(
+                                conversationId = typing.conversationId.ifBlank { typing.from },
+                                memberId = typing.from,
+                                memberName = peerNameResolver(typing.from) ?: typing.from,
+                                isTyping = true,
+                                timestampMs = timeSource.nowMs(),
+                            ),
+                            typing.from,
+                        )
+                    }
+                }
+            }
+        }
+        // Join requests the hub has not decided yet: ask again now and then (a repeat of a pending request answers
+        // PENDING until an admin decides, then JOINED or REJECTED).
+        if (enterpriseDirectoryClient != null && enterpriseTrustStore != null) {
+            scope.launch(ioDispatcher) {
+                while (true) {
+                    delay(PENDING_JOIN_POLL_MS)
+                    if (enterpriseTrustStore.pendingJoins.value.isNotEmpty()) {
+                        runCatching { refreshPendingEnterpriseJoins() }
                     }
                 }
             }
@@ -1137,11 +1253,13 @@ public class RealFlashChatRepository(
             }
             val rosterFlow = combine(rawRosterFlow, conversationRefreshTrigger) { roster, _ -> roster }
             // UI-052: how many catch-up messages have arrived, for the banner; nothing for a direct chat.
-            val syncFlow = if (isGroupConversation) {
+            val rawSyncFlow = if (isGroupConversation) {
                 groupSyncActivity.map { all -> all[conversationId]?.let { SyncBanner(it.received, it.expected) } }.distinctUntilChanged()
             } else {
                 flowOf(null)
             }
+            // The catch-up banner and the hub notice share one slot of the outer combine (it is at its typed limit).
+            val syncFlow = combine(rawSyncFlow, hubNoticeInputs) { sync, hub -> SyncAndHub(sync, hub) }
             // Outer combine (5 flows): join live presence, typing, roster and catch-up changes onto the header (#11).
             combine(
                 contentFlow,
@@ -1149,7 +1267,8 @@ public class RealFlashChatRepository(
                 typingFlow,
                 rosterFlow,
                 syncFlow,
-            ) { content, peers, typingByConversation, _, syncBanner ->
+            ) { content, peers, typingByConversation, _, syncAndHub ->
+                val syncBanner = syncAndHub.sync
                 // Group Phase A: a group thread derives its header from the member roster, not
                 // from a peer-name lookup (a groupId is not a device id — the UUID used to win).
                 val conversationEntity = conversationDao.get(conversationId)
@@ -1226,9 +1345,11 @@ public class RealFlashChatRepository(
                         pendingJoinRequests = pendingReqs,
                         groupSettings = currentSettings,
                         groupLocalPreferences = localPrefs,
+                        hubNotice = hubNoticeFor(conversationId, true, false, syncAndHub.hub),
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
                     directHeaderState(content, peers, typingByConversation, conversationId)
+                        .copy(hubNotice = hubNoticeFor(conversationId, false, conversationId in peers.online, syncAndHub.hub))
                         .let { it to Pair(content.newestMessageId, content.newestInboundId) }
                 }
             }.collectLatest { (state, cursors) ->
@@ -5500,7 +5621,9 @@ public class RealFlashChatRepository(
             // permanently FAILED every queued message even though the peer came back fine a
             // minute later. `attempts` now only picks the spacing. `createdAt` is stamped at
             // enqueue by every producer.
-            if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
+            // A message the organisation hub holds (or could hold) for its recipient may wait days, not minutes.
+            val hubHolds = hubBridge?.wouldHold(item.localId, message.conversationId) == true
+            if (queuedForMs >= (if (hubHolds) HUB_GIVE_UP_AFTER_MS else OUTBOX_GIVE_UP_AFTER_MS)) {
                 // Unacknowledged for the whole budget: mark the message Failed (surfaces a retry
                 // affordance in the bubble) and drop the outbox row so it stops being re-claimed.
                 messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
@@ -5508,23 +5631,7 @@ public class RealFlashChatRepository(
                 continue
             }
             val success = sendWithTimeout(wireFrame.localId, wireFrame.conversationId) {
-                if (relayClient != null && enterpriseTrustStore?.isEnrolled == true) {
-                    raceTransports(
-                        lanAction = { transportSink?.send(wireFrame.conversationId, wireFrame) == true },
-                        relayAction = {
-                            val envelope = FlashEnvelope(
-                                id = wireFrame.localId,
-                                type = "MSG_TEXT",
-                                payloadJson = message.text,
-                                senderId = localDeviceId,
-                                sentAt = message.sentAt,
-                            )
-                            relayClient.sendEnvelope(wireFrame.conversationId, envelope)
-                        }
-                    )
-                } else {
-                    transportSink?.send(wireFrame.conversationId, wireFrame) == true
-                }
+                sendDirectViaPaths(wireFrame)
             }
             if (success) {
                 // Single tick, unchanged — the bytes are on the wire. The row itself survives
@@ -5539,7 +5646,9 @@ public class RealFlashChatRepository(
             // insert is idempotent (IGNORE on localId) and it re-acks every TextMessage whether
             // the row was new or a replay, so the extra frame is precisely what produces the
             // receipt that clears this row.
-            val nextAttemptAt = now + backoffDelayMs(item.attempts + 1)
+            // Once the hub has the message the recipient's receipt can take as long as the recipient is away, so the
+            // resend spacing is long instead of the retry ladder.
+            val nextAttemptAt = now + if (success && hubBridge?.isHubAccepted(item.localId) == true) HUB_RESEND_MS else backoffDelayMs(item.attempts + 1)
             outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
             scheduled += nextAttemptAt
         }
@@ -5563,8 +5672,9 @@ public class RealFlashChatRepository(
         queuedForMs: Long,
     ): Long? {
         val deliveries = groupDeliveryDao ?: return null
-        val sink = groupTransportSink ?: return null
-        if (queuedForMs >= OUTBOX_GIVE_UP_AFTER_MS) {
+        val sink = lanGroupTransportSink ?: return null
+        val hubHolds = hubBridge != null && enterpriseTrustStore?.isGroupLinkedToHub(message.conversationId) == true
+        if (queuedForMs >= (if (hubHolds) HUB_GIVE_UP_AFTER_MS else OUTBOX_GIVE_UP_AFTER_MS)) {
             val delivered = deliveries.deliveredCount(item.localId)
             if (delivered == 0) {
                 messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
@@ -5594,23 +5704,7 @@ public class RealFlashChatRepository(
             pending.map { delivery ->
                 async {
                     val sent = sendWithTimeout(item.localId, delivery.memberId) {
-                        if (isLinkedToHub && relayClient != null) {
-                            raceTransports(
-                                lanAction = { sink.send(delivery.memberId, frame) },
-                                relayAction = {
-                                    val envelope = FlashEnvelope(
-                                        id = item.localId,
-                                        type = "GROUP_MSG",
-                                        payloadJson = GroupFrameCodec.encode(frame),
-                                        senderId = localDeviceId,
-                                        sentAt = message.sentAt,
-                                    )
-                                    relayClient.sendEnvelope(delivery.memberId, envelope)
-                                }
-                            )
-                        } else {
-                            sink.send(delivery.memberId, frame)
-                        }
+                        sendGroupViaPaths(sink, isLinkedToHub, delivery.memberId, item.localId, message.sentAt, frame)
                     }
                     delivery.memberId to sent
                 }
@@ -6483,6 +6577,18 @@ public class RealFlashChatRepository(
         // undelivered message stays retryable for half an hour, which comfortably outlasts the
         // screen-off/Doze windows that used to burn through an 8-attempt cap in ~2 minutes.
         const val OUTBOX_GIVE_UP_AFTER_MS = 30 * 60 * 1000L
+
+        /** ADR-122: how long a message the organisation hub holds (or could hold) stays retryable. */
+        const val HUB_GIVE_UP_AFTER_MS = 8L * 24 * 60 * 60 * 1000L
+
+        /** ADR-122: resend spacing once the hub has accepted a message. */
+        const val HUB_RESEND_MS = 15L * 60 * 1000L
+
+        /** ADR-122: how long a LAN-sent message may go without a delivery receipt before the hub also gets it. */
+        const val HUB_FALLBACK_GRACE_MS = 2_000L
+
+        /** How often undecided join requests are asked again. */
+        const val PENDING_JOIN_POLL_MS = 60_000L
         const val OUTBOX_BASE_BACKOFF_MS = 1_000L
         const val OUTBOX_MAX_BACKOFF_MS = 60_000L
 
@@ -6524,25 +6630,91 @@ public class RealFlashChatRepository(
     }
 
     /**
-     * Races direct LAN transport against Enterprise Hub Relay concurrently (P-REF-3).
-     * The first transport to report success immediately returns, while the second is cancelled.
+     * One direct text message over the best path (ADR-122, LAN first). A live LAN session is tried first; when it
+     * fails (or there is none) the hub carries the message at once if it may (the recipient is an organisation member
+     * and the content can be sealed or the user opted in). When the LAN write succeeded the hub is only asked after
+     * [hubFallbackGraceMs] without a delivery receipt, so a healthy LAN never duplicates through the server.
+     * Receivers de-duplicate by message id, so a message that arrives twice is stored once.
      */
-    private suspend fun raceTransports(
-        lanAction: suspend () -> Boolean,
-        relayAction: suspend () -> Boolean,
-    ): Boolean = coroutineScope {
-        val channel = kotlinx.coroutines.channels.Channel<Boolean>(2)
-        val j1 = launch { channel.send(try { lanAction() } catch (_: Throwable) { false }) }
-        val j2 = launch { channel.send(try { relayAction() } catch (_: Throwable) { false }) }
-        repeat(2) {
-            val result = channel.receive()
-            if (result) {
-                j1.cancel()
-                j2.cancel()
-                return@coroutineScope true
+    private suspend fun sendDirectViaPaths(frame: MessageWireFrame.TextMessage): Boolean {
+        val target = frame.conversationId
+        val lanOk = lanTransportSink?.send(target, frame) == true
+        val bridge = hubBridge ?: return lanOk
+        if (!lanOk) {
+            return bridge.canCarry(target) && bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
+        }
+        scheduleHubFallback("${frame.localId}|$target", pending = {
+            val row = messageDao.getByLocalId(frame.localId)
+            row != null && row.deletedAt == null && row.status != "DELIVERED" && row.status != "READ" && row.status != "FAILED"
+        }) {
+            if (bridge.canCarry(target) && !bridge.isHubAccepted(frame.localId)) {
+                bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
             }
         }
-        false
+        return true
+    }
+
+    private suspend fun sendGroupViaPaths(
+        lan: GroupTransportSink,
+        linked: Boolean,
+        memberId: String,
+        messageId: String,
+        sentAt: Long,
+        frame: GroupWireFrame.Message,
+    ): Boolean {
+        val bridge = hubBridge
+        val lanOk = lan.send(memberId, frame)
+        if (bridge == null || !linked) return lanOk
+        if (!lanOk) return bridge.canCarry(memberId, group = true) && bridge.sendGroup(memberId, messageId, sentAt, frame)
+        scheduleHubFallback("$messageId|$memberId", pending = {
+            groupDeliveryDao?.pendingForMessage(messageId)?.any { it.memberId == memberId } == true
+        }) {
+            if (bridge.canCarry(memberId, group = true) && !bridge.isHubAccepted(messageId)) bridge.sendGroup(memberId, messageId, sentAt, frame)
+        }
+        return true
+    }
+
+    private val hubFallbackJobs = SyncMap<String, Job>()
+
+    /** After [hubFallbackGraceMs], runs [send] when [pending] still holds. One waiting job per [key]. */
+    private fun scheduleHubFallback(key: String, pending: suspend () -> Boolean, send: suspend () -> Unit) {
+        if (hubFallbackJobs[key]?.isActive == true) return
+        val job = scope.launch(ioDispatcher) {
+            delay(hubFallbackGraceMs)
+            if (runCatching { pending() }.getOrDefault(false)) runCatching { send() }
+        }
+        hubFallbackJobs[key] = job
+        job.invokeOnCompletion { hubFallbackJobs.remove(key) }
+    }
+
+    /** The hub's verdict on a message: shown as a note, and a refusal ends a 1:1 message as Failed (a group one keeps trying others). */
+    private suspend fun onHubAck(event: HubAckEvent) {
+        val bridge = hubBridge ?: return
+        val message = messageDao.getByLocalId(event.id)
+        val recipient = event.to.ifBlank { message?.conversationId.orEmpty() }
+        bridge.onAck(event, peerNameResolver(recipient))
+        if (message == null || !event.kind.isFailure) return
+        if (conversationDao.get(message.conversationId)?.isGroup == true) return
+        messageDao.updateStatusIfUnacknowledged(event.id, "FAILED")
+        outboxDao.delete(event.id)
+    }
+
+    /** Wire-level ids for hub frames that carry no id of their own; deterministic so a resend is a recognisable duplicate. */
+    private fun hubFrameId(frame: MessageWireFrame): String = when (frame) {
+        is MessageWireFrame.TextMessage -> frame.localId
+        is MessageWireFrame.DeliveryReceipt -> "dr-${frame.messageId}-${frame.memberId}"
+        is MessageWireFrame.ReadReceipt -> "rr-${frame.upToMessageId}-${frame.memberId}-${frame.readAt}"
+        is MessageWireFrame.ReactionFrame -> "re-${frame.messageId}-${frame.memberId}-${frame.emoji}-${frame.isAdded}-${timeSource.nowMs()}"
+        is MessageWireFrame.DeleteForEveryone -> "del-${frame.messageId}"
+        is MessageWireFrame.TypingFrame -> "ty-${frame.memberId}-${frame.timestampMs}"
+    }
+
+    private fun hubGroupFrameId(frame: GroupWireFrame): String = when (frame) {
+        is GroupWireFrame.Message -> frame.messageId
+        is GroupWireFrame.Receipt -> "gdr-${frame.messageId}-${frame.from}"
+        is GroupWireFrame.Read -> "grr-${frame.groupId}-${frame.upToMessageId}-${frame.from}-${frame.readAt}"
+        is GroupWireFrame.DeleteForEveryone -> "gdel-${frame.messageId}"
+        else -> "gx-${frame.groupId}-${timeSource.nowMs()}"
     }
 
     override suspend fun linkGroupToHub(groupId: String, hubUrl: String?): FlashResult<Unit> {
@@ -6606,22 +6778,70 @@ public class RealFlashChatRepository(
         return client.fetchVisibleGroups(credentials.hubUrl, credentials.deviceId, targetDept)
     }
 
-    override suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<Unit> =
+    override val pendingEnterpriseJoins: StateFlow<Map<String, String>> =
+        enterpriseTrustStore?.pendingJoins ?: MutableStateFlow(emptyMap())
+
+    override suspend fun joinEnterpriseGroup(groupId: String, groupName: String): FlashResult<EnterpriseJoinResult> =
         withContext(ioDispatcher) {
-            val now = timeSource.nowMs()
-            runInTransaction {
-                upsertLegacyGroupConversation(
-                    groupId = groupId,
-                    title = groupName,
-                    sortOrder = now,
-                    createdBy = localDeviceId,
-                    createdAt = now,
-                )
+            val client = enterpriseDirectoryClient
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+            val trust = enterpriseTrustStore
+            val credentials = trust?.getCredentials()
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
+            when (val answer = client.requestJoin(credentials.hubUrl, groupId)) {
+                is FlashResult.Failure -> answer
+                is FlashResult.Success -> {
+                    val result = answer.value
+                    val name = result.name?.takeIf { it.isNotBlank() } ?: groupName
+                    when (result.status) {
+                        EnterpriseJoinStatus.JOINED -> {
+                            val now = timeSource.nowMs()
+                            runInTransaction {
+                                upsertLegacyGroupConversation(
+                                    groupId = groupId,
+                                    title = name,
+                                    sortOrder = now,
+                                    createdBy = localDeviceId,
+                                    createdAt = now,
+                                )
+                            }
+                            trust.linkGroupToHub(groupId)
+                            trust.setPendingJoin(groupId, null)
+                            touchConversationRefresh()
+                        }
+                        EnterpriseJoinStatus.PENDING -> trust.setPendingJoin(groupId, name)
+                        EnterpriseJoinStatus.REJECTED -> trust.setPendingJoin(groupId, null)
+                    }
+                    answer
+                }
             }
-            enterpriseTrustStore?.linkGroupToHub(groupId)
-            touchConversationRefresh()
-            FlashResult.Success(Unit)
         }
+
+    override suspend fun refreshPendingEnterpriseJoins(): List<EnterpriseJoinResult> {
+        val trust = enterpriseTrustStore ?: return emptyList()
+        val decided = mutableListOf<EnterpriseJoinResult>()
+        for ((groupId, name) in trust.pendingJoins.value) {
+            val answer = joinEnterpriseGroup(groupId, name)
+            if (answer is FlashResult.Success && answer.value.status != EnterpriseJoinStatus.PENDING) decided += answer.value
+        }
+        return decided
+    }
+
+    override suspend fun fetchEnterpriseJoinRequests(groupId: String?): FlashResult<List<EnterpriseJoinRequest>> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+        val credentials = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
+        return client.fetchJoinRequests(credentials.hubUrl, groupId)
+    }
+
+    override suspend fun decideEnterpriseJoinRequest(requestId: String, approve: Boolean, reason: String?): FlashResult<EnterpriseJoinResult> {
+        val client = enterpriseDirectoryClient
+            ?: return FlashResult.Failure(FlashError.Unknown("Enterprise directory client unavailable"))
+        val credentials = enterpriseTrustStore?.getCredentials()
+            ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
+        return client.decideJoinRequest(credentials.hubUrl, requestId, approve, reason)
+    }
 
     internal fun signedGroupsForTesting(): SignedGroups? = signedGroups
 }
