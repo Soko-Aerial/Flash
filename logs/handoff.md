@@ -7,6 +7,7 @@
 - `HubChatBridge` acknowledges with the sender (`from`). Open: ERROR-396 (duplicate set keyed by id only).
 - **Next task:** extract `:core:enterprise` (ADR-128) following `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`.
 - Owed tests: `HUBR-09`, `HUBR-10`, `EXTR-01` (+ `HUBR-01`..`HUBR-08`).
+- Committed 2026-10-13 on `dev`: `f6161567` (hub protocol, client, host wiring), `fd4cdb88` (server; includes another session's `MigratorTest.kt` / `ServerDatabaseTest.kt`), `12c8b231` (docs and logs). The tree was clean after these, so the extraction plan can start at its step 0.
 
 
 ## 2026-10-13 - SERVER: second-pass review fixes REV-01..REV-16 (ADR-127, ERROR-380..395, tests `HUBR-01`..`HUBR-08`)
