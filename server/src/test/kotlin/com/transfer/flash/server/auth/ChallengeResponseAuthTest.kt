@@ -1,5 +1,16 @@
 package com.transfer.flash.server.auth
 
+import com.transfer.flash.core.hubprotocol.HubErrorCodes
+import com.transfer.flash.core.hubprotocol.certs.DelegationCert
+import com.transfer.flash.core.hubprotocol.certs.DeviceCert
+import com.transfer.flash.core.hubprotocol.certs.HubAuth
+import com.transfer.flash.core.hubprotocol.rest.AuthChallengeResponse
+import com.transfer.flash.core.hubprotocol.rest.AuthVerifyRequest
+import com.transfer.flash.core.hubprotocol.rest.AuthVerifyResponse
+import com.transfer.flash.core.hubprotocol.rest.EnrollRequest
+import com.transfer.flash.core.hubprotocol.rest.EnrollResponse
+import com.transfer.flash.core.hubprotocol.rest.ErrorBody
+import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -36,6 +47,12 @@ class ChallengeResponseAuthTest {
         return Triple(rootKey, serverKey, delegation)
     }
 
+    private fun enrollProof(service: EnrollmentService, key: KeyPair, token: String, deviceId: String): String =
+        FlashCrypto.sign(
+            key.private,
+            HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), service.serverId),
+        )
+
     @Test
     fun testChallengeGeneration() {
         val (rootKey, _, _) = setupTestKeys()
@@ -71,7 +88,7 @@ class ChallengeResponseAuthTest {
         val challenge = auth.generateChallenge(now)
 
         val clientNonce = "client-nonce-xyz-123"
-        val payload = (challenge.serverNonce + clientNonce + deviceId).encodeToByteArray()
+        val payload = HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, clientNonce, deviceId, deviceCert.serial)
         val signature = FlashCrypto.sign(clientKey.private, payload)
 
         val result = auth.verifyChallenge(
@@ -104,6 +121,8 @@ class ChallengeResponseAuthTest {
             issuerPublicKey = serverKey.toBase64Spki(),
             deviceId = deviceId,
             subjectPublicKey = clientKey.toBase64Spki(),
+            validFrom = now - 1_000,
+            validTo = now + 60_000,
             serial = 202L,
         )
 
@@ -112,7 +131,7 @@ class ChallengeResponseAuthTest {
         val challenge = auth.generateChallenge(now - 65_000)
 
         val clientNonce = "client-nonce-456"
-        val payload = (challenge.serverNonce + clientNonce + deviceId).encodeToByteArray()
+        val payload = HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, clientNonce, deviceId, deviceCert.serial)
         val signature = FlashCrypto.sign(clientKey.private, payload)
 
         val result = auth.verifyChallenge(
@@ -142,6 +161,8 @@ class ChallengeResponseAuthTest {
             issuerPublicKey = serverKey.toBase64Spki(),
             deviceId = deviceId,
             subjectPublicKey = clientKey.toBase64Spki(),
+            validFrom = now - 1_000,
+            validTo = now + 60_000,
             serial = 203L,
         )
 
@@ -149,7 +170,7 @@ class ChallengeResponseAuthTest {
         val challenge = auth.generateChallenge(now)
 
         val clientNonce = "client-nonce-789"
-        val payload = (challenge.serverNonce + clientNonce + deviceId).encodeToByteArray()
+        val payload = HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, clientNonce, deviceId, deviceCert.serial)
         // Sign with WRONG private key
         val badSignature = FlashCrypto.sign(wrongKey.private, payload)
 
@@ -179,13 +200,15 @@ class ChallengeResponseAuthTest {
             issuerPublicKey = serverKey.toBase64Spki(),
             deviceId = deviceId,
             subjectPublicKey = clientKey.toBase64Spki(),
+            validFrom = now - 1_000,
+            validTo = now + 60_000,
             serial = 204L,
         )
 
         val auth = ChallengeResponseAuth(rootKey.toBase64Spki())
         val challenge = auth.generateChallenge(now)
         val clientNonce = "client-nonce-replay"
-        val payload = (challenge.serverNonce + clientNonce + deviceId).encodeToByteArray()
+        val payload = HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, clientNonce, deviceId, deviceCert.serial)
         val signature = FlashCrypto.sign(clientKey.private, payload)
 
         // First verification: success
@@ -251,6 +274,7 @@ class ChallengeResponseAuthTest {
             token = token,
             deviceId = "phone-scout-01",
             subjectPublicKey = clientKey1.toBase64Spki(),
+            proof = enrollProof(service, clientKey1, token, "phone-scout-01"),
             friendlyName = "Scout 1",
             currentTimeMs = now,
         )
@@ -259,7 +283,9 @@ class ChallengeResponseAuthTest {
         assertEquals("phone-scout-01", res1.deviceCert.deviceId)
         assertEquals("DEFENCE-INTELLIGENCE", res1.deviceCert.department)
         assertEquals(expectedRootFp, res1.rootFingerprint)
-        assertTrue(res1.deviceCert.verifyChain(delegation, rootPublicKey, now))
+        assertTrue(res1.deviceCert.verifyChain(delegation, rootPublicKey, JvmEcdsaVerifier, now, clockSkewToleranceMs = 0L))
+        assertTrue(res1.deviceCert.validTo <= delegation.validTo, "SEC-18: the leaf never outlives its delegation")
+        assertEquals(rootPublicKey, res1.rootPublicKey)
         assertEquals(1, service.currentRemainingQuota, "Quota should be decremented to 1")
 
         // 3. Second enrollment with SAME token: must FAIL (single-use consumed)
@@ -267,6 +293,7 @@ class ChallengeResponseAuthTest {
             token = token,
             deviceId = "phone-scout-imposter",
             subjectPublicKey = clientKey2.toBase64Spki(),
+            proof = enrollProof(service, clientKey2, token, "phone-scout-imposter"),
             currentTimeMs = now,
         )
         assertTrue(enrollReuse.isFailure, "Reusing single-use token must fail")
@@ -278,6 +305,7 @@ class ChallengeResponseAuthTest {
             token = token2,
             deviceId = "phone-scout-02",
             subjectPublicKey = clientKey2.toBase64Spki(),
+            proof = enrollProof(service, clientKey2, token2, "phone-scout-02"),
             currentTimeMs = now,
         )
         assertTrue(enroll2.isSuccess, "Second enrollment with fresh token must succeed")
@@ -290,10 +318,87 @@ class ChallengeResponseAuthTest {
             token = token3,
             deviceId = "phone-scout-03",
             subjectPublicKey = clientKey3.toBase64Spki(),
+            proof = enrollProof(service, clientKey3, token3, "phone-scout-03"),
             currentTimeMs = now,
         )
         assertTrue(enroll3.isFailure, "Enrollment must fail when server device quota is exhausted")
         assertTrue(enroll3.exceptionOrNull()?.message?.contains("quota", ignoreCase = true) == true)
+    }
+
+    @Test
+    fun enrolmentRequiresValidProofOfPossessionAndDoesNotBurnTheToken() {
+        val (rootKey, serverKey, delegation) = setupTestKeys()
+        val rootPublicKey = rootKey.toBase64Spki()
+        val owner = FlashCrypto.generateEcKeyPair()
+        val thief = FlashCrypto.generateEcKeyPair()
+        val now = System.currentTimeMillis()
+        val service = EnrollmentService(rootPublicKey, serverKey.private, delegation, initialQuota = 5)
+        val link = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
+        val token = link.substringAfter("token=").substringBefore("&")
+
+        // A proof made by a different key than the one being enrolled must be refused (SEC-14 / CLI-10).
+        val forged = service.enrollDevice(
+            token = token,
+            deviceId = "dev-pop",
+            subjectPublicKey = owner.toBase64Spki(),
+            proof = enrollProof(service, thief, token, "dev-pop"),
+            currentTimeMs = now,
+        )
+        assertTrue(forged.isFailure, "A proof by another key must fail")
+        assertTrue(forged.exceptionOrNull() is SecurityException)
+        assertEquals(5, service.currentRemainingQuota, "A failed proof must not consume quota")
+
+        // The token is still usable by the real key holder.
+        val ok = service.enrollDevice(
+            token = token,
+            deviceId = "dev-pop",
+            subjectPublicKey = owner.toBase64Spki(),
+            proof = enrollProof(service, owner, token, "dev-pop"),
+            currentTimeMs = now,
+        )
+        assertTrue(ok.isSuccess, "The real key holder can still use the token")
+
+        // A proof for another deviceId does not transfer.
+        val link2 = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
+        val token2 = link2.substringAfter("token=").substringBefore("&")
+        val wrongDevice = service.enrollDevice(
+            token = token2,
+            deviceId = "dev-other",
+            subjectPublicKey = owner.toBase64Spki(),
+            proof = enrollProof(service, owner, token2, "dev-pop"),
+            currentTimeMs = now,
+        )
+        assertTrue(wrongDevice.isFailure, "A proof is bound to the deviceId")
+    }
+
+    @Test
+    fun enrolledCertificateIsClampedToTheDelegationWindow() {
+        val rootKey = FlashCrypto.generateEcKeyPair()
+        val serverKey = FlashCrypto.generateEcKeyPair()
+        val device = FlashCrypto.generateEcKeyPair()
+        val now = System.currentTimeMillis()
+        // A delegation that ends in 2 hours: the default 7 day leaf must be cut to that.
+        val shortDelegation = DelegationCert.issue(
+            rootPrivateKey = rootKey.private,
+            rootPublicKey = rootKey.toBase64Spki(),
+            delegatePublicKey = serverKey.toBase64Spki(),
+            scopes = setOf(DelegationCert.SCOPE_ENROL_MEMBER),
+            validFrom = now - 5_000,
+            validTo = now + 2 * 3600 * 1000L,
+            maxDevices = 10,
+            serial = 7L,
+        )
+        val service = EnrollmentService(rootKey.toBase64Spki(), serverKey.private, shortDelegation)
+        val token = service.generateInviteLink("https://hub.example", InviteScope(expiry = now + 60_000), now)
+            .substringAfter("token=").substringBefore("&")
+        val result = service.enrollDevice(
+            token = token,
+            deviceId = "dev-clamp",
+            subjectPublicKey = device.toBase64Spki(),
+            proof = enrollProof(service, device, token, "dev-clamp"),
+            currentTimeMs = now,
+        ).getOrThrow()
+        assertEquals(shortDelegation.validTo, result.deviceCert.validTo, "SEC-18: leaf validTo clamps to the delegation")
     }
 
     @Test
@@ -310,19 +415,20 @@ class ChallengeResponseAuthTest {
             delegationCert = delegation,
             initialQuota = 10,
         )
+        val bearerTokens = BearerTokenStore()
 
         routing {
-            authRoutes(auth, enrollService)
+            authRoutes(auth, enrollService, bearerTokens = bearerTokens)
         }
 
-        // 1. GET /api/v1/auth/challenge -> 200 OK
+        // 1. GET /api/v1/auth/challenge -> 200 OK, DTO body
         val challengeRes = client.get("/api/v1/auth/challenge")
         assertEquals(HttpStatusCode.OK, challengeRes.status)
-        val challengeBody = challengeRes.bodyAsText()
-        val serverNonce = extractJsonField(challengeBody, "serverNonce")
-        assertNotNull(serverNonce)
+        val challenge = HubRestCodec.decode<AuthChallengeResponse>(challengeRes.bodyAsText())
+        assertTrue(challenge.serverNonce.isNotBlank())
+        assertEquals(auth.serverId, challenge.serverId)
 
-        // 2. POST /api/v1/enroll with token
+        // 2. POST /api/v1/enroll with token + proof of possession
         val now = System.currentTimeMillis()
         val inviteLink = enrollService.generateInviteLink(
             serverUrl = "https://server.local",
@@ -331,58 +437,129 @@ class ChallengeResponseAuthTest {
         )
         val token = inviteLink.substringAfter("token=").substringBefore("&")
 
-        val enrollReq = """{"token":"$token","deviceId":"$deviceId","subjectPublicKey":"${clientKey.toBase64Spki()}","friendlyName":"HQ Commander Tablet"}"""
+        // 2a. No proof: refused with the contract error body, token untouched.
+        val noProof = client.post("/api/v1/enroll") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                HubRestCodec.encode(
+                    EnrollRequest(token = token, deviceId = deviceId, subjectPublicKey = clientKey.toBase64Spki()),
+                ),
+            )
+        }
+        assertEquals(HttpStatusCode.BadRequest, noProof.status)
+        val noProofBody = HubRestCodec.decode<ErrorBody>(noProof.bodyAsText())
+        assertEquals(HubErrorCodes.ERR_BAD_REQUEST, noProofBody.code)
+        assertTrue(noProofBody.correlationId.isNotBlank())
+
+        // 2b. With proof.
         val enrollRes = client.post("/api/v1/enroll") {
             contentType(ContentType.Application.Json)
-            setBody(enrollReq)
+            setBody(
+                HubRestCodec.encode(
+                    EnrollRequest(
+                        token = token,
+                        deviceId = deviceId,
+                        subjectPublicKey = clientKey.toBase64Spki(),
+                        friendlyName = "HQ Commander Tablet",
+                        proof = enrollProof(enrollService, clientKey, token, deviceId),
+                    ),
+                ),
+            )
         }
         assertEquals(HttpStatusCode.OK, enrollRes.status)
-        val enrollBody = enrollRes.bodyAsText()
-        assertTrue(enrollBody.contains(""""status":"ENROLLED""""))
-        val deviceCert = parseDeviceCertFromJson(enrollBody)
-        assertNotNull(deviceCert)
-        assertEquals(deviceId, deviceCert.deviceId)
+        val enrolled = HubRestCodec.decode<EnrollResponse>(enrollRes.bodyAsText())
+        assertEquals(EnrollResponse.STATUS_ENROLLED, enrolled.status)
+        assertEquals(deviceId, enrolled.deviceCert.deviceId)
+        assertEquals(rootPublicKey, enrolled.rootPublicKey)
+        assertEquals(auth.serverId, enrolled.rootFingerprint)
+        assertEquals(1, enrolled.delegationChain.size)
 
         // 3. POST /api/v1/auth/verify with client signature
         val clientNonce = "c-nonce-12345"
-        val payload = (serverNonce + clientNonce + deviceId).encodeToByteArray()
-        val signature = FlashCrypto.sign(clientKey.private, payload)
-
-        val verifyReq = """{
-            "serverNonce":"$serverNonce",
-            "clientNonce":"$clientNonce",
-            "deviceId":"$deviceId",
-            "signature":"$signature",
-            "deviceCert":{
-                "deviceId":"${deviceCert.deviceId}",
-                "subjectPublicKey":"${deviceCert.subjectPublicKey}",
-                "role":"${deviceCert.role}",
-                "department":"${deviceCert.department}",
-                "validFrom":${deviceCert.validFrom},
-                "validTo":${deviceCert.validTo},
-                "serial":${deviceCert.serial},
-                "issuerPublicKey":"${deviceCert.issuerPublicKey}",
-                "issuerSignature":"${deviceCert.issuerSignature}"
-            },
-            "delegationCert":{
-                "rootPublicKey":"${delegation.rootPublicKey}",
-                "delegatePublicKey":"${delegation.delegatePublicKey}",
-                "scopes":["enrol:member"],
-                "validFrom":${delegation.validFrom},
-                "validTo":${delegation.validTo},
-                "maxDevices":${delegation.maxDevices},
-                "serial":${delegation.serial},
-                "signature":"${delegation.signature}"
-            }
-        }""".trimIndent()
-
+        val signature = FlashCrypto.sign(
+            clientKey.private,
+            HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, clientNonce, deviceId, enrolled.deviceCert.serial),
+        )
         val verifyRes = client.post("/api/v1/auth/verify") {
             contentType(ContentType.Application.Json)
-            setBody(verifyReq)
+            setBody(
+                HubRestCodec.encode(
+                    AuthVerifyRequest(
+                        serverNonce = challenge.serverNonce,
+                        clientNonce = clientNonce,
+                        deviceId = deviceId,
+                        deviceCert = enrolled.deviceCert,
+                        delegationChain = enrolled.delegationChain,
+                        signature = signature,
+                    ),
+                ),
+            )
         }
         assertEquals(HttpStatusCode.OK, verifyRes.status)
-        val verifyBody = verifyRes.bodyAsText()
-        assertTrue(verifyBody.contains(""""status":"AUTHENTICATED""""))
-        assertTrue(verifyBody.contains(""""deviceId":"$deviceId""""))
+        val verified = HubRestCodec.decode<AuthVerifyResponse>(verifyRes.bodyAsText())
+        assertEquals(AuthVerifyResponse.STATUS_AUTHENTICATED, verified.status)
+        assertEquals(deviceId, verified.principal.deviceId)
+        assertEquals(deviceId, bearerTokens.resolve(verified.token)?.deviceId, "the issued bearer resolves to the principal")
+
+        // 4. The same nonce cannot be replayed.
+        val replay = client.post("/api/v1/auth/verify") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                HubRestCodec.encode(
+                    AuthVerifyRequest(challenge.serverNonce, clientNonce, deviceId, enrolled.deviceCert, enrolled.delegationChain, signature),
+                ),
+            )
+        }
+        assertEquals(HttpStatusCode.Unauthorized, replay.status)
+        assertEquals(HubErrorCodes.ERR_AUTH, HubRestCodec.decode<ErrorBody>(replay.bodyAsText()).code)
+    }
+
+    @Test
+    fun verifyRouteRejectsABadSignatureWithAFixedSentence() = testApplication {
+        val (rootKey, serverKey, delegation) = setupTestKeys()
+        val rootPublicKey = rootKey.toBase64Spki()
+        val clientKey = FlashCrypto.generateEcKeyPair()
+        val other = FlashCrypto.generateEcKeyPair()
+        val auth = ChallengeResponseAuth(rootPublicKey)
+        val enrollService = EnrollmentService(rootPublicKey, serverKey.private, delegation)
+        routing { authRoutes(auth, enrollService) }
+
+        val now = System.currentTimeMillis()
+        val cert = DeviceCert.issue(
+            issuerPrivateKey = serverKey.private,
+            issuerPublicKey = serverKey.toBase64Spki(),
+            deviceId = "dev-bad-sig",
+            subjectPublicKey = clientKey.toBase64Spki(),
+            role = DeviceCert.ROLE_MEMBER,
+            validFrom = now - 1_000,
+            validTo = now + 60_000,
+            serial = 9L,
+        )
+        val challenge = HubRestCodec.decode<AuthChallengeResponse>(client.get("/api/v1/auth/challenge").bodyAsText())
+        val badSig = FlashCrypto.sign(
+            other.private,
+            HubAuth.authSigningBytes(auth.serverId, challenge.serverNonce, "cn", "dev-bad-sig", 9L),
+        )
+        val res = client.post("/api/v1/auth/verify") {
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(AuthVerifyRequest(challenge.serverNonce, "cn", "dev-bad-sig", cert, listOf(delegation), badSig)))
+        }
+        assertEquals(HttpStatusCode.Unauthorized, res.status)
+        val body = HubRestCodec.decode<ErrorBody>(res.bodyAsText())
+        assertEquals(HubErrorCodes.ERR_AUTH, body.code)
+        assertFalse(body.message.contains("signature", ignoreCase = true), "SEC-16: the reason is not echoed to the caller")
+    }
+
+    @Test
+    fun thePublicRevocationListIsRateLimitedPerClientAddress() = testApplication {
+        val (rootKey, serverKey, delegation) = setupTestKeys()
+        val auth = ChallengeResponseAuth(rootKey.toBase64Spki())
+        val enrollService = EnrollmentService(rootKey.toBase64Spki(), serverKey.private, delegation)
+        // REV-12 / SEC-09: the list is public so a revoked device can confirm its own revocation, so it must not be a free scraper endpoint.
+        routing { authRoutes(auth, enrollService, limits = HubRateLimits(unauthenticated = TokenBucketLimiter(3, 0.001, clock = { 0L }))) }
+        repeat(3) { assertEquals(HttpStatusCode.NotFound, client.get("/api/v1/revocations").status, "no list published yet: 404, but counted") }
+        val limited = client.get("/api/v1/revocations")
+        assertEquals(HttpStatusCode.TooManyRequests, limited.status)
+        assertEquals(HubErrorCodes.ERR_RATE_LIMIT, HubRestCodec.decode<ErrorBody>(limited.bodyAsText()).code)
     }
 }

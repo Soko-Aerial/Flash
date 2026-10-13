@@ -1,0 +1,28 @@
+/* The public page behind an invite link. Same graphite-and-paper identity as the console; system fonts only. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f3ef; --surface: #ffffff; --text: #1b1a17; --muted: #57554c; --line: #d9d6cc;
+  --accent: #3a3fcb; --on-accent: #ffffff; --accent-text: #2b2fa8; --ok: #14702f;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #121211; --surface: #1b1b19; --text: #ecebe5; --muted: #a9a79d; --line: #2e2d29; --accent: #8e94ff; --on-accent: #0b0b1a; --accent-text: #b5b9ff; --ok: #63d18a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+.card { width: min(420px, 100%); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 28px 24px; display: flex; flex-direction: column; gap: 14px; text-align: center; align-items: center; }
+.bolt { color: var(--accent); }
+h1 { margin: 0; font-size: 1.5rem; line-height: 1.2; }
+.lead { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.lead strong { color: var(--text); }
+dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; text-align: left; width: 100%; font-size: 0.9375rem; }
+dt { color: var(--muted); }
+dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.qr { background: #ffffff; padding: 10px; border-radius: 8px; border: 1px solid var(--line); line-height: 0; }
+.qr svg { width: 220px; height: 220px; max-width: 100%; height: auto; }
+.hint { margin: 0; color: var(--muted); font-size: 0.875rem; }
+.button { display: inline-flex; align-items: center; justify-content: center; width: 100%; min-height: 44px; padding: 0 16px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
+.button.secondary { background: transparent; color: var(--accent-text); }
+.button:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 2px; }
+.status { margin: 0; min-height: 1.5em; color: var(--ok); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+.offscreen { position: fixed; left: -9999px; top: 0; opacity: 0; }

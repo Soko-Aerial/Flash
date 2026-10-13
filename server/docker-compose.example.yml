@@ -1,0 +1,37 @@
+# Example only: Flash Enterprise Hub behind a TLS-terminating reverse proxy. Copy, then adapt the proxy address and the URL.
+#
+#   docker compose -f server/docker-compose.example.yml up --build
+#
+# Rules this file follows (docs/security.md, REV-12):
+#  - 8443 (relay + REST) is published for the reverse proxy only: bind it to the proxy's network, never straight to the internet
+#    (TLS is the proxy's job in tlsMode=proxy).
+#  - 8444 (the management listener with the admin console) is published to the HOST'S LOOPBACK ONLY. Reach it through an SSH tunnel
+#    or an authenticated proxy. It must never be published to 0.0.0.0.
+#  - FLASH_TRUSTED_PROXIES names the proxy, otherwise every client looks like the proxy and shares one rate-limit bucket.
+#  - /data holds the database, the delegate key (hub-identity), data.key (seals the authenticator seeds) and delegation.cert.
+#    BACK IT UP, and keep data.key apart from database backups. The organisation ROOT key is never here.
+services:
+  hub:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+    image: flash-hub:local
+    restart: unless-stopped
+    environment:
+      FLASH_EXTERNAL_URL: "https://hub.example.org"
+      FLASH_TLS_MODE: "proxy"
+      FLASH_TRUSTED_PROXIES: "172.18.0.0/16"   # the network of your reverse proxy
+      FLASH_ROOT_FINGERPRINT: "PASTE-THE-64-HEX-FINGERPRINT-THAT-keytool-init-root-PRINTED"   # required: the image sets FLASH_REQUIRE_ROOT_PIN=true
+    ports:
+      - "127.0.0.1:8443:8443"   # the reverse proxy on this host forwards to it
+      - "127.0.0.1:8444:8444"   # admin console: loopback only
+    volumes:
+      - hub-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  hub-data:

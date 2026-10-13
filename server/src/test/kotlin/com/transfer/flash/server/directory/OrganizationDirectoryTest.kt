@@ -239,7 +239,35 @@ class OrganizationDirectoryTest {
         // 4. HIDDEN: cannot join via request (D-E11)
         val joinHidden = dir.requestJoinGroup("grp-classified", "pilot-4", "dept-air")
         assertIs<JoinRequestResult.Rejected>(joinHidden)
-        assertTrue(joinHidden.reason.contains("D-E11"))
+        // D-E11 (fixed): a hidden group answers exactly like a group that does not exist, so a non-member can not probe for it.
+        val joinMissing = dir.requestJoinGroup("grp-does-not-exist", "pilot-4", "dept-air")
+        assertIs<JoinRequestResult.Rejected>(joinMissing)
+        assertEquals(joinMissing.reason.replace("grp-does-not-exist", "X"), joinHidden.reason.replace("grp-classified", "X"))
+    }
+
+    @Test
+    fun aJoinRequestForAGroupOutsideTheCallersScopeAnswersExactlyLikeAMissingOne() {
+        val dir = OrganizationDirectory()
+        dir.createDepartment("dept-air", "Air", listOf("air-admin"), isOrgAdmin = true)
+        dir.createDepartment("dept-medical", "Medical", listOf("med-admin"), isOrgAdmin = true)
+        dir.createGroup("grp-secret-ops", "Operation Nightfall", "dept-medical", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, callerDeviceId = "med-admin")
+        dir.createGroup("grp-open", "Open", "dept-medical", GroupVisibility.LISTED, JoinMode.OPEN_IN_SCOPE, callerDeviceId = "med-admin")
+
+        val missing = dir.requestJoinGroup("grp-nope", "pilot-1", "dept-air")
+        val outOfScopeAdminOnly = dir.requestJoinGroup("grp-secret-ops", "pilot-1", "dept-air")
+        val outOfScopeOpen = dir.requestJoinGroup("grp-open", "pilot-1", "dept-air")
+        assertIs<JoinRequestResult.Rejected>(missing)
+        assertIs<JoinRequestResult.Rejected>(outOfScopeAdminOnly)
+        assertIs<JoinRequestResult.Rejected>(outOfScopeOpen)
+        assertEquals(missing.reason, outOfScopeAdminOnly.reason, "an out-of-scope group must not be told apart from a missing one")
+        assertEquals(missing.reason, outOfScopeOpen.reason)
+        for (reason in listOf(missing.reason, outOfScopeAdminOnly.reason, outOfScopeOpen.reason)) {
+            assertFalse(reason.contains("Nightfall") || reason.contains("dept-medical") || reason.contains("grp-"), reason)
+        }
+        // A caller who CAN see the group is told why it cannot be joined, still without leaking anything else.
+        val inScope = dir.requestJoinGroup("grp-secret-ops", "medic-1", "dept-medical")
+        assertIs<JoinRequestResult.Rejected>(inScope)
+        assertFalse(inScope.reason.contains("Nightfall"))
     }
 
     @Test

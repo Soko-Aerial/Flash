@@ -1,0 +1,62 @@
+# The Docker build context is the repository root. Nothing secret and nothing that is only build output belongs in it.
+
+# Version control and editor state
+.git
+.gitignore
+.idea
+.vscode
+*.iml
+
+# Keys, keystores, tokens (a leaked key in an image layer can not be recalled).
+# Docker matches a pattern WITHOUT a leading **/ only at the root of the context, so every secret pattern is written with it (REV-12):
+# a key in any sub-directory must not enter the build context either. server/src/test/.../DockerIgnoreTest guards this list.
+**/keystore.properties
+**/local.properties
+**/*.jks
+**/*.keystore
+**/*.p12
+**/*.pk8
+**/*.pem
+**/*.key
+**/*.cert
+**/setup-token.txt
+**/root-identity*
+**/data.key
+**/tools/.tavily_api_key
+**/.tavily_api_key
+**/.flash-signing
+**/.env
+**/.env.*
+
+# Runtime data of a locally started hub
+server/data
+**/test-data
+data/
+**/flash-hub.db*
+
+# Build output, caches and tool state
+.gradle-user-home
+.gradle-user-home-verify
+.kotlin
+.claude
+.codegraph
+.jules
+.kilo
+.omo
+build
+**/build
+.gradle
+**/.gradle
+dist
+*.log
+
+# Large files the hub build does not use. NOTE: settings.gradle.kts includes :app, :desktop and :sample:*, so those
+# directories must stay in the context (Gradle needs them to exist); the image build configures only what it needs
+# (--configure-on-demand).
+art
+logo-claude
+measurements
+*.apk
+*.aab
+*.msi
+*.exe

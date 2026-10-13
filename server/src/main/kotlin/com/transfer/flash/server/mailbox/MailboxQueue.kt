@@ -1,383 +1,328 @@
 package com.transfer.flash.server.mailbox
 
-import com.transfer.flash.core.common.protocol.FlashEnvelope
+import com.transfer.flash.server.observability.MailboxStats
+import com.transfer.flash.server.observability.RelayMetrics
 import com.transfer.flash.server.storage.ServerDatabase
+import kotlinx.coroutines.CancellationException
+import org.slf4j.LoggerFactory
 import java.sql.Connection
-import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Result of an enqueue operation.
- */
-sealed class EnqueueResult {
-    data class Enqueued(val envelopeId: String) : EnqueueResult()
-    data class Duplicate(val existingEnvelopeId: String?) : EnqueueResult()
-    data class QuotaExceeded(val reason: String) : EnqueueResult()
-    data class Error(val cause: Throwable) : EnqueueResult()
-
-    val isSuccess: Boolean get() = this is Enqueued
-    val isDuplicate: Boolean get() = this is Duplicate
-}
-
-/**
- * Metadata record for a queued envelope retaining internal row ID and lifecycle timestamps.
- */
-data class QueuedEnvelope(
-    val envelopeId: String,
-    val envelope: SealedEnvelope,
-    val createdAt: Long,
-    val expiresAt: Long,
-)
-
-/**
- * Primary interface for the Store-and-Forward Mailbox queue.
- * Allows Subagent 1's frame router to decouple from direct database specifics.
- */
-interface MailboxQueueSeam {
-    fun enqueue(
-        envelope: SealedEnvelope,
-        recipientDeviceId: String,
-        ttlMs: Long = MailboxQueue.DEFAULT_TTL_MS,
-    ): EnqueueResult
-
-    fun fetchPending(targetDeviceId: String, limit: Int = 100): List<SealedEnvelope>
-
-    fun fetchPendingWithMetadata(targetDeviceId: String, limit: Int = 100): List<QueuedEnvelope>
-
-    fun markDelivered(envelopeIds: List<String>): Int
-
-    fun markDelivered(targetDeviceId: String, msgId: String): Boolean
-
-    fun getQueuedCount(targetDeviceId: String): Int
-
-    fun getQueuedBytes(targetDeviceId: String): Long
-
-    fun deleteExpired(): Int
-}
-
-/**
- * Production implementation of [MailboxQueueSeam] backed by [ServerDatabase].
- * Also implements [com.transfer.flash.server.relay.MailboxQueueSeam] for direct integration with RelayFrameRouter.
+ * Durable store-and-forward mailbox over [ServerDatabase] (schema: [MailboxSchema]).
+ *
+ * What this class guarantees (ADR-112, REL-02/03/07/08/09/11):
+ * - **Idempotent enqueue.** `UNIQUE(origin_device_id, msg_id, target_device_id)` plus `ON CONFLICT DO NOTHING`: a retry
+ *   returns [EnqueueResult.DuplicateQueued], concurrent duplicates store ONE row.
+ * - **Atomic quotas.** The duplicate check, the per-recipient / per-sender / global caps and the insert run in one
+ *   `BEGIN IMMEDIATE` transaction, so two concurrent senders can not both pass a cap that only has room for one.
+ * - **Server time only.** `created_at` and `expires_at` come from [clock]; the sender's `sentAt` is stored as
+ *   informational data and clamped when absurd, and a client can never lengthen the lifetime ([limits]`.ttlMs` is the cap).
+ * - **Ack-driven removal.** [fetchPage] never removes; [acknowledge] (from `FLASH_RECV_ACK`) deletes; [deleteExpired]
+ *   deletes the rest. Delivered payloads do not linger (REL-11).
+ * - **Opaque payload.** Stored as the UTF-8 bytes of the string the sender wrote and returned verbatim.
+ * - **Off the event loop.** Every suspend function runs its JDBC on `Dispatchers.IO`.
+ *
+ * Construction applies the `mailbox` migrations (idempotent) and throws if one fails, so the hub does not start on a
+ * schema it can not use.
+ *
+ * @param registry rejects a recipient that was never enrolled (REL-08). The default accepts everything: production
+ *   wiring must pass a real registry (see `DeviceRegistry`).
  */
 class MailboxQueue(
     private val database: ServerDatabase,
-    private val quotaManager: QuotaManager = QuotaManager(),
-    private val defaultTtlMs: Long = DEFAULT_TTL_MS,
-) : MailboxQueueSeam, com.transfer.flash.server.relay.MailboxQueueSeam {
+    val limits: MailboxLimits = MailboxLimits(),
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val registry: DeviceRegistry = DeviceRegistry.AcceptAll,
+    private val metrics: RelayMetrics? = null,
+) : MailboxStore, MailboxStats {
 
-    companion object {
-        const val DEFAULT_TTL_MS: Long = 7 * 24 * 60 * 60 * 1000L // 7 days retention
+    private val logger = LoggerFactory.getLogger(MailboxQueue::class.java)
+    private val delivered = AtomicLong()
+    private val expired = AtomicLong()
+    private val dropped = AtomicLong()
+
+    init {
+        MailboxSchema.migrate(database, clock)
     }
 
-    /**
-     * Enqueues a sealed envelope for store-and-forward delivery to [recipientDeviceId].
-     *
-     * Performs:
-     * 1. Deduplication on `(origin_device_id, msg_id, target_device_id)` using index `idx_mailbox_origin_msg`.
-     * 2. Quota check through [QuotaManager].
-     * 3. Insert into `mailbox_envelopes`.
-     */
-    override fun enqueue(
-        envelope: SealedEnvelope,
-        recipientDeviceId: String,
-        ttlMs: Long,
-    ): EnqueueResult {
-        return try {
-            database.withConnection { conn ->
-                // 1. Deduplication check
-                val existingId = checkDuplicate(conn, envelope.originDeviceId, envelope.msgId, recipientDeviceId)
-                if (existingId != null) {
-                    return@withConnection EnqueueResult.Duplicate(existingId)
-                }
+    // ---- MailboxStore ----------------------------------------------------------------------------------------
 
-                // 2. Quota verification
-                val payloadSize = envelope.payload.size.toLong()
-                val currentCount = queryQueuedCount(conn, recipientDeviceId)
-                val currentBytes = queryQueuedBytes(conn, recipientDeviceId)
-                val quotaResult = quotaManager.checkDeviceQuota(
-                    targetDeviceId = recipientDeviceId,
-                    currentQueuedBytes = currentBytes,
-                    currentPendingCount = currentCount,
-                    newPayloadSizeBytes = payloadSize,
-                )
-                if (!quotaResult.isAllowed) {
-                    val reason = (quotaResult as QuotaCheckResult.Exceeded).reason
-                    return@withConnection EnqueueResult.QuotaExceeded(reason)
-                }
+    override suspend fun enqueue(message: MailboxMessage, ttlOverrideMs: Long?): EnqueueResult {
+        val payloadBytes = message.payload.toByteArray(Charsets.UTF_8)
+        if (payloadBytes.size > limits.maxPayloadBytes) {
+            return refused(QuotaScope.PAYLOAD, "payload of ${payloadBytes.size} bytes exceeds ${limits.maxPayloadBytes}")
+        }
+        val known = try {
+            registry.isEnrolled(message.target)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            return failed("registry", t)
+        }
+        if (!known) {
+            dropped.incrementAndGet()
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, 1, "event" to "dropped")
+            return EnqueueResult.UnknownRecipient
+        }
+        val result = try {
+            database.ioTransaction { conn -> insert(conn, message, payloadBytes, ttlOverrideMs) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            return failed("enqueue", t)
+        }
+        if (result is EnqueueResult.QuotaExceeded) {
+            dropped.incrementAndGet()
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, 1, "event" to "dropped")
+        }
+        return result
+    }
 
-                // 3. Database insertion
-                val envelopeId = UUID.randomUUID().toString()
-                val now = if (envelope.timestamp > 0) envelope.timestamp else System.currentTimeMillis()
-                val expiresAt = now + ttlMs
+    private fun refused(scope: QuotaScope, reason: String): EnqueueResult {
+        dropped.incrementAndGet()
+        metrics?.inc(RelayMetrics.MAILBOX_EVENTS, 1, "event" to "dropped")
+        return EnqueueResult.QuotaExceeded(scope, reason)
+    }
 
-                val sql = """
-                    INSERT INTO mailbox_envelopes (
-                        id, origin_device_id, target_device_id, msg_id, kind, hops, counter,
-                        payload, auth_tag, created_at, expires_at, delivered
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                """.trimIndent()
+    private fun failed(operation: String, t: Throwable): EnqueueResult {
+        dropped.incrementAndGet()
+        metrics?.inc(RelayMetrics.DB_ERRORS, 1, "op" to operation)
+        logger.error("Mailbox {} failed: {}", operation, t.toString())
+        return EnqueueResult.Failed(t)
+    }
 
-                conn.prepareStatement(sql).use { stmt ->
-                    stmt.setString(1, envelopeId)
-                    stmt.setString(2, envelope.originDeviceId)
-                    stmt.setString(3, recipientDeviceId)
-                    stmt.setString(4, envelope.msgId)
-                    stmt.setString(5, envelope.kind)
-                    stmt.setInt(6, envelope.hops)
-                    stmt.setLong(7, envelope.counter)
-                    stmt.setBytes(8, envelope.payload)
-                    stmt.setString(9, envelope.authTagOrSignature)
-                    stmt.setLong(10, now)
-                    stmt.setLong(11, expiresAt)
-                    stmt.executeUpdate()
-                }
+    private fun insert(conn: Connection, m: MailboxMessage, payload: ByteArray, ttlOverrideMs: Long?): EnqueueResult {
+        val now = clock()
 
-                EnqueueResult.Enqueued(envelopeId)
+        existingSeq(conn, m)?.let { return EnqueueResult.DuplicateQueued(it) }
+
+        val size = payload.size.toLong()
+        val (recipientRows, recipientBytes) = usage(conn, "target_device_id", m.target, now)
+        if (recipientRows >= limits.perRecipientRows) {
+            return EnqueueResult.QuotaExceeded(QuotaScope.RECIPIENT, "recipient mailbox holds ${limits.perRecipientRows} messages")
+        }
+        if (recipientBytes + size > limits.perRecipientBytes) {
+            return EnqueueResult.QuotaExceeded(QuotaScope.RECIPIENT, "recipient mailbox byte quota ${limits.perRecipientBytes} exceeded")
+        }
+        val (senderRows, senderBytes) = usage(conn, "origin_device_id", m.origin, now)
+        if (senderRows >= limits.perSenderRows) {
+            return EnqueueResult.QuotaExceeded(QuotaScope.SENDER, "sender has ${limits.perSenderRows} undelivered messages")
+        }
+        if (senderBytes + size > limits.perSenderBytes) {
+            return EnqueueResult.QuotaExceeded(QuotaScope.SENDER, "sender byte quota ${limits.perSenderBytes} exceeded")
+        }
+        val (totalRows, totalBytes) = totals(conn)
+        if (totalRows >= limits.globalRows || totalBytes + size > limits.globalBytes) {
+            return EnqueueResult.QuotaExceeded(QuotaScope.GLOBAL, "hub mailbox is full")
+        }
+
+        val lifetime = ttlOverrideMs?.takeIf { it > 0 }?.coerceAtMost(limits.ttlMs) ?: limits.ttlMs
+        val sentAt = if (m.sentAt in 1..(now + limits.maxClockSkewMs)) m.sentAt else now
+
+        val inserted = conn.prepareStatement(
+            """
+            INSERT INTO mailbox_envelopes
+                (origin_device_id, target_device_id, msg_id, kind, payload, payload_bytes, group_id, sent_at, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(origin_device_id, msg_id, target_device_id) DO NOTHING
+            """.trimIndent(),
+        ).use { stmt ->
+            stmt.setString(1, m.origin)
+            stmt.setString(2, m.target)
+            stmt.setString(3, m.msgId)
+            stmt.setString(4, m.type)
+            stmt.setBytes(5, payload)
+            stmt.setLong(6, size)
+            stmt.setString(7, m.group)
+            stmt.setLong(8, sentAt)
+            stmt.setLong(9, now)
+            stmt.setLong(10, now + lifetime)
+            stmt.executeUpdate()
+        }
+        if (inserted == 0) return EnqueueResult.DuplicateQueued(existingSeq(conn, m) ?: 0L)
+        val seq = conn.createStatement().use { st -> st.executeQuery("SELECT last_insert_rowid()").use { rs -> rs.next(); rs.getLong(1) } }
+        return EnqueueResult.Queued(seq)
+    }
+
+    private fun existingSeq(conn: Connection, m: MailboxMessage): Long? =
+        conn.prepareStatement(
+            "SELECT seq FROM mailbox_envelopes WHERE origin_device_id = ? AND msg_id = ? AND target_device_id = ?",
+        ).use { stmt ->
+            stmt.setString(1, m.origin)
+            stmt.setString(2, m.msgId)
+            stmt.setString(3, m.target)
+            stmt.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
+        }
+
+    /** Unexpired rows and bytes held for/by [who] (`column` is a fixed internal name, never client input). */
+    private fun usage(conn: Connection, column: String, who: String, now: Long): Pair<Long, Long> =
+        conn.prepareStatement(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM mailbox_envelopes WHERE $column = ? AND expires_at > ?",
+        ).use { stmt ->
+            stmt.setString(1, who)
+            stmt.setLong(2, now)
+            stmt.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getLong(2) }
+        }
+
+    private fun totals(conn: Connection): Pair<Long, Long> =
+        conn.createStatement().use { st ->
+            st.executeQuery("SELECT rows, bytes FROM mailbox_totals WHERE k = 1").use { rs ->
+                if (rs.next()) rs.getLong(1) to rs.getLong(2) else 0L to 0L
             }
-        } catch (e: Throwable) {
-            EnqueueResult.Error(e)
         }
-    }
 
-    /**
-     * Enqueues an envelope for all recipients declared in [SealedEnvelope.recipientDeviceIds].
-     */
-    fun enqueueAll(envelope: SealedEnvelope, ttlMs: Long = defaultTtlMs): Map<String, EnqueueResult> {
-        return envelope.recipientDeviceIds.associateWith { recipientId ->
-            enqueue(envelope, recipientId, ttlMs)
-        }
-    }
-
-    /**
-     * Implementation of [com.transfer.flash.server.relay.MailboxQueueSeam] bridging FlashEnvelope to SealedEnvelope.
-     */
-    override suspend fun enqueue(recipientId: String, envelope: FlashEnvelope): Boolean {
-        val sealed = SealedEnvelope(
-            version = 1,
-            originDeviceId = envelope.senderId,
-            msgId = envelope.id,
-            hops = 1,
-            counter = 0L,
-            kind = envelope.type,
-            recipientDeviceIds = listOf(recipientId),
-            payload = envelope.payloadJson.toByteArray(Charsets.UTF_8),
-            authTagOrSignature = "",
-            timestamp = envelope.sentAt,
-        )
-        val result = enqueue(sealed, recipientId)
-        return result.isSuccess
-    }
-
-    /**
-     * Implementation of [com.transfer.flash.server.relay.MailboxQueueSeam] raw frame enqueue.
-     */
-    override suspend fun enqueueRaw(recipientId: String, rawFrame: String): Boolean {
-        val sealed = SealedEnvelope(
-            version = 1,
-            originDeviceId = "raw",
-            msgId = UUID.randomUUID().toString(),
-            hops = 1,
-            counter = 0L,
-            kind = EnvelopeKind.META,
-            recipientDeviceIds = listOf(recipientId),
-            payload = rawFrame.toByteArray(Charsets.UTF_8),
-            authTagOrSignature = "",
-            timestamp = System.currentTimeMillis(),
-        )
-        val result = enqueue(sealed, recipientId)
-        return result.isSuccess
-    }
-
-    /**
-     * Fetches undelivered, non-expired envelopes for [targetDeviceId] in order of creation.
-     */
-    override fun fetchPending(targetDeviceId: String, limit: Int): List<SealedEnvelope> {
-        return fetchPendingWithMetadata(targetDeviceId, limit).map { it.envelope }
-    }
-
-    /**
-     * Implements [com.transfer.flash.server.relay.MailboxQueueSeam] to fetch pending FlashEnvelopes.
-     */
-    override suspend fun fetchPendingEnvelopes(targetDeviceId: String, limit: Int): List<FlashEnvelope> {
-        val pending = fetchPending(targetDeviceId, limit)
-        return pending.map { sealed ->
-            FlashEnvelope(
-                id = sealed.msgId,
-                type = sealed.kind,
-                payloadJson = sealed.payload.decodeToString(),
-                senderId = sealed.originDeviceId,
-                sentAt = sealed.timestamp,
-            )
-        }
-    }
-
-    /**
-     * Fetches undelivered, non-expired envelopes with internal IDs and timestamps.
-     */
-    override fun fetchPendingWithMetadata(targetDeviceId: String, limit: Int): List<QueuedEnvelope> {
-        return database.withConnection { conn ->
-            val sql = """
-                SELECT id, origin_device_id, target_device_id, msg_id, kind, hops, counter,
-                       payload, auth_tag, created_at, expires_at
+    override suspend fun fetchPage(target: String, afterSeq: Long, limit: Int): List<QueuedMessage> {
+        val now = clock()
+        return database.io { conn ->
+            conn.prepareStatement(
+                """
+                SELECT seq, origin_device_id, target_device_id, msg_id, kind, payload, sent_at, created_at, expires_at, group_id
                 FROM mailbox_envelopes
-                WHERE target_device_id = ? 
-                  AND delivered = 0 
-                  AND (expires_at > ? OR expires_at = 0)
-                ORDER BY created_at ASC
+                WHERE target_device_id = ? AND seq > ? AND expires_at > ?
+                ORDER BY seq ASC
                 LIMIT ?
-            """.trimIndent()
-
-            val now = System.currentTimeMillis()
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setString(1, targetDeviceId)
-                stmt.setLong(2, now)
-                stmt.setInt(3, limit)
+                """.trimIndent(),
+            ).use { stmt ->
+                stmt.setString(1, target)
+                stmt.setLong(2, afterSeq)
+                stmt.setLong(3, now)
+                stmt.setInt(4, limit.coerceIn(1, 1000))
                 stmt.executeQuery().use { rs ->
-                    val results = mutableListOf<QueuedEnvelope>()
+                    val rows = ArrayList<QueuedMessage>()
                     while (rs.next()) {
-                        val envelope = SealedEnvelope(
-                            version = 1,
-                            originDeviceId = rs.getString("origin_device_id"),
-                            msgId = rs.getString("msg_id"),
-                            hops = rs.getInt("hops"),
-                            counter = rs.getLong("counter"),
-                            kind = rs.getString("kind"),
-                            recipientDeviceIds = listOf(rs.getString("target_device_id")),
-                            payload = rs.getBytes("payload") ?: ByteArray(0),
-                            authTagOrSignature = rs.getString("auth_tag"),
-                            timestamp = rs.getLong("created_at"),
-                        )
-                        results.add(
-                            QueuedEnvelope(
-                                envelopeId = rs.getString("id"),
-                                envelope = envelope,
-                                createdAt = rs.getLong("created_at"),
-                                expiresAt = rs.getLong("expires_at"),
-                            )
+                        rows.add(
+                            QueuedMessage(
+                                seq = rs.getLong(1),
+                                origin = rs.getString(2),
+                                target = rs.getString(3),
+                                msgId = rs.getString(4),
+                                type = rs.getString(5),
+                                payload = String(rs.getBytes(6) ?: ByteArray(0), Charsets.UTF_8),
+                                sentAt = rs.getLong(7),
+                                createdAt = rs.getLong(8),
+                                expiresAt = rs.getLong(9),
+                                group = rs.getString(10),
+                            ),
                         )
                     }
-                    results
+                    rows
                 }
             }
         }
     }
 
-    /**
-     * Marks envelopes as delivered by internal primary key IDs.
-     */
-    override fun markDelivered(envelopeIds: List<String>): Int {
-        if (envelopeIds.isEmpty()) return 0
-        return database.withConnection { conn ->
-            val placeholders = envelopeIds.joinToString(",") { "?" }
-            val sql = "UPDATE mailbox_envelopes SET delivered = 1 WHERE id IN ($placeholders)"
-            conn.prepareStatement(sql).use { stmt ->
-                envelopeIds.forEachIndexed { index, id ->
-                    stmt.setString(index + 1, id)
-                }
-                stmt.executeUpdate()
-            }
-        }
-    }
-
-    /**
-     * Marks envelope as delivered matching target device and origin message ID.
-     */
-    override fun markDelivered(targetDeviceId: String, msgId: String): Boolean {
-        return database.withConnection { conn ->
-            val sql = "UPDATE mailbox_envelopes SET delivered = 1 WHERE target_device_id = ? AND msg_id = ?"
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setString(1, targetDeviceId)
+    override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> {
+        val rows = database.ioTransaction { conn ->
+            // One row per acknowledgement: the named sender's copy, or the oldest copy when the device did not say whose it was.
+            val found = conn.prepareStatement(
+                "SELECT seq, origin_device_id, created_at FROM mailbox_envelopes WHERE target_device_id = ? AND msg_id = ?" +
+                    (if (origin != null) " AND origin_device_id = ?" else "") + " ORDER BY seq LIMIT 1",
+            ).use { stmt ->
+                stmt.setString(1, target)
                 stmt.setString(2, msgId)
-                stmt.executeUpdate() > 0
-            }
-        }
-    }
-
-    /**
-     * Implements [com.transfer.flash.server.relay.MailboxQueueSeam] to mark envelopes delivered by msgId list.
-     */
-    override suspend fun markEnvelopesDelivered(targetDeviceId: String, msgIds: List<String>): Int {
-        if (msgIds.isEmpty()) return 0
-        return database.withConnection { conn ->
-            val placeholders = msgIds.joinToString(",") { "?" }
-            val sql = "UPDATE mailbox_envelopes SET delivered = 1 WHERE target_device_id = ? AND msg_id IN ($placeholders)"
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setString(1, targetDeviceId)
-                msgIds.forEachIndexed { index, id ->
-                    stmt.setString(index + 2, id)
+                if (origin != null) stmt.setString(3, origin)
+                stmt.executeQuery().use { rs ->
+                    if (rs.next()) Triple(rs.getLong(1), rs.getString(2), rs.getLong(3)) else null
                 }
-                stmt.executeUpdate()
+            }
+            if (found == null) {
+                emptyList()
+            } else {
+                conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ?").use { stmt ->
+                    stmt.setLong(1, found.first)
+                    stmt.executeUpdate()
+                }
+                listOf(AckedRow(found.second, msgId, found.third))
             }
         }
-    }
-
-    override fun getQueuedCount(targetDeviceId: String): Int {
-        return database.withConnection { conn ->
-            queryQueuedCount(conn, targetDeviceId)
+        if (rows.isNotEmpty()) {
+            delivered.addAndGet(rows.size.toLong())
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, rows.size.toLong(), "event" to "delivered")
+            val now = clock()
+            for (r in rows) metrics?.mailboxResidence?.observeSeconds((now - r.createdAt) / 1000.0)
         }
+        return rows
     }
 
-    override fun getQueuedBytes(targetDeviceId: String): Long {
-        return database.withConnection { conn ->
-            queryQueuedBytes(conn, targetDeviceId)
-        }
-    }
-
-    override fun deleteExpired(): Int {
-        return database.withConnection { conn ->
-            val sql = "DELETE FROM mailbox_envelopes WHERE expires_at < ? AND expires_at > 0"
-            conn.prepareStatement(sql).use { stmt ->
-                stmt.setLong(1, System.currentTimeMillis())
-                stmt.executeUpdate()
+    override suspend fun deleteExpired(limit: Int): List<ExpiredRow> {
+        val now = clock()
+        val rows = database.ioTransaction { conn ->
+            val found = conn.prepareStatement(
+                "SELECT seq, origin_device_id, target_device_id, msg_id FROM mailbox_envelopes WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
+            ).use { stmt ->
+                stmt.setLong(1, now)
+                stmt.setInt(2, limit.coerceIn(1, 5000))
+                stmt.executeQuery().use { rs ->
+                    val list = ArrayList<Pair<Long, ExpiredRow>>()
+                    while (rs.next()) list.add(rs.getLong(1) to ExpiredRow(rs.getString(2), rs.getString(3), rs.getString(4)))
+                    list
+                }
             }
+            if (found.isNotEmpty()) {
+                conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ?").use { stmt ->
+                    for ((seq, _) in found) {
+                        stmt.setLong(1, seq)
+                        stmt.addBatch()
+                    }
+                    stmt.executeBatch()
+                }
+            }
+            found.map { it.second }
+        }
+        if (rows.isNotEmpty()) {
+            expired.addAndGet(rows.size.toLong())
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, rows.size.toLong(), "event" to "expired")
+        }
+        return rows
+    }
+
+    override fun noteDropped(count: Int) {
+        dropped.addAndGet(count.toLong())
+        metrics?.inc(RelayMetrics.MAILBOX_EVENTS, count.toLong(), "event" to "dropped")
+    }
+
+    /** Messages currently stored for [target] (unexpired). */
+    suspend fun pendingCount(target: String): Int = database.io { conn -> usage(conn, "target_device_id", target, clock()).first.toInt() }
+
+    // ---- MailboxStats ----------------------------------------------------------------------------------------
+
+    override fun queuedCount(): Long = database.withConnection { totals(it).first }
+
+    override fun queuedBytes(): Long = database.withConnection { totals(it).second }
+
+    override fun oldestAgeMs(deviceId: String): Long? = database.withConnection { conn ->
+        val now = clock()
+        conn.prepareStatement(
+            "SELECT created_at FROM mailbox_envelopes WHERE target_device_id = ? AND expires_at > ? ORDER BY seq ASC LIMIT 1",
+        ).use { stmt ->
+            stmt.setString(1, deviceId)
+            stmt.setLong(2, now)
+            stmt.executeQuery().use { rs -> if (rs.next()) (now - rs.getLong(1)).coerceAtLeast(0) else null }
         }
     }
 
-    private fun checkDuplicate(
-        conn: Connection,
-        originDeviceId: String,
-        msgId: String,
-        targetDeviceId: String,
-    ): String? {
-        val sql = """
-            SELECT id FROM mailbox_envelopes 
-            WHERE origin_device_id = ? AND msg_id = ? AND target_device_id = ?
-            LIMIT 1
-        """.trimIndent()
-        return conn.prepareStatement(sql).use { stmt ->
-            stmt.setString(1, originDeviceId)
-            stmt.setString(2, msgId)
-            stmt.setString(3, targetDeviceId)
+    override fun oldestAgesMs(limit: Int): Map<String, Long> = database.withConnection { conn ->
+        val now = clock()
+        conn.prepareStatement(
+            """
+            SELECT target_device_id, MIN(created_at) AS oldest FROM mailbox_envelopes
+            WHERE expires_at > ? GROUP BY target_device_id ORDER BY oldest ASC LIMIT ?
+            """.trimIndent(),
+        ).use { stmt ->
+            stmt.setLong(1, now)
+            stmt.setInt(2, limit.coerceIn(1, 1000))
             stmt.executeQuery().use { rs ->
-                if (rs.next()) rs.getString("id") else null
+                val map = LinkedHashMap<String, Long>()
+                while (rs.next()) map[rs.getString(1)] = (now - rs.getLong(2)).coerceAtLeast(0)
+                map
             }
         }
     }
 
-    private fun queryQueuedCount(conn: Connection, targetDeviceId: String): Int {
-        val sql = """
-            SELECT COUNT(*) FROM mailbox_envelopes 
-            WHERE target_device_id = ? AND delivered = 0 AND (expires_at > ? OR expires_at = 0)
-        """.trimIndent()
-        return conn.prepareStatement(sql).use { stmt ->
-            stmt.setString(1, targetDeviceId)
-            stmt.setLong(2, System.currentTimeMillis())
-            stmt.executeQuery().use { rs ->
-                if (rs.next()) rs.getInt(1) else 0
-            }
-        }
-    }
+    override fun deliveredTotal(): Long = delivered.get()
 
-    private fun queryQueuedBytes(conn: Connection, targetDeviceId: String): Long {
-        val sql = """
-            SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM mailbox_envelopes 
-            WHERE target_device_id = ? AND delivered = 0 AND (expires_at > ? OR expires_at = 0)
-        """.trimIndent()
-        return conn.prepareStatement(sql).use { stmt ->
-            stmt.setString(1, targetDeviceId)
-            stmt.setLong(2, System.currentTimeMillis())
-            stmt.executeQuery().use { rs ->
-                if (rs.next()) rs.getLong(1) else 0L
-            }
-        }
-    }
+    override fun expiredTotal(): Long = expired.get()
+
+    override fun droppedTotal(): Long = dropped.get()
 }

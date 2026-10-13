@@ -22,6 +22,8 @@ object QrCodeGenerator {
         margin: Int = 2,
         darkColor: String = "#0F172A",
         lightColor: String = "#FFFFFF",
+        /** Adds an inline `style` attribute (blocked by the console's CSP anyway); the console and landing page style the SVG with CSS classes instead. */
+        styled: Boolean = false,
     ): String {
         val hints = mapOf(
             EncodeHintType.MARGIN to margin,
@@ -33,15 +35,25 @@ object QrCodeGenerator {
         val height = matrix.height
 
         val sb = StringBuilder()
-        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 $width $height" width="$sizePx" height="$sizePx" shape-rendering="crispEdges" style="display:block;border-radius:8px;background:$lightColor;">""")
+        sb.append("""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 $width $height" width="$sizePx" height="$sizePx" shape-rendering="crispEdges"${if (styled) " style=\"display:block;border-radius:8px;background:$lightColor;\"" else ""}>""")
         sb.append("""<rect width="$width" height="$height" fill="$lightColor"/>""")
+        // ONE path with a run per row of dark modules: a 60x60 code is about 8 KB, not 130 KB of one-pixel rectangles
+        // (a response with many of them must stay inside the 64 KiB REST body cap).
+        sb.append("""<path fill="$darkColor" d="""")
         for (y in 0 until height) {
-            for (x in 0 until width) {
+            var x = 0
+            while (x < width) {
                 if (matrix.get(x, y)) {
-                    sb.append("""<rect x="$x" y="$y" width="1" height="1" fill="$darkColor"/>""")
+                    var run = 1
+                    while (x + run < width && matrix.get(x + run, y)) run++
+                    sb.append("M$x ${y}h${run}v1h-${run}z")
+                    x += run
+                } else {
+                    x++
                 }
             }
         }
+        sb.append("\"/>")
         sb.append("</svg>")
         return sb.toString()
     }
