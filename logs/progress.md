@@ -1,5 +1,305 @@
 # Progress Log
 
+
+## 2026-10-13 — Owner decisions on ADR-127 P-1..P-6, `from` acknowledgements, extraction plan
+
+### Worked on
+The owner answered the nine questions of the hub review round. Recorded the answers, did the small code parts, and prepared the `:core:enterprise` extraction for another implementer.
+
+### Changed
+- `docs/decisions.md`: ADR-127 addendum (answers P-1..P-6 and CLI-16) and ADR-128 (extract `:core:enterprise`, ACCEPTED).
+- `docs/FUTURE-OPTIMIZATION.md`: FO-13 (hashed revocation ids), FO-14 (phone co-signer), FO-15 (database encryption), FO-16 (multi-device per member; waits for the extraction), FO-17 (hub-only group roster and secret: direction chosen, NOT built, waits for group sealing).
+- `server/Dockerfile`: `FLASH_REQUIRE_ROOT_PIN=true` by default in the image; `server/docker-compose.example.yml`: `FLASH_ROOT_FINGERPRINT` placeholder; `docs/security.md` and `docs/protocol.md` say so.
+- `core/messaging`: `HubRelayPort.recvAck(id, from)`, `HubChatBridge` passes the sender; new test `theAcknowledgementNamesTheSenderOfTheMessageItConfirms`; `FakeHubRelay` records the senders.
+- `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`: the detailed extraction plan (written for an implementer that needs every step spelled out).
+- `logs/errors.md`: ERROR-396 (OPEN, found, not fixed): the chat bridge's duplicate set is keyed by message id only.
+- `docs/testing/TEST-BACKLOG.md`: `HUBR-09`, `HUBR-10`, `EXTR-01`.
+
+### Verification
+`:core:messaging:jvmTest` and `:core:messaging:testAndroidHostTest` (555 host tests) ran after the `from` change: `HubChatBridgeTest` 19/19 and `RealFlashChatRepositoryTest` 88/88 green, including the new `theAcknowledgementNamesTheSenderOfTheMessageItConfirms`. One unrelated failure in the first full run, `GroupHistorySyncTest.g12AMarkerCannotMoveTheWatermarkPastTheRowsItActuallySent` ("a watermark was stored"); it passed when re-run alone (timing-dependent, same test class as the group history sync work of 2026-10-09; not touched by this change; treat as a flaky test, do not weaken it). Not run in this session: the extraction itself and `:server:test` after the Dockerfile change (the Dockerfile is not exercised by tests).
+
+### Remaining
+- The extraction itself (plan written, not started).
+- ERROR-396 fix. FO-13..FO-17 are future work by the owner's decision.
+- Direct META and direct Send stay unscoped by department (owner wants inter-department messaging).
+
+### Next AI
+Do the extraction following `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md` before any multi-device work.
+
+## 2026-10-13 - Hub second-pass review fixes REV-01..REV-16 (ADR-127, ERROR-380..395, `HUBR-01`..`HUBR-08`)
+
+### Worked on
+Fixing, by the coordinator personally (not by sub-agents), everything an independent adversarial review found PARTIAL or new in the Phase 2 server work.
+
+### Changed
+- `:server`: client address resolver and proxy handling (REV-01), canonical paths and IPv6 /64 (REV-02), data at rest (REV-03), delegation revocation (REV-04), session expiry (REV-05), join-request oracle (REV-06), setup token at begin (REV-07), mailbox ack by sender (REV-08), META silence test (REV-09), password-change limiter and proxy warning (REV-10), signer replacement by recovery code (REV-11), Docker context, compose example (REV-12), log hygiene (REV-13), step-up value binding (REV-14), audit chain v2 (REV-15), root pin, serial persistence, keytool serial (REV-16).
+- `:core:hub-protocol`: `RecvAck.from` (additive). `FlashRelayClient.acknowledgeReceipt(messageId, from = null)`.
+- `FlashServerEngine.routeTable()` (internal) and `docs/protocol-routes.txt` with `RouteTableContractTest`.
+- Docs: `docs/protocol.md` (missing REST rows, review-round contract changes, config row, step-up actions), ADR-127, ERROR-380..395, audit addendum, backlog `HUBR-01`..`HUBR-08`.
+
+### Verification
+Full run 2026-10-13: `:core:hub-protocol:jvmTest` 122, `:server:test` 411, `:core:network:jvmTest` 1088 tests, 0 failures; `:server:installDist` builds. Mutation checks (each killed): removing `**/keystore.properties` from `.dockerignore` (`DockerIgnoreTest`), disabling the `requireRootPin` refusal and the persisted-serial rollback guard (`KeyToolAndDelegationTest`: 3 failures), then restored and re-run green. Targeted runs: `KeyToolAndDelegationTest` 21/21, `AbuseControlsTest` 13/13, `ChallengeResponseAuthTest` 11/11, `RelayFrameRouterTest` 37/37, `RouteTableContractTest` 1/1, Node console tests 51/51 (before the last edits).
+
+### Problems
+Concurrent Gradle runs clobber build directories; known flaky tests remain (see handoff).
+
+### Remaining
+Owner decisions in ADR-127 P-1..P-6; core/messaging passing `from`; whole-database encryption; device checks `HUBR-*`; the `:core:enterprise` extraction (next phase).
+
+### Next AI
+Read ADR-127 and the REV section of `docs/audit/2026-10-12-server-hub-audit.md`; do not weaken `DockerIgnoreTest`, `LogHygieneTest`, `RouteTableContractTest`.
+
+## 2026-10-13 - Hub CLIENT/HOST phase 4a: sealing keys in both hosts, sealed chat, changed-key policy (ADR-126, ERROR-360..363, `HUBH-01`..`HUBH-08`)
+
+### Worked on
+Making ADR-121/ADR-124 live on the devices: until now nothing in Android or Desktop made a sealing key, published it or built a `HubSealingPort`, so every hub message was readable opt-in text. The server half (ADR-124) was already done and was not touched.
+
+### Changed
+- `:core:security`: `HubSealingKeyStore` port (+ `MemoryHubSealingKeyStore`, `HubSealingKeyCodec`, `HubSealingFingerprint`), `HubSealingPins` / `HubSealingPinMath` / `HubSealingPinStore` (TOFU pins, persisted, `blocked` flow); Android `AndroidHubSealingKeyStore` (Keystore AES-GCM wrapper `flash_hub_seal_wrap_v1`) and `AndroidHubSealingPinStore`; JVM `FileHubSealingKeyStore` (identity key vault: DPAPI / Secret Service / 0600 file, atomic write) and `FileHubSealingPinStore`.
+- `:core:network`: `SealingPublishResult` + `HubSealingKeyApi` (409 / 429 / offline / 404 / refused distinguished, ERROR-360), `HubSealingKeyManager` (store before publish, new key on 409, 35 s on 429, backoff 15 s to 15 min, 30 min for an old hub), `EnterpriseHub(sealingKeyStore = ...)`: publish after start, after renewal / re-enrol and when the relay can send; unenrol DELETE (best effort, 5 s) and local wipe; revoke wipes locally; other organisation forgets the key.
+- `:core:messaging`: `HubSealingStatus`, `HubWaitReason`, `HubChatBridge` (`canCarry(recipient, group)`, key change holds even with the opt-in ON, groups never sealed, `waiting`, `droppedUnverified`, `confirmKeyChange`, `RETRY_LATER` for an unreachable sender directory, `wouldHold` keeps a message waiting for the user), `DirectoryHubSealing` (pins + `pendingKeyChanges`), `HubNoticeMath` / `HubDropCounts`, `FlashHubNoticeUi` in `FlashConversationUiState.hubNotice`, `FlashChatRepository.hubDropped` / `confirmHubKeyChange`, repository wiring (`group = true` on the three group paths, notice folded into the conversation state combine).
+- `:ui:chat`: `FlashHubNotice` (inline calm notice: changed key with Continue / Verify, waiting for an update, hub switched off, truthful group notes), `FlashHubNoticeMath`, `onConfirmHubKeyChange` on `FlashConversationScreen`, `FlashHubSealingUi` + sealing lines in the connection details, disclosure text now says 1:1 content is sealed when supported and groups are not sealed yet.
+- Hosts: Android `DiscoveryEngineHolder` (key store, pins, `DirectoryHubSealing` passed as `hubSealing`), `MainActivity` (settings model + confirm callback); Desktop `DesktopEngine` (`<stateDir>/hub/sealing.key`, `sealing-pins.txt`), `DesktopShell` (same).
+- Server: ONE new test file only, `server/src/test/.../e2e/E2eHostSealingLifecycleTest.kt` (3 tests: real `EnterpriseHub` with a key store publishes by itself, colleague seals and recipient opens across the real hub, unenrol removes the key, re-enrol after unenrol makes a new key and a colleague's pin reports CHANGED). No other server file was edited.
+- Docs: ADR-126, `docs/security.md` section, ERROR-360..363, backlog section 4zzzzz (`HUBH-01`..`HUBH-08`) and HUBC-05/06 + HUBE-05 annotated, audit CLI-05 row updated, `logs/handoff.md`.
+
+### Verification (real runs, 2026-10-13)
+- `:core:security:jvmTest` + `:core:security:testAndroidHostTest`: green (new: `HubSealingKeyStoreTest` 10, `FileHubSealingKeyStoreTest` 9 (1 skipped: POSIX perms on Windows), `AndroidHubSealingKeyStoreTest` 6; existing `HubSealingTest` 13).
+- `:core:network:jvmTest`: green (new: `HubSealingKeyManagerTest` 14, `EnterpriseHubSealingLifecycleTest` 10).
+- `:core:messaging:jvmTest` + `:core:messaging:testAndroidHostTest`: green (new: `HubSealingHostFlowTest` 9 two in-memory hosts through the real bridge, directory sealing and pins; `HubNoticeMathTest` 6; existing `HubSealingBridgeTest` 6, `HubChatBridgeTest`, `RealFlashChatRepositoryTest` unchanged and green).
+- `:ui:chat:jvmTest`: green (new: `FlashHubNoticeMathTest` 5, 2 new tests in `FlashHubStatusMathTest`).
+- `:app:compileDebugKotlin`, `:app:compileDebugUnitTestKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm`: BUILD SUCCESSFUL.
+- `:server:test` e2e files touched or related: `E2eHostSealingLifecycleTest` 3/3, `E2eSealingKeyContractTest` 9/9, `E2eSealedMessageContractTest` 3/3. A broader `:server:test --tests 'e2e.*'` run saw `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` fail and, in another run, `:server:compileTestKotlin` fail in `AdminAuthServiceTest` / `DataAtRestTest` ("No value passed for parameter 'token'") while another agent was editing the server; neither is in files of this phase and the sealing e2e re-ran green afterwards.
+- Mutation sanity (both killed, both reverted, the tests re-run green): (1) `HubSealingKeyManager.newKeyLocked`: ignoring a failed `store.save` (`if (false && saved.isFailure)`) failed `HubSealingKeyManagerTest.theKeyIsStoredBeforeItIsPublishedAndAKeyThatCannotBeStoredIsNeverPublished`; (2) `HubChatBridge.canCarry`: removing the `KEY_CHANGED` branch failed `HubSealingHostFlowTest.a changed key holds every message even with the readable switch on until the user continues`.
+
+### Remaining
+- Nothing is device-verified: `HUBH-01`..`HUBH-08`, HUBC-05, HUBC-06, HUBE-05.
+- Group sealing (design owed, ADR-123); per-bubble `hubDeliveryNotes` rendering (ERROR-363 OPEN); a dedicated "compare sealing codes" screen; whether the Android Keystore could hold the P-256 key itself was not checked (ADR-126 says so).
+- The Desktop `Rejected` handlers, Android presenter and other items of the 2026-10-09 deferred list are unchanged.
+- The "waiting" and key-changed notices are computed at conversation-state emissions; a group's notice can be stale until the next emission after the "Messages through the hub" switch is flipped (accepted, documented in ADR-126 consequences of the conversation combine).
+
+### Next AI
+Run `HUBH-01` and `HUBH-02` on two real phones against a real hub before anything else; then decide group sealing (ADR-123). Do not weaken `HubSealingHostFlowTest` or the mutation-checked tests above.
+
+## 2026-10-13 - Hub Phase 3 (UI): new static admin console replaces the server-rendered HTML (ADR-125, ERROR-340..342, `HUBU-01`..`HUBU-11`)
+
+### Worked on
+A completely new, professional admin console for the standalone hub (`:server`), replacing `AdminUiHtml.kt` / `AdminDashboardRoutes.kt` (owner: take nothing from the old design). Design record: `docs/ui/hub-admin-console.md`.
+
+### Changed
+- Front end: `server/src/main/resources/admin-ui/` (45 files, 462 KB): plain ES modules and CSS, no build step, no CDN, no third-party code, no inline script/style/handler, no `innerHTML`. Pages: setup wizard (and awaiting-delegation), sign-in, Overview, Devices (windowed table, filters, bulk revoke, drawer), Invites (single, bulk CSV, QR, print card), Organization, Audit (filters, verify, export), Security (revocations, delegation, admins, password, recovery codes, TOTP, step-up key), Settings. Light and dark themes, 390 px to desktop, keyboard map, `strings/en.js` + `t()`.
+- Server: `admin/AdminConsoleWeb.kt` (static routes, exact CSP and headers on every response, legacy redirects), `admin/ConsoleKeys.kt` (browser step-up key, P1363 to DER), `admin/EnrollLandingPage.kt` (invite landing page without inline code, assets under `/enroll-assets/`), console-key table (admin schema step 2), `POST admins/me/console-key`, `POST admins/{name}/totp-reset`, `GET metrics`, `audit?order=desc`, reject reason, DTO fields, `QrCodeGenerator.generateSvg`. Deleted the old HTML console and its test.
+- Tests: Kotlin `AdminConsoleWebTest`, `AdminConsoleApiTest` (20 tests); node tests `server/admin-ui-tests/*.test.mjs` (51 tests, run with `node --no-warnings --test "server/admin-ui-tests/*.test.mjs"`, not served, no package.json on purpose).
+- Docs: design doc sections 12 to 14 filled, ADR-125, `docs/protocol.md` (console additions), `docs/security.md` (Hub admin console), audit SEC-10/11/12, ERROR-340..342, backlog section 4zzzz (`HUBU-01`..`HUBU-11`).
+
+### Verification
+- `:server:test --tests '*AdminConsoleWebTest*' --tests '*AdminConsoleApiTest*'`: pass. Full `:server:test`: 370 tests, 1 failure not from this work (`HubServicesTest.revokingADeviceKills...`, stale assertion after `GET /revocations` became public, ERROR-342 (c)).
+- Mutation check: appended `innerHTML` to `js/format.js`; the source scan test failed; removed again.
+- Real browser (headless Edge 155 over the DevTools protocol, hub on localhost with the dev embedded root): setup wizard, sign-in with TOTP, failed sign-in, sign-out, all seven pages in light and dark at 1440 and 390 px with no console error and no horizontal overflow, invite create and revoke, a step-up certificate revocation signed with the real WebCrypto key (P1363 accepted), audit trail, focus trap and Escape. Screenshots: `docs/ui/hub-admin-console/*.png`. Defects found by this run were fixed (ERROR-341).
+
+### Remaining
+Everything in `HUBU-*` (other browsers, screen reader, zoom, print, air-gapped load, devices with data, bulk invites, delegation install, account flows, session expiry). Known gaps: step-up needs https or localhost; first delegation install needs the keytool command; reject reason is only in the audit trail; online count is taken from the first 500 devices; the throughput sparkline is session-local; bulk revoke asks one step-up per device; no console version endpoint (constant in `views/settings.js`); `invites.bulk.help` hard-codes 200 lines; ERROR-342 (a), (b).
+
+### Next AI
+After any change under `admin-ui/**` run `./gradlew :server:installDist` and restart the hub: it runs from the installed jar. Owner browser checks are the next step (`HUBU-01`). The stale `HubServicesTest` assertion (ERROR-342 c) belongs to the contract work.
+
+
+## 2026-10-13 - Hub Phase 3b (CONTRACT): server half of end-to-end sealing + real client <-> real server e2e tests (ADR-124, ERROR-330..337, tests `HUBE-01`..`HUBE-08`)
+
+### Worked on
+Two goals. (1) The server half of message sealing that the client built in Phase 2 (ADR-121): the hub now stores and serves each device's published sealing key. (2) An automated proof that the REAL client classes (`EnterpriseHub`, `FlashRelayClient`, `HubSession`, `EnterpriseDirectoryClient`) and the REAL `:server` agree on the wire, then fixing every mismatch. `:server/admin` and `admin-ui` were not touched (another agent owns them).
+
+### Changed
+- Sealing endpoint: `PUT/DELETE /api/v1/device/sealing-key` (`SealingKeyRoutes.kt`), identity schema step 2 (`hub_sealing_keys`, `hub_sealing_retired`, cleanup triggers on status change and delete), `MemberDto.sealingPublicKey/sealingSignature` served by the directory with the binding signature the client verifies (`HubAuth.sealingKeyBindingBytes`, golden vector in `hub-protocol`), rate limit 5 burst / 1 per 30 s, 64 KiB cap, audit actions `device.sealing-key.*`, a retired key can never be republished (409).
+- Client `publishSealingKey` in `EnterpriseDirectoryClient`.
+- Eight contract mismatches fixed (see `logs/errors.md`): ERROR-330 invite refusals 410/409 (server), 331 JoinResponse from the decision endpoint (server), 332 rejected join never reported (server), 333 `FlashRelayClient.start()` race gave two connections that kicked each other (client), 334 mailbox registry did not know hub devices so offline recipients were refused (server), 335 `GET /revocations` demanded a bearer a revoked device cannot get (server, now public + rate limited), 336 client passed no delegation to `verifyTrusted` for the revocation list (client), 337 login nonce stamped with the wall clock instead of the injected one (server).
+- `HubServices.build(..., limits)` test seam (documented in ADR-124).
+- Tests (about 41 e2e in `server/src/test/kotlin/com/transfer/flash/server/e2e/` plus `DatabaseDeviceRegistryTest`, `IdentitySealingMigrationTest`, `FlashRelayClientStartRaceTest`, hub-protocol/security golden tests): enrolment 7, directory 4, relay 8, sealing key 9, lifecycle 5 (revocation, renewal, expiry, unenrol), sealed message 3, group + limits 4, restart 1.
+- Docs: ADR-124, `docs/protocol.md`, audit rows (SEC-02/07/18, REL-08/09, CLI-05/08, new CON-01..09), backlog HUBE-01..08 and HUBB/HUBC annotations.
+
+### Verification
+2026-10-13: `:server:test` green (full run), `:core:hub-protocol:jvmTest`, `:core:security:jvmTest`, `:core:network:jvmTest`, `:core:messaging:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` all passed in one `--continue` run. One existing test (`HubServicesTest.revokingADeviceKillsItsBearer...`) asserted the old bearer-required `/revocations` and was updated for ERROR-335. In that same run `RevocationAndEnrolmentTest`, `RelayDeliveryContractTest.anOversizedWebSocketFrameClosesTheConnection` and `RelayLoadTest` failed once while the admin-console agent was building concurrently, and passed on every re-run (flaky under shared build dirs / CPU load, not diagnosed). Mutation sanity (each caught, each restored): start-race test fails without the lock; `anExpiredInviteIsSaidToBeExpired` fails when ERR_EXPIRED mapping is reverted; `theSignedRevocationListNeedsNoBearer...` and the revoke/re-enrol test fail when `/revocations` is removed from the public paths.
+
+### Problems
+Concurrent builds with the admin-console agent clobbered build dirs once; re-run fixed it.
+
+### Remaining
+Hosts do not yet generate/publish a sealing key or build a `HubSealingPort` (HUBC-05/06, HUBE-05 stay blocked on that). Group messages are not sealed (design owed). `/revocations` public exposure of revoked device ids is an owner decision. Slow-collector pong untested (HUBC-03). Handshake timeout covered only by `RelayHandshakeContractTest`. Nothing device-verified.
+
+### Next AI
+Wire a host (Android first) to generate `HubSealingKeyPair`, call `publishSealingKey` after enrol/renew, and build `HubSealingPort`; then run HUBE-05. Do not change the sealing wire without updating the golden vector.
+
+## 2026-10-13 - Hub fix effort Phase 2 (CLIENT): enrolment trust, relay hardening, incoming path, outbox, sealing, join flow, unenrol, Settings UI (ADR-120..123, ERROR-260..271)
+
+### Worked on
+Audit rows CLI-01, CLI-04..CLI-09, CLI-12..CLI-17 of `docs/audit/2026-10-12-server-hub-audit.md` in `:core:network` (enterprise, relay), `:core:security` (enterprise), `:core:messaging` (hub parts), `:ui:chat` (settings, browse groups, chat list), `:app` and `:desktop` wiring. SERVER-A and SERVER-B worked on `:server` in parallel; `:server` was not edited.
+
+### Changed
+- Enrolment (CLI-01, CLI-12): `HubCredentialVerifier` (pin, device id, key, chain, validity), cleartext refused, one atomic credential save, one shared `HttpClient` inside `EnterpriseHub`, typed `EnrollFailureReason` mapped from the hub's error codes.
+- `EnterpriseHub` (new, `:core:network`): enrol, live `HubStatus`, bearer session (`HubSession`) and renewal, root-signed revocation list (`FLASH_REVOKED` alone is not believed), unenrol (tells the hub, retries later, keeps group links for "Restore N groups", clears pending joins), join-request poll every 60 s.
+- Relay client (CLI-07, CLI-08, CLI-13): typed failures, jittered capped backoff reset only after a stable connection, handshake deadline, bounded delivery channel in front of the collector, `KtorRelayTransport` answers pings off the collector's path.
+- Incoming (CLI-14, CLI-15): `HubChatBridge.handleInbound` dedupe -> sender trust -> decode -> author == hub-stamped sender -> store -> RECV_ACK; `GROUP_MSG` fallback deleted.
+- Outbox (CLI-06): LAN first, hub after a 2 s grace, `FLASH_ACK`/`FLASH_QUEUE_STATE` drive state, hub-held message is not failed at 30 min (8 day budget), receipts/reads/typing fall back through the hub, `raceTransports` removed.
+- Sealing (CLI-05): `HubSealing` (`SEALED_V1`), sealing key pair bound by the identity key, `DirectoryHubSealing`, `HubSealingBridge`; content through the hub is an opt-in (default OFF) because the hub publishes no sealing keys yet.
+- Join flow (CLI-04): JOINED/PENDING/REJECTED, "Waiting for approval" rows in the chat list, admin Approve/Decline panel in the Browse groups sheet; the CLI-16 limitation sentence is shown at the top of that sheet.
+- UI: `FlashHubStatusMath`, `FlashHubCard` (Settings status row, banners with Retry now / Re-enrol / Dismiss, detail dialog, content disclosure, relink offer), enrol dialog with plain failure reasons; duplicate `ParsedEnrollmentInvite` / `FlashBrowseOrgGroupUi` removed (CLI-17). `:ui:chat` now depends on `:core:network`.
+- Hosts: Android `MainActivity`, `DiscoveryEngineHolder`, `AppEngine`; desktop `DesktopEngine` (creates `EnterpriseHub`, setting `hub_content_via_hub`), `DesktopShell`, `DesktopSettingsStore`.
+- ERROR-175 resolved (module-level test opt-in for `FlashInternalApi` in `:core:messaging`).
+
+### Verification (real results, 2026-10-13)
+- `:core:hub-protocol:jvmTest` 65/0 failed, `:core:security:jvmTest` 128/0, `:core:security:testAndroidHostTest` 220/0, `:core:network:jvmTest` 533/0, `:core:network:testAndroidHostTest` 530/0, `:core:messaging:jvmTest` 207/0, `:ui:chat:jvmTest` 418/0; `:app:compileDebugKotlin`, `:app:compileDebugUnitTestKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` BUILD SUCCESSFUL.
+- `:core:messaging:testAndroidHostTest` 539 tests, 1 failed (`GroupJoinTest` refused-join, passes alone) and `:ui:chat:testAndroidHostTest` 418 tests, 1 failed (`FlashStressLogicTest` timing, passes alone): ERROR-271, flaky under load. Earlier unrelated timing failures ERROR-269/270 passed in the final run.
+- Mutation checks (each applied, tests run, file restored from a saved copy, grep proves no leftover): (1) RECV_ACK before store -> 6 `HubChatBridgeTest` + 2 repository HUBC tests fail; (2) pin comparison disabled -> the ORIGINAL pin test still passed (the `serverId` check caught it), so two tests were added and both fail under the mutation; (3) sender signature check disabled and sender removed from the AAD -> `aPayloadSignedByAnotherDeviceIsRejected`, `theAadIsTheDocumentedCanonicalByteString`, `everyBoundFieldIsChecked` fail.
+- `:server` tests were not run (another agent is refactoring it); server behaviour is assumed from the contract in `docs/protocol.md`.
+- NOT tested: Compose rendering of the new Settings card and sheets, `KtorRelayTransport` slow-collector pong (needs a real WebSocket server), anything on a device. Owed: `HUBC-01`..`HUBC-11` in `docs/testing/TEST-BACKLOG.md` section 4zz.
+
+### Problems
+Pin mutation first did not fail the old test (see above). Test counts and flaky tests recorded in ERROR-269..271.
+
+### Remaining
+CLI-05 dormant until the hub serves sealing keys (`PUT /api/v1/device/sealing-key`, `sealingPublicKey`/`sealingSignature` on `MemberDto`); CLI-16 needs an owner decision (ADR-123 PROPOSED); `hubAccepted` is in memory only; presence is not surfaced via the hub.
+
+### Next AI
+Wire the server's sealing keys and turn CLI-05 from PARTIAL to FIXED; run `HUBC-*` against a real hub with SERVER-A/B's build; decide CLI-16. Do not create `:core:enterprise` before reading the extraction notes in `logs/handoff.md`.
+
+## 2026-10-13 - Hub fix effort Phase 2 (SERVER-A): offline root, revocation, persistence, TLS, admin backend and JSON API (ADR-111, ADR-113..115, ERROR-200..212)
+
+### Worked on
+Audit rows SEC-03..SEC-10, SEC-12, SEC-13, SEC-15 (admin API part), SEC-16 (config, Docker, body caps), SEC-17, SEC-18 (hub part), REL-10, REL-16
+(`docs/audit/2026-10-12-server-hub-audit.md`) in `:server`: auth, directory, admin, config, `Main.kt`, `HubServices`, migrations, Dockerfile.
+SERVER-B did relay, mailbox, observability (ADR-112); CLIENT did core/network, messaging, UI, app, desktop; all in the same working tree.
+
+### Changed
+- **Root key off the server**: `keytool init-root | issue-delegation | rotate` (`KeyTool.kt`), `HubKeyStore` (delegate key create-once, fail closed), `DelegationManager`
+  (pin, serial rules, hot reload, 14/3 day warnings), awaiting-delegation mode, `--dev-embedded-root` (needs `--allow-insecure`). ADR-111.
+- **Persistence**: `storage/Migrations.kt` (versioned, transactional, fail closed), `identity/IdentityStore`, persisted invites (hashed), serial counter, quota, admins,
+  sessions, lockouts, TOTP step, revocations, audit chain, directory (`OrganizationDirectory` on SQLite). ADR-111.
+- **Revocation**: `RevocationService`, `SqliteRevocationService` (+ `RevocationSigner`), `GET /api/v1/revocations`, unenroll, bearer re-check per use, `onRevoked` fan-out. ADR-113.
+- **Enrolment / API gate**: `EnrollmentService` (validation first, atomic, renew), `ChallengeResponseAuth`, `BearerTokenStore`, `HubApiGate` (bearer on every `/api/v1` route but
+  enrol/renew/auth/hub info), `ClientAddressResolver` + `TrustedProxies`, `TokenBucketLimiter`, 64 KiB body caps (413).
+- **Config / TLS / Docker**: strict `ServerConfig`, `TlsSupport` (proxy/self/none), management listener + `AdminListenerPolicy`, `server healthcheck`, Dockerfile (non-root, pinned tag,
+  HEALTHCHECK, no EXPOSE 8444), `.dockerignore`, setup token file 0600. New env `FLASH_MANAGEMENT_TOKEN` feeds SERVER-B's `DefaultManagementGuard`. ADR-114.
+- **Admin backend + JSON API**: `AdminAuthService` (PBKDF2 600k, TOTP replay, recovery codes, reserve-before-verify, persisted lockouts), `StepUpAuth` (+ `HubStepUp` in hub-protocol),
+  `CsrfGuard`/`AdminWeb`, `AuditLogger` (signed chain), `AdminApi*` under `/admin/api/v1`. `Main.kt` subcommands `serve|keytool|healthcheck|admin-recovery`. ADR-115.
+- **Wiring**: `HubServices.build(config)` is the single place that assembles everything; `FlashServerEngine` got three optional constructor parameters (`tls`, `apiGate`, `hubRoutes`)
+  and binds both listeners (the one surgical engine edit agreed with SERVER-B). `QrCodeGenerator` now emits one `<path>` (the per-module `<rect>` SVG broke the 64 KiB REST cap).
+- Legacy HTML dashboard (`AdminUiHtml`, HTML routes) was only rewired to the real invite registry and limits; it is NOT hardened (SEC-11 stays OPEN, a later phase replaces it).
+
+### Verification
+- `:server:test`: 310+ tests, 0 failures (see the commands below); `:core:hub-protocol:jvmTest` green.
+- Mutation checks (break the code, see the named tests fail, restore, re-run green): (1) removing the `isRevoked` re-check in `BearerTokenStore.resolve` failed
+  `aBearerTokenDiesTheMomentItsDeviceIsRevokedEvenWithoutAKick` and `HubServicesTest.revokingADeviceKillsItsBearerAtOnceAndRemovesItFromTheDirectory`; (2) removing the step-up check on
+  `POST /devices/{id}/revoke` failed `revokingADeviceNeedsAConfirmationFromTheAdministratorsDeviceAndIsSingleUse` and `aSignatureFromAnyOtherKeyDoesNotConfirmAnything`; (3) disabling the CSRF token
+  comparison in `CsrfGuard.check` failed `aStateChangingCallNeedsTheSessionsCsrfTokenAndASameSiteOrigin`, `theDirectoryCanBeManagedAndEveryChangeIsAudited` and `safeMethodsPassAndStateChangesNeedAMatchingToken`.
+- Not run: the Docker image build, anything on a phone, a real authenticator app, a real TLS proxy. Owed: `HUBA-01`..`HUBA-14` (`docs/testing/TEST-BACKLOG.md` section 4zy).
+
+### Problems
+- Concurrent Gradle builds by the three agents clobber `build/` directories (`Unable to delete directory ... core/network/build`, `NoSuchFileException ... in-progress-results-generic.bin`): re-run.
+- Test-only: `testApplication` sends no Host header, so `AdminWeb` in tests is built with `externalUrl = "http://localhost"`.
+
+### Remaining
+- A first delegation needs a restart to activate enrolment (a replacement hot-reloads): documented, not fixed.
+- SEC-11 (HTML console XSS) until the new admin UI; step-up needs a signer (client or admin UI): HUBA-12.
+- The client does not yet fetch the revocation list, renew, or use `device/unenroll`.
+- `relay/RelayAuth.kt:80` (SERVER-B's file) still carries a stale `PHASE-2` KDoc about the bearer store; the bearer store exists now.
+
+### Next AI
+Build the new admin UI on `/admin/api/v1` (read `docs/protocol.md` "Hub administration"), keep CSRF and step-up; then wire the client to the revocation list, renewal and unenroll.
+
+## 2026-10-12 - Hub fix effort Phase 2 (SERVER-B): relay delivery, mailbox, limits, observability (ADR-112, ERROR-230..237)
+
+### Worked on
+Audit rows SEC-02, REL-01..REL-09, REL-11, REL-13..REL-15 and part of SEC-16 (`docs/audit/2026-10-12-server-hub-audit.md`) for the standalone hub
+(`:server`): the relay, the mailbox, the engine lifecycle and observability. SERVER-A did auth, directory, admin, config, `Main.kt`; CLIENT did the
+client side, in parallel in the same working tree.
+
+### Changed
+- `core/hub-protocol`: `RelayFrame.Send.group`, `Deliver.group`, `Ack.delivered/queued/failed` (all optional, backward compatible), codec validation.
+- `server/relay/`: `RelayFrameRouter` rewritten (sender stamping, forged frames refused, in-flight table + spill, ack-driven deletion, paged drain with an
+  atomic gate against live overtaking and lost wake-ups, group fan-out, revocation per frame, `kick`, graceful `shutdown`), `RelaySession` (bounded outbound
+  queue + writer, `handOffLive`/`finishDrain`), `RelayConnectionPool` (identity-safe unregister), `RelayPolicy` (limits, token bucket, connection limiter),
+  `GroupMembership`.
+- `server/mailbox/`: new store (`MailboxQueue`, schema component `mailbox` v2 via SERVER-A's migrator, quotas, UNIQUE dedupe, server clock, registry check,
+  `TtlSweeper` with notices), `SealedEnvelope` header caps; `QuotaManager` deleted.
+- `server/storage/ServerDatabase.kt`: pragmas per pooled connection, `BEGIN IMMEDIATE`, JDBC on IO, `probe`, incremental vacuum, idempotent `close`.
+- `server/observability/` (new): `RelayMetrics` (Prometheus text), `ManagementGuard`, `LogSanitizer`, `MailboxStats`, `PresenceView`.
+- `server/core/FlashServerEngine.kt`: fixed-sentence 500s with correlation id, minimal `/health`, guarded `/health/detail` and `/metrics`, sweeper, graceful idempotent stop.
+- Docs: ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", ERROR-230..237, TEST-BACKLOG 4zx (`HUBB-01`..`HUBB-12`), audit statuses.
+
+### Verification
+- `:server:test` (run 2026-10-13 with the others' work in the tree): 304 tests; every test of mine green (mailbox, storage, relay, engine, load); the 10 reds are SERVER-A's
+  (`AdminApiTest` x9 "body larger than 65536 bytes" / join-request count, `OrganizationDirectoryTest.testJoinRequestRules`), not caused by this work.
+- `:core:hub-protocol:jvmTest` and `:core:network:jvmTest` green.
+- Load sanity (JVM, fake sessions, real file SQLite): 200 devices x 50 messages with random disconnects: 10,000 messages all delivered at least once, mailbox empty,
+  3.1 s (idle) / 9.5 s (three concurrent Gradle builds); redeliveries 0 to 123 depending on the cut timing.
+- Mutation checks (code broken, tests failed, code restored): (1) `RelayConnectionPool.unregister` by device id only -> 4 tests fail
+  (`aDisplacedSessionsCleanupCanNotDeregisterItsReplacement`, `theOldSessionsCleanupNeverTouchesTheReconnectedOne`, `theDisplacedSessionsUnacknowledgedMessagesMoveToTheNewConnection`,
+  `RelayDeliveryContractTest.aReconnectedDeviceIsNotKnockedOutByItsOldConnectionsCleanup`); (2) drain acknowledging rows right after writing them -> 3 tests fail
+  (`aReconnectingDeviceIsDrainedWithReplayAndRowsStayUntilItAcknowledges`, `anUnacknowledgedRowIsDeliveredAgainOnTheNextConnection`, `aQueuedMessageIsReplayedUntilAcknowledgedThenDeletedAndTheSenderIsTold`);
+  (3) live hand-off ignoring the `draining` gate -> 2 tests fail (`aLiveMessageDuringTheDrainIsQueuedBehindTheOlderRows`, `messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`).
+
+### Problems
+- sqlite-jdbc `Statement.execute("PRAGMA incremental_vacuum(N)")` frees ONE page; `executeUpdate` frees all (measured). Fixed, recorded in ERROR-233.
+- A router test that sent 300 frames from one sender hit the sender's own rate limit (test bug, not a router bug); the test now raises the budget.
+- JUnit4 `@Test fun x() = runBlocking { ... }` with a non-Unit last expression makes an invalid test class (`runBlocking<Unit>`).
+- The Gradle test results directory is shared and is wiped by concurrent builds of other agents; read the XML right after your own run.
+
+### Remaining / next AI
+- `Main.kt` (SERVER-A) must wire: `MailboxQueue(database = db, limits = MailboxLimits.forTtlDays(config.mailboxTtlDays), registry = <real registry>, metrics = metrics)`, and pass `database`, `revocationService`,
+  `delegationDaysRemaining`, `managementGuard`, the shared `RelayMetrics` to `FlashServerEngine`. Until then the 7-day default and `DeviceRegistry.AcceptAll` are in force (REL-08 / REL-09 stay OPEN in production).
+- CLIENT must consume `group`, aggregate Ack counts, QUEUE_STATE DELIVERED/EXPIRED/DROPPED, `replay` dedupe by msgId, RECV_ACK after durable store, `FLASH_KICK` reasons `superseded` / `server_shutdown`.
+- Not built: multi-device per user (registry has no user id); fragmented-message buffering cap (HUBB-10); real-device and load measurements (HUBB-01..12).
+
+## 2026-10-12 — Hub fix effort Phase 1: `:core:hub-protocol`, relay wire v2, REST bearer (ADR-107..110)
+
+### Worked on
+Phase 1 (foundation) of the server-hub audit fixes (`docs/audit/2026-10-12-server-hub-audit.md`): one shared definition of the hub contract so
+the later server, client and admin-UI phases can run in parallel against it.
+
+### Changed
+- New KMP module `:core:hub-protocol` (`com.transfer.flash.core.hubprotocol`): `HubContract`, `HubErrorCodes`, `HubJson`; `certs/` (DeviceCert,
+  DelegationCert, RevocationList v2, HubAuth signing bytes, roles/scopes, RenewalPolicy, EnrollmentInvite); `relay/` (RelayFrame, RelayFrameCodec);
+  `rest/` (DTOs, HubRestCodec). Depends on `:core:common` and kotlinx-serialization-json 1.9.0 only (ADR-107, ADR-108). 59 tests incl. golden vectors.
+- Deleted the old copies: server `auth/{DeviceCert,DelegationCert,RevocationList}.kt`, `AuthCanonicalWriter` in `CryptoSupport.kt`; `:core:security`
+  `enterprise/{AuthCanonicalWriter,DeviceCert,DelegationCert}.kt`; `:core:network` `relay/{RelayFrame,RelayFrameCodec}.kt`,
+  `enterprise/EnterpriseJsonHelper.kt` and `RelayFrameCodecTest.kt`.
+- Relay wire v2 (ADR-109): CHALLENGE -> HELLO (10 s) -> WELCOME, sender stamped by the hub, `FLASH_RECV_ACK`, no identity in the URL. v1 clients cannot
+  connect. Server: `RelayFrameRouter` rewritten, new seams `RelayAuthenticator` (+ `CertChainRelayAuthenticator`) and `HubPrincipalResolver`
+  (+ `BearerPrincipalResolver`), `BearerTokenStore`; `AuthRoutes`, `EnrollmentService` (PoP before token/quota, leaf clamped to the delegation),
+  `DirectoryRoutes` now speak DTOs. Client: `KtorRelayTransport`, `FlashRelayClient` (`acknowledgeReceipt`), `EnterpriseEnrollmentClient` (PoP,
+  fingerprint and chain checks), `EnterpriseDirectoryClient`, trust stores; hosts (`DiscoveryEngineHolder`, `DesktopEngine`, `MainActivity`,
+  `DesktopShell`) updated; `RealFlashChatRepository` acks a receipt only after handling succeeded (REL-02 client half).
+- Docs: ADR-107..110, `docs/protocol.md` "Hub relay wire v2 and hub REST contract v1", `docs/security.md` hub trust model, audit statuses,
+  ERROR-170..175, backlog section 4zw (`HUB-01`..`HUB-12`).
+
+### Why
+The audit found two divergent implementations of a security contract (server and clients), unauthenticated relay, hand-rolled JSON and ambiguous
+signed bytes. A shared module with golden vectors and a real client-against-real-server contract test removes the drift class of defect.
+
+### Verification (real runs, 2026-10-12)
+PASS: `:core:hub-protocol:jvmTest`, `:core:hub-protocol:testAndroidHostTest`, `:core:security:jvmTest`, `:core:security:testAndroidHostTest`,
+`:core:network:jvmTest`, `:core:network:testAndroidHostTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest`,
+`:server:test` (83 tests, 0 failures, incl. `RelayHandshakeContractTest` with the real client transport), `:app:compileDebugKotlin`,
+`:desktop:compileKotlinJvm`, `:app:compileDebugUnitTestKotlin`, `:desktop:compileTestKotlinJvm`.
+FAIL, not caused by this work: `:core:messaging:testAndroidHostTest` does not compile (opt-in for `FlashRelayClient`, ERROR-175, OPEN).
+NOT RUN: `:desktop:jvmTest` (ERROR-106 stays as recorded). Nothing was run on a device.
+
+### Problems
+- Contract deviation: `:core:security` has `api(project(":core:hub-protocol"))` (the trust-store port and `EnrollmentCredentials` hold `DeviceCert`);
+  the audit review had said not to. Recorded in ADR-107. No `:core:enterprise` client module was created.
+- Not served yet (contract only): `/api/v1/enroll/renew`, `/api/v1/revocations`, `/api/v1/hub`, join-request admin routes.
+
+### Remaining (Phase 2 and later; `// PHASE-N:` markers in the code, listed in `logs/handoff.md`)
+Revocation list build/serve/enforce and live kick (SEC-05), mailbox race and RECV_ACK-only delete (REL-01/02/03/07/09), rate limits, durable invite
+tokens and serials (SEC-04/06/08), TLS (SEC-06), directory legacy fallback removal (SEC-03), SEC-16 StatusPages, client renewal and bearer session,
+admin UI on DTOs.
+
+### Next AI
+Read `logs/handoff.md` (top section), then `docs/protocol.md` "Hub relay wire v2". Do not change a frame name, field name, path or signing byte
+order without updating `:core:hub-protocol`, its golden vectors, the three cross-check tests and `docs/protocol.md` together.
+
+---
+
 ## 2026-10-12 — Fix Rapid Connect/Disconnect Loop, SO_REUSEADDR Port Hopping, and Android SQLite PRAGMAs
 
 ### Worked on

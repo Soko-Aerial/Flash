@@ -1,5 +1,119 @@
 # Current Handoff
 
+## Update 2026-10-13 (late): owner decisions recorded, extraction plan ready
+
+- Owner answers to ADR-127 P-1..P-6 are in `docs/decisions.md` (ADR-127 addendum). Direct META/Send stay UNSCOPED (inter-department messaging is wanted); one device per member (FO-16); hub-only group roster/secret (FO-17) is a chosen direction and is NOT implemented.
+- The Docker image now defaults `FLASH_REQUIRE_ROOT_PIN=true` (set `FLASH_ROOT_FINGERPRINT`, or pass `-e FLASH_REQUIRE_ROOT_PIN=false` for a trial).
+- `HubChatBridge` acknowledges with the sender (`from`). Open: ERROR-396 (duplicate set keyed by id only).
+- **Next task:** extract `:core:enterprise` (ADR-128) following `docs/plans/CORE-ENTERPRISE-EXTRACTION-PLAN.md`.
+- Owed tests: `HUBR-09`, `HUBR-10`, `EXTR-01` (+ `HUBR-01`..`HUBR-08`).
+
+
+## 2026-10-13 - SERVER: second-pass review fixes REV-01..REV-16 (ADR-127, ERROR-380..395, tests `HUBR-01`..`HUBR-08`)
+- **Status:** all REV items built and unit/e2e tested in `:server` (and `RecvAck.from` in `:core:hub-protocol`). NOT device-verified, NOT committed.
+- **Where to look first:** `docs/decisions.md` ADR-127 (decisions and PROPOSED owner questions P-1..P-6), the REV section at the end of `docs/audit/2026-10-12-server-hub-audit.md`, `docs/protocol.md` "Hub review round", `docs/protocol-routes.txt`.
+- **Tests to keep green (do not weaken):** `RouteTableContractTest`, `DockerIgnoreTest`, `LogHygieneTest`, `DataAtRestTest`, `KeyToolAndDelegationTest`, `AbuseControlsTest`, `CanonicalPathTest`.
+- **Known flaky:** `GroupJoinTest` refused-join, `FlashStressLogicTest` 2000-message timing (ERROR-271), and server tests `RevocationAndEnrolmentTest`, `RelayLoadTest`, `RelayDeliveryContractTest.anOversizedWebSocketFrameClosesTheConnection`, `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` failed once only when Gradle builds ran concurrently.
+- **Open owner decisions:** ADR-127 P-1 (public `/revocations` hashing), P-2 (phone as step-up signer), P-3 (`FLASH_REQUIRE_ROOT_PIN` default), P-4 (whole-database encryption), P-5 (direct META scope, multi-device per user), P-6; CLI-16 (group roster/secret for hub-only members, ADR-123); whether to commit the large uncommitted tree.
+- **Operator notes:** back up `data.key` apart from the database; set `FLASH_TRUSTED_PROXIES` behind a proxy; production should set `FLASH_ROOT_FINGERPRINT` and `FLASH_REQUIRE_ROOT_PIN=true`.
+- **Next:** `:core:enterprise` extraction (mechanical, needs an ADR, keep `:server` free of it), an independent re-review of the client side, then device checks `HUBR-01`..`HUBR-08`.
+
+## 2026-10-13 - CLIENT/HOST: sealing keys, sealed chat and changed-key policy in both hosts (ADR-126, ERROR-360..363, tests `HUBH-01`..`HUBH-08`)
+- **Status:** built and unit-tested on Android and Desktop, plus three tests against the real hub (`E2eHostSealingLifecycleTest`). NOT device-verified. Group messages are NOT sealed (design owed, ADR-123); the UI says so.
+- **What happens now:** after enrolment each device makes a software P-256 sealing key (Android: Keystore-wrapped in app-private prefs; Desktop: identity key vault file `<stateDir>/hub/sealing.key`), publishes it (retries on offline / 429, new key on 409), wipes it on unenrol / revoke. A 1:1 message to a colleague with a published key is always sealed; without one it is sent readable only if "Messages through the hub" is ON, otherwise it waits and the chat says "Waiting for X to update the app". A colleague whose key changed gets NOTHING through the hub (sealed or readable) until the user taps Continue in the chat notice.
+- **Where to look first:** `docs/decisions.md` ADR-126; `core/security/.../enterprise/HubSealingKeyStore.kt`, `HubSealingPins.kt`; `core/network/.../enterprise/HubSealingKeyManager.kt` and `EnterpriseHub.kt` (`keepSealingKeyPublished`); `core/messaging/.../hub/HubChatBridge.kt`, `DirectoryHubSealing.kt`, `HubNotice.kt`; `ui/chat/.../FlashHubNotice.kt`; host wiring in `app/.../debug/DiscoveryEngineHolder.kt` and `desktop/.../DesktopEngine.kt`.
+- **Tests to keep green (do not weaken):** `HubSealingKeyManagerTest`, `EnterpriseHubSealingLifecycleTest`, `HubSealingHostFlowTest`, `HubNoticeMathTest`, `FlashHubNoticeMathTest`, `E2eHostSealingLifecycleTest`. Mutation-checked: `theKeyIsStoredBeforeItIsPublishedAndAKeyThatCannotBeStoredIsNeverPublished` and `a changed key holds every message even with the readable switch on until the user continues`.
+- **Open:** `hubDeliveryNotes` still not rendered per bubble (ERROR-363); group sealing; "compare sealing codes" screen; Keystore ECDH not verified (the wrapper design does not need it). A concurrent server-side agent was editing `:server` tests at the time (`AdminAuthServiceTest`, `DataAtRestTest` did not compile; `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` failed once under load): not this phase.
+- **Gotchas:** an uninstall / reinstall / new phone is always a key change for every colleague (one notice, one tap): by design, keys are not backed up. The pins are device-local. The Windows desktop `sealing-pins.txt` is plain text (public fingerprints only).
+- **Next:** `HUBH-01`, `HUBH-02` on two phones and a real hub; then the group sealing design.
+
+
+## 2026-10-13 - UI: new hub admin console (static files, ADR-125, tests `HUBU-01`..`HUBU-11`)
+- **Status:** built, unit-tested and checked in headless Edge on localhost; NOT checked in other browsers, with a screen reader, at 200% zoom, printed, air-gapped, or with real enrolled devices. `AdminUiHtml.kt` and `AdminDashboardRoutes.kt` are deleted.
+- **Where to look first:** `docs/ui/hub-admin-console.md` (design, file map, verification record), `server/src/main/resources/admin-ui/` (code), `server/.../admin/AdminConsoleWeb.kt` (routes and headers), `server/.../admin/ConsoleKeys.kt`, tests `AdminConsoleWebTest`, `AdminConsoleApiTest`, `server/admin-ui-tests/`.
+- **Run:** `./gradlew :server:installDist`, start the installed hub, open `http://localhost:<port>/admin/` (step-up needs https or localhost). Node tests: `node --no-warnings --test "server/admin-ui-tests/*.test.mjs"` (51).
+- **Rules to keep:** no `innerHTML`, inline script/style/handler or external URL in `admin-ui/**` (a test scans for them); every new `t('key')` needs a string in `strings/en.js` (a node test checks); the Kotlin tests list every asset, so a new file type needs the content-type table in `AdminConsoleWeb.kt`.
+- **Open:** ERROR-342: stale assertion in `HubServicesTest.revokingADeviceKillsItsBearer...` (contract work made `GET /revocations` public), "signed out" notice above a failed login, password form lacks a hidden username input. Owner decision HUBU-11 (phone as step-up signer). Known gaps in `logs/progress.md` (top entry).
+- **Gotchas:** the hub runs from the installed jar, so edits need `installDist` and a restart; concurrent gradle runs by other agents can clobber `server/build` (re-run); the console's step-up key lives in the browser profile (clear site data loses it; register again with a TOTP code).
+
+
+## 2026-10-13 - CONTRACT: real client <-> real hub agree on the wire; server sealing keys exist (ADR-124, ERROR-330..337, tests `HUBE-01`..`HUBE-08`)
+- **Status:** `PUT/DELETE /api/v1/device/sealing-key` and the sealing fields on `MemberDto` are served and tested against the real client. About 41 e2e tests in `server/src/test/kotlin/com/transfer/flash/server/e2e/` (harness `E2eHarness.kt`: real `EnterpriseHub` + `FlashRelayClient` against a real `HubServices` on loopback, shared test clock). Eight mismatches were found and fixed on whichever side was wrong (ERROR-330..337).
+- **Where to look first:** `server/.../e2e/`, `server/.../directory/SealingKeyRoutes.kt`, `server/.../identity/IdentityStore.kt`, `docs/decisions.md` ADR-124, audit section CON in `docs/audit/2026-10-12-server-hub-audit.md`.
+- **Not done:** hosts (Android/desktop) do not generate or publish a sealing key and do not build a `HubSealingPort`, so sealing stays dormant in the apps (HUBC-05/06, HUBE-05); group messages are not sealed; whether `GET /revocations` may be public (revoked device ids readable without a bearer) is the owner's decision; nothing here is device-verified (HUBE-01..08).
+- **Gotchas:** the restart e2e test takes about 12 s; `HubServices.build(limits = ...)` is the test seam for rate limits; the admin-console agent's work in `server/.../admin/` may leave admin tests transiently red.
+
+## 2026-10-13 - Hub Phase 2, CLIENT: enrolment, relay, incoming/outbox, sealing, join flow, unenrol, Settings UI DONE in code (ADR-120..123, ERROR-260..271, tests `HUBC-01`..`HUBC-11`)
+- **Status:** `EnterpriseHub` (`:core:network`) owns enrol / status / session / renewal / revocation / unenrol; `HubChatBridge` + `HubRelayPort` + `HubSealingPort` (`:core:messaging`) are the cut line between the chat repository and the hub; `FlashHubStatusMath` + `FlashHubCard` (`:ui:chat`) render it. Hosts: Android `MainActivity`/`AppEngine`/`DiscoveryEngineHolder`, desktop `DesktopEngine`/`DesktopShell`.
+- **Where to look first:** `core/network/.../enterprise/` (`EnterpriseHub`, `HubCredentialVerifier`, `HubSession`, `HubStatus`), `.../relay/FlashRelayClient.kt`, `core/security/.../enterprise/HubSealing.kt`, `core/messaging/.../hub/`, `RealFlashChatRepository.kt` (grep `hub`), `ui/chat/.../settings/FlashHub*.kt`.
+- **Not done / dormant:** sealing is dormant until the hub serves sealing keys (server owes `PUT /api/v1/device/sealing-key` + sealing fields on `MemberDto`); CLI-16 (hub-group members not paired with each other cannot read each other) is the owner's decision (ADR-123); `hubAccepted` in memory; hub presence not surfaced.
+- **Extraction notes for a later `:core:enterprise` module:** trust store port/codec (`EnterpriseTrustStore`, `EnrollmentCredentials`, `PendingJoinsCodec`) and `HubSealing` live in `:core:security` and use its internal crypto seams; `RealFlashChatRepository` and the `FlashChatRepository` interface still expose network types (`EnterpriseJoinResult`, `EnterpriseJoinRequest`, `HubDeliveryNote`, directory types); `:ui:chat` depends on `:core:network` and its settings/browse APIs expose `@FlashInternalApi` types (hosts and tests need a file-level opt-in); only `FlashRelayHubPort` touches `FlashRelayClient`.
+- **Tests:** see `logs/progress.md` (2026-10-13 CLIENT). Flaky: ERROR-269..271. Device checks: `docs/testing/TEST-BACKLOG.md` section 4zz.
+- **Next:** run `HUBC-01`..`HUBC-04` against a hub built from SERVER-A/B; implement the server side of sealing keys; owner picks the CLI-16 path.
+
+## 2026-10-13 - Hub Phase 2, SERVER-A: offline root, revocation, persistence, TLS modes, admin backend and JSON API DONE in code (ADR-111, ADR-113..115, ERROR-200..212, tests `HUBA-01`..`HUBA-14`)
+- **Status:** `HubServices.build(config)` assembles the hub: persisted state (SQLite, migrations), delegate key + root-signed delegation (root is OFFLINE, `server keytool`), revocation service
+  (signed monotonic list, bearer re-check, relay kick), enrolment (validated, atomic, renew), `HubApiGate` (bearer on every `/api/v1` route except enrol/renew/auth/hub info), strict `ServerConfig`
+  (TLS `proxy|self|none`, management listener, trusted proxies), admin auth + step-up + CSRF + signed audit chain, and the JSON admin API `/admin/api/v1`. `Main.kt`: `serve | keytool | healthcheck | admin-recovery`.
+- **Where to look first:** `server/.../HubServices.kt`, `Main.kt`, `KeyTool.kt`, `auth/` (`DelegationManager`, `SqliteRevocationService`, `EnrollmentService`, `ApiGate`), `admin/AdminApi*.kt`, `config/`; spec `docs/protocol.md` "Hub administration: JSON admin API, CLI and configuration"; ADR-111, 113, 114, 115; `docs/security.md` hub section.
+- **Tests:** `KeyToolAndDelegationTest`, `RevocationAndEnrolmentTest`, `AbuseControlsTest`, `ServerConfigTest`, `HubServicesTest`, `MainCommandsTest`, `AdminApiTest`, `AdminAuthServiceTest`, `StepUpAuthTest`, `AuditLoggerTest`, `DirectoryRoutesTest`, `OrganizationDirectoryTest`, `MigratorTest`. Template for a new admin endpoint: copy an `AdminApiTest` case (its `Realm` logs in, holds the CSRF token and does the step-up).
+- **Gotchas:** `testApplication` sends no Host header (give `AdminWeb` `externalUrl = "http://localhost"`); a Kotlin KDoc must not contain a slash-star pair (comments nest); build `HubServices` with a temp data dir and close `hub.database`; shared Gradle `build/` is wiped by concurrent builds (re-run); `FlashServerEngine` is shared with SERVER-B (only constructor params `tls`, `apiGate`, `hubRoutes` are SERVER-A's).
+- **Interfaces others use:** `RevocationService` (`isRevoked`, `current`, `onRevoked`), `SqliteRevocationService`, `PresenceView` (relay pool implements, directory reads), `MailboxStats`, `CsrfGuard.check`, `AdminWeb`, `HubApiGate`, `HubStepUp.proofBytes` (hub-protocol; an admin device signs it).
+- **Open:** SEC-11 (the HTML console is not hardened, a later phase replaces it with a UI over the JSON API); HUBA-12 needs a step-up signer; the client does not fetch revocations, renew or unenroll yet; a first delegation needs a restart; the Docker image was never built (HUBA-10); ERROR-200..212 stay OPEN until the `HUBA-*` checks pass.
+
+## 2026-10-12/13 - Hub Phase 2, SERVER-B: relay, mailbox, limits, observability DONE in code (ADR-112, ERROR-230..237, tests `HUBB-01`..`HUBB-12`)
+- **Status:** the relay delivers at least once, driven by the recipient's `FLASH_RECV_ACK`; rows leave the mailbox only on that ack; a live message is held in a
+  per-session in-flight table and spilled to the mailbox when the session ends; drain is paged (100) with an atomic gate (`RelaySession.handOffLive` / `finishDrain`) so live frames
+  never overtake stored ones; a device's reconnect no longer removes its replacement (`RelayConnectionPool.unregister(session)`); the hub stamps the sender, refuses client-sent
+  ACK/DELIVER/QUEUE_STATE/KICK/REVOKED, checks revocation by serial and device id at the handshake and per frame, and `RelayFrameRouter.kick(deviceId, reason)` is the hook for
+  `RevocationService.onRevoked`. Groups fan out on the server (`FLASH_RELAY.group`). Limits, token bucket, bounded outbound queue and per-connection writer: `RelayPolicy`.
+  Mailbox: `MailboxQueue` (quotas, UNIQUE dedupe, server clock, registry check), `TtlSweeper`. Operations: public `/health` minimal, guarded `/health/detail` and `/metrics`, fixed-sentence 500s.
+- **Where to look first:** `server/.../relay/RelayFrameRouter.kt`, `RelaySession.kt`, `mailbox/MailboxQueue.kt`, `core/FlashServerEngine.kt`; spec `docs/protocol.md` "Relay delivery semantics, limits and operations"; ADR-112.
+- **Tests:** `RelayFrameRouterTest` (fake sessions, `testsupport/FakeWebSocket.kt`), `RelayDeliveryContractTest` (real `KtorRelayTransport`), `RelayLoadTest` (env `FLASH_LOAD_DEVICES` / `FLASH_LOAD_MESSAGES` to scale), `MailboxQueueTest`, `ServerDatabaseTest`, `FlashServerEngineTest`. Template for new relay behaviour: copy a `RelayDeliveryContractTest` case.
+- **Still wiring (not mine):** `Main.kt` must pass the mailbox limits from `config.mailboxTtlDays`, a real `DeviceRegistry`, `database`, `revocationService`, `managementGuard`, `delegationDaysRemaining` (exact line in `logs/progress.md`). CLIENT must consume the contract extensions.
+- **Gotchas:** sqlite-jdbc `execute("PRAGMA incremental_vacuum")` frees one page, use `executeUpdate`; shared Gradle build dir is wiped by concurrent builds; `@Test fun x() = runBlocking<Unit> {}`.
+- **Open:** fragmented WebSocket messages are buffered by Ktor before `maxFrameSize` applies (HUBB-10); multi-device per user is not built; ERROR-230..237 stay OPEN until `HUBB-*` pass.
+
+## 2026-10-12 — Hub fix effort, Phase 1 DONE: `:core:hub-protocol` and relay wire v2 (the contract later phases build on)
+- **Current Branch:** `dev` (working tree only, NOT committed by this session). Last verified: see `logs/progress.md` top entry for the commands.
+- **Status:** Phase 1 code complete and green: server (`:server:test`, 83 tests), `:core:hub-protocol`, `:core:security`, `:core:network`, `:ui:chat`,
+  `:core:messaging:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. Not device-verified (`HUB-01`..`HUB-12`, backlog 4zw).
+  Known red, not ours: `:core:messaging:testAndroidHostTest` does not compile (ERROR-175, opt-in); `:desktop:jvmTest` not run (ERROR-106).
+- **The contract (single source: `core/hub-protocol`, spec `docs/protocol.md` "Hub relay wire v2 and hub REST contract v1", ADRs 107..110):**
+  relay `GET /flash-relay`: CHALLENGE -> HELLO (10 s) -> WELCOME, then RELAY / DELIVER / RECV_ACK / ACK / QUEUE_STATE / META / PING / PONG / REVOKED / KICK /
+  ERROR; REST `/api/v1/...` with bearer; errors `HubErrorCodes` (`ERR_AUTH`, `ERR_REVOKED`, `ERR_EXPIRED`, ...). Never change a frame name, field,
+  path or signing byte order without updating the module, its golden vectors (`CertGoldenVectorTest`, `HubSignedVectorTest`,
+  `HubSignedVectorServerTest`, `SignedVectorJvmTest`) and the doc together.
+- **Seams for later phases:** server `RelayAuthenticator` (prod: `CertChainRelayAuthenticator`; test: `TestRelayAuthenticator`) and
+  `HubPrincipalResolver` (prod: `BearerPrincipalResolver`; test: `FixedPrincipalResolver`) in `server/.../relay/RelayAuth.kt` and
+  `server/src/test/.../testsupport/HubTestFixture.kt`; client `RelayIdentity.expectedServerId` + `RelaySigner`, `EnterpriseDirectoryClient.bearerProvider`.
+  The contract test `RelayHandshakeContractTest` is the template for any new behaviour that crosses client and server.
+- **Serialization:** kotlinx-serialization-json 1.9.0 only through `HubJson` / `RelayFrameCodec` / `HubRestCodec`. No new regex JSON, ever (SEC-15).
+- **`// PHASE-` markers (grep `PHASE-` to list):**
+  - PHASE-2 (server): `RelayFrameRouter.kt` (REL-01 unregister-by-id race at two sites, REL-02 mark delivered only on RECV_ACK, REL-07/REL-09 DUPLICATE_QUEUED and QUOTA_EXCEEDED,
+    SEC-03 group META membership, SEC-05 verified list + active kick, rate limiting of rejected frames); `ChallengeResponseAuth.kt` (SEC-05 verified list);
+    `EnrollmentService.kt` (durable tokens and serials, SEC-04/06/08 rate limits); `AuthRoutes.kt` (`/enroll/renew`, per-IP limits, TLS, SEC-04);
+    `BearerTokenStore.kt` (per-request revocation re-check, bearer mandatory on all routes); `RelayAuth.kt` (`HubPrincipalResolver`);
+    `DirectoryRoutes.kt` (remove the legacy `X-Device-Id`/query/body fallback, admin scope on the approval endpoints); `FlashServerEngine.kt` (SEC-16 StatusPages leaks `cause.message`;
+    `/health` still prints memory and session counts).
+  - PHASE-2 (client side of the same contract): `EnterpriseDirectoryClient.kt` (drop `X-Device-Id` once the hub requires the bearer).
+  - PHASE-3 (client): `RelayIdentity.kt` (derive the pin from `rootPublicKey` when blank, CLI-01), `KtorRelayTransport.kt` (surface a realm mismatch to the user),
+    `EnterpriseEnrollmentClient.kt` (refuse cleartext `http://`), `EnterpriseDirectoryClient.kt` (wire `bearerProvider` to challenge/verify; client renewal call).
+  - PHASE-4 (admin UI): `DirectoryRoutes.kt` `escapeJson` goes away when the admin pages use DTOs.
+- **Not served yet (contract only):** `/api/v1/enroll/renew`, `/api/v1/revocations`, `/api/v1/hub`, join-request admin routes.
+- **Behaviour changes to know:** wire v1 is gone (v1 clients cannot connect); an invite with a blank `root=` is refused; `EnrollmentCredentials.isExpired` is
+  now real; a leaf certificate is clamped to its delegation window; the client acks a receipt only after it stored the message.
+- **Deviations:** `:core:security` has `api(project(":core:hub-protocol"))` (needed for `EnrollmentCredentials` and the trust-store port); no `:core:enterprise`
+  client module was created (ADR-107). The contract test pulls `:core:network` into `:server` as `testImplementation` only.
+- **Audit:** FIXED-IN-CODE in `docs/audit/2026-10-12-server-hub-audit.md`: SEC-01, SEC-14, SEC-15, REL-12, CLI-02, CLI-03, CLI-10, CLI-11. Partial (kept OPEN with a note):
+  SEC-02, SEC-07, SEC-18, REL-02, CLI-08, CLI-17. Everything else OPEN.
+- **Recommended next task:** Phase 2 (server fixes) against the seams above, starting with the REL-01 race and the REL-02 RECV_ACK-only delete, each with a
+  failing test first in `RelayFrameRouterTest`; then SEC-05 (build/sign/serve the revocation list, wire `revocationListProvider`).
+- **Files most relevant:** `core/hub-protocol/` (all), `server/.../relay/RelayFrameRouter.kt`, `server/.../relay/RelayAuth.kt`, `server/.../auth/*`,
+  `server/src/test/.../relay/RelayHandshakeContractTest.kt`, `core/network/.../relay/KtorRelayTransport.kt`, `docs/protocol.md`.
+
+---
+
 ## 2026-10-12 — Fix Rapid Connect/Disconnect Loop, SO_REUSEADDR Port Hopping, and Android SQLite PRAGMAs
 - **Current Branch:** `dev`
 - **Last Verified Build / Commit:** `1b2eb12d`

@@ -19,3 +19,9 @@ www.evilmadscientist.com). The Hershey Fonts licence requires these acknowledgem
 Binary distributions (the Android app and the desktop installers) also bundle the
 third-party components listed in THIRD_PARTY_NOTICES.txt. That file is generated at build
 time from the shipped dependencies and holds their licence texts and NOTICE contents.
+
+kotlinx.serialization (kotlinx-serialization-json 1.9.0)
+  Copyright JetBrains s.r.o. and Kotlin Programming Language contributors.
+  Licensed under the Apache License, Version 2.0. Used by :core:hub-protocol for the
+  enterprise-hub wire contract (ADR-108). Licence text and NOTICE contents ship in
+  THIRD_PARTY_NOTICES.txt.

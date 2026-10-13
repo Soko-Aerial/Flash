@@ -262,3 +262,149 @@ consistent; under `OPEN` a leaked invite admits its holder until the next rotati
 - Swarm announcements are validated before any model object is built: `root` must be 64 lowercase hex characters, the piece size a power of two inside the allowed range, and the total size within 1 byte to 16 GiB. An invalid announcement is dropped with a WARN that logs only lengths.
 - File names are capped at 120 code points and 200 UTF-8 bytes on a code-point boundary with the extension kept; Windows device names (CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM0-9, LPT0-9 and the superscript forms) are neutralised with or without an extension.
 - A failure to unwrap the database passphrase never mints a new one unless the Keystore key is permanently gone; a transient error is retried once and then surfaced, so chat history is not quarantined by a flaky Keystore.
+
+
+## Enterprise hub trust model (ADR-107, ADR-109, ADR-110; 2026-10-12)
+
+Scope: the organisation hub (`:server`) and the clients that enrol with it. The wire and signing bytes are specified in
+`docs/protocol.md` "Hub relay wire v2 and hub REST contract v1"; the findings behind this section are in
+`docs/audit/2026-10-12-server-hub-audit.md`. Everything below is unit-tested, contract-tested and NOT yet device-verified (`HUB-*` in
+`docs/testing/TEST-BACKLOG.md`).
+
+### Trust anchors and who may sign what
+
+- **Organisation root key**: signs delegations and (optionally) revocation lists. Clients pin its SHA-256 (`serverId`, from the invite's
+  `root=`); the hub holds only the public key at runtime. A client that cannot pin a root (blank `root=`) refuses to enrol.
+- **Hub delegated key**: certified by a root-signed `DelegationCert` with a scope set (`enrol:member`, `enrol:dept_admin`, `enrol:admin`,
+  `revoke:member`), a validity window and a device cap. It signs device certificates. Scopes use one wildcard rule (exact, `*`, `prefix:*`);
+  `admin` is never granted by a wildcard.
+- **Device key**: generated on the device, never leaves it. Its public half is certified by the hub key. The device proves possession of it
+  at enrolment, at every relay connect and at every REST login.
+
+### What a connection must prove
+
+1. The hub's CHALLENGE names a `serverId`; a client pinned to another realm refuses to answer (a rogue hub gets no signature).
+2. The device signs (serverId, serverNonce, clientNonce, deviceId, certSerial) under a domain tag: bound to the audience (no cross-organisation
+   replay), to a fresh single-use nonce from the hub (no replay), to the client's own nonce (a hostile hub cannot pre-compute), and
+   to a certificate serial (a stolen signature cannot be paired with another certificate). Fields are length-prefixed (no `a|bc` ambiguity).
+3. The chain verifies against the pinned root with a 60 s clock tolerance at both ends and the closed role set.
+4. The sender of every relayed message is the authenticated principal; a client-supplied sender is not read (SEC-02).
+
+### Enrolment
+
+The invite token only authorises a request; it does not authorise a key. The device signs (token, deviceId, subjectPublicKey, serverId) and
+the hub verifies that BEFORE it spends the token or a quota slot (a bad proof does not burn a good invite). The issued leaf is clamped to
+the delegation window (`validFrom = max(now - 10 s, delegation.validFrom)`, `validTo = min(now + 7 days, delegation.validTo)`), so a
+certificate never outlives or predates the authority that issued it (SEC-18). The client verifies the response chain against the pinned
+root and the invite fingerprint before it stores anything.
+
+### Revocation
+
+Signed monotonic `RevocationList` (`flash-revocation-v2`): certificate serials, device ids and delegation serials. Only the root may revoke a
+delegation; a delegate holding `revoke:member` may revoke devices. The check order puts revocation before expiry so a revoked, expired
+certificate reports `ERR_REVOKED`. The chain verification (`checkChain`) and the handshake honour a list. **Since 2026-10-13 (ADR-113) the hub builds, root- or delegate-signs, persists and serves the
+list** (`GET /api/v1/revocations`, bearer), revokes by serial and by device id, kills the device's bearer at once (`BearerTokenStore.resolve` re-checks every use),
+removes it from the directory and kicks its relay socket (`onRevoked`). A revoked id cannot re-enrol until an administrator unrevokes it, and the old
+serials stay revoked. The remaining gap is the CLIENT: it does not yet fetch or honour the list (HUBA-14).
+
+### Errors and logging
+
+A rejection on the wire or REST carries a fixed sentence and a code from `HubErrorCodes`, never exception text or a value from the request
+(SEC-16 for the hub's own routes; the generic StatusPages handler still echoes `cause.message`, Phase 2). Logs carry device ids, serials and
+codes; never a private key, token, nonce, signature or certificate body. Bearer tokens are 32 random bytes, valid 15 minutes; the hub keeps
+only their SHA-256.
+
+### Offline root, delegation and hub keys (ADR-111, 2026-10-13)
+
+The organisation root key is created and used OFFLINE with `server keytool` (encrypted file, owner-only; the pass-phrase never touches the hub). The hub
+holds only its delegate key and a root-signed, time-limited delegation with explicit scopes and a device cap. Consequences an operator must know:
+a stolen hub can enrol devices only until the delegation expires or is revoked (revoke the delegation serial with a root-signed list); losing the root key
+means re-enrolling the organisation; the hub refuses to start with a root key in its data directory (except the loud dev flag); a corrupt delegate key is
+an error, never silently replaced; with no valid delegation the hub only serves its admin console (awaiting-delegation mode). The delegation expiry is
+logged at 14 and 3 days left.
+
+### Transport, listeners and the admin surface (ADR-114, ADR-115, 2026-10-13)
+
+- TLS: `proxy` (hub behind a TLS terminating reverse proxy), `self` (self-signed P-256 certificate kept across restarts, fingerprint logged) or `none`
+  (insecure opt-in). Invites and QR codes carry `https://` only; the hub refuses to create an `http://` invite unless insecure mode is on.
+- The admin console and API live on the management listener (loopback by default); the public port serves no `/admin`. Reach it with an SSH tunnel
+  or an authenticated proxy. Cookies are `__Host-` Secure, HttpOnly, SameSite=Strict.
+- Admin sign-in: PBKDF2-HMAC-SHA256 600 000 iterations, TOTP with single-use steps, hashed recovery codes, persisted lockouts keyed by user and address,
+  attempts reserved before verification, equal work for unknown users, sessions hashed at rest (30 min idle, 2 h absolute, 5 per admin).
+- Dangerous admin actions need a step-up confirmation signed by the admin's own enrolled device and bound to the action and target; CSRF needs the
+  session-bound header plus a same-origin check. Every admin and key event goes to a persisted, hash-chained, delegate-signed audit log
+  (`audit/verify` recomputes it). Remaining limit: the chain is anchored only by the delegate key on the same host, so export the head off the box.
+- Abuse limits: token buckets per client address on enrol, auth and the directory; forwarded addresses are believed only from `FLASH_TRUSTED_PROXIES`;
+  bodies over 64 KiB are refused; no regex JSON in any security path; the setup token lives in an owner-only file and is not printed in production.
+- Docker: non-root, `.dockerignore` keeps keys and keystores out of the build context, HEALTHCHECK through `server healthcheck`, only 8443 exposed
+  (image not built by the author: `HUBA-10`).
+
+### Known open items (do not claim the hub is hardened)
+
+| Item | Status | Owner phase |
+|---|---|---|
+| Cleartext transport: the hub terminates TLS itself (`self`) or sits behind a proxy and refuses http invites (SEC-06); clients still accept `http://` hubs (CLI) | hub FIXED-IN-CODE 2026-10-13 (HUBA-08), client OPEN | 3 |
+| Revocation built, signed, served and enforced live on the hub (SEC-05); the client does not fetch it yet | hub FIXED-IN-CODE 2026-10-13 (HUBA-07, HUBA-14) | 3 |
+| Invite tokens, quota, serials, admins, audit persisted; limits per address (SEC-04, SEC-08, SEC-09) | FIXED-IN-CODE 2026-10-13 (HUBA-04, HUBA-05) | done |
+| Group META membership and the directory principal (SEC-02, SEC-03) | FIXED-IN-CODE 2026-10-12 and 2026-10-13 | done |
+| Mailbox row deleted on `FLASH_RECV_ACK` (REL-02) | FIXED-IN-CODE 2026-10-12 (ADR-112) | done |
+| `/health` minimal; `/health/detail` and `/metrics` guarded (loopback or `FLASH_MANAGEMENT_TOKEN`) | FIXED-IN-CODE 2026-10-12/13 | done |
+| Renewal route on the hub exists (`POST /api/v1/enroll/renew`); the client never renews or fetches revocations | hub FIXED-IN-CODE 2026-10-13, client OPEN | 3 |
+| The HTML admin console (`AdminUiHtml`) still has the XSS findings of SEC-11 and is replaced by a later phase using the JSON admin API | OPEN | later |
+| A first delegation needs a hub restart to activate enrolment (a replacement hot-reloads) | OPEN (documented) | |
+| Admin step-up needs a client or admin UI that signs `HubStepUp.proofBytes` (HUBA-12) | OPEN | later |
+| Channel binding of the handshake signature to the TLS session | not possible until TLS lands | revisit with SEC-06 |
+
+
+### Hub client trust rules (Phase 2 CLIENT, 2026-10-13; ADR-120, ADR-121, ADR-122)
+
+| Rule | Where | Test |
+|---|---|---|
+| The root pin of the invite is mandatory and compared with the answered root; the hub's own `serverId` claim is never the proof | `HubCredentialVerifier` | `EnrollmentTrustTest` (mutation-checked) |
+| Credentials are saved in one atomic write (desktop: temp file + move; Android: one `commit()`); a failure leaves the device un-enrolled, never half-enrolled | `EnterpriseTrustStore` adapters | `JvmFileEnterpriseTrustStoreAtomicTest`, `EnrollmentTrustTest` |
+| A revoke frame alone never clears credentials; the root-signed list must name this certificate | `EnterpriseHub` | `EnterpriseHubTest` |
+| A hub message is stored before it is acknowledged; the author must equal the hub-stamped sender, who must be paired or a directory MEMBER | `HubChatBridge` | `HubChatBridgeTest`, repository HUBC tests (mutation-checked) |
+| A sealed message is opened only after the sender's identity-key signature verifies; sender, recipient, message id and time are in the AAD; a sealing key counts only with a valid identity-key binding | `HubSealing`, `DirectoryHubSealing` | `HubSealingTest` (12), `HubSealingBridgeTest` (6), mutation-checked |
+| Readable chat text goes through the hub only when the user opts in (default OFF, never reset by "Reset to defaults", disclosure first) | settings + repository | repository HUBC tests |
+| Tokens, keys and invite links are never logged (tag `HUB` logs ids, states and counts) | all | review only |
+
+Not solved: the hub cannot yet receive sealing keys (sealing is dormant in production); members known only through the directory cannot read each other's group messages (CLI-16, ERROR-266, owner decision pending); `hubAccepted` (messages the hub has taken) is kept in memory only.
+
+## Hub admin console (ADR-125, 2026-10-13)
+
+The administrator's browser console (`docs/ui/hub-admin-console.md`) is static files served by the hub itself.
+
+- **No injected markup.** Every page is built with `document.createElement` and `textContent`; there is no `innerHTML`, `eval`, inline script, inline handler or style attribute. A test scans every console file for forbidden patterns, and another asserts the CSP and the other headers on every asset and error response under `/admin`, `/enroll` and `/enroll-assets/` (`AdminConsoleWebTest`). The CSP allows only same-origin scripts, styles, images (plus `data:` and `blob:`), fonts and connections, and forbids framing, forms to other origins and a `<base>`. The server's TOTP QR arrives as an SVG string; the console parses it, keeps a viewBox and one path of numbers and path letters, and rebuilds the picture itself, so SVG markup from the network never reaches the page.
+- **No third-party code.** No CDN, no package, no font or analytics request; the console is meant to work with no route to the internet (air-gapped load owed: `HUBU-*`).
+- **Cookie and CSRF.** Session cookie `__Host-` prefixed over TLS, HttpOnly, SameSite=Strict; `X-CSRF-Token` on every state-changing call; the token is kept in memory only. Nothing secret is stored in `localStorage`; the stored items per browser are the step-up key (below) and display preferences.
+- **Step-up key.** Dangerous actions need a signature from a key that never leaves the browser: WebCrypto ECDSA P-256, `extractable: false`, held as a `CryptoKey` in IndexedDB, registered with a proof of possession bound to the username and a fresh authenticator code. Honest limits: it protects against a stolen session cookie or a CSRF request (the thief has no key); it does NOT protect against script running on the console's own origin (XSS, which the CSP and the DOM rules above exist to prevent) or against someone using the unlocked browser. Clearing site data loses the key, which is a recovery path (register a new one with a TOTP code), not an incident. WebCrypto needs a secure context: https or `localhost`; over plain http the console says so.
+- **Invite links** come from the hub's configured external URL, never from the browser's address bar, and are shown once in the dialog that created them.
+- **Not covered:** a compromised administrator workstation, a malicious browser extension, side channels in the WebCrypto implementation.
+
+
+## Hub sealing key and changed-key policy (ADR-126, 2026-10-13)
+
+- **The key.** Each device has one software P-256 sealing key for hub chat content, separate from its identity key. It is bound to the device by a signature of the identity key over the device id and the public key (`HubAuth.sealingKeyBindingBytes`); the hub stores public material only, and a sender accepts a colleague's key only after verifying that binding against the identity key the organisation certified for that colleague.
+- **At rest.** Android: the PKCS#8 bytes are wrapped by an AES-GCM key held in the Android Keystore (not exportable) and kept in app-private preferences that the backup and data-extraction rules exclude. Desktop: the same bytes under the identity key vault (DPAPI on Windows; Secret Service, then an owner-only key file, on Linux) at `<stateDir>/hub/sealing.key`, written atomically. The key is never backed up and never logged (only a 16 hex digit public fingerprint is).
+- **Publication.** The key is stored before it is published; a key that cannot be stored is never published. A key the hub remembers as retired (409) is replaced by a new one; unenrol deletes the key at the hub and locally; a confirmed revocation wipes it locally.
+- **A changed key is never trusted silently.** The first key seen for a colleague is pinned (SHA-256 of the SPKI). A different verified key for the same device id stops all hub sending to that colleague, sealed or readable, even when "Messages through the hub" is on, until the user taps Continue in the chat. The pin and the pending change are persisted and keep holding while the directory cannot be read.
+- **No silent downgrade.** A colleague without a published key receives a readable hub message only when the user turned the switch on; otherwise the message waits and the chat says why.
+- **Incoming.** A sealed message is opened only when the sender's signature verifies against the sender's certified identity key; otherwise it is dropped, counted ("Messages not opened") and never stored or shown. A sender that cannot be looked up right now is retried, not dropped.
+- **Not covered.** Group messages travel readable through the hub (opt-in) and the UI says so; there is no key-transparency log; the sealing code comparison is by reading the short codes aloud (ADR-126 "Consequences").
+
+
+## Hub review round: deployment and operations rules (ADR-127, 2026-10-13)
+
+Facts an operator must know. All of it is unit/e2e tested; none of it is device-verified (`HUBR-01`..`HUBR-08`).
+
+- **Back up `data.key` apart from the database.** TOTP seeds in the database are AES-GCM sealed (`enc1:`) under `<data>/data.key`. A copy of the database alone reveals nothing usable; the key without the database is useless; both together are the secrets. Losing `data.key` means every administrator needs `admin-recovery`. The database rows themselves (mailbox payloads, directory) are NOT encrypted at rest: whole-database encryption is an open owner decision (ADR-127 P-4). File permissions are owner-only (POSIX modes, or an ACL on Windows) for the database, `data.key`, `server-identity.pk8`, `setup-token.txt`.
+- **Behind a reverse proxy** set `FLASH_TRUSTED_PROXIES` to the proxy's address. Without it every device appears to come from the proxy and shares one per-address limit and one relay connection cap; with a wrong list a client could pick its own address through `X-Forwarded-For`. The hub logs a WARN at start when `FLASH_TLS_MODE=proxy` and the list is empty. Only the rightmost untrusted entry of `X-Forwarded-For` is believed. IPv6 clients are limited by their /64.
+- **A compromised hub key** (the delegate key on the server): issue a new delegation (higher serial) for a new hub key FIRST, then `keytool revoke --delegation-serial <old>` with the offline root key (pass the list the hub serves today as `--base` so earlier entries are carried over), install it through the console (`revocation.install`, step-up) and on every other hub that serves the same devices. Devices stop trusting the old serial and everything it issued. Rotate `data.key` and the administrators' passwords as well.
+- **Root pin.** The hub trusts the root that signs its first delegation unless `FLASH_ROOT_FINGERPRINT` is set; it logs `TRUST ON FIRST USE` when it had to adopt one. Production: set the fingerprint `keytool init-root` printed and `FLASH_REQUIRE_ROOT_PIN=true`. The Docker image sets `FLASH_REQUIRE_ROOT_PIN=true` by default (owner decision 2026-10-13), so a container whose `FLASH_ROOT_FINGERPRINT` is missing refuses the first delegation and enrolment stays closed; a bare `installDist` or `:server:run` start keeps the default `false`; for a local container trial pass `-e FLASH_REQUIRE_ROOT_PIN=false`. The hub also remembers the highest delegation serial it ever accepted and refuses an older certificate, even after a restart.
+- **Keytool serials.** `keytool issue-delegation` never reuses a serial: it takes the highest of `delegation-serial.txt` and every `*.cert` beside the root key or at the output path. Keep the serial file with the root key backup; a missing file is warned about, not trusted.
+- **Replacing an administrator's step-up signer** (lost browser key or phone): sign in, then enter one of the administrator's recovery codes (not an authenticator code) when registering the new key. Generating new recovery codes itself needs a step-up confirmation once a signer exists.
+- **Setup.** `GET /admin/api/v1/setup/status` reveals only whether setup is open. `setup/begin` needs the setup token (`<data>/setup-token.txt`) and shares its lockout; at most 16 setups can be pending.
+- **Public information.** `GET /api/v1/revocations` is public (rate limited per address) so a revoked device can confirm its own revocation; it lists revoked device ids. The owner decided on 2026-10-13 to leave it public (ADR-127 addendum; hashed ids are FO-13), so do not publish the hub address where a list of revoked device ids is sensitive.
+- **Docker.** `.dockerignore` keeps keys, `keystore.properties`, `data.key`, setup tokens and tool-state directories out of the build context (checked by `DockerIgnoreTest`); `server/docker-compose.example.yml` binds the hub to loopback behind a proxy, read-only root, no capabilities. Pin the base image by digest for releases (the Dockerfile header says how).
+- **Logs.** The log never contains setup tokens, TOTP seeds, passwords, session or CSRF tokens or recovery codes (`LogHygieneTest`). Level INFO by default; `logback.xml` quiets Netty, Ktor, Jetty and SQLite.
+- **Audit.** New audit rows use a length-prefixed hash (`flash-audit-chain-v2`); `GET audit/verify` still verifies the older rows.

@@ -396,6 +396,7 @@ Take the umbrella, or compose only the lightweight pieces:
 | `core-network` | Supported — lightweight | No | Connection/session transport only. |
 | `core-transfer` | Supported — lightweight | No | Chunked file transfer without a database (DB-less resume off). |
 | `core-security` | Supported — lightweight | No | Trust store / pairing primitives. |
+| `core-hub-protocol` | Internal — shipped (pulled in by `core-security` and `core-network`) | No | The enterprise-hub wire contract: certificates, relay frames, REST DTOs and signing bytes shared by the hub server and its clients (ADR-107). Not a public API; do not depend on it directly. |
 | `core-persistence` | Supported — optional storage | Yes | Add cross-restart persistence to a lightweight setup. |
 | `core-messaging` | Experimental — shipped (API may change) | Yes (transitive) | Chat repository; pulled in transitively by `core-engine`. Don't depend on it directly yet. |
 | `core-calling` | Experimental — shipped | No (but ~30 MB WebRTC) | Voice/video calls. Reachable via `Flash.create` (`engine.attachCalling(...)`) — but the umbrella declares it `compileOnly`, so **add it yourself**; see [Voice & video calls](#voice--video-calls). |

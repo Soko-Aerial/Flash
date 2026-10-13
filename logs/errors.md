@@ -8227,3 +8227,2171 @@ When attempting to forward a message in `FlashConversationScreen`, the app crash
 
 ### Status
 RESOLVED in code, unit-tested.
+
+
+## ERROR-170 - Relay accepted any caller as any device (SEC-01, SEC-02)
+
+### Date
+2026-10-12
+
+### Area
+Hub relay / `:server` relay router
+
+### Symptoms
+`/flash-relay` took `deviceId`, `name` and `role` from the query string; any caller could impersonate a device, displace its session, drain its mailbox and choose the sender of relayed frames.
+
+### Root cause
+`RelayFrameRouter` registered the session before any proof of identity, `ChallengeResponseAuth` was never called by the relay, and `sender=` from the client was trusted.
+
+### Failed attempts
+None; found by the 2026-10-12 hub audit (`docs/audit/2026-10-12-server-hub-audit.md`), fixed in Phase 1 of the hub fix effort.
+
+### Working fix
+Relay wire v2 (ADR-109): the hub sends `FLASH_HUB_CHALLENGE`, the client answers `FLASH_HUB_HELLO` with its chain and a signature within 10 s, the hub verifies against the pinned root (`CertChainRelayAuthenticator`) and only then registers the session and sends `FLASH_HUB_WELCOME`. `FLASH_RELAY` has no sender member; the hub stamps `FLASH_DELIVER.from` and overwrites `FLASH_META.from`. With no authenticator configured every connection is refused. The client `KtorRelayTransport` implements the same handshake, and identity is no longer in the URL (CLI-10).
+
+### Verification
+`RelayHandshakeContractTest` (9 tests: the real client transport against the real server in `testApplication`), `RelayFrameRouterTest`, `ChallengeResponseAuthTest`; `:server:test` 83 tests green. Not device-verified: `HUB-01`..`HUB-05`.
+
+### Related files
+- `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/relay/`
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`, `RelayAuth.kt`
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/relay/KtorRelayTransport.kt`
+- `docs/protocol.md` (Hub relay wire v2)
+
+### Remaining
+Phase 2: live revocation kick (SEC-05), group META membership check (SEC-03), mailbox row deleted on RECV_ACK only (REL-02), TLS (SEC-06).
+
+### Status
+OPEN (fixed in code 2026-10-12, unit and contract tested; stays OPEN until the owner verifies on devices, see `HUB-*` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-171 - Authentication signature had no domain, audience or length prefix and returned no credential (SEC-14)
+
+### Date
+2026-10-12
+
+### Area
+Hub auth / `:core:hub-protocol` `HubAuth`
+
+### Symptoms
+The signed bytes were bare `serverNonce+clientNonce+deviceId`: usable across organisations and purposes and ambiguous at field boundaries. `/auth/verify` answered a status but no token, so REST routes had nothing to authenticate with.
+
+### Root cause
+Ad-hoc string concatenation on both sides.
+
+### Failed attempts
+None (audit finding).
+
+### Working fix
+`HubAuth.authSigningBytes` (tag `flash-hub-auth-v1`, length-prefixed, serverId as audience, certSerial) plus the enrolment proof (`flash-hub-enroll-v1`) and renewal proof (`flash-hub-renew-v1`) bytes. `/api/v1/auth/verify` returns a 15 minute opaque bearer; directory routes resolve the caller from it.
+
+### Verification
+`CertGoldenVectorTest`, `HubSignedVectorTest` (client verifier) and `HubSignedVectorServerTest` (java.security verifier) accept the same real signature; `ChallengeResponseAuthTest`, `DirectoryRoutesTest` (a bearer wins over a claimed id). Not device-verified: `HUB-06`.
+
+### Related files
+- `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/certs/HubAuth.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/ChallengeResponseAuth.kt`, `BearerTokenStore.kt`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/enterprise/HubClientAuth.kt`
+
+### Remaining
+Per-request revocation re-check of a bearer and requiring it on every route are Phase 2 (`// PHASE-2: SEC-03`).
+
+### Status
+OPEN (fixed in code 2026-10-12, unit tested; stays OPEN until device-verified, `HUB-06`)
+
+## ERROR-172 - Hand-rolled regex JSON in the hub's auth, relay and directory paths (SEC-15, REL-12)
+
+### Date
+2026-10-12
+
+### Area
+`:server` AuthRoutes / RelayFrameRouter / DirectoryRoutes, `:core:network` EnterpriseJsonHelper
+
+### Symptoms
+Fields were taken from the first regex match anywhere in the text (field confusion), a certificate block was cut at the first `}`, a relay payload at the first escaped quote, and a nested object payload became `{}`. The mailbox stored the corrupt copy while the live path forwarded the raw frame.
+
+### Root cause
+No real JSON parser in the contract code.
+
+### Failed attempts
+None (audit finding). Alternatives rejected in ADR-108.
+
+### Working fix
+All frames and REST bodies are `@Serializable` DTOs read and written only through `RelayFrameCodec` / `HubRestCodec` (kotlinx-serialization-json 1.9.0). Size caps and field validation live in the codec; unknown members are ignored; malformed input is rejected without throwing. `EnterpriseJsonHelper.kt` and the v1 relay frames are deleted.
+
+### Verification
+`RelayFrameCodecTest`, `RestAndInviteTest`, `RelayFrameRouterTest`, `ChallengeResponseAuthTest`, `DirectoryRoutesTest`. No regex JSON remains in those three routes; `escapeJson` stays only for admin HTML pages (Phase 4).
+
+### Related files
+- `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/relay/RelayFrameCodec.kt`, `rest/`
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/directory/DirectoryRoutes.kt`
+
+### Remaining
+Admin pages still build JSON/HTML by hand (Phase 4).
+
+### Status
+OPEN (fixed in code 2026-10-12, unit and contract tested; stays OPEN until device-verified, `HUB-01`)
+
+## ERROR-173 - Certificate chain rules differed between server and clients (SEC-18)
+
+### Date
+2026-10-12
+
+### Area
+`:core:hub-protocol` DeviceCert / DelegationCert, `:server` EnrollmentService, `EnrollmentCredentials`
+
+### Symptoms
+A leaf could outlive or predate its delegation, `validTo` had no clock-skew tolerance, any role string verified, the client honoured scope `prefix:*` while the server honoured only `*`, and `EnrollmentCredentials.isExpired` tested the enrolment time instead of now (a credential never expired).
+
+### Root cause
+Two copies of the certificate types with separate rules.
+
+### Failed attempts
+None (audit finding).
+
+### Working fix
+One implementation (`DeviceCert.checkChain`, `HubRoles`, `HubScopes`): closed role set, one wildcard grammar (admin never by wildcard), leaf window inside the delegation window, skew at both ends, revocation before time, delegation serial revocation (ADR-110). `EnrollmentService` clamps `validFrom` and `validTo` to the delegation; `isExpired` compares with now.
+
+### Verification
+`CertChainTest`, `DeviceCertTest`, `DelegatedAuthTest` (leaf outside delegation, skew, delegation serial revoked), `ChallengeResponseAuthTest.enrolledCertificateIsClampedToTheDelegationWindow`.
+
+### Related files
+- `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/certs/`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/enterprise/EnrollmentCredentials.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt`
+
+### Remaining
+The hub's `/api/v1/enroll/renew` route and the client renewal caller are not built (Phase 2 and 3).
+
+### Status
+OPEN (fixed in code 2026-10-12, unit tested; stays OPEN until device-verified, `HUB-08`)
+
+## ERROR-174 - Client and server disagreed on enrolment credentials and directory JSON (CLI-02, CLI-03, CLI-10, CLI-11, CLI-17 part)
+
+### Date
+2026-10-12
+
+### Area
+`:core:network` enterprise clients, `:ui:chat` FlashEnrollMath
+
+### Symptoms
+The client sliced the delegation array at the first `]` (empty chain, wrong root stored), read directory fields the server never wrote (`requiresApproval`, `friendlyName`, `department`), built the relay URL with raw `?deviceId=&name=&role=`, `chunkPayload` could cut a UTF-8 sequence, and two invite parsers existed.
+
+### Root cause
+Hand-written client parsers tested only with JSON the client itself invented.
+
+### Failed attempts
+None (audit finding).
+
+### Working fix
+Both ends use the DTOs of `:core:hub-protocol` (`StoredEnrollment`, `GroupDto`, `MemberDto`, `DepartmentDto`, `EnrollResponse`). `EnterpriseEnrollmentClient` signs the proof of possession and checks the invite fingerprint and the chain before storing. `chunkPayload` splits on code points. One `EnrollmentInvite` parser. Behaviour change: an invite with a blank `root=` is refused.
+
+### Verification
+`EnterpriseEnrollmentAndDirectoryTest`, `FlashRelayClientTest`, `JvmFileEnterpriseTrustStoreTest`, `FlashEnrollMathTest`, `RelayFrameCodecTest`, server `DirectoryRoutesTest`. Not device-verified: `HUB-07`..`HUB-09`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/relay/`
+- `ui/chat/` `FlashEnrollMath.kt`
+
+### Remaining
+`FlashBrowseOrgGroupUi` still has its own group model (CLI-17 stays OPEN).
+
+### Status
+OPEN (fixed in code 2026-10-12, unit tested; stays OPEN until device-verified, `HUB-07`..`HUB-09`)
+
+## ERROR-175 - `:core:messaging:testAndroidHostTest` does not compile: opt-in required for `FlashRelayClient` (observed, not caused by the hub work)
+
+### Date
+2026-10-12
+
+### Area
+Build / `:core:messaging` Android host tests
+
+### Symptoms
+`./gradlew :core:messaging:testAndroidHostTest` fails to compile with about 30 errors "This is an internal Flash API and should not be used outside the Flash library modules" at every `RealFlashChatRepository(` construction in `core/messaging/src/androidHostTest/` (ConversationReadStateTest:62, GroupDiscoveryTest:104, RealFlashChatRepositoryTest, SignedGroupsTest, GroupJoinTest, GroupRotationTest and others).
+
+### Root cause
+NOT FULLY PROVEN. The constructor parameter `relayClient: FlashRelayClient?` (`RealFlashChatRepository.kt`, about line 337) has a type that is `@FlashInternalApi`, and `FlashRelayClient` already carried that annotation at HEAD; the Android host test source set does not opt in. The hub Phase 1 diff of `core/messaging` is +5/-1 lines in the relay collector plus one import in a commonTest file, so it did not introduce the annotation. `:core:messaging:jvmTest` passes.
+
+### Failed attempts
+None; nothing in `core/messaging` androidHostTest was changed by the hub work.
+
+### Working fix
+Not applied. Likely: opt in to `FlashInternalApi` for the `androidHostTest` source set (file-level `@OptIn` or a compiler option in `core/messaging/build.gradle.kts`), as the common and JVM test sets already do.
+
+### Verification
+Not run.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/androidHostTest/`
+- `core/messaging/build.gradle.kts`
+
+### Status
+RESOLVED 2026-10-13 (CLIENT agent, phase 2)
+
+### Resolution (2026-10-13)
+**Root cause, now proven.** The K2 compiler reports the `@RequiresOptIn(level = ERROR)` violation at EVERY call of the public
+`RealFlashChatRepository(` constructor whenever the constructor's SIGNATURE mentions an `@FlashInternalApi` type, even when that parameter
+is defaulted and the call site never names it. `commonTest` and `jvmTest` carried a per-file `@OptIn`, about 28-30 `androidHostTest` call
+sites did not. The break dates from commit `85ce2c68` (it added the `relayClient: FlashRelayClient?` parameter), not from hub phase 1.
+The earlier note "NOT FULLY PROVEN" was right to be cautious: the annotation on `FlashRelayClient` was never the problem, the missing
+opt-in on the test source set was.
+
+**Fix.** `core/messaging/build.gradle.kts` opts the three test source sets in once:
+`listOf("commonTest", "androidHostTest", "jvmTest").forEach { getByName(it).languageSettings.optIn("com.transfer.flash.core.common.annotation.FlashInternalApi") }`.
+The production constructor now takes `hubRelay: HubRelayPort?` (see ADR-122), which is `@FlashInternalApi` too, so the module-level test opt-in stays necessary.
+
+**Verification.** `:core:messaging:testAndroidHostTest` compiles and runs (501 tests, 1 unrelated timing failure, see ERROR-269).
+
+
+
+## ERROR-230 - Reconnect killed the new connection (REL-01)
+
+### Date
+2026-10-12
+
+### Area
+Relay / `RelayConnectionPool`, `RelayFrameRouter`
+
+### Symptoms
+A device that reconnected (Wi-Fi switch, Transsion thaw) was disconnected again at once and stayed offline until the next retry.
+
+### Root cause
+`unregister(deviceId)` removed whatever session was registered under the id; the superseded session's cleanup ran after the new one registered and removed and closed the NEW session.
+
+### Working fix
+Unregister compares the session instance (`unregister(session)`), the displaced connection gets `FLASH_KICK superseded`, and its cleanup (`sessionEnded`) is idempotent and identity-safe.
+
+### Verification
+Unit and contract tests (not device-verified): `RelayConnectionPoolTest` (identity-safe unregister, kick superseded), `RelayFrameRouterTest.reconnectRace...`, `RelayDeliveryContractTest.aReconnectedDeviceIsNotKnockedOutByItsOldConnectionsCleanup` (real sockets). Device: `HUBB-06`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-231 - Messages lost on half-open sockets: delivery was at-most-once (REL-02, REL-07)
+
+### Date
+2026-10-12
+
+### Area
+Relay delivery
+
+### Symptoms
+A message handed to a socket that was already dead (about 45 s before TCP notices) was gone: the sender was told DELIVERED at once and the mailbox row was marked delivered on write.
+
+### Root cause
+Success of `send()` only means "queued in Ktor's channel". The hub deleted the row without the recipient's acknowledgement, a queued message never produced a later DELIVERED, live frames overtook older queued ones and a message enqueued during the last drain page waited for the next reconnect (lost wake-up).
+
+### Working fix
+ADR-112: rows are deleted only on `FLASH_RECV_ACK`; live messages sit in a per-session in-flight table that is spilled to the mailbox when the session ends; mailbox replay is paged (100) with `replay=true`; `FLASH_QUEUE_STATE DELIVERED` goes to the sender on the RECV_ACK; the "caught up" check and the live hand-off are atomic (`RelaySession.handOffLive` / `finishDrain`).
+
+### Verification
+Unit and contract tests (not device-verified): `RelayFrameRouterTest` (in-flight until RECV_ACK, spill on session end, drain replay rows stay, >100 pagination, ordering with a slow fetch, 300-message connect race), `RelayDeliveryContractTest` (real sockets), `RelayLoadTest`. Device: `HUBB-05`, `HUBB-06`, `HUBB-09`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-232 - Sender spoofing, forged ACKs, group META without membership, revoked devices stayed connected (SEC-02)
+
+### Date
+2026-10-12
+
+### Area
+Relay security
+
+### Symptoms
+A client could name the sender, send `FLASH_ACK` to any recipient, send group META without being a member, and a revoked device stayed connected.
+
+### Root cause
+The router trusted fields inside client frames and checked revocation only at the handshake, and only by serial.
+
+### Working fix
+The sender is always the authenticated device; client-sent ACK / DELIVER / QUEUE_STATE / KICK / REVOKED answer `ERR_PROTOCOL` and are never forwarded; group META needs membership (`ERR_NOT_MEMBER`, identical for a nonexistent group); revocation is checked by serial AND device id at the handshake and before every frame; `kick(deviceId, reason)` is wired to `RevocationService.onRevoked`.
+
+### Verification
+Unit and contract tests (not device-verified): `RelayFrameRouterTest` (stamping, forged frames, META membership, revoked kick), `RelayDeliveryContractTest` (revoked by id and by serial at the handshake, live kick, forged ACK over a real socket).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-233 - Mailbox store: non-atomic enqueue, client clock, no limits (REL-03, REL-08, REL-09, REL-11)
+
+### Date
+2026-10-12
+
+### Area
+Mailbox / SQLite
+
+### Symptoms
+Concurrent sends duplicated or overran quotas; a sender clock far in the past expired a message at once; a huge timestamp overflowed `expires_at` to a never-deleted row; any recipient id filled the disk.
+
+### Root cause
+Duplicate check, quota and insert were separate autocommit statements with a non-unique index; `created_at` came from the client; no recipient/sender/global limits; `mailboxTtlDays` was never passed on.
+
+### Working fix
+New mailbox schema (component `mailbox` v2: `seq`, UNIQUE(origin,target,msg_id), `expires_at` index, totals table and triggers, delivered flag removed), one `BEGIN IMMEDIATE` transaction for check+insert, recipient registry check, per-recipient/sender/global row and byte quotas, server-clock `created_at`/`expires_at` with the client `sentAt` clamped, an injectable clock, JDBC on `Dispatchers.IO`, incremental vacuum (FAILED APPROACH kept for the record: `Statement.execute("PRAGMA incremental_vacuum(N)")` frees ONE page with sqlite-jdbc, measured 2450 -> 2449 free pages; `executeUpdate` steps it to the end, 2450 -> 0).
+
+### Verification
+Unit and contract tests (not device-verified): `MailboxQueueTest` (concurrent duplicate 48 coroutines, concurrent quota, each quota, TTL boundary with an injected clock, overflow/negative TTL, clock clamping, sweeper batching and failure counting, restart durability, v1 to v2 migration with `expires_at=0` rows, opaque payload round trip), `ServerDatabaseTest`. Open: `Main.kt` must pass `MailboxLimits.forTtlDays(config.mailboxTtlDays)` and a real `DeviceRegistry` (SERVER-A file).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-234 - Relay had no handshake deadline, caps, rate limits, or protection from slow consumers (REL-04, REL-05, REL-06)
+
+### Date
+2026-10-12
+
+### Area
+Relay / resource exhaustion
+
+### Symptoms
+One silent socket, one oversized frame or one stalled recipient could hold resources or block senders.
+
+### Root cause
+No handshake timeout, no connection or per-IP caps, no per-session rate limit, `websocketSession.send` suspended on the sender's path, `catch (Throwable)` swallowed `CancellationException`, a failed ACK send was treated as "recipient failed".
+
+### Working fix
+`RelayPolicy` (`handshakeTimeoutMs`, `maxConnections`, `maxConnectionsPerIp`, token bucket, `abusiveRejectionsBeforeClose`, `outboundQueueCapacity`, `sendTimeoutMs`, `maxInFlightPerSession`, ping/pong), a bounded outbound queue with one writer coroutine per session (a stalled client is closed, never waited for), cancellation is rethrown everywhere.
+
+### Verification
+Unit and contract tests (not device-verified): `RelayFrameRouterTest` (slow consumer, in-flight cap, flood rate limit, oversized frame, payload cap), `RelayConnectionPoolTest`, `RelayDeliveryContractTest` (per-IP cap, rate limit, oversized WebSocket frame). Residual risk OPEN: Ktor buffers fragmented messages before `maxFrameSize` applies.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-235 - `/health` leaked internals, errors leaked exception text, shutdown left threads and pools (REL-13, SEC-16 part)
+
+### Date
+2026-10-12
+
+### Area
+Engine / operations
+
+### Symptoms
+Public `/health` printed memory, ports and session counts and was always UP; `StatusPages` returned `cause.message`; `stop()` never closed the database; a failed bind left the sweeper running.
+
+### Root cause
+Convenience telemetry without a guard; no DB probe; no idempotent lifecycle.
+
+### Working fix
+Public `/health` is `{"status":...}` with a DB probe (503 when down); `/health/detail` and `/metrics` sit behind `ManagementGuard`; 500s answer a fixed sentence plus a correlation id; `stop()` is idempotent (sweeper, sessions kicked in parallel, Netty, WAL checkpoint, pool close) and a failed `start()` cleans up; the TTL sweeper counts, logs and notifies EXPIRED.
+
+### Verification
+Unit and contract tests (not device-verified): `FlashServerEngineTest` (11 tests), `RelayDeliveryContractTest.shutdownKicksEverySession...`, `RelayDeliveryContractTest.anOnlineSenderIsToldWhenItsQueuedMessageExpires`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-236 - Group messages were never fanned out by the hub (REL-14)
+
+### Date
+2026-10-12
+
+### Area
+Relay / groups
+
+### Symptoms
+A group chat message was only delivered through the sender's own N sends, with no membership check and no aggregate answer.
+
+### Root cause
+Only META was broadcast to a group; the router had no group send.
+
+### Working fix
+`FLASH_RELAY.group`: the hub resolves members through `GroupMembershipView`, sends to every member but the sender in parallel (`groupFanoutConcurrency`), answers one aggregate `FLASH_ACK` with `delivered/queued/failed`; a non-member and a nonexistent group get the same answer. Multi-device per user is NOT built (the registry has no user id): one device per id.
+
+### Verification
+Unit and contract tests (not device-verified): `RelayFrameRouterTest` (group fan-out aggregate ack, non-member rejected), `RelayDeliveryContractTest.aGroupMessageOverTheWire...`, `RelayFrameCodecTest` (group, aggregate ack).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-237 - Database pragmas, deferred BEGIN, unbounded envelope header (REL-15)
+
+### Date
+2026-10-12
+
+### Area
+Storage
+
+### Symptoms
+Suspected: only the first statement of a two-statement `connectionInitSql` ran; a deferred `BEGIN` failed with SQLITE_BUSY; `SealedEnvelope.fromBinary` allocated from an attacker header.
+
+### Root cause
+Per-connection settings were applied through one init statement; transactions did not take the write lock up front.
+
+### Working fix
+Pragmas are applied as driver data-source properties on every pooled connection (busy_timeout 5000, synchronous NORMAL, foreign_keys, WAL), `withTransaction` uses `BEGIN IMMEDIATE`, `SealedEnvelope.fromBinary` caps every header length; `counter` and `authTagOrSignature` are documented as reserved.
+
+### Verification
+Unit and contract tests (not device-verified): `ServerDatabaseTest.everyPooledConnectionCarriesThePragmas` (four connections borrowed at once), `withTransactionTakesTheWriteLockUpFront`, `MailboxQueueTest` (hostile header caps).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/`, `mailbox/`, `core/FlashServerEngine.kt`, `storage/ServerDatabase.kt`, `observability/`
+- `docs/decisions.md` ADR-112, `docs/protocol.md` "Relay delivery semantics, limits and operations", `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-12, resolved only after the device checks `HUBB-01`..`HUBB-12` in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-200 - Organisation root private key lived on the hub, delegation re-issued every boot, a corrupt key file silently regenerated (SEC-04)
+
+### Date
+2026-10-13
+
+### Area
+Hub / keys
+
+### Symptoms
+The hub generated the organisation root key on first start and kept it as plain base64 with default permissions next to the delegate key; the delegation was re-issued on every boot with serial 1 and a 30-day window (the hub stopped enrolling after 30 days of uptime); a key file that failed to parse caused root and server keys to be regenerated, breaking every client pin.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+The hub was designed as its own certificate authority, contradicting the offline-root decision (D-E2/H7).
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+Root key creation moved to the offline `server keytool` (init-root encrypted and owner-only, issue-delegation with scopes, device limit, expiry and monotonic serial, rotate). The hub holds only a delegate key created once (`HubKeyStore`): corrupt, mismatched or incomplete key files are startup errors, never regenerated. A root key found in the data directory refuses the start. No delegation means awaiting-delegation mode (admin console and /health work, enrolment and relay do not). Delegation hot reload, expiry warnings at 14 and 3 days. `--dev-embedded-root` is the only embedded-root path (needs `--allow-insecure`, logs an error line).
+
+### Verification
+`KeyToolAndDelegationTest` (init-root encrypted/owner-only/never prints the key/refuses overwrite, issue-delegation, serial and scope rules, key create-once/corrupt/mismatch fail closed, misplaced root key, replacement rules, expiry warnings), `HubServicesTest` (awaiting mode, misplaced root, corrupt delegate not regenerated, hot reload, dev flag). Unit-level only; `HUBA-01`..`HUBA-03` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/auth/KeyFiles.kt, HubKeyStore.kt, DelegationManager.kt, KeyTool.kt, HubServices.kt, Main.kt; docs/decisions.md ADR-111
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-201 - Revocation was never enforced: no list, no kick, no endpoint (SEC-05)
+
+### Date
+2026-10-13
+
+### Area
+Hub / revocation
+
+### Symptoms
+The relay compared a hard-coded serial of -1, no list was built, signed or served, nothing could revoke a device or a delegation, a revoked device kept its bearer.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+No revocation service existed in the hub; the contract (ADR-110) had no producer.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`RevocationService` / `SqliteRevocationService`: persisted, signed (delegate key, `revoke:member`), strictly monotonic versions, by serial and by device id, unenroll, `GET /api/v1/revocations` (bearer required), admin revoke/unrevoke step-up gated and audited; `onRevoked` listeners kill bearer tokens, remove the device from the directory and kick the relay socket. `BearerTokenStore.resolve` re-checks revocation on every use.
+
+### Verification
+`RevocationAndEnrolmentTest` (persists across restart, idempotent, signed monotonic versions, no signing right -> needsSignedList, revoked id cannot re-enrol until unrevoke, unenroll, bearer dies without kick), `HubServicesTest.revokingADeviceKillsItsBearerAtOnceAndRemovesItFromTheDirectory`, `AdminApiTest`. Mutation check: removing the `isRevoked` re-check in `BearerTokenStore.resolve` failed 2 tests. `HUBA-07` and `HUBA-14` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/auth/RevocationService.kt, SqliteRevocationService.kt, BearerTokenStore.kt, admin/AdminApi.kt; ADR-113
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-202 - Enrolment: no duplicate / revoked id check, no SPKI parse, token and quota spent before validation (SEC-07, SEC-18 hub part)
+
+### Date
+2026-10-13
+
+### Area
+Hub / enrolment
+
+### Symptoms
+One invite could mint certificates for any device id, including ids of revoked devices; a bad request burned the invite and a quota slot; renewal did not exist; leaf validity was not clamped by the hub.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+Validation happened after side effects and there was no transaction around token use, quota and serial.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`EnrollmentService`: proof of possession and P-256 SPKI parse first, id format check, duplicate or revoked id refused without spending the invite, token use + quota + serial in one transaction, clamp to the delegation window, `POST /api/v1/enroll/renew` inside a renewal window, plain-http invites refused unless insecure mode.
+
+### Verification
+`RevocationAndEnrolmentTest` (8-thread race on a single-use invite yields exactly one device, quota and serial counter survive restart, duplicate id keeps the invite unburned, renew window / revoked, http invite refused, invite secrets hashed in the DB). `HUBA-04` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt, AuthRoutes.kt; ADR-111
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-203 - All hub state was in memory: invites, serial counter, quota, admins, sessions, audit; setup reopened after restart (SEC-08)
+
+### Date
+2026-10-13
+
+### Area
+Hub / persistence
+
+### Symptoms
+After a restart device serials restarted at 1001 and collided, quotas reset, `/admin/setup` reopened, admins, sessions, lockouts and the audit log vanished.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+Only the mailbox and device registry had tables; everything else lived in maps.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+Versioned migrations (`storage/Migrations.kt`, per component, transactional, fail closed) and persisted invites (hashed), serial counter, identities, admins, sessions (hashed), lockouts, TOTP step, revocations, audit chain; the setup token lives in an owner-only file.
+
+### Verification
+`RevocationAndEnrolmentTest` and `HubServicesTest` restart cases, `AdminAuthServiceTest` persistence cases, migration tests. `HUBA-05` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/storage/Migrations.kt, identity/IdentityStore.kt, admin/AdminAuthService.kt; ADR-111
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-204 - Directory REST was unauthenticated and trusted self-asserted principals; the directory lived in memory (SEC-03, REL-10)
+
+### Date
+2026-10-13
+
+### Area
+Hub / directory
+
+### Symptoms
+Anyone could list or join groups by choosing `X-Device-Id` / `department`; `department=*` listed everything; enrolment never registered the device in its department or applied the invite scope; a restart lost every group; read-modify-write lost members.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+No principal came from authentication; directory state was not transactional.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`HubApiGate` requires a bearer on every `/api/v1` route except enrol, renew, auth challenge/verify and hub info; the principal is the token's device; department comes from the enrolled identity; invite scope (allowed and auto-join groups) is applied at enrolment (`applyEnrollment`); the directory is on SQLite with transactional membership changes; a hidden group answers like a missing one; createGroup/createDepartment cannot overwrite.
+
+### Verification
+`DirectoryRoutesTest`, `OrganizationDirectoryTest`, `HubServicesTest` (full enrol -> auth -> bearer -> directory flow, reconciliation after restart). `HUBA-06` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/directory/*, auth/ApiGate.kt; ADR-111
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-205 - Plain-text transport, http invite links, one public listener (SEC-06)
+
+### Date
+2026-10-13
+
+### Area
+Hub / TLS and listeners
+
+### Symptoms
+`FLASH_TLS_MODE=self` served plaintext, invite and QR links were `http://`, the session cookie was not Secure, the admin port was never bound.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+TLS was never implemented and the config defaulted to insecure.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`proxy` / `self` / `none` TLS modes (`TlsSupport`: self-signed once, owner-only, renewal, fingerprint logged), https external URL required unless `--allow-insecure`, management listener on `FLASH_ADMIN_PORT` (loopback by default) with `AdminListenerPolicy`, `__Host-` Secure cookie over TLS, trusted-proxy handling for forwarded headers.
+
+### Verification
+`AbuseControlsTest` (TLS self mode, connectors, listener policy, proxy parsing), `ServerConfigTest`, `HubServicesTest`. `HUBA-08`, `HUBA-09` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/config/TlsSupport.kt, ServerConfig.kt, admin/AdminWeb.kt, core/FlashServerEngine.kt; ADR-114
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-206 - Config silently defaulted, Dockerfile ran as root with COPY . . and no .dockerignore, setup token printed (SEC-16 remainder)
+
+### Date
+2026-10-13
+
+### Area
+Hub / config and Docker
+
+### Symptoms
+A bad number fell back to a default; the image ran as root, could capture keys and `keystore.properties`, and EXPOSEd 8444 with nothing behind it; the setup token was printed to the console.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+Defaults were chosen for convenience.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+Strict numeric / enum / fingerprint parsing naming the variable (exit 2), non-root multi-stage Dockerfile with HEALTHCHECK (`server healthcheck`), `.dockerignore`, setup token generated into an owner-only file and not printed in production, HTTP bodies capped at 64 KiB (413).
+
+### Verification
+`ServerConfigTest`, `MainCommandsTest` (healthcheck 1/0), `HubServicesTest` (setup token owner-only and not on console). The Docker image was NOT built in this session: `HUBA-10`.
+
+### Related files
+- server/Dockerfile, .dockerignore, server/src/main/kotlin/com/transfer/flash/server/config/ServerConfig.kt, Main.kt; ADR-114
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-207 - Unauthenticated endpoints unbounded: O(n) challenge sweep and no rate limits (SEC-09)
+
+### Date
+2026-10-13
+
+### Area
+Hub / abuse controls
+
+### Symptoms
+`/auth/challenge` scanned the whole map on each request; enrol, auth and relay had no rate limiting.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+No limiter existed.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+Token buckets per client address with a bounded key map (`HubRateLimits`), bounded challenge store, forwarded addresses believed only from trusted proxies.
+
+### Verification
+`AbuseControlsTest` (burst/refill, bounded key map, rightmost untrusted XFF), `HubServicesTest`. `HUBA-09` owed (behind a real proxy).
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/auth/RateLimiter.kt, ClientAddress.kt, ApiGate.kt; ADR-114
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-208 - Admin authentication weaknesses: no CSRF, XFF trusted, lockout race, TOTP replay, 100k PBKDF2, non-atomic setup (SEC-10, SEC-17)
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin
+
+### Symptoms
+CSRF on state changes, spoofable lockout, check-then-act lockout race, replayable TOTP, weak hashes, setup token compare not constant-time, client-chosen TOTP secret, the enrolment landing page acting as a token oracle.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+Admin auth was written as a demo.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+PBKDF2 600k with upgrade of old hashes, reserve-before-verify attempt counter, persisted lockouts, TOTP single-use step, server-generated TOTP with confirmation, recovery codes, break-glass `admin-recovery`, session cap and sweep, CSRF header + origin check, SameSite=Strict cookies, `/enroll` landing reveals only validity.
+
+### Verification
+`AdminAuthServiceTest`, `AdminApiTest` (CSRF matrix, login), `AbuseControlsTest`. Mutation check: disabling the CSRF token comparison failed 3 tests. `HUBA-11` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/admin/AdminAuthService.kt, AdminWeb.kt, AdminApi.kt; ADR-115
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-209 - Step-up verified with a caller-supplied key and nothing used it (SEC-12)
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin
+
+### Symptoms
+`StepUpAuth.verifySignature` took the verifying key from the caller; challenges were never evicted; dangerous actions had no gate.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+The gate was a stub.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`StepUpAuth` binds the challenge to (admin, action, target), verifies against the key stored server-side for that admin's enrolled device (rejects revoked), single-use, 5 min, bounded; enforced on revoke/unrevoke, revoke by serial, delegation install/reload, create/reset/disable admin, settings change, non-member invites (`X-Step-Up` header); signed bytes in the shared `HubStepUp.proofBytes`.
+
+### Verification
+`StepUpAuthTest`, `AdminApiTest` (aSignatureFromAnyOtherKeyDoesNotConfirmAnything, revokingADeviceNeedsAConfirmation...). Mutation check: removing the step-up call on revoke failed 2 tests. `HUBA-12` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/admin/StepUpAuth.kt, AdminApi.kt, core/hub-protocol HubStepUp; ADR-115
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-210 - Audit log in memory, recomputable chain, many events missing (SEC-13)
+
+### Date
+2026-10-13
+
+### Area
+Hub / audit
+
+### Symptoms
+Anyone with process access could rewrite the chain; truncation was undetectable; no events for failed setup, logout, key load.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+No signing or persistence.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+`AuditLogger`: persisted, chained, each entry signed with the delegate key; `/audit/verify`, `/audit/head`, CSV export; events added for admin, enrolment, revocation, delegation and key operations.
+
+### Verification
+`AuditLoggerTest`, `AdminApiTest`. `HUBA-13` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/admin/AuditLogger.kt; ADR-115
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-211 - Dashboard invites were separate from the enrolment registry (REL-16)
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin
+
+### Symptoms
+Invites could not be revoked, `used` was never set, links used an unregistered token, health fell back to SHA-256 of the empty string as the root fingerprint.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+Two parallel invite stores.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+The admin API and dashboard use the `EnrollmentService` registry; the fingerprint fallback was removed (the engine uses the real server id or empty).
+
+### Verification
+`AdminApiTest` invite cases, `AdminDashboardRoutesTest`, `HubServicesTest`. `HUBA-04` owed.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/admin/AdminApi.kt, AdminDashboardRoutes.kt, core/FlashServerEngine.kt; ADR-115
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-212 - QR SVG for an invite exceeded the 64 KiB REST body cap (found while capping bodies)
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin
+
+### Symptoms
+`InviteCreatedDto` carrying the SVG QR could not be decoded by the capped REST codec.
+
+### Environment
+Standalone hub (`:server`), JDK 21, Ktor 3, SQLite; unit and contract tests on Windows. Not run on a device or in Docker.
+
+### Root cause
+`QrCodeGenerator` emitted one `<rect>` per dark module.
+
+### Failed attempts
+None recorded (found by the 2026-10-12 audit, `docs/audit/2026-10-12-server-hub-audit.md`).
+
+### Working fix
+The SVG is now a single `<path>` with one run per row.
+
+### Verification
+`AdminApiTest` invite creation test.
+
+### Related files
+- server/src/main/kotlin/com/transfer/flash/server/admin/QrCodeGenerator.kt
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (fixed in code 2026-10-13, resolved only after the matching `HUBA-*` device checks in `docs/testing/TEST-BACKLOG.md`)
+
+## ERROR-260 - Enrolment trusted whoever answered, and half-saved on a storage failure (CLI-01, CLI-12)
+
+### Date
+2026-10-13
+
+### Area
+Client / `EnterpriseEnrollmentClient`, trust stores
+
+### Symptoms
+Enrolling against a wrong or hostile host succeeded; a failed disk write left a certificate without its root (or the reverse) and a connection pool leaked per tap.
+
+### Root cause
+The client accepted the hub's own `rootKey` (trust on first use), accepted cleartext, did not check that the certificate belonged to this device and key, and wrote the credential fields one at a time. `EnterpriseEnrollmentClient` was also created per tap with its own `HttpClient`.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+Pin first, then verify, then one atomic save: refuse a link without a root pin, refuse cleartext (debug switch only), compare the answered root with the pin, check subject device id + key, verify the chain with the shared rules, validity window; `EnterpriseTrustStore.saveCredentials` is one write (desktop: temp file + move; Android: one `commit()`). One shared client inside `EnterpriseHub`, closed in `shutdown`. See ADR-120.
+
+### Verification
+`EnrollmentTrustTest` (15: pin missing, cleartext, wrong root, other device id, other key, forged issuer, expired, storage failure leaves nothing, error mapping, unreachable, delegation chain survives codec), `JvmFileEnterpriseTrustStoreAtomicTest` (5), `JvmFileEnterpriseTrustStoreTest`. Mutation check (pin comparison disabled in `HubCredentialVerifier`): the first test did NOT fail because the `serverId` check caught it, so two tests were added (`aHubThatLiesAboutItsServerIdButPresentsAnotherRootIsStillRefused`, `aHubThatNamesNoServerIdAndPresentsAnotherRootIsRefused`); with the mutation both fail, restored afterwards. Device: `HUBC-01`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-261 - Relay client: reconnect storm, silent stop, slow collector froze the socket, a frame could "revoke" the device (CLI-07, CLI-08, CLI-13)
+
+### Date
+2026-10-13
+
+### Area
+Client / `FlashRelayClient`, `KtorRelayTransport`, `EnterpriseHub`
+
+### Symptoms
+After a hub restart every phone reconnected in the same second; a revoked or mismatched hub made the client retry for ever with no reason shown; a collector that was busy delayed ping/pong until the hub closed the socket; one `FLASH_REVOKED` frame (from anyone who could inject one) cleared the credentials.
+
+### Root cause
+Fixed-interval retry, no typed failure, deliveries handed to the collector on the socket coroutine, and the revoke frame was believed. No certificate renewal existed, so a device went offline when its certificate ended.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+Typed `RelayFailure` + jittered capped backoff, no retry for `REVOKED`/`SERVER_MISMATCH`/`CERT_EXPIRED`; a bounded delivery channel in front of the collector (overflow closes the connection and the hub replays); revocation only after the root-signed list names this certificate; renewal inside the window; one live `HubStatus`. See ADR-120.
+
+### Verification
+`FlashRelayClientRecoveryTest` (13), `HubSessionTest` (16, renewal and revocation list), `EnterpriseHubTest` (12, revoke confirmed / unconfirmed, renewal window, expiring status), `HubStatusMathTest` (7). NOT unit-tested: the `KtorRelayTransport` slow-collector pong behaviour (needs a real WebSocket server; `HUBC-03`).
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-262 - Incoming hub messages: lost before the collector, acknowledged before stored, no dedupe, any sender accepted, group messages stored under the envelope id (CLI-14, CLI-15)
+
+### Date
+2026-10-13
+
+### Area
+Client / `RealFlashChatRepository`, `HubChatBridge`
+
+### Symptoms
+A message that arrived before the repository started collecting vanished; the hub was told "received" before the database write (a crash lost it for good); a replay produced duplicates; a colleague outside the directory could write into a chat; a group message through the hub became a one-person conversation named after the envelope id.
+
+### Root cause
+The relay collector acknowledged on receipt, kept no seen-set, never checked who the sender was, and had a `GROUP_MSG` fallback that treated the envelope id as the group id.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+`HubChatBridge.handleInbound`: dedupe (LRU 2048) -> sender trust (paired or directory MEMBER; directory down -> retry later, no ack) -> decode -> author must equal the hub-stamped sender -> durable store -> only then RECV_ACK. The `GROUP_MSG` fallback is deleted. See ADR-122.
+
+### Verification
+`HubChatBridge` tests (18), `RealFlashChatRepositoryTest` HUBC tests (14): `a hub message is stored first and only then acknowledged to the hub`, non-directory sender dropped and acknowledged, dedupe, plain group message no longer stored with the envelope id. Mutation check: RECV_ACK sent before the store -> 6 `HubChatBridgeTest` tests and the 2 repository tests above fail; restored. Device: `HUBC-07`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-263 - Hub-held messages were failed by the 30 minute timer; LAN and hub were raced on every send (CLI-06)
+
+### Date
+2026-10-13
+
+### Area
+Client / outbox, `RealFlashChatRepository`
+
+### Symptoms
+A message waiting in the hub mailbox for an offline colleague turned red "Failed" after 30 minutes although the hub still held it; every send also went out twice (LAN and hub) and failures of one path were reported as the message failing.
+
+### Root cause
+The outbox knew only "sent on a transport" and a fixed give-up time; `raceTransports` fired both paths concurrently and reported the first result. FLASH_ACK / FLASH_QUEUE_STATE were ignored.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+LAN first, hub after a 2 s grace or at once when LAN fails; FLASH_ACK/QUEUE_STATE drive the outbox (`DELIVERED`/`HELD` keep SENT; `UNDELIVERABLE`/`QUOTA`/`REFUSED`/`EXPIRED`/`DROPPED` fail with a friendly sentence); a hub-accepted message gets an 8 day budget; receipts, reads, typing fall back the same way. `raceTransports` removed. See ADR-122.
+
+### Verification
+`RealFlashChatRepositoryTest` HUBC tests: `no-LAN hub send + HELD keeps SENT`, `QUOTA fails the message`, `LAN ok + receipt -> hub silent`, `LAN ok, no receipt -> hub after grace`, `hub-held is not failed past 30 minutes`, `receipt falls back via hub`. Device: `HUBC-04`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-264 - Chat content crossed the hub as plaintext (CLI-05)
+
+### Date
+2026-10-13
+
+### Area
+Client / hub payloads, `HubSealing`
+
+### Symptoms
+Everything sent through the hub, and everything stored in its mailbox, was readable by the hub operator.
+
+### Root cause
+No end-to-end layer existed; the plan said "blind hub" but nothing sealed the payload.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+ECDH + HKDF + AES-GCM sealing bound to sender, recipient and message id, with a per-device sealing key vouched for by the identity key; readable content through the hub only with the user's opt-in (default OFF, disclosure shown). See ADR-121. **Not complete: the hub does not publish sealing keys, so sealing is dormant in production.**
+
+### Verification
+`HubSealingTest` (12, core:security), `HubSealingBridgeTest` (6: sealed even with the setting off, opens for the recipient, tampered, re-sent under another sender, other recipient, forged sealing key never used). Mutation check: sender signature check disabled and sender removed from the AAD -> `aPayloadSignedByAnotherDeviceIsRejected`, `theAadIsTheDocumentedCanonicalByteString`, `everyBoundFieldIsChecked` fail; restored. Device: `HUBC-05`, `HUBC-06`. Server work owed: `PUT /api/v1/device/sealing-key` and sealing fields on `MemberDto`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (partial: sealing is dormant until the hub publishes sealing keys)
+
+## ERROR-265 - Joining a department group did not say what happened: approval-required groups looked joined (CLI-04)
+
+### Date
+2026-10-13
+
+### Area
+Client / `joinEnterpriseGroup`, Browse groups sheet, chat list
+
+### Symptoms
+Tapping Join on a group that needs approval created a local chat that nobody would ever answer; the admin had no way to approve inside Flash; the hub's answer (joined / pending / refused) was folded into success.
+
+### Root cause
+The client treated any 2xx as joined and had no pending state or admin screen.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+`requestJoin` returns JOINED / PENDING / REJECTED; PENDING is stored and shown as "Waiting for approval" at the top of the chat list and polled every 60 s; admins approve or decline from the group row. See ADR-123.
+
+### Verification
+`RealFlashChatRepositoryTest`: `join PENDING -> JOINED`, `REJECTED clears`, `open group JOINED links`; `FlashHubStatusMathTest` (join feedback and badges); `EnterpriseHubTest.leavingTheOrganisationAlsoForgetsGroupJoinRequestsThatWereWaitingForApproval`. Device: `HUBC-09`..`HUBC-11`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-266 - Members of a hub group who are not paired with each other cannot read each other (CLI-16)
+
+### Date
+2026-10-13
+
+### Area
+Client / group frames
+
+### Symptoms
+In a department group, colleagues known only through the organisation directory are invited and appear in the roster but their messages are rejected by the group gate on the other side.
+
+### Root cause
+Group frames are authenticated through pairwise sessions and the roster/vouching model of ADR-044; the directory certificate is not an accepted trust root for group frames.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+NOT FIXED. Design note PROPOSED in ADR-123 (vouched introductions through the hub directory is the least new cryptography); `FlashHubStatusMath.GROUP_LIMITATION_TEXT` holds the user-facing sentence and is shown at the top of the Browse groups sheet. The owner picks the path; no group crypto was changed.
+
+### Verification
+No test: nothing to verify until a path is chosen. Device: `HUBC-11`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+OPEN (not fixed, owner decision needed)
+
+## ERROR-267 - Leaving the organisation only wiped local fields (CLI-09)
+
+### Date
+2026-10-13
+
+### Area
+Client / `EnterpriseHub.unenrol`
+
+### Symptoms
+The hub kept the device enrolled and its mailbox; links, pending joins and the session were partly left behind; a failed write left a half-cleared state.
+
+### Root cause
+Disconnect called `clearCredentials()` on the store and nothing else.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+`EnterpriseHub.unenrol()` tells the hub, remembers the intention if it cannot, clears credentials, session and pending joins, remembers linked groups for "Restore N groups". Settings shows the result in plain words. See ADR-120 item 6.
+
+### Verification
+`EnterpriseHubTest` (unenrol tells the hub then clears, offline unenrol retried, storage failure keeps the device enrolled, pending joins forgotten), `HubSessionTest` (unenrol 401 refresh, 404 counts as done, refused). Device: `HUBC-02`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-268 - Settings showed an address, a "root fingerprint" and nothing else about the hub (CLI-07 UI, CLI-17)
+
+### Date
+2026-10-13
+
+### Area
+UI / Settings, enrol dialog, browse groups
+
+### Symptoms
+No live state (online, offline, expiring, revoked), no reason when offline, enrolment failures were shown as raw exception text, the content-through-hub choice did not exist, and `:ui:chat` had its own copies of `ParsedEnrollmentInvite` and `FlashBrowseOrgGroupUi`.
+
+### Root cause
+The UI was written before the hub had a status.
+
+### Failed attempts
+None recorded for this entry (see ADR-120..123 for rejected alternatives).
+
+### Working fix
+`FlashHubStatusMath` (dot, line, banners with "Retry now" / "Re-enrol", detail sheet on long-press, plain enrolment failures, join feedback); Settings card, "Messages through the hub" switch with disclosure, "Restore N groups" offer; the duplicate types are removed (the shared `EnrollmentInvite` and `EnterpriseDirectoryGroup` are used).
+
+### Verification
+`FlashHubStatusMathTest` (16, pure), `FlashEnrollMathTest`. Compose rendering is NOT covered by a test: device `HUBC-01`, `HUBC-02`, `HUBC-08`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/`, `.../relay/`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/`, `RealFlashChatRepository.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+- `docs/audit/2026-10-12-server-hub-audit.md`
+
+### Status
+FIXED IN CODE 2026-10-13 (CLIENT agent, phase 2): unit-tested, NOT device-verified. Stays OPEN until the device tests named above pass.
+
+## ERROR-269 - GroupHistorySyncTest g12 marker test fails by timing (unrelated to the hub)
+
+### Date
+2026-10-13
+
+### Area
+Messaging / group history sync
+
+### Symptoms
+`:core:messaging:testAndroidHostTest` (501 tests): `GroupHistorySyncTest > g12AMarkerCannotMoveTheWatermarkPastTheRowsItActuallySent` fails; it is the only failure in the module.
+
+### Root cause
+NOT investigated. The test belongs to the overnight group history sync work (commit `8b129f3f`, ADR-100) and the hub changes do not touch that code path; a timing or ordering dependency is the likely cause.
+
+### Failed attempts
+None.
+
+### Working fix
+None yet. Found while verifying the CLIENT hub work; recorded so the next session does not blame the hub change.
+
+### Verification
+`:core:messaging:testAndroidHostTest` on 2026-10-13, after the hub changes. Not re-run in isolation yet.
+
+### Related files
+- see Symptoms
+
+### Status
+OPEN
+
+## ERROR-270 - RadioLinkTesterTest: two timing failures (unrelated to the hub)
+
+### Date
+2026-10-13
+
+### Area
+Network / radio link tester
+
+### Symptoms
+`:core:network:jvmTest` (530 tests): `RadioLinkTesterTest.concurrentBurstsAndTheReceiveSideShareOneSessionWithoutLosingAcks` (line 146) and `withoutAResponderTheBurstReportsLossInsteadOfHanging` (uncaught exception before test, line 103).
+
+### Root cause
+NOT investigated. Overnight radio-link code (ADR-101, `BT-*` tests); both tests are timing based and the hub work does not touch `RadioLinkTester`.
+
+### Failed attempts
+None.
+
+### Working fix
+None yet. Found while verifying the CLIENT hub work; recorded so the next session does not blame the hub change.
+
+### Verification
+`:core:network:jvmTest` on 2026-10-13 after the hub changes.
+
+### Related files
+- see Symptoms
+
+### Status
+OPEN
+
+## ERROR-271 - Load-dependent test failures when the whole verify list runs in one Gradle invocation (unrelated to the hub)
+
+### Date
+2026-10-13
+
+### Area
+Tests / `:core:messaging` `GroupJoinTest`, `:ui:chat` `FlashStressLogicTest`
+
+### Symptoms
+In one `--continue` run of all CLIENT test tasks (7 min, parallel with other agents' Gradle work): `GroupJoinTest > testRefusedJoinRequestCleansUpSecretAndVouch` (`GroupJoinTest.kt:534`, AssertionError) and `FlashStressLogicTest > 2000-message generation completes well under one second` failed. Both passed when run alone straight afterwards (`:core:messaging:testAndroidHostTest --tests *GroupJoinTest`, `:ui:chat:testAndroidHostTest --tests *FlashStressLogicTest`, BUILD SUCCESSFUL). In the same full run `GroupHistorySyncTest g12...` (ERROR-269) and the two `RadioLinkTesterTest` tests (ERROR-270) passed, which supports "timing, depends on machine load".
+
+### Root cause
+NOT investigated. The stress test is a wall-clock assertion; the group join test is probably an ordering/timing dependency. Neither touches code changed by the hub work.
+
+### Failed attempts
+None.
+
+### Working fix
+None. If either fails again on a quiet machine, treat it as a real bug and capture the first failing run's XML report.
+
+### Verification
+Isolated re-runs as above (2026-10-13).
+
+### Related files
+- `core/messaging/src/androidHostTest/.../GroupJoinTest.kt`
+- `ui/chat/src/commonTest/.../FlashStressLogicTest.kt`
+
+### Status
+OPEN (flaky)
+
+## ERROR-330 - Hub answered an expired or used enrolment invite with 400 ERR_BAD_REQUEST (client could not tell them apart)
+
+### Date
+2026-10-13
+
+### Area
+Hub server / enrolment contract (client `EnterpriseEnrollmentClient.mapHttpFailure`, `docs/protocol.md` error table)
+
+### Symptoms
+Found by the new real-client-against-real-hub test `E2eEnrollmentContractTest` (CONTRACT agent, ADR-124): an invite past its expiry and an invite already redeemed both reached the client as `INVITE_REJECTED` ("the hub refused the code"), never `INVITE_EXPIRED` / `INVITE_USED`, so the app could not say "this link has expired, ask for a new one".
+
+### Root cause
+`EnrollmentService.refusal()` turned every invite refusal into `IllegalArgumentException`, and `AuthRoutes.refusalStatus` maps that to `400 ERR_BAD_REQUEST`. The client maps `ERR_EXPIRED` / `ERR_CONFLICT` (and the statuses 410 / 409) to the two specific reasons. The SERVER violated the documented contract.
+
+### Failed attempts
+None. Changing the client to guess from the message text was rejected: messages are authored sentences, not a contract.
+
+### Working fix
+`InviteRefusedException(InviteRefusal.EXPIRED|USED)` (still an `IllegalArgumentException`, so no caller changes) and `AuthRoutes.refusalStatus`: expired -> `410 ERR_EXPIRED`, used -> `409 ERR_CONFLICT`. Unknown / revoked tokens stay 400 (no oracle beyond what a token holder already knows).
+
+### Verification
+`E2eEnrollmentContractTest.anExpiredInviteIsSaidToBeExpired`, `aReusedSingleUseInviteIsSaidToBeUsed` (failed before, pass after); `RevocationAndEnrolmentTest`, `DelegatedAuthTest` still green.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/e2e/E2eEnrollmentContractTest.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-01)
+
+## ERROR-331 - `POST /groups/join-requests/decision` answered `{ok:true}`; the client decodes a `JoinResponse`
+
+### Date
+2026-10-13
+
+### Area
+Hub server / directory contract (`docs/protocol.md` line "join-requests/decision ... `JoinResponse`")
+
+### Symptoms
+An admin's approval or refusal succeeded on the hub but `EnterpriseDirectoryClient.decideJoinRequest` returned a failure ("The hub sent an answer this app does not understand"), so the admin UI would have shown an error for a decision that had in fact been applied.
+
+### Root cause
+The route replied `OkResponse`; the protocol document and the client both say `JoinResponse {status, groupId, name, requestId, reason}`. SERVER violated the contract.
+
+### Failed attempts
+None.
+
+### Working fix
+The route now answers `JoinResponse` (`JOINED` for an approval, `REJECTED` for a refusal, with the group id/name and request id).
+
+### Verification
+`E2eDirectoryContractTest.joinOpenPendingRepeatedPendingApprovedAndTheHiddenGroupIsRefused` and `aRejectedJoinIsSeenByTheDeviceThatAskedAndANonAdminCannotDecide`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/directory/DirectoryRoutes.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-02)
+
+## ERROR-332 - A rejected group-join request was never reported to the device that asked
+
+### Date
+2026-10-13
+
+### Area
+Hub server / directory (`OrganizationDirectory.requestJoinGroup`) and client pending-join polling
+
+### Symptoms
+The client polls pending joins by repeating `POST /groups/join-request` every 60 s (`refreshPendingEnterpriseJoins`). After an admin rejected the request, the next poll created a NEW pending row and answered `PENDING`, so the member saw "waiting for approval" forever and the admin saw the request come back.
+
+### Root cause
+`requestJoinGroup` only looked at PENDING rows; a REJECTED row was ignored. SERVER violated "REJECTED must reach the requester".
+
+### Failed attempts
+None.
+
+### Working fix
+New terminal status `REJECTED_SEEN`: the first request after a rejection is answered `REJECTED` ("An administrator declined this request.") and marks the row seen; a request after that starts a new pending row. No schema change (status is stored as text).
+
+### Verification
+`E2eDirectoryContractTest.aRejectedJoinIsSeenByTheDeviceThatAskedAndANonAdminCannotDecide` (failed before the change, passes after).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/directory/OrganizationDirectory.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-02)
+
+## ERROR-333 - Two relay connection loops for one device displaced each other for ever (client)
+
+### Date
+2026-10-13
+
+### Area
+Client / `FlashRelayClient` lifecycle, `EnterpriseHub`
+
+### Symptoms
+In the client/server contract test a freshly enrolled device never stayed online: the hub logged a "superseded" Kick for the same device id over and over, and the sender saw no stable session.
+
+### Root cause
+`FlashRelayClient.start()` was a non-atomic check-then-set (`if (running && loopJob?.isActive == true) return; running = true; ...; loopJob = startConnectionLoop()`). `EnterpriseHub` calls `relay.start()` from its credentials collector AND from `enroll()` within microseconds of each other, so two loops were created. The hub allows one session per device, so each new socket kicked the other and each loop reconnected. CLIENT violated the contract (one connection per device).
+
+### Failed attempts
+None (found on the first run of the relay scenario).
+
+### Working fix
+`start()` and `stop()` run under one lock (`withRadioLock(lifecycleLock)`), so the check and the launch are one step.
+
+### Verification
+`FlashRelayClientStartRaceTest.manyConcurrentStartCallsOpenExactlyOneConnection` (32 concurrent start() calls, one connect; failed with the lock removed) and `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`.
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/relay/FlashRelayClient.kt`
+- `core/network/src/jvmTest/kotlin/com/transfer/flash/core/network/relay/FlashRelayClientStartRaceTest.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-01)
+
+## ERROR-334 - Every offline recipient was answered ERR_UNKNOWN_RECIPIENT (server mailbox registry)
+
+### Date
+2026-10-13
+
+### Area
+Hub server / `DatabaseDeviceRegistry` (REL-08), mailbox, relay router
+
+### Symptoms
+A message for an enrolled device that was offline was acked `REJECTED reason=ERR_UNKNOWN_RECIPIENT` instead of `QUEUED`, so the mailbox (offline delivery, replay, spill-on-session-end, duplicate suppression) never stored anything in a real deployment.
+
+### Root cause
+`DatabaseDeviceRegistry.isEnrolled` read the legacy `device_registry` table. Enrolment writes the identity store (`hub_devices`); nothing calls `ServerDatabase.registerDevice`. The existing unit tests used `DeviceRegistry.AcceptAll`, which hid it. SERVER violated docs/protocol.md (an enrolled offline recipient is QUEUED).
+
+### Failed attempts
+None.
+
+### Working fix
+`isEnrolled` is true for an ACTIVE row of `hub_devices` (or, for databases that used it, a `device_registry` row); a REVOKED or UNENROLLED device is not a recipient; a missing `hub_devices` table (bare mailbox database) falls back to the legacy table.
+
+### Verification
+`DatabaseDeviceRegistryTest` (enrolled -> true, revoked -> false) and `E2eRelayContractTest` (offline recipient QUEUED, replayed in order with replay=true, spill on session end, duplicate stored once).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/mailbox/MailboxStore.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/mailbox/DatabaseDeviceRegistryTest.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-03)
+
+## ERROR-335 - A revoked device could never confirm its own revocation (server required a bearer for GET /revocations)
+
+### Date
+2026-10-13
+
+### Area
+Hub server / `AuthRoutes` + `HubApiGate`, client `HubSession.fetchRevocations`
+
+### Symptoms
+After an administrator revoked a device, the hub closed its relay session and the status read "Revoked", but the phone never cleared its credentials: `EnterpriseHub.confirmRevocation()` always returned false and the device kept "enrolled" state with a certificate the hub refuses.
+
+### Root cause
+`FLASH_REVOKED` is deliberately not believed on its own; the client confirms it against the root/delegate-signed `GET /api/v1/revocations`. The client calls it WITHOUT a bearer (a revoked device cannot get one: `/auth/verify` refuses it), but the server route called `requirePrincipal`, so the call was always a 401. SERVER violated the client's (correct) assumption; docs/protocol.md said "bearer" and was the stale part.
+
+### Failed attempts
+Making the client send a bearer: impossible for the very device the answer is about.
+
+### Working fix
+`GET /api/v1/revocations` is a public path (`HubApiGate.DEFAULT_PUBLIC_PATHS`), rate limited per client address with the `unauthenticated` limiter. The list is signed and holds serials and device ids only. Owner may want to review the exposure of revoked device ids to anyone who can reach the hub (ADR-124 records the trade-off).
+
+### Verification
+`E2eLifecycleContractTest.theSignedRevocationListNeedsNoBearerBecauseARevokedDeviceHasNone`, `aRevokedDeviceIsKickedWithinTheBoundSeesRevokedAndCanEnrolAgainOnTheSameInstall`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`, `ApiGate.kt`
+- `docs/protocol.md`
+
+### Status
+RESOLVED in code (device check: HUBE-04)
+
+## ERROR-336 - The client rejected every revocation list the hub signs (delegation not offered to the trust check)
+
+### Date
+2026-10-13
+
+### Area
+Client / `HubSession.fetchRevocations`, `RevocationList.verifyTrusted`
+
+### Symptoms
+Even with ERROR-335 fixed, the revoked device still did not confirm its revocation.
+
+### Root cause
+The hub signs the list with its delegate key (the root key is offline). `RevocationList.verifyTrusted` accepts a delegate issuer only when the delegation certificate is passed in; the client called it without one, so only a root-signed list could ever be accepted. CLIENT violated the contract.
+
+### Failed attempts
+None.
+
+### Working fix
+`fetchRevocations` looks up, in the delegation chain stored at enrolment, the certificate whose delegate key is the list's issuer and passes it in. A list from an unknown issuer is still rejected.
+
+### Verification
+Same e2e tests as ERROR-335 (red before this change, green after).
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/HubSession.kt`
+
+### Status
+RESOLVED in code (device check: HUBE-04)
+
+## ERROR-337 - REST auth nonces were stamped with the wall clock but verified with the injected hub clock
+
+### Date
+2026-10-13
+
+### Area
+Hub server / `AuthRoutes.newChallengeResponse`
+
+### Symptoms
+In the contract test, after the shared test clock was moved into the renewal window, `POST /enroll/renew` answered 401 "Authentication failed" (the nonce looked 6 days old).
+
+### Root cause
+`generateChallenge()` used `System.currentTimeMillis()` while `verifyRenewal` / `verifyChallenge` used the hub's injected `clock()`. Harmless in production (both are the wall clock) but it made time-dependent behaviour untestable and would break if the hub ever gets a monotonic or adjusted clock. SERVER inconsistency.
+
+### Working fix
+The challenge is stamped with the same `clock()` that verifies it.
+
+### Verification
+`E2eLifecycleContractTest.aCertificateInsideItsRenewalWindowIsRenewedWithANewSerialAndTheRelayReconnects`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/AuthRoutes.kt`
+
+### Status
+RESOLVED in code
+
+
+## ERROR-340 - Admin console: the server-rendered HTML console was an XSS and CSRF surface and has no step-up UI (SEC-11)
+
+### Date
+2026-10-13
+
+### Area
+Hub admin console / `:server`
+
+### Symptoms
+`AdminUiHtml.kt` built pages from strings with unescaped values and inline handlers; no CSP; nothing in the UI could sign a step-up confirmation, so every dangerous action answered 403 `ERR_STEP_UP`.
+
+### Root cause
+Markup, data and script were mixed in Kotlin strings; the step-up verifier had no browser-side signer.
+
+### Working fix
+Replaced by the static console (ADR-125): `textContent`-only DOM helper, CSP and headers on every response, a non-extractable WebCrypto step-up key registered with proof of possession, and a verifier that accepts P1363 as well as DER.
+
+### Verification
+`AdminConsoleWebTest`, `AdminConsoleApiTest`, node tests in `server/admin-ui-tests/`, a mutation check of the source scan, and a real-browser run (setup, sign-in, invite create and revoke, a step-up certificate revocation).
+
+### Related files
+`server/src/main/resources/admin-ui/`, `server/src/main/kotlin/com/transfer/flash/server/admin/AdminConsoleWeb.kt`, `ConsoleKeys.kt`, `docs/ui/hub-admin-console.md`.
+
+### Status
+RESOLVED in code; browser matrix not verified (HUBU-*)
+
+## ERROR-341 - Admin console: defects found by the first real-browser run (all fixed)
+
+### Date
+2026-10-13
+
+### Area
+Hub admin console / CSS and views
+
+### Symptoms
+1. The role showed the raw key `role.ORG_ADMIN` in the header (no string for the hub's role value `ORG_ADMIN`).
+2. After the setup finished, the sign-in page still offered "Start the setup".
+3. Cards on Security and the relay card on Overview had no vertical spacing.
+4. Links styled as buttons were underlined.
+5. The audit "Contains" filter had left padding for a glyph that is not drawn.
+6. `.table-scroll.short` and `.row-bad` were used but not defined.
+
+### Root cause
+1. `shell.js` lowercased nothing and `en.js` lacked `role.org_admin`. 2. `showSetup` left `setupOpen` true when it navigated away. 3. The host elements were plain `div`s, not `stack`. 4. `.btn` did not reset `text-decoration`. 5. A search-input class was reused. 6. Two CSS rules were forgotten.
+
+### Failed attempts
+None; found by screenshots and DOM checks in headless Edge, so a unit test would not have seen them.
+
+### Working fix
+`t('role.' + String(role).toLowerCase())` plus the string; `setupOpen = false` before `router.go`; `stack` containers; `.btn { text-decoration: none }`; removed `input-search`; added the two rules. The strings test (`strings.test.mjs`) now fails the build when a view asks for a missing key.
+
+### Verification
+Re-ran the page tour at 1440 and 390 px in light and dark: no console errors, no horizontal overflow (28 combinations).
+
+### Related files
+`js/ui/shell.js`, `js/main.js`, `js/views/{audit,security,overview}.js`, `css/components.css`, `js/strings/en.js`
+
+### Status
+RESOLVED
+
+## ERROR-342 - Admin console: known minor defects left open
+
+### Date
+2026-10-13
+
+### Symptoms
+(a) The sign-in page shows "You are signed out." above the error of a failed sign-in. (b) Chrome logs "Password forms should have username fields" on the change-password form. (c) `HubServicesTest.revokingADeviceKillsItsBearerAtOnceAndRemovesItFromTheDirectory` fails in `:server:test`: it expects 401 for `GET revocations` without a bearer, while `ApiGate.DEFAULT_PUBLIC_PATHS` now lists `PATH_REVOCATIONS` as public (ERROR-335, ADR-124). Not caused by the console work; the test is stale against the contract work.
+
+### Root cause
+(a) the notice is not cleared when an attempt starts; (b) the form lacks a hidden username input; (c) the contract change did not update that assertion.
+
+### Working fix
+None yet. (c) should change the assertion to expect 200 (and the list to name the revoked device).
+
+### Status
+OPEN
+
+
+## ERROR-360 - The client could not tell a retired sealing key (409) from a rate limit (429) from an unreachable hub
+
+### Date
+2026-10-13
+
+### Area
+Hub client / sealing key publication (CLI-05, ADR-124, ADR-126)
+
+### Symptoms
+`EnterpriseDirectoryClient.publishSealingKey(...)` returned one `FlashResult.Failure` for every outcome. A caller could not decide between "make a new key" (the hub remembers this one as retired), "wait" (rate limit: burst 5, then 1 per 30 s per device) and "try later" (offline, 5xx, a hub that predates ADR-124). A host built on it would either hammer the hub, or loop forever republishing a retired key.
+
+### Environment
+Found while building the host side; no device involved. JVM tests with a scripted hub and the real hub (`E2eHostSealingLifecycleTest`).
+
+### Root cause
+The publish call was written for the contract test ("it works") and returned a generic failure; the server's 409 / 429 / 404 answers were never part of the client's vocabulary.
+
+### Failed attempts
+1. Parsing the error text of the failure: rejected, it is a sentence for people, not a contract.
+
+### Working fix
+`SealingPublishResult` (`PUBLISHED`, `KEY_RETIRED`, `RATE_LIMITED`, `HUB_TOO_OLD`, `REFUSED`, `UNREACHABLE`, `SERVER_ERROR`) on a new `HubSealingKeyApi` (`publish`, `remove`); `publishSealingKey` stays as a wrapper for the existing e2e tests. `HubSealingKeyManager` maps each result to an action (new key, 35 s wait, exponential backoff, 30 min). Tests: `HubSealingKeyManagerTest` (14), `EnterpriseHubSealingLifecycleTest` (10).
+
+### Verification
+Unit tests above; `E2eHostSealingLifecycleTest` against the real hub (publish after enrol, key served with a valid binding, re-enrol makes a new key). Not device-verified (`HUBH-03`).
+
+### Related files
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/EnterpriseDirectoryClient.kt`
+- `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/enterprise/HubSealingKeyManager.kt`
+
+### Status
+FIXED-IN-CODE (unit-tested, e2e-tested, not device-verified)
+
+
+## ERROR-361 - A sealed hub message whose sender could not be looked up was rejected, so the hub dropped it for good
+
+### Date
+2026-10-13
+
+### Area
+Hub chat bridge / inbound (CLI-05, ADR-121, ADR-126)
+
+### Symptoms
+Latent (sealing was not wired in any host). With sealing on, a sealed delivery whose sender's directory entry could not be fetched at that moment (directory unreachable, short outage) failed to open, was answered as "rejected" and therefore acknowledged, so the hub deleted the only copy. The recipient never saw a message that was perfectly valid.
+
+### Environment
+JVM host test `HubSealingHostFlowTest` (`a sealed message is kept for later when the sender cannot be looked up right now`).
+
+### Root cause
+`HubChatBridge.handleInbound` treated "could not open" as "forged". A failed open has two causes: the message does not verify, or the key needed to verify it could not be fetched.
+
+### Failed attempts
+None; found while reading the inbound path to count dropped messages.
+
+### Working fix
+When the open fails and the standing of the sender is `UNAVAILABLE`, the outcome is `RETRY_LATER` (not acknowledged, not counted). Only a failure with a known sender standing is rejected, counted in `droppedUnverified` and never stored.
+
+### Verification
+`HubSealingHostFlowTest` (9 tests): the retry case and the counted-and-never-stored case. Mutation check noted in `logs/progress.md`. Not device-verified.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/HubChatBridge.kt`
+
+### Status
+FIXED-IN-CODE
+
+
+## ERROR-362 - Group frames would have been sealed with a single recipient key, and a changed key could have been bypassed by the readable fallback
+
+### Date
+2026-10-13
+
+### Area
+Hub chat bridge / sealing policy (CLI-05, ADR-123, ADR-126)
+
+### Symptoms
+Latent. `HubChatBridge.sendPayload` sealed whatever it was given whenever the recipient had a key, so group frames (one frame per member) would have been sealed in a way ADR-123 says is not designed yet, while `canCarry` knew nothing about key changes: with a changed key and the readable switch ON the message would have gone out in the clear (a silent downgrade).
+
+### Environment
+Code reading plus `HubSealingHostFlowTest`.
+
+### Root cause
+`canCarry` and `sendPayload` had a binary view of sealing (can seal or cannot). A third state ("key changed, wait for the user") did not exist, and group frames shared the direct-message path.
+
+### Failed attempts
+None.
+
+### Working fix
+`HubSealingStatus` (`AVAILABLE`, `NOT_PUBLISHED`, `KEY_CHANGED`) from the port; `canCarry(recipient, group)` / `wouldHold(..., group)`: `KEY_CHANGED` holds even with the switch ON, group frames are never sealed and only the switch counts; the held reason is kept in `waiting` (`NEEDS_UPDATE`, `SWITCHED_OFF`, `KEY_CHANGED`) for the chat notice. `wouldHold` is true while a change waits for the user, so the message is not failed after the short outbox budget. The repository passes `group = true` on the three group paths.
+
+### Verification
+`HubSealingHostFlowTest`: `a changed key holds every message even with the readable switch on until the user continues`, `a pending key change keeps holding when the directory cannot be read`, `groups are never sealed and need the readable switch`; `HubNoticeMathTest`. Mutation check (the KEY_CHANGED branch) in `logs/progress.md`. Not device-verified (`HUBH-02`).
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/HubChatBridge.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+
+### Status
+FIXED-IN-CODE
+
+
+## ERROR-363 - Hub delivery notes and the "readable message refused" count are computed but shown nowhere
+
+### Date
+2026-10-13
+
+### Area
+Chat UI / hub status (CLI-05, CLI-06)
+
+### Symptoms
+`RealFlashChatRepository.hubDeliveryNotes` (what the hub said about each message) is not rendered by any bubble, and `HubChatBridge.droppedPlain` (readable messages refused while "Messages through the hub" is off) was not surfaced anywhere. A message held for a reason the user could not see just stayed on one tick.
+
+### Environment
+Code reading (grep for the flow in `:ui:chat`, `app`, `desktop`).
+
+### Root cause
+The bridge exposed state before the UI side existed; the two were never joined.
+
+### Failed attempts
+None.
+
+### Working fix (partial)
+- Why a chat's messages wait is now an inline notice in the conversation (`FlashHubNotice`, `FlashConversationUiState.hubNotice`: changed key with Continue / Verify, "Waiting for X to update the app", hub switched off, truthful group notes).
+- `hubDropped` (unverified and readable-refused counts) and the sealing key state are lines in the connection-details dialog.
+- NOT done: per-bubble rendering of `hubDeliveryNotes`.
+
+### Verification
+`HubNoticeMathTest`, `FlashHubNoticeMathTest`, `FlashHubStatusMathTest` (2 new tests). Not device-verified (`HUBH-05`).
+
+### Related files
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashHubNotice.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubStatusMath.kt`
+
+### Status
+OPEN (bubble notes); the rest FIXED-IN-CODE
+
+
+
+## ERROR-380 - REV-01: the relay per-IP connection cap saw the proxy, not the device
+
+### Date
+2026-10-13
+
+### Area
+Hub / relay / reverse proxy
+
+### Symptoms
+Behind nginx or Caddy every device had the proxy address, so 150 devices shared one per-IP cap and the 21st connection was refused; with `trustForwardedFor` on, any client could choose its own address.
+
+### Root cause
+Two separate notions of the client address: a boolean that believed forwarded headers from anyone, and the raw socket peer.
+
+### Working fix
+One resolver (`ClientAddressResolver.clientKey`): socket peer, or rightmost untrusted `X-Forwarded-For` entry for a peer in `FLASH_TRUSTED_PROXIES`. `trustForwardedFor` removed. The relay and every limiter use it.
+
+### Verification
+Relay and auth tests with a proxied peer (`RelayFrameRouterTest`, `AbuseControlsTest`, `HubServicesTest`).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/ClientAddress.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-381 - REV-02: ambiguous request paths bypassed the API gate; IPv6 addresses escaped per-IP limits
+
+### Date
+2026-10-13
+
+### Area
+Hub / HTTP front
+
+### Symptoms
+A path such as `/admin/api/v1/../v1/x` or one with encoded slashes could be read differently by the gate and by routing; one IPv6 client could rotate through its /64 to get unlimited buckets.
+
+### Root cause
+The gate matched the raw string, routing matched the decoded one; limiter keys used the full IPv6 address.
+
+### Working fix
+`RequestPathGuard` computes one canonical path (or 400) in `ApplicationCallPipeline.Setup`, before the gate; baseline security headers on every response; `RateKeys.normalise` keys IPv6 by /64.
+
+### Verification
+`CanonicalPathTest`, `AbuseControlsTest` IPv6 cases.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/core/RequestPathGuard.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/ClientAddress.kt` (RateKeys)
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-382 - REV-03: the database and its secrets were readable by any local user and TOTP seeds were stored in clear
+
+### Date
+2026-10-13
+
+### Area
+Hub / storage
+
+### Symptoms
+Database, key and token files inherited default permissions; TOTP seeds sat in plain text in SQLite.
+
+### Root cause
+No permission hardening and no field-level protection.
+
+### Working fix
+`SecureFiles` (owner-only POSIX permissions or Windows ACL), `SecretBox` AES-GCM (`enc1:` prefix) under `data.key`, TOTP seeds sealed, `sealLegacySecrets` on start. Whole-database encryption deliberately NOT done (ADR-127 P-4).
+
+### Verification
+`DataAtRestTest`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/KeyFiles.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/SecretBox.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminAuthService.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-383 - REV-04: a stolen hub key could not be revoked
+
+### Date
+2026-10-13
+
+### Area
+Hub / delegation / revocation
+
+### Symptoms
+The only answer to a compromised hub key was a new root; there was no way to revoke one delegation serial and everything it issued.
+
+### Root cause
+Revocation lists could name device serials and ids, not delegation serials.
+
+### Working fix
+`keytool revoke` (offline root key) signs a list with delegation serials; `POST /admin/api/v1/revocations/install` (step-up `revocation.install`); the hub installs a dropped-in list at start; certificates issued by a revoked delegation count as revoked.
+
+### Verification
+`KeyToolAndDelegationTest`, `DelegatedAuthTest.aRevokedDelegationSerialRevokesEveryCertificateItIssued`, admin API tests.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/KeyTool.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/SqliteRevocationService.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-384 - REV-05: a relay session outlived its device certificate
+
+### Date
+2026-10-13
+
+### Area
+Hub / relay
+
+### Symptoms
+A device whose certificate had expired stayed connected until it reconnected for another reason.
+
+### Root cause
+The certificate was checked at the handshake only.
+
+### Working fix
+A per-session timer closes the session with `ERR_EXPIRED` 60 s (`sessionExpirySkewMs`) after expiry (`AuthResult.Accepted.validUntilMs`).
+
+### Verification
+`RelayFrameRouterTest` expiry tests.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-385 - REV-06: join requests revealed which group ids exist
+
+### Date
+2026-10-13
+
+### Area
+Hub / directory
+
+### Symptoms
+`POST /groups/join-request` answered differently for a missing group, a hidden group and a group out of scope.
+
+### Root cause
+Three code paths with three sentences.
+
+### Working fix
+One constant sentence (`This group is not available to join.`) for all three.
+
+### Verification
+`OrganizationDirectoryTest.aJoinRequestForAGroupOutsideTheCallersScopeAnswersExactlyLikeAMissingOne`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/directory/OrganizationDirectory.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-386 - REV-07: the setup status leaked admin state and one visitor could evict another visitor's setup
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin setup
+
+### Symptoms
+`GET setup/status` said whether admins exist and the delegation status; `setup/begin` needed no token and evicted the oldest pending setup when full.
+
+### Root cause
+Convenience for the console over minimal disclosure.
+
+### Working fix
+Status answers only `setupOpen`; `setup/begin` takes the setup token (shared lockout) and refuses (409) instead of evicting at 16 pending.
+
+### Verification
+`AdminAuthServiceTest`/`AdminApiTest` setup tests.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminAuthService.kt`
+- `server/src/main/resources/admin-ui/js/views/setup.js`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-387 - REV-08: a mailbox acknowledgement deleted the wrong sender's message
+
+### Date
+2026-10-13
+
+### Area
+Hub / mailbox
+
+### Symptoms
+Two senders using the same message id: an acknowledgement removed both rows, or a live hand-off overwrote another sender's in-flight entry.
+
+### Root cause
+The acknowledgement carried only the message id.
+
+### Working fix
+`RecvAck.from` (additive); delete only that sender's row or the oldest row; a live hand-off refuses to overwrite another origin's in-flight entry.
+
+### Verification
+`MailboxQueueTest`, `RelayFrameRouterTest` (two senders, same id).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/mailbox/MailboxStore.kt`
+- `core/hub-protocol/.../RelayFrame.kt`
+
+### Status
+FIXED-IN-CODE; clients do not yet pass `from` (ADR-127 P-6)
+
+
+## ERROR-388 - REV-09: direct META could reveal presence
+
+### Date
+2026-10-13
+
+### Area
+Hub / relay
+
+### Symptoms
+A sender could tell online from offline from unknown recipients by what came back.
+
+### Root cause
+Different outcomes per case.
+
+### Working fix
+Uniform silence. Department scoping was NOT added (ADR-127 decision 9).
+
+### Verification
+`RelayFrameRouterTest.directMetaGivesTheSenderTheSameSilenceWhetherTheRecipientIsOnlineOfflineOrUnknown`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt`
+
+### Status
+PARTIAL (owner decision recorded)
+
+
+## ERROR-389 - REV-10: the own-password form allowed unlimited guessing of the current password
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin
+
+### Symptoms
+A hijacked session could guess the current password at full speed through `/me/password`; a misconfigured proxy mode went unnoticed.
+
+### Root cause
+Only sign-in had a lockout.
+
+### Working fix
+`changeOwnPasswordLimited` (key `pw:<user>`, reserve before check) and `ServerConfig.proxyMisconfigurationWarning()`.
+
+### Verification
+`AdminAuthServiceTest`, `ServerConfigTest`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminAuthService.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/config/ServerConfig.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-390 - REV-11: a stolen session plus an authenticator code could replace the step-up signer
+
+### Date
+2026-10-13
+
+### Area
+Hub / admin / step-up
+
+### Symptoms
+An attacker with a session cookie and one TOTP code could install their own browser key and approve any dangerous action.
+
+### Root cause
+The signer was replaceable with the same weak factor it protects.
+
+### Working fix
+First signer: fresh TOTP. Replacement: a recovery code (403 `ERR_SIGNER_EXISTS` otherwise). New recovery codes need step-up `recovery.regenerate` once a signer exists. Console strings and flow updated.
+
+### Verification
+`AdminApiTest.onceASignerExistsOnlyARecoveryCodeCanReplaceItAndNewRecoveryCodesNeedTheSigner`; node tests 51/51.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminApiDirectory.kt`
+- `server/src/main/resources/admin-ui/js/ui/keydialog.js`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-391 - REV-12: the Docker build context could contain keys, local properties and tool state
+
+### Date
+2026-10-13
+
+### Area
+Deployment
+
+### Symptoms
+`.dockerignore` patterns without `**/` matched only the context root, so `server/data.key` or `core/x/keystore.properties` entered the image build.
+
+### Root cause
+Docker matches un-prefixed patterns at the root only.
+
+### Working fix
+`**/` patterns for every secret kind, tool-state directories ignored, `server/docker-compose.example.yml` (loopback binding, read-only root, dropped capabilities).
+
+### Verification
+`DockerIgnoreTest` (3 tests, a small matcher that follows Docker's rules).
+
+### Related files
+- `.dockerignore`
+- `server/docker-compose.example.yml`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-392 - REV-13: nothing checked that secrets stay out of the log
+
+### Date
+2026-10-13
+
+### Area
+Hub / logging
+
+### Symptoms
+No logging configuration and no test; a future `log.info` of a token would have shipped.
+
+### Root cause
+Defaults only.
+
+### Working fix
+`logback.xml` (root INFO, noisy libraries WARN) and `LogHygieneTest` (ListAppender at ALL: setup token, TOTP seeds, passwords, session/CSRF tokens and recovery codes are never logged).
+
+### Verification
+`LogHygieneTest`.
+
+### Related files
+- `server/src/main/resources/logback.xml`
+- `server/src/test/kotlin/com/transfer/flash/server/LogHygieneTest.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-393 - REV-14: a step-up confirmation for one setting value could be reused for another
+
+### Date
+2026-10-13
+
+### Area
+Hub / step-up
+
+### Symptoms
+The challenge target was the setting key only.
+
+### Root cause
+The value was not bound.
+
+### Working fix
+Target `<key>=<value>` on server and console.
+
+### Verification
+`AdminApiTest` (confirmation for another value gets 403).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminApi.kt`
+- `server/src/main/resources/admin-ui/js/views/settings.js`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-394 - REV-15: the audit hash chain used `|` as a separator between free-text fields
+
+### Date
+2026-10-13
+
+### Area
+Hub / audit
+
+### Symptoms
+A `|` inside a field could be moved across a field boundary without changing the hash.
+
+### Root cause
+Hash input was `a|b|c`.
+
+### Working fix
+Schema step 2 adds `chain_ver`; new rows use length-prefixed canonical fields (`flash-audit-chain-v2`), old rows verify in the old form. Unauthenticated audit budget 60 to 20 per minute.
+
+### Verification
+`AuditLoggerTest` (separator forgery, mixed v1/v2 chain).
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AuditLogger.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-395 - REV-16: first-use root trust, delegation rollback after restart and serial reuse after a lost serial file
+
+### Date
+2026-10-13
+
+### Area
+Hub / delegation / keytool
+
+### Symptoms
+The first delegation file that appeared fixed the organisation root; after a restart an older, still valid delegation could be installed again; losing `delegation-serial.txt` restarted serials at 1.
+
+### Root cause
+No persisted maximum serial, no way to require a pin, and the serial source was a single file.
+
+### Working fix
+`FLASH_REQUIRE_ROOT_PIN`; persisted `delegation.highest-serial` in the identity meta table; TOFU WARN on adoption; `keytool issue-delegation` takes the maximum of the serial file and the `*.cert` files beside the root key and at the output path.
+
+### Verification
+`KeyToolAndDelegationTest` (three new tests: lost serial file, restart rollback, require-root-pin), `HubServicesTest`, `ServerConfigTest`.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/DelegationManager.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/KeyTool.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/HubServices.kt`
+
+### Status
+FIXED-IN-CODE (unit/e2e tested; not device-verified)
+
+
+## ERROR-396 — Hub chat bridge treats a reused message id from another sender as a duplicate
+
+### Date
+2026-10-13
+
+### Area
+Enterprise hub client / `core:messaging` (`HubChatBridge`)
+
+### Symptoms
+Not observed in a run; found by reading the code while passing `from` to the acknowledgement (ADR-127 P-6). `HubChatBridge` remembers delivered messages in a `seen` set keyed by the message id alone. If device B sends a message with an id that device A's earlier message already used, the receiver drops B's message as a DUPLICATE and still acknowledges it.
+
+### Root cause
+The duplicate key does not include the sender. Message ids are chosen by the sender, so they are not unique across senders. The hub side was fixed in REV-08 (an acknowledgement names the sender); the client side was not.
+
+### Failed attempts
+None yet.
+
+### Working fix
+Not applied. Key `seen` by `(from, id)` (persist it the same way), and add a test where two senders use the same id and both messages are delivered.
+
+### Verification
+None yet.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/hub/HubChatBridge.kt`
+- `docs/decisions.md` (ADR-127 addendum)
+
+### Status
+OPEN
