@@ -1350,7 +1350,7 @@ public class DesktopEngine(
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,
                 localDisplayName = friendlyName,
-                isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+                isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
                 orgPeerResolver = orgPeerResolver,
                 conversationDao = db.conversationDao(),
                 messageDao = db.messageDao(),
@@ -1535,9 +1535,12 @@ public class DesktopEngine(
             localDeviceId = localId,
             localName = friendlyName,
             scope = scope,
-            // Group Phase 0 trust closure, like the app host: only paired peers can place or
-            // receive calls; an inbound invite from a stranger is auto-declined, never rung.
-            isTrustedPeer = { peerId -> trustStore.isTrusted(FlashDeviceId(peerId)) },
+            // Group Phase 0 trust closure, like the app host: only paired peers and verified ORG colleagues may ring.
+            isTrustedPeer = { peerId ->
+                val paired = trustStore.isTrusted(FlashDeviceId(peerId))
+                val isOrg = if (enterpriseTrustStore.isEnrolled) orgPeerResolverRef?.isOrgPeer(peerId) == true else false
+                com.transfer.flash.core.messaging.PeerTrustPolicy.mayRing(isPaired = paired, isOrg = isOrg)
+            },
             // ADR-044 V2: a vouched member of a v2 group may join that group's calls without being paired.
             isGroupTrustedPeer = { peerId, groupId ->
                 chatImpl?.isGroupCallPeer(groupId, peerId) ?: trustStore.isTrusted(FlashDeviceId(peerId))
@@ -1698,7 +1701,7 @@ public class DesktopEngine(
         val remembered = RememberedRoutes(
             scope = scope,
             store = chatDb?.let { DesktopRememberedEndpointStore(it.rememberedEndpointDao()) },
-            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) },
+            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) || (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isKnownColleague(id) == true) },
             wallClockMs = System::currentTimeMillis,
             hasLiveSession = network::hasLiveSession,
             log = { FlashLog.i(TAG_WS, it) },

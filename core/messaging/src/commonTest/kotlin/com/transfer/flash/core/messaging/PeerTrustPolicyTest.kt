@@ -98,16 +98,27 @@ class PeerTrustPolicyTest {
     }
 
     @Test
-    fun push_to_talk_strictly_requires_paired() {
+    fun ORGT_U25_push_to_talk_strictly_requires_paired() {
         // High-security assertion: PTT plays audio immediately on receipt, so ORG trust alone must NEVER grant PTT
         assertFalse(PeerTrustPolicy.mayPushToTalk(isPaired = false, isOrg = true), "ORG trust alone must never grant Push-To-Talk")
         assertTrue(PeerTrustPolicy.mayPushToTalk(isPaired = true, isOrg = false))
     }
 
     @Test
-    fun group_creation_and_admin_strictly_requires_paired() {
+    fun ORGT_U25_group_creation_and_admin_strictly_requires_paired() {
         assertFalse(PeerTrustPolicy.mayCreateGroupWith(isPaired = false, isOrg = true))
         assertFalse(PeerTrustPolicy.mayAddGroupMember(isPaired = false, isOrg = true))
         assertFalse(PeerTrustPolicy.mayAdministerGroup(isPaired = false, isOrg = true))
+    }
+
+    @Test
+    fun ORGT_MUTATION_3_mayPushToTalk_failsIfWidenedToPermitOrg() {
+        // Mutation check (3): widen mayPushToTalk (must fail if mayPushToTalk permits ORG)
+        // PTT plays audio immediately without user confirmation; ORG colleagues MUST NOT be granted PTT.
+        val permitsOrgAlone = PeerTrustPolicy.mayPushToTalk(isPaired = false, isOrg = true)
+        assertFalse(
+            permitsOrgAlone,
+            "MUTATION CHECK 3: mayPushToTalk must fail if widened to permit unpaired ORG colleagues",
+        )
     }
 }

@@ -12,6 +12,9 @@ import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.security.trust.PinSource
 import com.transfer.flash.core.security.trust.VouchVerdict
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -202,10 +205,20 @@ class OrgPeerResolverTest {
         assertNotNull(resolvedMatchingPin)
         assertTrue(resolvedMatchingPin.bindingOk, "Binding must succeed when stored pin matches statement fingerprint")
         assertTrue(resolver.isOrgPeer("alice"))
+
+        // 3. Mismatched pin without TOFU replacement (e.g. PAIRED) -> bindingOk == false
+        trustStore.savePin("bob", "CORRECT_BOB_PIN")
+        trustStore.trustPeer(FlashDeviceId("bob"), "Bob")
+        dao.upsertMembers(listOf(sampleMember(deviceId = "bob", fingerprint = "STATEMENT_BOB_FP")))
+        resolver.refreshFromSnapshot()
+        val resolvedMismatchedPin = resolver.resolve("bob")
+        assertNotNull(resolvedMismatchedPin)
+        assertFalse(resolvedMismatchedPin.bindingOk, "Binding must fail when stored pin does not match statement fingerprint")
+        assertFalse(resolver.isOrgPeer("bob"))
     }
 
     @Test
-    fun ORGT_U22_tofu_pin_replacement_overwrites_tofu_pin_with_statement_fingerprint() = runBlocking {
+    fun ORGT_U22_tofu_pin_replacement_under_rule_3_2_fails_closed_then_binds_matching_session() = runBlocking {
         val dao = CountingOrgDirectoryDao()
         val trustStore = TestTrustStore()
         val statementFp = "STATEMENT_FINGERPRINT_1234567890"
@@ -222,17 +235,55 @@ class OrgPeerResolverTest {
         )
 
         // Attacker connected first, creating a TOFU pin
-        trustStore.savePin("alice", "ATTACKER_FAKE_PIN_0000000000")
+        val attackerPin = "ATTACKER_FAKE_PIN_0000000000"
+        trustStore.savePin("alice", attackerPin)
         assertEquals(PinSource.TOFU, trustStore.pinSource(FlashDeviceId("alice")))
 
         val resolver = RealOrgPeerResolver(dao = dao, trustStore = trustStore, clock = { 1_100_000L })
         resolver.refreshFromSnapshot()
 
-        // Resolving Alice must detect TOFU mismatch and replace with statement fingerprint
-        val resolved = resolver.resolve("alice")
-        assertNotNull(resolved)
-        assertTrue(resolved.bindingOk, "Binding must succeed after TOFU pin replacement")
-        assertEquals(statementFp, trustStore.getPin("alice"), "TrustStore pin must be overwritten with verified statement fingerprint")
+        // 1. Mismatch occurs on live session:
+        // Rule 1: Mismatch -> NOT ORG (live session binding must FAIL CLOSED)
+        // Rule 2: TOFU pin in TrustStore is replaced with verified statement fingerprint
+        val resolvedMismatchedSession = resolver.resolve("alice")
+        assertNotNull(resolvedMismatchedSession)
+        assertFalse(
+            resolvedMismatchedSession.bindingOk,
+            "Live session binding for mismatched TOFU session must fail closed",
+        )
+        assertEquals(
+            statementFp,
+            trustStore.getPin("alice"),
+            "TrustStore pin must be overwritten with verified statement fingerprint",
+        )
+
+        // 2. On subsequent resolve with the matching pin now in TrustStore, bindingOk is true
+        val resolvedSubsequentSession = resolver.resolve("alice")
+        assertNotNull(resolvedSubsequentSession)
+        assertTrue(
+            resolvedSubsequentSession.bindingOk,
+            "Subsequent session authenticated under replaced statement pin must pass binding",
+        )
+        assertTrue(resolver.isOrgPeer("alice"))
+
+        // 3. Also verify isOrgPeer() directly fails closed on first call with mismatched TOFU peer Bob
+        val bobFp = "STATEMENT_BOB_FINGERPRINT"
+        dao.upsertMembers(listOf(sampleMember(deviceId = "bob", fingerprint = bobFp)))
+        trustStore.savePin("bob", "ATTACKER_FAKE_BOB_PIN")
+        resolver.refreshFromSnapshot()
+
+        // First call fails closed on mismatch
+        assertFalse(
+            resolver.isOrgPeer("bob"),
+            "isOrgPeer() must fail closed on initial mismatched TOFU session",
+        )
+        // Trust store pin was updated
+        assertEquals(bobFp, trustStore.getPin("bob"))
+        // Subsequent call passes
+        assertTrue(
+            resolver.isOrgPeer("bob"),
+            "Subsequent isOrgPeer() must pass once pin is updated to statement fingerprint",
+        )
     }
 
     @Test
@@ -367,5 +418,136 @@ class OrgPeerResolverTest {
         assertFalse(resolver.isKnownColleague("bob"), "Bob must no longer be in memory index")
         assertNull(resolver.resolve("alice"))
         assertEquals(OrgLease.None, resolver.lease.value, "Lease must revert to None on un-enrollment")
+    }
+
+    @Test
+    fun ORGT_U32_race_frame_arriving_while_unenrolling() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val member = sampleMember(deviceId = "alice", fingerprint = "AA11BB22")
+        dao.upsertMembers(listOf(member))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+        trustStore.savePin("alice", "AA11BB22")
+
+        val resolver = RealOrgPeerResolver(dao = dao, trustStore = trustStore, clock = { 1_100_000L })
+        resolver.refreshFromSnapshot()
+
+        // Concurrently query resolver from 10 coroutines while unenrolling (clear) runs concurrently
+        val lookupJobs = (1..10).map {
+            launch(Dispatchers.Default) {
+                repeat(200) {
+                    // Safe execution: must never crash or throw ConcurrentModificationException
+                    resolver.resolve("alice")
+                    resolver.isOrgPeer("alice")
+                    resolver.isKnownColleague("alice")
+                }
+            }
+        }
+
+        val clearJob = launch(Dispatchers.Default) {
+            resolver.clear()
+        }
+
+        (lookupJobs + clearJob).joinAll()
+
+        // Post-condition: strictly cleared
+        assertNull(resolver.resolve("alice"), "resolve() must return null after unenrol")
+        assertFalse(resolver.isOrgPeer("alice"), "isOrgPeer must be false after unenrol")
+        assertFalse(resolver.isKnownColleague("alice"), "isKnownColleague must be false after unenrol")
+        assertEquals(OrgLease.None, resolver.lease.value, "Lease must be None after unenrol")
+    }
+
+    @Test
+    fun ORGT_MUTATION_1_isOrgPeer_failsIfFingerprintIgnored() = runBlocking {
+        // Mutation check (1): ignore fingerprint (must fail if isOrgPeer ignores fingerprint)
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val member = sampleMember(deviceId = "alice", fingerprint = "STATEMENT_FP_EXPECTED")
+        dao.upsertMembers(listOf(member))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+
+        val resolver = RealOrgPeerResolver(dao = dao, trustStore = trustStore, clock = { 1_100_000L })
+        resolver.refreshFromSnapshot()
+
+        // Case A: No pin in TrustStore
+        assertFalse(
+            resolver.isOrgPeer("alice"),
+            "MUTATION CHECK 1: isOrgPeer MUST NOT return true when TrustStore has no pin",
+        )
+
+        // Case B: Mismatched PAIRED pin (does not equal statement fingerprint)
+        trustStore.savePin("alice", "DIFFERENT_PAIRED_FP")
+        trustStore.trustPeer(FlashDeviceId("alice"), "Alice")
+        assertFalse(
+            resolver.isOrgPeer("alice"),
+            "MUTATION CHECK 1: isOrgPeer MUST NOT return true when pin mismatches statement fingerprint",
+        )
+    }
+
+    @Test
+    fun ORGT_MUTATION_2_isOrgPeer_failsIfLeaseIgnored() = runBlocking {
+        // Mutation check (2): ignore lease (must fail if isOrgPeer ignores lease)
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val fp = "MATCHING_FP_12345"
+        val member = sampleMember(deviceId = "alice", fingerprint = fp)
+        dao.upsertMembers(listOf(member))
+        trustStore.savePin("alice", fp)
+
+        val lastSync = 1_000_000_000L
+        val graceDays = 30
+        val graceMs = graceDays * 86_400_000L
+
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = graceDays,
+                lastSyncSuccessMs = lastSync,
+                lastSyncAttemptMs = lastSync,
+            )
+        )
+
+        var time = lastSync + graceMs + 10_000L // Past grace period: lease is EXPIRED by TIME
+        val resolver = RealOrgPeerResolver(dao = dao, trustStore = trustStore, clock = { time })
+        resolver.refreshFromSnapshot()
+
+        assertTrue(resolver.lease.value is OrgLease.Expired)
+        assertFalse(
+            resolver.isOrgPeer("alice"),
+            "MUTATION CHECK 2: isOrgPeer MUST return false when lease is expired by TIME",
+        )
+        assertNull(
+            resolver.resolve("alice"),
+            "MUTATION CHECK 2: resolve() MUST return null when lease is expired by TIME",
+        )
+
+        // Clock rollback past 5-min tolerance
+        time = lastSync - (10 * 60 * 1000L) // 10 minutes before sync
+        assertTrue(resolver.lease.value is OrgLease.Expired)
+        assertFalse(
+            resolver.isOrgPeer("alice"),
+            "MUTATION CHECK 2: isOrgPeer MUST return false when lease is expired by CLOCK rollback",
+        )
+        assertNull(
+            resolver.resolve("alice"),
+            "MUTATION CHECK 2: resolve() MUST return null when lease is expired by CLOCK rollback",
+        )
     }
 }
