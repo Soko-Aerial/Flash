@@ -263,6 +263,7 @@ private class Wiring(
         )
         val trustStore = AndroidPreferencesTrustStore(appContext)
         this.trustStoreRef = trustStore
+        val enterpriseTrustStore = com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore(appContext)
         val crypto = KeystoreFlashCrypto(appContext)
         // Audit S3: TLS is mandatory. No plaintext fallback — failure throws out of Flash.create.
         val tlsOptions = requireTransportSecurity(
@@ -438,10 +439,14 @@ private class Wiring(
         modeRef = modes
         // DR1 (ADR-047): the addresses paired peers were last authenticated at, kept in the
         // encrypted DB. A hint source for the planner only; it never changes Online/Offline.
+        var orgPeerResolverRef: com.transfer.flash.core.enterprise.OrgPeerResolver? = null
         val remembered = RememberedRoutes(
             scope = scope,
             store = RoomRememberedEndpointStore(db.rememberedEndpointDao()),
-            isPaired = { id -> trustStore.isTrusted(id) },
+            isPaired = { id ->
+                trustStore.isTrusted(id) ||
+                    (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isKnownColleague(id) == true)
+            },
             wallClockMs = System::currentTimeMillis,
             hasLiveSession = networkImpl::hasLiveSession,
             log = { Log.i(TAG, it) },
@@ -482,6 +487,7 @@ private class Wiring(
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
         )
+        orgPeerResolverRef = orgPeerResolver
         scope.launch {
             orgPeerResolver.refreshFromSnapshot()
         }
@@ -490,7 +496,7 @@ private class Wiring(
             scope = scope,
             localDeviceId = localId,
             localDisplayName = identity.friendlyName,
-            isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+            isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
             orgPeerResolver = orgPeerResolver,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),

@@ -588,6 +588,12 @@ object DiscoveryEngineHolder {
 
     fun currentOrgPeerResolver(): com.transfer.flash.core.enterprise.OrgPeerResolver? = orgPeerResolverRef
 
+    fun isOrgPeer(deviceId: String): Boolean =
+        if (enterpriseTrustStoreRef?.isEnrolled == true) orgPeerResolverRef?.isOrgPeer(deviceId) == true else false
+
+    fun isKnownColleague(deviceId: String): Boolean =
+        if (enterpriseTrustStoreRef?.isEnrolled == true) orgPeerResolverRef?.isKnownColleague(deviceId) == true else false
+
     fun currentEnterpriseHub(): EnterpriseHub? = enterpriseHubRef
 
     fun hubContentViaHub(): kotlinx.coroutines.flow.StateFlow<Boolean> = hubContentViaHubFlag
@@ -1197,7 +1203,7 @@ object DiscoveryEngineHolder {
             scope = appScope,
             localDeviceId = identity.deviceId.value,
             localDisplayName = identity.friendlyName,
-            isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+            isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
             orgPeerResolver = orgPeerResolver,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
@@ -1494,8 +1500,12 @@ object DiscoveryEngineHolder {
             localDeviceId = identity.deviceId.value,
             localName = identity.friendlyName,
             scope = appScope,
-            // Group Phase 0 trust closure: only paired peers can place or receive calls.
-            isTrustedPeer = { peerId -> trustStore.isTrusted(peerId) },
+            // Group Phase 0 trust closure: paired peers and verified ORG colleagues may ring (mayRing).
+            isTrustedPeer = { peerId ->
+                val paired = trustStore.isTrusted(peerId)
+                val isOrg = if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false
+                com.transfer.flash.core.messaging.PeerTrustPolicy.mayRing(isPaired = paired, isOrg = isOrg)
+            },
             // ADR-044 V2: inside a v2 group a member the owner vouched for (verified certificate key equals the
             // key of its live session) may take part in the group's calls without being paired.
             isGroupTrustedPeer = { peerId, groupId -> chatImpl.isGroupCallPeer(groupId, peerId) },
@@ -1960,7 +1970,7 @@ object DiscoveryEngineHolder {
         val remembered = RememberedRoutes(
             scope = appScope,
             store = RoomRememberedEndpointStore(db.rememberedEndpointDao()),
-            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) },
+            isPaired = { id -> trustStore.isTrusted(FlashDeviceId(id)) || (enterpriseTrustStore.isEnrolled && orgPeerResolverRef?.isKnownColleague(id) == true) },
             wallClockMs = System::currentTimeMillis,
             hasLiveSession = networkImpl::hasLiveSession,
             log = { Log.i(TAG_WS, it) },

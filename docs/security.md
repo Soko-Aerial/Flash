@@ -428,3 +428,26 @@ Facts an operator must know. All of it is unit/e2e tested; none of it is device-
 | **TOFU spoof** | An attacker on the local LAN attempts a Trust-On-First-Use (TOFU) man-in-the-middle or spoofing attack against an unpaired colleague's device. | Authoritative organization directory pinning. An incoming connection from an org member verifies against the cryptographically signed organization directory snapshot / member statement. The verified organization statement authoritatively overwrites or precedes unverified TOFU pins (`org.pin.replaced`), preventing unauthenticated peers from claiming an org colleague's device identity. | In a non-enrolled personal context or before the initial directory snapshot is synced, standard TOFU rules apply (mitigated by Pairing v2 6-digit numeric comparison). |
 | **Gossip flooding** | A malicious peer floods the local mesh/LAN with spam statements, fake revocations, or high-volume gossip frames to exhaust client CPU, memory, or battery. | Rate limiting per peer, strict size caps per gossip frame, idempotency check (already-known statements/versions dropped immediately without parsing or re-forwarding), and hard signature verification gates. Unverifiable gossip is dropped with `org.gossip.ignored` and sender peer connection is throttled or disconnected. | Transient local network bandwidth consumption and signature verification CPU overhead up to the peer rate-limit threshold. |
 | **Statement replay** | An attacker captures an old valid member statement or directory snapshot and replays it to a peer or rewinds a revoked peer's status to an earlier valid state. | Monotonic epoch / version checking and issue timestamp validation. Clients refuse snapshots with version <= current stored version. Statements older than the current pinned record or outside the validity window + grace period are rejected. A revocation is permanent and can never be undone by an older statement. | None against monotonic version checks and revocation lists; replay of an unrevoked active statement within its valid lease is idempotent. |
+
+## Organisation Tier (ADR-134)
+
+Flash establishes a three-tier trust model for peer communication:
+1. **Stranger (Tier 1):** Discovered via mDNS/NSD, Wi-Fi Direct, or transport beacon, but neither paired nor attested by an organisation snapshot. All application payload processing is blocked (`isTrustedPeer == false`).
+2. **Colleague / Organisation (Tier 2):** Attested by a signed `OrgMemberStatement` chained to an enrolled root certificate, within a valid time-bounded lease (`now <= lastSuccessfulSync + offlineGraceDays`), whose live TLS leaf certificate public key strictly matches the statement SPKI fingerprint (`sha256(statement.subjectPublicKey) == liveTlsLeafSpkiSha256`).
+   - Capabilities granted: 1:1 chat messages, deliveries, reactions (`mayReact`), read receipts, typing status, voice/video incoming calls/ringing (`mayRing` — auto-answer strictly forbidden).
+   - Capabilities denied: Push-to-talk audio (`mayPushToTalk` requires Tier 3 Paired), group creation/joining (`mayCreateGroupWith`, `mayAddGroupMember`), group administration (`mayAdministerGroup`), vouching (`mayVouch`), and swarm serving (`mayServeSwarm`).
+3. **Paired (Tier 3):** Explicitly authenticated via out-of-band numeric SAS comparison (Pairing v2). All capabilities enabled.
+
+### Rule 3.2 TOFU Pin Replacement
+When a connection is received from a peer claiming to be an enrolled colleague:
+- If a stored pin exists and matches the statement fingerprint, binding succeeds.
+- If a stored pin exists from a prior TOFU (Trust-On-First-Use) discovery and differs from the authoritative statement fingerprint:
+  - The resolver replaces the TOFU pin in the `trustStore` with the statement fingerprint, logging `org.pin.replaced`.
+  - The live session that presented the mismatch fails closed (`bindingOk = false`). The subsequent handshake with the legitimate colleague presenting the correct key succeeds.
+  - A stored pin whose source is `PAIRED` or `VOUCHED` is **never** replaced by an organisation statement.
+
+### Clock Skew and Lease Expiration
+- Device clock is continuously validated against the snapshot sync timestamp. If `now < lastSyncSuccessMs - 5 min`, clock rollback is flagged (`OrgLease.Expired(reason = CLOCK)`).
+- If `now > lastSyncSuccessMs + offlineGraceDays`, the lease expires (`OrgLease.Expired(reason = TIME)`).
+- In both expired states, `resolve(deviceId)` returns `null`, immediate offline colleague chat fails closed, and UI renders honest reconnect notices matching Plan B Section 9 strings.
+

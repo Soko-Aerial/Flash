@@ -15,7 +15,9 @@ import com.transfer.flash.ui.nearby.NearbyNetworkScan
 import com.transfer.flash.ui.nearby.NearbyScanBlock
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -212,6 +214,85 @@ class DesktopNearbyStateTest {
         assertTrue(!stateOf(trusted = paired, discovered = emptyList(), liveSessions = 1).discoveryQuiet)
         assertTrue(!stateOf(trusted = paired, discovered = listOf(endpoint(PEER_ID, "Flash Alpaca"))).discoveryQuiet)
         assertTrue(!stateOf(trusted = emptyList(), discovered = emptyList()).discoveryQuiet)
+    }
+
+    @Test
+    fun `ORGT_U37_nearbyUiStateOf_preserves_isColleague_and_orgName_for_unpaired_colleagues`() {
+        val colleagueId = "colleague-uuid-1"
+        val strangerId = "stranger-uuid-2"
+        val discovered = listOf(
+            endpoint(colleagueId, "Colleague Bob"),
+            endpoint(strangerId, "Stranger Alice"),
+        )
+        val state = nearbyUiStateOf(
+            trusted = emptyList(),
+            discovered = discovered,
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Flash Desktop",
+            localDeviceId = LOCAL_ID,
+            liveSessions = 0,
+            isOrgPeer = { it == colleagueId },
+            orgName = "Acme Corp",
+        )
+
+        val bobPeer = state.peers.first { it.id == colleagueId }
+        assertTrue(bobPeer.isColleague)
+        assertEquals("Acme Corp", bobPeer.orgName)
+        assertFalse(bobPeer.isTrusted)
+
+        val alicePeer = state.peers.first { it.id == strangerId }
+        assertFalse(alicePeer.isColleague)
+        assertNull(alicePeer.orgName)
+        assertFalse(alicePeer.isTrusted)
+    }
+
+    @Test
+    fun `ORGT_U47_unauthenticatedDiscoveredPeerMustNotBeColleague`() {
+        val colleagueId = "colleague-uuid-unauthenticated"
+        val discovered = listOf(endpoint(colleagueId, "Spoofed Bob"))
+        // When peer has no active authenticated TLS session, isOrgPeer predicate evaluates to false
+        val state = nearbyUiStateOf(
+            trusted = emptyList(),
+            discovered = discovered,
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Flash Desktop",
+            localDeviceId = LOCAL_ID,
+            liveSessions = 0,
+            isOrgPeer = { false },
+            orgName = "Acme Corp",
+        )
+
+        val bobPeer = state.peers.first { it.id == colleagueId }
+        assertFalse(bobPeer.isColleague, "Unauthenticated mDNS endpoint must never be badged as colleague")
+        assertNull(bobPeer.orgName)
+    }
+
+    @Test
+    fun `ORGT_U37_nearbyUiStateOf_trusted_peer_is_filtered_from_peers_even_if_colleague`() {
+        val pairedColleagueId = "paired-colleague-uuid"
+        val paired = listOf(FlashTrustedPeer(id = pairedColleagueId, name = "Paired Colleague"))
+        val discovered = listOf(endpoint(pairedColleagueId, "Paired Colleague"))
+
+        val state = nearbyUiStateOf(
+            trusted = paired,
+            discovered = discovered,
+            discoveryState = FlashDiscoveryState(isDiscovering = true, advertisedPort = 45822),
+            ui = null,
+            ready = true,
+            localFriendlyName = "Flash Desktop",
+            localDeviceId = LOCAL_ID,
+            liveSessions = 0,
+            isOrgPeer = { it == pairedColleagueId },
+            orgName = "Acme Corp",
+        )
+
+        // Paired peer must be filtered from peers list and present in trustedPeers
+        assertTrue(state.peers.none { it.id == pairedColleagueId })
+        assertTrue(state.trustedPeers.any { it.id == pairedColleagueId })
     }
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

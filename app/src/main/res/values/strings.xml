@@ -11,4 +11,23 @@
     <string name="widget_description">Quick access to Flash file sharing and keepalive</string>
     <string name="widget_status_idle">Flash Ready</string>
     <string name="widget_pin_success">Widget added to Home Screen</string>
+
+    <!-- Organisation Trust (Plan B Section 9) -->
+    <string name="org_trust_valid">Colleague trust valid until %s</string>
+    <string name="org_trust_expiring">Connect to the company network within %d days to keep chatting with colleagues offline.</string>
+    <string name="org_trust_expired">Reconnect to your company network to chat with colleagues who are not paired with you.</string>
+    <string name="org_trust_never">Connect to the company network once to load your colleagues.</string>
+    <string name="org_trust_unsupported">This company server does not support offline colleague chat yet.</string>
+    <string name="org_trust_clock">Your device clock looks wrong. Colleague trust may fail until it is fixed.</string>
+    <string name="org_trust_identity">Your device identity changed. Rejoin your organisation to chat with colleagues again.</string>
+    <string name="org_chip_colleague">Colleague · verified by %s</string>
+    <string name="org_chip_a11y">Colleague verified by the company server</string>
+    <string name="org_honesty_line">Colleagues are verified by your company\'s server. Pair with someone when you need to be sure it is really them.</string>
+    <string name="org_start_not_member">This person is not in your company directory.</string>
+    <string name="org_start_self">That is you.</string>
+    <string name="org_start_removed">This person is no longer part of your organisation.</string>
+    <string name="org_start_expired">Reconnect to your company network to start a chat with this colleague.</string>
+    <string name="org_readonly">You are no longer part of this organisation. Your old messages stay here.</string>
+    <string name="org_waiting_sync">Waiting for your next company sync.</string>
+    <string name="org_group_unsealed">Group messages sent through your company\'s server can be read by it. Messages sent directly between phones are encrypted.</string>
 </resources>

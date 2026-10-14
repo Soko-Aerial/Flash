@@ -101,6 +101,7 @@ import com.transfer.flash.ui.nearby.NearbyTrustedPeerUi
 import com.transfer.flash.ui.nearby.NearbyUiState
 import com.transfer.flash.core.network.sweep.SweepRefusal
 import com.transfer.flash.core.network.sweep.SweepState
+import com.transfer.flash.ui.settings.FlashHubStatusMath
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsScreen
 import com.transfer.flash.ui.shell.FlashBottomNav
@@ -194,14 +195,17 @@ public fun DesktopShell(
     var isSearching by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var messageBodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var colleagueMatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(searchQuery, isSearching) {
         val q = searchQuery.trim()
         if (!isSearching || q.isEmpty()) {
             messageBodyMatches = emptySet()
+            colleagueMatchIds = emptySet()
             return@LaunchedEffect
         }
         delay(200)
         messageBodyMatches = chatRepository.searchMessageBodies(q)
+        colleagueMatchIds = chatRepository.searchColleagues(q)
     }
 
     // ── Group creation (Item 3) ──
@@ -355,7 +359,7 @@ public fun DesktopShell(
     // that structural rather than remembered — there is no enclosing `val` left to capture. The body
     // lives in `nearbyUiStateOf` below; being pure, its invariant is unit-tested
     // (DesktopNearbyStateTest) instead of being checked by eye in a live run.
-    val nearby by remember(engine, engine.discovery) {
+    val nearby by remember(engine, engine.discovery, activeSessions) {
         derivedStateOf {
             nearbyUiStateOf(
                 trusted = trustedPeersByCoordinator,
@@ -367,6 +371,8 @@ public fun DesktopShell(
                 localDeviceId = engine.localDeviceId,
                 liveSessions = activeSessions.size,
                 scan = sweepState.toNearbyScan(),
+                isOrgPeer = { peerId -> engine.hasAuthenticatedOrgSession(peerId) },
+                orgName = engine.enterpriseTrustStore.getCredentials()?.hubName,
             )
         }
     }
@@ -533,6 +539,7 @@ public fun DesktopShell(
             // When an active session is established with the peer, presence resolves to Online.
             val isDirectPeerOnline = activeSessions.containsKey(com.transfer.flash.core.common.model.FlashDeviceId(convId))
             val isEncrypted = base.header.isEncrypted || (engine.trust.getSessionKey(convId) != null)
+            val isColleague = engine.isKnownColleague(convId) || engine.isOrgPeer(convId)
             val fallback = desktopConversationHeader(
                 conversationId = convId,
                 trusted = trustedPeersByCoordinator,
@@ -541,6 +548,8 @@ public fun DesktopShell(
                 presence = base.header.presence,
                 transport = base.header.transport,
                 hasActiveSession = isDirectPeerOnline,
+                isColleague = isColleague,
+                orgName = engine.enterpriseTrustStore.getCredentials()?.hubName,
             )
             val resolvedTitle = if (base.header.title.isNotBlank() && base.header.title != convId && base.header.title != "Select a conversation") {
                 base.header.title
@@ -566,6 +575,7 @@ public fun DesktopShell(
             } else {
                 fallback?.transport ?: base.header.transport
             }
+            val isColleaguePeer = base.header.isColleague || (fallback?.isColleague == true)
             val header = base.header.copy(
                 title = resolvedTitle,
                 avatarInitials = resolvedInitials,
@@ -576,6 +586,8 @@ public fun DesktopShell(
                 typingMemberNames = base.header.typingMemberNames,
                 isEncrypted = isEncrypted,
                 showCallActions = true,
+                isColleague = isColleaguePeer,
+                orgName = base.header.orgName ?: fallback?.orgName,
             )
             base.copy(header = header)
         }
@@ -991,12 +1003,28 @@ public fun DesktopShell(
     val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks
         ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
     val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCredentials) { hubObject?.relinkableGroups()?.size ?: 0 }
+    val orgLeaseFlow = remember(engine, ready) {
+        engine.orgPeerResolver?.lease ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.OrgLease>(com.transfer.flash.core.enterprise.OrgLease.None)
+    }
+    val orgLease by orgLeaseFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCredentials) {
+        if (enterpriseCredentials == null) null
+        else {
+            val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
+            FlashHubStatusMath.orgTrustState(
+                lease = orgLease,
+                clockOk = clockOk,
+                hubSupports = true,
+                nowMs = System.currentTimeMillis(),
+            )
+        }
+    }
     var isEnrollingDevice by remember { mutableStateOf(false) }
     var enrollDeviceError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped) {
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped, orgTrustState) {
         FlashSettingsModel(
             displayName = localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
@@ -1035,6 +1063,7 @@ public fun DesktopShell(
                 readableOff = hubDropped.readableOff,
             ),
             hubRelinkableGroups = hubRelinkable,
+            orgTrustState = orgTrustState,
         )
     }
 
@@ -1099,6 +1128,7 @@ public fun DesktopShell(
                 searchQuery = ""
             },
             messageBodyMatches = messageBodyMatches,
+            colleagueMatchIds = colleagueMatchIds,
             onConversationLongClick = chatRepository::enterListSelectionMode,
             onToggleSelection = chatRepository::toggleListSelection,
             onArchiveConversation = chatRepository::archiveConversation,
@@ -1727,8 +1757,27 @@ public fun DesktopShell(
                         onAcceptPairing = { engine.pairing.acceptLocal() },
                         onDeclinePairing = { engine.pairing.declineLocal() },
                         onChatClick = { peer ->
-                            chatRepository.openConversation(peer.id)
-                            nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                            if (peer.isColleague && !peer.isTrusted) {
+                                scope.launch {
+                                    val outcome = chatRepository.startColleagueConversation(peer.id)
+                                    when (outcome) {
+                                        is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                                            selectedChatConversationId = peer.id
+                                            chatRepository.openConversation(peer.id)
+                                            nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                                        }
+                                        is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                                            val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                                ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
+                                            snackbarHostState.showSnackbar(msg)
+                                        }
+                                    }
+                                }
+                            } else {
+                                selectedChatConversationId = peer.id
+                                chatRepository.openConversation(peer.id)
+                                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                            }
                         },
                         onRevokeClick = { trusted ->
                             scope.launch { engine.trust.revokeTrust(com.transfer.flash.core.common.model.FlashDeviceId(trusted.id)) }
@@ -2569,6 +2618,8 @@ internal fun desktopConversationHeader(
     presence: FlashPeerPresence? = null,
     transport: FlashNetworkTransport? = null,
     hasActiveSession: Boolean = false,
+    isColleague: Boolean = false,
+    orgName: String? = null,
 ): FlashChatHeaderUiState? {
     if (conversationId == null) return null
     val trustedName = trusted.firstOrNull { it.id == conversationId }?.name
@@ -2580,6 +2631,7 @@ internal fun desktopConversationHeader(
         else -> FlashPeerPresence.Offline
     }
     val resolvedTransport = transport ?: if (resolvedPresence == FlashPeerPresence.Online) FlashNetworkTransport.Lan else FlashNetworkTransport.Unknown
+    val isColleaguePeer = isColleague && trustedName == null
     return FlashChatHeaderUiState(
         title = name,
         avatarInitials = name.trim().split(" ")
@@ -2593,6 +2645,8 @@ internal fun desktopConversationHeader(
         isGroup = false,
         isEncrypted = isEncrypted,
         showCallActions = true,
+        isColleague = isColleaguePeer,
+        orgName = if (isColleaguePeer) orgName else null,
     )
 }
 
@@ -2620,17 +2674,23 @@ internal fun nearbyUiStateOf(
     localDeviceId: String,
     liveSessions: Int,
     scan: NearbyNetworkScan = NearbyNetworkScan.Idle,
+    isOrgPeer: (String) -> Boolean = { false },
+    orgName: String? = null,
 ): NearbyUiState {
     val trustedIds = trusted.mapTo(HashSet()) { it.id }
     // Every discovered peer as a row, BEFORE the trusted filter — the join in `withDeviceKinds`
     // below looks a trusted peer up here, and a trusted peer is deliberately excluded from `peers`.
     val discoveredRows = discovered.map { ep ->
+        val peerId = ep.deviceId.value
+        val isColleague = isOrgPeer(peerId)
         NearbyPeerUi(
-            id = ep.deviceId.value,
+            id = peerId,
             name = ep.friendlyName,
             transport = ep.transportType.toDesktopTransport(),
             isTrusted = false,
             deviceKind = ep.deviceKind,
+            isColleague = isColleague,
+            orgName = if (isColleague) orgName else null,
         )
     }
     return NearbyUiState(

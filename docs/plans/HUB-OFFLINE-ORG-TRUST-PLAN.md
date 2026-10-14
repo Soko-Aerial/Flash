@@ -1060,6 +1060,21 @@ Phase B2 implements the ORG trust tier at the application gate without mutating 
 - **Extra Situation 3 (Clock Backward Jump Past Tolerance):** When the system clock moves backwards past skew tolerance, lease immediately switches to `OrgLease.Expired(reason = "CLOCK")` denying ORG operations until clock is rectified or resynced.
 - **Extra Situation 4 (Colleague Re-enrolled with New Key):** When a colleague re-enrols with a new key, live TLS fingerprint differs from snapshot fingerprint; `bindingOk = false`, `isOrgPeer = false`, preventing impersonation.
 - **Extra Situation 5 (Self-Colleague Chat Prevention):** Calling `startColleagueConversation(localDeviceId)` returns error `That is you.` (`org_start_self`).
+- **Phase B2 Audit & Verification Complete (2026-10-14, Stream S1):**
+  - Audited all 17 `isTrustedPeer` call sites in `RealFlashChatRepository.kt` against Section 6; verified capability gates (`mayChat`, `mayReact`, `mayRing`, `mayPushToTalk`, `mayCreateGroupWith`, `mayAddGroupMember`, `mayAdministerGroup`, `mayServeSwarm`, `mayVouch`).
+  - Resolved TOFU pin mismatch security defect in `RealOrgPeerResolver.kt` (mismatch now fails closed for current session while updating `trustStore` for subsequent handshakes).
+  - Wired `RememberedRoutes` across `DiscoveryEngineHolder`, `DesktopEngine`, and `Flash.kt` to preserve colleague IP sightings on enterprise Wi-Fi where mDNS is blocked.
+  - Added `orgTrustStatusText` and `orgTrustDot` in `FlashHubStatusMath.kt` with full unit test coverage matching Section 9 exact strings.
+  - All test suites `ORGT-U20` through `ORGT-U32` and 4 mutation checks pass 100% green across `:core:enterprise`, `:core:messaging`, `:ui:chat`, and `:desktop`.
+- **Phase B3 Colleague Trust UX Completeness & Desktop Parity Complete (2026-10-14, Stream S1):**
+  - Colleague Trust Badges & Semantics: Implemented `FlashColleagueTrustChip` dynamically displaying `FlashOrgStrings.chipText(orgName)` with ellipsis and dynamic TalkBack accessibility (`org_chip_a11y`). Gated to `isColleague && !isTrusted` (paired trust strictly outranks org colleague status).
+  - Merged semantics in `FlashChatListRow.kt` (`mergeDescendants = true`) and narrow viewport layout protection (`Modifier.weight(1f, fill = false)`).
+  - Nearby Screen Discovery & CTA Gating: Gated Nearby `isColleague` strictly on active authenticated live TLS sessions (`engine.hasAuthenticatedOrgSession(peer.id)`), eliminating raw mDNS colleague spoofing. Connected "Message" CTA to `startColleagueConversation(peer.id)` with clean error surfacing. TalkBack description includes colleague verification status.
+  - Directory Snapshot Search: Added `searchColleagueIds` to `OrgPeerResolver` and `searchColleagues` to `FlashChatRepository`, integrating with `FlashChatListScreen` and `FlashChatListSearchMath` to find colleagues from the snapshot directory even if never chatted before.
+  - Settings Status Math & Formatter: Implemented `formatEpochDate(epochMs)` in `FlashHubStatusMath.kt` producing human-readable lease expiration dates (e.g. "12 Nov 2026"). Wired `clockOk` to live resolver state.
+  - Privacy: Lock-screen notifications omit corporate tags to protect bystander privacy.
+  - Desktop Parity: Implemented and verified all features in `DesktopShell.kt` and `DesktopEngine.kt`.
+  - All test suites `ORGT-U40` through `ORGT-U49` pass across Android and Desktop JVM suites; all compile and test gates succeed.
 
 ---
 

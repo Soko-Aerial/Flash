@@ -243,7 +243,19 @@ class RealFlashChatRepositoryColleagueTest {
             return members[deviceId]
         }
 
-        override fun isKnownColleague(deviceId: String): Boolean = members.containsKey(deviceId)
+        override fun isKnownColleague(deviceId: String): Boolean =
+            _lease.value is OrgLease.Valid && members.containsKey(deviceId)
+
+        override fun searchColleagueIds(query: String, limit: Int): Set<String> {
+            if (_lease.value !is OrgLease.Valid) return emptySet()
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) return emptySet()
+            return members.values
+                .filter { it.displayName.lowercase().contains(q) || it.departmentId.lowercase().contains(q) || it.role.lowercase().contains(q) }
+                .take(limit)
+                .map { it.deviceId }
+                .toSet()
+        }
 
         override fun displayName(deviceId: String): String? = members[deviceId]?.displayName
 
@@ -300,7 +312,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsSelfWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsSelfWithExactSentence() = runTest {
         val repo = createRepository(
             MutableTimeSource(),
             FakeMessageDao(),
@@ -314,7 +326,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsWhenNoSyncOrResolverWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsWhenNoSyncOrResolverWithExactSentence() = runTest {
         val repo = createRepository(
             MutableTimeSource(),
             FakeMessageDao(),
@@ -329,7 +341,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsWhenLeaseNoneWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsWhenLeaseNoneWithExactSentence() = runTest {
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
                 colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
@@ -350,7 +362,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsWhenLeaseExpiredWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsWhenLeaseExpiredWithExactSentence() = runTest {
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
                 colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
@@ -371,7 +383,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsWhenNotInDirectoryWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsWhenNotInDirectoryWithExactSentence() = runTest {
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
                 colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
@@ -392,7 +404,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_rejectsWhenRemovedFromDirectoryWithExactSentence() = runTest {
+    fun ORGT_U27_startColleagueConversation_rejectsWhenRemovedFromDirectoryWithExactSentence() = runTest {
         val convDao = FakeConversationDao()
         // Prior conversation existed with Bob
         convDao.upsert(ConversationEntity(id = colleagueBob, title = "Bob", isGroup = false, sortOrder = 100L))
@@ -418,7 +430,7 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun startColleagueConversation_succeedsForValidColleagueAndCreatesConversation() = runTest {
+    fun ORGT_U27_startColleagueConversation_succeedsForValidColleagueAndCreatesConversation() = runTest {
         val convDao = FakeConversationDao()
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
@@ -447,43 +459,68 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun durableOutbox_unreachableColleague_messagePersistedAndRetained() = runTest {
+    fun ORGT_U28_durableOutbox_survivesRestartWithUnreachableColleague() = runTest {
         val msgDao = FakeMessageDao()
         val outboxDao = FakeOutboxDao()
         val convDao = FakeConversationDao()
+        val reactionDao = FakeReactionDao()
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
                 colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
             ),
             leaseState = OrgLease.Valid(untilMs = 9_999_999L),
         )
-        val repo = createRepository(
-            MutableTimeSource(),
+        val timeSource = MutableTimeSource(1_000_000L)
+
+        // Session 1: Send message while colleague is unreachable
+        val repo1 = createRepository(
+            timeSource,
             msgDao,
             convDao,
             outboxDao,
-            FakeReactionDao(),
+            reactionDao,
             orgPeerResolver = resolver,
             transportSink = { _, _ -> false }, // Offline/unreachable transport sink
         )
 
-        repo.openConversation(colleagueAlice)
-        repo.sendText("Hello offline colleague!")
+        repo1.openConversation(colleagueAlice)
+        repo1.sendText("Hello offline colleague!")
 
-        // Message is durably written to Room messages table
         assertEquals(1, msgDao.messages.size)
-        val msg = msgDao.messages.values.first()
-        assertEquals(colleagueAlice, msg.conversationId)
-        assertEquals("Hello offline colleague!", msg.text)
-
-        // And retained in durable outbox awaiting delivery
+        val msgBeforeRestart = msgDao.messages.values.first()
+        assertEquals(colleagueAlice, msgBeforeRestart.conversationId)
+        assertEquals("Hello offline colleague!", msgBeforeRestart.text)
         assertEquals(1, outboxDao.outbox.size)
-        val outboxEntry = outboxDao.outbox.values.first()
-        assertEquals(msg.localId, outboxEntry.localId)
+        val outboxBeforeRestart = outboxDao.outbox.values.first()
+        assertEquals(msgBeforeRestart.localId, outboxBeforeRestart.localId)
+
+        // Simulate app kill / restart: close repo1 and create repo2 using same persistent DAOs
+        repo1.close()
+
+        val repo2 = createRepository(
+            timeSource,
+            msgDao,
+            convDao,
+            outboxDao,
+            reactionDao,
+            orgPeerResolver = resolver,
+            transportSink = { _, _ -> false },
+        )
+
+        // Post-restart verification: outbox and message survive
+        assertEquals(1, msgDao.messages.size, "Message must survive restart")
+        assertEquals(1, outboxDao.outbox.size, "Outbox item must survive restart")
+        val msgAfterRestart = msgDao.getByLocalId(msgBeforeRestart.localId)
+        assertNotNull(msgAfterRestart)
+        assertEquals("Hello offline colleague!", msgAfterRestart.text)
+        timeSource.timeMs += 10_000L
+        val outboxAfterRestart = outboxDao.dueForDelivery(timeSource.nowMs(), 10)
+        assertEquals(1, outboxAfterRestart.size, "Outbox entry must remain due for delivery after restart")
+        assertEquals(msgBeforeRestart.localId, outboxAfterRestart.first().localId)
     }
 
     @Test
-    fun orgDialCandidates_filtersAndCapsAtEight() = runTest {
+    fun ORGT_U29_orgDialCandidates_cappedAtEightAndPrioritizesOpenOutboxRecent() = runTest {
         val msgDao = FakeMessageDao()
         val outboxDao = FakeOutboxDao()
         val convDao = FakeConversationDao()
@@ -506,33 +543,46 @@ class RealFlashChatRepositoryColleagueTest {
             orgPeerResolver = resolver,
         )
 
-        // 1. Open conversation is colleague-1
+        // 1. Open conversation is colleague-1 (Priority 1)
         repo.openConversation("colleague-1")
 
-        // 2. Outbox pending for colleague-2 and colleague-3
+        // 2. Outbox pending for colleague-2 and colleague-3 (Priority 2)
         msgDao.insert(MessageEntity("m1", "colleague-2", localDeviceId, "Me", "hi", now, "PENDING"))
         outboxDao.enqueue(OutboxEntity("m1", 0, now, "{}", now))
         msgDao.insert(MessageEntity("m2", "colleague-3", localDeviceId, "Me", "hi", now, "PENDING"))
         outboxDao.enqueue(OutboxEntity("m2", 0, now, "{}", now))
 
-        // 3. Recent conversations for colleague-4 through colleague-12 (updated recently)
-        for (i in 4..12) {
-            convDao.upsert(ConversationEntity("colleague-$i", "Colleague $i", false, sortOrder = now - 1000L))
+        // 3. Recent conversations for colleague-4 through colleague-15 (Priority 3)
+        for (i in 4..15) {
+            convDao.upsert(ConversationEntity("colleague-$i", "Colleague $i", false, sortOrder = now - (i * 1000L)))
         }
 
         val candidates = repo.orgDialCandidates(nowMs = now, limit = 8)
 
-        // Must be capped at exactly 8
-        assertEquals(8, candidates.size)
-        // Must contain open conversation
-        assertTrue(candidates.contains("colleague-1"))
-        // Must contain peers with outbox messages
-        assertTrue(candidates.contains("colleague-2"))
-        assertTrue(candidates.contains("colleague-3"))
+        // Cap verification: strictly capped at limit (8)
+        assertEquals(8, candidates.size, "orgDialCandidates must be capped at 8")
+
+        // Priority 1 verification: open conversation MUST be first
+        assertEquals("colleague-1", candidates.first(), "Priority 1 must be open conversation")
+
+        // Priority 2 verification: outbox peers must precede recent conversations
+        assertTrue(candidates.contains("colleague-2"), "Must contain outbox peer colleague-2")
+        assertTrue(candidates.contains("colleague-3"), "Must contain outbox peer colleague-3")
+
+        // Priority 3 verification: remaining slots filled by most recent conversations
+        assertTrue(candidates.contains("colleague-4"))
+        assertTrue(candidates.contains("colleague-5"))
+        assertTrue(candidates.contains("colleague-6"))
+        assertTrue(candidates.contains("colleague-7"))
+        assertTrue(candidates.contains("colleague-8"))
+
+        // Older conversations (colleague-9..15) must be truncated by the cap
+        assertFalse(candidates.contains("colleague-9"), "Peers beyond cap of 8 must be excluded")
+        assertFalse(candidates.contains("colleague-15"), "Peers beyond cap of 8 must be excluded")
     }
 
     @Test
-    fun reactionGate_acceptsOrgColleagueAndRejectsStranger() = runTest {
+    fun ORGT_U25_reactionGate_acceptsOrgColleagueAndRejectsStranger() = runTest {
         val reactionDao = FakeReactionDao()
         val msgDao = FakeMessageDao()
         val convDao = FakeConversationDao()
@@ -555,7 +605,7 @@ class RealFlashChatRepositoryColleagueTest {
         // Setup message
         msgDao.insert(MessageEntity("msg-1", colleagueAlice, colleagueAlice, "Alice", "hi", 100L, "DELIVERED"))
 
-        // 1. Inbound reaction from ORG colleague Alice -> ACCEPTED
+        // 1. Inbound reaction from authenticated ORG colleague Alice -> ACCEPTED
         repo.onInboundWireFrame(
             MessageWireFrame.ReactionFrame(
                 conversationId = colleagueAlice,
@@ -566,9 +616,9 @@ class RealFlashChatRepositoryColleagueTest {
             ),
             transportPeerId = colleagueAlice,
         )
-        assertNotNull(reactionDao.get("msg-1", "👍"))
+        assertNotNull(reactionDao.get("msg-1", "👍"), "Reaction from verified ORG colleague must be accepted")
 
-        // 2. Inbound reaction from stranger Eve (neither paired nor ORG) targeting Alice's chat -> DROPPED by trust gate
+        // 2. Inbound reaction from stranger Eve (transportPeerId = strangerEve) -> REJECTED & DROPPED
         repo.onInboundWireFrame(
             MessageWireFrame.ReactionFrame(
                 conversationId = colleagueAlice,
@@ -579,11 +629,37 @@ class RealFlashChatRepositoryColleagueTest {
             ),
             transportPeerId = strangerEve,
         )
-        assertNull(reactionDao.get("msg-1", "❤️"))
+        assertNull(reactionDao.get("msg-1", "❤️"), "Reaction from stranger transport must be rejected")
+
+        // 3. Hostile spoofing: Stranger Eve connected over TLS claiming to be Alice in memberId -> REJECTED
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "🔥",
+                memberId = colleagueAlice, // Spoofed frame memberId
+                isAdded = true,
+            ),
+            transportPeerId = strangerEve, // Authentic TLS transport peer is stranger
+        )
+        assertNull(reactionDao.get("msg-1", "🔥"), "Hostile spoofed reaction from stranger transport must be rejected")
+
+        // 4. Missing transportPeerId with stranger memberId -> REJECTED
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "🎉",
+                memberId = strangerEve,
+                isAdded = true,
+            ),
+            transportPeerId = null,
+        )
+        assertNull(reactionDao.get("msg-1", "🎉"), "Reaction with stranger memberId must be rejected")
     }
 
     @Test
-    fun groupGate_rejectsCreationAndMemberAdditionWithUnpairedColleague() = runTest {
+    fun ORGT_U25_groupGate_rejectsCreationAndMemberAdditionWithUnpairedColleague() = runTest {
         val resolver = FakeOrgPeerResolver(
             members = mapOf(
                 colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
@@ -607,8 +683,262 @@ class RealFlashChatRepositoryColleagueTest {
     }
 
     @Test
-    fun defaultIsOrgPeerFalse_preservesExistingBehaviour() = runTest {
+    fun ORGT_U26_defaultIsOrgPeerFalse_preservesExistingBehaviour() = runTest {
         // Default constructor without orgPeerResolver
+        val reactionDao = FakeReactionDao()
+        val msgDao = FakeMessageDao()
+        val repo = createRepository(
+            MutableTimeSource(),
+            msgDao,
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            reactionDao,
+            isTrustedPeer = { false },
+        )
+
+        // 1. Conversation start fails with connect once
+        val result = repo.startColleagueConversation(colleagueAlice)
+        assertTrue(result is FlashResult.Failure)
+        assertEquals("Connect to the company network once to load your colleagues.", (result as FlashResult.Failure).errorText())
+
+        // 2. Inbound reaction from unpaired colleague is dropped under default isOrgPeer = false
+        msgDao.insert(MessageEntity("msg-1", colleagueAlice, colleagueAlice, "Alice", "hi", 100L, "DELIVERED"))
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "👍",
+                memberId = colleagueAlice,
+                isAdded = true,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+        assertNull(reactionDao.get("msg-1", "👍"), "Default repository must drop reactions when isOrgPeer defaults to false")
+    }
+
+    @Test
+    fun ORGT_U30_revokedColleague_staysChatableOfflineUntilSync_refusedAfterSync() = runTest {
+        val reactionDao = FakeReactionDao()
+        val msgDao = FakeMessageDao()
+        val convDao = FakeConversationDao()
+        val members = mutableMapOf(
+            colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
+        )
+        val resolver = FakeOrgPeerResolver(
+            members = members,
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+        val repo = createRepository(
+            MutableTimeSource(),
+            msgDao,
+            convDao,
+            FakeOutboxDao(),
+            reactionDao,
+            isTrustedPeer = { false },
+            orgPeerResolver = resolver,
+        )
+
+        convDao.upsert(ConversationEntity(id = colleagueAlice, title = "Alice", isGroup = false, sortOrder = 100L))
+        msgDao.insert(MessageEntity("msg-1", colleagueAlice, colleagueAlice, "Alice", "hi", 100L, "DELIVERED"))
+
+        // Phase 1: Colleague Alice is active in offline snapshot -> chat and reactions work
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "👍",
+                memberId = colleagueAlice,
+                isAdded = true,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+        assertNotNull(reactionDao.get("msg-1", "👍"), "Alice must be accepted before revocation")
+
+        // Phase 2: Alice is revoked on server, but local device is offline and has not synced yet.
+        // Documented Plan B behavior (§3.1): Revoked colleague stays chatable offline until sync.
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "🚀",
+                memberId = colleagueAlice,
+                isAdded = true,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+        assertNotNull(reactionDao.get("msg-1", "🚀"), "Alice remains chat-able offline before local directory sync")
+
+        // Phase 3: Phone connects to server and completes directory sync; Alice is removed (tombstoned).
+        members.remove(colleagueAlice)
+
+        // After sync: Alice is no longer in directory
+        assertFalse(resolver.isKnownColleague(colleagueAlice), "Alice must no longer be in directory after sync")
+        assertNull(resolver.resolve(colleagueAlice), "Alice must not resolve after sync")
+
+        // Phase 4: Inbound frames from revoked colleague are now strictly refused
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = colleagueAlice,
+                messageId = "msg-1",
+                emoji = "⛔",
+                memberId = colleagueAlice,
+                isAdded = true,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+        assertNull(reactionDao.get("msg-1", "⛔"), "Reactions from revoked colleague must be refused after sync")
+
+        // Phase 5: Starting conversation with revoked colleague fails with exact sentence
+        val startResult = repo.startColleagueConversation(colleagueAlice)
+        assertTrue(startResult is FlashResult.Failure)
+        assertEquals(
+            "This person is no longer part of your organisation.",
+            (startResult as FlashResult.Failure).errorText(),
+        )
+    }
+
+    @Test
+    fun ORGT_MUTATION_4_defaultIsOrgPeer_failsIfDefaultIsTrue() = runTest {
+        // Mutation check (4): isOrgPeer default must stay false (must fail if default is true)
+        // If constructor default were mutated to `isOrgPeer: (String) -> Boolean = { true }`,
+        // any stranger would bypass gates and become an ORG colleague!
+        val reactionDao = FakeReactionDao()
+        val msgDao = FakeMessageDao()
+        val repo = createRepository(
+            MutableTimeSource(),
+            msgDao,
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            reactionDao,
+            isTrustedPeer = { false }, // Stranger
+            // isOrgPeer parameter omitted: relies strictly on default value
+        )
+
+        msgDao.insert(MessageEntity("msg-1", strangerEve, strangerEve, "Eve", "hi", 100L, "DELIVERED"))
+
+        repo.onInboundWireFrame(
+            MessageWireFrame.ReactionFrame(
+                conversationId = strangerEve,
+                messageId = "msg-1",
+                emoji = "💥",
+                memberId = strangerEve,
+                isAdded = true,
+            ),
+            transportPeerId = strangerEve,
+        )
+
+        assertNull(
+            reactionDao.get("msg-1", "💥"),
+            "MUTATION CHECK 4: Reaction must be dropped under default isOrgPeer; fails if default is mutated to true",
+        )
+    }
+
+    @Test
+    fun ORGT_U38_conversationHeader_populates_isColleague_for_colleague_and_suppresses_for_paired() = runTest {
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(
+                colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
+            ),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        // 1. Unpaired colleague: isColleague = true
+        val repoColleague = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = resolver,
+        )
+        repoColleague.openConversation(colleagueAlice)
+        assertTrue(repoColleague.conversationState.value.header.isColleague, "Unpaired colleague must have isColleague=true")
+
+        // 2. Paired colleague: isColleague = false (paired outranks colleague)
+        val repoPaired = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { it == colleagueAlice },
+            orgPeerResolver = resolver,
+        )
+        repoPaired.openConversation(colleagueAlice)
+        assertFalse(repoPaired.conversationState.value.header.isColleague, "Paired status must suppress isColleague badge")
+
+        // 3. Stranger: isColleague = false
+        repoColleague.openConversation(strangerEve)
+        assertFalse(repoColleague.conversationState.value.header.isColleague, "Stranger must have isColleague=false")
+    }
+
+    @Test
+    fun `ORGT_U44_inboundColleagueMessageNotificationOmitsColleagueTagForLockScreenPrivacy`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        var notifiedSenderName: String? = null
+        var notifiedText: String? = null
+        var notifiedGroupTitle: String? = null
+
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Engineer", "Engineering", "Developer", "fp-alice", true)),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        val repo = RealFlashChatRepository(
+            localDeviceId = "me",
+            localDisplayName = "Me",
+            messageDao = FakeMessageDao(),
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            isTrustedPeer = { false },
+            isOrgPeer = { it == colleagueAlice },
+            orgPeerResolver = resolver,
+            onInboundTextMessageWithGroupTitle = { _, senderName, text, groupTitle ->
+                notifiedSenderName = senderName
+                notifiedText = text
+                notifiedGroupTitle = groupTitle
+            },
+        )
+
+        // Inbound message from colleague Alice
+        repo.onInboundWireFrame(
+            MessageWireFrame.TextMessage(
+                localId = "msg-alice-1",
+                conversationId = colleagueAlice,
+                senderId = colleagueAlice,
+                senderName = "Alice Engineer",
+                text = "Secret corporate plans",
+                sentAt = 1000L,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+
+        assertEquals("Alice Engineer", notifiedSenderName)
+        assertEquals("Secret corporate plans", notifiedText)
+        assertNull(notifiedGroupTitle)
+        assertFalse(
+            notifiedSenderName?.contains("Colleague", ignoreCase = true) == true,
+            "Notification title must never leak '(Colleague)' on lock screens visible to bystanders",
+        )
+        assertFalse(
+            notifiedText?.contains("Colleague", ignoreCase = true) == true,
+            "Notification body must not contain colleague tag",
+        )
+    }
+
+    @Test
+    fun `ORGT_U41_expiredLeaseSuppressesColleagueChipInChatListAndHeader`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        val expiredResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice", "Eng", "Dev", "fp-alice", true)),
+            leaseState = OrgLease.Expired(sinceMs = 1000L, reason = ExpiredReason.TIME),
+        )
+
         val repo = createRepository(
             MutableTimeSource(),
             FakeMessageDao(),
@@ -616,9 +946,59 @@ class RealFlashChatRepositoryColleagueTest {
             FakeOutboxDao(),
             FakeReactionDao(),
             isTrustedPeer = { false },
+            orgPeerResolver = expiredResolver,
         )
-        val result = repo.startColleagueConversation(colleagueAlice)
-        assertTrue(result is FlashResult.Failure)
-        assertEquals("Connect to the company network once to load your colleagues.", (result as FlashResult.Failure).errorText())
+
+        // Expired lease must evaluate isKnownColleague to false
+        assertFalse(expiredResolver.isKnownColleague(colleagueAlice), "isKnownColleague must return false when lease is expired")
+
+        repo.openConversation(colleagueAlice)
+        assertFalse(
+            repo.conversationState.value.header.isColleague,
+            "Expired lease must suppress isColleague badge in conversation header",
+        )
+    }
+
+    @Test
+    fun `ORGT_U40_searchColleaguesQueriesResolver`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        val validResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Executive", "Finance", "CFO", "fp-alice", true)),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = validResolver,
+        )
+
+        // Matching query
+        val matches = repo.searchColleagues("Alice")
+        assertTrue(matches.contains(colleagueAlice), "searchColleagues must return colleague device ID matching name")
+
+        // Unmatched query
+        val noMatches = repo.searchColleagues("Zack")
+        assertTrue(noMatches.isEmpty(), "searchColleagues must return empty for unmatched query")
+
+        // Expired lease resolver
+        val expiredResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Executive", "Finance", "CFO", "fp-alice", true)),
+            leaseState = OrgLease.Expired(sinceMs = 1000L, reason = ExpiredReason.TIME),
+        )
+        val expiredRepo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = expiredResolver,
+        )
+        assertTrue(expiredRepo.searchColleagues("Alice").isEmpty(), "searchColleagues must return empty when lease is expired")
     }
 }

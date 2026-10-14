@@ -786,6 +786,22 @@ fun FlashApp(
     val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
     val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks ?: remember { MutableStateFlow(null) }).collectAsState()
     val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCreds) { hubObject?.relinkableGroups()?.size ?: 0 }
+    val orgLeaseFlow = remember(ready) {
+        DiscoveryEngineHolder.currentOrgPeerResolver()?.lease ?: MutableStateFlow(com.transfer.flash.core.enterprise.OrgLease.None)
+    }
+    val orgLease by orgLeaseFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCreds) {
+        if (enterpriseCreds == null) null
+        else {
+            val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
+            com.transfer.flash.ui.settings.FlashHubStatusMath.orgTrustState(
+                lease = orgLease,
+                clockOk = clockOk,
+                hubSupports = true,
+                nowMs = System.currentTimeMillis(),
+            )
+        }
+    }
 
     val settings = FlashSettingsModel(
         // ERROR-034: no `if (ready)` gate. Identity comes from a self-healing prefs store that
@@ -834,6 +850,7 @@ fun FlashApp(
             readableOff = hubDropped.readableOff,
         ),
         hubRelinkableGroups = hubRelinkable,
+        orgTrustState = orgTrustState,
     )
     // Captured here (composable scope) so the non-composable lambda below can construct an
     // AndroidPreferencesIdentityStore when the display name changes.
@@ -1176,14 +1193,17 @@ private fun FlashShell(
     // repository (Room LIKE over all message bodies) for the matching conversation ids. Debounced so
     // a fast typer issues one query per pause, cleared when search closes or the box empties.
     var messageBodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var colleagueMatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     LaunchedEffect(searchQuery, isSearching) {
         val q = searchQuery.trim()
         if (!isSearching || q.isEmpty()) {
             messageBodyMatches = emptySet()
+            colleagueMatchIds = emptySet()
             return@LaunchedEffect
         }
         kotlinx.coroutines.delay(200)
         messageBodyMatches = chatRepository.searchMessageBodies(q)
+        colleagueMatchIds = chatRepository.searchColleagues(q)
     }
 
     // UI-046 2.1: scroll position per tab lives HERE. AnimatedContent disposes the outgoing
@@ -1685,18 +1705,22 @@ private fun FlashShell(
     // the default structural-equality policy drops an identical rebuild without invalidating anyone.
     // Keyed on the engine handles that own the four flows: they swap once at boot, and without the
     // keys this block would keep reading the pre-boot fallback States forever.
-    val nearby by remember(engine, engine.discovery, engine.pairing) {
+    val nearby by remember(engine, engine.discovery, engine.pairing, engine.network) {
         derivedStateOf {
             val trustedIds = trustedPeers.mapTo(HashSet()) { it.id }
             // Every discovered peer as a row, BEFORE the trusted filter: the badge join below looks
             // a trusted peer up here, and trusted peers are deliberately excluded from `peers`.
             val discoveredRows = discoveredEndpoints.map { ep ->
+                val peerId = ep.deviceId.value
+                val isColleague = engine.hasAuthenticatedOrgSession(peerId)
                 NearbyPeerUi(
-                    id = ep.deviceId.value,
+                    id = peerId,
                     name = ep.friendlyName,
                     transport = ep.transportType.toUiTransport(),
                     isTrusted = false,
                     deviceKind = ep.deviceKind,
+                    isColleague = isColleague,
+                    orgName = if (isColleague) engine.enterpriseTrustStore?.getCredentials()?.hubName else null,
                 )
             }
             NearbyUiState(
@@ -2548,9 +2572,31 @@ private fun FlashShell(
                 if (pendingShare.value != null) {
                     sendSharedPayloadToPeer(peer.id, peer.name)
                 }
-                selectedChatConversationId = peer.id
-                chatRepository.openConversation(peer.id)
-                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                if (peer.isColleague && !peer.isTrusted) {
+                    scope.launch {
+                        val outcome = chatRepository.startColleagueConversation(peer.id)
+                        when (outcome) {
+                            is com.transfer.flash.core.common.result.FlashResult.Success -> {
+                                selectedChatConversationId = peer.id
+                                chatRepository.openConversation(peer.id)
+                                nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                            }
+                            is com.transfer.flash.core.common.result.FlashResult.Failure -> {
+                                val msg = (outcome.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message
+                                    ?: com.transfer.flash.ui.chat.FlashOrgStrings.ORG_START_NOT_MEMBER
+                                android.widget.Toast.makeText(
+                                    toastContext,
+                                    msg,
+                                    android.widget.Toast.LENGTH_SHORT,
+                                ).show()
+                            }
+                        }
+                    }
+                } else {
+                    selectedChatConversationId = peer.id
+                    chatRepository.openConversation(peer.id)
+                    nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+                }
             },
             onRevokeClick = { trusted -> engine.pairing?.revoke(trusted.id) },
             // ADR-042: re-run pairing (v2) with a peer paired under the forceable v1 code.
@@ -2725,6 +2771,7 @@ private fun FlashShell(
                 searchQuery = ""
             },
             messageBodyMatches = messageBodyMatches,
+            colleagueMatchIds = colleagueMatchIds,
             onConversationLongClick = chatRepository::enterListSelectionMode,
             onToggleSelection = chatRepository::toggleListSelection,
             onArchiveConversation = chatRepository::archiveConversation,
