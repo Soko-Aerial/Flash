@@ -169,8 +169,10 @@ class DirectoryRoutesTest {
         assertEquals("SPKI-01", byId["member-01"]!!.subjectPublicKey)
         assertFalse(byId["member-01"]!!.online)
         assertTrue(byId["member-02"]!!.online)
-        // Another department's roster is refused.
-        assertEquals(HttpStatusCode.Forbidden, client.getAs("/api/v1/directory/members?departmentId=dept-ng", w.token("member-01")).status)
+        // Plan A2 (option C, §3.3.4): another NON-HIDDEN department's roster is listable org-wide, with keys (D9).
+        val cross = client.getAs("/api/v1/directory/members?departmentId=dept-ng", w.token("member-01"))
+        assertEquals(HttpStatusCode.OK, cross.status)
+        assertTrue(HubRestCodec.decodeList<MemberDto>(cross.bodyAsText()).any { it.deviceId == "outsider-01" })
         // No department and no group: a fixed bad-request sentence.
         assertEquals(HttpStatusCode.BadRequest, client.getAs("/api/v1/directory/members", w.token("floating-01", dept = null)).status)
     }
