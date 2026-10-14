@@ -372,7 +372,7 @@ public class RealFlashChatRepository(
 
     /** Derives whether [deviceId] is an active organisation colleague via resolver or capability lambda. */
     private fun effectiveIsOrgPeer(deviceId: String): Boolean =
-        (orgPeerResolver?.isOrgPeer(deviceId) == true) || isOrgPeer(deviceId)
+        orgPeerResolver?.isOrgPeer(deviceId) ?: isOrgPeer(deviceId)
 
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
@@ -387,7 +387,7 @@ public class RealFlashChatRepository(
             contentViaHub = hubContentViaHub,
             sealing = hubSealing,
             standing = { id -> hubPeers?.standing(id) ?: HubPeerStanding.UNKNOWN },
-            isPaired = { isTrustedPeer(it) || effectiveIsOrgPeer(it) },
+            isPaired = { PeerTrustPolicy.mayChat(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
         )
     }
@@ -2864,7 +2864,7 @@ public class RealFlashChatRepository(
             val recipients = members?.activeMembers(conversationId)
                 ?.filter {
                     it.deviceId != localDeviceId &&
-                        (isTrustedPeer(it.deviceId) || (swarmOffer != null && isGroupPeerTrusted(conversationId, it.deviceId)))
+                        (PeerTrustPolicy.mayServeSwarm(isPaired = isTrustedPeer(it.deviceId), isOrg = effectiveIsOrgPeer(it.deviceId)) || (swarmOffer != null && isGroupPeerTrusted(conversationId, it.deviceId)))
                 }
                 .orEmpty()
             val activeOthers = members?.activeMembers(conversationId).orEmpty().count { it.deviceId != localDeviceId }
@@ -3125,7 +3125,7 @@ public class RealFlashChatRepository(
                 }
                 if (localDeviceId !in frame.memberIds ||
                     !GroupPolicy.validMemberIds(frame.memberIds, frame.from) ||
-                    frame.memberIds.any { it != localDeviceId && !isTrustedPeer(it) }
+                    frame.memberIds.any { it != localDeviceId && !PeerTrustPolicy.mayCreateGroupWith(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) }
                 ) return
                 val name = GroupPolicy.normalizedName(frame.name) ?: return
                 groupTitleCache[frame.groupId] = name
@@ -3152,7 +3152,7 @@ public class RealFlashChatRepository(
             }
             is GroupWireFrame.Add -> {
                 if (!isActiveTrustedMember(members, frame.groupId, frame.from) ||
-                    frame.memberIds.any { !isTrustedPeer(it) && it != localDeviceId }
+                    frame.memberIds.any { !PeerTrustPolicy.mayAddGroupMember(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) && it != localDeviceId }
                 ) return
                 if (members.activeCount(frame.groupId) + frame.memberIds.filter { members.member(frame.groupId, it)?.isActive != true }.size > GroupPolicy.MAX_MEMBERS) return
                 frame.memberIds.forEach { memberId ->
@@ -3528,7 +3528,7 @@ public class RealFlashChatRepository(
                     )
                     return
                 }
-                if (!isTrustedPeer(frame.from)) {
+                if (!PeerTrustPolicy.mayServeSwarm(isPaired = isTrustedPeer(frame.from), isOrg = effectiveIsOrgPeer(frame.from))) {
                     // A vouched sender's swarm offer this device cannot use (swarm off, or the offer did not verify): no
                     // whole-file push will ever follow from a device it is not paired with, so park nothing.
                     FlashProbe.emit(
@@ -5266,7 +5266,8 @@ public class RealFlashChatRepository(
         members: GroupMemberDao,
         groupId: String,
         deviceId: String,
-    ): Boolean = isTrustedPeer(deviceId) && members.member(groupId, deviceId)?.isActive == true
+    ): Boolean = PeerTrustPolicy.mayAdministerGroup(isPaired = isTrustedPeer(deviceId), isOrg = effectiveIsOrgPeer(deviceId)) &&
+        members.member(groupId, deviceId)?.isActive == true
 
     /**
      * ADR-044 V2 (E3): a peer this device accepts group traffic from. Paired, or an active member of a v2 group whose
@@ -5505,7 +5506,8 @@ public class RealFlashChatRepository(
                     val members = groupMemberDao ?: return
                     if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                 } else {
-                    if (false) return
+                    val peerId = transportPeerId ?: frame.memberId
+                    if (!PeerTrustPolicy.mayReact(isPaired = isTrustedPeer(peerId), isOrg = effectiveIsOrgPeer(peerId))) return
                 }
                 val msg = messageDao.getByLocalId(frame.messageId)
                 if (msg != null && msg.conversationId != frame.conversationId) return

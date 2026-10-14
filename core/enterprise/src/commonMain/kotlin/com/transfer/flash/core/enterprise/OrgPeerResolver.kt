@@ -215,7 +215,9 @@ public class RealOrgPeerResolver(
                 trustStore.savePin(deviceId, peer.keyFingerprint)
                 FlashLog.i(TAG, "Replaced TOFU pin for peer ${FlashProbe.short(deviceId)} with statement fingerprint")
                 FlashProbe.emit("org.pin.replaced", "peer" to FlashProbe.short(deviceId))
-                true
+                // Rule 1: Mismatch -> not ORG for the live session that proved the mismatched key.
+                // TrustStore pin is now replaced so the attacker's next handshake fails and the real colleague connects.
+                false
             } else {
                 // Rule 3: PAIRED or VOUCHED pins are never replaced
                 false
