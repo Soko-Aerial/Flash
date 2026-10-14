@@ -159,3 +159,86 @@ For EVERY such claim: open the code, mark it CONFIRMED, WRONG (give the correct 
 Output: (1) a table per plan in logs/streams/F-factcheck/report.md with claim, status, evidence; (2) a corrected copy of each wrong sentence applied in the plan file itself, each change marked "Corrected 2026-10-14 (fact-check): <old> -> <new>" so nothing is silently rewritten; (3) a list of plan assumptions that are not decided by code and need the owner.
 Do not add features or change decisions (D1-D11, ADR-133..138 are final).
 ```
+
+---
+
+# Round 2 (2026-10-14, after the first integration, dev = 438a196e or later)
+
+Round 1 is merged into `dev`. Each stream agent FIRST runs `git merge dev` inside its own worktree (merge, never rebase), then works the list below.
+B1 wiring (coordinator, rate limit, Rule 8) is already done on `dev` (ORGT-U50..U58); do not redo it. Cloud agents need `dev` as a bundle (GitHub is not connected):
+`git bundle create ..lash-dev.bundle dev`.
+
+## R2-1 — Antigravity, stream S1 (lead + 2 subagents)
+
+```text
+You are the S1 lead agent (org trust). Worktree E:\FlashWork\S1-org-trust, branch agent/S1-org-trust. FIRST: git merge dev (resolve conflicts, keep dev's version of RealFlashChatRepository.kt reaction gate and OrgPeerResolver unless you can prove yours is better).
+Logs only in logs/streams/S1-org-trust/. Numbers: ADR 139-148, ERROR 400-429, EXP 025-029, tests ORGT-U59 and up.
+
+PARALLEL MODE. Read in this order before anything else: AGENTS.md (all of it, including section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md,
+docs/plans/HUB-QUALITY-CONTRACT.md, docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, then your plan file(s), then logs/handoff.md.
+Rules: (1) work only in your own worktree/branch; never edit the integration tree C:\Users\KaliOxygen\Downloads\Flash; (2) write logs ONLY into logs/streams/<your stream>/
+in the canonical formats, never into logs/*.md, docs/decisions.md, docs/testing/TEST-BACKLOG.md or AGENTS.md; use only the number ranges reserved for your stream
+(protocol section 7); (3) edit only files your stream owns (protocol section 5); new code in new files, three-line hooks in big host files, no reformatting;
+(4) commit small, only to your branch; never merge, rebase, push to dev/main, force-push or stash; (5) the plan text wins over any handoff description;
+(6) the quality contract applies in full: explain-back before code, evidence table, adversarial self-review with at least 10 path:line findings, honest "Not done";
+(7) never touch the phone, never uninstall/clear the app, never print keys or tokens; (8) no new dependency or Gradle module without asking;
+(9) stop and ask the owner on any contradiction with the plan; do not guess; (10) finish with the contract section 7 report plus the exact gate commands and
+last output lines, and the list of shared files you touched with hunk sizes.
+Build and test ONLY through toolslash-gradle.cmd <gradle args> run from your worktree root.
+
+TASK: close the remaining defects of logs/streams/V-verifier/report.md for B1 and B2, each with a test that fails first and a mutation check. Defects 1, 2, 3, 4 and 6 are already fixed on dev; verify that and do not redo them.
+ 1. (5) OrgPeerResolver clear()/refreshFromSnapshot(): the dao reads happen outside the lock, so a refresh that started before clear() can repopulate after it. Serialise them (generation counter or one mutex) and add a race test.
+ 2. (7) OrgSyncStateEntity lacks orgRootFingerprint and lastErrorKind (plan B1.3/B1.4, section 3 "bound to the organisation"). Add them as Room schema 15 (renumber the reservation: B4 becomes 16, A3 becomes 17; edit docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 7 and say so in your handoff), with migration 14->15 tested from a real 14 database (FlashMigrationsChainTest, FlashJvmMigrationsTest) and exported schema JSON. Use the root fingerprint in OrgSnapshotCoordinator so a snapshot built for another organisation is discarded at start even when the app was not running at the change.
+ 3. (10) B2.5 undelivered: callers for FlashHubStatusMath.orgTrustState (Settings row, hub status), org_trust_* string resources for every state in plan section 9, IDENTITY_MISMATCH state and notification, and the probes org.sync.start/ok/fail, org.lease.state, org.gate.allow/deny actually emitted (not only documented).
+ 4. (11) Missing tests: B2 U28 (restart with a real database, not an in-memory fake), U30 (revoked after sync), U31 (desktop parity); U-tags for B1 U02-U09/U17/U19; a persistence-suite test for the stale-serial filter in OrgDirectoryDao.applySyncBatch (mutation M2 survived); per-site tests for the isTrustedPeer sites at RealFlashChatRepository.kt around 1948, 3531, 5320 (mutations S1-S3 survived).
+ 5. (12) The hosts wire RealOrgPeerResolver unconditionally; the resolver must answer "not a colleague" whenever the device is not enrolled, tested.
+ 6. (13,14,15) probe revocationsCount mislabelled and hub name in the probe; delegation chain duplicated per page; backoff vars not @Volatile; startColleagueConversation removed-vs-not-member wording; orgDialCandidates starved by dueForDelivery(limit*2).
+ 7. Call requestOrgSync on pull-to-refresh and when the Hub tab opens ONLY if the Hub tab host code is on your branch after merging dev (S3's work is on dev); otherwise note it for S3.
+Subagent A writes tests, subagent B reviews adversarially; the lead owns production edits and commits. Deliver the contract section 7 report in logs/streams/S1-org-trust/progress.md. Stop after this list; do not start B4.
+```
+
+## R2-2 — OpenCode, stream S2
+
+```text
+You are the S2 agent (server and console). Worktree E:\FlashWork\S2-server, branch agent/S2-server. FIRST: git merge dev. Logs in logs/streams/S2-server/. Numbers: ADR 149-158 (renumber your A2/A1 decisions that you called ADR-137/ADR-136: those numbers are taken; use 149 and 150 and fix every reference), ERROR 430-459 (ERROR-430 is yours), EXP 030-034, tests ANN-/PRIV-/DEPH-.
+
+PARALLEL MODE. Read in this order before anything else: AGENTS.md (all of it, including section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md,
+docs/plans/HUB-QUALITY-CONTRACT.md, docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, then your plan file(s), then logs/handoff.md.
+Rules: (1) work only in your own worktree/branch; never edit the integration tree C:\Users\KaliOxygen\Downloads\Flash; (2) write logs ONLY into logs/streams/<your stream>/
+in the canonical formats, never into logs/*.md, docs/decisions.md, docs/testing/TEST-BACKLOG.md or AGENTS.md; use only the number ranges reserved for your stream
+(protocol section 7); (3) edit only files your stream owns (protocol section 5); new code in new files, three-line hooks in big host files, no reformatting;
+(4) commit small, only to your branch; never merge, rebase, push to dev/main, force-push or stash; (5) the plan text wins over any handoff description;
+(6) the quality contract applies in full: explain-back before code, evidence table, adversarial self-review with at least 10 path:line findings, honest "Not done";
+(7) never touch the phone, never uninstall/clear the app, never print keys or tokens; (8) no new dependency or Gradle module without asking;
+(9) stop and ask the owner on any contradiction with the plan; do not guess; (10) finish with the contract section 7 report plus the exact gate commands and
+last output lines, and the list of shared files you touched with hunk sizes.
+Build and test ONLY through toolslash-gradle.cmd <gradle args> (the script now accepts bare :module:task arguments; use them) from your worktree root.
+
+TASK, in this order:
+ 1. Server defects of the B1 verification (logs/streams/V-verifier/report.md items 8 and 9), in server/.../OrganizationDirectory.kt getSyncChanges and DirectoryRoutes.kt: prune tombstones after 90 days and answer fullResync when `since` is older than the oldest kept tombstone; paginate in SQL instead of loading and sorting in memory; a bad cursor must be an error (400), not a silent restart; members without a signed statement must be counted and reported, not silently dropped; make offlineGraceDays a server setting (default 30, clamp as the client does). Each with a failing test first and a mutation check. The directory sync rate limit was already raised on dev; keep that test.
+ 2. The self-disable guard you added to POST /admins/{u}/disable (403) is not in plan A1; dev kept it and changed AdminApiTest. Say in your report whether you want it kept and why; do not remove it.
+ 3. Plan A3 (docs/plans/HUB-ANNOUNCEMENTS-PLAN.md), only after 1 is reported: announcements server side, console, hub-protocol DTOs. Migration `announcements` step 1. You are the only stream that may add routes; regenerate docs/protocol-routes.txt.
+Deliver the contract section 7 report per item in logs/streams/S2-server/progress.md.
+```
+
+## R2-3 — Cloud, independent verifier (re-run on the fixed dev)
+
+```text
+You are the independent VERIFIER again. Import the bundle: git clone flash-dev.bundle flash-verify -b dev. Write nothing outside logs/streams/V-verifier/ and commit it to branch agent/V-verifier-2.
+
+PARALLEL MODE. Read in this order before anything else: AGENTS.md (all of it, including section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md,
+docs/plans/HUB-QUALITY-CONTRACT.md, docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, then your plan file(s), then logs/handoff.md.
+Rules: (1) work only in your own worktree/branch; never edit the integration tree C:\Users\KaliOxygen\Downloads\Flash; (2) write logs ONLY into logs/streams/<your stream>/
+in the canonical formats, never into logs/*.md, docs/decisions.md, docs/testing/TEST-BACKLOG.md or AGENTS.md; use only the number ranges reserved for your stream
+(protocol section 7); (3) edit only files your stream owns (protocol section 5); new code in new files, three-line hooks in big host files, no reformatting;
+(4) commit small, only to your branch; never merge, rebase, push to dev/main, force-push or stash; (5) the plan text wins over any handoff description;
+(6) the quality contract applies in full: explain-back before code, evidence table, adversarial self-review with at least 10 path:line findings, honest "Not done";
+(7) never touch the phone, never uninstall/clear the app, never print keys or tokens; (8) no new dependency or Gradle module without asking;
+(9) stop and ask the owner on any contradiction with the plan; do not guess; (10) finish with the contract section 7 report plus the exact gate commands and
+last output lines, and the list of shared files you touched with hunk sizes.
+You build on your own machine without the PC lock; say exactly which tasks could not run.
+
+TASK 1: run the gate of docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 6 plus :ui:chat jvmTest and :desktop:compileTestKotlinJvm; per task executed/pass/fail counts; mark flakes only with evidence (rerun in isolation).
+TASK 2: re-verify B1 against docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md section 4 Phase B1 and logs/streams/V-verifier/report.md: for each of the 16 defects say FIXED / STILL OPEN with path:line. In particular defect 4 (OrgSnapshotCoordinator is constructed and started in DesktopEngine.kt and DiscoveryEngineHolder.kt: prove it by reading, and re-run mutation: remove the clearSnapshot call on unenrol, expect ORGT-U51/U52 to fail), defect 3 (DirectorySyncLimitTest), defect 6 (ORGT-U57/U58).
+TASK 3: re-verify B2 and B3 (section 4 Phase B2/B3, call-site table section 6, strings of section 9 verbatim, TalkBack, lock-screen privacy ORGT-U44). ACCEPT or REJECT with numbered path:line defects. Do not fix anything.
+```
