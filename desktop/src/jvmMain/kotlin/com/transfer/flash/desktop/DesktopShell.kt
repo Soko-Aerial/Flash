@@ -1874,6 +1874,12 @@ public fun DesktopShell(
                                 )
                             }
                         },
+                        onLoadApprovals = {
+                            (engine.enterpriseHub?.pendingApprovals() as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+                        },
+                        onApprove = { approval ->
+                            engine.enterpriseHub?.approve(approval) is com.transfer.flash.core.common.result.FlashResult.Success
+                        },
                         onRetryHub = { engine.enterpriseHub?.retryNow() },
                         onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
                         onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
