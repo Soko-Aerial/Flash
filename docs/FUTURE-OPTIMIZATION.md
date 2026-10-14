@@ -31,7 +31,17 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-14 | Phone as co-signer for the most dangerous admin actions (delegation install, admin creation, signer replacement) | 2026-10-13 | BUILT 2026-10-14 (ADR-131), unit-tested, not device-verified; no QR transport yet (was POSTPONED by ADR-127 P-2) |
 | FO-15 | Hub database encryption (mailbox payload column, or the whole file) | 2026-10-13 | FO-15a (payload column) BUILT 2026-10-14 (ADR-130); FO-15b (whole file) still POSTPONED (ADR-127 P-4) |
 | FO-16 | Several devices per member on the hub | 2026-10-13 | POSTPONED (owner: one device per member, ADR-127 P-5) |
-| FO-17 | Hub-only members receive a group's roster and secret through sealed hub messages | 2026-10-13 | DECIDED DIRECTION, not built: waits for group sealing (ADR-123, ADR-127 P-7) |
+| FO-17 | Hub-only members receive a group's roster and secret through sealed hub messages | 2026-10-13 | DECIDED DIRECTION 2026-10-13; **2026-10-14: the offline/LAN need is met by a hub-signed roster statement instead (ADR-135, ACCEPTED by the owner 2026-10-14, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` section 10)**; the secret-through-sealed-messages idea is replaced by FO-27 (group message encryption) |
+| FO-18 | Multi-organisation: one user in two organisations, with an organisation switcher | 2026-10-14 | POSTPONED (owner D6; FO-16 one device per member still stands) |
+| FO-19 | Acknowledge-required announcements ("read and understood" with a report) | 2026-10-14 | IDEA (not decided; hooks: `announcement.kind`, `flags`) |
+| FO-20 | Scheduled announcements | 2026-10-14 | IDEA |
+| FO-21 | Announcement attachments (over the hub transfer path) | 2026-10-14 | IDEA |
+| FO-22 | Reactions / comments on announcements | 2026-10-14 | IDEA |
+| FO-23 | Organisation chart / reporting lines | 2026-10-14 | IDEA (the hub models departments only) |
+| FO-24 | Sealed (end-to-end) announcements for a department | 2026-10-14 | IDEA (needs group sealing; owner chose plaintext for v1, ADR-138) |
+| FO-25 | Remote wipe of a lost company phone; presence "out of office" status; file drop to a department over the hub | 2026-10-14 | IDEA |
+| FO-26 | Per-department audit view for department heads; heads revoke leavers in their department | 2026-10-14 | IDEA (roadmap questions 7/8, ADR-136) |
+| FO-27 | Group message encryption (a per-group message key, end to end, also on the hub relay path); announcements and hub groups could then be sealed | 2026-10-14 | IDEA (owner asked to record it; needs an ADR and a design before any code) |
 
 ---
 
@@ -363,3 +373,49 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 **Bring it back when.** Group sealing is designed.
 
 **Read first.** ADR-123, ADR-126, ADR-127 P-7, ERROR-266, ERROR-362.
+
+**Update 2026-10-14:** the owner asked for offline (LAN) operation of hub-joined groups and accepted ADR-135 (the hub-signed roster statement; no group secret on the hub, no group sealing needed). This item is therefore `ABSORBED` for the offline/LAN need by `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` section 10; the part about confidentiality of group messages continues as **FO-27**. The text above stays as history. Do not delete this item.
+
+---
+
+## FO-18 — Multi-organisation
+
+**What.** One person belongs to two organisations (for example a contractor) and switches between them. Today the app stores one `EnrollmentCredentials`, one directory snapshot (Plan B binds it to a single root fingerprint and deletes it on re-enrol) and one hub session.
+
+**Why parked.** Owner decision D6, 2026-10-14. It touches enrolment storage, the trust tier (ORG is "member of *the* organisation"), the directory/announcement caches, notifications and the Hub tab (an organisation switcher).
+
+**What the project assumes meanwhile.** One organisation per device. Enrolling into another hub requires leaving the first (the snapshot, announcements and hub groups are deleted). The plans store an `orgRootFingerprint` next to every cache so a later multi-organisation change can key them by it.
+
+**Bring it back when.** A real user needs two organisations at once. Write an ADR first; reread ADR-120, ADR-134 and FO-16.
+
+**Read first.** `docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md`, ADR-120, ADR-134, FO-16.
+
+---
+
+## FO-27 — Group message encryption
+
+**What.** Today a group has **no message key**. The group secret of the GM track (`:core:security:group`) is only a membership proof (a MAC challenge), never used to encrypt. Group messages between phones on the LAN are protected hop by hop by TLS with pinned device identities, which is real encryption in transit and invisible to the hub. A group message that travels **through the hub** (opt-in, default off) is readable by the hub, and so are announcements (plaintext by owner decision D5). One-to-one hub messages are different: they are already sealed end to end to the recipient's sealing key (ADR-121/124/126).
+
+**Idea (not a design).** Sender keys: every member generates a chain key per group and hands it to each other member through the already sealed one-to-one channel; group messages are encrypted with a key derived from the sender's chain (AES-GCM, ratcheted per message for forward secrecy); the hub relays ciphertext. On removal, every remaining member makes a new chain and sends it only to the remaining members; a joiner receives the current chains but not the history (history sync, ADR-100, would need its own rule). The GM secret stays a membership proof; the two jobs (who may join, who may read) stay separate.
+
+**Why parked.** It is a protocol project of its own: key distribution and loss recovery (a member that missed a key message), ordering and out-of-order delivery, removal and rotation races, late joiners, one-device-per-member assumption (FO-16), the swarm file path (FSW1 content keys), history sync, announcements (FO-24) and a UI that tells the truth in both states. The owner chose to ship offline trust and the roster statement first.
+
+**What the project assumes meanwhile.** LAN group messages: encrypted in transit, not seen by the hub. Hub-relayed group messages and announcements: readable by the hub, and the UI says exactly that (Plan B section 9 `org_group_unsealed`).
+
+**Bring it back when.** The owner wants end-to-end confidentiality for groups on the hub path, or announcements that the hub operator must not read. Write an ADR first. Reread ADR-044, ADR-070..076 (group membership), ADR-121/124/126 (sealing), ADR-135, FO-17, FO-24 and `docs/security.md` "Hub sealing key and changed-key policy".
+
+**Read first.** `core/security/.../enterprise/HubSealing.kt`, `core/messaging/.../hub/DirectoryHubSealing.kt`, `docs/security.md` sections 10 and the hub sealing section, `docs/protocol.md` "Group membership v1".
+
+---
+
+## FO-19..FO-26 — Hub feature ideas not decided
+
+Listed in the table above. None is scheduled. Notes for whoever picks one up:
+- **FO-19 acknowledge-required announcements:** the `announcement` table has `kind` and `flags` columns reserved for this; it needs a per-user read/ack table, a report in the console and a privacy statement (who sees who acknowledged).
+- **FO-20 scheduled announcements:** server-side `publish_at` plus a worker; push at publish time; the console must show the schedule in the user's time zone.
+- **FO-21 attachments:** reuse the transfer engine over the hub, size limits, virus-scan question for the operator.
+- **FO-22 reactions/comments:** changes the one-way nature; moderation needed.
+- **FO-23 org chart:** a reporting-line model and privacy rules; not in the directory today.
+- **FO-24 sealed announcements:** needs group sealing (ADR-126 "not built"); loses server-side search and console preview for the sealed ones (owner D5 chose plaintext for that reason).
+- **FO-25:** remote wipe needs a command channel and a cooperating client; out of office needs presence privacy rules; file drop needs department-scoped inbox rules.
+- **FO-26:** audit view scoped to a department; revocation rights for heads need an ADR-136 amendment.

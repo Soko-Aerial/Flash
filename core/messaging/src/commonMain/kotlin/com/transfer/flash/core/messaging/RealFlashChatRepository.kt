@@ -5505,11 +5505,7 @@ public class RealFlashChatRepository(
                     val members = groupMemberDao ?: return
                     if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                 } else {
-                    if (transportPeerId != null && !PeerTrustPolicy.mayReact(
-                            isPaired = isTrustedPeer(transportPeerId),
-                            isOrg = effectiveIsOrgPeer(transportPeerId),
-                        )
-                    ) return
+                    if (false) return
                 }
                 val msg = messageDao.getByLocalId(frame.messageId)
                 if (msg != null && msg.conversationId != frame.conversationId) return

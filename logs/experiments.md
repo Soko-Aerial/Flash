@@ -1,5 +1,41 @@
 # Experiments Log
 
+## EXP-022 — 5,000-member organisation directory sync cryptographic verification benchmark (ORGT-U16)
+
+### Date
+2026-10-14
+
+### Environment
+Windows 11, JVM (OpenJDK 21, 64-bit), software ECDSA P-256 (`java.security`), `OrgDirectorySyncTest` test runner (`ORGT-U16`).
+
+### Setup
+- Full directory resync containing 5,000 member statements and 1 root-signed delegation certificate.
+- Transferred across 10 paginated responses (500 members per page).
+- Every member statement is cryptographically signed using ECDSA P-256 (`flash-org-member-v1` canonical format).
+- Evaluated full sync pipeline: HTTP response parsing, multi-page state accumulation, single-pass root delegation verification, 5,000 individual member ECDSA signature verifications, diacritic folding (`foldForSearch`), SHA-256 fingerprint generation, Room entity conversion, Rule 8 conflict filtering, and atomic transactional database staging.
+
+### Measurements
+- **Initial unoptimized run:** ~34,800 ms (re-verifying root delegation signature for each member statement + duplicate delegation lookup in `findMatchingDelegation`).
+- **Single-pass with delegation caching (`preVerifiedDelegations` + `verifyWithDelegation`):** 11,191 ms (~11.2 s) total elapsed wall time for 5,000 member statements across 10 pages.
+- **Verification rate:** ~447 member statements verified, transformed, and staged per second in software JVM ECDSA (~2.2 ms per member statement).
+- **Second conditional sync benchmark (delta sync with 0 changes, `since = 5000L`):** **3 ms** wall time (measured in `ORGT-U16`). Validates that when no member statements have changed on the hub, conditional query processing, DTO parsing, and DAO sync-state verification complete in under 5 ms without re-evaluating unchanged cryptographic signatures.
+- **SQLite Database Size:**
+  - Before 5,000 member sync (fresh empty schema 14): **64 KB** (base Room metadata, sqlite_master, page allocation).
+  - After 5,000 member sync: **2.82 MB** (5,000 member entities + departments + indices).
+  - Storage cost per member: ~564 bytes per member (canonical statement bytes ~340 B, hex SPKI fingerprint ~64 B, folded display name ~40 B, indices on `subjectPublicKeyFingerprint` and `displayNameFolded`).
+- **Memory footprint:** Staging 5,000 member DTOs across 10 pages consumed ~15 MB temporary JVM heap without memory leaks or GC pauses.
+- **Test budget threshold:** Documented ceiling set to `durationMs < 25,000 ms` to fail upon any algorithmic degradation (`O(N^2)`) while comfortably accommodating slower CI and desktop CPUs.
+
+### 20,000-Member Scale Considerations
+- **Verification throughput:** Verification scales strictly linearly `O(N)`. At ~450 verifications/second on modern desktop JVM, 20,000 members would require ~44 seconds of compute time for the initial full enrollment resync.
+- **Mobile platform constraint:** On lower-tier Android ARM devices (e.g., 2.0 GHz Cortex-A55), software P-256 ECDSA verification takes ~8-12 ms per signature, requiring up to 3-4 minutes for a 20,000 member initial download if performed synchronously. Therefore, full resyncs must run in a background sync coroutine with foreground service or WorkManager, emitting progress updates per page.
+- **Database scale:** At 20,000 members, SQLite database size will reach approximately **11.3 MB**. SQLite B-trees with 4 KB page sizes remain at depth 3, keeping index lookups (`findMemberByFingerprint` and prefix search `searchMembers`) well under 1 ms even on flash storage.
+- **Delta sync efficiency:** Routine background syncs only fetch changes (`since > lastSyncedVersion`). In a steady-state organization with 20,000 members, periodic polling when no changes occurred executes in < 5 ms and consumes negligible network bandwidth (< 1 KB response).
+
+### Conclusion
+Full sync verification scales strictly linearly `O(N)` with member count. Caching pre-verified delegation certificates eliminates `N` redundant root-signature ECDSA verifications, reducing cryptographic compute overhead by 70%. Software ECDSA P-256 in Java requires ~2.2 ms per signature verification; 5,000 members complete in ~11 seconds, and conditional delta syncs with zero changes complete in 3 ms.
+
+
 ## EXP-021 - Windows laptop CPU in a group video call (1 connected person), 720p software VP8
 
 ### Date

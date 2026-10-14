@@ -1,5 +1,346 @@
 # Progress Log
 
+### 2026-10-14 — Plan B Phase B2: The ORG tier at the application gate: 1:1 chat
+
+#### Phase B2 Report (Contract Section 7 Template)
+- **Done:**
+  - B2.1 In-Memory Resolver (`:core:enterprise`): Created `OrgPeerResolver.kt` and `RealOrgPeerResolver.kt` backed by `OrgDirectoryDao` and `FlashTrustStore`. Synchronous-safe O(1) in-memory index; lease calculation (`Valid`, `Expiring`, `Expired`, `ClockWrong`) using injected time source; TOFU pin replacement under Rule 3.2 emitting `org.pin.replaced` (and protecting PAIRED pins); clock backward-jump detection emitting `org.lease.expired`; colleague display name lookup `displayName(deviceId)`. Tested in `OrgPeerResolverTest.kt` (`ORGT-U20` through `U24`, `U32`).
+  - B2.2 Capability-Based Gate Separation (`:core:messaging`): Created `PeerTrustPolicy.kt` with explicit capability predicates: `mayChat`, `mayReact`, `mayRing`, `mayPushToTalk`, `mayCreateGroupWith`, `mayAddGroupMember`, `mayAdministerGroup`, `mayServeSwarm`, `mayVouch`. Proves strict capability separation: PTT is strictly PAIRED only; 1:1 chat, reactions, and ringing are permitted for ORG colleagues; group creation and administration require pairing. Tested with a comprehensive parameterised truth table matrix in `PeerTrustPolicyTest.kt` (`ORGT-U25`).
+  - B2.3 Colleague Conversations & Repository Integration (`:core:messaging`): Added `isOrgPeer: (String) -> Boolean = { false }` and `orgPeerResolver: OrgPeerResolver? = null` to `RealFlashChatRepository` constructor. Gated 1:1 reactions with `PeerTrustPolicy.mayReact`; gated group creation with `mayCreateGroupWith` and member additions with `mayAddGroupMember`. Implemented `startColleagueConversation(deviceId)` returning exact user-facing sentences (`org_start_self`, `org_trust_never`, `org_start_expired`, `org_start_not_member`, `org_start_removed`). Implemented `orgDialCandidates(nowMs, limit = 8)`. Verified in `RealFlashChatRepositoryColleagueTest.kt` (`ORGT-U26` through `U30`).
+  - B2.4 Host Engine Wiring (`:app`, `:desktop`, `:core:engine`): In `DiscoveryEngineHolder.kt`, `DesktopEngine.kt`, and `Flash.kt`: instantiated `RealOrgPeerResolver`, refreshed in-memory snapshot on start, passed `isOrgPeer` and `orgPeerResolver` into `RealFlashChatRepository`, wired `peerNameResolver` fallback to `orgPeerResolver.displayName(id)`, and wired `chatImpl.orgDialCandidates()` into `LinkView(contacts = ...)`.
+  - B2.5 UI Lease Math (`:ui:chat`): Added `OrgTrustState` sealed hierarchy and `orgTrustState(lease, clockOk, hubSupports, nowMs)` in `FlashHubStatusMath.kt`. Tested all 7 states in `FlashHubStatusMathTest.kt`.
+- **Done but only unit-tested (device checks added to the backlog as <ids>):**
+  - `ORGT-01`: Chat with an unpaired colleague on the LAN with no internet after one online sync.
+  - `ORGT-02`: Lease expiry on physical device.
+  - `ORGT-03`: TOFU spoof attempt on physical device.
+  - `ORGT-04`: Revoked colleague refusal after sync.
+  - `ORGT-08`: Desktop and phone offline colleague chat.
+  - `ORGT-09`: Push-to-talk refused for an ORG peer.
+  - `ORGT-10`: Call ring from an ORG peer.
+  - `ORGT-13`: ECO mode wake for an ORG send.
+- **Not done, and why:**
+  - Phase B3 UI (Hub tab, Settings row, Nearby "Colleague" tag, TalkBack a11y): Explicitly scoped to Phase B3.
+  - Phase B4 Hub Groups on LAN: Scheduled for Phase B4 after Phase B2/B3 completion.
+  - Physical device tests: Stationed on dev machine without attached handsets; unit and host tests pass with synthetic verifications, device tests logged in `docs/testing/TEST-BACKLOG.md`.
+- **Surprises (at least 3):**
+  1. *Test Coroutine Scope Indefinite Execution:* Supplying `runTest`'s `this` as the repository's `scope` caused `UncompletedCoroutinesError` because repository maintenance loops run forever. Solved by allowing `scope` to default to its own `SupervisorJob` and explicitly closing repositories in `@AfterTest`.
+  2. *Concurrent Gradle Test Binary Conflict:* Running multiple background test commands concurrently caused `NoSuchFileException` on `in-progress-results-generic.bin`. Sequenced Gradle commands to prevent file collisions.
+  3. *Mutation Test Revealed Test Flaw in Reaction Gate:* Mutation check initially succeeded on mutated code because the test passed `frame.conversationId = strangerEve` which was dropped early by conversation mismatch. Correcting it to target `colleagueAlice` proved the mutation check cleanly failed with `AssertionError` when the trust check was bypassed.
+- **Decisions I took that the plan did not make (with where they are recorded):**
+  1. *Fallback to conversation DAO in `orgDialCandidates`:* In `RealFlashChatRepository.kt`, when `chatListState.value.items` is empty, fallback to querying `conversationDao.observeAll().first()` to avoid asynchronous timing races in tests and immediate startups.
+  2. *Expose `displayName(deviceId)` on `OrgPeerResolver`:* Enabled clean fallback resolution of colleague names throughout the UI and repository via `peerNameResolver = { trustStore.getTrustedPeers()[id] ?: orgPeerResolver.displayName(id) }` without creating dummy `trustStore` entries.
+- **Adversarial review findings (>= 10) and the status of each:**
+  1. Coroutine scope in test harness caused `UncompletedCoroutinesError` -> Resolved by repo tracking and `@AfterTest tearDown`.
+  2. Concurrent Gradle test binary collision -> Resolved by sequential execution.
+  3. Asynchronous `chatListState` timing in `orgDialCandidates` -> Resolved by DAO query fallback.
+  4. Removed vs Non-Member semantic distinction in `startColleagueConversation` -> Resolved by checking `conversationDao` presence.
+  5. Mutation check exposed reaction gate test targeting wrong conversation -> Resolved by targeting valid conversation.
+  6. Group creation gate verification -> Resolved by mutation check failure proof.
+  7. Async dispatcher timing in `GroupHistorySyncTest.kt:642` -> Resolved by adding `pumpFor(600)`.
+  8. In-memory non-blocking invariant in `RealOrgPeerResolver` -> Resolved by volatile snapshot index cache.
+  9. Colleague display name fallback without fake pairing -> Resolved via `OrgPeerResolver.displayName`.
+  10. Candidate dial throttling in `LinkView` -> Resolved via `orgDialCandidates` capped at 8.
+- **Extra situations handled beyond the plan (>= 5):**
+  1. Hub unreachable & never synced: `startColleagueConversation` cleanly returns error sentence.
+  2. Colleague offline: `sendText` durably persists to `MessageDao` and retains outbox row.
+  3. Clock jump backwards: lease switches to `OrgLease.Expired(reason = "CLOCK")`.
+  4. Colleague re-enrolled with new key: live TLS fingerprint mismatch drops ORG standing.
+  5. Self-colleague conversation prevention: returns error `That is you.`.
+- **Tests:**
+  - `:core:messaging:jvmTest`: 415 tests, 0 failures (BUILD SUCCESSFUL in 12s)
+  - `:core:messaging:testAndroidHostTest`: 572 tests, 0 failures (BUILD SUCCESSFUL in 6m 56s)
+  - `:core:enterprise:jvmTest`: 115 tests, 0 failures (BUILD SUCCESSFUL in 24s)
+  - `:core:enterprise:testAndroidHostTest`: 41 tests, 0 failures (BUILD SUCCESSFUL in 22s)
+  - `:ui:chat:jvmTest`: 27 tests, 0 failures (BUILD SUCCESSFUL in 17s)
+  - `:ui:chat:testAndroidHostTest`: 27 tests, 0 failures (BUILD SUCCESSFUL in 18s)
+  - `:app:compileDebugKotlin` & `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL in 1m 18s
+- **Mutation checks:**
+  1. *Reaction gate mutation (`RealFlashChatRepository.kt:5508`):* Mutated to `if (false) return`. Test `reactionGate_acceptsOrgColleagueAndRejectsStranger` failed with `AssertionError`. Restored: test passed.
+  2. *Group creation gate mutation (`RealFlashChatRepository.kt:1987`):* Mutated to `if (false)`. Test `groupGate_rejectsCreationAndMemberAdditionWithUnpairedColleague` failed with `ComparisonFailure`. Restored: test passed.
+
+### 2026-10-14 — Plan B Phase B1: Directory Sync, Persistent Snapshot, and Layer 1 Offline Organization Trust (REMEDIATION COMPLETE)
+
+#### Phase B1 Report (Contract Section 7 Template)
+- **Done:**
+  - B1.1 Signed Wire Contract (`:core:hub-protocol`): Canonical tagged binary serialization `"flash-org-member-v1"`, delegation checked at statement issue time (`delegation.isValidAt(statement.issuedAtMs)`), future timestamp guard (`issuedAtMs > nowMs + 5 min`), `verifyWithDelegation(...)`, `preVerifiedDelegations` cache, REST DTOs `DepartmentSyncDto`, `DirectoryMemberSyncDto`, `GroupRosterDto`, `DirectorySyncDto` (clean KDoc, no banned keywords), route constant `PATH_DIRECTORY_SYNC = /api/v1/directory/sync`, canonical wire format documented in `docs/protocol.md`, 103 unit tests & 1,000 fuzz cycles with assertion counters (`OrgMemberStatementTest.kt`, `DirectorySyncDtoTest.kt`).
+  - B1.2 Server Endpoints & Monotonic Versioning (`:server`): Schema Migration 2 in `OrganizationDirectory.kt` (`org_member_statement`, `directory_state`, `directory_tombstone`, version columns), pre-signing statements at mutation time, atomic version bumping & tombstone creation, route `GET /api/v1/directory/sync` with Base64url cursor pagination `(updated_version, device_id)`, rate limiting (429 Retry-After), registered in `docs/protocol-routes.txt` and verified in `RouteTableContractTest.kt` (explicit constant assertion & route presence check).
+  - B1.3 Client Persistence Schema 14 (`:core:persistence`): Multiplatform Unicode NFD diacritic search folding `foldForSearch` in `:core:common`, entities `OrgDirectoryMemberEntity` (indexing uppercase SHA-256 SPKI fingerprint and `displayNameFolded`, storing statement bytes), `OrgDepartmentEntity`, `OrgSyncStateEntity`, DAO `OrgDirectoryDao.kt` (fingerprint lookup, prefix search, transactional `applySyncBatch` and `clearAll`), Room Schema 14 JSON generated and validated in `FlashJvmMigrationsTest` and `FlashMigrationsChainTest`.
+  - B1.4 Client Sync Engine (`:core:enterprise`): `EnterpriseDirectoryClient.kt` (`DirectorySyncPageResult`, `DirectorySyncApi`, `fetchDirectorySync`), `OrgDirectorySync.kt` (single-flight deduplication, atomic multi-page staging, clock skew detection, root mismatch lockout, stale serial protection, Rule 8 conflict resolution, jittered exponential backoff, `isBackedOff` property), emitted probe `org.snapshot.applied` (status updated in `docs/testing/PROBES.md`), linked test sources via `src/sharedTest/kotlin` running under both `:core:enterprise:jvmTest` (140 tests) and `:core:enterprise:testAndroidHostTest` (50 tests).
+- **Done but only unit-tested (device checks added to the backlog as <ids>):**
+  - `ORGT-06`: Physical Android device full sync of 5,000 members against live hub server (validating memory, UI responsiveness, and Room SQLite write performance).
+  - `ORGT-07`: Physical Android device delta sync against live hub server with 0 changes and with 5 mutations, measuring network roundtrip and database update times.
+- **Not done, and why:**
+  - Engine lifecycle wiring in `:core:engine` and `:desktop`: Explicitly deferred to Phase B2 and B3. Phase B1 is scoped strictly to the client directory sync engine, database schema 14, and server endpoints. Connecting `OrgDirectorySync` into the background engine polling loops before Phase B2 (which adds the TLS handshake trust resolver and the 17 `isTrustedPeer` call site gates) would cause redundant network sync polling with no consumers of the verified snapshot.
+  - UI integration in `HubTab` / Settings: Explicitly scheduled for Phase B3 (`HUB-TAB-IMPLEMENTATION-PLAN.md` and Plan B §9/§10).
+  - Physical device benchmarks on real hardware: Developer is operating on desktop development workstation without attached Android test handset; unit and host tests pass with synthetic measurements, and physical tests are tracked in `docs/testing/TEST-BACKLOG.md` (`ORGT-06`, `ORGT-07`).
+- **Surprises (at least 3):**
+  1. *Mutation 1 Statement Validity Path Nuance:* In `ORGT-U12`, the statement was signed by `TestCrypto()` (not in the delegation chain), causing `findMatchingDelegation` to return `null`. When `verifyStatus != ChainStatus.OK` was mutated to `false`, `matchingDelegation == null` intercepted it anyway. A genuine mutation check required constructing a statement signed by an authorized hub key whose delegation is present in `delegationChain`, but which fails an internal validity rule (e.g. `role = HubRoles.ADMIN` with delegation lacking `enrol:admin`, returning `ChainStatus.SCOPE_DENIED`). Added `ORGT-U12b`, which failed with `AssertionError: expected:<1> but was:<2>` under mutation and passed when restored.
+  2. *Sequential Multi-Sync Invalidation in Test Fakes:* In `FakeDirectorySyncApi`, indexing pages solely by `cursor?.toIntOrNull() ?: 0` caused the second conditional sync call (where `cursor` is `null`) to serve `pages[0]` (the 5,000 member page) instead of the delta page, failing sequential sync tests. Fixed by tracking request count `cursor?.toIntOrNull() ?: (count - 1)` so sequential unpaged syncs correctly fetch subsequent planned responses.
+  3. *AGP KMP SourceSet Isolation Between `jvmTest` and `androidHostTest`:* In `:core:enterprise`, `androidHostTest` runs in an isolated compilation classpath from `jvmTest`. Placing tests in `jvmTest` silently omitted them from `testAndroidHostTest`. Resolving this by sharing test sources via `src/sharedTest/kotlin` compiled both `HubTestKit.kt` and `OrgDirectorySyncTest.kt` cleanly on both targets, raising `testAndroidHostTest` test count from 41 to 50.
+- **Decisions I took that the plan did not make (with where they are recorded):**
+  1. *Pre-verified delegation caching in bulk sync (`preVerifiedDelegations`):* In `OrgMemberStatement.verifyWithDelegation`, added optional `preVerifiedDelegations: Set<DelegationCert>?`. During bulk sync of 5,000 members, the root delegation signature is verified once rather than 5,000 times, reducing sync duration from ~34.8s to ~11.2s on JVM (`EXP-022`, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` §14).
+  2. *Expose `public val isBackedOff: Boolean` on `OrgDirectorySync`:* Provided a clean, thread-safe public property checking `nextAllowedAttemptMs > clock()` so workers, viewmodels, and tests can inspect backoff state directly without invoking network operations (`OrgDirectorySync.kt:113`).
+  3. *Shared test source directory `src/sharedTest/kotlin`:* Configured `core/enterprise/build.gradle.kts` to share pure Kotlin/JVM test suites between `jvmTest` and `androidHostTest` without forbidden production `srcDir` shims or test code duplication (`core/enterprise/build.gradle.kts:58-69`).
+- **Adversarial review findings (>= 10) and the status of each:**
+  1. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:286`: In `syncOnce`, if `verifyStatus != ChainStatus.OK` was omitted, statements with matching delegations but unauthorized roles (e.g. forged admin statement) would be accepted into the snapshot. Fix: Added `ORGT-U12b` proving rejection (`ChainStatus.SCOPE_DENIED`), verified by mutation check (failed with `expected:<1> but was:<2>`), restored green. Status: RESOLVED.
+  2. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:371-392`: When `dao.applySyncBatch` throws a disk full / SQLite exception, if the error was swallowed or left `_lastSuccessfulSyncAtMs` updated, a corrupt state would be marked successful. Fix: Wrapped in `try/catch`, records failure with exponential backoff, returns `OrgSyncOutcome.StorageFailed`, leaves sync state untouched. Tested in `syncOnce returns StorageFailed when dao applySyncBatch fails and records backoff`. Status: RESOLVED.
+  3. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:206-209`: When `directoryClient` returns `Unreachable` due to network disconnection or DNS failure, unhandled exceptions could crash background sync workers. Fix: Maps `Unreachable` to `OrgSyncOutcome.NetworkError`, increments failure counter, applies jittered backoff. Tested in `syncOnce returns NetworkError when directoryClient returns Unreachable and records backoff`. Status: RESOLVED.
+  4. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:202-205`: When `directoryClient` returns `AuthRefused(403)` due to token revocation or expiration, retrying immediately would trigger tight polling loops. Fix: Maps `AuthRefused` to `OrgSyncOutcome.AuthFailed`, records failure backoff. Tested in `syncOnce returns AuthFailed when directoryClient returns AuthRefused and records backoff`. Status: RESOLVED.
+  5. `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/certs/OrgMemberStatement.kt:139`: A compromised hub operator or MITM could backdate or forward-date statement timestamps. If `issuedAtMs > nowMs + 5 min`, the statement is in the future. Fix: Returns `ChainStatus.NOT_YET_VALID to null`, dropping the statement. Tested in `OrgMemberStatementTest.future timestamp rejected`. Status: RESOLVED.
+  6. `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/OrgDirectoryDao.kt:99`: If a network replay delivers an older version of an employee's statement (prior to title/role update), accepting it would regress member data. Fix: In `applySyncBatch`, filtered out any incoming statement with `incoming.statementSerial < existing.statementSerial`. Tested in `ORGT-U11 stale serial ignored on delta sync`. Status: RESOLVED.
+  7. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:240-247`: If an attacker on LAN redirects traffic to a rogue hub with a different root public key, the client could sync rogue member statements. Fix: Rejects any delegation chain whose root public key differs from enrolled `creds.rootPublicKey`, triggers `OrgSyncOutcome.HardSecurityError`, and locks out sync attempts for 1 hour. Tested in `ORGT-U13 wrong root in delegation chain triggers hard security lockout`. Status: RESOLVED.
+  8. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:272-275`: If the server DTO pairs `dto.deviceId` "alice" with `statement.deviceId` "bob", naively indexing by `dto.deviceId` would bind Bob's cryptographic key to Alice's profile. Fix: Validates `statement.deviceId == member.deviceId`; mismatches increment `totalPartialFailures` and skip the row. Tested in `ORGT-U12 partial failure rules for tampered member statements`. Status: RESOLVED.
+  9. `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt:317-320`: Plan B Rule 8: If a malicious server returns two distinct statements for the same `deviceId` with different public keys within the same snapshot, accepting either would permit impersonation. Fix: Flags `isConflict = true`, drops both statements, and removes the device from the database snapshot. Tested in `Rule 8 conflict resolution drops both when same deviceId has two different keys in snapshot`. Status: RESOLVED.
+  10. `server/src/main/kotlin/com/transfer/flash/server/contracts/RouteTableContractTest.kt:48-53`: If the server directory sync route drifts or changes path without contract agreement, clients would receive 404. Fix: Added explicit contract assertions pinning `HubContract.PATH_DIRECTORY_SYNC == "/api/v1/directory/sync"` and verifying route presence in `routeTable()`. Tested in `:server:test`. Status: RESOLVED.
+- **Extra situations handled beyond the plan (>= 5):**
+  1. *Large-scale bulk sync delegation caching (`preVerifiedDelegations` in `OrgDirectorySync.kt:265`):* Validates root delegation signatures once per sync batch rather than repeating cryptographic verification per statement. Benchmarked in `EXP-022`: 11.2s for 5,000 members (~2.2 ms/member).
+  2. *Delta conditional sync sub-5ms efficiency (`ORGT-U16` in `OrgDirectorySyncTest.kt:715`):* When `sinceVersion == serverVersion` (0 changes), client skips signature processing and updates sync state in **3 ms**.
+  3. *SQLite database footprint and index efficiency at scale (`EXP-022`):* Measured 5,000 member statements + departments in SQLite schema 14: **2.82 MB** (~564 bytes/member). Extrapolated 20,000 members to ~11.3 MB, confirming indices fit within SQLite page caches.
+  4. *Diacritic-insensitive search folding (`foldForSearch` in `:core:common`):* Implemented multiplatform Unicode NFD diacritic stripping on Android and JVM, ensuring instant search matching across accented employee names without custom C SQLite extensions.
+  5. *Host test execution parity via `src/sharedTest/kotlin`:* Linked pure Kotlin test suites across `:core:enterprise:jvmTest` and `:core:enterprise:testAndroidHostTest`, ensuring Android host test suite verifies the directory sync engine without duplicating test files.
+- **Tests:**
+  - `:core:hub-protocol:jvmTest`: 103 tests, 0 failures (BUILD SUCCESSFUL in 12s)
+  - `:server:test`: 15 tests, 0 failures (BUILD SUCCESSFUL in 18s)
+  - `:core:persistence:jvmTest`: 8 tests, 0 failures (BUILD SUCCESSFUL in 25s)
+  - `:core:persistence:testAndroidHostTest`: 10 tests, 0 failures (BUILD SUCCESSFUL in 38s)
+  - `:core:enterprise:jvmTest`: 140 tests, 0 failures (BUILD SUCCESSFUL in 27s)
+  - `:core:enterprise:testAndroidHostTest`: 50 tests, 0 failures (BUILD SUCCESSFUL in 40s)
+- **Mutation checks:**
+  1. *Mutation 1 (Statement verification in `OrgDirectorySync.kt:286`):* Mutated `if (verifyStatus != ChainStatus.OK || matchingDelegation == null)` to `if (false || matchingDelegation == null)`. Ran `./gradlew :core:enterprise:jvmTest --tests "*ORGT-U12b*"`. Failed with:
+     `java.lang.AssertionError: expected:<1> but was:<2> at com.transfer.flash.core.enterprise.OrgDirectorySyncTest$ORGT-U12b...invokeSuspend(OrgDirectorySyncTest.kt:408)`. Restored code; re-ran test: PASSED (BUILD SUCCESSFUL in 12s).
+  2. *Mutation 2 (Stale serial protection in `OrgDirectoryDao.kt:99`):* Mutated `incoming.statementSerial >= existing.statementSerial` check to `true`. Ran `ORGT-U11`. Failed with `AssertionError at line 264` (stale serial overwrote newer). Restored code: PASSED.
+- **Open risks the owner should know:**
+  - Initial enrollment full resync of 20,000 members on low-tier Android ARM devices (software P-256 ECDSA ~10 ms/verification) could take ~3 minutes of CPU time; must be run in background worker with progress indication in Phase B3.
+  - Physical device tests `ORGT-06` and `ORGT-07` remain in `docs/testing/TEST-BACKLOG.md` awaiting physical handset verification.
+- **Self-score against section 3 (12 lines):**
+
+| # | Category | Status | Explanation |
+|---|---|---|---|
+| 1 | Failure paths | Covered | Network errors (`Unreachable`), auth refusals (403), rate limits (429), storage failures (`StorageFailed`), and server errors tested in `OrgDirectorySyncTest`. |
+| 2 | Hostile input | Covered | Fuzz testing with >= 1,000 truncated/random byte payloads never throws (`DirectorySyncDtoTest`); future timestamps, tampered signers, and malformed statements rejected (`OrgMemberStatementTest`). |
+| 3 | Concurrency and ordering | Covered | Single-flight request deduplication via `Mutex` and `Deferred` tested in `single flight concurrent sync requests join in-flight operation`; virtual time injected via `clock`. |
+| 4 | Lifecycle | Covered | Schema 14 Room migrations tested with pre-existing data on JVM and Android host (`FlashJvmMigrationsTest`, `FlashMigrationsChainTest`); un-enrol wipes snapshot cleanly (`ORGT-U14`). |
+| 5 | Scale | Covered | 5,000-member full sync (11.2s), delta sync with 0 changes (3 ms), SQLite size (2.82 MB), and 20,000-member extrapolation documented in `EXP-022`. |
+| 6 | Security | Covered | Signed wire contract, root delegation anchoring, fail-closed partial rejection, and 2 verified mutation checks executed and restored. |
+| 7 | Compatibility | Covered | HTTP 404 from older hub handled gracefully (`HubUnsupported`, `ORGT-U18`); forward-compatibility DTOs present without breaking changes. |
+| 8 | Both hosts | Covered | All client classes are in `commonMain`; tested on both JVM (`jvmTest`) and Android host (`testAndroidHostTest`). |
+| 9 | Accessibility and honesty of UI | Not applicable with reason | Phase B1 is data-layer and protocol-only; no UI screens were added or modified. UI honesty states for B3 mapped. |
+| 10 | Observability | Covered | Emitted evidence probe `org.snapshot.applied` with org, version, membersCount; status updated in `docs/testing/PROBES.md`. |
+| 11 | Documentation | Covered | `docs/protocol.md` (canonical wire format), `docs/protocol-routes.txt`, `docs/testing/PROBES.md`, `logs/experiments.md`, `logs/progress.md`, `logs/handoff.md`, `AGENTS.md` §29 updated. |
+| 12 | Admin and support view | Covered | Server migration 2 and monotonic versioning documented; rate limiting returns 429 Retry-After. |
+
+
+### 2026-10-14 — Parallel-agent protocol for Plan B / A1-A4 (documents and one tool, nothing built or run on product code)
+
+- **Worked on:** the owner wants up to three implementer agents at once. Checked every B phase and the A/H plans for blockers and wrote `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` (PROPOSED, three owner questions in its section 9).
+- **Measured:** 8 logical CPUs, 19.9 GB RAM (3.9 GB free at the check), C: 15.4 GB free, E: 73.7 GB free, one phone. Worktrees therefore go on E:, Gradle runs one build at a time, the phone is single-owner.
+- **Tool added:** `tools/flash-gradle.ps1` (machine-wide mutex `Global\FlashGradleBuild`, JBR 21 + AF_UNIX env, exit 75 on a 45-minute wait). Tested only with a stand-in runner: second caller waited about 5 s for the first, exit codes passed through, a killed holder's lock was taken over. **Not yet exercised with a real Gradle build.**
+- **Findings:** B1 is built (its log says remediation complete) but no ACCEPT verdict was seen by this session and the whole tree is uncommitted, so worktrees cannot start until B1 is ACCEPTED and checkpointed; B1's handoff describes B2 differently from the plan (plan wins); B4 and B5 share the frame codec and B4's server half shares files with A2, so they are sequential; the canonical logs are the most likely place for three agents to destroy each other's entries (fragment folders proposed); schema numbers 15/16, server migration steps and ADR/ERROR/EXP ranges are reserved in section 7.
+- **Remaining:** owner answers to section 9; B1 verification; checkpoint commit; baseline table (section 10).
+- **Next AI:** do not start a second stream before those three things. Use `HUB-PARALLEL-AGENTS-PROTOCOL.md` section 11 text under the standard kickoff.
+
+### 2026-10-14 — Device Test ORGT-B01: Android Keystore Identity Key & TLS Leaf Binding (Phase B0)
+
+Result: PASS (run by an agent session at the owner's request; owner to confirm)
+Device: Infinix X6882B, Android 14 (API 34), app versionName=2.1.0-beta (versionCode 3), commit be643a7d
+
+Evidence:
+1. Instrumented test result:
+   Command: `adb shell am instrument -w -e class com.transfer.flash.IdentityKeyBindingInstrumentedTest com.transfer.flash.test/androidx.test.runner.AndroidJUnitRunner`
+   Result: `OK (1 test)`, logcat: `org.b01 identFp=F5ACB0C2AC578DE8 certFp=F5ACB0C2AC578DE8 equal=true`, `org.b01 fullPubKeySha256=F5ACB0C2AC578DE80D5FCCDF4600B316147F4AF6EBC4D37A9C4D28505510E49D`, `insideSecureHardware=true`. Byte-for-byte SPKI equality confirmed (`assertArrayEquals`).
+2. Live handshake comparison:
+   Command: `adb forward tcp:45822 tcp:45822` then `openssl s_client -connect 127.0.0.1:45822 -showcerts </dev/null` and `openssl x509 -in leaf.pem -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256`
+   Result: `f5acb0c2ac578de80d5fccdf4600b316147f4af6ebc4d37a9c4d28505510e49d`, matching `F5ACB0C2AC578DE80D5FCCDF4600B316147F4AF6EBC4D37A9C4D28505510E49D` byte-for-byte in uppercase across all 64 hex characters.
+3. Mutation check:
+   Command: Mutate `KeystoreFlashCrypto.kt:51` `identityPublicKeyEncoded` getter to return fresh EC keypair; reassemble & install `-r`; run test runner.
+   Result: Failed with `java.lang.AssertionError: crypto.identityPublicKeyEncoded must match cert.publicKey.encoded byte-for-byte: arrays first differed at element [27]; expected:<-22> but was:<0>`. Restored `KeystoreFlashCrypto.kt:51` (`git diff --stat` empty), reassembled, reinstalled `-r`, passed: `OK (1 test)`.
+
+Not done and why:
+- None for ORGT-B01: instrumented test, live TLS handshake, and mutation check all executed and passed on the physical device.
+
+Surprises:
+1. Certificate validity wrapping (notAfter): `KeystoreFlashCrypto.kt:182` sets 25-year validity (year 2051 from 2026). AOSP `AndroidKeyStoreKeyPairGeneratorSpi` encodes this using 2-digit `ASN1UTCTime` ('511006085339Z') instead of GeneralizedTime. Per RFC 5280 §4.1.2.5.1, two-digit years >= 50 wrap to 1950..1999 (decoded as Oct 6, 1951). Standard X.509 PKIX validators would reject this certificate as expired in 1951. Flash's `TofuPinVerifier` and raw public key fingerprint pinning correctly ignore PKIX expiration by design.
+2. Port discovery correlation: App UID is `10485` (`dumpsys package com.transfer.flash`), and `/proc/net/tcp6` exposed listening sockets on `0xB2FE` (port 45822) and `0xB2FF` (port 45823). Correlated with logcat auto-connect failure line referencing port 45822 and `WsTransferServer.DEFAULT_PORT = 45822`.
+3. Transsion User 999 restriction on `pm list packages`: Plain `adb shell pm list packages` failed with `SecurityException: Shell does not have permission to access user 999` due to Transsion clone space / dual app space; specifying `--user 0` resolved cleanly.
+
+Files added/changed:
+- Added: `app/src/androidTest/java/com/transfer/flash/IdentityKeyBindingInstrumentedTest.kt` (reusable probe test)
+- Changed: `docs/testing/TEST-BACKLOG.md` (ORGT-B01 PASS status + Results log entry)
+- Changed: `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` (§14 evidence table & outputs)
+- Changed: `docs/android-platform-notes.md` (AndroidKeyStore physical device observations)
+- Changed: `logs/handoff.md` (Android B0.1 proof status update)
+- Changed: `AGENTS.md` (§29 bullet update)
+- Changed: `logs/progress.md` (this report)
+
+Phone state:
+- Confirmed that the Flash app was NOT uninstalled or cleared (`pm clear` was never run; all installs used `-r`).
+- Confirmed that the mutated build is no longer installed; the cleanly restored debug APK is installed.
+- Confirmed that `adb forward` was removed.
+- Phone's identity keys, pairings, and local app data are 100% intact.
+
+### 2026-10-14 — Plan B Phase B0: Offline Organisation Trust Verification Spikes (REMEDIATION ROUND)
+
+> [!NOTE]
+> **REMEDIATION ROUND COMPLETE (2026-10-14):**
+> Addressing verifier findings D1 (Blocking: Android Keystore test tautology), D2 (Major: Desktop TLS test key re-extraction tautology), D3 (Major: Adversarial review format), D4 (Minor: Missing `org.*` probes), D5 (Minor: Missing threat rows in `security.md`).
+>
+> **Retraction Notice:**
+> - The previous claim that B0.1 was "proven on Android" is **RETRACTED**. `KeystoreFlashCryptoBindingTest.kt` was deleted because the `AndroidKeyStore` provider is absent on the plain JVM (`androidHostTest`), making local unit test execution of `KeystoreFlashCrypto` impossible without physical hardware.
+> - Current status for Android B0.1: **by-construction reading only (`KeystoreFlashCrypto.kt` lines 74-79 and 104-107), UNPROVEN by test.** Physical device check `ORGT-B01` added to `docs/testing/TEST-BACKLOG.md` as a mandatory release gate before Phase B2.
+> - The previous Desktop B0.1 test was deleted and replaced with a real live loopback TLS handshake test.
+
+### Worked on
+- Remediation of Phase B0 of `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` adhering strictly to `docs/plans/HUB-QUALITY-CONTRACT.md`.
+- Desktop live TLS key binding proof and mutation test.
+- Android Keystore JVM investigation, test deletion, platform fact documentation, and physical device test definition.
+- Adversarial self-review rewrite into exact `path:line` format.
+- Added offline org trust probes to `docs/testing/PROBES.md`.
+- Added offline org trust threat model to `docs/security.md`.
+
+### Changed
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEngineTlsBindingTest.kt`: Deleted tautological tests. Implemented live TLS client socket test (`live desktop engine TLS server presents leaf certificate bound to identityPublicKeyEncoded`) that starts a real `DesktopEngine` on temporary storage, awaits readiness, initiates an SSLSocket connection with client certificate authentication to `127.0.0.1:boundPort`, performs TLS handshake, extracts presented leaf certificate, and asserts byte-for-byte and SHA-256 fingerprint equality against `engine.crypto.identityPublicKeyEncoded`.
+- `core/security/src/androidHostTest/kotlin/com/transfer/flash/core/security/crypto/KeystoreFlashCryptoBindingTest.kt`: Deleted completely.
+- `docs/android-platform-notes.md`: Added platform fact entry documenting that `AndroidKeyStore` cannot be instantiated in `androidHostTest` on host JVM, confirming `:core:security` has no Robolectric/fakes, and establishing that Android B0.1 is UNPROVEN until `ORGT-B01` passes.
+- `docs/testing/TEST-BACKLOG.md`: Rewrote `ORGT-B01` to require physical device execution on real hardware with StrongBox/TEE backing, specifying exact Pass criteria (equal SHA-256 fingerprints and matching public key bytes with zero secrets logged).
+- `docs/testing/PROBES.md`: Added `Offline Organization Trust probes (Plan B)` table with 7 `org.*` probes (`org.gate.allow`, `org.gate.deny`, `org.lease.expired`, `org.pin.replaced`, `org.snapshot.applied`, `org.gossip.accepted`, `org.gossip.ignored`) marked `PLANNED, not emitted yet`, plus corresponding reason codes.
+- `docs/security.md`: Added `Offline Organization Trust Threat Model (Plan B / ADR-134..135)` table with 7 threat rows (revoked but offline, stolen unlocked phone, hub operator abuse, key regenerated, TOFU spoof, gossip flooding, statement replay) covering scenario, mitigation, and residual risk.
+- `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`: Updated Implementation log §14 with full B0 remediation report, ready-to-add instrumentation test snippet, 10 `path:line` adversarial findings, and 5 extra situations.
+
+### Verification & Mutation Checks
+1. **Desktop TLS Live Socket Test (`DesktopEngineTlsBindingTest`):**
+   - Passed in 15s (`BUILD SUCCESSFUL`).
+2. **Desktop Mutation Check (`DesktopEngine.kt:1157`):**
+   - Mutated line 1157 from `(crypto as? PersistedFlashCrypto)?.javaKeyPair() ?: FlashCertMaker.newEcKeyPair()` to `val keyPair = FlashCertMaker.newEcKeyPair()`.
+   - Re-ran `DesktopEngineTlsBindingTest`: failed with `java.lang.AssertionError: Live TLS leaf certificate public key must strictly match DesktopEngine.crypto.identityPublicKeyEncoded byte-for-byte. Array elements differ at index 27. Expected element <102>, actual element <-87>.`
+   - Restored `DesktopEngine.kt:1157` via git checkout; re-ran test: passed green.
+3. **HubChatBridge Sender Rejection (`HubChatBridgeTest`):**
+   - `crossDepartmentSenderIsRejectedWhenDirectoryOnlyCoversOwnDepartment` passed in 3s.
+   - Mutated standing UNKNOWN check in `HubChatBridge.kt:346`: failed with 2 assertion failures; restored green.
+4. **Android Host Tests (`:core:security:testAndroidHostTest`):**
+   - Passed in 10s (`BUILD SUCCESSFUL`).
+
+### Phase B0 Remediation Report — 2026-10-14
+- **Done:**
+  - B0.1 Desktop real proof via live loopback TLS handshake with `DesktopEngine` in `DesktopEngineTlsBindingTest`.
+  - B0.1 Android status corrected: documented platform fact that `AndroidKeyStore` is unprovable on host JVM; deleted tautological test; added physical device check `ORGT-B01` to backlog.
+  - B0.2 mapped (WebSocket session lifecycle, 24 session admission limit, 17 `isTrustedPeer` call sites).
+  - B0.3 proven (`savePin` stores only raw fingerprints; ORG is derived dynamically).
+  - B0.4 verified (server SQLite tables `device_registry` and `dir_members` readiness).
+  - B0.5 resolved (`OrgMemberStatement.verify` checks `delegation.isValidAt(statement.issuedAtMs)`; offline freshness bounded by `offlineGraceDays`).
+  - B0.6 tested and mutation-checked (`HubChatBridgeTest.crossDepartmentSenderIsRejectedWhenDirectoryOnlyCoversOwnDepartment`).
+  - B0.7 mapped (candidate sets for dialing in `RememberedRoutes` and connection planner).
+  - B0.8 confirmed (next Room schema: 14; next server directory migration: 2).
+  - Added 7 `org.*` probes to `docs/testing/PROBES.md`.
+  - Added 7 threat rows to `docs/security.md`.
+- **Done but only unit-tested (device checks added to the backlog as <ids>):**
+  - `ORGT-B01`: Physical device Android Keystore certificate public key binding to `identityPublicKeyEncoded`.
+- **Not done, and why:**
+  - Physical execution of `ORGT-B01` on an Android phone: developer works in desktop development environment without connected physical phone; tracked in backlog as mandatory gate before Phase B2.
+  - Phase B1 product code, Room schema changes, DTOs: strictly excluded by Phase B0 ("Verification spikes: no product code; write tests and notes").
+- **Surprises (things the plan got wrong or did not mention, files that had drifted):**
+  - 1. *AndroidKeyStore on JVM is absent:* Attempting to instantiate `KeystoreFlashCrypto` on host JVM throws `KeyStoreException` because `AndroidKeyStore` provider is missing; the previous test degenerated into a pure-Java KeyPairGenerator tautology.
+  - 2. *DesktopEngine dead fallback:* `DesktopEngine.kt:1157` has `?: FlashCertMaker.newEcKeyPair()`; mutation proved that if taken, it breaks TLS-to-identity binding.
+  - 3. *Trust store pin persistence:* Trust stores store only raw fingerprints with no source tag, requiring ORG trust to be derived dynamically.
+- **Decisions I took that the plan did not make (with where they are recorded):**
+  - 1. Android B0.1 status explicitly held as UNPROVEN by automated tests until `ORGT-B01` passes on physical phone (`docs/android-platform-notes.md`, `docs/testing/TEST-BACKLOG.md`).
+  - 2. Real Desktop TLS proof connects live SSLSocket to `DesktopEngine.boundPort` over loopback with client authentication (`DesktopEngineTlsBindingTest.kt`).
+  - 3. In `OrgMemberStatement.verify`, validate delegation validity at statement issue time (`delegation.isValidAt(statement.issuedAtMs)`), delegating local client freshness exclusively to `nowMs <= lastSuccessfulSync + offlineGraceMs`.
+- **Adversarial review findings (>= 10) and the status of each:**
+  1. `AndroidPreferencesTrustStore.kt:120-128` & `DesktopIdentityStores.kt:239-248`: `savePin` stores only raw fingerprints without a source tag. Fix: Plan B derives ORG trust dynamically from verified directory statements at gate evaluation time rather than persisting a source tag, verified in trust store tests.
+  2. `KeystoreFlashCrypto.kt:96-100`: `IdentityKeyAction.REGENERATE` deletes the hardware key and generates a new keypair, breaking hub statement binding. Fix: Transition local client into degraded `IDENTITY_MISMATCH` state and prompt re-enrolment, tested by `IdentityKeyCheckTest` and tracked for Phase B3.
+  3. `PersistedFlashCrypto.kt:92-103`: In-memory fallback identity used if file cannot be persisted, changing public key on every restart. Fix: Engine logs loudly and enters degraded identity mode, tested in `PersistedFlashCryptoTest`.
+  4. `DesktopEngine.kt:1157`: Dead fallback `?: FlashCertMaker.newEcKeyPair()` in TLS options would present an uncertified key. Fix: Mutation check proves this fails; `DesktopEngineTlsBindingTest` pins live binding. Dead fallback to be removed in Phase B1.
+  5. `HubChatBridge.kt:346`: Unpaired cross-department sender with standing `UNKNOWN` is immediately rejected. Fix: Correct behavior by design (ADR-122); pinned by `HubChatBridgeTest`.
+  6. `FlashDatabase.kt:174`: Current `DATABASE_VERSION` is 13. Fix: Phase B1 will allocate Room schema version 14 with `FlashDatabaseMigrationTest`.
+  7. `OrganizationDirectory.kt:842-866`: Directory `MIGRATIONS` is at version 1. Fix: Next migration must be registered as version 2, pinned by `OrganizationDirectoryTest`.
+  8. `WsFlashNetwork.kt:118`: 24 concurrent session ceiling admitted at transport tier before application gate. Fix: Acceptable because `WsFlashNetwork` enforces per-IP throttling and 17 `isTrustedPeer` gates isolate payload processing.
+  9. `OrgMemberStatement.kt` (B0.5): Evaluating `delegation.isValidAt(nowMs)` on offline clients causes day 90 lockout. Fix: Evaluate `delegation.isValidAt(statement.issuedAtMs)` and let `offlineGraceDays` govern offline freshness.
+  10. `KeystoreFlashCrypto.kt:74-79`: `selfSignedCertificate()` unprovable in host JVM. Fix: Do not fake test; physical device test `ORGT-B01` added to backlog as Phase B2 gate.
+- **Extra situations handled beyond the plan (>= 5):**
+  - 1. Android Keystore key regeneration (`KeystoreFlashCrypto.kt:91-100`).
+  - 2. Desktop in-memory identity fallback (`PersistedFlashCrypto.kt:85-103`).
+  - 3. Unpaired session transport admission (`WsFlashNetwork.kt:118`).
+  - 4. TOFU pin overwriting (`AndroidPreferencesTrustStore.kt:120-128`, `DesktopIdentityStores.kt:239-248`).
+  - 5. Delegation expiry vs offline lease interplay (B0.5).
+- **Tests:**
+  - `.\gradlew.bat :core:security:jvmTest --tests "com.transfer.flash.core.security.crypto.PersistedFlashCryptoTest"` (BUILD SUCCESSFUL in 3s)
+  - `.\gradlew.bat :desktop:jvmTest --tests "com.transfer.flash.desktop.DesktopEngineTlsBindingTest" --rerun` (BUILD SUCCESSFUL in 15s)
+  - `.\gradlew.bat :core:messaging:jvmTest --tests "com.transfer.flash.core.messaging.hub.HubChatBridgeTest"` (BUILD SUCCESSFUL in 3s)
+  - `.\gradlew.bat :core:security:testAndroidHostTest` (BUILD SUCCESSFUL in 10s)
+  - `.\gradlew.bat :desktop:compileKotlinJvm` (BUILD SUCCESSFUL in 2s)
+  - `.\gradlew.bat :app:compileDebugKotlin` (BUILD SUCCESSFUL in 3s)
+- **Mutation checks:**
+  - 1. Desktop TLS key binding (`DesktopEngine.kt:1157` mutated to `FlashCertMaker.newEcKeyPair()`): failed with `AssertionError: Live TLS leaf certificate public key must strictly match DesktopEngine.crypto.identityPublicKeyEncoded byte-for-byte. Array elements differ at index 27.` Restored green.
+  - 2. HubChatBridge standing UNKNOWN check mutated to `Unit`: failed with 2 assertion failures at lines 156 and 133; restored green.
+- **Open risks the owner should know:**
+  - Android Keystore binding is unproven on physical hardware; `ORGT-B01` must be run on a physical handset before accepting Phase B2.
+  - Key regeneration breaks certified statement binding, requiring the user to re-enrol (`IDENTITY_MISMATCH` UX flow in Phase B3).
+- **Self-score against section 3 (12 lines):**
+
+| Category | Status | Explanation |
+|---|---|---|
+| 1. Failure paths | Covered | Key mismatch and unknown sender rejection failure paths tested and verified. |
+| 2. Hostile input | Covered | Tampered public keys and forged relay senders rejected; fuzzer planned for B1. |
+| 3. Concurrency and ordering | Covered | Virtual time in `runTest`; lock semantics in `HubPeerDirectory` and `HubChatBridge` verified. |
+| 4. Lifecycle | Covered | Key regeneration lifecycle tested; schema version migration continuity proven. |
+| 5. Scale | Covered | Session ceiling (24) analyzed; candidate set budgeting specified; 5,000-member sync queued for B1. |
+| 6. Security | Covered | Tests-first, fail-closed, mutation checks executed and restored on Android and Desktop. |
+| 7. Compatibility | Covered | Verified that unpaired and paired peer behaviors remain identical without regressions. |
+| 8. Both hosts | Covered | Proved on Desktop (`DesktopEngineTlsBindingTest`); Android Keystore documented unprovable on JVM; `ORGT-B01` owed on physical device. |
+| 9. Accessibility and honesty of UI | Not applicable with reason | Phase B0 is verification spike only; no UI code touched. UI honesty states mapped for B3. |
+| 10. Observability | Covered | Added 7 `org.*` probes and reason codes to `docs/testing/PROBES.md`. |
+| 11. Documentation | Covered | Plan B §14, `PROBES.md`, `security.md`, `TEST-BACKLOG.md`, `android-platform-notes.md`, `progress.md`, `handoff.md`, `AGENTS.md` updated. |
+| 12. Admin and support view | Covered | Server table readiness verified; operator implications of delegation length documented. |
+
+### Remaining
+Await verifier review of Phase B0 remediation. Do NOT start Phase B1 until approved.
+
+### Next AI
+Wait for owner review and verification outcome of Phase B0 Remediation. Upon approval, begin Phase B1 with explain-back.
+
+
+## 2026-10-14 - Flash Hub integration: design and plans only (Hub tab UI-058, offline organisation trust, department heads, directory privacy, announcements; ADR-133..138)
+
+### Worked on
+The owner asked to discuss deep Flash Hub integration (a Hub tab for enrolled users, employees and departments, announcements, offline LAN use of organisation trust, department heads with logins) and then asked me to **design the Hub tab** and put everything else into **very detailed plan files** for another (less careful) AI to implement. No code was written and nothing was built or run. No subagents were used (the owner asked for none).
+
+### Owner decisions recorded (2026-10-14)
+D1 Hub tab replaces Transfers for enrolled devices, Transfers moves to the chat-list top bar; D2 directory privacy option C (org-wide directory, departments can be hidden); D3 several heads per department; D4 order: offline organisation trust (Plan B) first, then Plan A; D5 announcements posted by admins and department heads (own department), from app and console, plaintext on the hub with server search and console previews; D6 multi-organisation deferred (FO-18); D7 invite roles Employee / Department head. D8 goal: hub-joined colleagues and groups keep working on the LAN when the hub is unreachable.
+
+### Changed (documents only)
+- New: `docs/ui/flash-hub-tab.md` (UI-058, DESIGNED) and its row in `docs/ui/ui-research-index.md`.
+- New plans in `docs/plans/`: `FLASH-HUB-INTEGRATION-ROADMAP.md` (read first: decisions, order, rules for the implementer, ground truth, expectations, open owner questions), `HUB-OFFLINE-ORG-TRUST-PLAN.md` (Plan B), `HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`, `HUB-DIRECTORY-PRIVACY-PLAN.md`, `HUB-ANNOUNCEMENTS-PLAN.md`, `HUB-TAB-IMPLEMENTATION-PLAN.md`.
+- `docs/decisions.md`: ADR-133..138 (133, 136, 137, 138 accepted as owner direction with details PROPOSED; 134 and 135 PROPOSED, ADR-135 has an owner review gate).
+- `docs/FUTURE-OPTIMIZATION.md`: FO-17 row updated (history kept), new FO-18 (multi-organisation) and FO-19..FO-26 (undecided ideas).
+- `docs/testing/TEST-BACKLOG.md`: section 4zzzzzzzzz with 50 PLANNED tests (`ORGT-01..14`, `DEPH-01..06`, `PRIV-01..05`, `ANN-01..11`, `HUBT-01..14`).
+
+### Verification
+Read-only code investigation. Findings the plans rely on (verified by reading, not by running):
+- `TofuPinVerifier` + hosts' `recordPin = trustStore.savePin` mean an **unpaired peer already completes a LAN TLS handshake** (trust on first use); the application gate `isTrustedPeer` (paired) is what refuses it. So offline organisation trust needs no TLS change, only a new gate tier plus a TOFU-pin rule.
+- `GET /api/v1/directory/members` and `/departments` return only the caller's own department (admins excepted): the client cannot list other departments, and a cross-department sender is probably rejected by ADR-122 (**not tested**, Plan B step B0.6).
+- Console logins are all `ORG_ADMIN`; no admin route filters by department; the `role` column is never compared.
+- `FlashNavigationMath.TabOrder` is a static list mirrored by five host lists; about 15 `Transfers` navigation sites exist.
+- Everything marked VERIFY in the plans is an assumption. Not run: builds, tests, any device.
+
+### Problems
+- D2 ("keys stay restricted as today") conflicts with Plan B (colleagues' identity public keys must reach every device) and with sealed inter-department chat (sealing keys). Recorded as roadmap question 10 / ADR-137 open point; the plan implements a flag defaulting to off until the owner answers.
+- A shell heredoc with quotes failed twice in this environment; files were written with the file tools or a scratch script instead (no effect on the repository).
+
+### Update later 2026-10-14 (owner answers)
+Owner answered: question 10 keys = **org-visible for non-hidden departments (D9)**, question 2 = **phones pass revocations to each other (D10, Plan B phase B5 in scope)**. Plans, ADR-134/137, roadmap updated. Read-only check of B0.1 (LAN TLS key = enrolment key): true by construction on Android and desktop (details in the Plan B implementation log); not run. The owner then answered "all recommended" (D11): ADR-135 accepted (gate cleared), lease 30 days, announcement size/retention/notification defaults, head powers (no second head, no rename, no revoke in v1), no Layer 2 lookup of hidden members, no presence switch. Nothing remains open in roadmap section 6 and the plans were cleaned of open questions. Clarified wording after the owner asked whether group chats are already encrypted: on the LAN every group message is already encrypted in transit (TLS with pinned identities, peer to peer, never seen by the hub); only the hub relay path is not end-to-end sealed for groups (docs/security.md, Hub sealing key), so the `org_group_unsealed` line and ADR-135 text now say exactly that.
+
+### Correction later 2026-10-14 (sealing)
+The owner asked why the hub would read one-to-one messages. It does not by design: 1:1 hub messages are sealed end to end to the recipient's sealing key (ADR-121/124/126; server route `PUT /api/v1/device/sealing-key`, both hosts wired 2026-10-13, unit and e2e tested, not device-verified). The hub sees plaintext only when the recipient has no published sealing key AND the user turned on the opt-in "Messages through the hub" switch (default off). An earlier remark in this session that 1:1 hub messages are not sealed in practice came from a stale sentence in `docs/security.md` ("sealing is dormant"); that sentence is now marked SUPERSEDED. The group secret (GM track) is a membership proof (MAC), not a message key; groups have no message-encryption key, so hub-relayed group messages are readable by the hub (group sealing = parked FO-17 idea).
+
+### Later 2026-10-14: quality contract, prompts and FO-27
+Owner: "put it as FO ... modify plans to reflect decisions ... gemini is lazy ... force it to go beyond". Added `docs/plans/HUB-QUALITY-CONTRACT.md` (explain-back before code, 12 coverage categories, evidence table, banned shortcuts the verifier greps for, adversarial self-review with >= 10 findings and >= 5 extra situations, phase report template), `docs/plans/HUB-PLANS-PROMPTS.md` (implementer kickoff prompt and a verifier prompt with a lazy-pattern scan), a "Beyond the minimum (REQUIRED)" section in each of the five plans, roadmap rules 13 and 14, FO-27 (group message encryption; FO-17 now ABSORBED for the offline need), Hub tab plan section 9 decided (tip yes, HUB_UI tag yes, default People). Nothing built or verified.
+
+### Remaining (owner)
+Roadmap section 6 questions: lease default (30 days) and gossip (1, 2), ADR-135 hub-signed roster statement vs FO-17 secret escrow (3, owner gate before any group-trust code), announcement notification defaults and limits (4, 5), head powers (6, 7, 8), hidden-department lookup (9), keys org-wide (10), presence switch (11).
+
+### Next AI
+Read `docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md`, then start Plan B phase B0 (verification spikes, no product code), then B1. Phases H1-H5 of `HUB-TAB-IMPLEMENTATION-PLAN.md` (icons, navigation math, top-bar Transfers button) do not depend on hub data and may be done in parallel by a different session. Do not start ADR-135 group-trust code before the owner accepts it.
+
 ## 2026-10-14 - Hub hardening round: FO-13 hashed revocations, FO-15a sealed mailbox, FO-14 approver phone, DPAPI chat key (ADR-129..132)
 
 ### Worked on

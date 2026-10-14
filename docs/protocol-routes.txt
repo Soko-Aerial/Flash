@@ -42,6 +42,7 @@ GET /api/v1/directory/departments
 GET /api/v1/directory/groups
 GET /api/v1/directory/me
 GET /api/v1/directory/members
+GET /api/v1/directory/sync
 GET /api/v1/groups/join-requests
 GET /api/v1/hub
 GET /api/v1/revocations

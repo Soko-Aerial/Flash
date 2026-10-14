@@ -75,6 +75,19 @@ Rules (AGENTS.md section 24 applies in full):
 | `radio.link.down` | same | the link ended or failed | `reason`, `kissOk` (frames decoded so far), `garbage`, `badEscape`, `oversize` (KISS decoder counters) |
 | `radio.tnc.params` | same | KISS parameters were sent after connect (only when configured) | `txDelayMs`, `p`, `slotMs`, `tailMs`, `fullDuplex` |
 
+### Offline Organization Trust probes (Plan B)
+
+| Probe | Emitted by (Phase) | When | Fields | Example Line | Status |
+|---|---|---|---|---|---|
+| `org.b01` | `IdentityKeyBindingInstrumentedTest` (Phase B0 / ORGT-B01) | Device probe verifying Keystore identity key binding to self-signed TLS leaf cert | `identFp`, `certFp`, `equal`, `fullPubKeySha256`, `insideSecureHardware`, `notAfter`, `notAfterCalYear` | `I/PROBE: org.b01 identFp=F5ACB0C2AC578DE8 certFp=F5ACB0C2AC578DE8 equal=true` | Emitted (ORGT-B01 device test) |
+| `org.gate.allow` | `OrgTrustGate` / `HubChatBridge` / `PeerTrustPolicy` (Phase B2) | Inbound frame or connection from an org member passes the org trust gate | `peer`, `org`, `dept`, `source`, `standing` | `I/PROBE: org.gate.allow peer=dev-a1b2 org=org-xyz dept=eng source=snapshot standing=ACTIVE` | Emitted (Phase B2) |
+| `org.gate.deny` | `OrgTrustGate` / `HubChatBridge` / `PeerTrustPolicy` (Phase B2) | Inbound frame or connection from an unpaired/untrusted peer fails the org trust gate | `peer`, `reason`, `org`, `dept` | `I/PROBE: org.gate.deny peer=dev-c3d4 reason=cross_dept_unscoped org=org-xyz dept=sales` | Emitted (Phase B2) |
+| `org.lease.expired` | Freshness & lease manager / `OrgPeerResolver` (Phase B2) | Org member statement or delegation passes validity window + offline grace period | `member`, `org`, `issuedAtMs`, `expiredAtMs`, `graceDays` | `I/PROBE: org.lease.expired member=dev-a1b2 org=org-xyz issuedAtMs=1730000000000 expiredAtMs=1732592000000 graceDays=30` | Emitted (Phase B2) |
+| `org.pin.replaced` | Trust store / pin manager / `OrgPeerResolver` (Phase B2) | A verified org member statement replaces an existing TOFU pin in the trust store | `peer`, `prevFp`, `newFp`, `source` | `I/PROBE: org.pin.replaced peer=dev-a1b2 prevFp=A1B2... newFp=C3D4... source=org_statement` | Emitted (Phase B2) |
+| `org.snapshot.applied` | `OrgDirectorySync` (Phase B1) | A verified signed organization directory snapshot is applied to local storage | `org`, `version`, `membersCount`, `revocationsCount`, `signer` | `I/PROBE: org.snapshot.applied org=org-xyz version=12 membersCount=45 revocationsCount=1 signer=hub-root` | Emitted (Phase B1) |
+| `org.gossip.accepted` | Gossip / peer exchange (Phase B4) | A peer-exchanged member statement or snapshot piece is verified and incorporated | `fromPeer`, `targetMember`, `org`, `version` | `I/PROBE: org.gossip.accepted fromPeer=dev-b5e6 targetMember=dev-f7a8 org=org-xyz version=12` | PLANNED, not emitted yet |
+| `org.gossip.ignored` | Gossip / peer exchange (Phase B4) | A gossiped frame is rejected or ignored | `fromPeer`, `reason` | `I/PROBE: org.gossip.ignored fromPeer=dev-b5e6 reason=older_version` | PLANNED, not emitted yet |
+
 A row first seen already finished (receiver) or with members already holding (sender) was restored after a restart; it produces no `swarm.*` line (ERROR-121), so every `swarm.*` line describes the current run.
 
 ### Reason codes
@@ -90,6 +103,12 @@ A row first seen already finished (receiver) or with members already holding (se
 | `no_matching_request` | a catch-up push that answers no request this device sent |
 | `no_other_active_member` | the group has nobody else to send to |
 | `not_a_swarm_offer` / `incomplete_offer` / `swarm_off_here` / `bad_announcement_signature` | why a swarm offer from an unpaired sender was unusable (`swarm.offer.ignored`) |
+| `unknown_member` | peer is not listed in verified org directory snapshot or member statement (`org.gate.deny`) |
+| `expired_statement` | member statement timestamp exceeds validity window + offline grace period (`org.gate.deny`) |
+| `delegation_revoked` | signing delegation key was revoked in current CRL / directory (`org.gate.deny`) |
+| `cross_dept_unscoped` | peer belongs to a different department and directory scoping does not permit access (`org.gate.deny`) |
+| `identity_mismatch` | peer TLS public key does not match the statement's subject public key (`org.gate.deny`) |
+| `older_version` / `stale_statement` | gossiped statement or directory snapshot is older than local version (`org.gossip.ignored`) |
 
 ## Reading a log (what the probes settle)
 
