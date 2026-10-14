@@ -166,7 +166,7 @@ Do not add features or change decisions (D1-D11, ADR-133..138 are final).
 
 Round 1 is merged into `dev`. Each stream agent FIRST runs `git merge dev` inside its own worktree (merge, never rebase), then works the list below.
 B1 wiring (coordinator, rate limit, Rule 8) is already done on `dev` (ORGT-U50..U58); do not redo it. Cloud agents need `dev` as a bundle (GitHub is not connected):
-`git bundle create ..lash-dev.bundle dev`.
+`git bundle create ..\flash-dev.bundle dev`.
 
 ## R2-1 — Antigravity, stream S1 (lead + 2 subagents)
 
@@ -184,7 +184,7 @@ in the canonical formats, never into logs/*.md, docs/decisions.md, docs/testing/
 (7) never touch the phone, never uninstall/clear the app, never print keys or tokens; (8) no new dependency or Gradle module without asking;
 (9) stop and ask the owner on any contradiction with the plan; do not guess; (10) finish with the contract section 7 report plus the exact gate commands and
 last output lines, and the list of shared files you touched with hunk sizes.
-Build and test ONLY through toolslash-gradle.cmd <gradle args> run from your worktree root.
+Build and test ONLY through tools\flash-gradle.cmd <gradle args> run from your worktree root.
 
 TASK: close the remaining defects of logs/streams/V-verifier/report.md for B1 and B2, each with a test that fails first and a mutation check. Defects 1, 2, 3, 4 and 6 are already fixed on dev; verify that and do not redo them.
  1. (5) OrgPeerResolver clear()/refreshFromSnapshot(): the dao reads happen outside the lock, so a refresh that started before clear() can repopulate after it. Serialise them (generation counter or one mutex) and add a race test.
@@ -212,7 +212,7 @@ in the canonical formats, never into logs/*.md, docs/decisions.md, docs/testing/
 (7) never touch the phone, never uninstall/clear the app, never print keys or tokens; (8) no new dependency or Gradle module without asking;
 (9) stop and ask the owner on any contradiction with the plan; do not guess; (10) finish with the contract section 7 report plus the exact gate commands and
 last output lines, and the list of shared files you touched with hunk sizes.
-Build and test ONLY through toolslash-gradle.cmd <gradle args> (the script now accepts bare :module:task arguments; use them) from your worktree root.
+Build and test ONLY through tools\flash-gradle.cmd <gradle args> (the script now accepts bare :module:task arguments; use them) from your worktree root.
 
 TASK, in this order:
  1. Server defects of the B1 verification (logs/streams/V-verifier/report.md items 8 and 9), in server/.../OrganizationDirectory.kt getSyncChanges and DirectoryRoutes.kt: prune tombstones after 90 days and answer fullResync when `since` is older than the oldest kept tombstone; paginate in SQL instead of loading and sorting in memory; a bad cursor must be an error (400), not a silent restart; members without a signed statement must be counted and reported, not silently dropped; make offlineGraceDays a server setting (default 30, clamp as the client does). Each with a failing test first and a mutation check. The directory sync rate limit was already raised on dev; keep that test.
