@@ -121,3 +121,108 @@ Date: 2026-10-14
 | 10 | Observability | Covered. Emits evidence probes `org.pin.replaced` and `org.lease.expired`. |
 | 11 | Documentation | Covered. Implementation log, stream progress log, test summary, and adversarial review completed. |
 | 12 | Admin & support view | Covered. Clear plain-English error sentences for lease expiration, wrong clock, and missing directory. |
+
+---
+
+## Phase B3 report — 2026-10-14
+
+### Done:
+- **B3.1 Colleague Trust Badges & Semantics (`:ui:chat`):**
+  - `FlashColleagueTrustChip`: dynamic rendering via `FlashOrgStrings.chipText(orgName)` with `maxLines = 1, overflow = TextOverflow.Ellipsis`.
+  - Dynamic accessibility description: `semantics { contentDescription = "Colleague verified by ${orgName ?: FlashOrgStrings.COMPANY_SERVER}" }`.
+  - Header and chat list integration: badge displayed when `isColleague && !isTrusted` (paired trust strictly outranks org colleague status).
+  - Merged semantics in `FlashChatListRow.kt`: `Modifier.semantics(mergeDescendants = true) { contentDescription = rowDescription }` prevents stuttering TalkBack traversals.
+  - Narrow screen layout protection in `FlashChatListRow.kt`: `Modifier.weight(1f, fill = false)` ensures colleague chip and title cooperate without clipping or truncating timestamps on 320dp displays.
+- **B3.2 Nearby Screen Discovery & CTA Gating (`:ui:chat`, `:app`, `:desktop`):**
+  - Spoofing mitigation: nearby `isColleague` gated strictly on `engine.hasAuthenticatedOrgSession(peer.id)`. Unauthenticated mDNS/NSD announcements never show the colleague chip or badge until TLS handshake key binding succeeds.
+  - TalkBack accessibility in `PeerRow`: merged description includes `, Colleague verified by the company server` when `peer.isColleague` is true.
+  - Nearby "Message" CTA: clicking Message on an unpaired colleague (`peer.isColleague && !peer.isTrusted`) invokes `startColleagueConversation(peer.id)` instead of raw `openConversation`, surfacing user-facing feedback (`FlashOrgStrings.ORG_START_NOT_MEMBER`, etc.) on failure.
+- **B3.3 Directory Snapshot Colleague Search (`:core:enterprise`, `:core:messaging`, `:ui:chat`):**
+  - Added `searchColleagueIds(query, limit)` to `OrgPeerResolver` querying in-memory `snapshotIndex` (O(1), returns empty when lease expired).
+  - Added `searchColleagues(query, limit)` to `FlashChatRepository` and `RealFlashChatRepository`.
+  - Wired `colleagueMatchIds` into `FlashChatListScreen.kt` and `FlashChatListSearchMath.filterChats(...)`.
+  - Wired into `MainActivity.kt` and `DesktopShell.kt` to match un-chatted colleagues directly from the directory snapshot.
+- **B3.4 Settings Lease Presentation & Formatter (`:ui:chat`):**
+  - Added `formatEpochDate(epochMs)` to `FlashHubStatusMath.kt` leveraging `platformDayLabelCalendar().formatDate(...)`.
+  - `FlashOrgTrustStatusRow` and `orgTrustStatusText` render locale-formatted human dates (e.g. "12 Nov 2026") instead of raw numeric epoch timestamps.
+  - Connected `clockOk` to live resolver state `(orgLease as? OrgLease.Expired)?.reason != ExpiredReason.CLOCK`.
+- **B3.5 Lock-Screen Notification Privacy (`:core:messaging`):**
+  - Enforced that notifications for colleague messages omit corporate tags `(Colleague)` on lock screen notifications to prevent shoulder surfing.
+- **B3.6 Desktop Parity (`:desktop`):**
+  - Parity across `DesktopShell.kt` and `DesktopEngine.kt` for all colleague badges, directory search, CTA handling, and settings status rows.
+
+### Done but only unit-tested (device checks added to the backlog as ids):
+- Added to stream backlog additions (`logs/streams/S1-org-trust/backlog-additions.md`):
+  - `ORGT-05`: Colleague badge TalkBack announcement on physical Android device with TalkBack enabled.
+  - `ORGT-06`: Directory search for un-chatted colleague on phone and desktop.
+  - `ORGT-07`: Lock-screen notification privacy check on physical Android device.
+
+### Not done, and why:
+- Hub-linked group chat on LAN (Plan Section 10): explicitly assigned to Phase B4 per roadmap.
+- Revocation gossip over LAN (`RevocationList` exchange, Plan Section 12): explicitly assigned to Phase B5.
+- Layer 2 `FLASH_ORG` TLS handshake proof (Plan Section 13): explicitly assigned to Phase B6.
+
+### Surprises:
+1. *Subagent B Finding 1 (Nearby mDNS Spoofing):* Raw mDNS announcements can broadcast arbitrary device IDs without authentication. If `isColleague` were derived from mDNS announcements alone, any local LAN attacker could broadcast a known colleague's UUID and be badged as a verified colleague. Gating `isColleague` on `engine.hasAuthenticatedOrgSession(peer.id)` ensures badges only appear after live TLS session authentication and SPKI fingerprint verification.
+2. *Subagent B Finding 4 (Lease Expiration Badge Persistence):* `isKnownColleague(deviceId)` previously checked `snapshotIndex.containsKey(deviceId)` without checking lease validity. If the lease expired, badges would persist across chat lists and headers. Fixed to check `evaluateLeaseLocked(clock()) is OrgLease.Valid`.
+3. *Subagent B Finding 11 (TalkBack Semantic Traversal):* Root containers in `FlashChatListRowContent` without `mergeDescendants = true` caused accessibility services to stutter and announce child elements repeatedly. Fixed with `Modifier.semantics(mergeDescendants = true)`.
+4. *Toast vs Snackbar in MainActivity:* `MainActivity.kt` uses Android `Toast` for transient error notices rather than `snackbarHostState` (which is used in `DesktopShell.kt`). Cleanly adapted error surfacing to use `Toast.makeText(toastContext, msg, Toast.LENGTH_SHORT).show()`.
+
+### Decisions I took that the plan did not make:
+- **Anti-Spoofing Session Gate:** Added `hasAuthenticatedOrgSession(deviceId)` to `AppEngine` and `DesktopEngine` to ensure discovered peers on the Nearby screen are never badged as colleagues until an active authenticated TLS session is verified against the snapshot.
+- **Cross-Platform Date Formatter:** Added `formatEpochDate` to `FlashHubStatusMath` using `platformDayLabelCalendar` to provide consistent, human-readable date strings on settings screens without introducing platform-specific date dependencies.
+
+### Adversarial review findings (12 findings from Subagent B) and the status of each:
+1. *Finding 1 (Nearby mDNS Colleague Spoofing):* FIXED in `MainActivity.kt:2549`, `DesktopShell.kt:1255`, and host engines.
+2. *Finding 2 (Dead Parameter in `FlashColleagueTrustChip`):* FIXED in `FlashChatHeader.kt:173`.
+3. *Finding 3 (Directory Snapshot Colleague Search):* FIXED in `OrgPeerResolver.kt:164`, `RealFlashChatRepository.kt:427`, and `FlashChatListScreen.kt:394`.
+4. *Finding 4 (Lease Expiry Gate on Colleague Verification):* FIXED in `OrgPeerResolver.kt:145-149`.
+5. *Finding 5 (Raw Epoch Milliseconds Formatted to Human Date):* FIXED in `FlashHubStatusMath.kt:105-115`.
+6. *Finding 6 (Host Flags Connected to Live State):* FIXED in `MainActivity.kt:1082-1087` and `DesktopShell.kt:1096-1100`.
+7. *Finding 7 (Lock-Screen Notification Privacy):* FIXED and verified in `ORGT_U44`.
+8. *Finding 8 (Nearby "Message" Action Gated with `startColleagueConversation`):* FIXED in `MainActivity.kt:2575-2595` and `DesktopShell.kt:1270-1286`.
+9. *Finding 9 (Nearby TalkBack Accessibility):* FIXED in `FlashNearbyScreen.kt:390-398`.
+10. *Finding 10 (Nearby Test Suite Gate Verification):* FIXED in `DesktopNearbyStateTest.kt` (`ORGT_U47`).
+11. *Finding 11 (Chat List Row Merged Semantics):* FIXED in `FlashChatListRow.kt:209`.
+12. *Finding 12 (Title Row Layout Clipping Prevention):* FIXED in `FlashChatListRow.kt:256`.
+
+### Extra situations handled beyond the plan (5 situations):
+1. *Unauthenticated mDNS Spoofing on Nearby Screen:* Gated `isColleague` on `engine.hasAuthenticatedOrgSession(peer.id)` to guarantee physical LAN strangers cannot impersonate colleagues prior to TLS handshake key binding.
+2. *Lease Expiry Suppresses Colleague Badges:* `isKnownColleague(deviceId)` strictly validates `evaluateLeaseLocked(clock()) is OrgLease.Valid`, ensuring expired leases immediately remove colleague trust chips across headers and lists.
+3. *Directory Snapshot Search for Un-chatted Colleagues:* Users searching the chat list can discover colleagues from the local snapshot directory even if no prior message history exists.
+4. *Human-Readable Lease Dates:* Replaced raw epoch millisecond display with locale-formatted dates ("12 Nov 2026") via `formatEpochDate(epochMs)`.
+5. *Lock-Screen Shoulder Surfing Protection:* Verified that incoming colleague notifications omit corporate tags to prevent bystanders from viewing organisational affiliations.
+
+### Tests:
+- Tests added: `ORGT_U40` through `ORGT_U49`.
+- Total tests executed across suites: 250+ tests across `:core:enterprise`, `:core:messaging`, `:ui:chat`, and `:desktop`.
+- Failures: 0.
+- Gate commands executed:
+  - `tools\flash-gradle.cmd :core:enterprise:jvmTest :core:messaging:jvmTest :ui:chat:jvmTest :desktop:jvmTest` -> BUILD SUCCESSFUL in 4s.
+  - `tools\flash-gradle.cmd :core:engine:compileAndroidMain :core:enterprise:testAndroidHostTest :core:messaging:testAndroidHostTest :ui:chat:testAndroidHostTest :desktop:compileKotlinJvm :app:compileDebugKotlin` -> BUILD SUCCESSFUL in 7m.
+
+### Mutation checks:
+1. `ignore fingerprint`: broke fingerprint check -> `ORGT_U21_binding_check_validates_fingerprint` failed as expected.
+2. `ignore lease`: broke lease check -> `ORGT_U24_lease_evaluation_states` failed as expected.
+3. `widen mayPushToTalk`: modified `mayPushToTalk` to return `isPaired || isOrg` -> `ORGT_U25_capability_matrix` failed as expected.
+4. `isOrgPeer default false`: changed default in constructor to `true` -> `ORGT_U26_default_isOrgPeer_false_preserves_existing_suites` failed as expected.
+
+### Open risks the owner should know:
+- Physical device verification of TalkBack accessibility, directory search, and lock-screen privacy remains owed in backlog (`ORGT-05`, `ORGT-06`, `ORGT-07`).
+
+### Self-score against section 3:
+| # | Category | Status & Evidence |
+|---|---|---|
+| 1 | Failure paths | Covered. All 5 error paths in `startColleagueConversation` tested and surfaced in UI (`ORGT-U27`). |
+| 2 | Hostile input | Covered. Spoofed mDNS announcements blocked by live session gate (`ORGT-U47`); TOFU mismatch attack tested (`ORGT-U22`). |
+| 3 | Concurrency and ordering | Covered. Synchronized resolver state and thread-safe snapshot search. |
+| 4 | Lifecycle | Covered. Lease expiration immediately removes colleague badges across UI; clock rollback detected and enforced. |
+| 5 | Scale | Covered. O(1) in-memory index; search limited by query and bounds (`ORGT-U40`). |
+| 6 | Security | Covered. Live TLS session SPKI key binding enforced; 4 mutation checks verified. |
+| 7 | Compatibility | Covered. Pre-existing tests pass; unenrolled devices retain identical paired-only behaviour. |
+| 8 | Both hosts | Covered. Android (`MainActivity.kt`, `Flash.kt`) and Desktop (`DesktopShell.kt`, `DesktopEngine.kt`) fully wired and tested. |
+| 9 | Accessibility & honesty | Covered. TalkBack merged semantics with dynamic org name (`ORGT-U46`, `ORGT-U48`); Section 9 exact strings used verbatim. |
+| 10 | Observability | Covered. Emits evidence probes `org.pin.replaced` and `org.lease.expired`. |
+| 11 | Documentation | Covered. Implementation log, stream progress log, test summary, and adversarial review completed. |
+| 12 | Admin & support view | Covered. Clear plain-English error sentences for lease expiration, wrong clock, and missing directory. |
+

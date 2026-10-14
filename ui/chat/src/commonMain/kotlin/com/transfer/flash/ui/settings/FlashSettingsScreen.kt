@@ -167,6 +167,8 @@ data class FlashSettingsModel(
     val hubSealing: FlashHubSealingUi? = null,
     /** Groups that were linked to this organisation before the last unenrol, restorable after enrolling again. */
     val hubRelinkableGroups: Int = 0,
+    /** Plan B Phase B3: The evaluated organisation colleague trust state (null if not enrolled or unsupported). */
+    val orgTrustState: FlashHubStatusMath.OrgTrustState? = null,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -318,7 +320,7 @@ object FlashSettingsMath {
         ),
         ENTERPRISE(
             "Enterprise & Organization", "Corporate hub relay, enrollment, and department directory",
-            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect", "Messages through the hub", "Connection", "Status", "Approve admin requests"),
+            listOf("Organization hub", "Colleague trust", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect", "Messages through the hub", "Connection", "Status", "Approve admin requests"),
         ),
     }
 
@@ -908,6 +910,9 @@ fun FlashSettingsScreen(
                                     onClick = {},
                                 )
                             }
+                        }
+                        if (model.orgTrustState != null && FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Colleague trust")) {
+                            FlashOrgTrustStatusRow(state = model.orgTrustState)
                         }
                         if (model.hubRelinkableGroups > 0 && onRestoreHubGroups != null && onForgetHubGroups != null) {
                             FlashHubRelinkOffer(count = model.hubRelinkableGroups, onRestore = onRestoreHubGroups, onForget = onForgetHubGroups)

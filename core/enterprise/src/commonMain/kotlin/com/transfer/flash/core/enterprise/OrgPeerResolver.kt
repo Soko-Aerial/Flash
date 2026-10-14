@@ -86,6 +86,12 @@ public interface OrgPeerResolver {
     public fun displayName(deviceId: String): String? = null
 
     /**
+     * Searches known colleague device IDs in the snapshot by query string (case-insensitive name/dept/role).
+     * Returns empty set if query is blank or if the lease is expired.
+     */
+    public fun searchColleagueIds(query: String, limit: Int = 20): Set<String> = emptySet()
+
+    /**
      * Current state of the organization lease.
      */
     public val lease: StateFlow<OrgLease>
@@ -185,8 +191,32 @@ public class RealOrgPeerResolver(
         }
     }
 
-    override fun isKnownColleague(deviceId: String): Boolean =
-        snapshotIndex.containsKey(deviceId)
+    override fun isKnownColleague(deviceId: String): Boolean {
+        val now = clock()
+        val currentLease = synchronized(lock) {
+            evaluateLeaseLocked(now)
+        }
+        return currentLease is OrgLease.Valid && snapshotIndex.containsKey(deviceId)
+    }
+
+    override fun searchColleagueIds(query: String, limit: Int): Set<String> {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) return emptySet()
+        val now = clock()
+        val currentLease = synchronized(lock) {
+            evaluateLeaseLocked(now)
+        }
+        if (currentLease !is OrgLease.Valid) return emptySet()
+        return snapshotIndex.values
+            .filter { peer ->
+                peer.displayName.lowercase().contains(q) ||
+                    peer.departmentId.lowercase().contains(q) ||
+                    peer.role.lowercase().contains(q)
+            }
+            .take(limit)
+            .map { it.deviceId }
+            .toSet()
+    }
 
     override fun displayName(deviceId: String): String? =
         snapshotIndex[deviceId]?.displayName

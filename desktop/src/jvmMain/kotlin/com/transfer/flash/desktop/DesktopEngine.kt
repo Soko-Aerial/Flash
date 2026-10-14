@@ -257,6 +257,16 @@ public class DesktopEngine(
     private var orgPeerResolverRef: com.transfer.flash.core.enterprise.OrgPeerResolver? = null
     public val orgPeerResolver: com.transfer.flash.core.enterprise.OrgPeerResolver?
         get() = orgPeerResolverRef
+
+    public fun isOrgPeer(deviceId: String): Boolean =
+        if (enterpriseTrustStore.isEnrolled) orgPeerResolverRef?.isOrgPeer(deviceId) == true else false
+
+    public fun isKnownColleague(deviceId: String): Boolean =
+        if (enterpriseTrustStore.isEnrolled) orgPeerResolverRef?.isKnownColleague(deviceId) == true else false
+
+    public fun hasAuthenticatedOrgSession(deviceId: String): Boolean =
+        network.activeSessions.value.containsKey(com.transfer.flash.core.common.model.FlashDeviceId(deviceId)) && isOrgPeer(deviceId)
+
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 

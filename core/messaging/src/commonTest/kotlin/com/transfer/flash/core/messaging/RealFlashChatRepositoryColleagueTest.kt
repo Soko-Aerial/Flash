@@ -243,7 +243,19 @@ class RealFlashChatRepositoryColleagueTest {
             return members[deviceId]
         }
 
-        override fun isKnownColleague(deviceId: String): Boolean = members.containsKey(deviceId)
+        override fun isKnownColleague(deviceId: String): Boolean =
+            _lease.value is OrgLease.Valid && members.containsKey(deviceId)
+
+        override fun searchColleagueIds(query: String, limit: Int): Set<String> {
+            if (_lease.value !is OrgLease.Valid) return emptySet()
+            val q = query.trim().lowercase()
+            if (q.isEmpty()) return emptySet()
+            return members.values
+                .filter { it.displayName.lowercase().contains(q) || it.departmentId.lowercase().contains(q) || it.role.lowercase().contains(q) }
+                .take(limit)
+                .map { it.deviceId }
+                .toSet()
+        }
 
         override fun displayName(deviceId: String): String? = members[deviceId]?.displayName
 
@@ -819,5 +831,174 @@ class RealFlashChatRepositoryColleagueTest {
             reactionDao.get("msg-1", "💥"),
             "MUTATION CHECK 4: Reaction must be dropped under default isOrgPeer; fails if default is mutated to true",
         )
+    }
+
+    @Test
+    fun ORGT_U38_conversationHeader_populates_isColleague_for_colleague_and_suppresses_for_paired() = runTest {
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(
+                colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
+            ),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        // 1. Unpaired colleague: isColleague = true
+        val repoColleague = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = resolver,
+        )
+        repoColleague.openConversation(colleagueAlice)
+        assertTrue(repoColleague.conversationState.value.header.isColleague, "Unpaired colleague must have isColleague=true")
+
+        // 2. Paired colleague: isColleague = false (paired outranks colleague)
+        val repoPaired = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { it == colleagueAlice },
+            orgPeerResolver = resolver,
+        )
+        repoPaired.openConversation(colleagueAlice)
+        assertFalse(repoPaired.conversationState.value.header.isColleague, "Paired status must suppress isColleague badge")
+
+        // 3. Stranger: isColleague = false
+        repoColleague.openConversation(strangerEve)
+        assertFalse(repoColleague.conversationState.value.header.isColleague, "Stranger must have isColleague=false")
+    }
+
+    @Test
+    fun `ORGT_U44_inboundColleagueMessageNotificationOmitsColleagueTagForLockScreenPrivacy`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        var notifiedSenderName: String? = null
+        var notifiedText: String? = null
+        var notifiedGroupTitle: String? = null
+
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Engineer", "Engineering", "Developer", "fp-alice", true)),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        val repo = RealFlashChatRepository(
+            localDeviceId = "me",
+            localDisplayName = "Me",
+            messageDao = FakeMessageDao(),
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            isTrustedPeer = { false },
+            isOrgPeer = { it == colleagueAlice },
+            orgPeerResolver = resolver,
+            onInboundTextMessageWithGroupTitle = { _, senderName, text, groupTitle ->
+                notifiedSenderName = senderName
+                notifiedText = text
+                notifiedGroupTitle = groupTitle
+            },
+        )
+
+        // Inbound message from colleague Alice
+        repo.onInboundWireFrame(
+            MessageWireFrame.TextMessage(
+                localId = "msg-alice-1",
+                conversationId = colleagueAlice,
+                senderId = colleagueAlice,
+                senderName = "Alice Engineer",
+                text = "Secret corporate plans",
+                sentAt = 1000L,
+            ),
+            transportPeerId = colleagueAlice,
+        )
+
+        assertEquals("Alice Engineer", notifiedSenderName)
+        assertEquals("Secret corporate plans", notifiedText)
+        assertNull(notifiedGroupTitle)
+        assertFalse(
+            notifiedSenderName?.contains("Colleague", ignoreCase = true) == true,
+            "Notification title must never leak '(Colleague)' on lock screens visible to bystanders",
+        )
+        assertFalse(
+            notifiedText?.contains("Colleague", ignoreCase = true) == true,
+            "Notification body must not contain colleague tag",
+        )
+    }
+
+    @Test
+    fun `ORGT_U41_expiredLeaseSuppressesColleagueChipInChatListAndHeader`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        val expiredResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice", "Eng", "Dev", "fp-alice", true)),
+            leaseState = OrgLease.Expired(sinceMs = 1000L, reason = ExpiredReason.TIME),
+        )
+
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = expiredResolver,
+        )
+
+        // Expired lease must evaluate isKnownColleague to false
+        assertFalse(expiredResolver.isKnownColleague(colleagueAlice), "isKnownColleague must return false when lease is expired")
+
+        repo.openConversation(colleagueAlice)
+        assertFalse(
+            repo.conversationState.value.header.isColleague,
+            "Expired lease must suppress isColleague badge in conversation header",
+        )
+    }
+
+    @Test
+    fun `ORGT_U40_searchColleaguesQueriesResolver`() = runTest {
+        val colleagueAlice = "colleague-alice-id"
+        val validResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Executive", "Finance", "CFO", "fp-alice", true)),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = validResolver,
+        )
+
+        // Matching query
+        val matches = repo.searchColleagues("Alice")
+        assertTrue(matches.contains(colleagueAlice), "searchColleagues must return colleague device ID matching name")
+
+        // Unmatched query
+        val noMatches = repo.searchColleagues("Zack")
+        assertTrue(noMatches.isEmpty(), "searchColleagues must return empty for unmatched query")
+
+        // Expired lease resolver
+        val expiredResolver = FakeOrgPeerResolver(
+            members = mapOf(colleagueAlice to OrgPeer(colleagueAlice, "Alice Executive", "Finance", "CFO", "fp-alice", true)),
+            leaseState = OrgLease.Expired(sinceMs = 1000L, reason = ExpiredReason.TIME),
+        )
+        val expiredRepo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            orgPeerResolver = expiredResolver,
+        )
+        assertTrue(expiredRepo.searchColleagues("Alice").isEmpty(), "searchColleagues must return empty when lease is expired")
     }
 }

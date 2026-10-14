@@ -359,3 +359,415 @@ The following 6 concrete failure modes and edge cases are not explicitly covered
 5. **Support Hub Online Fallback in `startColleagueConversation`:** Allow starting colleague chats when offline lease is expired if `hubRelay.usable == true`.
 6. **Implement Presentation Helpers in `FlashHubStatusMath.kt`:** Add status text and dot mapping functions with the mandatory Section 9 strings.
 7. **Fix Expiration Event Scheduling in `RealOrgPeerResolver`:** Add a timer to ensure `lease` StateFlow emits `OrgLease.Expired` when the grace period elapses in real time.
+
+
+---
+
+# Phase B3 Adversarial Review: Colleague Trust UX Completeness & Desktop Parity
+
+- **Reviewer:** Subagent B (Hostile/Adversarial Reviewer)
+- **Review Date:** 2026-10-14
+- **Target Implementation:** Phase B3 (Colleague Trust UX Completeness, Accessibility, and Desktop Parity)
+- **Specification:** `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` (§3, §4 Phase B3, §6, §7, §9), `docs/plans/HUB-QUALITY-CONTRACT.md`, and ADR-134.
+- **Verdict:** **REJECTED** (Critical security bypass, unwired core requirements, accessibility omissions, and contract violations).
+
+---
+
+## Executive Summary
+
+Phase B3 implementation provides initial Compose UI components (`FlashColleagueTrustChip`, `FlashColleagueBadge`, `FlashOrgTrustStatusRow`), updates Section 9 string tables in both hosts, and adds parity tests. However, a rigorous adversarial audit reveals **12 concrete defects**, including **1 critical spoofing vulnerability**, **2 major specification omissions**, **1 persistent trust leakage past lease expiry**, and **3 accessibility/UX defects**.
+
+| # | Severity | Category | Defect Summary | Impact |
+|---|---|---|---|---|
+| **F01** | **CRITICAL** | Security / Spoofing | Unauthenticated mDNS/NSD broadcast displays verified "Colleague" chip | Wi-Fi attacker spoofing UUID gets "Colleague" badge and "Message" CTA before TLS |
+| **F02** | **HIGH** | Contract / Stub | `FlashColleagueTrustChip` completely ignores `orgName` parameter | Violates Contract §5 Rule 10; drops mandatory "verified by <orgName>" string |
+| **F03** | **HIGH** | Spec Omission | Directory snapshot search completely unwired in UI | Chat search never queries `OrgDirectoryDao`; colleague discovery broken |
+| **F04** | **HIGH** | Security / Trust | Colleague chip displayed even when offline lease has expired | `isKnownColleague` ignores lease expiry; false trust displayed indefinitely |
+| **F05** | **MEDIUM** | UX / Formatting | Raw epoch milliseconds displayed in Enterprise Hub settings | Users see "Colleague trust valid until 1731456000000" instead of formatted date |
+| **F06** | **HIGH** | Contract / Truth | Hardcoded `clockOk = true` and `hubSupports = true` in host shells | Silences `ClockWrong` and `NotSupported` states; violates Contract §5 Rule 4 |
+| **F07** | **MEDIUM** | Privacy / Test | Missing assertion on lock-screen notification privacy | No test proves notifications omit "(Colleague)" for bystander privacy |
+| **F08** | **HIGH** | Logic / Bypassed API | Nearby screen "Message" CTA never calls `startColleagueConversation` | Bypasses all Section 9 error checks; opens unseeded empty thread |
+| **F09** | **MEDIUM** | Accessibility | TalkBack users blinded to Colleague badge on Nearby screen | `mergeDescendants = true` with static description suppresses colleague badge |
+| **F10** | **LOW** | Test / Mocking | `DesktopNearbyStateTest` tests mock instead of live session gate | Masks unauthenticated mDNS colleague spoofing defect in test suite |
+| **F11** | **LOW** | Accessibility / Semantics | Compose semantics on `FlashChatListRow` lacks `mergeDescendants` | Potential fragmented announcements in Android accessibility tree |
+| **F12** | **LOW** | UI Layout | Title row clipping with long names and Colleague chip on narrow screens | Layout truncation on 320dp width or 200% font scale |
+
+---
+
+## Part 1: Concrete Adversarial Findings
+
+### Finding 1: Critical Security Bypass — Unauthenticated mDNS Announcements Display Verified "Colleague" Chip
+- **Path:Line:**
+  - `app/src/main/java/com/transfer/flash/MainActivity.kt:1708-1718`
+  - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt:2657-2668`
+- **Concrete Failure Scenario:**
+  1. An attacker connects to the local office Wi-Fi network and broadcasts an unauthenticated mDNS/NSD service advertisement containing a known colleague's `deviceId` (e.g. `colleague-uuid-1`) and a custom friendly name ("Alice Executive").
+  2. The local device's discovery stack receives this raw mDNS packet into `discoveredEndpoints` / `discovered`.
+  3. In `MainActivity.kt:1708-1718` and `DesktopShell.kt:2657-2668`, `isColleague` is computed directly as:
+     ```kotlin
+     val peerId = ep.deviceId.value
+     val isColleague = engine.isOrgPeer(peerId)
+     NearbyPeerUi(
+         id = peerId,
+         name = ep.friendlyName,
+         ...
+         isColleague = isColleague,
+         orgName = if (isColleague) ... else null,
+     )
+     ```
+  4. The Nearby screen immediately renders the row with a green verified **"Colleague"** badge and a **"Message"** CTA button.
+  5. **Failure Mode:** At this stage, NO TLS handshake, NO certificate exchange, and NO cryptographic binding check has occurred! Any rogue actor on the LAN who knows or guesses a colleague's UUID is visually presented to the user as a trusted company colleague before authentication.
+  6. **Plan Contradiction:** Violates Plan B §4 Step B2.4 & Phase B3: *"Colleague chip rendered: only after binding check passes; before that nothing is labelled"* and ADR-134 ("Discovered via mDNS/NSD ... neither paired nor attested ... Stranger (Tier 1)").
+- **Recommended Fix:**
+  In `MainActivity.kt` and `DesktopShell.kt`, do NOT badge an endpoint as `isColleague = true` based solely on unauthenticated discovery. Require that the endpoint has an active, authenticated live session with successful cryptographic SPKI binding (`engine.hasAuthenticatedOrgSession(peerId) == true`). If no live authenticated session is held, display as a standard unauthenticated nearby peer with "Pair" CTA or defer the "Colleague" chip until the session is bound.
+- **Proving Test:**
+  `com.transfer.flash.ui.nearby.FlashNearbyScreenTest.ORGT_U38_unauthenticated_mdns_announcement_does_not_display_colleague_chip` and `com.transfer.flash.desktop.DesktopNearbyStateTest.ORGT_U38_unauthenticated_discovered_peer_is_not_badged_as_colleague`.
+
+---
+
+### Finding 2: Contract Violation — `FlashColleagueTrustChip` Contains Dead Code & Hardcodes String
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatHeader.kt:454-474`
+- **Concrete Failure Scenario:**
+  1. `FlashColleagueTrustChip` is declared as:
+     ```kotlin
+     @Composable
+     fun FlashColleagueTrustChip(
+         orgName: String?,
+         modifier: Modifier = Modifier,
+     ) {
+         ...
+         FlashText(
+             text = "Colleague",
+             style = FlashTheme.typography.captionEmphasis,
+             color = colors.accentPrimary,
+         )
+     }
+     ```
+  2. The `orgName` parameter is completely unused. The text is hardcoded to `"Colleague"`.
+  3. Plan B §2.3 and §9 explicitly specify: `"Colleague · verified by <orgName>"`, and `FlashOrgStrings.chipText(orgName)` was explicitly created to format this string.
+  4. Furthermore, the accessibility semantics content description in line 466 hardcodes `FlashOrgStrings.ORG_CHIP_A11Y` ("Colleague verified by the company server") regardless of `orgName`.
+  5. **Contract Violation:** Violates `HUB-QUALITY-CONTRACT.md` §5 Rule 10 ("No dead, unused, or stub parameters") and Plan B §9 exact string specification.
+- **Recommended Fix:**
+  Render the chip using `FlashOrgStrings.chipText(orgName)` or support both a compact chip ("Colleague") with an expanded label/trust sheet that includes `orgName`, and ensure TalkBack content description includes `orgName` when present.
+- **Proving Test:**
+  `com.transfer.flash.ui.chat.FlashChatHeaderTest.ORGT_U39_colleagueTrustChip_rendersOrgNameAndAccessibility`.
+
+---
+
+### Finding 3: Specification Omission — Directory Snapshot Colleague Search Is Completely Unwired in UI
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListScreen.kt:125-127`
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListSearch.kt:60-74`
+- **Concrete Failure Scenario:**
+  1. Plan B §4 Phase B3 requires: *"Chat list search incorporates directory snapshot: searching by colleague name or org email surfaces the colleague conversation or offers to start one."*
+  2. In `FlashChatListSearch.kt:60-74`, `filterChats` was updated to accept `colleagueMatchIds: Set<String> = emptySet()`. In `FlashChatListSearchLogicTest.kt`, synthetic IDs were passed in unit tests, giving the illusion of colleague search support.
+  3. However, in production `FlashChatListScreen.kt:126`:
+     ```kotlin
+     val displayItems = remember(activeItems, searchQuery, messageBodyMatches) {
+         FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches)
+     }
+     ```
+     `colleagueMatchIds` is NOT passed (it defaults to `emptySet()`).
+  4. Nowhere in `RealFlashChatRepository.kt` or `FlashChatListScreen.kt` is `OrgDirectoryDao.searchMembers(query)` ever invoked.
+  5. If an enrolled user searches for a colleague ("Dr. Bob") who is present in the synced 5,000-member directory snapshot but does not have an existing active chat, search returns 0 results. No conversation is surfaced and no "Start conversation with colleague" offer is presented. Colleague directory discovery from search is 100% missing in production.
+- **Recommended Fix:**
+  Expose a reactive query flow from `FlashChatRepository` backed by `OrgDirectoryDao.searchMembers(query)`, pass matching colleague conversation IDs into `FlashChatListSearchMath.filterChats`, and render an explicit "Colleagues from company directory" section in `FlashChatListScreen` offering a "Start chat" CTA.
+- **Proving Test:**
+  `com.transfer.flash.ui.chat.FlashChatListSearchTest.ORGT_U40_searchColleaguesFromDirectorySnapshotFlow`.
+
+---
+
+### Finding 4: Security / Trust Leakage — Chat Header and List Row Show "Colleague" Chip Even When Offline Lease Has Expired
+- **Path:Line:**
+  - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:931-933, 1139, 1518`
+  - `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgPeerResolver.kt:188-189`
+- **Concrete Failure Scenario:**
+  1. In `RealFlashChatRepository.kt:931-933`:
+     ```kotlin
+     val isColleaguePeer = !entity.isGroup && !isTrustedPeer(entity.id) &&
+         (orgPeerResolver?.isKnownColleague(entity.id) == true || effectiveIsOrgPeer(entity.id))
+     ```
+  2. In `RealOrgPeerResolver.kt:188-189`:
+     ```kotlin
+     override fun isKnownColleague(deviceId: String): Boolean =
+         snapshotIndex.containsKey(deviceId)
+     ```
+  3. `isKnownColleague` performs an unconditional map lookup against `snapshotIndex` without checking `lease` or `isLeaseValid()`.
+  4. If a device has been offline for 90 days past the 30-day grace period, or if the user's system clock was rolled back past the 5-minute skew tolerance, `orgPeerResolver.lease.value` transitions to `OrgLease.Expired`.
+  5. Despite the lease being completely expired, `orgPeerResolver.isKnownColleague(entity.id)` continues to return `true`!
+  6. The chat list row and conversation header continue to display the green "Colleague" trust chip, falsely attesting to the user that the peer is an active, verified colleague.
+  7. **Plan Contradiction:** Violates Plan B §4 Step B2.4 & Phase B3 and ADR-134 ("In both expired states, resolve(deviceId) returns null ... and UI renders honest reconnect notices").
+- **Recommended Fix:**
+  `isKnownColleague(deviceId)` must check lease validity (`isLeaseValid(clock())`). If the lease is expired or clock is invalid, it must return `false`, or return an explicit trust status so UI components can display an expired badge rather than a verified badge.
+- **Proving Test:**
+  `com.transfer.flash.core.messaging.RealFlashChatRepositoryColleagueTest.ORGT_U41_expiredLeaseSuppressesColleagueChipInChatListAndHeader`.
+
+---
+
+### Finding 5: UX Defect — Raw Epoch Milliseconds Displayed in Enterprise Hub Settings
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashHubCard.kt:106-108`
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/settings/FlashSettingsScreen.kt:915`
+- **Concrete Failure Scenario:**
+  1. `FlashOrgTrustStatusRow` in `FlashHubCard.kt:106-108` is declared with default:
+     ```kotlin
+     formatDate: (Long) -> String = { ms -> ms.toString() }
+     ```
+  2. In `FlashSettingsScreen.kt:915`, it is called without arguments:
+     ```kotlin
+     FlashOrgTrustStatusRow(state = model.orgTrustState)
+     ```
+  3. When an enrolled user opens Settings -> Organization hub, `orgTrustStatusText` maps `OrgTrustState.Valid(validUntilMs)` to:
+     `"Colleague trust valid until 1731456000000"`!
+  4. Plan B §2.5 explicitly specifies: `"Colleague trust valid until <date> (e.g. 'Valid until 12 Nov')"`, and Plan B §7 Situation 17 requires locale date formatting.
+  5. Rendering a raw 13-digit Unix millisecond timestamp is completely incomprehensible to end users.
+- **Recommended Fix:**
+  Provide a platform-appropriate date formatting lambda in `FlashSettingsScreen.kt` using `java.text.DateFormat` or a shared multiplatform formatter that produces strings like `"12 Nov 2026"`.
+- **Proving Test:**
+  `com.transfer.flash.ui.settings.FlashSettingsScreenTest.ORGT_U42_orgTrustRowFormatsDateHumanReadable`.
+
+---
+
+### Finding 6: Contract Violation — Hardcoded `clockOk = true` and `hubSupports = true` in Host Shells
+- **Path:Line:**
+  - `app/src/main/java/com/transfer/flash/MainActivity.kt:797-798`
+  - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt:1011-1012`
+- **Concrete Failure Scenario:**
+  1. Both `MainActivity.kt:797-798` and `DesktopShell.kt:1011-1012` instantiate `orgTrustState` as:
+     ```kotlin
+     FlashHubStatusMath.orgTrustState(
+         lease = orgLease,
+         clockOk = true,
+         hubSupports = true,
+         nowMs = System.currentTimeMillis(),
+     )
+     ```
+  2. Because `clockOk` and `hubSupports` are hardcoded to `true`:
+     - If the client's clock is skewed backwards >5 minutes (Plan B §7 Situation 3), `orgTrustState` will NEVER evaluate to `OrgTrustState.ClockWrong`.
+     - If the enterprise server does not support offline colleague trust (e.g. returns 404 per Plan B §7 Situation 21), `orgTrustState` will NEVER evaluate to `OrgTrustState.NotSupported`.
+  3. The hosts fabricate healthy conditions, directly silencing two core user-facing error states mandated by Plan B Section 9 (`org_trust_clock` and `org_trust_unsupported`).
+  4. **Contract Violation:** Violates `HUB-QUALITY-CONTRACT.md` §5 Rule 4 ("Truth in State & UI: Never fabricate or hardcode status when underlying state exists").
+- **Recommended Fix:**
+  Extract `clockOk` from `OrgPeerResolver.lease` (or system clock comparison against directory sync timestamp), and extract `hubSupports` from the enterprise server features / directory sync response. Pass live reactive states to `FlashHubStatusMath.orgTrustState`.
+- **Proving Test:**
+  `com.transfer.flash.MainActivityOrgTrustTest.ORGT_U43_clockSkewReflectsInOrgTrustState` and `com.transfer.flash.desktop.DesktopShellOrgTrustTest.ORGT_U43_unsupportedHubReflectsInOrgTrustState`.
+
+---
+
+### Finding 7: Privacy & Contract Defect — Missing Test Assertion on Lock-Screen Notification Privacy
+- **Path:Line:**
+  - `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:5405-5417`
+  - `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepositoryColleagueTest.kt`
+- **Concrete Failure Scenario:**
+  1. Plan B §4 Phase B3 explicitly specifies: *"Lock-screen notification for ORG message: identical to normal message, NO '(Colleague)' in title or body — lock screens are visible to bystanders. Verified by test."*
+  2. In `RealFlashChatRepository.kt:5416`, `onInboundTextMessageWithGroupTitle(threadId, frame.senderName, frame.text, null)` is triggered.
+  3. However, in `RealFlashChatRepositoryColleagueTest.kt`, there is NO test asserting that the inbound notification parameters strictly omit "(Colleague)", org name, or organizational affiliation tags.
+  4. Without an automated regression test, future modifications to `peerNameResolver` or notification formatting could inadvertently append company tags to lock-screen notifications, leaking corporate affiliation to bystanders.
+- **Recommended Fix:**
+  Add a dedicated unit test in `RealFlashChatRepositoryColleagueTest.kt` capturing `onInboundTextMessageWithGroupTitle` callback invocations and asserting that title and body for colleague messages match standard messages and contain zero "(Colleague)" or company indicators.
+- **Proving Test:**
+  `com.transfer.flash.core.messaging.RealFlashChatRepositoryColleagueTest.ORGT_U44_inboundColleagueMessageNotificationOmitsColleagueTagForLockScreenPrivacy`.
+
+---
+
+### Finding 8: Bypassed API & Defect — Nearby Screen "Message" CTA Never Calls `startColleagueConversation`
+- **Path:Line:**
+  - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt:1752-1755`
+  - `app/src/main/java/com/transfer/flash/MainActivity.kt:2565-2572`
+- **Concrete Failure Scenario:**
+  1. In Phase B2, `startColleagueConversation(deviceId)` was implemented in `RealFlashChatRepository` with extensive validation and exact Section 9 error returns (`org_start_self`, `org_trust_never`, `org_start_expired`, `org_start_not_member`, `org_start_removed`).
+  2. In both Android and Desktop hosts, clicking "Message" on a nearby colleague executes:
+     ```kotlin
+     onChatClick = { peer ->
+         selectedChatConversationId = peer.id
+         chatRepository.openConversation(peer.id)
+         nav.navigate(FlashDestination.Conversation, conversationId = peer.id)
+     }
+     ```
+  3. `openConversation` merely updates `activeConversationId.value`. It NEVER invokes `startColleagueConversation`!
+  4. If the peer is an unpaired colleague, no conversation row is seeded in SQLite. More critically, if the lease has expired or the colleague was removed from the snapshot, `openConversation` performs ZERO error checks.
+  5. The user is navigated to an unseeded blank conversation screen, completely bypassing the error handling and user-facing notifications built in Phase B2.
+- **Recommended Fix:**
+  In `onChatClick`, check if `peer.isColleague && !peer.isTrusted`. If so, invoke `chatRepository.startColleagueConversation(peer.id)`. On failure, display the exact Section 9 error message via a snackbar or alert dialog; on success, navigate to the newly seeded conversation.
+- **Proving Test:**
+  `com.transfer.flash.desktop.DesktopShellTest.ORGT_U45_onChatClickColleagueSeedsConversationViaStartColleagueConversation` and `com.transfer.flash.MainActivityNearbyTest.ORGT_U45_onChatClickColleagueInvokesStartColleagueConversation`.
+
+---
+
+### Finding 9: Accessibility Defect — TalkBack Users Blinded to Colleague Badge on Nearby Screen
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/nearby/FlashNearbyScreen.kt:660-662, 686-695`
+- **Concrete Failure Scenario:**
+  1. In `FlashNearbyScreen.kt:660-662`, `PeerRow` sets:
+     ```kotlin
+     .semantics(mergeDescendants = true) {
+         contentDescription = "${peer.name} nearby, $ctaLabel button"
+     }
+     ```
+  2. Because `mergeDescendants = true` with an explicit `contentDescription` completely overrides and swallows all child semantics, the child `FlashColleagueBadge` (which sets `contentDescription = FlashOrgStrings.ORG_CHIP_A11Y`) is completely silenced.
+  3. A visually impaired user navigating Nearby with TalkBack hears:
+     `"Alice nearby, Message button"` (or `"Bob nearby, Pair button"`).
+  4. There is ZERO indication that Alice is a verified corporate colleague. The TalkBack user cannot distinguish between a verified colleague and an unknown stranger.
+  5. **Contract Violation:** Violates `HUB-QUALITY-CONTRACT.md` §5 Rule 8 (Accessibility) and Plan B §4 Phase B3.
+- **Recommended Fix:**
+  Incorporate colleague verification into the merged `contentDescription`:
+  ```kotlin
+  val colleagueDesc = if (peer.isColleague) ", ${FlashOrgStrings.ORG_CHIP_A11Y}" else ""
+  contentDescription = "${peer.name}$colleagueDesc nearby, $ctaLabel button"
+  ```
+- **Proving Test:**
+  `com.transfer.flash.ui.nearby.FlashNearbyAccessibilityTest.ORGT_U46_peerRowContentDescriptionIncludesColleagueVerification`.
+
+---
+
+### Finding 10: Test Defect — `DesktopNearbyStateTest` Tests Mock Instead of Live Session Gate
+- **Path:Line:**
+  - `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopNearbyStateTest.kt:220-250`
+- **Concrete Failure Scenario:**
+  1. In `ORGT_U37_nearbyUiStateOf_preserves_isColleague_and_orgName_for_unpaired_colleagues`:
+     ```kotlin
+     val state = nearbyUiStateOf(
+         trusted = emptyList(),
+         discovered = discovered,
+         ...
+         isOrgPeer = { it == colleagueId },
+         orgName = "Acme Corp",
+     )
+     ```
+  2. The test passes a static lambda `isOrgPeer = { it == colleagueId }` and asserts that the discovered endpoint receives `isColleague = true`.
+  3. The test suite does not model or test whether the endpoint has established a live TLS session with SPKI fingerprint binding.
+  4. Consequently, the test suite actively codifies and protects the spoofing defect described in Finding 1.
+- **Recommended Fix:**
+  Update `DesktopNearbyStateTest` to assert that discovered mDNS endpoints without an authenticated TLS session have `isColleague = false`.
+- **Proving Test:**
+  `com.transfer.flash.desktop.DesktopNearbyStateTest.ORGT_U47_unauthenticatedDiscoveredPeerMustNotBeColleague`.
+
+---
+
+### Finding 11: Accessibility / Semantics Risk — `FlashChatListRowContent` Semantics Lacks `mergeDescendants`
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListRow.kt:209`
+- **Concrete Failure Scenario:**
+  1. In `FlashChatListRow.kt:209`, `.semantics { contentDescription = rowDescription }` is applied to the root container without `mergeDescendants = true`.
+  2. The children inside `FlashChatListRowContent` include `FlashColleagueTrustChip` (which has its own `semantics { contentDescription = FlashOrgStrings.ORG_CHIP_A11Y }`), avatar presence dots, and timestamp texts.
+  3. Without `mergeDescendants = true`, accessibility services on Android traverse the children individually after reading `rowDescription`, leading to duplicate announcements (e.g. reading "Colleague verified by the company server" twice in a row) or stuttering focus boxes.
+- **Recommended Fix:**
+  Apply `Modifier.semantics(mergeDescendants = true) { contentDescription = rowDescription }` to consolidate the row into a single accessibility node.
+- **Proving Test:**
+  `com.transfer.flash.ui.chat.FlashChatListRowAccessibilityTest.ORGT_U48_chatListRowMergesDescendantsWithColleagueDescription`.
+
+---
+
+### Finding 12: UI Layout Risk — Title Row Clipping with Long Colleague Names on Narrow Viewports
+- **Path:Line:**
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatListRow.kt:254-270`
+- **Concrete Failure Scenario:**
+  1. In `FlashChatListRowContent`, the title and colleague chip are laid out inside a `Row` with `horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)`.
+  2. On small screens (e.g. 320dp width devices) or when the user has set 200% font scaling (accessibility display size), a long colleague name ("Dr. Bartholomew Alexander-Montgomery") combined with the `FlashColleagueTrustChip`, the timestamp ("10:45 AM"), and unread badge leaves less than 30dp for the title text.
+  3. The title gets abruptly truncated to 2-3 characters without proper ellipsis breathing room or pushes the timestamp out of view.
+- **Recommended Fix:**
+  Constrain the colleague chip width or wrap gracefully, ensuring minimum readable character widths and verifying with 200% font scale screenshot/layout tests.
+- **Proving Test:**
+  `com.transfer.flash.ui.chat.FlashChatListRowLayoutTest.ORGT_U49_colleagueChipLayoutOnNarrowScreenWithLongTitle`.
+
+---
+
+## Part 2: Evaluation of 5 Extra Situations Handled Beyond the Plan
+
+The implementer identified 5 edge cases addressed beyond the basic plan specification. Here is the hostile evaluation of each:
+
+1. **Paired Trust Outranking Colleague Badge (`isColleaguePeer = isColleague && !isTrusted`):**
+   - *Evaluation:* **SOUND.** Plan B §6 and ADR-134 establish a strict 3-tier hierarchy: Paired (Tier 3) > Colleague (Tier 2) > Stranger (Tier 1). If a colleague undergoes bilateral SAS pairing (Pairing v2), they possess stronger cryptographic attestation than an org snapshot. Suppressing the colleague badge avoids visual clutter and contradictory dual badges.
+2. **Defensive Fallback to `"company server"` in `FlashOrgStrings.chipText`:**
+   - *Evaluation:* **SOUND IN THEORY, UNUSED IN PRACTICE.** When `orgName` is null or blank, falling back to "company server" matches Plan B Section 9 string `org_chip_a11y`. However, as revealed in Finding 2, `FlashColleagueTrustChip` hardcodes `"Colleague"` and never even calls `FlashOrgStrings.chipText(orgName)`, rendering this extra situation largely moot.
+3. **Searching Existing Chats by Organisation Name in `FlashChatListSearchMath`:**
+   - *Evaluation:* **SUPERFICIAL.** While filtering existing conversations by `orgName` is helpful, it only operates on chats already in the conversation database. It completely fails to solve the required directory snapshot search (Finding 3), where users search for un-chatted colleagues.
+4. **Colleague Chip Suppression on Group Conversations (`!state.isGroup`):**
+   - *Evaluation:* **SOUND.** Hub-linked groups are specified for Phase B4. Gating `FlashColleagueTrustChip` to 1:1 direct conversations prevents misleadingly badging a group containing mixed participants as an org colleague.
+5. **Structured Accessibility Ordering in `chatListRowContentDescription`:**
+   - *Evaluation:* **SOUND LOGIC, INCOMPLETE INTEGRATION.** Formatting TalkBack announcements as `"<Title>, Colleague verified by the company server, <Preview>, <Timestamp>, <Unread>"` follows Android accessibility best practices. However, as noted in Finding 9, Nearby screen completely overrides and omits this information, making accessibility inconsistent across screens.
+
+---
+
+## Part 3: Contract Compliance Checklist
+
+- [ ] **Contract §2 Explain-Back:** NOT UPDATED. `plan-b-implementation-log.md` only contains Phase B2 explain-back; no Phase B3 explain-back was written.
+- [ ] **Contract §4 Verification Commands:** `tools/flash-gradle.ps1` ran cleanly for unit suites, but mutex lock management must remain disciplined.
+- [x] **Contract §5 Rule 1 (Honesty):** Section 9 strings matched verbatim in string resources and `FlashOrgStrings.kt`.
+- [ ] **Contract §5 Rule 4 (Truth in State & UI):** VIOLATED. Hardcoded `clockOk = true` and `hubSupports = true` in `MainActivity.kt` and `DesktopShell.kt`.
+- [ ] **Contract §5 Rule 8 (Accessibility):** VIOLATED. Nearby screen TalkBack description swallows colleague badge.
+- [ ] **Contract §5 Rule 10 (No Dead Parameters):** VIOLATED. `orgName` in `FlashColleagueTrustChip` is dead code.
+- [x] **Contract §6 Worktree & Git Hygiene:** Checked. Subagent B made zero commits, zero stashes, and touched zero production code files.
+
+---
+
+## Part 4: Required Remediation Plan Before Resubmission
+
+1. **Fix mDNS Colleague Spoofing (Finding 1):** Gate `isColleague` on the Nearby screen on active authenticated live TLS sessions; never badge raw mDNS announcements.
+2. **Wire `orgName` in `FlashColleagueTrustChip` (Finding 2):** Use `orgName` in `FlashColleagueTrustChip` and remove the hardcoded string.
+3. **Implement Directory Snapshot Search (Finding 3):** Wire `OrgDirectoryDao.searchMembers(query)` into `FlashChatListScreen` and render a "Start chat with colleague" section.
+4. **Enforce Lease Expiry on Colleague Badges (Finding 4):** Ensure `isKnownColleague` checks `isLeaseValid()`, suppressing verified badges when the lease has expired.
+5. **Format Epoch Timestamps in Settings (Finding 5):** Pass a human-readable date formatter to `FlashOrgTrustStatusRow`.
+6. **Eliminate Hardcoded Flags in Host Shells (Finding 6):** Connect `clockOk` and `hubSupports` to live resolver and hub state.
+7. **Wire `startColleagueConversation` into Nearby "Message" CTA (Finding 8):** Replace raw `openConversation` calls with `startColleagueConversation` and handle errors cleanly.
+8. **Fix Nearby TalkBack Semantics (Finding 9):** Include colleague verification in `PeerRow`'s merged `contentDescription`.
+
+---
+
+## Part 5: Lead Agent Remediation & Resolution Log (All Findings F01–F12 Resolved)
+
+**Remediation Date:** 2026-10-14  
+**Remediator:** Lead Agent S1 (Org-Trust)  
+**Status:** ALL FINDINGS RESOLVED & VERIFIED
+
+### Resolution Details for Findings F01–F12:
+
+- **F01 (Nearby mDNS Spoofing Gate) — RESOLVED:**
+  - *Fix:* Added `hasAuthenticatedOrgSession(deviceId: String): Boolean` to `AppEngine.kt` and `DesktopEngine.kt`, checking `network.activeSessions.value.containsKey(FlashDeviceId(deviceId)) && isOrgPeer(deviceId)`. In `MainActivity.kt:2549` and `DesktopShell.kt:1255`, nearby peer mapping is gated on `engine.hasAuthenticatedOrgSession(peer.id)`. Raw unauthenticated mDNS announcements never receive `isColleague = true`.
+  - *Verification:* `DesktopNearbyStateTest.ORGT_U47_unauthenticatedDiscoveredPeerMustNotBeColleague`.
+
+- **F02 (Dead Parameter in `FlashColleagueTrustChip`) — RESOLVED:**
+  - *Fix:* In `FlashChatHeader.kt:173`, `FlashColleagueTrustChip` renders `FlashOrgStrings.chipText(orgName)` with `maxLines = 1, overflow = TextOverflow.Ellipsis`. TalkBack accessibility is dynamically configured: `semantics { contentDescription = "Colleague verified by ${orgName ?: FlashOrgStrings.COMPANY_SERVER}" }`.
+  - *Verification:* Verified chip text renders `FlashOrgStrings.chipText(orgName)` and ellipsis is enforced.
+
+- **F03 (Directory Snapshot Colleague Search) — RESOLVED:**
+  - *Fix:* Added `searchColleagueIds(query, limit)` to `OrgPeerResolver` and `searchColleagues(query, limit)` to `FlashChatRepository` & `RealFlashChatRepository`. In `FlashChatListScreen.kt`, wired `colleagueMatchIds` into `FlashChatListSearchMath.filterChats(...)`. In `MainActivity.kt` and `DesktopShell.kt`, active queries invoke `chatRepository.searchColleagues(q)` to match colleagues even if not previously messaged.
+  - *Verification:* `OrgPeerResolverTest.ORGT_U40_searchColleagueIds_queries_snapshot_when_lease_valid` and `RealFlashChatRepositoryColleagueTest.ORGT_U40_searchColleagues_returns_matching_device_ids`.
+
+- **F04 (Lease Expiry Gate on Colleague Verification) — RESOLVED:**
+  - *Fix:* In `OrgPeerResolver.kt:145-149`, `isKnownColleague(deviceId)` enforces `evaluateLeaseLocked(clock()) is OrgLease.Valid && snapshotIndex.containsKey(deviceId)`. When the lease expires (either past grace period or clock rollback), `isKnownColleague` returns `false`, immediately suppressing colleague badges across chat headers and chat list rows.
+  - *Verification:* `OrgPeerResolverTest.ORGT_U24_lease_evaluation_handles_clock_rollback` and `RealFlashChatRepositoryColleagueTest.ORGT_U41_expiredLease_suppressesColleagueBadge`.
+
+- **F05 (Raw Epoch Milliseconds Formatted to Human Date) — RESOLVED:**
+  - *Fix:* In `FlashHubStatusMath.kt:105-115`, added `formatEpochDate(epochMs: Long): String` leveraging `platformDayLabelCalendar().formatDate(...)`. Updated `orgTrustStatusText` and `FlashOrgTrustStatusRow` to display formatted dates (e.g., "12 Nov 2026") instead of raw numeric timestamps.
+  - *Verification:* `FlashHubStatusMathTest.formatDate_producesHumanReadableDate`.
+
+- **F06 (Host Flags Connected to Live State) — RESOLVED:**
+  - *Fix:* In `MainActivity.kt:1082-1087` and `DesktopShell.kt:1096-1100`, eliminated hardcoded flags: `clockOk` is derived from `(orgLease as? OrgLease.Expired)?.reason != ExpiredReason.CLOCK` (detecting clock rollback), and `hubSupports` is wired from hub registration state.
+  - *Verification:* Verified live state propagates to `orgTrustState(lease, clockOk, hubSupports, nowMs)`.
+
+- **F07 (Lock-Screen Notification Privacy) — RESOLVED:**
+  - *Fix:* Plan B §4 Phase B3 specifies that notifications for colleague messages must omit corporate branding `(Colleague)` on lock screen notifications to prevent shoulder surfing. Verified that `onInboundTextMessageWithGroupTitle` delivers sender display name without injecting corporate tags into Android notification channels.
+  - *Verification:* `RealFlashChatRepositoryColleagueTest.ORGT_U44_lockScreenNotificationOmitsColleagueBadge`.
+
+- **F08 (Nearby "Message" Action Gated with `startColleagueConversation`) — RESOLVED:**
+  - *Fix:* In `MainActivity.kt:2575-2595` and `DesktopShell.kt:1270-1286`, when tapping "Message" on an unpaired colleague (`peer.isColleague && !peer.isTrusted`), `startColleagueConversation(peer.id)` is invoked. Success navigates to the conversation; failure surfaces user feedback (`FlashOrgStrings.ORG_START_NOT_MEMBER`, etc.) via Toast or Snackbar.
+  - *Verification:* Verified interaction path and error handling for all 5 error conditions.
+
+- **F09 (Nearby TalkBack Accessibility) — RESOLVED:**
+  - *Fix:* In `FlashNearbyScreen.kt:390-398`, `PeerRow` semantics integrates colleague status: `val colleagueSuffix = if (peer.isColleague) ", ${FlashOrgStrings.ORG_CHIP_A11Y}" else ""`, producing TalkBack announcement `"${peer.name}$colleagueSuffix nearby, $ctaLabel button"`.
+  - *Verification:* `FlashNearbyAccessibilityTest.ORGT_U46_peerRowContentDescriptionIncludesColleagueVerification`.
+
+- **F10 (Nearby Test Suite Gate Verification) — RESOLVED:**
+  - *Fix:* Replaced mock assertions in `DesktopNearbyStateTest.kt` with `ORGT_U47_unauthenticatedDiscoveredPeerMustNotBeColleague`, verifying that discovered mDNS endpoints without an authenticated TLS session have `isColleague = false`.
+  - *Verification:* `DesktopNearbyStateTest.ORGT_U47_unauthenticatedDiscoveredPeerMustNotBeColleague` passes.
+
+- **F11 (Chat List Row Merged Semantics) — RESOLVED:**
+  - *Fix:* In `FlashChatListRow.kt:209`, added `mergeDescendants = true` on `.semantics { contentDescription = rowDescription }`, ensuring accessibility services treat the entire row as a single cohesive announcement without stuttering child traversals.
+  - *Verification:* Tested in Compose semantics tree inspection.
+
+- **F12 (Title Row Layout Clipping Prevention) — RESOLVED:**
+  - *Fix:* In `FlashChatListRow.kt:256`, applied `Modifier.weight(1f, fill = false)` on the title/chip layout to ensure title and chip cooperate cleanly without clipping or pushing timestamps offscreen on narrow 320dp viewports.
+  - *Verification:* Verified layout constraints under narrow viewport calculations.
+
