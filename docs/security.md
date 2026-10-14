@@ -408,3 +408,11 @@ Facts an operator must know. All of it is unit/e2e tested; none of it is device-
 - **Docker.** `.dockerignore` keeps keys, `keystore.properties`, `data.key`, setup tokens and tool-state directories out of the build context (checked by `DockerIgnoreTest`); `server/docker-compose.example.yml` binds the hub to loopback behind a proxy, read-only root, no capabilities. Pin the base image by digest for releases (the Dockerfile header says how).
 - **Logs.** The log never contains setup tokens, TOTP seeds, passwords, session or CSRF tokens or recovery codes (`LogHygieneTest`). Level INFO by default; `logback.xml` quiets Netty, Ktor, Jetty and SQLite.
 - **Audit.** New audit rows use a length-prefixed hash (`flash-audit-chain-v2`); `GET audit/verify` still verifies the older rows.
+
+
+## Hub: hashed revocations, sealed mailbox, approver phone; desktop chat key (ADR-129..132, 2026-10-14)
+
+- **Revoked ids.** The public revocation list (v3) holds `SHA-256(audience | deviceId)` per revoked device, not the ids. It stops casual reading; anyone holding a candidate id can still test it, so do not treat the list as secret.
+- **Mailbox at rest.** Payloads of queued messages are sealed with `data.key` (AES-256-GCM, AAD binds origin, target and message id). A copied database without `data.key` shows no payload. Metadata is still readable. Losing `data.key` loses the queue: back it up apart from the database.
+- **Approver phone.** With a phone bound, a stolen browser key plus a stolen session can no longer install a delegation, create or reset an administrator, or replace the signer: the phone must sign the same challenge and the person must compare six digits. If the phone is revoked the hub **refuses** (fail closed) until the account's recovery code removes the phone. Binding the first phone needs a fresh authenticator code, so a session cookie alone cannot name the attacker's phone. Residual risk: a person talked into approving a request they did not start.
+- **Desktop chat key.** The chat database passphrase file is wrapped with Windows DPAPI (same vault as the hub sealing key). It protects a copied profile, another Windows user and backups; it does not protect against malware running as the same user. A failed unprotect never overwrites the file.

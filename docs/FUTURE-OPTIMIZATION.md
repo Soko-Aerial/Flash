@@ -27,9 +27,9 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-10 | New-member history: ask before syncing, admin rule | 2026-10-07 | DESIGNED 2026-10-08, owner decisions taken (30 days default, no history = no files, returning member 7 days, any admin changes the ceiling): `docs/group/GROUP-SYNC-REVAMP-PLAN.md`. Not built |
 | FO-11 | Linux desktop as a committed target | 2026-10-07 | OPEN DECISION (owner, D-L1): `docs/LINUX-PORT-PLAN.md`; only Phase L0 (unbreak build/CI, audit `TASK-CORE-SEC-1`) is justified before it is answered |
 | FO-12 | Bluetooth direct transport and VHF/UHF radio (KISS TNC) bridge | 2026-10-07 | POSTPONED until the owner confirms it and hardware spike `BT-00` passes: `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`. Overlaps FO-02 (BLE discovery) and FO-03 (ADR-056 postponements) |
-| FO-13 | Hub revocation list served as hashed device ids (`SHA-256(serverId \| deviceId)`) | 2026-10-13 | POSTPONED (owner: leave the public list as is for now, ADR-127 P-1) |
-| FO-14 | Phone as co-signer for the most dangerous admin actions (delegation install, admin creation, signer replacement) | 2026-10-13 | POSTPONED (owner: browser key only for now, ADR-127 P-2) |
-| FO-15 | Hub database encryption (mailbox payload column, or the whole file) | 2026-10-13 | POSTPONED (owner: not now, ADR-127 P-4) |
+| FO-13 | Hub revocation list served as hashed device ids (`SHA-256(serverId \| deviceId)`) | 2026-10-13 | BUILT 2026-10-14 (ADR-129), unit-tested, not device-verified (owner asked for it; was POSTPONED by ADR-127 P-1) |
+| FO-14 | Phone as co-signer for the most dangerous admin actions (delegation install, admin creation, signer replacement) | 2026-10-13 | BUILT 2026-10-14 (ADR-131), unit-tested, not device-verified; no QR transport yet (was POSTPONED by ADR-127 P-2) |
+| FO-15 | Hub database encryption (mailbox payload column, or the whole file) | 2026-10-13 | FO-15a (payload column) BUILT 2026-10-14 (ADR-130); FO-15b (whole file) still POSTPONED (ADR-127 P-4) |
 | FO-16 | Several devices per member on the hub | 2026-10-13 | POSTPONED (owner: one device per member, ADR-127 P-5) |
 | FO-17 | Hub-only members receive a group's roster and secret through sealed hub messages | 2026-10-13 | DECIDED DIRECTION, not built: waits for group sealing (ADR-123, ADR-127 P-7) |
 
@@ -294,6 +294,8 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 
 **What.** `GET /api/v1/revocations` is public (rate limited per address) so a revoked device, which has no login, can still confirm its own revocation. It therefore lists every revoked device id in the clear. Option B of ADR-127 P-1: serve `SHA-256(serverId | deviceId)` per entry; a device hashes its own id and looks for it; outsiders learn nothing readable. The root signature still covers the whole list.
 
+**Update 2026-10-14: BUILT (ADR-129).** List v3 carries `revokedDeviceHashes`; see `docs/protocol.md` "Hub round 2026-10-14". Hub and clients must be updated together (an older client ignores a v3 list). The text below is the original parking note, kept as history.
+
 **Why parked.** Owner decision 2026-10-13: leave it. Revoked ids are not secrets by themselves and the endpoint is rate limited.
 
 **What the project assumes meanwhile.** The list holds plain ids (`docs/protocol.md` "Hub REST contract", `docs/security.md` "Public information"). Do not publish the hub address where "which device ids were removed" matters.
@@ -308,6 +310,8 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 
 **What.** Today a step-up confirmation (revoke a device, install a delegation, create an admin, replace the signer) is signed by a key in the administrator's browser. Option C of ADR-127 P-2: keep that for everyday actions, but require the administrator's enrolled phone (hardware-backed key, approval by QR or push) for `delegation.install`, `admin.create` and signer replacement.
 
+**Update 2026-10-14: BUILT (ADR-131)** except the QR transport: server, console card "Approver phone", hub client (`fetchApprovals`, `submitApproval`) and a Settings dialog "Approve admin requests" on Android and desktop. Device checks `APPR-01`...`APPR-08`. The text below is the original parking note, kept as history.
+
 **Why parked.** Owner decision 2026-10-13: browser key only for now.
 
 **What the project assumes meanwhile.** A stolen browser key plus a stolen session can take over the hub. The recovery-code rule of REV-11 limits only signer replacement. Run the console only on a trusted workstation, over a tunnel or an authenticated proxy.
@@ -319,6 +323,8 @@ Always useful whichever is chosen: detect "same subnet, unreachable" and tell th
 ---
 
 ## FO-15 — Hub database encryption
+
+**Update 2026-10-14:** FO-15a (mailbox payload column sealed with `data.key`) is BUILT (ADR-130). FO-15b (whole database file) stays postponed. The text below is the original parking note, kept as history.
 
 **What.** Mailbox payloads and the directory sit readable in `flash-hub.db`; only TOTP seeds are sealed (`enc1:`, REV-03). Options: encrypt just the mailbox payload column (small), or the whole file with sqlite-jdbc-crypt (the willena driver is already preferred in `resolveDriverClass`; needs a native driver per target, key hand-over and migration).
 

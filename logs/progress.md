@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-10-14 - Hub hardening round: FO-13 hashed revocations, FO-15a sealed mailbox, FO-14 approver phone, DPAPI chat key (ADR-129..132)
+
+### Worked on
+The owner asked for FO-13, FO-14, FO-15a and the Windows DPAPI wrapping of the desktop chat database key, and said not to use subagents (none were used).
+
+### Changed
+- **FO-13 (ADR-129):** `RevocationList` v3 (`audience`, `revokedDeviceHashes`, tag `flash-revocation-v3`), pure-Kotlin `Sha256` in `:core:hub-protocol`; server `ServerCerts`, `SqliteRevocationService` (hash rows, plain list republished as v3 at start), `RelayFrameRouter`, `KeyTool.revoke`; client-side checks use `revokesDevice`.
+- **FO-15a (ADR-130):** `SecretBox.sealBytes/openBytes`; mailbox migration v3 (`sealed`); `MailboxQueue` seals on insert, opens on fetch, seals legacy rows at start; `HubServices` passes one `data.key` box to the admin auth service and the mailbox.
+- **FO-14 (ADR-131):** hub-protocol `HubStepUp.approvalBytes/approvalCode`, DTOs, `PATH_APPROVALS`; server admin migration 3 (`approver_device_id`), `StepUpAuth` approval state (fail closed), `ApprovalRoutes`, admin API (`/stepup/{id}`, `/admins/me/approver`, `/approver/remove`, phone-first signer replacement); console (`stepup.js`, `ui/approvaldialog.js`, "Approver phone" card, strings, CSS); `HubClientAuth.signApproval`, `EnterpriseDirectoryClient.fetchApprovals/submitApproval`, `EnterpriseHub.pendingApprovals/approve`; `FlashApprovalsDialog` + Settings row "Approve admin requests" wired in `MainActivity` and `DesktopShell`.
+- **DPAPI (ADR-132):** `desktop/.../ChatDbKeyStore.kt`; `DesktopEngine.chatDbKey()` uses it.
+- Docs: ADR-129..132, ERROR-399, `docs/protocol.md` ("Hub round 2026-10-14"), `docs/security.md`, `docs/FUTURE-OPTIMIZATION.md`, `docs/ui/hub-admin-console.md` section 15, `docs/protocol-routes.txt` (+5 routes), AGENTS.md section 29, test backlog section 4zzzzzzzz.
+
+### Verification
+- `:core:hub-protocol:jvmTest` 145, `:core:security:jvmTest` 385 (2 skipped), `:core:enterprise:jvmTest` 165, `:server:test` 451: all 0 failed in the final run. `:desktop:jvmTest` `ChatDbKeyStoreTest` (10, includes real DPAPI on this Windows machine) and `DesktopEngineBootTest`. `:ui:chat` `FlashApprovalTextTest` and the settings tests. `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` compile. Node console tests: 60 pass (9 new in `stepup.test.mjs`). `:server:installDist` rebuilt.
+- Mutation checks (change the code, see tests fail, restore): hashed list (11 tests), sealed payloads (killed 3), `StepUpAuth.authorize` approval check (killed 3). All restored.
+- NOT done: any run in a browser, on a phone, against a real Windows profile with history, or an old client against a new hub.
+
+### Problems
+- A reconnect-race server test depended on frame order (ERROR-399); fixed in the test, cause of the timing change not proven.
+- `hubPost` handed any refusal body to the parser, so a 403 on an approval looked like success; approvals now use `refusalMayCarryBody = false` (found by the new test).
+
+### Remaining
+- No QR transport for approvals; the phone polls its list while the dialog is open (3 s). No notification when a request arrives.
+- FO-15b (whole database), FO-16, FO-17 stay deferred.
+- Old clients ignore a v3 revocation list: hub and clients must be updated together.
+- The user's running hub must be restarted from the new install (`server\build\install\server\bin\server.bat serve`); the first start migrates the admin and mailbox schemas and seals old mailbox rows.
+
+### Next AI
+Run the device checks in `docs/testing/TEST-BACKLOG.md` section 4zzzzzzzz (`RVH-*`, `MBX-*`, `CDK-*`, `APPR-*`). Do not weaken `HashedRevocationListTest`, `SealedMailboxPayloadTest`, `PhoneApprovalTest`, `PhoneApprovalApiTest`, `ChatDbKeyStoreTest`, `stepup.test.mjs`.
+
 
 
 
