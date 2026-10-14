@@ -876,27 +876,17 @@ public class DesktopEngine(
     public val receivedDirectory: File get() = _canonicalRoot
 
     /**
-     * Passphrase for the chat database. Random hex generated once and kept in
-     * `<stateDir>/chat/db-key.bin`, inheriting whatever OS protections `stateDir` has —
-     * the same trust model as the identity and trust stores beside it.
+     * Passphrase for the chat database: random hex generated once, kept in `<stateDir>/chat/db-key.bin` and, since ADR-132,
+     * protected by the identity vault (Windows DPAPI, the Linux keyring or key file) instead of sitting there as plain text.
+     * A legacy plain-text file is read once and rewritten protected. See [ChatDbKeyStore] for the failure rules.
      *
      * Per-device by design (D5 = C: no SQLCipher parity): losing this file means the next
      * boot mints a fresh key and the old history fails loudly (wrong-key reads are an
      * error, never an empty chat list — proven by `JdbcCipherSQLiteDriverTest`), rather
-     * than silently decrypting.
+     * than silently decrypting. A file that exists but cannot be unprotected is NOT replaced.
      */
-    private fun chatDbKey(): String {
-        val dir = File(stateDir, "chat").apply { mkdirs() }
-        val keyFile = File(dir, "db-key.bin")
-        val saved = runCatching { keyFile.takeIf { it.isFile }?.readText()?.trim() }
-            .getOrNull().orEmpty()
-        if (saved.isNotEmpty()) return saved
-        val fresh = ByteArray(32)
-            .also { java.security.SecureRandom().nextBytes(it) }
-            .joinToString("") { "%02x".format(it) }
-        runCatching { keyFile.writeText(fresh) }
-        return fresh
-    }
+    private fun chatDbKey(): String =
+        ChatDbKeyStore(File(stateDir, "chat"), hubSealingVault, log = { FlashLog.i(TAG_WS, it) }).passphrase()
 
     private val openHandles = ConcurrentHashMap<String, RandomAccessSinkHandle>()
     private val incomingMeta = ConcurrentHashMap<String, ChunkFrame.FileStart>()
