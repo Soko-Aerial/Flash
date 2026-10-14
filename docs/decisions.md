@@ -5190,3 +5190,104 @@ Create the KMP module `:core:enterprise` (artifact `core-enterprise`, same plugi
 
 ### Revisit when
 A second client (for example a Linux or iOS host) wants the hub client without `:core:security`, or the hub protocol gets a v3.
+
+
+## ADR-129 — The hub's revocation list names devices by hash (FO-13; list v3)
+
+### Status
+ACCEPTED 2026-10-14 (the owner asked for FO-13 to be built). Unit-tested; not device-verified.
+
+### Decision
+`RevocationList` version 3 (signed tag `flash-revocation-v3`) carries `audience` (the organisation's root fingerprint, uppercase hex) and `revokedDeviceHashes` (a set of `deviceHash(audience, deviceId)` = lower-case hex of `SHA-256("flash-revoked-device-v1" | audience | deviceId)` in `AuthCanonicalWriter` form). Serials and delegation serials stay numbers. A device checks `revokesDevice(deviceId)` (it hashes its own id). The root signature still covers every field. SHA-256 is a pure-Kotlin implementation in `:core:hub-protocol` (`Sha256.kt`, tested against the JDK and the NIST vectors) because the module does no platform cryptography.
+
+### Context
+`GET /api/v1/revocations` is public so a revoked device, which cannot log in, can still see its own revocation. The v2 list printed every revoked device id. Option B of ADR-127 P-1 was parked; the owner brought it back on 2026-10-14.
+
+### Alternatives considered
+- Keep plain ids (ADR-127 P-1 as it was): rejected now that the owner asked for the privacy.
+- Per-hub salted hash: rejected; the audience (root fingerprint) already separates organisations and the client knows it.
+- A bloom filter or a keyed hash with a secret: rejected; the device would need the secret, or false positives would revoke strangers.
+
+### Consequences
+- Device ids are guessable (UUID-like but also operator-chosen names), so the hash hides the list from a casual reader, not from someone who already has a candidate id. Documented in `docs/security.md`.
+- An **older client ignores a v3 list**: it neither crashes nor sees its own revocation by id (a serial entry still works). Hub and clients must be updated together; the hub republishes its plain list as v3 at startup (`republishPlainList()`) and `keytool revoke` writes v3.
+- `RelayFrameRouter` and the REST bearer use `list.revokesDevice`; the old `revokedDeviceIds` is still read for lists a hub already holds.
+
+### Revisit when
+A client older than this change must keep working against a new hub; then the hub would have to serve both lists (a version query parameter).
+
+---
+
+## ADR-130 — Mailbox payloads are encrypted at rest with the hub's data key (FO-15a)
+
+### Status
+ACCEPTED 2026-10-14. Unit-tested (`SealedMailboxPayloadTest`, `MailboxQueueTest`; a mutation check killed three tests); not run against a real restart on a device or a long-lived database.
+
+### Decision
+`mailbox_envelopes.payload` is stored as `nonce(12) || ciphertext+tag` (AES-256-GCM) under the hub's existing `data.key` (`SecretBox`), with the additional authenticated data `mailbox_envelopes.payload|<len>:origin|<len>:target|<len>:msgId`. A row moved to another envelope or another database therefore does not open. Migration v3 adds `sealed INTEGER NOT NULL DEFAULT 0`; `payload_bytes` keeps the plain size so the byte quota is unchanged. At start `sealLegacyPayloads()` seals the old plain rows in batches of 200. A row that cannot be opened is logged, skipped and **not deleted**.
+
+### Context
+The payload column holds what hubs relay for offline devices (already sealed end to end for direct messages, ADR-121/126, but readable for group traffic until ADR-123 lands). A copied database file should not hand that over.
+
+### Alternatives considered
+- Whole-database encryption (SQLCipher or file-level, FO-15b): still deferred by the owner; a native dependency and a build change for every platform.
+- A second key just for the mailbox: rejected; `data.key` already protects the TOTP seeds, one key to back up.
+- Encrypt only on a flag: rejected; `SecretBox.None` exists for tests, a running hub always has a key.
+
+### Consequences
+- **Losing `data.key` loses the queued mailbox** (and the sealed TOTP seeds, as before). Back it up apart from the database.
+- Metadata (origin, target, ids, times) stays readable in the database; only payload bytes are sealed.
+
+### Revisit when
+FO-15b (whole file), or when the mailbox must be searchable.
+
+---
+
+## ADR-131 — The administrator's phone co-signs the most dangerous console actions (FO-14)
+
+### Status
+ACCEPTED 2026-10-14. Server, console, hub client and phone/desktop settings dialog are built and unit-tested; the whole flow is NOT device-verified (tests `APPR-01`...`APPR-08`). No QR transport yet (the console shows six digits; the phone lists pending requests by polling).
+
+### Decision
+An administrator may bind **one approver phone** (an ACTIVE enrolled device with the admin role) to the account. Once bound, these console actions need that phone's signature as well as the browser key's: `delegation.install`, `admin.create` (also covers password and TOTP resets), `admin.signer.replace` and `approver.change`. `admin.signer.replace` is **phone only** (the browser key may be the one that was lost).
+
+Flow: the console asks for a step-up challenge; the hub puts `approvalRequired` and a six-digit `approvalCode` (derived from challenge id and server nonce, `HubStepUp.approvalCode`) in the answer; the browser key signs as before; the console shows the digits and polls `GET /admin/api/v1/stepup/{id}`. The phone lists `GET /api/v1/approvals` (device bearer), shows the same digits, signs `HubStepUp.approvalBytes` (domain `flash-hub-approval-v1`, fields: challenge id, action, admin, target, nonce) with its device identity key and posts `POST /api/v1/approvals/{id}`. The hub verifies against the key in its registry and marks the challenge approved; `authorize` then consumes it. Binding the first phone needs a fresh authenticator code (plus the browser key's confirmation when the admin has one); replacing it needs the old phone; removing it needs a **recovery code** (the loss path).
+
+### Context
+ADR-127 P-2 option C. A stolen browser key plus a stolen session could take over the hub; REV-11 limited only signer replacement.
+
+### Alternatives considered
+- Push notification to the phone: rejected; no push dependency in the hub (FCM out of scope, FO list).
+- QR only (console shows QR, phone scans): kept as a later transport; polling works on a LAN hub and with no camera.
+- Two approvers or an M-of-N rule: rejected for now; one phone plus recovery codes covers loss.
+- Fail open when the phone is unreachable: **rejected**. If the bound phone is revoked or no longer an admin device the hub answers `ERR_APPROVER_UNAVAILABLE` and the action does not happen; only the recovery-code removal unblocks it.
+
+### Consequences
+- The six digits protect against a request someone else raised: the person compares them before approving. They are not a secret.
+- REV-11 interplay: with a phone bound and a signer present, `/me/console-key` and `/me/device` check the phone's approval FIRST, then the recovery code (a missing approval must not burn a code).
+- A phone that approves a request it did not start is a social-engineering risk the UI wording warns about ("only approve a request you started yourself").
+- The approval state lives in the in-memory challenge (5 minutes); a hub restart drops pending approvals, the console says "not answered in time".
+
+### Revisit when
+A QR transport, push, or a second approver is wanted; or the phone UI moves out of Settings.
+
+---
+
+## ADR-132 — The desktop chat database key is wrapped with the OS vault (Windows DPAPI)
+
+### Status
+ACCEPTED 2026-10-14. Unit-tested including real DPAPI on Windows (`ChatDbKeyStoreTest`, `DesktopEngineBootTest`); not tested on a profile with an existing chat history.
+
+### Decision
+`<stateDir>/chat/db-key.bin` is `0x01 || vault.protect(passphrase bytes)`, using the same vault the hub sealing key already uses (`hubSealingVault`: DPAPI on Windows, owner-only file elsewhere). A legacy plain 64-hex file is read once and rewritten protected; **the passphrase does not change**, so the database is untouched. If unprotect fails the engine throws and **never replaces the file** (a replaced key would make the history unreadable for ever); the existing `runCatching` around the database open degrades chat instead. A missing or empty file mints a new key.
+
+### Context
+The key sat in a plain file next to the database, so a copied profile or a backup opened the history.
+
+### Consequences
+- Protects against a stolen copy, another Windows user and backups. It does **not** protect against malware running as the same user (DPAPI by design).
+- Moving the profile to another Windows account makes the history unreadable; it is not lost, it needs the original account.
+- Linux and macOS use the vault's owner-only file path; unchanged strength there.
+
+### Revisit when
+A password or biometric unlock for desktop is wanted, or the Android key storage is audited the same way.

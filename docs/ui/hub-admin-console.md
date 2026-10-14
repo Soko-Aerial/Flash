@@ -265,3 +265,11 @@ dialog focus trap and Escape returning focus, the session countdown.
 NOT exercised in a browser (tracked as `HUBU-*` in `docs/testing/TEST-BACKLOG.md`): enrolling and revoking a real enrolled device, the device table with data and
 5,000 rows, Organization with data, bulk invites, delegation install, password change, recovery-code regeneration, TOTP reset, session expiry mid-action, idle
 warning, invite print card, keyboard shortcuts dialog, Chrome / Firefox / Safari, screen readers, 200% zoom, air-gapped load.
+
+
+## 15. Approver phone (ADR-131, 2026-10-14)
+
+- **Security tab, account section:** a new card "Approver phone": status banner, the bound phone's name, a device picker (ACTIVE admin-role devices), an authenticator-code field (first phone only), "Bind this phone" / "Replace the phone", and "Remove (lost phone)" which asks for a recovery code.
+- **Waiting dialog:** `ui/approvaldialog.js` shows "Approve on your phone" with the six digits in large monospace and a Cancel button while `stepup.js` polls `GET /stepup/{id}` (every 1.5 s, local ceiling 6 minutes). Cancel, timeout, "approver unavailable" and "no approver" each have their own toast; none of them opens the "set up this browser" dialog.
+- **Signer replacement is phone only:** `enrol()` catches `ERR_STEP_UP`, obtains `admin.signer.replace` (no browser key) and retries with the id.
+- Tests: `server/admin-ui-tests/stepup.test.mjs` (9 cases); the Node suite is 60 tests. Strings: `approval.*`, `sec.appr.*`, `stepup.approval.*`. Not looked at in a browser yet (`APPR-01`).

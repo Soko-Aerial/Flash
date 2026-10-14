@@ -1186,6 +1186,7 @@ then the members. The signature is ECDSA P-256 / SHA-256, DER encoded, base64 on
 |---|---|---|---|
 | Device certificate | `flash-device-cert-v1` | deviceId, subjectPublicKey, role, department, validFrom, validTo, serial, issuerPublicKey | the hub's delegated key |
 | Delegation | `flash-delegation-v1` | rootPublicKey, delegatePublicKey, scopes (set), validFrom, validTo, maxDevices (int), serial | the organisation root key |
+| Revocation list v3 (ADR-129) | `flash-revocation-v3` | version, audience, revokedSerials, revokedDeviceHashes, revokedDelegationSerials, issuerPublicKey | root, or a delegate with `revoke:member`; clients since 2026-10-14 read it |
 | Revocation list | `flash-revocation-v2` | version, revokedSerials (set), revokedDeviceIds (set), revokedDelegationSerials (set), issuerPublicKey | root, or a delegate with `revoke:member` |
 | Relay / REST authentication | `flash-hub-auth-v1` | serverId, serverNonce, clientNonce, deviceId, certSerial | the device key |
 | Enrolment proof of possession | `flash-hub-enroll-v1` | token, deviceId, subjectPublicKey, serverId | the device key |
@@ -1459,6 +1460,15 @@ The full list of routes the hub answers is `docs/protocol-routes.txt`; `RouteTab
 - **Step-up.** `settings.change` binds the new value (`<key>=<value>` is the challenge target). A signer (browser key or bound device) is installed with a fresh authenticator code only while the administrator has none; once one exists, replacing it needs one of the administrator's recovery codes in `code` (else `403 ERR_SIGNER_EXISTS`). New recovery codes (`POST admins/me/recovery-codes`) need step-up `recovery.regenerate` when a signer exists (REV-11, REV-14).
 - **Own password.** `POST admins/me/password` is limited per administrator: after repeated wrong current passwords the answer is `429` with `Retry-After`, independent of the sign-in lock (REV-10).
 - **Audit chain.** Records written from schema step 2 are hashed length-prefixed (`flash-audit-chain-v2`); older rows verify with the original `a|b|c` form (REV-15).
+
+### Hub round 2026-10-14: hashed revocation list v3, phone approvals (ADR-129, ADR-130, ADR-131)
+
+- **Revocation list v3.** `audience` = `HubClientAuth.rootFingerprintHex(rootPublicKey)` (uppercase hex). `deviceHash(audience, deviceId)` = lower-case hex SHA-256 over `AuthCanonicalWriter("flash-revoked-device-v1").text(audience).text(deviceId)`. Golden: `deviceHash("TEST-AUDIENCE","dev-1")` = `5889627c...68c0` (full value in `HashedRevocationListTest`). `GET /api/v1/revocations` serves v3; `keytool revoke` signs v3; the hub republishes its plain list as v3 at startup. A client that does not know v3 ignores the list.
+- **Mailbox at rest.** Not a wire change: `mailbox_envelopes.payload` is sealed with AES-256-GCM (`sealed=1`), AAD `mailbox_envelopes.payload|<len>:origin|<len>:target|<len>:msgId`. See ADR-130.
+- **Approvals (device bearer).** `GET /api/v1/approvals` -> `[ApprovalDto{challengeId, action, admin, target, nonce, code, expiresAtMs}]` for the calling device (empty when it is nobody's approver). `POST /api/v1/approvals/{challengeId}` body `ApprovalSubmitBody{signature}` (Base64, DER or P1363, at most 256 chars) over `HubStepUp.approvalBytes(challengeId, action, admin, target, nonce)` (domain `flash-hub-approval-v1`) -> `{ok:true}` or 403 `ERR_FORBIDDEN` (expired, already answered, not this device's, not the bound approver). Six-digit code: `HubStepUp.approvalCode(challengeId, nonce)`; golden `("c-1","n0nce")` = `396796`, `("c-2","n0nce")` = `530814`.
+- **Console API.** `POST /admin/api/v1/stepup/challenge` now also returns `approvalRequired`, `approvalCode`, `browserKeyRequired` (false for `admin.signer.replace`); `GET /admin/api/v1/stepup/{id}` -> `StepUpStatusDto{verified, approvalRequired, approved, expiresAtMs}` (404 when expired or another admin's); `POST /admin/api/v1/admins/me/approver` `{deviceId, code}` (first phone: fresh TOTP, plus browser step-up `approver.change` when a signer exists; replacing: step-up with the old phone's approval); `POST /admin/api/v1/admins/me/approver/remove` `{code}` (a recovery code). `SessionDto` and `AdminDto` gain `approverDeviceId`. New error codes in challenge creation: `ERR_APPROVER_UNAVAILABLE` (bound phone revoked or no longer an admin device; fail closed), `ERR_NO_APPROVER` (signer replacement needs a bound phone).
+- **Actions needing the phone when one is bound:** `delegation.install`, `admin.create`, `admin.signer.replace` (phone only), `approver.change`. Admin schema migration 3 adds `admin_users.approver_device_id`; mailbox migration v3 adds `sealed`.
+- The checked route list (`docs/protocol-routes.txt`) has the five new routes.
 
 ### Compatibility
 

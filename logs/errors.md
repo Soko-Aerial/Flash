@@ -10463,3 +10463,30 @@ bracketed), or the external URL when the console is on the public port. Test `Se
 
 ### Status
 RESOLVED in code 2026-10-14 (unit-tested; owner to confirm the banner link opens)
+
+
+## ERROR-399 - `RelayDeliveryContractTest` acknowledgement race changed once the revocation check hashed ids (test-only fix)
+
+### Date
+2026-10-14
+
+### Area
+`:server` relay tests / FO-13
+
+### Symptoms
+During the hashed revocation list work (ADR-129) the reconnect-race test in `RelayDeliveryContractTest` (`after-race`) failed intermittently: right after `bob2` received the message it read alice's `Ack` from her frame list, and the ack had not arrived yet.
+
+### Root cause
+**Not proven.** The test assumed that alice's ack is already there when bob2 has the delivery; the hub writes the two frames separately and the contract promises no order between them. Whether the new `list.revokesDevice` check changed the timing or the test was always racy was not isolated.
+
+### Working fix
+The test now waits (`awaitUntil`) for alice's ack before asserting its status. No production code was changed for this.
+
+### Verification
+`:server:test` 451 tests, 0 failed in the final run of 2026-10-14. Not stress-run in a loop, so intermittence is not ruled out.
+
+### Related files
+- `server/src/test/kotlin/com/transfer/flash/server/relay/RelayDeliveryContractTest.kt`
+
+### Status
+RESOLVED in the test; root cause of the timing change OPEN (low priority). Listed with the other known flaky server tests in `logs/handoff.md`.

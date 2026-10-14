@@ -2576,6 +2576,90 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 - **Pass:** the admin shows `SWARM announce ... origin=false` (a swarm offer), not only `Data channel joined`. If the admin still gets a whole-file push, capture which `sw1` feature set the sender had for it (the cause is unproven).
 - **Source:** ERROR-117 "Bug 3". **Status:** TODO
 
+### 4zzzzzzzz. Hub hardening round: hashed revocations, sealed mailbox, approver phone, DPAPI chat key (ADR-129..132, 2026-10-14)
+
+All of this is unit-tested only. Nothing here has been run on a phone, a real hub for days, or a Windows profile with history.
+
+#### RVH-01 - A revoked device sees its revocation through a v3 list
+- **Setup:** current hub build, a phone with the current build enrolled.
+- **Steps:** revoke the phone's device in the console; wait for the relay to drop it; watch the phone.
+- **Pass:** the phone shows "your organisation removed this device" within about a minute; `GET /api/v1/revocations` shows `revokedDeviceHashes` and no readable device id.
+- **Source:** ADR-129, FO-13. **Status:** TODO
+
+#### RVH-02 - An older phone build against the new hub
+- **Setup:** the phone build from before 2026-10-14 enrolled with the hub, then the hub updated.
+- **Steps:** revoke that phone.
+- **Pass:** the relay still closes the session (`REVOKED`); record whether the old app shows the notice or only fails to connect (an old client ignores a v3 list by design). Write the result into ADR-129.
+- **Source:** ADR-129. **Status:** TODO
+
+#### RVH-03 - `keytool revoke` then console install
+- **Steps:** `keytool revoke` a delegation serial, install the file in the console (step-up).
+- **Pass:** the hub accepts a v3 root-signed list; devices under that delegation are refused; a device revoked earlier by hash stays revoked.
+- **Source:** ADR-129. **Status:** TODO
+
+#### MBX-01 - Hub restart with legacy plain mailbox rows
+- **Setup:** a hub database from before this change with queued messages for an offline phone.
+- **Steps:** start the new hub; read the log; open the database (`sqlite3`): `SELECT sealed, count(*) FROM mailbox_envelopes GROUP BY 1`; then connect the phone.
+- **Pass:** every row has `sealed=1`, the phone receives all messages intact and acknowledges them.
+- **Source:** ADR-130, FO-15a. **Status:** TODO
+
+#### MBX-02 - Restore the database without `data.key`
+- **Steps:** copy the database to a fresh data directory with a new `data.key`; start the hub; connect a recipient with queued mail.
+- **Pass:** the log says rows cannot be opened; the rows are NOT deleted; the hub keeps running; restoring the old `data.key` makes them deliverable again.
+- **Source:** ADR-130. **Status:** TODO
+
+#### CDK-01 - Desktop chat key migrates on a real Windows profile
+- **Setup:** a Windows desktop install with chat history and the old plain `db-key.bin`.
+- **Steps:** note `chat/db-key.bin` (64 hex characters); start the new build; open a conversation with history; inspect the file.
+- **Pass:** history opens; the file now starts with byte `0x01` followed by binary data (not hex); a second start still opens the history.
+- **Source:** ADR-132. **Status:** TODO
+
+#### CDK-02 - A copied profile does not open
+- **Steps:** copy the whole state directory to another Windows user (or another PC) and start Flash there.
+- **Pass:** chat degrades with a log line about the key; the copied `db-key.bin` is NOT replaced; the original profile still works.
+- **Source:** ADR-132. **Status:** TODO
+
+#### APPR-01 - Bind an approver phone
+- **Setup:** hub console in a browser with a console key; a phone enrolled with the admin role.
+- **Steps:** Security -> Approver phone -> choose the phone, enter the current authenticator code, Bind.
+- **Pass:** the card shows "Approver phone bound" and the phone's name; the audit log has `admin.approver.bind`; a wrong code is refused with the "not right" text.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-02 - Install a delegation with the phone
+- **Steps:** start a delegation install in the console; the dialog shows six digits; on the phone open Settings -> Enterprise -> Approve admin requests.
+- **Pass:** the phone lists the request with the same six digits and the sentence "Install the hub's signing delegation"; after Approve the console proceeds and the install succeeds; the audit log has `stepup.approval.accepted`.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-03 - Cancel and timeout
+- **Steps:** start the same action, press Cancel in the console dialog; start again and let it run 6 minutes without approving.
+- **Pass:** Cancel -> "Cancelled. Nothing was changed."; the wait ends with "Your phone did not answer in time"; nothing was installed; a stale request disappears from the phone's list.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-04 - A request someone else raised
+- **Steps:** sign in as the same admin in a second browser and start a dangerous action there; compare the digits in each console with the phone's list.
+- **Pass:** each request has its own digits; approving one does not approve the other.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-05 - The phone is revoked (fail closed)
+- **Steps:** revoke the bound phone; try to create an administrator.
+- **Pass:** the console says the approver phone is not available; nothing is created; the action does not go through without the phone.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-06 - Lost phone: remove it with a recovery code
+- **Steps:** Approver phone -> Remove (lost phone) -> one recovery code; then bind a new phone.
+- **Pass:** the code works once (the recovery-codes count drops by one); a wrong code is refused; afterwards dangerous actions need the browser key alone until a phone is bound again.
+- **Source:** ADR-131. **Status:** TODO
+
+#### APPR-07 - Replace the console key with the phone
+- **Steps:** with a phone bound, "Replace" the browser key (Security -> key card) from a browser that has no key.
+- **Pass:** the console asks the phone only (no browser-key prompt), then the recovery code rule still applies; a missing approval does not burn the recovery code.
+- **Source:** ADR-131, ERROR-390. **Status:** TODO
+
+#### APPR-08 - Replace the approver phone
+- **Steps:** bind phone B while phone A is bound.
+- **Pass:** phone A must approve (and the browser key confirm); phone B alone cannot take over.
+- **Source:** ADR-131. **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

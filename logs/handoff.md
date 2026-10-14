@@ -1,5 +1,14 @@
 # Current Handoff
 
+## Update 2026-10-14 (latest): hub hardening round built, uncommitted until the line below says otherwise
+
+- **Built, unit-tested, NOT device-verified:** FO-13 hashed revocation list v3 (ADR-129), FO-15a sealed mailbox payloads (ADR-130), FO-14 approver phone (ADR-131: server, console card, hub client, Settings dialog "Approve admin requests" on Android and desktop; no QR), desktop chat DB key wrapped with DPAPI (ADR-132). Summary and numbers: `logs/progress.md` 2026-10-14.
+- **Operator notes:** restart the hub from the new install; back up `data.key` apart from the database (losing it loses the queued mailbox); update hub and phones together (older phones ignore a v3 revocation list).
+- **Owed tests:** `RVH-01`...`03`, `MBX-01`/`02`, `CDK-01`/`02`, `APPR-01`...`08` (backlog section 4zzzzzzzz).
+- **Open:** ERROR-399 (test-only fix, timing cause not proven). Known flaky: `RelayLoadTest.everyMessageArrivesAtLeastOnceDespiteRandomDisconnects`, `GroupJoinTest` refused-join, `FlashStressLogicTest` 2000-message timing.
+- **Next:** device checks above; then QR transport / phone notification for approvals if the owner wants it (ADR-131 "Revisit"). FO-15b, FO-16, FO-17 are still deferred (owner decisions 2026-10-13).
+- Committed 2026-10-14 on `dev` (newest first): 1a6cd6f0 e786af52 16bca574 e081bdd6 (docs commit follows; `git log` has it).
+
 ## Update 2026-10-13 (late): owner decisions recorded, extraction plan ready
 
 - Owner answers to ADR-127 P-1..P-6 are in `docs/decisions.md` (ADR-127 addendum). Direct META/Send stay UNSCOPED (inter-department messaging is wanted); one device per member (FO-16); hub-only group roster/secret (FO-17) is a chosen direction and is NOT implemented.
