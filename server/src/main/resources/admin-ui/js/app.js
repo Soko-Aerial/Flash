@@ -41,7 +41,13 @@ export function rearmExpiry() {
   expiredSignalled = false;
 }
 
-export const stepUp = createStepUp({ api, getUsername: () => session.user });
+/** Registered by main.js: shows the "approve on your phone" dialog and returns {cancelled(), close()}. */
+let approvalHook = () => null;
+export function setApprovalHook(fn) {
+  approvalHook = fn;
+}
+
+export const stepUp = createStepUp({ api, getUsername: () => session.user, onApproval: (info) => approvalHook(info) });
 
 /** Registered by main.js: opens the "set up confirmation on this browser" dialog; resolves true when a key was registered. */
 let enrolHook = async () => false;
@@ -61,6 +67,9 @@ export async function guarded(action, target, perform, { rethrow = false } = {})
     if (e instanceof StepUpError) {
       if (e.reason === 'unsupported') toast(t('stepup.unsupported'), { kind: 'error' });
       else if (e.reason === 'rejected') toast(t('stepup.rejected'), { kind: 'error' });
+      else if (e.reason === 'approval-timeout') toast(t('stepup.approval.timeout'), { kind: 'error' });
+      else if (e.reason === 'approver-unavailable') toast(t('stepup.approval.unavailable'), { kind: 'error' });
+      else if (e.reason === 'no-approver') toast(t('stepup.approval.none'), { kind: 'error' });
       else toast(t('stepup.cancelled'), { kind: 'warning' });
     } else if (e instanceof ApiError && e.code === 'ERR_STEP_UP') {
       toast(t('stepup.expired'), { kind: 'error', reference: e.correlationId });

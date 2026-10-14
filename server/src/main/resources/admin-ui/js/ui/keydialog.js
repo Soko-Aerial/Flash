@@ -7,6 +7,7 @@ import { t } from '../i18n.js';
 import { openDialog } from './dialog.js';
 import { button, field, textInput, banner, withBusy } from './widgets.js';
 import { ApiError } from '../api.js';
+import { StepUpError } from '../stepup.js';
 import { session } from '../state.js';
 import { toast } from './toast.js';
 
@@ -60,7 +61,8 @@ export function askToEnrol(reason, stepUp) {
           toast(t('keydialog.done'), { kind: 'success' });
           dlg.close(true);
         } catch (e) {
-          if (e instanceof ApiError && e.code === 'ERR_SIGNER_EXISTS') codeField.setError(t('keydialog.code.needRecovery'));
+          if (e instanceof StepUpError) codeField.setError(t('stepup.approval.' + (e.reason === 'approval-timeout' ? 'timeout' : e.reason === 'cancelled' ? 'cancelled' : e.reason === 'approver-unavailable' ? 'unavailable' : 'none')));
+          else if (e instanceof ApiError && e.code === 'ERR_SIGNER_EXISTS') codeField.setError(t('keydialog.code.needRecovery'));
           else if (e instanceof ApiError && e.status === 403) codeField.setError(t('keydialog.code.refused'));
           else if (e instanceof ApiError && e.status === 429) codeField.setError(t('error.rate.wait', { seconds: e.retryAfter || 30 }));
           else codeField.setError((e && e.message) || t('error.generic'));

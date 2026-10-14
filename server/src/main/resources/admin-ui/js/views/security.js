@@ -18,6 +18,7 @@ import { askToEnrol } from '../ui/keydialog.js';
 import { stepUp } from '../app.js';
 import { delegationBody } from './delegation.js';
 import { downloadText } from './setup.js';
+import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
 import { setActiveTable } from '../shortcuts.js';
 
 const TABS = ['account', 'admins', 'sessions', 'delegation', 'revocations', 'trust'];
@@ -80,6 +81,7 @@ export function mountSecurity(container, ctx) {
     const pwHost = h('div', { class: 'stack' });
     const recHost = h('div', { class: 'stack' });
     const totpHost = h('div', { class: 'stack' });
+    const apprHost = h('div', { class: 'stack' });
     mount(
       panel,
       h(
@@ -89,12 +91,14 @@ export function mountSecurity(container, ctx) {
         card({ title: t('sec.pw.title'), id: 'sec-pw' }, pwHost),
         card({ title: t('sec.rec.title'), subtitle: t('sec.rec.sub'), id: 'sec-rec' }, recHost),
         card({ title: t('sec.totp.title'), subtitle: t('sec.totp.sub'), id: 'sec-totp' }, totpHost),
+        card({ title: t('sec.appr.title'), subtitle: t('sec.appr.sub'), id: 'sec-appr' }, apprHost),
       ),
     );
     renderKeyCard(keyHost);
     renderPasswordCard(pwHost);
     renderRecoveryCard(recHost);
     renderTotpCard(totpHost);
+    renderApproverCard(apprHost);
   }
 
   async function renderKeyCard(host) {
@@ -134,6 +138,111 @@ export function mountSecurity(container, ctx) {
       ]),
       h('div', { class: 'form-actions start' }, enrol, forget),
       h('p', { class: 'muted small', text: t('sec.key.limits') }),
+    );
+  }
+
+  // ADR-131 (FO-14): the approver phone. Binding the first one needs a fresh authenticator code (and this browser's confirmation when it has
+  // a key); replacing it needs the old phone's approval; removing it (the lost-phone path) needs a recovery code.
+  async function renderApproverCard(host) {
+    mount(host, skeleton('lines', 2));
+    let dto;
+    let names;
+    try {
+      [dto, names] = await Promise.all([api.get('/session'), loadDeviceNames(true)]);
+    } catch (e) {
+      mount(host, errorState(e, () => renderApproverCard(host)));
+      return;
+    }
+    const bound = dto.approverDeviceId || null;
+    const hasSigner = !!dto.enrolledDeviceId;
+    let picked = null;
+    const pickedNote = h('p', { class: 'muted small', role: 'status', 'aria-live': 'polite' });
+    const picker = devicePicker({
+      label: t('sec.appr.pick'),
+      onPick: (d) => {
+        picked = d;
+        pickedNote.textContent = t('sec.appr.picked', { name: d.name || d.deviceId });
+      },
+      exclude: () => new Set(bound ? [bound] : []),
+    });
+    const code = textInput({ inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 8, className: 'input-code' });
+    const codeField = field({ label: t('sec.appr.code'), control: code, hint: t('keydialog.code.hint') });
+    const go = button({ label: bound ? t('sec.appr.replace') : t('sec.appr.bind'), icon: 'key', variant: 'primary' });
+    go.addEventListener('click', () =>
+      withBusy(go, async () => {
+        codeField.clearError();
+        if (!picked) {
+          pickedNote.textContent = t('sec.appr.pick');
+          return;
+        }
+        const deviceId = picked.deviceId;
+        const clean = code.value.replace(/\s+/g, '');
+        try {
+          if (!bound && !/^\d{6}$/.test(clean)) {
+            codeField.setError(t('keydialog.code.invalid'));
+            code.focus();
+            return;
+          }
+          const send = (id) => api.post('/admins/me/approver', { deviceId, code: clean }, id ? { stepUp: id } : undefined);
+          let ok;
+          if (bound || hasSigner) ok = await guarded('approver.change', 'approver:' + deviceId, (id) => send(id), { rethrow: true });
+          else ok = await send(null);
+          if (ok === undefined) return;
+          toast(t('sec.appr.done'), { kind: 'success' });
+          await renderApproverCard(host);
+        } catch (e) {
+          if (e && e.status === 403) codeField.setError(t('keydialog.code.refused'));
+          else if (e && e.status === 429) codeField.setError(t('error.rate.wait', { seconds: e.retryAfter || 30 }));
+          else toastError(e);
+        }
+      }),
+    );
+    const remove = bound
+      ? button({
+          label: t('sec.appr.remove'),
+          variant: 'ghost',
+          icon: 'trash',
+          on: {
+            click: () => {
+              const rc = textInput({ autocomplete: 'off', maxlength: 64, className: 'input-code' });
+              rc.setAttribute('data-autofocus', '');
+              const rf = field({ label: t('sec.appr.remove.code'), control: rc, required: true });
+              const rm = button({ label: t('sec.appr.remove'), variant: 'danger' });
+              const dlg = openDialog({
+                title: t('sec.appr.remove.title'),
+                size: 'sm',
+                body: [h('p', { text: t('sec.appr.remove.text') }), rf.el],
+                actions: [button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), rm],
+              });
+              rm.addEventListener('click', () =>
+                withBusy(rm, async () => {
+                  rf.clearError();
+                  try {
+                    await api.post('/admins/me/approver/remove', { code: rc.value.replace(/\s+/g, '') });
+                    dlg.close();
+                    toast(t('sec.appr.removed'), { kind: 'success' });
+                    await renderApproverCard(host);
+                  } catch (e) {
+                    if (e && e.status === 403) rf.setError(t('sec.appr.remove.refused'));
+                    else if (e && e.status === 429) rf.setError(t('error.rate.wait', { seconds: e.retryAfter || 30 }));
+                    else rf.setError((e && e.message) || t('error.generic'));
+                    rc.focus();
+                  }
+                }),
+              );
+            },
+          },
+        })
+      : null;
+    mount(
+      host,
+      banner({ tone: bound ? 'ok' : 'warn', text: bound ? t('sec.appr.bound') : t('sec.appr.none') }),
+      bound ? dl([[t('sec.appr.device'), deviceLabel(names, bound)]]) : null,
+      picker.el,
+      pickedNote,
+      bound ? null : codeField.el,
+      h('div', { class: 'form-actions start' }, go, remove),
+      h('p', { class: 'muted small', text: t('sec.appr.limits') }),
     );
   }
 

@@ -12,6 +12,7 @@ export const session = {
   sessionId: '',
   stepUpAvailable: false,
   enrolledDeviceId: null,
+  approverDeviceId: null,
   lastActivity: Date.now(),
 };
 
@@ -23,6 +24,7 @@ export function setSession(dto) {
   session.sessionId = dto.sessionId || '';
   session.stepUpAvailable = !!dto.stepUpAvailable;
   session.enrolledDeviceId = dto.enrolledDeviceId || null;
+  session.approverDeviceId = dto.approverDeviceId || null;
   if (dto.serverTimeMs) session.skewMs = dto.serverTimeMs - Date.now();
   session.lastActivity = Date.now();
   emit();
@@ -41,6 +43,7 @@ export function clearSession() {
   session.sessionId = '';
   session.stepUpAvailable = false;
   session.enrolledDeviceId = null;
+  session.approverDeviceId = null;
   emit();
 }
 

@@ -184,6 +184,7 @@ td .link-btn:hover .cell-title { text-decoration: underline; }
   background-repeat: no-repeat;
 }
 .input-code { font-family: var(--font-mono); letter-spacing: 0.12em; font-size: var(--fs-md); }
+.approval-code { font-family: var(--font-mono); font-size: 2rem; letter-spacing: 0.2em; text-align: center; font-weight: 600; margin: 1rem 0; }
 .input-num { max-width: 160px; font-variant-numeric: tabular-nums; }
 .input-search { padding-left: 36px; }
 .file-input { width: 100%; padding: var(--s-2); border: 1px dashed var(--c-border); border-radius: var(--r-control); background: var(--c-sunken); }
