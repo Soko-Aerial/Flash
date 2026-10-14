@@ -494,4 +494,60 @@ class OrganizationDirectorySyncTest {
         val err429 = HubRestCodec.decode<ErrorBody>(res3.bodyAsText())
         assertEquals(HubErrorCodes.ERR_RATE_LIMIT, err429.code)
     }
+
+    @Test
+    fun `ORGT-S20 a cursor that does not parse is rejected, not restarted`() {
+        val dir = OrganizationDirectory.open(ServerDatabase.inMemory())
+        dir.createDepartment("d", "D", emptyList(), isOrgAdmin = true)
+        val actor = DirectoryActor("admin-root", null, MemberRole.ORG_ADMIN)
+        for (bad in listOf("!!!", Base64.encode("nounderscore".encodeToByteArray()), "bm9fdW5kZXJzY29yZV8="/*"no_underscore_"*/)) {
+            kotlin.test.assertFailsWith<InvalidDirectoryCursorException>(bad) {
+                dir.getSyncChanges(since = 0L, cursor = bad, limit = 10, actor = actor)
+            }
+        }
+    }
+
+    @Test
+    fun `ORGT-S21 tombstones older than 90 days are pruned and a client behind the watermark gets a full resync`() {
+        var now = 1_000_000_000L
+        val dir = OrganizationDirectory.open(ServerDatabase.inMemory(), clock = { now })
+        dir.createDepartment("d", "D", emptyList(), isOrgAdmin = true)
+        dir.addDepartmentMember("d", "gone", "Gone", role = MemberRole.MEMBER, subjectPublicKey = testSpki("G"))
+        dir.addDepartmentMember("d", "stay", "Stay", role = MemberRole.MEMBER, subjectPublicKey = testSpki("S"))
+        val behind = dir.currentVersion
+        dir.removeDepartmentMember("d", "gone")
+        val actor = DirectoryActor("admin-root", null, MemberRole.ORG_ADMIN)
+        val before = dir.getSyncChanges(since = behind, cursor = null, limit = 10, actor = actor)
+        assertEquals(listOf("gone"), before.removedDeviceIds)
+        assertFalse(before.fullResync)
+
+        assertEquals(0, dir.pruneTombstones(), "nothing is old yet")
+        now += OrganizationDirectory.TOMBSTONE_RETENTION_MS + 1
+        assertEquals(1, dir.pruneTombstones())
+        assertTrue(dir.prunedThroughVersion > behind)
+
+        val after = dir.getSyncChanges(since = behind, cursor = null, limit = 10, actor = actor)
+        assertTrue(after.fullResync, "the deletion can no longer be told, so the client must start over")
+        val caughtUp = dir.getSyncChanges(since = dir.currentVersion, cursor = null, limit = 10, actor = actor)
+        assertFalse(caughtUp.fullResync)
+    }
+
+    @Test
+    fun `ORGT-S22 the prune watermark survives a restart`() {
+        var now = 1_000_000_000L
+        val db = ServerDatabase.inMemory()
+        val dir = OrganizationDirectory.open(db, clock = { now })
+        dir.createDepartment("d", "D", emptyList(), isOrgAdmin = true)
+        dir.addDepartmentMember("d", "gone", "Gone", role = MemberRole.MEMBER, subjectPublicKey = testSpki("G"))
+        dir.removeDepartmentMember("d", "gone")
+        now += OrganizationDirectory.TOMBSTONE_RETENTION_MS + 1
+        dir.pruneTombstones()
+        val mark = dir.prunedThroughVersion
+        assertTrue(mark > 0)
+        val reopened = OrganizationDirectory.open(db, clock = { now })
+        assertEquals(mark, reopened.prunedThroughVersion)
+        val actor = DirectoryActor("admin-root", null, MemberRole.ORG_ADMIN)
+        assertTrue(reopened.getSyncChanges(since = 1L, cursor = null, limit = 10, actor = actor).fullResync)
+        assertFalse(reopened.getSyncChanges(since = 1L, cursor = null, limit = 10, actor = actor).removedDeviceIds.contains("watermark"))
+    }
 }

@@ -98,6 +98,9 @@ data class DepartmentMember(
     val version: Long = 0L,
 )
 
+/** The sync cursor did not parse; the route answers 400 instead of restarting from the beginning. */
+class InvalidDirectoryCursorException : IllegalArgumentException("The directory sync cursor is not valid.")
+
 /** Tombstone tracking deletion of an entity for incremental directory sync. */
 data class DirectoryTombstone(
     val entityType: String,
@@ -323,12 +326,40 @@ class OrganizationDirectory(
         tombstones[type to id] = DirectoryTombstone(type, id, version, nowMs)
     }
 
+    /**
+     * Highest tombstone version that was pruned. A client whose `since` is below it can no longer be told what was
+     * deleted, so it gets a full resync (plan B1.2, verifier defect 8). Persisted as a reserved tombstone row
+     * (`_pruned`) so it survives a restart without a schema migration.
+     */
+    var prunedThroughVersion: Long = 0L
+        private set
+
+    /** Deletes tombstones older than [retentionMs] (default 90 days) and raises [prunedThroughVersion]. Returns how many. */
+    fun pruneTombstones(retentionMs: Long = TOMBSTONE_RETENTION_MS): Int = lock.write {
+        val cutoff = clock() - retentionMs
+        val old = tombstones.values.filter { it.entityType != PRUNE_MARK && it.deletedAtMs < cutoff }
+        if (old.isEmpty()) return@write 0
+        val watermark = maxOf(prunedThroughVersion, old.maxOf { it.deletedAtVersion })
+        persist { c ->
+            c.update("DELETE FROM directory_tombstone WHERE entity_type <> ? AND deleted_at_ms < ?", PRUNE_MARK, cutoff)
+        }
+        old.forEach { tombstones.remove(it.entityType to it.entityId) }
+        prunedThroughVersion = watermark
+        recordTombstoneLocked(PRUNE_MARK, "watermark", watermark)
+        old.size
+    }
+
     fun resetEpoch(newEpoch: String = UUID.randomUUID().toString()) = lock.write {
         epochId = newEpoch
         persist { c ->
             c.update("UPDATE directory_state SET epoch_id = ?, last_bumped_at_ms = ? WHERE id = 1", epochId, clock())
         }
     }
+
+    /** Members of the last sync page that had no signed statement and were left out (the route reports it). */
+    @Volatile
+    var unsignedOnLastPage: Int = 0
+        private set
 
     fun getMemberStatement(deviceId: String): OrgMemberStatement? = lock.read { memberStatements[deviceId] }
 
@@ -1134,7 +1165,8 @@ class OrganizationDirectory(
         requestedEpoch: String? = null,
     ): DirectorySyncDto = lock.read {
         val now = clock()
-        val isFullResync = since > currentVersion || (requestedEpoch != null && requestedEpoch != epochId)
+        val isFullResync = since > currentVersion || (requestedEpoch != null && requestedEpoch != epochId) ||
+            (since in 1 until prunedThroughVersion)
         val effectiveSince = if (isFullResync) 0L else since.coerceAtLeast(0L)
 
         // Filter departments visible to actor
@@ -1158,13 +1190,13 @@ class OrganizationDirectory(
             .filter { it.version > effectiveSince }
             .sortedWith(compareBy({ it.version }, { it.deviceId }))
 
-        // Parse cursor: format "$version_$deviceId"
+        // Cursor: base64url("$version_$deviceId"). A cursor that does not parse is a client bug, never a silent restart.
         val cursorPair: Pair<Long, String>? = cursor?.let { raw ->
             runCatching {
                 val decoded = String(Base64.getUrlDecoder().decode(raw))
                 val parts = decoded.split("_", limit = 2)
-                parts[0].toLong() to parts[1]
-            }.getOrNull()
+                parts[0].toLong() to parts[1].also { require(it.isNotEmpty()) }
+            }.getOrElse { throw InvalidDirectoryCursorException() }
         }
 
         val pagedMembers = if (cursorPair != null) {
@@ -1183,6 +1215,7 @@ class OrganizationDirectory(
             Base64.getUrlEncoder().withoutPadding().encodeToString("${last.version}_${last.deviceId}".toByteArray())
         } else null
 
+        unsignedOnLastPage = membersOnPage.count { memberStatements[it.deviceId] == null }
         val memberDtos = membersOnPage.mapNotNull { m ->
             val statement = memberStatements[m.deviceId]
             if (statement != null) {
@@ -1303,7 +1336,10 @@ class OrganizationDirectory(
                     deletedAtVersion = rs.getLong("deleted_at_version"),
                     deletedAtMs = rs.getLong("deleted_at_ms"),
                 )
-            }.forEach { tombstones[it.entityType to it.entityId] = it }
+            }.forEach {
+                tombstones[it.entityType to it.entityId] = it
+                if (it.entityType == PRUNE_MARK) prunedThroughVersion = it.deletedAtVersion
+            }
 
             // Load org_member_statement
             c.query("SELECT device_id, statement_serial, issued_at_ms, signature_bytes FROM org_member_statement") { rs ->
@@ -1336,6 +1372,12 @@ class OrganizationDirectory(
 
     companion object {
         const val COMPONENT: String = "directory"
+
+        /** Tombstones older than this are pruned; a client further behind gets a full resync (90 days). */
+        const val TOMBSTONE_RETENTION_MS: Long = 90L * 24 * 60 * 60 * 1000
+
+        /** Reserved tombstone type that stores [prunedThroughVersion]; never reported to clients. */
+        const val PRUNE_MARK: String = "_pruned"
 
         /** The one answer for a join request that names a missing, hidden or out-of-scope group (REV-06): it must not tell them apart. */
         const val JOIN_NOT_AVAILABLE: String = "This group is not available to join."
