@@ -10426,3 +10426,40 @@ New test `FlashRelayClientStartRaceTest.aStopDisconnectNeverRunsAfterTheNextStar
 
 ### Status
 RESOLVED in code 2026-10-13 (unit-tested, mutation-checked; not device-verified)
+
+
+## ERROR-398 - First-run banner pointed to the public port (and https) instead of the management listener
+
+### Date
+2026-10-14
+
+### Area
+Server / admin console / first-run setup banner
+
+### Symptoms
+Owner started the hub with `FLASH_ALLOW_INSECURE=true`, `FLASH_TLS_MODE=proxy` and the default ports. The banner said
+`Open https://10.143.208.82:8443/admin/setup`. That URL does not work: the public listener (8443) answers 404 for `/admin`, and in proxy mode nothing speaks
+https. The owner reported "the pages are not working, it does not load". (A second cause was a wrong URL in the chat instructions: `/admin/ui/` is the asset
+prefix and answers 404; the console is entered at `/admin/`.)
+
+### Root cause
+`HubServices` built the banner's `setupUrl` from `config.externalUrl` (the public listener, the address invites use). The console is served only on the
+management listener (`adminPort`, default `127.0.0.1:8444`, plain http unless `tlsMode=self`) unless `FLASH_ADMIN_ON_PUBLIC_PORT=true`.
+Reproduced on spare ports 28443/28444: `/admin/` on 28444 = 200, `/admin/setup` on 28444 = 302 to `/admin/#/setup`, `/admin/setup` and `/admin/ui/` on 28443 = 404.
+
+### Failed attempts
+None. The router and the assets were correct; only the printed address and the instruction were wrong.
+
+### Working fix
+`setupUrlFor(config)` in `HubServices.kt`: management listener address (scheme https only for `tlsMode=self`, wildcard bind shown as `localhost`, IPv6
+bracketed), or the external URL when the console is on the public port. Test `SetupUrlTest` (5 cases). Correct local address: `http://127.0.0.1:8444/admin/`.
+
+### Verification
+`:server:test` SetupUrlTest 5/5 and AdminConsoleWebTest 13/13; `:server:installDist` rebuilt. Not run against a person's browser after the fix.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/HubServices.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/SetupUrlTest.kt`
+
+### Status
+RESOLVED in code 2026-10-14 (unit-tested; owner to confirm the banner link opens)
