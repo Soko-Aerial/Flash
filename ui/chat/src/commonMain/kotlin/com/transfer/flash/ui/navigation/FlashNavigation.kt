@@ -21,6 +21,13 @@ enum class FlashDestination(val title: String) {
     Transfers("Transfers"),
     NearbyDevices("Nearby devices"),
     Settings("Settings"),
+
+    /**
+     * UI-058: the organisation tab. A tab root ONLY while the device is enrolled
+     * ([FlashNavigationMath.tabOrder]); it takes Transfers' slot, and Transfers becomes a pushed
+     * destination. Appended last: the saver persists names, but keep any ordinal user safe.
+     */
+    Hub("Hub"),
 }
 
 /**
@@ -64,14 +71,34 @@ object FlashNavigationMath {
         FlashDestination.Settings,
     )
 
+    /** UI-058: the tab set of an enrolled device: Hub takes Transfers' slot. */
+    val TabOrderEnrolled = listOf(
+        FlashDestination.ChatList,
+        FlashDestination.Hub,
+        FlashDestination.NearbyDevices,
+        FlashDestination.Settings,
+    )
+
+    /**
+     * The tab set as a function of enrolment (UI-058, ADR-133). `tabOrder(false)` IS [TabOrder], so
+     * an unenrolled device sees exactly the four tabs it always had.
+     */
+    fun tabOrder(hubEnrolled: Boolean): List<FlashDestination> =
+        if (hubEnrolled) TabOrderEnrolled else TabOrder
+
     /** The tab system back falls through to before letting the system exit the app. */
     val HOME_TAB = FlashDestination.ChatList
 
     /** Position of [destination] in the shell bar, or -1 when it is not a tab root. */
-    fun tabIndex(destination: FlashDestination): Int = TabOrder.indexOf(destination)
+    fun tabIndex(destination: FlashDestination, hubEnrolled: Boolean = false): Int =
+        tabOrder(hubEnrolled).indexOf(destination)
 
-    /** UI-046: destinations that are shell tab roots (bottom-nav surfaces). */
-    fun isTabRoot(destination: FlashDestination): Boolean = tabIndex(destination) >= 0
+    /**
+     * UI-046: destinations that are shell tab roots (bottom-nav surfaces). When [hubEnrolled],
+     * Transfers is NOT a tab root (it is pushed from the chat-list top bar) and Hub is.
+     */
+    fun isTabRoot(destination: FlashDestination, hubEnrolled: Boolean = false): Boolean =
+        tabIndex(destination, hubEnrolled) >= 0
 
     /**
      * Stack size after an operation: pushing adds one entry capped at [MAX_STACK_DEPTH],
@@ -137,12 +164,63 @@ object FlashNavigationMath {
     fun transitionFor(
         from: FlashBackStackState,
         to: FlashBackStackState,
+        hubEnrolled: Boolean = false,
     ): FlashScreenTransition = when {
         from == to -> FlashScreenTransition.None
-        !isTabRoot(to.destination) -> FlashScreenTransition.Push
-        !isTabRoot(from.destination) -> FlashScreenTransition.Pop
-        tabIndex(to.destination) > tabIndex(from.destination) -> FlashScreenTransition.TabForward
+        !isTabRoot(to.destination, hubEnrolled) -> FlashScreenTransition.Push
+        !isTabRoot(from.destination, hubEnrolled) -> FlashScreenTransition.Pop
+        tabIndex(to.destination, hubEnrolled) > tabIndex(from.destination, hubEnrolled) ->
+            FlashScreenTransition.TabForward
         else -> FlashScreenTransition.TabBackward
+    }
+
+    /**
+     * Which tab the shell bar / rail / sidebar highlights for [entries]. A tab root highlights
+     * itself; a conversation highlights Chats (unchanged behaviour); any other pushed destination
+     * (Transfers while enrolled) highlights the nearest tab root beneath it, else Chats.
+     */
+    fun shellTab(entries: List<FlashBackStackState>, hubEnrolled: Boolean): FlashDestination {
+        val top = entries.lastOrNull()?.destination ?: return HOME_TAB
+        return when {
+            top == FlashDestination.Conversation -> FlashDestination.ChatList
+            isTabRoot(top, hubEnrolled) -> top
+            else -> entries.lastOrNull { isTabRoot(it.destination, hubEnrolled) }?.destination ?: HOME_TAB
+        }
+    }
+
+    /**
+     * Rewrites a stack so it is valid for the CURRENT enrolment (UI-058). Total: never throws,
+     * never returns an empty list, never returns an invalid entry, never exceeds [MAX_STACK_DEPTH],
+     * idempotent, and returns [entries] itself when nothing had to change.
+     *
+     * - Invalid entries are dropped (as the saver always did).
+     * - Not enrolled: every [FlashDestination.Hub] entry is removed; if Hub was the root, Chats
+     *   becomes the root so the stack still starts at a tab.
+     * - Enrolled: Transfers is no longer a tab root, so a stack that STARTS with it becomes
+     *   Chats + Transfers (the user stays on Transfers; back returns to Chats).
+     * - Consecutive duplicates created by the above collapse into one entry.
+     */
+    fun normalised(
+        entries: List<FlashBackStackState>,
+        hubEnrolled: Boolean,
+    ): List<FlashBackStackState> {
+        var result = entries.filter { it.isValid() }
+        val chatsRoot = FlashBackStackState(FlashDestination.ChatList)
+        if (hubEnrolled) {
+            if (result.firstOrNull()?.destination == FlashDestination.Transfers) {
+                result = listOf(chatsRoot) + result
+            }
+        } else {
+            val rootWasHub = result.firstOrNull()?.destination == FlashDestination.Hub
+            result = result.filter { it.destination != FlashDestination.Hub }
+            if (rootWasHub) result = listOf(chatsRoot) + result
+        }
+        result = result.filterIndexed { index, entry -> index == 0 || entry != result[index - 1] }
+        if (result.isEmpty()) result = listOf(chatsRoot)
+        if (result.size > MAX_STACK_DEPTH) {
+            result = listOf(result.first()) + result.takeLast(MAX_STACK_DEPTH - 1)
+        }
+        return if (result == entries) entries else result
     }
 
     /**
@@ -166,14 +244,24 @@ object FlashNavigationMath {
  * latched its first value forever. All decision logic still lives in the pure
  * [FlashNavigationMath] helpers, so it stays unit-testable without Compose.
  */
-class FlashNavigationState internal constructor(initialEntries: List<FlashBackStackState>) {
+class FlashNavigationState internal constructor(
+    initialEntries: List<FlashBackStackState>,
+    initialHubEnrolled: Boolean = false,
+) {
 
     constructor(initial: FlashDestination = FlashDestination.ChatList) :
-        this(listOf(FlashBackStackState(initial)))
+        this(listOf(FlashBackStackState(initial)), false)
+
+    /**
+     * UI-058: whether the shell shows the Hub tab (in Transfers' slot). Only the host sets it, and
+     * only once enrolment is KNOWN (the engine is ready); see [updateHubEnrolled].
+     */
+    var hubEnrolled: Boolean by mutableStateOf(initialHubEnrolled)
+        private set
 
     /** The whole stack, root first. Read by tests and by the saver; mutated only in here. */
     var entries: List<FlashBackStackState> by mutableStateOf(
-        initialEntries.filter { it.isValid() }.ifEmpty { listOf(FlashBackStackState()) },
+        FlashNavigationMath.normalised(initialEntries, initialHubEnrolled),
     )
         private set
 
@@ -185,6 +273,10 @@ class FlashNavigationState internal constructor(initialEntries: List<FlashBackSt
     val stackSize: Int
         get() = entries.size
 
+    /** The tab the shell bar / rail / sidebar highlights now (see [FlashNavigationMath.shellTab]). */
+    val shellTab: FlashDestination
+        get() = FlashNavigationMath.shellTab(entries, hubEnrolled)
+
     /**
      * True when [back] will consume the press: either an entry sits above the root, or we are
      * parked on a non-home tab and back should return to [FlashNavigationMath.HOME_TAB].
@@ -192,9 +284,30 @@ class FlashNavigationState internal constructor(initialEntries: List<FlashBackSt
     val canGoBack: Boolean
         get() = entries.size > 1 || current.destination != FlashNavigationMath.HOME_TAB
 
-    /** Pushes [destination]; see [FlashNavigationMath.pushed] for the guards. */
+    /** Pushes [destination]; see [FlashNavigationMath.pushed] for the guards. Hub is ignored when not enrolled. */
     fun navigate(destination: FlashDestination, conversationId: String? = null) {
+        if (destination == FlashDestination.Hub && !hubEnrolled) return
         entries = FlashNavigationMath.pushed(entries, FlashBackStackState(destination, conversationId))
+    }
+
+    /**
+     * Opens the transfers list from any entry point (notification, shortcut, share, top-bar icon).
+     * Not enrolled: Transfers is a tab, so this selects it. Enrolled: it is pushed on the current
+     * stack (a repeat while already open is ignored by the push guard).
+     */
+    fun openTransfers() {
+        if (hubEnrolled) navigate(FlashDestination.Transfers) else selectTab(FlashDestination.Transfers)
+    }
+
+    /**
+     * Applies a changed enrolment: rewrites the stack so it is valid for the new tab set (Hub
+     * entries vanish on un-enrol, a Transfers root becomes Chats + Transfers on enrol). No-op when
+     * unchanged. Hosts call this only once enrolment is known, never from a not-yet-ready default.
+     */
+    fun updateHubEnrolled(enrolled: Boolean) {
+        if (enrolled == hubEnrolled) return
+        hubEnrolled = enrolled
+        entries = FlashNavigationMath.normalised(entries, enrolled)
     }
 
     /**
@@ -220,12 +333,15 @@ class FlashNavigationState internal constructor(initialEntries: List<FlashBackSt
      * list, which snapshot state treats as no change.
      */
     fun selectTab(destination: FlashDestination) {
-        if (!FlashNavigationMath.isTabRoot(destination)) return
+        if (!FlashNavigationMath.isTabRoot(destination, hubEnrolled)) return
         entries = listOf(FlashBackStackState(destination))
     }
 }
 
 private const val ENTRY_SEPARATOR = '|'
+
+/** Saver marker entry carrying the enrolment the saved stack was valid for (no destination name starts with '@'). */
+internal const val HUB_MARKER_PREFIX = "@hubEnrolled|"
 
 /**
  * Survives rotation and process death by encoding each entry as `DestinationName|conversationId`.
@@ -234,9 +350,17 @@ private const val ENTRY_SEPARATOR = '|'
 val FlashNavigationStateSaver: Saver<FlashNavigationState, Any> =
     listSaver<FlashNavigationState, String>(
         save = { state ->
-            state.entries.map { "${it.destination.name}$ENTRY_SEPARATOR${it.conversationId ?: ""}" }
+            listOf("$HUB_MARKER_PREFIX${if (state.hubEnrolled) "1" else "0"}") +
+                state.entries.map { "${it.destination.name}$ENTRY_SEPARATOR${it.conversationId ?: ""}" }
         },
-        restore = { encoded -> FlashNavigationState(encoded.mapNotNull(::decodeNavigationEntry)) },
+        restore = { encoded ->
+            val enrolled = encoded.firstOrNull { it.startsWith(HUB_MARKER_PREFIX) }
+                ?.removePrefix(HUB_MARKER_PREFIX) == "1"
+            FlashNavigationState(
+                encoded.filterNot { it.startsWith(HUB_MARKER_PREFIX) }.mapNotNull(::decodeNavigationEntry),
+                enrolled,
+            )
+        },
     )
 
 internal fun decodeNavigationEntry(raw: String): FlashBackStackState? {
@@ -269,6 +393,7 @@ fun rememberFlashNavigationState(): FlashNavigationState =
 fun FlashAnimatedScreen(
     targetState: FlashBackStackState,
     modifier: Modifier = Modifier,
+    hubEnrolled: Boolean = false,
     content: @Composable (FlashBackStackState) -> Unit,
 ) {
     val motion = FlashTheme.motion
@@ -276,7 +401,7 @@ fun FlashAnimatedScreen(
         targetState = targetState,
         modifier = modifier,
         transitionSpec = {
-            when (FlashNavigationMath.transitionFor(initialState, targetState)) {
+            when (FlashNavigationMath.transitionFor(initialState, targetState, hubEnrolled)) {
                 FlashScreenTransition.Push -> ContentTransform(
                     targetContentEnter = motion.screenPushEnter(),
                     initialContentExit = motion.screenPushExit(),
