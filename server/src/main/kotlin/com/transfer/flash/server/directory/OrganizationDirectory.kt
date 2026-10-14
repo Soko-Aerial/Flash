@@ -57,12 +57,17 @@ enum class MemberRole {
 /**
  * Department entity.
  * Per D-E13: only organization admins may create departments.
+ * [hidden] (Plan A2, option C): when true, outsiders (devices that are neither
+ * members/admins of this department nor org admins) see neither the department
+ * nor its people, counts, groups or keys. Listing-only: known ids can still
+ * message and LAN device names are unchanged.
  */
 data class Department(
     val id: String,
     val name: String,
     val adminDeviceIds: List<String> = emptyList(),
     val version: Long = 0L,
+    val hidden: Boolean = false,
 )
 
 /**
@@ -114,20 +119,90 @@ fun interface OrgMemberStatementSigner {
 }
 
 /**
- * Scoping and visibility rules shared between REST directory endpoints and directory sync (Plan B, ADR-134).
+ * Scoping and visibility rules shared between REST directory endpoints and directory sync (Plan B, ADR-134;
+ * hidden departments: Plan A2, ADR-137). Every directory read goes through here; no route re-implements the rules.
+ *
+ * Hidden is listing-only: it never stops a message between two devices that already know each other's ids, it never
+ * hides LAN device names, and the hub operator / org admins always see everything.
  */
 object DirectoryVisibility {
+    /** Ships ON (owner D9): identity + sealing keys are org-visible for non-hidden departments. */
+    const val DIRECTORY_KEYS_ORG_WIDE: Boolean = true
+
     fun canSeeDepartment(department: Department, actor: DirectoryActor): Boolean {
-        return actor.isOrgAdmin || department.id == actor.departmentId || actor.deviceId in department.adminDeviceIds
+        if (actor.isOrgAdmin) return true
+        // Insiders (own department or an administered department) always see it, hidden or not.
+        if (department.id == actor.departmentId || actor.deviceId in department.adminDeviceIds) return true
+        // Option C: non-hidden departments are visible org-wide to every authenticated device.
+        // Routes always authenticate first, so a blank device id never reaches here.
+        if (!department.hidden) return actor.deviceId.isNotBlank()
+        return false
     }
 
     fun canSeeMember(member: DepartmentMember, actor: DirectoryActor, directory: OrganizationDirectory): Boolean {
         if (actor.isOrgAdmin) return true
         if (member.deviceId == actor.deviceId) return true
-        if (member.departmentId.isNotBlank() && member.departmentId == actor.departmentId) return true
-        val dept = if (member.departmentId.isNotBlank()) directory.getDepartment(member.departmentId) else null
+        return canListMember(actor, member, directory)
+    }
+
+    /** Org-wide people listing predicate (A2 §3.1): hidden-department rows are never delivered to outsiders. */
+    fun canListMember(actor: DirectoryActor, member: DepartmentMember, directory: OrganizationDirectory): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (member.deviceId == actor.deviceId) return true
+        val deptId = member.departmentId
+        if (deptId.isBlank()) return true
+        if (deptId == actor.departmentId) return true
+        val dept = directory.getDepartment(deptId)
         if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
-        return false
+        // A known department admin (device) sees members of the department they administer even when their own
+        // certificate names another department.
+        if (dept == null) return false
+        if (dept.hidden) return false
+        return true
+    }
+
+    /** Single lookup by known id (A2 §3.3.2): any authenticated org member who knows the id may resolve it. */
+    fun canLookupMember(actor: DirectoryActor, deviceId: String): Boolean = actor.deviceId.isNotBlank() && deviceId.isNotBlank()
+
+    /** Group predicate with the hidden-department filter (A2 §3.1): outsiders lose groups of hidden departments. */
+    fun canSeeGroup(group: GroupCharter, actor: DirectoryActor, directory: OrganizationDirectory): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (group.memberDeviceIds.contains(actor.deviceId) || group.adminDeviceIds.contains(actor.deviceId)) return true
+        val deptId = group.departmentId
+        if (deptId.isBlank()) return true
+        val dept = directory.getDepartment(deptId)
+        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        // Members of the department itself are insiders even when they are not group members.
+        if (deptId == actor.departmentId) return true
+        if (dept != null && dept.hidden) return false
+        if (dept == null) return true
+        return true
+    }
+
+    /** Keys (identity + sealing) follow D9: org-wide for non-hidden departments, insiders-only for hidden ones. */
+    fun keysVisible(actor: DirectoryActor, member: DepartmentMember, directory: OrganizationDirectory): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (member.deviceId == actor.deviceId) return true
+        val deptId = member.departmentId
+        if (deptId.isBlank()) return true
+        if (deptId == actor.departmentId) return true
+        val dept = directory.getDepartment(deptId)
+        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        if (dept != null && dept.hidden) return false
+        return DIRECTORY_KEYS_ORG_WIDE
+    }
+
+    /** Presence (online dots): hidden departments show dots to insiders only; otherwise org-visible (v1, no per-dept switch). */
+    fun presenceVisible(actor: DirectoryActor, member: DepartmentMember, directory: OrganizationDirectory): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (member.deviceId == actor.deviceId) return true
+        val deptId = member.departmentId
+        if (deptId.isBlank()) return true
+        if (deptId == actor.departmentId) return true
+        val dept = directory.getDepartment(deptId)
+        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        if (dept != null && dept.hidden) return false
+        return true
     }
 }
 
@@ -326,27 +401,55 @@ class OrganizationDirectory(
         }
     }
 
+    /** Creates a department with an explicit hidden flag (Plan A2; org admin only). */
+    fun createDepartment(id: String, name: String, adminDeviceIds: List<String>, hidden: Boolean, actor: DirectoryActor): Department {
+        if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can create departments (D-E13)")
+        requireId(id, "Department id")
+        requireName(name, "Department name")
+        val dept = Department(id = id.trim(), name = name.trim(), adminDeviceIds = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct(), hidden = hidden)
+        return lock.write {
+            if (departments.containsKey(dept.id)) throw DirectoryConflictException("Department '${dept.id}' already exists")
+            val newVer = bumpVersionLocked()
+            val deptWithVer = dept.copy(version = newVer)
+            persist { c -> insertDepartment(c, deptWithVer) }
+            departments[dept.id] = deptWithVer
+            if (hidden) resetEpoch()
+            deptWithVer
+        }
+    }
+
     fun getDepartment(id: String): Department? = lock.read { departments[id] }
 
     fun listDepartments(): List<Department> = lock.read { departments.values.toList() }
 
     /** Renames a department and/or replaces its admin list. Organisation admin only. */
-    fun updateDepartment(id: String, name: String?, adminDeviceIds: List<String>?, actor: DirectoryActor): Department {
+    fun updateDepartment(id: String, name: String?, adminDeviceIds: List<String>?, actor: DirectoryActor): Department =
+        updateDepartment(id, name, adminDeviceIds, null, actor)
+
+    /** Full update including the A2 hidden flag; any change of hidden bumps the directory epoch (forces full resync). */
+    fun updateDepartment(id: String, name: String?, adminDeviceIds: List<String>?, hidden: Boolean?, actor: DirectoryActor): Department {
         if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can change departments")
         return lock.write {
             val existing = departments[id] ?: throw DirectoryNotFoundException("Department '$id' not found")
             if (name != null) requireName(name, "Department name")
+            val hiddenChanged = hidden != null && hidden != existing.hidden
             val newVer = bumpVersionLocked()
             val updated = existing.copy(
                 name = name?.trim() ?: existing.name,
                 adminDeviceIds = adminDeviceIds?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct() ?: existing.adminDeviceIds,
                 version = newVer,
+                hidden = hidden ?: existing.hidden,
             )
-            persist { c -> c.update("UPDATE dir_departments SET name = ?, admin_ids = ?, version = ? WHERE id = ?", updated.name, encodeList(updated.adminDeviceIds), newVer, id) }
+            persist { c -> c.update("UPDATE dir_departments SET name = ?, admin_ids = ?, hidden = ?, version = ? WHERE id = ?", updated.name, encodeList(updated.adminDeviceIds), if (updated.hidden) 1 else 0, newVer, id) }
             departments[id] = updated
+            if (hiddenChanged) resetEpoch()
             updated
         }
     }
+
+    /** Flips only the hidden flag (console toggle); bumps the epoch so every client resyncs fully. */
+    fun setDepartmentHidden(id: String, hidden: Boolean, actor: DirectoryActor): Department =
+        updateDepartment(id, null, null, hidden, actor)
 
     /** Deletes an empty department (no groups, no members). Organisation admin only. */
     fun deleteDepartment(id: String, actor: DirectoryActor) {
@@ -514,6 +617,27 @@ class OrganizationDirectory(
     /** The groups [actor] may see (rules in the class comment). */
     fun listVisibleGroups(actor: DirectoryActor): List<GroupCharter> = lock.read {
         groups.values.filter { canSee(it, actor) }
+    }
+
+    /** A2 helper: groups of hidden departments are listed only to insiders/members/admins. */
+    fun listVisibleGroupsWithPrivacy(actor: DirectoryActor): List<GroupCharter> = lock.read {
+        groups.values.filter { g -> canSee(g, actor) && DirectoryVisibility.canSeeGroup(g, actor, this) }
+    }
+
+    /**
+     * Org-wide people search for `GET /directory/people` (A2 §3.3.1): every member
+     * [DirectoryVisibility.canListMember] allows, filtered by [query] (case-insensitive
+     * contains on displayName, `%`/`_` escaped by the caller contract) and optional
+     * [departmentId], ordered by `(displayNameFolded, deviceId)`.
+     */
+    fun searchPeople(actor: DirectoryActor, query: String, departmentId: String?, limit: Int): List<DepartmentMember> = lock.read {
+        val q = query.trim().lowercase()
+        members.values
+            .filter { DirectoryVisibility.canListMember(actor, it, this) }
+            .filter { departmentId.isNullOrBlank() || it.departmentId == departmentId }
+            .filter { q.isEmpty() || it.displayName.lowercase().contains(q) }
+            .sortedWith(compareBy({ it.displayName.lowercase() }, { it.deviceId }))
+            .take(limit.coerceIn(1, 500))
     }
 
     fun canSee(group: GroupCharter, actor: DirectoryActor): Boolean = lock.read {
@@ -932,7 +1056,7 @@ class OrganizationDirectory(
     }
 
     private fun insertDepartment(c: Connection, d: Department) {
-        c.update("INSERT INTO dir_departments(id, name, admin_ids, version) VALUES(?,?,?,?)", d.id, d.name, encodeList(d.adminDeviceIds), d.version)
+        c.update("INSERT INTO dir_departments(id, name, admin_ids, hidden, version) VALUES(?,?,?,?,?)", d.id, d.name, encodeList(d.adminDeviceIds), if (d.hidden) 1 else 0, d.version)
     }
 
     private fun insertGroup(c: Connection, g: GroupCharter, now: Long) {
@@ -993,15 +1117,15 @@ class OrganizationDirectory(
                 name = it.name,
                 headDeviceIds = it.adminDeviceIds,
                 memberCount = members.values.count { m -> m.departmentId == it.id },
-                hidden = false,
+                hidden = it.hidden,
             )
         }
         val removedDepts = if (isFullResync) emptyList() else tombstones.values
             .filter { it.entityType == "department" && it.deletedAtVersion > effectiveSince }
             .map { it.entityId }
 
-        // Filter members visible to actor
-        val visibleMembers = members.values.filter { DirectoryVisibility.canSeeMember(it, actor, this) }
+        // Filter members visible to actor (A2: hidden-department rows never reach outsiders).
+        val visibleMembers = members.values.filter { DirectoryVisibility.canListMember(actor, it, this) }
         val allChangedMembers = visibleMembers
             .filter { it.version > effectiveSince }
             .sortedWith(compareBy({ it.version }, { it.deviceId }))
@@ -1073,8 +1197,18 @@ class OrganizationDirectory(
 
     private fun load(database: ServerDatabase) {
         database.withConnection { c ->
+            val hasHidden = runCatching {
+                c.query("SELECT hidden FROM dir_departments LIMIT 1") { rs -> rs.getInt(1) }
+                true
+            }.getOrDefault(false)
             c.query("SELECT * FROM dir_departments ORDER BY rowid") { rs ->
-                Department(rs.getString("id"), rs.getString("name"), decodeList(rs.getString("admin_ids")), rs.getLong("version"))
+                Department(
+                    rs.getString("id"),
+                    rs.getString("name"),
+                    decodeList(rs.getString("admin_ids")),
+                    rs.getLong("version"),
+                    hidden = if (hasHidden) runCatching { rs.getInt("hidden") }.getOrDefault(0) != 0 else false,
+                )
             }.forEach { departments[it.id] = it }
             val memberRows = c.query("SELECT group_id, device_id FROM dir_group_members ORDER BY rowid") { it.getString(1) to it.getString(2) }
                 .groupBy({ it.first }, { it.second })
@@ -1236,6 +1370,12 @@ class OrganizationDirectory(
                         ")",
                     )
                     st.execute("CREATE INDEX IF NOT EXISTS idx_directory_tombstone_ver ON directory_tombstone(deleted_at_version)")
+                }
+            },
+            Migration(3, "directory: hidden departments for option C privacy (Plan A2)") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE dir_departments ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_dir_members_dept_name ON dir_members(department_id, display_name)")
                 }
             },
         )
