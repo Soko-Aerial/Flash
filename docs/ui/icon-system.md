@@ -268,3 +268,20 @@ Flash icons use a **single stroke language** tuned to the Pulse palette — roun
 - New: `MicOff` (`flash_ic_mic_off`), `Video` (alias of `flash_ic_video_call`), `VideoOff` (`flash_ic_video_off`), `Earpiece` (`flash_ic_earpiece`).
 - Redrawn: `CameraFlip` (two chasing arrows around a lens), `Hangup` (the handset turned onto its back; no slash).
 - A call control that toggles has one glyph per state; see `docs/ui/calling-ui.md` UI-050e.
+
+---
+
+## Addendum 2026-10-14 — Hub and Announcement icons (UI-058, stream S3)
+
+Registered before use, as `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md` H1 requires. Same technique as every other `flash_ic_*`: a stroke-only Android vector drawable
+(24 × 24 viewport, 2 dp stroke, round caps and joins, fill `#00000000`, tinted at runtime), declared in `ui/theme/src/commonMain/composeResources/drawable/`, exposed through
+`FlashIcons`. No Material glyph, no new dependency.
+
+| Icon | Drawable | Content description | Drawing |
+|---|---|---|---|
+| `FlashIcons.Hub` | `flash_ic_hub` | Hub | An office building (tower with a lower side wing), ground line, three window dashes. Keylines: tower x 5–15, y 3–21; wing x 15–19, y 10–21; ground y 21 from x 3 to 21; window dashes 2 dp long at x 9–11, y 7 / 11 / 15. Optical centre of mass kept near x 12. |
+| `FlashIcons.Announcement` | `flash_ic_announcement` | Announcement | A megaphone: closed horn polygon x 4–14, y 6–18, one sound-wave arc (radius 4) at x 17.5, and a short handle below the horn. |
+
+Accessibility: the content description is the default; a call site that shows a count (for example the Hub tab badge) passes its own description ("Hub, 3 unread announcements").
+`Announcement` is registered now because the design doc names it; no screen in stream S3 phases H0–H5 uses it yet.
+Status of the glyph shapes: drawn from path data, **not yet seen on a screen** (no renderer ran in the S3 sandbox); the owner checks them in the Settings icon sheet / bottom bar (backlog `HUBT-15`).
