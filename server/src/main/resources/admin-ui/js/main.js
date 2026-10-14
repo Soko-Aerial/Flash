@@ -4,13 +4,14 @@
 
 import { h, mount } from './dom.js';
 import { t, getLocale } from './i18n.js';
-import { api, events, setEnrolHook, stepUp } from './app.js';
+import { api, events, setEnrolHook, setApprovalHook, stepUp } from './app.js';
 import { session, setSession, clearSession, subscribe } from './state.js';
 import { createRouter, parseHash } from './router.js';
 import { createShell } from './ui/shell.js';
 import { installShortcuts, openHelp, setActiveTable } from './shortcuts.js';
 import { watchSession } from './sessionwatch.js';
 import { askToEnrol } from './ui/keydialog.js';
+import { showApprovalDialog } from './ui/approvaldialog.js';
 import { emptyState, errorState, button } from './ui/widgets.js';
 import { authFrame, mountLogin } from './views/login.js';
 import { mountSetup } from './views/setup.js';
@@ -305,6 +306,7 @@ async function start() {
 doc.documentElement.lang = String(getLocale()).split('-')[0] || 'en';
 setTitle('');
 setEnrolHook((reason) => askToEnrol(reason, stepUp));
+setApprovalHook((info) => showApprovalDialog(info));
 router = createRouter(globalThis, (parsed) => route(parsed));
 events.on('expired', () => signOut('expired'));
 events.on('delegation-changed', () => refreshOverview());
