@@ -42,6 +42,7 @@ import java.security.KeyPair
 import java.util.Base64
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -689,9 +690,11 @@ class AdminApiTest {
         val self = client.stepUp(r, s, StepUpActions.ADMIN_DISABLE, "boss")
         val resp = client.postJson("/admins/enable-nobody/disable", s, OkDto(), stepUp = self)
         assertEquals(HttpStatusCode.NotFound, resp.status)
-        // boss is now the only enabled administrator: disabling boss is refused
+        // boss is now the only enabled administrator: disabling boss is refused. Since Plan A1 (2ac45536) the route refuses
+        // disabling your own login first (403); the last-administrator rule itself is checked at the service.
         val self2 = client.stepUp(r, s, StepUpActions.ADMIN_DISABLE, "boss")
-        assertEquals(HttpStatusCode.Conflict, client.postJson("/admins/boss/disable", s, OkDto(), stepUp = self2).status)
+        assertEquals(HttpStatusCode.Forbidden, client.postJson("/admins/boss/disable", s, OkDto(), stepUp = self2).status)
+        assertFailsWith<IllegalStateException>("the last enabled administrator can not be disabled") { r.admins.setDisabled("boss", true) }
         assertEquals(HttpStatusCode.OK, client.getA("/session", s).status)
     }
 

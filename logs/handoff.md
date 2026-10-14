@@ -1,5 +1,13 @@
 # Current Handoff
 
+## Integration 2026-10-14 (S1 B2+B3, S2 A2+A1, S3 H0-H5, V-verifier merged into dev)
+
+- Merged with `--no-ff`: `agent/S1-org-trust`, `agent/S2-server`, `agent/S3-hubtab` (from the cloud bundle), `agent/V-verifier` (report only). One conflict (1:1 reaction gate in `RealFlashChatRepository.kt`), resolved to S1's version; the committed `if (false) return` (verifier blocking defect 1) is fixed.
+- Gate on the merged tree: all executed; only red were `ORGT-U16` (passes in isolation, load-dependent) and `AdminApiTest...LastOneCannotBeDisabled` (real: A1 added an unplanned self-disable guard that returns 403; test updated, last-admin rule asserted at the service). Rerun `:server:test --rerun-tasks` green. `:desktop:jvmTest` NOT run (S3 saw `DesktopEngineTlsBindingTest` hang 37 min; ERROR-106).
+- **Still open from the verifier (B1 is NOT accepted):** `OrgDirectorySync` is never created by any host (feature inert), nothing clears the snapshot on unenrol, `directorySync` rate limit (burst 6) vs a 5,000-member full sync is untested against the real limiter, missing `OrgSyncStateEntity` fields, no tombstone pruning, Rule 8 flag bug, tests U28/U30/U31. Defect list: `logs/streams/V-verifier/report.md`. Next S1 task: wire B1 (sync caller, unenrol clear, limiter) before B4.
+- Log fragments in `logs/streams/*/` are NOT yet folded into the canonical logs; S2's ADR-136/137 collide with the planning ADRs (133..138) and must be renumbered when folding.
+- S3 gaps: top bar overflow at 320 dp, Paused not counted in the Transfers badge (ADR-160 proposed), Hub copy not in string resources.
+
 ## Note 2026-10-14 (parallel agents)
 
 - Running several implementer agents at once is described in `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` (PROPOSED; owner answers pending). Until it is accepted, run **one** stream. All Gradle runs of parallel agents go through `tools/flash-gradle.ps1`.
