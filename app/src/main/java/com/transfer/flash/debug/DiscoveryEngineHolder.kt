@@ -220,6 +220,7 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var orgPeerResolverRef: com.transfer.flash.core.enterprise.OrgPeerResolver? = null
+    private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
 
     /** The one object for everything about the organisation hub (ADR-120); null while the engine is stopped. */
     @Volatile
@@ -587,6 +588,12 @@ object DiscoveryEngineHolder {
     fun currentEnterpriseTrustStore(): EnterpriseTrustStore? = enterpriseTrustStoreRef
 
     fun currentOrgPeerResolver(): com.transfer.flash.core.enterprise.OrgPeerResolver? = orgPeerResolverRef
+
+    /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
+    fun requestOrgSync(reason: String, force: Boolean = false) {
+        val c = orgSnapshotCoordinatorRef ?: return
+        appScope.launch { c.requestSync(reason, force) }
+    }
 
     fun isOrgPeer(deviceId: String): Boolean =
         if (enterpriseTrustStoreRef?.isEnrolled == true) orgPeerResolverRef?.isOrgPeer(deviceId) == true else false
@@ -1195,9 +1202,27 @@ object DiscoveryEngineHolder {
             trustStore = trustStore,
         )
         orgPeerResolverRef = orgPeerResolver
-        appScope.launch {
-            orgPeerResolver.refreshFromSnapshot()
-        }
+        // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or
+        // changes organisation (verifier defect 4, ORGT-U50..U55).
+        val orgDirectorySync = com.transfer.flash.core.enterprise.OrgDirectorySync(
+            directoryClient = hub.directory,
+            orgDirectoryDao = db.orgDirectoryDao(),
+            credentialsProvider = { enterpriseTrustStore.credentials.value },
+            verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+            scope = appScope,
+        )
+        val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
+            credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
+            relayConnected = hub.relay.state.map { it.canSend },
+            syncOnce = { force -> orgDirectorySync.syncOnce(force) },
+            clearSnapshot = { orgDirectorySync.clearSnapshot() },
+            refreshResolver = { orgPeerResolver.refreshFromSnapshot() },
+            clearResolver = { orgPeerResolver.clear() },
+            scope = appScope,
+            onOutcome = { reason, outcome -> Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+        )
+        orgSnapshotCoordinatorRef = orgSnapshotCoordinator
+        orgSnapshotCoordinator.start()
 
         val chatImpl = RealFlashChatRepository(
             scope = appScope,

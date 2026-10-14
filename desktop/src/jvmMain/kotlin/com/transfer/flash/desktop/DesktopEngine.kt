@@ -258,6 +258,15 @@ public class DesktopEngine(
     public val orgPeerResolver: com.transfer.flash.core.enterprise.OrgPeerResolver?
         get() = orgPeerResolverRef
 
+    @Volatile
+    private var orgSnapshotCoordinatorRef: com.transfer.flash.core.enterprise.OrgSnapshotCoordinator? = null
+
+    /** Pull-to-refresh and Hub tab opening: ask for a directory sync (honours the 60 s minimum unless [force]). */
+    public fun requestOrgSync(reason: String, force: Boolean = false) {
+        val c = orgSnapshotCoordinatorRef ?: return
+        scope.launch { c.requestSync(reason, force) }
+    }
+
     public fun isOrgPeer(deviceId: String): Boolean =
         if (enterpriseTrustStore.isEnrolled) orgPeerResolverRef?.isOrgPeer(deviceId) == true else false
 
@@ -1353,9 +1362,26 @@ public class DesktopEngine(
                 trustStore = trustStore,
             )
             orgPeerResolverRef = orgPeerResolver
-            scope.launch {
-                orgPeerResolver.refreshFromSnapshot()
-            }
+            // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).
+            val orgDirectorySync = com.transfer.flash.core.enterprise.OrgDirectorySync(
+                directoryClient = hub.directory,
+                orgDirectoryDao = db.orgDirectoryDao(),
+                credentialsProvider = { enterpriseTrustStore.credentials.value },
+                verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+                scope = scope,
+            )
+            val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
+                credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
+                relayConnected = hub.relay.state.map { it.canSend },
+                syncOnce = { force -> orgDirectorySync.syncOnce(force) },
+                clearSnapshot = { orgDirectorySync.clearSnapshot() },
+                refreshResolver = { orgPeerResolver.refreshFromSnapshot() },
+                clearResolver = { orgPeerResolver.clear() },
+                scope = scope,
+                onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+            )
+            orgSnapshotCoordinatorRef = orgSnapshotCoordinator
+            orgSnapshotCoordinator.start()
 
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,

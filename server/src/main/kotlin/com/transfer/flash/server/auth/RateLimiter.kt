@@ -97,8 +97,12 @@ class HubRateLimits(
     val unauthenticated: TokenBucketLimiter = TokenBucketLimiter(20, 1.0, clock = clock),
     /** Per device on `PUT|DELETE /device/sealing-key`: burst 5, then 1 every 30 s (a key changes rarely; ADR-124). */
     val sealingKey: TokenBucketLimiter = TokenBucketLimiter(5, 1.0 / 30.0, clock = clock),
-    /** Per authenticated device on `GET /api/v1/directory/sync`: burst 6, then 1 every 10 s (6/min). */
-    val directorySync: TokenBucketLimiter = TokenBucketLimiter(6, 1.0 / 10.0, clock = clock),
+    /**
+     * Per authenticated device on `GET /api/v1/directory/sync`: burst 60, then 1 per second. A full sync of 20,000 members is
+     * 40 pages of 500, and a rejected page restarts the whole sync (the client stages all pages first), so the burst must
+     * hold one complete sync (verifier defect 3, ORGT-U56). Steady-state polling is still bounded to 60 pages a minute.
+     */
+    val directorySync: TokenBucketLimiter = TokenBucketLimiter(60, 1.0, clock = clock),
     /** Per authenticated device on `GET /api/v1/directory/people*`: burst 30, then 1 per 2 s (30/min, A2 §3.3). */
     val directoryPeople: TokenBucketLimiter = TokenBucketLimiter(30, 0.5, clock = clock),
 ) {
