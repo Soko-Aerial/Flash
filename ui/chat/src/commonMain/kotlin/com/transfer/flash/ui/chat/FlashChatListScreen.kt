@@ -103,6 +103,10 @@ fun FlashChatListScreen(
     onJoinWithLinkClick: (() -> Unit)? = null,
     /** Browse department groups on the enterprise hub; null hides the action. */
     onBrowseOrgGroupsClick: (() -> Unit)? = null,
+    /** UI-058: Transfers action of an enrolled device (its Transfers tab became Hub); null hides it. */
+    onTransfersClick: (() -> Unit)? = null,
+    /** Transfers in progress, shown on the [onTransfersClick] action. */
+    transfersActiveCount: Int = 0,
     /** Active conversation id in two-pane mode to highlight the currently open chat. */
     activeConversationId: String? = null,
     /**
@@ -164,6 +168,8 @@ fun FlashChatListScreen(
                     onNewGroupClick = onNewGroupClick,
                     onJoinWithLinkClick = onJoinWithLinkClick,
                     onBrowseOrgGroupsClick = onBrowseOrgGroupsClick,
+                    onTransfersClick = onTransfersClick,
+                    transfersActiveCount = transfersActiveCount,
                 )
             }
         },
