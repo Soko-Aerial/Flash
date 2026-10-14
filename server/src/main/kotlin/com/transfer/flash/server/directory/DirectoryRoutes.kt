@@ -18,6 +18,8 @@ import com.transfer.flash.core.hubprotocol.rest.JoinResponse
 import com.transfer.flash.core.hubprotocol.rest.MeDto
 import com.transfer.flash.core.hubprotocol.rest.MemberDto
 import com.transfer.flash.core.hubprotocol.rest.OkResponse
+import com.transfer.flash.core.hubprotocol.rest.PeoplePageDto
+import com.transfer.flash.core.hubprotocol.rest.PersonDto
 import com.transfer.flash.core.hubprotocol.rest.UpdateGroupBody
 import com.transfer.flash.server.auth.AuditSink
 import com.transfer.flash.server.auth.HubRateLimits
@@ -123,7 +125,119 @@ fun Route.directoryRoutes(
             get("/groups") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@get
                 val actor = principal.toActor()
-                call.respondJson(directory.listVisibleGroups(actor).map { it.toDto(actor, directory, isOnline) })
+                val visible = directory.listVisibleGroups(actor).filter { DirectoryVisibility.canSeeGroup(it, actor, directory) }
+                call.respondJson(visible.map { it.toDto(actor, directory, isOnline) })
+            }
+
+            get("/people") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@get
+                if (!limits.directoryPeople.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.directoryPeople.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many directory requests")
+                    return@get
+                }
+                val actor = principal.toActor()
+                val rawLimit = call.request.queryParameters["limit"]?.toIntOrNull()
+                if (call.request.queryParameters["limit"] != null && rawLimit == null) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@get
+                }
+                val limit = DirectoryPrivacy.clampLimit(rawLimit)
+                val rawQ = call.request.queryParameters["q"]
+                if (rawQ != null && rawQ.length > DirectoryPrivacy.PEOPLE_MAX_QUERY_CHARS) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@get
+                }
+                val q = DirectoryPrivacy.cleanQuery(rawQ ?: "")
+                if (rawQ != null && q == null) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@get
+                }
+                val departmentId = call.request.queryParameters["departmentId"]?.take(128)
+                if (departmentId != null && departmentId.isNotBlank()) {
+                    val dept = directory.getDepartment(departmentId)
+                    if (dept != null && !DirectoryVisibility.canSeeDepartment(dept, actor)) {
+                        // A hidden department is indistinguishable from a missing one for outsiders.
+                        call.respondJson(PeoplePageDto(emptyList(), null))
+                        return@get
+                    }
+                }
+                val cursorRaw = call.request.queryParameters["cursor"]
+                if (!cursorRaw.isNullOrBlank() && DirectoryPrivacy.decodeCursor(cursorRaw) == null) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@get
+                }
+                val cursor = DirectoryPrivacy.decodeCursor(cursorRaw)
+                // Minimum query length 2 for non-empty search (plan §Beyond-4); empty means list.
+                if (!q.isNullOrEmpty() && q.length < 2) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@get
+                }
+                val matches = directory.searchPeople(actor, q ?: "", departmentId, limit + 1)
+                val afterCursor = if (cursor == null) matches else matches.filter {
+                    val folded = it.displayName.lowercase()
+                    folded > cursor.foldedName || (folded == cursor.foldedName && it.deviceId > cursor.deviceId)
+                }
+                val page = afterCursor.take(limit)
+                val next = if (afterCursor.size > limit && page.isNotEmpty()) {
+                    val last = page.last()
+                    DirectoryPrivacy.encodeCursor(last.displayName.lowercase(), last.deviceId)
+                } else null
+                // Server log hygiene: no names in logs (the audit records counts only).
+                audit.record(principal.deviceId, "directory.people.list", "rows=${page.size}")
+                call.respondJson(
+                    PeoplePageDto(
+                        people = page.map { it.toPersonDto(actor, directory, isOnline) },
+                        nextCursor = next,
+                    ),
+                )
+            }
+
+            get("/people/{deviceId}") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@get
+                val actor = principal.toActor()
+                val target = call.parameters["deviceId"].orEmpty().take(128)
+                if (target.isBlank() || !DirectoryVisibility.canLookupMember(actor, target)) {
+                    call.respondNotFound()
+                    return@get
+                }
+                val missLimiter = lookupMissLimiterFor(principal.deviceId)
+                val member = directory.getDepartmentMember(target)
+                val allowed = member != null && (DirectoryVisibility.canListMember(actor, member, directory) || member.deviceId == actor.deviceId)
+                // Hidden-department members ARE resolvable by known id (id known = allowed),
+                // but their department fields are blanked for outsiders.
+                val visibleMember = if (allowed) member else member?.takeIf {
+                    DirectoryVisibility.canLookupMember(actor, target)
+                }
+                if (visibleMember == null) {
+                    if (!missLimiter.check(principal.deviceId, true)) {
+                        audit.record(principal.deviceId, "directory.lookup.missburst", "misses>=10/min")
+                        val retryAfter = limits.directoryPeople.retryAfterSeconds(principal.deviceId)
+                        call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                        call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many directory requests")
+                        return@get
+                    }
+                    call.respondNotFound()
+                    return@get
+                }
+                if (!missLimiter.check(principal.deviceId, false)) {
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many directory requests")
+                    return@get
+                }
+                val dept = directory.getDepartment(visibleMember.departmentId)
+                val maySeeDept = dept == null || DirectoryVisibility.canSeeDepartment(dept, actor) || visibleMember.deviceId == actor.deviceId
+                audit.record(principal.deviceId, "directory.lookup.hit", "hit=1")
+                call.respondJson(
+                    PersonDto(
+                        deviceId = visibleMember.deviceId,
+                        displayName = visibleMember.displayName,
+                        departmentId = if (maySeeDept) visibleMember.departmentId else "",
+                        departmentName = if (maySeeDept) (dept?.name.orEmpty()) else "",
+                        role = visibleMember.role.name,
+                        online = if (DirectoryVisibility.presenceVisible(actor, visibleMember, directory)) isOnline(visibleMember.deviceId) else null,
+                    ),
+                )
             }
 
             get("/members") {
@@ -146,21 +260,36 @@ fun Route.directoryRoutes(
                     return@get
                 }
                 val dept = directory.getDepartment(departmentId)
-                val allowed = actor.isOrgAdmin || principal.departmentId == departmentId ||
+                // A2: old scoping stays for old clients, plus any non-hidden department is listable org-wide.
+                // A hidden (or missing) department outside the caller's scope answers like the old 403/404
+                // contract: 403 when the department exists but is not visible, 404-safe via canSee below.
+                val legacyAllowed = actor.isOrgAdmin || principal.departmentId == departmentId ||
                     (dept != null && principal.deviceId in dept.adminDeviceIds)
-                if (!allowed) {
-                    call.respondForbidden()
+                val orgWideAllowed = dept != null && !dept.hidden && DirectoryVisibility.canSeeDepartment(dept, actor)
+                if (!legacyAllowed && !orgWideAllowed) {
+                    if (dept == null || dept.hidden) {
+                        // A hidden department — and a missing id — are indistinguishable for outsiders:
+                        // same status, same body (no existence oracle).
+                        call.respondNotFound()
+                    } else {
+                        call.respondForbidden()
+                    }
                     return@get
                 }
-                call.respondJson(directory.listDepartmentMembers(departmentId).withSealing(sealingKeys, isOnline))
+                val scoped = directory.listDepartmentMembers(departmentId)
+                    .filter { DirectoryVisibility.canListMember(actor, it, directory) }
+                call.respondJson(scoped.withPrivacy(sealingKeys, isOnline, actor, directory))
             }
 
             get("/departments") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@get
                 val actor = principal.toActor()
-                val own = principal.departmentId.orEmpty()
-                val visible = directory.listDepartments().filter { actor.isOrgAdmin || it.id == own || principal.deviceId in it.adminDeviceIds }
-                call.respondJson(visible.map { it.toDto(directory) })
+                // A2 (option C): every department the actor canSeeDepartment, org-wide for non-hidden.
+                // Counts of hidden departments are zeroed for outsiders (never reveal the number);
+                // non-hidden departments show counts. Deviation from the plan's "null" recorded in the
+                // A2 report: DepartmentDto counts are non-null Ints on the wire, so 0 keeps old clients working.
+                val visible = directory.listDepartments().filter { DirectoryVisibility.canSeeDepartment(it, actor) }
+                call.respondJson(visible.map { it.toPrivacyDto(directory, actor) })
             }
         }
 
@@ -351,6 +480,24 @@ private fun hideFromStrangers(directory: OrganizationDirectory, groupId: String,
     if (group == null || !directory.canSee(group, actor)) throw DirectoryNotFoundException("group")
 }
 
+/** One miss limiter per device for the single lookup (A2 §3.3.2: 60/min total, 10/min misses). */
+private val lookupMissLimiters = java.util.concurrent.ConcurrentHashMap<String, DirectoryPrivacy.LookupMissLimiter>()
+private fun lookupMissLimiterFor(deviceId: String): DirectoryPrivacy.LookupMissLimiter =
+    lookupMissLimiters.computeIfAbsent(deviceId) { DirectoryPrivacy.LookupMissLimiter() }
+
+private fun DepartmentMember.toPersonDto(actor: DirectoryActor, directory: OrganizationDirectory, isOnline: (String) -> Boolean): PersonDto {
+    val dept = directory.getDepartment(departmentId)
+    val maySeeDept = dept == null || DirectoryVisibility.canSeeDepartment(dept, actor) || deviceId == actor.deviceId
+    return PersonDto(
+        deviceId = deviceId,
+        displayName = displayName,
+        departmentId = if (maySeeDept) departmentId else "",
+        departmentName = if (maySeeDept) (dept?.name.orEmpty()) else "",
+        role = role.name,
+        online = if (DirectoryVisibility.presenceVisible(actor, this, directory)) isOnline(deviceId) else null,
+    )
+}
+
 /** Runs [block], turning the directory's failures into the contract's fixed error responses. */
 private suspend fun ApplicationCall.guarded(block: suspend () -> Unit) {
     try {
@@ -392,7 +539,21 @@ private fun Department.toDto(directory: OrganizationDirectory) = DepartmentDto(
     adminDeviceIds = adminDeviceIds,
     memberCount = directory.memberCount(id),
     groupCount = directory.groupCount(id),
+    hidden = hidden,
 )
+
+/** A2: outsiders of a hidden department get zeroed counts (never the real number); hidden flag always ships. */
+private fun Department.toPrivacyDto(directory: OrganizationDirectory, actor: DirectoryActor): DepartmentDto {
+    val insider = actor.isOrgAdmin || id == actor.departmentId || actor.deviceId in adminDeviceIds
+    return DepartmentDto(
+        id = id,
+        name = name,
+        adminDeviceIds = adminDeviceIds,
+        memberCount = if (!hidden || insider) directory.memberCount(id) else 0,
+        groupCount = if (!hidden || insider) directory.groupCount(id) else 0,
+        hidden = hidden,
+    )
+}
 
 /**
  * The published sealing key of a device (ADR-124): PUBLIC material, served only inside the member DTOs of an
@@ -421,6 +582,34 @@ private fun List<DepartmentMember>.withSealing(sealing: SealingKeyLookup, isOnli
             subjectPublicKey = member.subjectPublicKey,
             sealingPublicKey = keys[member.deviceId]?.publicKey,
             sealingSignature = keys[member.deviceId]?.signature,
+        )
+    }
+}
+
+/**
+ * A2 privacy rendering of a member list: keys are stripped unless
+ * [DirectoryVisibility.keysVisible], presence is blanked (false, same shape as
+ * offline) unless [DirectoryVisibility.presenceVisible]. No names in logs.
+ */
+private fun List<DepartmentMember>.withPrivacy(
+    sealing: SealingKeyLookup,
+    isOnline: (String) -> Boolean,
+    actor: DirectoryActor,
+    directory: OrganizationDirectory,
+): List<MemberDto> {
+    val keys = sealing.lookup(map { it.deviceId })
+    return map { member ->
+        val showKeys = DirectoryVisibility.keysVisible(actor, member, directory)
+        val showPresence = DirectoryVisibility.presenceVisible(actor, member, directory)
+        MemberDto(
+            deviceId = member.deviceId,
+            departmentId = member.departmentId,
+            displayName = member.displayName,
+            role = member.role.name,
+            online = showPresence && isOnline(member.deviceId),
+            subjectPublicKey = if (showKeys) member.subjectPublicKey else null,
+            sealingPublicKey = if (showKeys) keys[member.deviceId]?.publicKey else null,
+            sealingSignature = if (showKeys) keys[member.deviceId]?.signature else null,
         )
     }
 }

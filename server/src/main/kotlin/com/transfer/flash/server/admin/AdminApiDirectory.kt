@@ -7,6 +7,7 @@ import com.transfer.flash.server.auth.respondError
 import com.transfer.flash.server.auth.respondJson
 import com.transfer.flash.server.directory.Department
 import com.transfer.flash.server.directory.DirectoryActor
+import com.transfer.flash.server.directory.DirectoryConflictException
 import com.transfer.flash.server.directory.GroupCharter
 import com.transfer.flash.server.directory.GroupVisibility
 import com.transfer.flash.server.directory.JoinMode
@@ -35,7 +36,7 @@ private val CONSOLE = DirectoryActor.CONSOLE
 // ---------------------------------------------------------------------------------------------------------- directory
 
 private fun Department.toAdminDto(d: AdminApiDeps) =
-    AdminDepartmentDto(id, name, adminDeviceIds, d.directory.memberCount(id), d.directory.groupCount(id))
+    AdminDepartmentDto(id, name, adminDeviceIds, d.directory.memberCount(id), d.directory.groupCount(id), hidden)
 
 private fun GroupCharter.toAdminDto(d: AdminApiDeps) = AdminGroupDto(
     id, name, departmentId, visibility.name, joinMode.name, adminDeviceIds, memberDeviceIds,
@@ -58,36 +59,51 @@ private inline fun <reified E : Enum<E>> parseEnum(name: String?): E? =
 internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
     route("/departments") {
         get {
-            call.adminSession(d) ?: return@get
-            call.respondJson(d.directory.listDepartments().map { it.toAdminDto(d) })
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
+            val all = d.directory.listDepartments()
+            call.respondJson(all.filter { scope.allows(it.id) }.map { it.toAdminDto(d) })
         }
 
         post {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val b = call.body<DepartmentBody>() ?: return@post
             call.guarded {
-                val created = d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), CONSOLE)
+                val created = if (b.hidden == null) {
+                    d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), CONSOLE)
+                } else {
+                    d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), b.hidden, CONSOLE)
+                }
                 d.audit.log(session.username, "department.create", "department=${created.id}")
+                if (created.hidden) d.audit.log(session.username, "directory.department.hidden", "department=${created.id} hidden=true")
                 call.respondJson(created.toAdminDto(d), HttpStatusCode.Created)
             }
         }
 
         put("/{id}") {
             val session = call.adminSession(d) ?: return@put
+            if (!call.requireOrg(d.scopeOf(session))) return@put
             val id = call.parameters["id"].orEmpty()
             val b = call.body<DepartmentBody>() ?: return@put
             call.guarded {
-                val updated = d.directory.updateDepartment(id, b.name, b.adminDeviceIds, CONSOLE)
+                val before = d.directory.getDepartment(id)?.hidden
+                val updated = d.directory.updateDepartment(id, b.name, b.adminDeviceIds, b.hidden, CONSOLE)
                 d.audit.log(session.username, "department.update", "department=$id")
+                if (b.hidden != null && b.hidden != before) {
+                    d.audit.log(session.username, "directory.department.hidden", "department=$id hidden=${updated.hidden}")
+                }
                 call.respondJson(updated.toAdminDto(d))
             }
         }
 
         delete("/{id}") {
             val session = call.adminSession(d) ?: return@delete
+            if (!call.requireOrg(d.scopeOf(session))) return@delete
             val id = call.parameters["id"].orEmpty()
             call.guarded {
                 d.directory.deleteDepartment(id, CONSOLE)
+                d.admins.removeDepartmentScopes(id)
                 d.audit.log(session.username, "department.delete", "department=$id")
                 call.respondJson(OkDto())
             }
@@ -96,15 +112,24 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
     route("/groups") {
         get {
-            call.adminSession(d) ?: return@get
-            call.respondJson(d.directory.listGroups().map { it.toAdminDto(d) })
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
+            call.respondJson(d.directory.listGroups().filter { scope.allowsGroup(it) }.map { it.toAdminDto(d) })
         }
 
         post {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val b = call.body<GroupBody>() ?: return@post
             val visibility = if (b.visibility == null) GroupVisibility.LISTED else parseEnum<GroupVisibility>(b.visibility) ?: return@post call.badRequest()
             val joinMode = if (b.joinMode == null) JoinMode.REQUEST_APPROVAL else parseEnum<JoinMode>(b.joinMode) ?: return@post call.badRequest()
+            val dept = b.departmentId.orEmpty().trim()
+            if (dept.isBlank()) {
+                // Organisation-wide groups are org admin only.
+                if (!call.requireOrg(scope)) return@post
+            } else if (!scope.allows(dept)) {
+                return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "That department is not yours.")
+            }
             call.guarded {
                 val created = d.directory.createGroup(
                     b.id.orEmpty(), b.name.orEmpty(), b.departmentId.orEmpty(), visibility, joinMode, b.adminDeviceIds.orEmpty(), CONSOLE,
@@ -116,11 +141,14 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
         put("/{id}") {
             val session = call.adminSession(d) ?: return@put
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             val b = call.body<GroupBody>() ?: return@put
             val visibility = if (b.visibility == null) null else parseEnum<GroupVisibility>(b.visibility) ?: return@put call.badRequest()
             val joinMode = if (b.joinMode == null) null else parseEnum<JoinMode>(b.joinMode) ?: return@put call.badRequest()
             call.guarded {
+                val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(existing)) return@guarded call.notFound()
                 var updated = d.directory.updateGroup(id, b.name, visibility, joinMode, CONSOLE)
                 if (b.adminDeviceIds != null) updated = d.directory.setGroupAdmins(id, b.adminDeviceIds, CONSOLE)
                 d.audit.log(session.username, "group.update", "group=$id")
@@ -130,8 +158,11 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
         delete("/{id}") {
             val session = call.adminSession(d) ?: return@delete
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             call.guarded {
+                val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(existing)) return@guarded call.notFound()
                 d.directory.deleteGroup(id, CONSOLE)
                 d.audit.log(session.username, "group.delete", "group=$id")
                 call.respondJson(OkDto())
@@ -140,9 +171,18 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
         post("/{id}/members") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             val b = call.body<GroupMemberAddBody>() ?: return@post
             call.guarded {
+                val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(existing)) return@guarded call.notFound()
+                if (b.deviceId.isNotBlank() && scope !is ConsoleScope.Org) {
+                    val memberDept = d.directory.getDepartmentMember(b.deviceId)?.departmentId
+                    if (!scope.allows(memberDept)) {
+                        return@guarded call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "That device is not in your department.")
+                    }
+                }
                 val updated = d.directory.addMemberToGroup(id, b.deviceId, CONSOLE)
                 d.audit.log(session.username, "group.member.add", "group=$id device=${b.deviceId}")
                 call.respondJson(updated.toAdminDto(d))
@@ -151,9 +191,12 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
         delete("/{id}/members/{deviceId}") {
             val session = call.adminSession(d) ?: return@delete
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             val device = call.parameters["deviceId"].orEmpty()
             call.guarded {
+                val existing = d.directory.getGroup(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(existing)) return@guarded call.notFound()
                 val updated = d.directory.removeMemberFromGroup(id, device, CONSOLE)
                 d.audit.log(session.username, "group.member.remove", "group=$id device=$device")
                 call.respondJson(updated.toAdminDto(d))
@@ -163,28 +206,40 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 
     route("/join-requests") {
         get {
-            call.adminSession(d) ?: return@get
-            call.respondJson(d.directory.listPendingFor(CONSOLE).map { it.toAdminDto(d) })
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
+            val all = d.directory.listPendingFor(CONSOLE)
+            call.respondJson(
+                all.filter { r -> d.directory.getGroup(r.groupId)?.let { scope.allowsGroup(it) } == true }.map { it.toAdminDto(d) },
+            )
         }
 
         post("/{id}/approve") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             call.guarded {
-                val group = d.directory.approveJoinRequest(id, CONSOLE)
-                d.audit.log(session.username, "join.approve", "request=$id group=${group.id}")
-                call.respondJson(group.toAdminDto(d))
+                val req = d.directory.getJoinRequest(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("request")
+                val group = d.directory.getGroup(req.groupId) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(group)) return@guarded call.notFound()
+                val updated = d.directory.approveJoinRequest(id, CONSOLE)
+                d.audit.log(session.username, "join.approve", "request=$id group=${updated.id}")
+                call.respondJson(updated.toAdminDto(d))
             }
         }
 
         post("/{id}/reject") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             // The body is optional: `{"reason": "..."}` is recorded in the audit log (the requester is not told).
             val reason = com.transfer.flash.core.hubprotocol.rest.HubRestCodec
                 .decodeOrNull<RejectBody>(call.receiveBoundedText().orEmpty())?.reason
                 ?.filter { it.code >= 0x20 && it.code != 0x7F }?.trim()?.take(200).orEmpty()
             call.guarded {
+                val req = d.directory.getJoinRequest(id) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("request")
+                val group = d.directory.getGroup(req.groupId) ?: throw com.transfer.flash.server.directory.DirectoryNotFoundException("group")
+                if (!scope.allowsGroup(group)) return@guarded call.notFound()
                 d.directory.rejectJoinRequest(id, CONSOLE)
                 d.audit.log(session.username, "join.reject", "request=$id" + if (reason.isNotEmpty()) " reason=$reason" else "")
                 call.respondJson(OkDto())
@@ -193,10 +248,18 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
     }
 }
 
+/** Organisation-wide groups (blank department) are ORG; otherwise the group's department must be in scope. */
+internal fun ConsoleScope.allowsGroup(group: GroupCharter): Boolean {
+    if (this is ConsoleScope.Org) return true
+    if (group.departmentId.isBlank()) return false
+    return allows(group.departmentId)
+}
+
 // ---------------------------------------------------------------------------------------------------------- accounts
 
 private fun AdminUser.toDto(d: AdminApiDeps) = AdminDto(
     username, role, disabled, enrolledDeviceId, createdAtMs, createdBy, d.admins.recoveryCodesRemaining(username), approverDeviceId,
+    displayName, if (role == AdminUser.ROLE_DEPT_HEAD) d.admins.headDepartments(username).sorted() else emptyList(), linkedDeviceId,
 )
 
 private fun AdminSession.toRow() = SessionRowDto(sessionId, username, createdAtMs, lastSeenMs, expiresAtMs)
@@ -204,15 +267,37 @@ private fun AdminSession.toRow() = SessionRowDto(sessionId, username, createdAtM
 internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
     route("/admins") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             call.respondJson(d.admins.listAdmins().map { it.toDto(d) })
         }
 
         // A new administrator can approve everything the console can do: it needs the same step-up as a delegation.
         post {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val b = call.body<AdminCreateBody>() ?: return@post
             if (!call.stepUpOk(d, session, StepUpActions.ADMIN_CREATE, b.username.trim())) return@post
+            // Plan A1: creating a head = role DEPT_HEAD with departments, display name and an optional linked device.
+            if (b.role == AdminUser.ROLE_DEPT_HEAD) {
+                if (b.departments.isEmpty()) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Choose at least one department for a department head.")
+                }
+                for (deptId in b.departments) {
+                    if (d.directory.getDepartment(deptId) == null) {
+                        return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That department no longer exists.")
+                    }
+                }
+                call.guarded {
+                    val credentials = d.admins.createHead(b.username, b.password, session.username, b.displayName.orEmpty(), b.departments, b.linkedDeviceId)
+                    d.audit.log(session.username, "admin.create", "admin=${credentials.username} role=DEPT_HEAD departments=${b.departments.sorted()}")
+                    call.respondJson(
+                        AdminCredentialsDto(credentials.username, null, credentials.totpSecret, credentials.otpAuthUri, credentials.recoveryCodes, QrCodeGenerator.generateSvg(credentials.otpAuthUri)),
+                        HttpStatusCode.Created,
+                    )
+                }
+                return@post
+            }
             call.guarded {
                 val credentials = d.admins.createAdmin(b.username, b.password, session.username)
                 d.audit.log(session.username, "admin.create", "admin=${credentials.username}")
@@ -223,8 +308,44 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
             }
         }
 
+        // Plan A1: add or remove a head's departments (org admin only). Removing the last one
+        // leaves a login with empty scope ("No departments").
+        get("/{username}/departments") {
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
+            val name = call.parameters["username"].orEmpty()
+            val admin = d.admins.getAdmin(name) ?: return@get call.notFound()
+            if (admin.role != AdminUser.ROLE_DEPT_HEAD) return@get call.respondJson(HeadDepartmentsDto(name, emptyList()))
+            call.respondJson(HeadDepartmentsDto(name, d.admins.headDepartments(name).sorted()))
+        }
+
+        put("/{username}/departments") {
+            val session = call.adminSession(d) ?: return@put
+            if (!call.requireOrg(d.scopeOf(session))) return@put
+            val name = call.parameters["username"].orEmpty()
+            val b = call.body<HeadDepartmentsBody>() ?: return@put
+            val admin = d.admins.getAdmin(name) ?: return@put call.notFound()
+            if (admin.role != AdminUser.ROLE_DEPT_HEAD) {
+                return@put call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Only a department head has departments.")
+            }
+            for (deptId in b.departments) {
+                if (d.directory.getDepartment(deptId) == null) {
+                    return@put call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That department no longer exists.")
+                }
+            }
+            if (name.equals(session.username, ignoreCase = true)) {
+                return@put call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You can not remove your own departments.")
+            }
+            call.guarded {
+                d.admins.setHeadDepartments(name, b.departments, session.username)
+                d.audit.log(session.username, "admin.departments.change", "admin=$name departments=${b.departments.sorted()}")
+                call.respondJson(HeadDepartmentsDto(name, d.admins.headDepartments(name).sorted()))
+            }
+        }
+
         post("/{username}/password") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val name = call.parameters["username"].orEmpty()
             val b = call.body<PasswordResetBody>() ?: return@post
             if (d.admins.getAdmin(name) == null) return@post call.notFound()
@@ -241,6 +362,7 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
         // administrator this ends their own session too; the console says so before it asks.
         post("/{username}/totp-reset") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val name = call.parameters["username"].orEmpty()
             if (d.admins.getAdmin(name) == null) return@post call.notFound()
             if (!call.stepUpOk(d, session, StepUpActions.ADMIN_CREATE, "totp:$name")) return@post
@@ -254,8 +376,12 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
 
         post("/{username}/disable") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val name = call.parameters["username"].orEmpty()
             if (d.admins.getAdmin(name) == null) return@post call.notFound()
+            if (name.equals(session.username, ignoreCase = true)) {
+                return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You can not disable your own login.")
+            }
             if (!call.stepUpOk(d, session, StepUpActions.ADMIN_DISABLE, name)) return@post
             call.guarded {
                 d.admins.setDisabled(name, true)
@@ -267,6 +393,7 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
 
         post("/{username}/enable") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val name = call.parameters["username"].orEmpty()
             if (d.admins.getAdmin(name) == null) return@post call.notFound()
             if (!call.stepUpOk(d, session, StepUpActions.ADMIN_DISABLE, name)) return@post
@@ -403,13 +530,22 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
 
     route("/sessions") {
         get {
-            call.adminSession(d) ?: return@get
-            call.respondJson(d.admins.listSessions().map { it.toRow() })
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
+            // A head sees only their own sessions; the org admin sees all.
+            val rows = if (scope is ConsoleScope.Org) d.admins.listSessions() else d.admins.listSessions(session.username)
+            call.respondJson(rows.map { it.toRow() })
         }
 
         post("/{id}/revoke") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
+            if (scope !is ConsoleScope.Org) {
+                // A head may revoke only their own sessions.
+                val own = d.admins.listSessions(session.username).any { it.sessionId == id }
+                if (!own) return@post call.notFound()
+            }
             if (!d.admins.revokeSession(id)) return@post call.notFound()
             d.audit.log(session.username, "admin.session.revoke", "session=$id")
             call.respondJson(OkDto())
@@ -438,7 +574,8 @@ private fun io.ktor.server.application.ApplicationCall.auditFilter(): AuditFilte
 internal fun Route.auditRoutes(d: AdminApiDeps) {
     route("/audit") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val filter = call.auditFilter() ?: return@get call.badRequest()
             val limit = (call.request.queryParameters["limit"]?.toIntOrNull() ?: 100).coerceIn(1, 500)
             val offset = (call.request.queryParameters["offset"]?.toIntOrNull() ?: 0).coerceIn(0, 10_000_000)
@@ -447,19 +584,22 @@ internal fun Route.auditRoutes(d: AdminApiDeps) {
         }
 
         get("/head") {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val head = d.audit.head()
             call.respondJson(AuditHeadDto(head?.first, head?.second, d.audit.size()))
         }
 
         get("/verify") {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val v = d.audit.verifyChain()
             call.respondJson(AuditVerifyDto(v.ok, v.entries, v.anchors, v.firstBadIndex, v.reason))
         }
 
         get("/export") {
             val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val filter = call.auditFilter() ?: return@get call.badRequest()
             d.audit.log(session.username, "audit.export", "filter=${filter.actionPrefix.orEmpty()}")
             call.response.header(HttpHeaders.ContentDisposition, "attachment; filename=\"flash-hub-audit.csv\"")

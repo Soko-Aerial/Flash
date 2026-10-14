@@ -126,6 +126,8 @@ public data class DepartmentDto(
     public val adminDeviceIds: List<String> = emptyList(),
     public val memberCount: Int = 0,
     public val groupCount: Int = 0,
+    /** Plan A2: true when this department is hidden from outsiders. Old clients ignore it (`ignoreUnknownKeys`). */
+    public val hidden: Boolean = false,
 )
 
 /**

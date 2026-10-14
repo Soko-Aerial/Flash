@@ -67,7 +67,14 @@ data class SessionDto(
     val serverTimeMs: Long = 0,
     /** The bound approver phone (ADR-131), or null. */
     val approverDeviceId: String? = null,
+    /** Plan A1: console display name; empty for older rows. */
+    val displayName: String = "",
+    /** Plan A1: departments this login is bound to (empty for org admins and empty-scope heads). */
+    val departments: List<DepartmentRefDto> = emptyList(),
 )
+
+@Serializable
+data class DepartmentRefDto(val id: String, val name: String = "")
 
 @Serializable
 data class SessionRowDto(val sessionId: String, val username: String, val createdAtMs: Long, val lastSeenMs: Long, val expiresAtMs: Long)
@@ -214,10 +221,10 @@ data class BulkInviteRowDto(val line: Int, val name: String, val created: Invite
 data class BulkInviteDto(val rows: List<BulkInviteRowDto>)
 
 @Serializable
-data class DepartmentBody(val id: String? = null, val name: String? = null, val adminDeviceIds: List<String>? = null)
+data class DepartmentBody(val id: String? = null, val name: String? = null, val adminDeviceIds: List<String>? = null, val hidden: Boolean? = null)
 
 @Serializable
-data class AdminDepartmentDto(val id: String, val name: String, val adminDeviceIds: List<String>, val memberCount: Int, val groupCount: Int)
+data class AdminDepartmentDto(val id: String, val name: String, val adminDeviceIds: List<String>, val memberCount: Int, val groupCount: Int, val hidden: Boolean = false)
 
 @Serializable
 data class GroupBody(
@@ -269,10 +276,28 @@ data class AdminDto(
     val createdBy: String? = null,
     val recoveryCodesRemaining: Int = 0,
     val approverDeviceId: String? = null,
+    /** Plan A1: console display name and bound departments (empty = none). */
+    val displayName: String = "",
+    val departments: List<String> = emptyList(),
+    val linkedDeviceId: String? = null,
 )
 
 @Serializable
-data class AdminCreateBody(val username: String, val password: String)
+data class AdminCreateBody(
+    val username: String,
+    val password: String,
+    /** Plan A1: "DEPT_HEAD" creates a head login (org admin + step-up); anything else means ORG_ADMIN. */
+    val role: String? = null,
+    val displayName: String? = null,
+    val departments: List<String> = emptyList(),
+    val linkedDeviceId: String? = null,
+)
+
+@Serializable
+data class HeadDepartmentsBody(val departments: List<String> = emptyList())
+
+@Serializable
+data class HeadDepartmentsDto(val username: String, val departments: List<String>)
 
 @Serializable
 data class AdminCredentialsDto(

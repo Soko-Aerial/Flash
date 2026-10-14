@@ -391,15 +391,15 @@ class OrganizationDirectorySyncTest {
         dir.addDepartmentMember("dept-sales", "seller-1", "Alice", role = MemberRole.MEMBER, subjectPublicKey = testSpki("SPKI-A"))
         dir.addDepartmentMember("dept-eng", "coder-1", "Bob", role = MemberRole.MEMBER, subjectPublicKey = testSpki("SPKI-B"))
 
-        // Member of dept-sales syncs: must only receive members of dept-sales
+        // Plan A2 (option C, §3.3.6): member of dept-sales syncs non-hidden org-wide rows (both departments visible).
         val salesActor = DirectoryActor(
             deviceId = "seller-1",
             departmentId = "dept-sales",
             role = MemberRole.MEMBER,
         )
         val salesSync = dir.getSyncChanges(since = 0L, cursor = null, limit = 10, actor = salesActor)
-        assertEquals(1, salesSync.members.size)
-        assertEquals("seller-1", salesSync.members[0].deviceId)
+        assertEquals(2, salesSync.members.size)
+        assertEquals(setOf("seller-1", "coder-1"), salesSync.members.map { it.deviceId }.toSet())
 
         // Admin syncs: receives all members
         val adminActor = DirectoryActor(
