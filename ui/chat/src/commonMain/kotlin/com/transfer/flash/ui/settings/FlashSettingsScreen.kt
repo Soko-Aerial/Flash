@@ -318,7 +318,7 @@ object FlashSettingsMath {
         ),
         ENTERPRISE(
             "Enterprise & Organization", "Corporate hub relay, enrollment, and department directory",
-            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect", "Messages through the hub", "Connection", "Status"),
+            listOf("Organization hub", "Department", "Role", "Enrolment", "Root fingerprint", "Directory", "Disconnect", "Messages through the hub", "Connection", "Status", "Approve admin requests"),
         ),
     }
 
@@ -432,6 +432,13 @@ fun FlashSettingsScreen(
     onEnrollDevice: ((String) -> Unit)? = null,
     /** Disconnects/un-enrolls device from enterprise hub. */
     onDisconnectEnterprise: (() -> Unit)? = null,
+    /**
+     * Lists the console actions waiting for this phone to approve (ADR-131, FO-14). Null on a host without a hub; the result is
+     * null when the hub could not be asked.
+     */
+    onLoadApprovals: (suspend () -> List<com.transfer.flash.core.enterprise.EnterpriseApproval>?)? = null,
+    /** Approves one listed request with this device's key; true when the hub accepted it. */
+    onApprove: (suspend (com.transfer.flash.core.enterprise.EnterpriseApproval) -> Boolean)? = null,
     /** Connects to the hub now ("Retry now" on a banner). */
     onRetryHub: (() -> Unit)? = null,
     /** Forgets the "your organisation removed this device" notice. */
@@ -454,6 +461,7 @@ fun FlashSettingsScreen(
     var showRestartPrompt by remember { mutableStateOf(false) }
     var showEnrollDialog by remember { mutableStateOf(false) }
     var showDisconnectEnterpriseConfirmation by remember { mutableStateOf(false) }
+    var showApprovals by remember { mutableStateOf(false) }
     var showHubDetails by remember { mutableStateOf(false) }
     var showHubContentDisclosure by remember { mutableStateOf(false) }
     val hubStatus = model.hubStatus
@@ -542,6 +550,10 @@ fun FlashSettingsScreen(
             },
             onCancel = { showHubContentDisclosure = false },
         )
+    }
+
+    if (showApprovals && onLoadApprovals != null && onApprove != null) {
+        FlashApprovalsDialog(load = onLoadApprovals, approve = onApprove, onDismiss = { showApprovals = false })
     }
 
     if (showDisconnectEnterpriseConfirmation && onDisconnectEnterprise != null) {
@@ -921,6 +933,15 @@ fun FlashSettingsScreen(
                             subtitle = "Delegated permission level inside company",
                             value = model.enterpriseRole ?: "Member",
                             onClick = {},
+                        )
+                        if (onLoadApprovals != null && onApprove != null &&
+                            FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Approve admin requests")
+                        ) ValueRow(
+                            iconSpec = FlashIcons.Relay,
+                            title = "Approve admin requests",
+                            subtitle = "If you set this phone as your approver, approve dangerous admin console actions here",
+                            value = "Open",
+                            onClick = { showApprovals = true },
                         )
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Disconnect from Organization")) ValueRow(
                             iconSpec = FlashIcons.Close,
