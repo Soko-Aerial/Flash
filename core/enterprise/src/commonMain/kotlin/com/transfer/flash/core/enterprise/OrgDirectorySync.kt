@@ -319,6 +319,10 @@ public class OrgDirectorySync(
 
                         val existing = accumulatedMembers[member.deviceId]
                         if (existing != null) {
+                            if (existing.isConflict) {
+                                // Rule 8 is sticky: K1, K2, K1 must not clear the flag (verifier defect 6).
+                                continue
+                            }
                             if (existing.subjectPublicKey != statement.subjectPublicKey) {
                                 // Rule 8: Same deviceId, two different keys in snapshot -> drop both, mark conflict
                                 accumulatedMembers[member.deviceId] = existing.copy(isConflict = true)
@@ -353,6 +357,7 @@ public class OrgDirectorySync(
 
         // All pages fetched & verified successfully in memory -> Atomic apply to database
         val membersToUpsert = accumulatedMembers.values.filterNot { it.isConflict }.map { it.entity }
+        val conflictedIds = accumulatedMembers.filterValues { it.isConflict }.keys
         val clampedGraceDays = responseOfflineGraceDays.coerceIn(
             DirectorySyncDto.MIN_OFFLINE_GRACE_DAYS,
             DirectorySyncDto.MAX_OFFLINE_GRACE_DAYS,
@@ -377,7 +382,8 @@ public class OrgDirectorySync(
             orgDirectoryDao.applySyncBatch(
                 fullResync = isFullResync,
                 membersToUpsert = membersToUpsert,
-                memberIdsToDelete = accumulatedRemovedMemberIds.toList(),
+                // A conflicted device is dropped from the snapshot, so a row stored by an earlier sync goes too.
+                memberIdsToDelete = (accumulatedRemovedMemberIds + conflictedIds).toList(),
                 departmentsToUpsert = accumulatedDepartments.values.toList(),
                 departmentIdsToDelete = accumulatedRemovedDeptIds.toList(),
                 newState = newState,

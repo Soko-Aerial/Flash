@@ -640,6 +640,51 @@ class OrgDirectorySyncTest {
         assertEquals(0, dao.members.size)
     }
 
+    private fun conflictPage(vararg members: DirectoryMemberSyncDto, full: Boolean) = DirectorySyncDto(
+        directoryEpoch = "epoch-1", version = 10L, fromVersion = 0L, fullResync = full, nextCursor = null, serverTimeMs = nowMs,
+        delegationChain = listOf(testOrg.delegation()), members = members.toList(),
+    )
+
+    @Test
+    fun `ORGT-U57 Rule 8 stays in force for key sequence K1 K2 K1`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+        val k1 = TestCrypto()
+        val (s1, _) = createStatement(deviceId = "dev-x", subjectCrypto = k1, serial = 1)
+        val (s2, _) = createStatement(deviceId = "dev-x", subjectCrypto = TestCrypto(), serial = 2)
+        val (s3, _) = createStatement(deviceId = "dev-x", subjectCrypto = k1, serial = 3)
+        fakeApi.pages.add(DirectorySyncPageResult.Success(conflictPage(
+            DirectoryMemberSyncDto("dev-x", "X", "dept-1", statement = s1),
+            DirectoryMemberSyncDto("dev-x", "X", "dept-1", statement = s2),
+            DirectoryMemberSyncDto("dev-x", "X", "dept-1", statement = s3),
+            full = true,
+        )))
+        assertTrue(sync.syncOnce() is OrgSyncOutcome.Success)
+        assertNull(dao.findMemberByDeviceId("dev-x"), "the third statement with the first key must not revive a conflicted device")
+    }
+
+    @Test
+    fun `ORGT-U58 a conflict on a delta sync deletes the row an earlier sync stored`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+        dao.upsertMembers(listOf(OrgDirectoryMemberEntity(
+            deviceId = "dev-x", displayName = "X", displayNameFolded = "x", departmentId = "dept-1", role = "member",
+            subjectPublicKeyFingerprint = "FP-OLD", statementBytes = byteArrayOf(1), statementSerial = 1L,
+            statementIssuedAtMs = nowMs - 1000L, statementDelegationSerial = 1L, lastSyncedAtMs = nowMs - 1000L,
+        )))
+        val (a, _) = createStatement(deviceId = "dev-x", subjectCrypto = TestCrypto(), serial = 5)
+        val (b, _) = createStatement(deviceId = "dev-x", subjectCrypto = TestCrypto(), serial = 6)
+        fakeApi.pages.add(DirectorySyncPageResult.Success(conflictPage(
+            DirectoryMemberSyncDto("dev-x", "X", "dept-1", statement = a),
+            DirectoryMemberSyncDto("dev-x", "X", "dept-1", statement = b),
+            full = false,
+        )))
+        assertTrue(sync.syncOnce() is OrgSyncOutcome.Success)
+        assertNull(dao.findMemberByDeviceId("dev-x"))
+    }
+
     @Test
     fun `ORGT-U16 5,000-member sync time and memory budget test`() = runBlocking {
         val fakeApi = FakeDirectorySyncApi()
