@@ -1999,6 +1999,12 @@ public fun DesktopShell(
                                 searchQuery = ""
                                 true
                             }
+                            // UI-058: Transfers is pushed (not a tab) on an enrolled device, so Esc closes its
+                            // detail pane first and then goes back; the sidebar has no Transfers entry to leave by.
+                            nav.hubEnrolled && nav.current.destination == FlashDestination.Transfers && nav.stackSize > 1 -> {
+                                if (selectedTransferItem != null) selectedTransferItem = null else nav.back()
+                                true
+                            }
                             nav.current.destination == FlashDestination.Conversation || selectedChatConversationId != null -> {
                                 selectedChatConversationId = null
                                 chatRepository.closeConversation()
