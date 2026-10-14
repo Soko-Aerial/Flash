@@ -122,11 +122,12 @@ class E2eDirectoryContractTest {
         assertEquals(setOf("g-ops"), carolGroups)
 
         val depts = w.alice.client.directory.fetchDepartments(url).ok().map { it.departmentId }
-        assertEquals(listOf("eng"), depts, "a member sees its own department only")
+        assertEquals(listOf("eng", "ops"), depts, "Plan A2 (option C): non-hidden departments are org-visible")
         val members = w.alice.client.directory.fetchDepartmentMembers(url, "eng").ok()
         assertEquals(setOf("alice", "bob"), members.map { it.deviceId }.toSet())
         assertTrue(members.all { !it.subjectPublicKey.isNullOrBlank() }, "subjectPublicKey is on MemberDto for in-scope callers")
-        assertTrue(w.alice.client.directory.fetchDepartmentMembers(url, "ops") is FlashResult.Failure, "another department's roster is refused")
+        val opsMembers = w.alice.client.directory.fetchDepartmentMembers(url, "ops").ok()
+        assertEquals(setOf("carol"), opsMembers.map { it.deviceId }.toSet(), "Plan A2 §3.3.4: non-hidden rosters are listable org-wide")
     }
 
     @Test

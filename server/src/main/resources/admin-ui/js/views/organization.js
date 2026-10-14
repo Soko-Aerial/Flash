@@ -89,6 +89,7 @@ export function mountOrganization(container, ctx) {
       onOpen: (d) => editDepartment(d),
       columns: [
         { key: 'name', label: t('org.col.name'), primary: true, render: (d) => h('span', { class: 'cell-stack' }, h('span', { class: 'cell-title', text: d.name }), h('span', { class: 'cell-sub mono', text: d.id })) },
+        { key: 'hidden', label: t('org.dept.hidden'), className: 'hide-sm', render: (d) => (d.hidden ? badge(t('org.vis.HIDDEN'), 'accent') : h('span', { class: 'muted', text: '—' })) },
         { key: 'members', label: t('org.col.members'), className: 'num', render: (d) => formatNumber(d.memberCount) },
         { key: 'groups', label: t('org.col.groups'), className: 'num', render: (d) => formatNumber(d.groupCount) },
         { key: 'admins', label: t('org.col.admins'), className: 'hide-sm', render: (d) => (d.adminDeviceIds.length ? d.adminDeviceIds.map((id) => deviceLabel(names, id)).join(', ') : h('span', { class: 'muted', text: t('org.noAdmins') })) },
@@ -103,6 +104,10 @@ export function mountOrganization(container, ctx) {
     const isNew = !dept;
     const name = textInput({ value: dept ? dept.name : '', maxlength: 128 });
     const nf = field({ label: t('org.dept.name'), control: name, required: true });
+    const hiddenBox = h('input', { type: 'checkbox', class: 'check' });
+    if (dept && dept.hidden) hiddenBox.checked = true;
+    const hiddenField = field({ label: t('org.dept.hidden'), control: hiddenBox, hint: t('org.dept.hidden.help') });
+    hiddenField.el.appendChild(h('p', { class: 'muted small', text: t('org.dept.hidden.note') }));
     let admins = dept ? [...dept.adminDeviceIds] : [];
     const adminHost = h('div');
     const draw = () => mount(adminHost, deviceChips(admins, names, (id) => { admins = admins.filter((x) => x !== id); draw(); }, t('org.dept.admins')));
@@ -113,7 +118,7 @@ export function mountOrganization(container, ctx) {
     const del = !isNew ? button({ label: t('org.dept.delete'), icon: 'trash', variant: 'danger', on: { click: () => deleteDepartment(dept, dlg) } }) : null;
     const dlg = openDialog({
       title: isNew ? t('org.dept.create') : t('org.dept.edit', { name: dept.name }),
-      body: [nf.el, h('h3', { class: 'subhead', text: t('org.dept.admins') }), h('p', { class: 'muted small', text: t('org.dept.admins.hint') }), adminHost, picker.el, message],
+      body: [nf.el, hiddenField.el, h('h3', { class: 'subhead', text: t('org.dept.admins') }), h('p', { class: 'muted small', text: t('org.dept.admins.hint') }), adminHost, picker.el, message],
       actions: [del, button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), save],
     });
     save.addEventListener('click', () =>
@@ -123,11 +128,15 @@ export function mountOrganization(container, ctx) {
           nf.setError(t('org.name.required'));
           return name.focus();
         }
+        const wantHidden = hiddenBox.checked;
+        const hiddenChanged = dept ? wantHidden !== !!dept.hidden : wantHidden;
+        const proceed = !hiddenChanged || (await confirmDialog({ title: t('org.dept.hidden.confirm.title'), message: t('org.dept.hidden.confirm.text'), detail: t('org.dept.hidden.help'), confirmLabel: t('org.dept.hidden.confirm.ok'), danger: false }));
+        if (!proceed) return undefined;
         try {
           if (isNew) {
-            await createWithUniqueId((id) => api.post('/departments', { id, name: name.value.trim(), adminDeviceIds: admins }), name.value);
+            await createWithUniqueId((id) => api.post('/departments', { id, name: name.value.trim(), adminDeviceIds: admins, hidden: wantHidden }), name.value);
           } else {
-            await api.put('/departments/' + encodeURIComponent(dept.id), { name: name.value.trim(), adminDeviceIds: admins });
+            await api.put('/departments/' + encodeURIComponent(dept.id), { name: name.value.trim(), adminDeviceIds: admins, hidden: wantHidden });
           }
           dlg.close();
           toast(t(isNew ? 'org.dept.created' : 'org.dept.saved'), { kind: 'success' });

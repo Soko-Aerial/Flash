@@ -1362,6 +1362,33 @@ JSON bodies, UTF-8, at most 64 KiB. Success bodies are the DTOs in `rest/RestDto
 | `DELETE /api/v1/groups/{id}` | bearer (group admin) | none | `OkResponse`; same `404` rule | served |
 | `POST /api/v1/groups/members` | bearer (group admin) | `GroupMemberBody {groupId, deviceId, add}` (`add` false removes) | `GroupDto`; audited `directory.group.member.add` / `.remove` | served |
 
+#### Directory privacy v1 (Plan A2, option C, ADR-137; owner D2 + D9)
+
+Names, departments and online dots are org-visible by default; an admin can mark
+a department **hidden**. Hidden hides listing only: directory lists, searches,
+counts, cursors, group browse lists, member lists, keys and presence never reveal
+a hidden department's rows to outsiders. Anyone who knows a person's id, or has
+been contacted by them, can still chat (inter-department messaging is wanted).
+Devices on the same Wi-Fi still see each other's device names through local
+discovery. The hub operator and org admins see everything.
+
+| Method and path | Auth | Request | Response | State |
+|---|---|---|---|---|
+| `GET /api/v1/directory/people?cursor=&limit=&q=&departmentId=` | bearer | `q` max 64 chars (min 2 when non-empty), `limit` default 100 max 500 (clamped), `cursor` opaque Base64url | `PeoplePageDto {people: PersonDto[deviceId, displayName, departmentId, departmentName, role, online?], nextCursor?}` — NO keys; ordered by `(displayNameFolded, deviceId)`; rate limit 30/min/device (`429`); invalid cursor/limit/q is `400` | served (A2) |
+| `GET /api/v1/directory/people/{deviceId}` | bearer | known id | `PersonDto`; hidden-department members resolve (id known = allowed) with blanked department fields; missing AND not-allowed share one `404` body; miss bursts (≥10/min) are `429` + audit | served (A2) |
+| `GET /api/v1/directory/departments` (changed) | bearer | none | every `DepartmentDto` the caller `canSeeDepartment` (org-wide for non-hidden); counts are `0` for hidden departments to outsiders (wire keeps non-null Ints so old clients work); `hidden` ships (old clients ignore it) | served (A2 changed) |
+| `GET /api/v1/directory/members` (kept, superset) | bearer | `departmentId` or `groupId` | old scoping unchanged for old clients, plus any non-hidden `departmentId` is listable; keys per D9 (`DIRECTORY_KEYS_ORG_WIDE=true`: org-wide for non-hidden, insiders-only for hidden); presence blanked (false) for hidden outsiders | served (A2 changed) |
+| `GET /api/v1/directory/groups` (changed) | bearer | none | `listVisibleGroups` AND the hidden-department filter (`canSeeGroup`) | served (A2 changed) |
+| Plan B sync `/directory/sync` (changed) | bearer | unchanged | member rows use `canListMember` (hidden never delivered to outsiders); `DepartmentSyncDto.hidden` now carries the flag; every `hidden` change bumps `directoryEpoch` (full resync) | served (A2 changed) |
+
+Keys (D9, `DIRECTORY_KEYS_ORG_WIDE=true`): identity + sealing keys are org-visible
+for non-hidden departments and never for hidden ones to outsiders (delivered only
+to members/admins of that department, through the lookup by known id, and in the
+Plan B Layer 2 handshake). Compatibility: old client + new hub keeps working
+(old routes answer as before for the own department; new `hidden` field ignored);
+new client + old hub gets `404` on `/directory/people*` and shows "Your company
+server is out of date. Some people may not be listed."
+
 Since Phase 2 SERVER-A (SEC-03, ADR-111) EVERY `/api/v1` route except `enroll`, `enroll/renew`, `auth/challenge`, `auth/verify`, `hub` and `revocations` needs a
 bearer (`HubApiGate`, installed first in the engine; `GET revocations` joined the public list in ADR-124); the principal is the bearer's device and department, a claimed `X-Device-Id` or
 `department` is never read, and a missing or unresolvable bearer is `401 ERR_AUTH`. Bodies above 64 KiB are `413 ERR_TOO_LARGE`. The public
