@@ -89,6 +89,8 @@ import com.transfer.flash.debug.TranssionSetupGuide
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
+import com.transfer.flash.ui.hub.FlashHubPlaceholderScreen
+import com.transfer.flash.ui.shell.FlashShellTabs
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
 import com.transfer.flash.ui.navigation.rememberFlashNavigationState
@@ -678,13 +680,6 @@ private const val GROUP_CALL_NOT_STARTED: String =
     "Couldn't start the group call: none of its members can be called from this device " +
         "(you must be paired with them, or a call is already running)"
 
-private val bottomNavTabs = listOf(
-    FlashBottomNavItem(FlashDestination.ChatList, FlashIcons.Chat, "Chats"),
-    FlashBottomNavItem(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
-    FlashBottomNavItem(FlashDestination.NearbyDevices, FlashIcons.Nearby, "Nearby"),
-    FlashBottomNavItem(FlashDestination.Settings, FlashIcons.Settings, "Settings"),
-)
-
 /** #14: maps the UI theme enum to/from the persisted DataStore string keys (pure, JVM-testable). */
 object SettingsKeys {
     fun themeModeFromKey(key: String): FlashThemeMode = when (key) {
@@ -1004,6 +999,12 @@ private fun FlashShell(
     // stack comes up (UI-026), first-run empty state once it is up with no threads (UI-025), error
     // state if boot failed (UI-027).
     val ready by engine.ready.collectAsState()
+    // UI-058: the Hub tab replaces Transfers for an enrolled device. Enrolment is only trusted once the
+    // engine is ready (before that the credentials flow holds its empty default); the saved stack
+    // carries the last known value, so a restore does not flicker.
+    LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
+        if (ready) nav.updateHubEnrolled(settings.isEnterpriseEnrolled)
+    }
     val chatStartError by engine.startError.collectAsState()
     val chatRepository: com.transfer.flash.core.messaging.FlashChatRepository =
         (if (ready) engine.chats else null) ?: EmptyFlashChatRepository
@@ -1088,14 +1089,14 @@ private fun FlashShell(
     val shortcutTab by pendingShortcutTab.collectAsState()
     LaunchedEffect(shortcutTab) {
         val tab = shortcutTab ?: return@LaunchedEffect
-        nav.selectTab(tab)
+        if (tab == FlashDestination.Transfers) nav.openTransfers() else nav.selectTab(tab)
         pendingShortcutTab.value = null
     }
 
     val activeShare by pendingShare.collectAsState()
     LaunchedEffect(activeShare) {
         if (activeShare != null) {
-            if (nav.current.destination == FlashDestination.Transfers || nav.current.destination == FlashDestination.Settings) {
+            if (nav.current.destination == FlashDestination.Transfers || nav.current.destination == FlashDestination.Hub || nav.current.destination == FlashDestination.Settings) {
                 nav.selectTab(FlashDestination.NearbyDevices)
             }
         }
@@ -1856,39 +1857,16 @@ private fun FlashShell(
         chatListState.items.sumOf { it.unreadCount }
     }
 
-    val liveBottomNavTabs = remember(totalUnreadCount) {
-        listOf(
-            FlashBottomNavItem(FlashDestination.ChatList, FlashIcons.Chat, "Chats", badgeCount = if (totalUnreadCount > 0) totalUnreadCount else null),
-            FlashBottomNavItem(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
-            FlashBottomNavItem(FlashDestination.NearbyDevices, FlashIcons.Nearby, "Nearby"),
-            FlashBottomNavItem(FlashDestination.Settings, FlashIcons.Settings, "Settings"),
-        )
+    // UI-058: ONE tab source for the bottom bar and the rail (FlashShellTabs), so they cannot drift
+    // from FlashNavigationMath.tabOrder. Hub carries no badge until announcements exist (A3).
+    val shellTabs = remember(totalUnreadCount, nav.hubEnrolled) {
+        FlashShellTabs.of(nav.hubEnrolled, chatsUnread = totalUnreadCount)
     }
-
-    val navigationRailTabs = remember(totalUnreadCount) {
-        listOf(
-            FlashNavigationRailTab(
-                destination = FlashDestination.ChatList,
-                icon = FlashIcons.Chat,
-                label = "Chats",
-                badgeCount = totalUnreadCount,
-            ),
-            FlashNavigationRailTab(
-                destination = FlashDestination.Transfers,
-                icon = FlashIcons.Transfer,
-                label = "Transfers",
-            ),
-            FlashNavigationRailTab(
-                destination = FlashDestination.NearbyDevices,
-                icon = FlashIcons.Nearby,
-                label = "Nearby",
-            ),
-            FlashNavigationRailTab(
-                destination = FlashDestination.Settings,
-                icon = FlashIcons.Settings,
-                label = "Settings",
-            ),
-        )
+    val liveBottomNavTabs = remember(shellTabs) {
+        shellTabs.map { FlashBottomNavItem(it.destination, it.icon, it.label, it.badgeCount) }
+    }
+    val navigationRailTabs = remember(shellTabs) {
+        shellTabs.map { FlashNavigationRailTab(it.destination, it.icon, it.label, it.badgeCount ?: 0) }
     }
 
     // In two-pane mode, back clears active detail selection without popping the tab or exiting the app
@@ -2748,6 +2726,13 @@ private fun FlashShell(
     }
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
+    // UI-058: shell-only Hub screen (H3); the data sections arrive in H7.
+    val hubScreenContent: @Composable () -> Unit = {
+        FlashHubPlaceholderScreen(
+            onBrowseGroups = { showBrowseOrgGroups = true },
+            modifier = Modifier.padding(bottom = tabBottomInset),
+        )
+    }
     val chatListScreenContent: @Composable () -> Unit = {
         FlashChatListScreen(
             state = chatListState,
@@ -2819,7 +2804,18 @@ private fun FlashShell(
                 activeJoinLink = null
                 showJoinGroupDialog = true
             },
-            onBrowseOrgGroupsClick = if (settings.isEnterpriseEnrolled) { { showBrowseOrgGroups = true } } else null,
+            // UI-058: enrolled devices browse department groups from the Hub tab and open Transfers
+            // from this bar; unenrolled devices keep the bar they always had.
+            onBrowseOrgGroupsClick = null,
+            onTransfersClick = if (nav.hubEnrolled) { { nav.openTransfers() } } else null,
+            transfersActiveCount = if (nav.hubEnrolled) {
+                domainTransfers.count {
+                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Queued ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+                }
+            } else 0,
             pendingApprovalGroupNames = hubPendingJoins.values.toList(),
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
@@ -2836,7 +2832,7 @@ private fun FlashShell(
             Row(Modifier.fillMaxSize()) {
                 FlashNavigationRail(
                     tabs = navigationRailTabs,
-                    selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
+                    selectedTab = nav.shellTab,
                     onTabSelected = { destination ->
                         if (destination == FlashDestination.ChatList) {
                             if (selectedChatConversationId != null && twoPane) {
@@ -2967,14 +2963,17 @@ private fun FlashShell(
                                     windowWidthDp = availableWidthDp,
                                 )
                             }
+                            // UI-058: shell-only Hub (H3) uses the full width; list + detail panes arrive with H7.
+                            FlashDestination.Hub -> hubScreenContent()
                         }
                     } else {
                         // Medium (600..839dp) - rail on left, single pane in content area
                         Box(Modifier.fillMaxSize()) {
-                            FlashAnimatedScreen(targetState = nav.current) { entry ->
+                            FlashAnimatedScreen(targetState = nav.current, hubEnrolled = nav.hubEnrolled) { entry ->
                                 when (entry.destination) {
                                     FlashDestination.Conversation -> conversationScreenContent()
                                     FlashDestination.Transfers -> transfersScreenContent()
+                                    FlashDestination.Hub -> hubScreenContent()
                                     FlashDestination.NearbyDevices -> nearbyScreenContent()
                                     FlashDestination.Settings -> settingsScreenContent()
                                     FlashDestination.ChatList -> chatListScreenContent()
@@ -2987,10 +2986,11 @@ private fun FlashShell(
         } else {
             // Compact (< 600dp) - standard phone single-pane layout
             Box(Modifier.fillMaxSize()) {
-                FlashAnimatedScreen(targetState = nav.current) { entry ->
+                FlashAnimatedScreen(targetState = nav.current, hubEnrolled = nav.hubEnrolled) { entry ->
                     when (entry.destination) {
                         FlashDestination.Conversation -> conversationScreenContent()
                         FlashDestination.Transfers -> transfersScreenContent()
+                        FlashDestination.Hub -> hubScreenContent()
                         FlashDestination.NearbyDevices -> nearbyScreenContent()
                         FlashDestination.Settings -> settingsScreenContent()
                         FlashDestination.ChatList -> chatListScreenContent()
@@ -3127,7 +3127,7 @@ private fun FlashShell(
                 ) {
                     FlashBottomNav(
                         items = liveBottomNavTabs,
-                        selectedTab = nav.current.destination,
+                        selectedTab = nav.shellTab,
                         onTabSelected = nav::selectTab,
                         visible = autoNavVisible,
                         // Telegram behaviour: tapping the tab you are already on returns it to the top.

@@ -103,6 +103,10 @@ object FlashIcons {
     val Nearby = FlashIconSpec(Res.drawable.flash_ic_nearby, "Nearby")
     val Settings = FlashIconSpec(Res.drawable.flash_ic_settings, "Settings")
 
+    /** UI-058 Hub tab (the organisation) and its announcements; docs/ui/icon-system.md addendum 2026-10-14. */
+    val Hub = FlashIconSpec(Res.drawable.flash_ic_hub, "Hub")
+    val Announcement = FlashIconSpec(Res.drawable.flash_ic_announcement, "Announcement")
+
     // Provisional reaction / action icons (UI-009 will refine)
     val Thread = FlashIconSpec(Res.drawable.flash_ic_thread, "Thread reply")
     val Flag = FlashIconSpec(Res.drawable.flash_ic_flag, "Flag message")
