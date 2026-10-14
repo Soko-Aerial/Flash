@@ -66,4 +66,25 @@ internal object FakeSigs : EcdsaVerifier {
         val unsigned = RevocationList(version, serials, ids, delegationSerials, issuer, "")
         return unsigned.copy(signature = sign(issuer, unsigned.canonicalBytes()))
     }
+
+    fun statement(
+        deviceId: String = "dev-1",
+        subjectKey: String = keyOf("subject-$deviceId"),
+        dept: String = "dept-1",
+        role: String = "member",
+        issuedAt: Long = T0,
+        serial: Long = 1,
+        signer: String = keyOf("hub"),
+    ): com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement {
+        val unsigned = com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement(
+            deviceId = deviceId,
+            subjectPublicKey = subjectKey,
+            departmentId = dept,
+            role = role,
+            issuedAtMs = issuedAt,
+            statementSerial = serial,
+            issuerSignature = "",
+        )
+        return unsigned.copy(issuerSignature = sign(signer, unsigned.canonicalBytes()))
+    }
 }

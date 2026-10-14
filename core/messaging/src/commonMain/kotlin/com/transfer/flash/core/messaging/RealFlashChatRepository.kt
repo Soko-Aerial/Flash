@@ -93,6 +93,8 @@ import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.concurrent.SyncSet
 import com.transfer.flash.core.messaging.util.sortedChatListItems
 import com.transfer.flash.core.messaging.util.throttleLatest
+import com.transfer.flash.core.enterprise.OrgPeerResolver
+import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
@@ -362,7 +364,15 @@ public class RealFlashChatRepository(
     private val hubSealing: HubSealingPort? = null,
     /** After a LAN send succeeds, how long to wait for a delivery receipt before also sending through the hub. */
     private val hubFallbackGraceMs: Long = HUB_FALLBACK_GRACE_MS,
+    /** B2: Capability resolver for colleagues in the organisation directory (Plan B, ADR-134). */
+    private val isOrgPeer: (String) -> Boolean = { false },
+    /** B2: Full organisation peer resolver providing lease and metadata queries (Plan B, ADR-134). */
+    private val orgPeerResolver: OrgPeerResolver? = null,
 ) : FlashChatRepository, AutoCloseable {
+
+    /** Derives whether [deviceId] is an active organisation colleague via resolver or capability lambda. */
+    private fun effectiveIsOrgPeer(deviceId: String): Boolean =
+        (orgPeerResolver?.isOrgPeer(deviceId) == true) || isOrgPeer(deviceId)
 
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
@@ -377,7 +387,7 @@ public class RealFlashChatRepository(
             contentViaHub = hubContentViaHub,
             sealing = hubSealing,
             standing = { id -> hubPeers?.standing(id) ?: HubPeerStanding.UNKNOWN },
-            isPaired = isTrustedPeer,
+            isPaired = { isTrustedPeer(it) || effectiveIsOrgPeer(it) },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
         )
     }
@@ -1974,7 +1984,7 @@ public class RealFlashChatRepository(
         if (!GroupPolicy.validMemberIds(allMembers, localDeviceId, GroupPolicy.MAX_MEMBERS_V2)) {
             return FlashResult.Failure(FlashError.Unknown("Groups support 2-${GroupPolicy.MAX_MEMBERS_V2} unique members"))
         }
-        if (memberIds.any { !isTrustedPeer(it) }) {
+        if (memberIds.any { !PeerTrustPolicy.mayCreateGroupWith(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) }) {
             return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
         }
         val members = groupMemberDao
@@ -2076,7 +2086,7 @@ public class RealFlashChatRepository(
         memberIds: Set<String>,
     ): FlashResult<Unit> {
         if (memberIds.isEmpty()) return FlashResult.Success(Unit)
-        if (memberIds.any { !isTrustedPeer(it) }) {
+        if (memberIds.any { !PeerTrustPolicy.mayAddGroupMember(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) }) {
             return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
         }
         val members = groupMemberDao
@@ -5495,7 +5505,11 @@ public class RealFlashChatRepository(
                     val members = groupMemberDao ?: return
                     if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                 } else {
-                    if (transportPeerId != null && !isTrustedPeer(transportPeerId)) return
+                    if (transportPeerId != null && !PeerTrustPolicy.mayReact(
+                            isPaired = isTrustedPeer(transportPeerId),
+                            isOrg = effectiveIsOrgPeer(transportPeerId),
+                        )
+                    ) return
                 }
                 val msg = messageDao.getByLocalId(frame.messageId)
                 if (msg != null && msg.conversationId != frame.conversationId) return
@@ -6516,6 +6530,12 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** B2.4: Default concurrent dial cap for active organisation colleagues. */
+        const val DEFAULT_ORG_DIAL_CAP: Int = 8
+
+        /** B2.4: Activity window (14 days) within which colleague conversations count as dial candidates. */
+        const val ORG_CANDIDATE_WINDOW_MS: Long = 14L * 86_400_000L
+
         /** GM-8: Default timeout for address hint dialing before falling back to discovery (M-03). */
         const val HINT_DIAL_TIMEOUT_MS: Long = 30_000L
         const val INVITE_PROOF_MAX_RETRIES: Int = 3
@@ -6841,6 +6861,100 @@ public class RealFlashChatRepository(
         val credentials = enterpriseTrustStore?.getCredentials()
             ?: return FlashResult.Failure(FlashError.Unknown("Device not enrolled"))
         return client.decideJoinRequest(credentials.hubUrl, requestId, approve, reason)
+    }
+
+    override suspend fun startColleagueConversation(deviceId: String): FlashResult<String> = withContext(ioDispatcher) {
+        if (deviceId.isBlank()) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("This person is not in your company directory."))
+        }
+        if (deviceId == localDeviceId) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("That is you."))
+        }
+        val resolver = orgPeerResolver
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Connect to the company network once to load your colleagues."))
+
+        when (resolver.lease.value) {
+            is OrgLease.None -> {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Connect to the company network once to load your colleagues."))
+            }
+            is OrgLease.Expired -> {
+                return@withContext FlashResult.Failure(FlashError.Unknown("Reconnect to your company network to start a chat with this colleague."))
+            }
+            is OrgLease.Valid -> {
+                // Active valid lease
+            }
+        }
+
+        if (!resolver.isKnownColleague(deviceId)) {
+            val existing = conversationDao.get(deviceId)
+            val errorMessage = if (existing != null) {
+                "This person is no longer part of your organisation."
+            } else {
+                "This person is not in your company directory."
+            }
+            return@withContext FlashResult.Failure(FlashError.Unknown(errorMessage))
+        }
+
+        val colleagueName = resolver.displayName(deviceId) ?: deviceId
+        val now = timeSource.nowMs()
+        runInTransaction {
+            upsertDirectConversation(
+                conversationId = deviceId,
+                title = peerNameResolver(deviceId)?.ifBlank { null } ?: colleagueName,
+                sortOrder = now,
+            )
+        }
+        FlashResult.Success(deviceId)
+    }
+
+    /**
+     * B2.4: Active ORG candidate device IDs for connection planning.
+     * Includes colleagues who are active in the synced directory snapshot and have either:
+     * - An active or pending outbox message waiting for delivery,
+     * - A direct conversation updated within the last 14 days ([ORG_CANDIDATE_WINDOW_MS]), or
+     * - The currently open conversation in the UI ([activeConversationId]).
+     * Capped at [limit] (default [DEFAULT_ORG_DIAL_CAP] = 8).
+     */
+    public suspend fun orgDialCandidates(
+        nowMs: Long = timeSource.nowMs(),
+        limit: Int = DEFAULT_ORG_DIAL_CAP,
+    ): Set<String> = withContext(ioDispatcher) {
+        val resolver = orgPeerResolver ?: return@withContext emptySet()
+        if (resolver.lease.value !is OrgLease.Valid) return@withContext emptySet()
+
+        val candidates = LinkedHashSet<String>()
+        // 1. Currently open conversation if it is an active colleague direct chat
+        val openId = activeConversationId
+        if (openId != null && !GroupPolicy.isV2GroupId(openId) && resolver.isKnownColleague(openId)) {
+            candidates.add(openId)
+        }
+
+        // 2. Peers with unsent outbox messages
+        val outboxRows = outboxDao.dueForDelivery(Long.MAX_VALUE, limit * 2)
+        for (row in outboxRows) {
+            val msg = messageDao.getByLocalId(row.localId) ?: continue
+            val target = msg.conversationId
+            if (target != localDeviceId && !GroupPolicy.isV2GroupId(target) && resolver.isKnownColleague(target)) {
+                candidates.add(target)
+                if (candidates.size >= limit) return@withContext candidates
+            }
+        }
+
+        // 3. Direct conversations with activity in the last 14 days
+        val cutoff = nowMs - ORG_CANDIDATE_WINDOW_MS
+        val directConversations = if (chatListState.value.items.isNotEmpty()) {
+            chatListState.value.items.map { Triple(it.id, it.isGroup, it.sortOrder) }
+        } else {
+            conversationDao.observeAll().first().map { Triple(it.id, it.isGroup, it.sortOrder) }
+        }
+        for ((id, isGroup, sortOrder) in directConversations) {
+            if (!isGroup && sortOrder >= cutoff && resolver.isKnownColleague(id)) {
+                if (candidates.size < limit) {
+                    candidates.add(id)
+                }
+            }
+        }
+        candidates
     }
 
     internal fun signedGroupsForTesting(): SignedGroups? = signedGroups

@@ -13,6 +13,8 @@ import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.enterprise.HubOfflineReason
 import com.transfer.flash.core.enterprise.HubSealingKeyState
 import com.transfer.flash.core.enterprise.HubStatus
+import com.transfer.flash.core.enterprise.OrgLease
+import com.transfer.flash.core.enterprise.ExpiredReason
 import com.transfer.flash.core.enterprise.UnenrolResult
 
 /** Colour family of the status dot in Settings. The UI maps each to a Flash colour token. */
@@ -311,4 +313,46 @@ public object FlashHubStatusMath {
 
     /** Row text of a request an admin can decide. */
     public fun joinRequestTitle(displayName: String): String = "$displayName wants to join"
+
+    // --- Colleague trust lease states (Plan B, Phase B2) ----------------------------------------------------
+
+    public sealed class OrgTrustState {
+        public data object NotSupported : OrgTrustState()
+        public data object NeverSynced : OrgTrustState()
+        public data class Valid(val untilMs: Long) : OrgTrustState()
+        public data class Expiring(val untilMs: Long, val daysLeft: Int) : OrgTrustState()
+        public data object Expired : OrgTrustState()
+        public data object ClockWrong : OrgTrustState()
+    }
+
+    /**
+     * Calculates the presentation state for colleague trust (Plan B §4 Step B2.5).
+     * Maps lease, clock skew, and server support to user-facing states.
+     */
+    public fun orgTrustState(
+        lease: OrgLease,
+        clockOk: Boolean,
+        hubSupports: Boolean,
+        nowMs: Long = System.currentTimeMillis(),
+    ): OrgTrustState {
+        if (!hubSupports) return OrgTrustState.NotSupported
+        if (!clockOk) return OrgTrustState.ClockWrong
+        return when (lease) {
+            is OrgLease.None -> OrgTrustState.NeverSynced
+            is OrgLease.Expired -> {
+                if (lease.reason == ExpiredReason.CLOCK) OrgTrustState.ClockWrong
+                else OrgTrustState.Expired
+            }
+            is OrgLease.Valid -> {
+                val msLeft = lease.untilMs - nowMs
+                val daysLeft = ((msLeft.coerceAtLeast(0L) + 86_399_999L) / 86_400_000L).toInt()
+                when {
+                    msLeft <= 0L -> OrgTrustState.Expired
+                    daysLeft in 1..3 -> OrgTrustState.Expiring(lease.untilMs, daysLeft)
+                    else -> OrgTrustState.Valid(lease.untilMs)
+                }
+            }
+        }
+    }
 }
+

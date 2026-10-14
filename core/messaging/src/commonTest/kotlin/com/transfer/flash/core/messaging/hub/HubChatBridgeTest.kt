@@ -7,6 +7,14 @@ import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.enterprise.EnterpriseDepartment
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
+import com.transfer.flash.core.enterprise.EnterpriseDirectoryMember
+import com.transfer.flash.core.enterprise.EnterpriseJoinRequest
+import com.transfer.flash.core.enterprise.EnterpriseJoinResult
+import com.transfer.flash.core.enterprise.HubDirectoryApi
+import com.transfer.flash.core.enterprise.HubPeerDirectory
 import com.transfer.flash.core.enterprise.HubPeerStanding
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -142,6 +150,67 @@ class HubChatBridgeTest {
         val outcome = bridge(standing = mapOf("alice" to HubPeerStanding.UNAVAILABLE)).handleInbound(text("m-6"), sink)
         assertEquals(HubInboundOutcome.RETRY_LATER, outcome)
         assertTrue(relay.recvAcks.isEmpty())
+    }
+
+    @Test
+    fun crossDepartmentSenderIsRejectedWhenDirectoryOnlyCoversOwnDepartment() = runTest {
+        val fakeDirectoryApi = object : HubDirectoryApi {
+            override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?): FlashResult<List<EnterpriseDirectoryGroup>> =
+                FlashResult.Success(emptyList())
+
+            override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String): FlashResult<List<EnterpriseDirectoryMember>> =
+                // In caller's department ("engineering"), only Alice is present. Carol in "marketing" is omitted.
+                FlashResult.Success(listOf(
+                    EnterpriseDirectoryMember(
+                        deviceId = "alice",
+                        friendlyName = "Alice",
+                        department = "engineering",
+                        role = "member",
+                        online = true,
+                    )
+                ))
+
+            override suspend fun fetchDepartments(hubUrl: String): FlashResult<List<EnterpriseDepartment>> =
+                FlashResult.Success(emptyList())
+
+            override suspend fun requestJoin(hubUrl: String, groupId: String, message: String?): FlashResult<EnterpriseJoinResult> =
+                FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("unused"))
+
+            override suspend fun fetchJoinRequests(hubUrl: String, groupId: String?): FlashResult<List<EnterpriseJoinRequest>> =
+                FlashResult.Success(emptyList())
+
+            override suspend fun decideJoinRequest(hubUrl: String, requestId: String, approve: Boolean, reason: String?): FlashResult<EnterpriseJoinResult> =
+                FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("unused"))
+        }
+
+        val hubPeers = HubPeerDirectory(
+            directory = fakeDirectoryApi,
+            hubUrl = { "https://hub.example.com" },
+        )
+
+        val sink = RecordingSink(log)
+        val b = HubChatBridge(
+            localDeviceId = "me",
+            port = relay,
+            contentViaHub = { true },
+            standing = { id -> hubPeers.standing(id) },
+            isPaired = { false },
+        )
+
+        // 1. Inbound message from own-department colleague ("alice"):
+        // HubPeerDirectory lists alice -> standing is MEMBER -> message accepted and stored
+        val aliceOutcome = b.handleInbound(text("m-alice", from = "alice"), sink)
+        assertEquals(HubInboundOutcome.STORED, aliceOutcome)
+        assertEquals(1, sink.direct.size)
+        assertEquals("alice", sink.direct.first().second)
+
+        // 2. Inbound message from cross-department colleague ("carol", marketing):
+        // HubPeerDirectory only fetched own department -> lookup("carol") is null -> standing is UNKNOWN
+        // Unpaired + UNKNOWN -> message is rejected and dropped
+        val carolOutcome = b.handleInbound(text("m-carol", from = "carol"), sink)
+        assertEquals(HubInboundOutcome.REJECTED, carolOutcome)
+        assertEquals(1, sink.direct.size, "Carol's message must NOT be stored")
+        assertTrue(relay.recvAcks.contains("m-carol"), "Dropped message is acknowledged to prevent endless hub redelivery")
     }
 
     @Test

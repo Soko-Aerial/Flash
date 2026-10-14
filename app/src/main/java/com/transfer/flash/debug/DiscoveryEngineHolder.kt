@@ -218,6 +218,9 @@ object DiscoveryEngineHolder {
     @Volatile
     private var enterpriseTrustStoreRef: EnterpriseTrustStore? = null
 
+    @Volatile
+    private var orgPeerResolverRef: com.transfer.flash.core.enterprise.OrgPeerResolver? = null
+
     /** The one object for everything about the organisation hub (ADR-120); null while the engine is stopped. */
     @Volatile
     private var enterpriseHubRef: EnterpriseHub? = null
@@ -582,6 +585,8 @@ object DiscoveryEngineHolder {
     fun currentChats(): FlashChatRepository? = chatRepo
 
     fun currentEnterpriseTrustStore(): EnterpriseTrustStore? = enterpriseTrustStoreRef
+
+    fun currentOrgPeerResolver(): com.transfer.flash.core.enterprise.OrgPeerResolver? = orgPeerResolverRef
 
     fun currentEnterpriseHub(): EnterpriseHub? = enterpriseHubRef
 
@@ -1123,7 +1128,8 @@ object DiscoveryEngineHolder {
                     available = engine.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
                         presence.reachablePeerIds.value + sessions,
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
-                        presenceChat?.activeGroupRosters().orEmpty().flatten(),
+                        presenceChat?.activeGroupRosters().orEmpty().flatten() +
+                        presenceChat?.orgDialCandidates().orEmpty(),
                     activity = networkImpl.linkActivity(),
                     busy = busyPeerIds,
                     nearbyOpen = _nearbyVisible.value,
@@ -1178,10 +1184,21 @@ object DiscoveryEngineHolder {
             lookup = { hub.peers.lookup(it) },
         )
 
+        val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
+            dao = db.orgDirectoryDao(),
+            trustStore = trustStore,
+        )
+        orgPeerResolverRef = orgPeerResolver
+        appScope.launch {
+            orgPeerResolver.refreshFromSnapshot()
+        }
+
         val chatImpl = RealFlashChatRepository(
             scope = appScope,
             localDeviceId = identity.deviceId.value,
             localDisplayName = identity.friendlyName,
+            isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+            orgPeerResolver = orgPeerResolver,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
             outboxDao = db.outboxDao(),
@@ -1220,8 +1237,8 @@ object DiscoveryEngineHolder {
                 endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
             },
             // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
-            // the chat list / header show the real name instead of the raw id.
-            peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
+            // the chat list / header show the real name instead of the raw id. Falls back to org snapshot display name.
+            peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
             // B4: join live transfer progress onto chat attachment rows so a chat bubble mirrors the
             // Transfers tab (image thumbnail / file card with progress). Completed transfers drop out
             // of activeTransfers; applyAttachment then falls back to the row's stored path so the
@@ -2946,6 +2963,7 @@ object DiscoveryEngineHolder {
         enterpriseHubRef?.shutdown()
         enterpriseHubRef = null
         enterpriseTrustStoreRef = null
+        orgPeerResolverRef = null
         currentEngine?.stopAll()
         currentNetwork?.stop()
         // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,

@@ -252,6 +252,11 @@ public class DesktopEngine(
     private var enterpriseHubRef: EnterpriseHub? = null
     public val enterpriseHub: EnterpriseHub?
         get() = enterpriseHubRef
+
+    @Volatile
+    private var orgPeerResolverRef: com.transfer.flash.core.enterprise.OrgPeerResolver? = null
+    public val orgPeerResolver: com.transfer.flash.core.enterprise.OrgPeerResolver?
+        get() = orgPeerResolverRef
     public val identity: com.transfer.flash.core.security.identity.FlashIdentity
         get() = identityStore.getIdentity()
 
@@ -1083,6 +1088,7 @@ public class DesktopEngine(
             // Stops the relay and closes the shared HTTP client (CLI-12).
             enterpriseHubRef?.shutdown()
             enterpriseHubRef = null
+            orgPeerResolverRef = null
             // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
             detachPtt()
             detachSwarm()
@@ -1272,7 +1278,8 @@ public class DesktopEngine(
                     available = discovery.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
                         presence.reachablePeerIds.value + sessions,
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
-                        chatImpl?.activeGroupRosters().orEmpty().flatten(),
+                        chatImpl?.activeGroupRosters().orEmpty().flatten() +
+                        chatImpl?.orgDialCandidates().orEmpty(),
                     activity = network.linkActivity(),
                     busy = callsImpl?.activeCall?.value?.busyPeerIds.orEmpty(),
                     nearbyOpen = _nearbyVisible.value,
@@ -1331,9 +1338,20 @@ public class DesktopEngine(
                 lookup = { hub.peers.lookup(it) },
             )
 
+            val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
+                dao = db.orgDirectoryDao(),
+                trustStore = trustStore,
+            )
+            orgPeerResolverRef = orgPeerResolver
+            scope.launch {
+                orgPeerResolver.refreshFromSnapshot()
+            }
+
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,
                 localDisplayName = friendlyName,
+                isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+                orgPeerResolver = orgPeerResolver,
                 conversationDao = db.conversationDao(),
                 messageDao = db.messageDao(),
                 outboxDao = db.outboxDao(),
@@ -1370,6 +1388,7 @@ public class DesktopEngine(
                 },
                 peerNameResolver = { id ->
                     trustStore.getTrustedPeers()[FlashDeviceId(id)]
+                        ?: orgPeerResolver.displayName(id)
                         ?: discovery.discoveredEndpoints.value.firstOrNull { it.deviceId.value == id }?.friendlyName
                 },
                 attachmentProgress = transfer.activeTransfers.map { transfers ->

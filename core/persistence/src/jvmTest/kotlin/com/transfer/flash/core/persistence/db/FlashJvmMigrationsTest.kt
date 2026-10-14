@@ -183,6 +183,52 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `a v13 database gains the org directory tables and Room validates it`() = runBlocking {
+        helper.createDatabase(13).use { v13 ->
+            v13.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, groupCreatedBy, groupCreatedAt, groupProto) " +
+                    "VALUES ('c1', 'Chat', 0, 0, 0, 0, 1, 'owner', 1, 2)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.execSQL(
+                "INSERT INTO org_department (id, name, memberCount, headDeviceIdsJson, hidden) " +
+                    "VALUES ('dept-1', 'Engineering', 5, '[\"head-1\"]', 0)",
+            )
+            upgraded.prepare("SELECT id, name, memberCount, hidden FROM org_department WHERE id = 'dept-1'").use { row ->
+                assertTrue(row.step(), "the org_department row was not inserted")
+                assertEquals("dept-1", row.getText(0))
+                assertEquals("Engineering", row.getText(1))
+                assertEquals(5L, row.getLong(2))
+                assertEquals(0L, row.getLong(3))
+            }
+
+            upgraded.execSQL(
+                "INSERT INTO org_sync_state (id, directoryEpoch, lastSyncedVersion, offlineGraceDays, lastSyncSuccessMs, lastSyncAttemptMs) " +
+                    "VALUES (1, 'epoch-abc', 42, 30, 1000, 1000)",
+            )
+            upgraded.prepare("SELECT directoryEpoch, lastSyncedVersion, offlineGraceDays FROM org_sync_state WHERE id = 1").use { row ->
+                assertTrue(row.step(), "the org_sync_state row was not inserted")
+                assertEquals("epoch-abc", row.getText(0))
+                assertEquals(42L, row.getLong(1))
+                assertEquals(30L, row.getLong(2))
+            }
+
+            upgraded.execSQL(
+                "INSERT INTO org_directory_member (deviceId, displayName, displayNameFolded, departmentId, role, subjectPublicKeyFingerprint, statementBytes, statementSerial, statementIssuedAtMs, statementDelegationSerial, lastSyncedAtMs) " +
+                    "VALUES ('dev-1', 'Alice Wonder', 'alice wonder', 'dept-1', 'member', 'FINGERPRINT01', x'010203', 1, 1000, 1, 1000)",
+            )
+            upgraded.prepare("SELECT deviceId, displayNameFolded, subjectPublicKeyFingerprint FROM org_directory_member WHERE deviceId = 'dev-1'").use { row ->
+                assertTrue(row.step(), "the org_directory_member row was not inserted")
+                assertEquals("dev-1", row.getText(0))
+                assertEquals("alice wonder", row.getText(1))
+                assertEquals("FINGERPRINT01", row.getText(2))
+            }
+        }
+    }
+
+    @Test
     fun `every JVM migration is registered and the chain reaches the current version`() {
         val migrations = FlashJvmMigrations.ALL.toList()
         assertEquals(1, migrations.first().startVersion)

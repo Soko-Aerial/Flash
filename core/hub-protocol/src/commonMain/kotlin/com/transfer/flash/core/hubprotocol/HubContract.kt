@@ -81,6 +81,9 @@ public object HubContract {
     /** `GET`, Bearer (existing path): members of `?departmentId=`. */
     public const val PATH_DIRECTORY_MEMBERS: String = "$PATH_API/directory/members"
 
+    /** `GET`, Bearer: [com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto] synchronisation stream. */
+    public const val PATH_DIRECTORY_SYNC: String = "$PATH_API/directory/sync"
+
     /** `POST`, Bearer (existing path): [com.transfer.flash.core.hubprotocol.rest.JoinRequestBody]. */
     public const val PATH_GROUP_JOIN_REQUEST: String = "$PATH_API/groups/join-request"
 

@@ -265,6 +265,53 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v13 → v14: offline organization directory trust (Plan B, ADR-134).
+     * Adds `org_directory_member`, `org_department` and `org_sync_state`.
+     */
+    val STEP_13_14: FlashSchemaStep = FlashSchemaStep(
+        from = 13,
+        to = 14,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS `org_directory_member` (" +
+                "`deviceId` TEXT NOT NULL, " +
+                "`displayName` TEXT NOT NULL, " +
+                "`displayNameFolded` TEXT NOT NULL, " +
+                "`departmentId` TEXT NOT NULL, " +
+                "`role` TEXT NOT NULL, " +
+                "`subjectPublicKeyFingerprint` TEXT NOT NULL, " +
+                "`statementBytes` BLOB NOT NULL, " +
+                "`statementSerial` INTEGER NOT NULL, " +
+                "`statementIssuedAtMs` INTEGER NOT NULL, " +
+                "`statementDelegationSerial` INTEGER NOT NULL, " +
+                "`lastSyncedAtMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`deviceId`))",
+            "CREATE INDEX IF NOT EXISTS `index_org_directory_member_subjectPublicKeyFingerprint` " +
+                "ON `org_directory_member` (`subjectPublicKeyFingerprint`)",
+            "CREATE INDEX IF NOT EXISTS `index_org_directory_member_displayNameFolded` " +
+                "ON `org_directory_member` (`displayNameFolded`)",
+            "CREATE INDEX IF NOT EXISTS `index_org_directory_member_departmentId` " +
+                "ON `org_directory_member` (`departmentId`)",
+            "CREATE TABLE IF NOT EXISTS `org_department` (" +
+                "`id` TEXT NOT NULL, " +
+                "`name` TEXT NOT NULL, " +
+                "`memberCount` INTEGER NOT NULL, " +
+                "`headDeviceIdsJson` TEXT NOT NULL, " +
+                "`hidden` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+            "CREATE TABLE IF NOT EXISTS `org_sync_state` (" +
+                "`id` INTEGER NOT NULL, " +
+                "`directoryEpoch` TEXT NOT NULL, " +
+                "`lastSyncedVersion` INTEGER NOT NULL, " +
+                "`offlineGraceDays` INTEGER NOT NULL, " +
+                "`lastSyncSuccessMs` INTEGER NOT NULL, " +
+                "`lastSyncAttemptMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
-    val ALL: List<FlashSchemaStep> = listOf(STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13)
+    val ALL: List<FlashSchemaStep> = listOf(
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14
+    )
 }

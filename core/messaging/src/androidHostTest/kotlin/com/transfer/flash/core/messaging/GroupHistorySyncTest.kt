@@ -655,6 +655,7 @@ class GroupHistorySyncTest {
                 lastSentAt = now + 400 * day, lastMessageId = "zzzz",
             ),
         )
+        pumpFor(600)
         val mark = b.historyDao.watermarks["$groupId|dev-a"]
         assertNotNull("a watermark was stored", mark)
         assertEquals("cut back to the row that was sent", now - hour, mark!!.sentAt)

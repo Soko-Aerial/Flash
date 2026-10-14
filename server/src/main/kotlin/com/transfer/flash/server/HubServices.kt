@@ -1,6 +1,7 @@
 package com.transfer.flash.server
 
 import com.transfer.flash.core.hubprotocol.certs.HubRoles
+import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.server.admin.AdminApiDeps
 import com.transfer.flash.server.admin.AdminAuthService
 import com.transfer.flash.server.admin.AdminListenerPolicy
@@ -26,12 +27,14 @@ import com.transfer.flash.server.auth.RevocationSigner
 import com.transfer.flash.server.auth.SqliteRevocationService
 import com.transfer.flash.server.auth.TrustedProxies
 import com.transfer.flash.server.auth.authRoutes
+import com.transfer.flash.server.auth.issue
 import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.config.TlsMaterial
 import com.transfer.flash.server.config.TlsSupport
 import com.transfer.flash.server.core.FlashServerEngine
 import com.transfer.flash.server.directory.DepartmentMember
 import com.transfer.flash.server.directory.MemberRole
+import com.transfer.flash.server.directory.OrgMemberStatementSigner
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.directory.PublishedSealingKey
 import com.transfer.flash.server.directory.SealingKeyLookup
@@ -284,6 +287,20 @@ class HubServices private constructor(
                     directory.removeDevice(deviceId)
                 }
                 reconcileDirectory(identities, directory)
+                directory.statementSigner = OrgMemberStatementSigner { deviceId, subjectPublicKey, departmentId, role, nowMs, serial ->
+                    val d = delegations.current ?: return@OrgMemberStatementSigner null
+                    val statement = OrgMemberStatement.issue(
+                        issuerPrivateKey = delegate.pair.private,
+                        deviceId = deviceId,
+                        subjectPublicKey = subjectPublicKey,
+                        departmentId = departmentId,
+                        role = role,
+                        issuedAtMs = nowMs,
+                        statementSerial = serial,
+                    )
+                    statement to d.serial
+                }
+                directory.ensureStatementsSigned()
                 log.info("Delegation active: serial {}, {} day(s) left, root fingerprint {}", cert.serial, delegations.daysLeft(), DelegationManager.rootFingerprint(cert))
             }
 
@@ -343,6 +360,8 @@ class HubServices private constructor(
                         sealingKeys = SealingKeyLookup { ids ->
                             identities.sealingKeys(ids).mapValues { PublishedSealingKey(it.value.sealingPublicKey, it.value.sealingSignature) }
                         },
+                        limits = limits,
+                        delegationChain = { delegations.current?.let { listOf(it) } ?: emptyList() },
                     )
                     sealingKeyRoutes(
                         identities = identities,

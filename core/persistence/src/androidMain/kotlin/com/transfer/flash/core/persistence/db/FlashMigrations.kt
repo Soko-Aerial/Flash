@@ -52,6 +52,9 @@ public object FlashMigrations {
     /** v12 -> v13: group history sync, the signed ceiling column and two device-local tables (ADR-100). */
     public val MIGRATION_12_13: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_12_13)
 
+    /** v13 -> v14: offline organization directory trust (Plan B, ADR-134). */
+    public val MIGRATION_13_14: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_13_14)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }
