@@ -103,9 +103,10 @@ import com.transfer.flash.core.network.sweep.SweepRefusal
 import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsScreen
+import com.transfer.flash.ui.hub.FlashHubPlaceholderScreen
 import com.transfer.flash.ui.shell.FlashBottomNav
+import com.transfer.flash.ui.shell.FlashShellTabs
 import com.transfer.flash.ui.shell.FlashBottomNavItem
-import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.transfers.FlashTransferDirection
 import com.transfer.flash.ui.transfers.FlashTransferItemUi
@@ -1074,6 +1075,11 @@ public fun DesktopShell(
     val nearbyScroll = rememberLazyListState()
     val settingsScroll = rememberLazyListState()
 
+    // UI-058: the Hub tab replaces Transfers for an enrolled device. Enrolment is trusted only once the
+    // engine is ready; the saved navigation state carries the last known value across a restart.
+    LaunchedEffect(ready, enterpriseCredentials != null) {
+        if (ready) nav.updateHubEnrolled(enterpriseCredentials != null)
+    }
     val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
@@ -1134,7 +1140,18 @@ public fun DesktopShell(
                 activeJoinLink = null
                 showJoinGroupDialog = true
             },
-            onBrowseOrgGroupsClick = if (settings.isEnterpriseEnrolled) { { showBrowseOrgGroups = true } } else null,
+            // UI-058: an enrolled device browses department groups from the Hub tab and opens Transfers
+            // from this bar; an unenrolled device keeps the bar it always had.
+            onBrowseOrgGroupsClick = null,
+            onTransfersClick = if (nav.hubEnrolled) { { nav.openTransfers() } } else null,
+            transfersActiveCount = if (nav.hubEnrolled) {
+                domainTransfers.count {
+                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Queued ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+                }
+            } else 0,
             pendingApprovalGroupNames = hubPendingJoins.values.toList(),
             modifier = Modifier.fillMaxSize(),
             listState = chatListScroll,
@@ -1613,9 +1630,14 @@ public fun DesktopShell(
             if (twoPane && nav.current.destination == FlashDestination.Conversation) {
                 chatListPaneContent()
             } else {
-                FlashAnimatedScreen(targetState = nav.current) { entry ->
+                FlashAnimatedScreen(targetState = nav.current, hubEnrolled = nav.hubEnrolled) { entry ->
                     when (entry.destination) {
                         FlashDestination.ChatList -> chatListPaneContent()
+                        // UI-058: shell-only Hub (H4); the data sections arrive with H7.
+                        FlashDestination.Hub -> FlashHubPlaceholderScreen(
+                            onBrowseGroups = { showBrowseOrgGroups = true },
+                            modifier = Modifier.padding(bottom = tabBottomInset),
+                        )
                         FlashDestination.Conversation -> conversationPaneContent()
                         FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,
@@ -2013,7 +2035,8 @@ public fun DesktopShell(
                                 true
                             }
                             Key.Two, Key.NumPad2 -> {
-                                nav.selectTab(FlashDestination.Transfers)
+                                // Same shortcut as ever; for an enrolled device it pushes Transfers (UI-058).
+                                nav.openTransfers()
                                 true
                             }
                             Key.Three, Key.NumPad3 -> {
@@ -2304,8 +2327,8 @@ public fun DesktopShell(
             // Expanded: sidebar on the left edge, list+detail in the remainder.
             Row(Modifier.fillMaxSize()) {
                 DesktopSideBar(
-                    tabs = DESKTOP_SIDE_TABS,
-                    selectedTab = if (nav.current.destination == FlashDestination.Conversation) FlashDestination.ChatList else nav.current.destination,
+                    tabs = desktopSideTabs(nav.hubEnrolled),
+                    selectedTab = nav.shellTab,
                     onTabSelected = { destination ->
                         if (destination == FlashDestination.ChatList) {
                             if (selectedChatConversationId != null) {
@@ -2336,11 +2359,11 @@ public fun DesktopShell(
         } else {
             // Compact/Medium: the Phase 21 single-pane layout with the hanging bottom nav.
             listPaneContent()
-            if (FlashNavigationMath.isTabRoot(nav.current.destination)) {
+            if (FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
                 Box(Modifier.align(Alignment.BottomCenter)) {
                     FlashBottomNav(
-                        items = DESKTOP_TABS,
-                        selectedTab = nav.current.destination,
+                        items = desktopBottomTabs(nav.hubEnrolled),
+                        selectedTab = nav.shellTab,
                         onTabSelected = nav::selectTab,
                         onTabReselected = { destination ->
                             val listState = when (destination) {
@@ -2479,12 +2502,9 @@ private fun TransfersUiState.Companion.fromDomain(
 ): TransfersUiState = TransfersUiState.fromItems(transfers.map { it.toDesktopTransferItemUi() })
     .copy(isLoading = isLoading, isError = isError)
 
-private val DESKTOP_TABS = listOf(
-    FlashBottomNavItem(FlashDestination.ChatList, FlashIcons.Chat, "Chats"),
-    FlashBottomNavItem(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
-    FlashBottomNavItem(FlashDestination.NearbyDevices, FlashIcons.Nearby, "Nearby"),
-    FlashBottomNavItem(FlashDestination.Settings, FlashIcons.Settings, "Settings"),
-)
+/** UI-058: the compact bottom bar's tabs, from the one shared source (see [desktopSideTabs]). */
+private fun desktopBottomTabs(hubEnrolled: Boolean): List<FlashBottomNavItem> =
+    FlashShellTabs.of(hubEnrolled).map { FlashBottomNavItem(it.destination, it.icon, it.label) }
 
 /** Same pacing window the app shell derives from the theme's animation duration. */
 private const val FLASH_TRANSFERS_THROTTLE_MS = 75L
