@@ -1,6 +1,7 @@
 package com.transfer.flash.ui.chat
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -33,6 +35,13 @@ fun FlashChatListTopBar(
     onJoinWithLinkClick: (() -> Unit)? = null,
     /** Browse department groups on the enterprise hub; null hides the action. */
     onBrowseOrgGroupsClick: (() -> Unit)? = null,
+    /**
+     * UI-058: opens Transfers as a pushed screen. Non-null only on an enrolled device (its Transfers
+     * tab became Hub); null hides the action, so an unenrolled device is unchanged.
+     */
+    onTransfersClick: (() -> Unit)? = null,
+    /** Transfers in progress, for the indicator on the Transfers action; 0 shows none. */
+    transfersActiveCount: Int = 0,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -58,6 +67,31 @@ fun FlashChatListTopBar(
                 style = typography.headingMedium,
                 color = colors.textPrimary,
             )
+            if (onTransfersClick != null) {
+                val badge = FlashChatListTopBarMath.badgeText(transfersActiveCount)
+                Box(contentAlignment = Alignment.TopEnd) {
+                    IconButton(
+                        onClick = onTransfersClick,
+                        modifier = Modifier.size(FlashDimensions.minTouchTarget),
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Transfer,
+                            contentDescription = FlashChatListTopBarMath.contentDescription(transfersActiveCount),
+                        )
+                    }
+                    if (badge != null) {
+                        Text(
+                            text = badge,
+                            modifier = Modifier
+                                .padding(top = FlashSpacing.space4, end = FlashSpacing.space4)
+                                .background(colors.accentPrimary, CircleShape)
+                                .padding(horizontal = FlashSpacing.space4),
+                            style = typography.metadataEmphasis,
+                            color = colors.textOnAccent,
+                        )
+                    }
+                }
+            }
             if (onBrowseOrgGroupsClick != null) {
                 IconButton(
                     onClick = onBrowseOrgGroupsClick,

@@ -225,7 +225,7 @@ public fun main(args: Array<String> = emptyArray()) {
                     onClick = {
                         isWindowVisible = true
                         windowState.isMinimized = false
-                        nav.selectTab(FlashDestination.Transfers)
+                        nav.openTransfers()
                     },
                 )
                 Item(

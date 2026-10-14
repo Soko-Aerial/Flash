@@ -5,8 +5,8 @@ import androidx.compose.ui.Modifier
 import com.transfer.flash.ui.adaptive.FlashNavigationRail
 import com.transfer.flash.ui.adaptive.FlashNavigationRailTab
 import com.transfer.flash.ui.icons.FlashIconSpec
-import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.navigation.FlashDestination
+import com.transfer.flash.ui.shell.FlashShellTabs
 
 /**
  * The vertical navigation rail shown at expanded window widths (>= 840dp).
@@ -50,10 +50,12 @@ public data class DesktopSideTab(
     val label: String,
 )
 
-/** The desktop tab set — one source of truth shared by the sidebar and the bottom nav. */
-public val DESKTOP_SIDE_TABS: List<DesktopSideTab> = listOf(
-    DesktopSideTab(FlashDestination.ChatList, FlashIcons.Chat, "Chats"),
-    DesktopSideTab(FlashDestination.Transfers, FlashIcons.Transfer, "Transfers"),
-    DesktopSideTab(FlashDestination.NearbyDevices, FlashIcons.Nearby, "Nearby"),
-    DesktopSideTab(FlashDestination.Settings, FlashIcons.Settings, "Settings"),
-)
+/**
+ * The desktop tab set for the current enrolment (UI-058): built from [FlashShellTabs], the one source
+ * shared with the bottom bar and the Android host, so it cannot drift from `FlashNavigationMath.tabOrder`.
+ */
+public fun desktopSideTabs(hubEnrolled: Boolean): List<DesktopSideTab> =
+    FlashShellTabs.of(hubEnrolled).map { DesktopSideTab(it.destination, it.icon, it.label) }
+
+/** The tab set of a device that is not enrolled (what every device had before the Hub tab). */
+public val DESKTOP_SIDE_TABS: List<DesktopSideTab> = desktopSideTabs(hubEnrolled = false)
