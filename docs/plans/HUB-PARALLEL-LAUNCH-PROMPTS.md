@@ -242,3 +242,45 @@ TASK 1: run the gate of docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 6 plu
 TASK 2: re-verify B1 against docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md section 4 Phase B1 and logs/streams/V-verifier/report.md: for each of the 16 defects say FIXED / STILL OPEN with path:line. In particular defect 4 (OrgSnapshotCoordinator is constructed and started in DesktopEngine.kt and DiscoveryEngineHolder.kt: prove it by reading, and re-run mutation: remove the clearSnapshot call on unenrol, expect ORGT-U51/U52 to fail), defect 3 (DirectorySyncLimitTest), defect 6 (ORGT-U57/U58).
 TASK 3: re-verify B2 and B3 (section 4 Phase B2/B3, call-site table section 6, strings of section 9 verbatim, TalkBack, lock-screen privacy ORGT-U44). ACCEPT or REJECT with numbered path:line defects. Do not fix anything.
 ```
+
+---
+
+# Overnight master prompt (2026-10-14, owner demos the server tomorrow)
+
+Two agents work in parallel with DISJOINT file ownership: Antigravity (S1) owns the client side, Claude Code (integration owner) owns the server side, the demo kit and the canonical docs/logs.
+Paste the block below into Antigravity. It replaces R2-1's "start" and R2-2/R2-3 are NOT run overnight (Claude Code does R2-2's server defects itself).
+
+```text
+OVERNIGHT MASTER PROMPT - you are Antigravity, stream S1 (org trust, client side). The owner demos the Flash Hub server tomorrow. Work until the list is done; the owner is asleep, so do NOT stop to ask unless a rule below forces it.
+
+SETUP
+ 1. cd E:\FlashWork\S1-org-trust (branch agent/S1-org-trust). Run: git merge dev (the worktree shares the repository, no fetch needed). dev already contains B1 wiring (OrgSnapshotCoordinator, ORGT-U50..U58), the S2 server work (A1/A2) and the S3 Hub tab. Keep dev's version of the reaction gate in RealFlashChatRepository.kt and of OrgPeerResolver unless you prove yours better.
+ 2. Read, in order: AGENTS.md (all, esp. section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md, docs/plans/HUB-QUALITY-CONTRACT.md, docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md, logs/streams/V-verifier/report.md, then the section "R2-1 - Antigravity, stream S1" of docs/plans/HUB-PARALLEL-LAUNCH-PROMPTS.md. That R2-1 TASK list (items 1-7) is your work. The common PARALLEL MODE rules in R2-1 apply in full.
+
+FILE OWNERSHIP (hard line, so the two of us never conflict)
+ You may edit: core/enterprise/**, core/persistence/**, core/messaging/**, core/engine/**, ui/chat/**, app/** and desktop/** (three-line hooks only in the big host files), docs/testing notes inside logs/streams/S1-org-trust/.
+ You must NOT edit: server/**, core/hub-protocol/** (ask via your handoff if you need a wire change), tools/**, docs/protocol.md, docs/decisions.md, logs/*.md, docs/testing/TEST-BACKLOG.md, AGENTS.md. Claude Code owns those and folds your logs/streams/S1-org-trust/ fragments into them.
+ Numbers: ADR 139-148, ERROR 400-429, EXP 025-029, tests ORGT-U59 and up. Room schema 15 is yours (renumber B4 to 16 and A3 to 17 in the protocol section 7 table ONLY by writing the change into logs/streams/S1-org-trust/handoff.md; Claude Code applies it).
+
+ORDER OF WORK (demo value first; commit after EACH item so partial progress can be merged at any moment)
+ A. Item 1 (resolver clear/refresh race) and item 5 (resolver says "not a colleague" when not enrolled).
+ B. Item 3 (B2.5 UX: callers for orgTrustState in Settings/hub status, org_trust_* strings for every state, IDENTITY_MISMATCH, probes actually emitted).
+ C. Item 7 (requestOrgSync on pull-to-refresh and Hub tab open; S3's Hub tab is on dev).
+ D. Item 2 (Room schema 15 with orgRootFingerprint + lastErrorKind, migration 14->15 tested on a real 14 database, exported schema JSON).
+ E. Items 4 and 6 (missing tests, hygiene).
+ Every fix: a test that fails first, then passes, plus a mutation check recorded. Build/test ONLY through tools\flash-gradle.cmd from your worktree root (exit 75 = Claude Code is building: wait and retry, do other work meanwhile).
+ Gate before your final report: tools\flash-gradle.cmd :core:enterprise:jvmTest :core:enterprise:testAndroidHostTest :core:persistence:jvmTest :core:messaging:jvmTest :ui:chat:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin
+ Do NOT run :desktop:jvmTest (DesktopEngineTlsBindingTest hangs, ERROR-106).
+
+HARD RULES
+ - Never touch the phone, never uninstall/clear the app, never print keys/tokens, never commit keystore.properties/*.jks/local.properties.
+ - Do not remove or weaken any security guard (the server's self-disable guard is Claude Code's business, not yours).
+ - Do not start B4. Do not push. Commit only to agent/S1-org-trust. Trailer on every commit: Co-Authored-By: Antigravity <noreply@antigravity.google>
+ - No new dependency/module. No decisions beyond the plans (D1-D11, ADR-133..138 are final).
+ - If the Gradle lock is busy for more than 30 min, write what you did in the handoff and continue with the next item.
+
+FINISH
+ Write logs/streams/S1-org-trust/handoff.md with: items done (commit hashes), items not done and why, the exact gate command output last lines, the schema-15 renumbering note, and the shared files you touched with hunk sizes. Then create the empty marker file logs/streams/S1-org-trust/DONE and commit it. Claude Code will merge agent/S1-org-trust into dev when the marker appears (or whenever the owner asks).
+```
+
+Claude Code's side of the same night (so Antigravity knows what not to touch): server defects 8/9 (tombstone pruning, cursor 400, unsigned members reported, `offlineGraceDays` setting), the demo kit (`tools/demo-server.ps1`, `docs/plans/HUB-DEMO-RUNBOOK.md`), folding the three log fragments into the canonical logs and ADR renumbering, then merging S1 and re-running the integration gate.

@@ -69,6 +69,7 @@ fun Route.directoryRoutes(
     sealingKeys: SealingKeyLookup = SealingKeyLookup.None,
     limits: HubRateLimits = HubRateLimits.unlimited(),
     delegationChain: () -> List<DelegationCert> = { emptyList() },
+    offlineGraceDays: () -> Int = { 30 },
 ) {
     route(HubContract.PATH_API) {
         route("/directory") {
@@ -93,15 +94,23 @@ fun Route.directoryRoutes(
 
                 val actor = principal.toActor()
                 val chain = delegationChain()
-                val result = directory.getSyncChanges(
-                    since = since,
-                    cursor = cursor,
-                    limit = limit,
-                    actor = actor,
-                    activeDelegationChain = chain,
-                    offlineGraceDays = 30,
-                    requestedEpoch = epoch,
-                )
+                directory.pruneTombstones()
+                val result = try {
+                    directory.getSyncChanges(
+                        since = since,
+                        cursor = cursor,
+                        limit = limit,
+                        actor = actor,
+                        activeDelegationChain = chain,
+                        offlineGraceDays = offlineGraceDays().coerceIn(1, 365),
+                        requestedEpoch = epoch,
+                    )
+                } catch (_: InvalidDirectoryCursorException) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "The directory sync cursor is not valid.")
+                    return@get
+                }
+                // Members without a signed statement cannot be trusted offline and are left out; say so (verifier defect 8).
+                call.response.header("X-Flash-Unsigned-Members", directory.unsignedOnLastPage.toString())
                 call.respondJson(result)
             }
             get("/me") {
