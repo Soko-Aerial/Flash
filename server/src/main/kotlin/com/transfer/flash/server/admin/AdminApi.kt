@@ -18,6 +18,7 @@ import com.transfer.flash.server.auth.respondError
 import com.transfer.flash.server.auth.respondJson
 import com.transfer.flash.server.config.ServerConfig
 import com.transfer.flash.server.directory.DirectoryActor
+import com.transfer.flash.server.directory.DirectoryConflictException
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.identity.DeviceRecord
 import com.transfer.flash.server.identity.DeviceStatus
@@ -281,10 +282,16 @@ private fun Route.authRoutes(d: AdminApiDeps) {
     get("/session") {
         val session = call.adminSession(d) ?: return@get
         val admin = d.admins.getAdmin(session.username)
+        val scope = d.scopeOf(session)
         call.respondJson(
             SessionDto(
                 session.username, session.role, session.csrfToken, session.expiresAtMs, d.stepUp.hasUsableDevice(session.username),
                 admin?.enrolledDeviceId, session.sessionId, d.clock(), admin?.approverDeviceId,
+                admin?.displayName.orEmpty(),
+                when (scope) {
+                    ConsoleScope.Org -> emptyList()
+                    is ConsoleScope.Departments -> scope.ids.sorted().map { id -> DepartmentRefDto(id, d.directory.getDepartment(id)?.name.orEmpty()) }
+                },
             ),
         )
     }
@@ -339,31 +346,43 @@ internal fun delegationDto(d: AdminApiDeps): DelegationDto {
 
 private fun Route.overviewRoutes(d: AdminApiDeps) {
     get("/overview") {
-        call.adminSession(d) ?: return@get
+        val session = call.adminSession(d) ?: return@get
+        val scope = d.scopeOf(session)
         val now = d.clock()
-        val invites = d.identities.listInvites(1000).groupingBy { it.state(now) }.eachCount()
-        val groups = d.directory.listGroups()
+        val inScopeDept: (String?) -> Boolean = { dept -> scope.allows(dept) || (scope is ConsoleScope.Org) }
+        val invites = d.identities.listInvites(1000).filter { inScopeDept(it.department) }.groupingBy { it.state(now) }.eachCount()
+        val groups = d.directory.listGroups().filter { g ->
+            when (scope) {
+                ConsoleScope.Org -> true
+                is ConsoleScope.Departments -> g.departmentId.isNotBlank() && g.departmentId in scope.ids
+            }
+        }
         val rev = d.revocations?.status()
         val head = d.audit.head()
+        val scopedDepartments = when (scope) {
+            ConsoleScope.Org -> d.directory.listDepartments().size
+            is ConsoleScope.Departments -> scope.ids.size
+        }
+        val devicesInScope = d.identities.listDevices(DeviceStatus.ACTIVE, limit = 500).filter { inScopeDept(it.department) }
         call.respondJson(
             OverviewDto(
                 hubName = d.config.hubName,
                 serverId = d.enrollment?.serverId.orEmpty(),
-                devicesByStatus = d.identities.countByStatus().mapKeys { it.key.name },
-                onlineDevices = d.identities.listDevices(DeviceStatus.ACTIVE, limit = 500).count { d.directory.isOnline(it.deviceId) },
+                devicesByStatus = if (scope is ConsoleScope.Org) d.identities.countByStatus().mapKeys { it.key.name } else mapOf(DeviceStatus.ACTIVE.name to devicesInScope.size.toLong()),
+                onlineDevices = devicesInScope.count { d.directory.isOnline(it.deviceId) },
                 invites = InviteCountsDto(
                     invites[InviteState.PENDING] ?: 0, invites[InviteState.USED] ?: 0,
                     invites[InviteState.EXPIRED] ?: 0, invites[InviteState.REVOKED] ?: 0,
                 ),
-                departments = d.directory.listDepartments().size,
+                departments = scopedDepartments,
                 groups = groups.size,
-                pendingJoinRequests = d.directory.listPendingFor(DirectoryActor.CONSOLE).size,
-                queueDepth = d.mailboxStats.queuedCount(),
-                queueBytes = d.mailboxStats.queuedBytes(),
+                pendingJoinRequests = groups.sumOf { d.directory.pendingCount(it.id) },
+                queueDepth = if (scope is ConsoleScope.Org) d.mailboxStats.queuedCount() else 0L,
+                queueBytes = if (scope is ConsoleScope.Org) d.mailboxStats.queuedBytes() else 0L,
                 delegation = delegationDto(d),
-                revocations = rev?.let { RevocationStatusDto(it.listVersion, it.revokedSerials, it.revokedDeviceIds, it.unpublishedChanges, it.canSign, it.revokedDelegations.sorted()) },
-                audit = AuditHeadDto(head?.first, head?.second, d.audit.size()),
-                deviceQuota = d.config.deviceQuota,
+                revocations = if (scope is ConsoleScope.Org) rev?.let { RevocationStatusDto(it.listVersion, it.revokedSerials, it.revokedDeviceIds, it.unpublishedChanges, it.canSign, it.revokedDelegations.sorted()) } else null,
+                audit = if (scope is ConsoleScope.Org) AuditHeadDto(head?.first, head?.second, d.audit.size()) else AuditHeadDto(),
+                deviceQuota = if (scope is ConsoleScope.Org) d.config.deviceQuota else 0,
             ),
         )
     }
@@ -378,25 +397,44 @@ internal fun DeviceRecord.toDto(online: Boolean) = DeviceDto(
 private fun Route.deviceRoutes(d: AdminApiDeps) {
     route("/devices") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
             val q = call.request.queryParameters
             val status = q["status"]?.let { s -> DeviceStatus.entries.firstOrNull { it.name.equals(s, true) } ?: return@get call.badRequest() }
-            val list = d.identities.listDevices(status, q["department"], q["search"], q["limit"].toIntOr(100, 1..500), q["offset"].toIntOr(0, 0..1_000_000))
-            call.respondJson(list.map { it.toDto(d.directory.isOnline(it.deviceId)) })
+            // A list endpoint filters; it never returns forbidden for a partly allowed list.
+            val askedDept = q["department"]
+            if (askedDept != null && scope !is ConsoleScope.Org && !scope.allows(askedDept)) {
+                return@get call.respondJson(emptyList<DeviceDto>())
+            }
+            val effectiveDept = when (scope) {
+                ConsoleScope.Org -> askedDept
+                is ConsoleScope.Departments -> askedDept ?: if (scope.ids.size == 1) scope.ids.single() else null
+            }
+            val list = d.identities.listDevices(status, effectiveDept, q["search"], q["limit"].toIntOr(100, 1..500), q["offset"].toIntOr(0, 0..1_000_000))
+            val scoped = when (scope) {
+                ConsoleScope.Org -> list
+                is ConsoleScope.Departments -> list.filter { scope.allows(it.department) }
+            }
+            call.respondJson(scoped.map { it.toDto(d.directory.isOnline(it.deviceId)) })
         }
 
         get("/{id}") {
-            call.adminSession(d) ?: return@get
-            val device = d.identities.device(call.parameters["id"].orEmpty()) ?: return@get call.notFound()
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
+            val device = d.identities.device(call.parameters["id"].orEmpty())
+            // Cross-scope object ids answer exactly like a non-existent id (no existence leak).
+            if (device == null || (scope !is ConsoleScope.Org && !scope.allows(device.department))) return@get call.notFound()
             call.respondJson(device.toDto(d.directory.isOnline(device.deviceId)))
         }
 
         put("/{id}") {
             val session = call.adminSession(d) ?: return@put
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
             val b = call.body<DeviceUpdateBody>() ?: return@put
             call.guarded {
                 val device = d.identities.device(id) ?: return@guarded call.notFound()
+                if (scope !is ConsoleScope.Org && !scope.allows(device.department)) return@guarded call.notFound()
                 val changes = ArrayList<String>()
                 if (b.name != null) {
                     require(b.name.isNotBlank() && b.name.length <= IdentityStore.MAX_NAME)
@@ -404,10 +442,18 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
                     changes += "name"
                 }
                 if (b.moveToDepartment) {
+                    // Cross-department moves are org-admin work; a head may only rename.
+                    if (scope !is ConsoleScope.Org) {
+                        return@guarded call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can move a device.")
+                    }
                     val target = b.department?.trim()?.ifEmpty { null }
                     if (target != null && d.directory.getDepartment(target) == null) throw com.transfer.flash.server.directory.DirectoryNotFoundException("department")
+                    val previous = d.directory.getDepartmentMember(id)?.departmentId
                     d.identities.setDepartment(id, target)
                     d.directory.getDepartmentMember(id)?.let { d.directory.registerMember(it.copy(departmentId = target.orEmpty())) }
+                    if (previous != null && previous != target.orEmpty()) {
+                        d.directory.removeFromAdmins(previous, id)
+                    }
                     changes += "department=${target.orEmpty()}"
                 }
                 d.audit.log(session.username, "device.update", "device=${device.deviceId} ${changes.joinToString(" ")}")
@@ -417,6 +463,7 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
 
         post("/{id}/revoke") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val id = call.parameters["id"].orEmpty()
             val b = call.body<RevokeBody>() ?: return@post
             val revocations = d.revocations ?: return@post call.notAvailable()
@@ -432,6 +479,7 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
 
         post("/{id}/unrevoke") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val id = call.parameters["id"].orEmpty()
             val revocations = d.revocations ?: return@post call.notAvailable()
             if (d.identities.device(id) == null) return@post call.notFound()
@@ -453,20 +501,49 @@ private fun InviteRecord.toDto(now: Long) = InviteDto(
 private fun Route.inviteRoutes(d: AdminApiDeps) {
     route("/invites") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            val scope = d.scopeOf(session)
             val now = d.clock()
             val state = call.request.queryParameters["state"]?.let { s -> InviteState.entries.firstOrNull { it.name.equals(s, true) } ?: return@get call.badRequest() }
             val all = d.identities.listInvites(call.request.queryParameters["limit"].toIntOr(200, 1..1000), call.request.queryParameters["offset"].toIntOr(0, 0..1_000_000))
-            call.respondJson(all.filter { state == null || it.state(now) == state }.map { it.toDto(now) })
+            call.respondJson(
+                all.filter { state == null || it.state(now) == state }
+                    .filter { inv -> if (scope is ConsoleScope.Org) true else !inv.department.isNullOrBlank() && scope.allows(inv.department) }
+                    .map { it.toDto(now) },
+            )
         }
 
         post {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val b = call.body<InviteCreateBody>() ?: return@post
             val enrollment = d.enrollment ?: return@post call.notAvailable()
             if (!HubRoles.isValid(b.role)) return@post call.badRequest()
+            if (scope !is ConsoleScope.Org) {
+                // Heads invite employees to their own department only (plan §3.5, exact sentences in en.js).
+                if (b.role != HubRoles.MEMBER) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "Only an organisation administrator can invite a department head.")
+                }
+                val dept = b.department?.trim().orEmpty()
+                if (dept.isBlank()) {
+                    return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Choose a department for this invite.")
+                }
+                if (!scope.allows(dept)) {
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "A head can only invite employees to their own department.")
+                }
+                for (groupId in (b.allowedGroups + b.autoJoinGroups)) {
+                    val group = d.directory.getGroup(groupId)
+                    if (group == null || group.departmentId != dept) {
+                        return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That department no longer exists.")
+                    }
+                }
+            }
             // An invite that can mint an administrator device is as dangerous as creating an administrator.
             if (b.role != HubRoles.MEMBER && !call.stepUpOk(d, session, StepUpActions.ADMIN_CREATE, "invite:${b.role}")) return@post
+            // A department-head invite names its department (required) so enrolment can grant the device role.
+            if (b.role == HubRoles.DEPT_ADMIN && b.department.isNullOrBlank()) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Choose a department for a department head.")
+            }
             call.guarded {
                 val created = createInvite(d, enrollment, session.username, b)
                 d.audit.log(session.username, "invite.create", "invite=${created.invite.inviteId} role=${b.role} department=${b.department.orEmpty()} uses=${created.invite.maxUses}")
@@ -476,6 +553,7 @@ private fun Route.inviteRoutes(d: AdminApiDeps) {
 
         post("/bulk") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val b = call.body<BulkInviteBody>() ?: return@post
             val enrollment = d.enrollment ?: return@post call.notAvailable()
             if (b.role != HubRoles.MEMBER) return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Bulk invites are for members only.")
@@ -483,6 +561,11 @@ private fun Route.inviteRoutes(d: AdminApiDeps) {
             if (rows.isEmpty() || rows.size > MAX_BULK) return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Send between 1 and $MAX_BULK rows.")
             val out = rows.map { (line, name, dept) ->
                 try {
+                    // Heads are bound to their scope row by row; out-of-scope rows fail with the row sentence.
+                    if (scope !is ConsoleScope.Org) {
+                        val rowDept = dept?.trim().orEmpty()
+                        if (rowDept.isBlank() || !scope.allows(rowDept)) throw IllegalArgumentException("out of scope")
+                    }
                     val created = createInvite(d, enrollment, session.username, InviteCreateBody(dept, b.role, ttlMinutes = b.ttlMinutes, note = name))
                     BulkInviteRowDto(line, name, created)
                 } catch (_: IllegalArgumentException) {
@@ -497,7 +580,13 @@ private fun Route.inviteRoutes(d: AdminApiDeps) {
 
         post("/{id}/revoke") {
             val session = call.adminSession(d) ?: return@post
+            val scope = d.scopeOf(session)
             val id = call.parameters["id"].orEmpty()
+            val invite = d.identities.invite(id)
+            if (invite == null) return@post call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "That invite does not exist or is already revoked.")
+            if (scope !is ConsoleScope.Org && (invite.department.isNullOrBlank() || !scope.allows(invite.department))) {
+                return@post call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "That invite does not exist or is already revoked.")
+            }
             val ok = d.identities.revokeInvite(id, d.clock())
             if (!ok) return@post call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "That invite does not exist or is already revoked.")
             d.audit.log(session.username, "invite.revoke", "invite=$id")
@@ -552,7 +641,8 @@ internal const val MAX_TTL_MINUTES = 43_200L
 private fun Route.revocationRoutes(d: AdminApiDeps) {
     route("/revocations") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val r = d.revocations ?: return@get call.notAvailable()
             val s = r.status()
             call.respondJson(
@@ -567,6 +657,7 @@ private fun Route.revocationRoutes(d: AdminApiDeps) {
         // strictly monotonic, merged; every certificate under a revoked delegation dies at once.
         post("/install") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val r = d.revocations ?: return@post call.notAvailable()
             val list = call.body<RevocationList>() ?: return@post
             if (!call.stepUpOk(d, session, StepUpActions.REVOCATION_INSTALL, "version:${list.version}")) return@post
@@ -580,6 +671,7 @@ private fun Route.revocationRoutes(d: AdminApiDeps) {
 
         post("/serial") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val b = call.body<RevokeSerialBody>() ?: return@post
             val r = d.revocations ?: return@post call.notAvailable()
             if (!call.stepUpOk(d, session, StepUpActions.REVOKE_DEVICE, "serial:${b.serial}")) return@post
@@ -596,12 +688,14 @@ private fun Route.revocationRoutes(d: AdminApiDeps) {
 private fun Route.delegationRoutes(d: AdminApiDeps) {
     route("/delegation") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             call.respondJson(delegationDto(d))
         }
 
         post("/reload") {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val manager = d.delegations ?: return@post call.notAvailable()
             if (!call.stepUpOk(d, session, StepUpActions.DELEGATION_RELOAD, "delegation")) return@post
             val result = manager.reload()
@@ -614,6 +708,7 @@ private fun Route.delegationRoutes(d: AdminApiDeps) {
 
         post {
             val session = call.adminSession(d) ?: return@post
+            if (!call.requireOrg(d.scopeOf(session))) return@post
             val manager = d.delegations ?: return@post call.notAvailable()
             val cert = call.body<DelegationCert>() ?: return@post
             if (!call.stepUpOk(d, session, StepUpActions.DELEGATION_INSTALL, "serial:${cert.serial}")) return@post
@@ -632,7 +727,8 @@ private fun Route.delegationRoutes(d: AdminApiDeps) {
 private fun Route.settingsRoutes(d: AdminApiDeps) {
     route("/settings") {
         get {
-            call.adminSession(d) ?: return@get
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
             val c = d.config
             call.respondJson(
                 SettingsDto(
@@ -648,6 +744,7 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
 
         put {
             val session = call.adminSession(d) ?: return@put
+            if (!call.requireOrg(d.scopeOf(session))) return@put
             val b = call.body<SettingChangeBody>() ?: return@put
             val ok = when (b.key) {
                 SETTING_TTL -> b.value.toLongOrNull()?.let { it in 5..MAX_TTL_MINUTES } == true
@@ -719,7 +816,8 @@ private fun Route.stepUpRoutes(d: AdminApiDeps) {
 
 private fun Route.metricsRoutes(d: AdminApiDeps) {
     get("/metrics") {
-        call.adminSession(d) ?: return@get
+        val session = call.adminSession(d) ?: return@get
+        if (!call.requireOrg(d.scopeOf(session))) return@get
         val m = d.metrics
         val stats = d.mailboxStats
         val now = d.clock()

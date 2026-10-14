@@ -9,6 +9,7 @@ DELETE /api/v1/groups/{id}
 GET /
 GET /admin
 GET /admin/api/v1/admins
+GET /admin/api/v1/admins/{username}/departments
 GET /admin/api/v1/audit
 GET /admin/api/v1/audit/export
 GET /admin/api/v1/audit/head
@@ -42,6 +43,8 @@ GET /api/v1/directory/departments
 GET /api/v1/directory/groups
 GET /api/v1/directory/me
 GET /api/v1/directory/members
+GET /api/v1/directory/people
+GET /api/v1/directory/people/{deviceId}
 GET /api/v1/directory/sync
 GET /api/v1/groups/join-requests
 GET /api/v1/hub
@@ -95,6 +98,7 @@ POST /api/v1/groups
 POST /api/v1/groups/join-request
 POST /api/v1/groups/join-requests/decision
 POST /api/v1/groups/members
+PUT /admin/api/v1/admins/{username}/departments
 PUT /admin/api/v1/departments/{id}
 PUT /admin/api/v1/devices/{id}
 PUT /admin/api/v1/groups/{id}

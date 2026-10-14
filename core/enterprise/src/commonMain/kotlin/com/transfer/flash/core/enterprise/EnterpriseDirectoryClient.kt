@@ -180,7 +180,7 @@ public class EnterpriseDirectoryClient(
     /** The hub address stored in the credentials, or null when not enrolled. When non-null, every call must match its host. */
     private val pinnedHubUrl: () -> String? = { null },
     private val allowCleartext: () -> Boolean = { false },
-) : HubDirectoryApi, HubSealingKeyApi, DirectorySyncApi {
+) : HubDirectoryApi, HubSealingKeyApi, DirectorySyncApi, DirectoryPrivacyApi {
 
     private class Reply(val response: HttpResponse, val body: String)
 
@@ -302,6 +302,55 @@ public class EnterpriseDirectoryClient(
     override suspend fun fetchDepartmentMembers(hubUrl: String, departmentId: String): FlashResult<List<EnterpriseDirectoryMember>> =
         hubGet(hubUrl, HubContract.PATH_DIRECTORY_MEMBERS, mapOf("departmentId" to departmentId)) { body ->
             HubRestCodec.decodeList<MemberDto>(body).map { it.toDirectoryMember() }
+        }
+
+    override suspend fun fetchPeople(
+        hubUrl: String,
+        cursor: String?,
+        limit: Int,
+        q: String?,
+        departmentId: String?,
+    ): FlashResult<PeoplePage> = withContext(ioDispatcher) {
+        val reply = when (
+            val r = execute(hubUrl) { base, bearer ->
+                httpClient.get("$base${HubContract.PATH_DIRECTORY_PEOPLE}") {
+                    if (!cursor.isNullOrBlank()) parameter("cursor", cursor)
+                    parameter("limit", limit.coerceIn(1, 500).toString())
+                    if (!q.isNullOrBlank()) parameter("q", q.take(64))
+                    if (!departmentId.isNullOrBlank()) parameter("departmentId", departmentId.take(128))
+                    authorize(bearer)
+                }
+            }
+        ) {
+            is FlashResult.Failure -> return@withContext r
+            is FlashResult.Success -> r.value
+        }
+        val status = reply.response.status
+        if (status == HttpStatusCode.NotFound || status == HttpStatusCode.MethodNotAllowed) {
+            return@withContext FlashResult.Success(PeoplePage(emptyList(), null, hubTooOld = true))
+        }
+        if (status != HttpStatusCode.OK) return@withContext friendlyHttpFailure(status)
+        decodePeoplePage(reply.body)?.let { FlashResult.Success(it) }
+            ?: FlashResult.Failure(FlashError.Unknown("The hub sent an answer this app does not understand."))
+    }
+
+    override suspend fun lookupPerson(hubUrl: String, deviceId: String): FlashResult<EnterpriseDirectoryMember?> =
+        withContext(ioDispatcher) {
+            if (deviceId.isBlank()) return@withContext FlashResult.Success(null)
+            val reply = when (
+                val r = execute(hubUrl) { base, bearer ->
+                    httpClient.get("$base${HubContract.PATH_DIRECTORY_PEOPLE}/$deviceId") { authorize(bearer) }
+                }
+            ) {
+                is FlashResult.Failure -> return@withContext r
+                is FlashResult.Success -> r.value
+            }
+            val status = reply.response.status
+            if (status == HttpStatusCode.NotFound) return@withContext FlashResult.Success(null)
+            if (status != HttpStatusCode.OK) return@withContext friendlyHttpFailure(status)
+            val dto = HubRestCodec.decodeOrNull<com.transfer.flash.core.hubprotocol.rest.PersonDto>(reply.body)
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("The hub sent an answer this app does not understand."))
+            FlashResult.Success(dto.toDirectoryMember())
         }
 
     override suspend fun fetchDepartments(hubUrl: String): FlashResult<List<EnterpriseDepartment>> =
