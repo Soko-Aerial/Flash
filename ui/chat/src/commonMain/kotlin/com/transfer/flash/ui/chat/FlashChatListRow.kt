@@ -206,7 +206,7 @@ private fun FlashChatListRowContent(
                     else -> colors.backgroundSurface
                 },
             )
-            .semantics { contentDescription = rowDescription }
+            .semantics(mergeDescendants = true) { contentDescription = rowDescription }
             .combinedClickable(
                 interactionSource = interactionSource,
                 indication = null,
@@ -251,14 +251,26 @@ private fun FlashChatListRowContent(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FlashText(
-                        text = item.title,
+                    Row(
                         modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = if (item.unreadCount > 0) typography.bodyEmphasis else typography.bodyDefault,
-                        color = colors.textPrimary,
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                    ) {
+                        FlashText(
+                            text = item.title,
+                            modifier = Modifier.weight(1f, fill = false),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = if (item.unreadCount > 0) typography.bodyEmphasis else typography.bodyDefault,
+                            color = colors.textPrimary,
+                        )
+                        if (item.isColleague) {
+                            FlashColleagueTrustChip(
+                                orgName = item.orgName,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.width(FlashSpacing.space8))
                     FlashText(
                         text = item.timestamp,

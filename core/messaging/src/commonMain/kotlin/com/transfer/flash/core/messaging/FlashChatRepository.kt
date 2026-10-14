@@ -357,6 +357,12 @@ public interface FlashChatRepository {
     public suspend fun searchMessageBodies(query: String): Set<String> = emptySet()
 
     /**
+     * Plan B Phase B3: Searches matching colleague device IDs in the organization directory snapshot
+     * (matching name, department, or role). Returns empty set when unenrolled, expired, or for a blank query.
+     */
+    public suspend fun searchColleagues(query: String, limit: Int = 20): Set<String> = emptySet()
+
+    /**
      * In-conversation content search: case-insensitive substring match over message
      * bodies within [conversationId]. Returns matching message IDs.
      */

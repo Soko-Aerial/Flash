@@ -249,7 +249,8 @@ public fun chatListRowContentDescription(item: FlashChatListItemUi): String {
     } else {
         ""
     }
-    return "${item.title}, $preview, ${item.timestamp}$unreadPart"
+    val colleaguePart = if (item.isColleague) ", Colleague verified by the company server" else ""
+    return "${item.title}$colleaguePart, $preview, ${item.timestamp}$unreadPart"
 }
 
 /**

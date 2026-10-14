@@ -355,10 +355,16 @@ public object FlashHubStatusMath {
         }
     }
 
+    /** Formats epoch millisecond timestamp as a human-readable local date (e.g. "12 Nov 2026"). */
+    public fun formatEpochDate(epochMs: Long): String {
+        val calendar = com.transfer.flash.core.messaging.util.platformDayLabelCalendar()
+        return calendar.formatDate(calendar.localDate(epochMs))
+    }
+
     /** Maps [OrgTrustState] to exact Plan B §9 user-facing strings. */
     public fun orgTrustStatusText(
         state: OrgTrustState,
-        formatDate: (Long) -> String = { it.toString() },
+        formatDate: (Long) -> String = { formatEpochDate(it) },
     ): String = when (state) {
         is OrgTrustState.NotSupported -> "This company server does not support offline colleague chat yet."
         is OrgTrustState.NeverSynced -> "Connect to the company network once to load your colleagues."

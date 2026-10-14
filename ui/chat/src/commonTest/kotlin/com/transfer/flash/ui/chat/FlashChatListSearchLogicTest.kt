@@ -12,12 +12,16 @@ class FlashChatListSearchLogicTest {
         id: String,
         title: String,
         previewText: String,
+        isColleague: Boolean = false,
+        orgName: String? = null,
     ) = FlashChatListItemUi(
         id = id,
         title = title,
         avatarInitials = "X",
         previewText = previewText,
         timestamp = "10:00 AM",
+        isColleague = isColleague,
+        orgName = orgName,
     )
 
     private val sampleChats = listOf(
@@ -128,5 +132,77 @@ class FlashChatListSearchLogicTest {
             limit = 5,
         )
         assertEquals(listOf("q1", "q2", "q3", "q4", "q5"), recents)
+    }
+
+    @Test
+    fun `ORGT_U34_colleagueMatchIds_surfaces_chat_even_if_title_and_preview_do_not_match`() {
+        val chatsWithColleague = sampleChats + listOf(
+            chat("c4", "Dana Scully", "Classified investigation", isColleague = true, orgName = "FBI"),
+        )
+        // "extraterrestrial" matches neither Dana Scully nor Classified investigation,
+        // but colleague directory match id c4 surfaces it.
+        val result = FlashChatListSearchMath.filterChats(
+            items = chatsWithColleague,
+            rawQuery = "extraterrestrial",
+            colleagueMatchIds = setOf("c4"),
+        )
+        assertEquals(listOf("c4"), result.map { it.id })
+    }
+
+    @Test
+    fun `ORGT_U34_colleague_orgName_matches_query_case_insensitively_only_when_isColleague_is_true`() {
+        val mixedChats = listOf(
+            chat("colleague1", "Bob Smith", "Hey there", isColleague = true, orgName = "Acme Corp"),
+            chat("colleague2", "Alice Wonder", "Working remotely", isColleague = true, orgName = "Initech"),
+            chat("stranger1", "Eve Hacker", "Phishing link", isColleague = false, orgName = "Acme Corp"),
+            chat("colleagueNoOrg", "Charlie Brown", "Good grief", isColleague = true, orgName = null),
+        )
+
+        // Matches Acme Corp case-insensitively
+        val acmeMatches = FlashChatListSearchMath.filterChats(mixedChats, "acme")
+        assertEquals(listOf("colleague1"), acmeMatches.map { it.id })
+
+        val corpMatches = FlashChatListSearchMath.filterChats(mixedChats, "CORP")
+        assertEquals(listOf("colleague1"), corpMatches.map { it.id })
+
+        // stranger1 has orgName="Acme Corp" but isColleague=false; must NOT match
+        assertFalse(acmeMatches.any { it.id == "stranger1" })
+
+        // colleagueNoOrg has orgName=null; must NOT match
+        assertFalse(acmeMatches.any { it.id == "colleagueNoOrg" })
+    }
+
+    @Test
+    fun `ORGT_U34_colleague_match_is_unioned_with_title_preview_and_body_without_duplicates`() {
+        val mixedChats = listOf(
+            chat("c1", "Alice Smith", "Design review", isColleague = true, orgName = "Cyberdyne"),
+            chat("c2", "Bob Jones", "Security audit", isColleague = false, orgName = null),
+            chat("c3", "Carol Danvers", "Status report", isColleague = true, orgName = "Avengers"),
+        )
+
+        // Query "review" matches c1 via preview.
+        // Also provide c1 via colleagueMatchIds, and c2 via bodyMatchIds.
+        val result = FlashChatListSearchMath.filterChats(
+            items = mixedChats,
+            rawQuery = "review",
+            bodyMatchIds = setOf("c2"),
+            colleagueMatchIds = setOf("c1", "c3"),
+        )
+
+        // c1 matches preview and colleagueMatchIds, but must appear only once.
+        // c2 matches bodyMatchIds.
+        // c3 matches colleagueMatchIds.
+        // Order must match original list order.
+        assertEquals(listOf("c1", "c2", "c3"), result.map { it.id })
+    }
+
+    @Test
+    fun `ORGT_U34_blank_query_ignores_colleagueMatchIds_and_returns_all_unfiltered`() {
+        val mixedChats = listOf(
+            chat("c1", "Alice", "Hello", isColleague = true, orgName = "OrgA"),
+            chat("c2", "Bob", "Hi", isColleague = false),
+        )
+        assertEquals(mixedChats.map { it.id }, FlashChatListSearchMath.filterChats(mixedChats, "", colleagueMatchIds = setOf("c1")).map { it.id })
+        assertEquals(mixedChats.map { it.id }, FlashChatListSearchMath.filterChats(mixedChats, "   ", colleagueMatchIds = setOf("c1")).map { it.id })
     }
 }

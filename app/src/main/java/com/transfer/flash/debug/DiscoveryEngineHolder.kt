@@ -588,6 +588,12 @@ object DiscoveryEngineHolder {
 
     fun currentOrgPeerResolver(): com.transfer.flash.core.enterprise.OrgPeerResolver? = orgPeerResolverRef
 
+    fun isOrgPeer(deviceId: String): Boolean =
+        if (enterpriseTrustStoreRef?.isEnrolled == true) orgPeerResolverRef?.isOrgPeer(deviceId) == true else false
+
+    fun isKnownColleague(deviceId: String): Boolean =
+        if (enterpriseTrustStoreRef?.isEnrolled == true) orgPeerResolverRef?.isKnownColleague(deviceId) == true else false
+
     fun currentEnterpriseHub(): EnterpriseHub? = enterpriseHubRef
 
     fun hubContentViaHub(): kotlinx.coroutines.flow.StateFlow<Boolean> = hubContentViaHubFlag

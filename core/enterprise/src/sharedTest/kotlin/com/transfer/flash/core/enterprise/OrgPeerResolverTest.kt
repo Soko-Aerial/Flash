@@ -533,6 +533,10 @@ class OrgPeerResolverTest {
             resolver.isOrgPeer("alice"),
             "MUTATION CHECK 2: isOrgPeer MUST return false when lease is expired by TIME",
         )
+        assertFalse(
+            resolver.isKnownColleague("alice"),
+            "isKnownColleague MUST return false when lease is expired by TIME",
+        )
         assertNull(
             resolver.resolve("alice"),
             "MUTATION CHECK 2: resolve() MUST return null when lease is expired by TIME",
@@ -545,9 +549,50 @@ class OrgPeerResolverTest {
             resolver.isOrgPeer("alice"),
             "MUTATION CHECK 2: isOrgPeer MUST return false when lease is expired by CLOCK rollback",
         )
+        assertFalse(
+            resolver.isKnownColleague("alice"),
+            "isKnownColleague MUST return false when lease is expired by CLOCK rollback",
+        )
         assertNull(
             resolver.resolve("alice"),
             "MUTATION CHECK 2: resolve() MUST return null when lease is expired by CLOCK rollback",
         )
+    }
+
+    @Test
+    fun ORGT_U40_searchColleagueIds_queries_snapshot_when_lease_valid() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val member1 = sampleMember(deviceId = "alice-id", displayName = "Alice Executive", departmentId = "Finance", role = "CFO")
+        val member2 = sampleMember(deviceId = "bob-id", displayName = "Bob Engineer", departmentId = "Engineering", role = "Developer")
+        dao.upsertMembers(listOf(member1, member2))
+        val now = 1_000_000L
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = now,
+                lastSyncAttemptMs = now,
+            )
+        )
+
+        var time = now
+        val resolver = RealOrgPeerResolver(dao = dao, trustStore = trustStore, clock = { time })
+        resolver.refreshFromSnapshot()
+
+        // 1. Matches by name, department, role
+        assertEquals(setOf("alice-id"), resolver.searchColleagueIds("alice"))
+        assertEquals(setOf("alice-id"), resolver.searchColleagueIds("finance"))
+        assertEquals(setOf("alice-id"), resolver.searchColleagueIds("cfo"))
+        assertEquals(setOf("bob-id"), resolver.searchColleagueIds("engineer"))
+
+        // 2. Blank or unmatched
+        assertTrue(resolver.searchColleagueIds("   ").isEmpty())
+        assertTrue(resolver.searchColleagueIds("nonexistent").isEmpty())
+
+        // 3. Expired lease -> returns empty
+        time = now + (31 * 86_400_000L)
+        assertTrue(resolver.searchColleagueIds("alice").isEmpty(), "searchColleagueIds must return empty set when lease expired")
     }
 }

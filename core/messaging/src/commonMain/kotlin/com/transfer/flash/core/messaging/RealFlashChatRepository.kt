@@ -928,6 +928,9 @@ public class RealFlashChatRepository(
                     } else {
                         isDirectOnline && typingByConversation[entity.id].orEmpty().isNotEmpty()
                     }
+                    val isColleaguePeer = !entity.isGroup && !isTrustedPeer(entity.id) &&
+                        (orgPeerResolver?.isKnownColleague(entity.id) == true || effectiveIsOrgPeer(entity.id))
+                    val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
                     return FlashChatListItemUi(
                         id = entity.id,
                         title = displayTitle,
@@ -944,6 +947,8 @@ public class RealFlashChatRepository(
                         isTyping = isTyping,
                         sortOrder = entity.sortOrder,
                         isArchived = entity.archived,
+                        isColleague = isColleaguePeer,
+                        orgName = orgName,
                     )
                 }
                 val unarchived = entities.filter { !it.archived }.map { toUiItem(it) }
@@ -1131,11 +1136,16 @@ public class RealFlashChatRepository(
             )
         } else {
             val seedTitle = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
+            val isColleaguePeer = !isTrustedPeer(conversationId) &&
+                (orgPeerResolver?.isKnownColleague(conversationId) == true || effectiveIsOrgPeer(conversationId))
+            val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
             _conversationState.value = FlashConversationUiState(
                 header = FlashChatHeaderUiState(
                     title = seedTitle,
                     avatarInitials = computeInitials(seedTitle),
                     isEncrypted = isChannelEncrypted(conversationId),
+                    isColleague = isColleaguePeer,
+                    orgName = orgName,
                 ),
                 messages = emptyList(),
             )
@@ -1505,6 +1515,9 @@ public class RealFlashChatRepository(
             conversationId in peers.reachable -> FlashPeerPresence.Reachable
             else -> FlashPeerPresence.Offline
         }
+        val isColleaguePeer = !isTrustedPeer(conversationId) &&
+            (orgPeerResolver?.isKnownColleague(conversationId) == true || effectiveIsOrgPeer(conversationId))
+        val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
         return FlashConversationUiState(
             header = FlashChatHeaderUiState(
                 title = title,
@@ -1521,6 +1534,8 @@ public class RealFlashChatRepository(
                 },
                 typingMemberNames = typingNames,
                 isEncrypted = isChannelEncrypted(conversationId),
+                isColleague = isColleaguePeer,
+                orgName = orgName,
             ),
             messages = content.messages,
             // Restore any unsent composer text (#9); blank when there is no saved draft.
@@ -5844,6 +5859,13 @@ public class RealFlashChatRepository(
                 .map { it.conversationId }
                 .toSet()
         }
+    }
+
+    override suspend fun searchColleagues(query: String, limit: Int): Set<String> {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return emptySet()
+        val resolver = orgPeerResolver ?: return emptySet()
+        return resolver.searchColleagueIds(trimmed, limit)
     }
 
     override suspend fun searchConversationMessages(

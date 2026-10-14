@@ -311,6 +311,9 @@ public data class FlashChatListItemUi(
     val previewDelivery: FlashListPreviewDelivery? = null,
     val sortOrder: Long = 0L,
     val isArchived: Boolean = false,
+    /** Plan B Phase B3: whether this peer is a verified organisation colleague. */
+    val isColleague: Boolean = false,
+    val orgName: String? = null,
 )
 
 @Immutable
@@ -352,6 +355,9 @@ public data class FlashChatHeaderUiState(
     val onlineCount: Int = 0,
     /** UI-028 group header: names of members currently typing (drives the named typing subtitle). */
     val typingMemberNames: List<String> = emptyList(),
+    /** Plan B Phase B3: whether this peer is a verified organisation colleague. */
+    val isColleague: Boolean = false,
+    val orgName: String? = null,
 )
 
 /** Role of a member inside a group conversation (UI-029). */
