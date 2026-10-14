@@ -554,3 +554,47 @@ All supported Android versions (API 24+).
 - Android developer documentation (read 2026-10-08): starting a foreground service from the background is allowed for a high-priority FCM message, Companion Device Manager (with `REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND`), exact alarms for user actions, boot broadcasts, battery optimisation disabled, and device/profile owners. Android 14+ forbids creating camera, microphone or location foreground services from the background even then.
 - Companion Device Manager presence is BLE and Bluetooth only, not Wi-Fi. Android 16 deprecates the string-based `startObservingDevicePresence`/`onDeviceAppeared`.
 - None of these is documented to unfreeze a process that an OEM freezer holds; whether Transsion's Hiber respects them is unverified (HIB-04, HIB-06, HIB-07). Project impact and ranked options: `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md`.
+
+## 2026-10-14 - AndroidKeyStore self-signed certificate binding (B0.1) unprovable on host JVM
+
+### Android version / API level
+- All supported Android versions (API 24+).
+- `KeyGenParameterSpec`, `AndroidKeyStore`, StrongBox (API 28+).
+
+### Official documentation source
+- https://developer.android.com/privacy-and-security/keystore (read 2026-10-14, **verified**): "Use the Android Keystore provider to create and use keys stored inside the device's Trusted Execution Environment (TEE) or StrongBox."
+- https://developer.android.com/reference/java/security/KeyStore (read 2026-10-14, **verified**): "The KeyStore class provides an interface to a security token or credential store." The `AndroidKeyStore` provider is a platform provider provided by the Android OS framework and is not available in standard Java/JVM runtimes without physical device hardware or system emulation.
+
+### Project implication
+- The `AndroidKeyStore` security provider does not exist on a standard JVM (`KeyStore.getInstance("AndroidKeyStore")` throws `KeyStoreException`). `core:security` has no Robolectric dependency and no fake keystore mock (dependency addition is forbidden without approval).
+- Therefore, `KeystoreFlashCrypto` cannot be instantiated in `androidHostTest` on the JVM. Any host test attempting to assert keystore binding on plain JVM would either fail with `KeyStoreException` or degenerate into a tautological test on pure Java `KeyPairGenerator` that proves nothing about AndroidKeyStore.
+- **Status of Android B0.1 on JVM vs Device:** On the plain JVM, B0.1 remains unprovable by automated host unit tests (by-construction reading only from `KeystoreFlashCrypto.kt` lines 74-79 and 104-107). On physical hardware, B0.1 was verified via instrumented test and live TLS handshake under `ORGT-B01` (Infinix X6882B, Android 14 / API 34; run by an agent session at owner request; owner to confirm; see section below).
+- **Phase B2 Gate Requirement:** Physical device test `ORGT-B01` has been executed and logged in `logs/progress.md` and `docs/testing/TEST-BACKLOG.md` (owner to confirm).
+
+## 2026-10-14 — AndroidKeyStore physical device observations (ORGT-B01: certificate validity and hardware backing)
+
+### Android version / API level
+- Android 14 (API 34), build `ro.build.version.release=14`, `ro.build.version.sdk=34`, model `Infinix X6882B`.
+
+### APIs / components involved
+- `java.security.KeyStore` (`"AndroidKeyStore"`)
+- `android.security.keystore.KeyGenParameterSpec.Builder.setCertificateNotAfter`
+- `android.security.keystore.KeyInfo.isInsideSecureHardware`
+- `com.transfer.flash.core.security.crypto.KeystoreFlashCrypto`
+
+### Official documentation source
+- RFC 5280 Section 4.1.2.5.1 (UTCTime): "Where YY is greater than or equal to 50, the year SHALL be interpreted as 19YY; and Where YY is less than 50, the year SHALL be interpreted as 20YY."
+- https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec.Builder#setCertificateNotAfter(java.util.Date) (read 2026-10-14, **verified**): "Sets the end of the validity period for the self-signed certificate of the generated key pair."
+- https://developer.android.com/reference/android/security/keystore/KeyInfo#isInsideSecureHardware() (read 2026-10-14, **verified**): "Returns true if the key resides inside secure hardware (e.g., Trusted Execution Environment (TEE) or Secure Element (SE))."
+
+### Observed platform behaviour on physical handset
+1. **Certificate Validity Wrapping (Y2050 UTCTime):**
+   `KeystoreFlashCrypto` sets certificate validity to 25 years (`now + 25L * 365 * 24 * 60 * 60 * 1000`), which evaluates to year 2051 from 2026. AOSP `AndroidKeyStoreKeyPairGeneratorSpi` serializes this certificate notAfter date using 2-digit `ASN1UTCTime` (`511006085339Z`) instead of `ASN1GeneralizedTime`. Because YY = 51 >= 50, every standard RFC 5280 X.509 parser (including Android's `OpenSSLX509Certificate` and Java's `CertificateFactory`) decodes `cert.notAfter` as `Sat Oct 06 08:53:39 GMT 1951`.
+2. **Hardware Key Backing:**
+   On the Infinix X6882B (MediaTek Helio G99), `KeyInfo.isInsideSecureHardware` evaluated to `true`, confirming the ECDSA P-256 identity key material is generated within and non-exportable from hardware TEE / secure enclave.
+3. **Public Key SPKI Equality:**
+   Byte-for-byte SPKI comparison and SHA-256 fingerprint comparison confirmed that `crypto.identityPublicKeyEncoded == cert.publicKey.encoded` (`F5ACB0C2AC578DE80D5FCCDF4600B316147F4AF6EBC4D37A9C4D28505510E49D`).
+
+### Project implication
+- **Custom Trust Verification Mandatory:** A standard platform `X509TrustManager` or strict validity validator would immediately reject the leaf certificate as expired in 1951. Flash's P2P TLS architecture bypasses standard PKIX expiry verification by design, authenticating peers strictly by public key SHA-256 pinning via `TofuPinVerifier` and `OrgMemberStatement`. Any future TLS verification logic must maintain this invariant and NOT reject self-signed peer certificates based on PKIX date checks.
+- **B0.1 Verified on Device:** Confirmed on physical hardware that the key enrolled with is identical to the TLS leaf certificate presented on LAN.

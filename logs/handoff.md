@@ -1,6 +1,59 @@
 # Current Handoff
 
-## Update 2026-10-14 (latest): hub hardening round built, uncommitted until the line below says otherwise
+## Note 2026-10-14 (parallel agents)
+
+- Running several implementer agents at once is described in `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` (PROPOSED; owner answers pending). Until it is accepted, run **one** stream. All Gradle runs of parallel agents go through `tools/flash-gradle.ps1`.
+- B1 needs an ACCEPT verdict (none seen by the author of this note) and a checkpoint commit before any worktree is created.
+
+## Update 2026-10-14 (latest, Plan B Phase B2): The ORG tier at the application gate: 1:1 chat Complete
+
+- **Status:** Phase B2 of `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` complete and fully verified adhering strictly to `docs/plans/HUB-QUALITY-CONTRACT.md`. All unit and host test suites passing on Android host and Desktop JVM, both mutation checks proven, 17-site call-site classification table filled in Section 6, and host engines (`DiscoveryEngineHolder`, `DesktopEngine`, `Flash.kt`) wired.
+- **Completed Components:**
+  - **B2.1 In-Memory Resolver (`:core:enterprise`):** `OrgPeerResolver.kt` and `RealOrgPeerResolver.kt` backed by `OrgDirectoryDao` and `FlashTrustStore`. Synchronous-safe O(1) in-memory index; lease calculation (`Valid`, `Expiring`, `Expired`, `ClockWrong`); TOFU pin replacement under Rule 3.2 emitting `org.pin.replaced`; clock backward-jump detection emitting `org.lease.expired`; colleague display name lookup `displayName(deviceId)`. Tested in `OrgPeerResolverTest.kt` (`ORGT-U20` through `U24`, `U32`).
+  - **B2.2 Capability-Based Gate Separation (`:core:messaging`):** `PeerTrustPolicy.kt` with explicit capability predicates: `mayChat`, `mayReact`, `mayRing`, `mayPushToTalk`, `mayCreateGroupWith`, `mayAddGroupMember`, `mayAdministerGroup`, `mayServeSwarm`, `mayVouch`. PTT is strictly PAIRED only; 1:1 chat, reactions, and ringing are permitted for ORG colleagues; group creation and administration require pairing. Tested with parameterised truth table matrix in `PeerTrustPolicyTest.kt` (`ORGT-U25`).
+  - **B2.3 Colleague Conversations & Repository Integration (`:core:messaging`):** Added `isOrgPeer: (String) -> Boolean = { false }` and `orgPeerResolver: OrgPeerResolver? = null` to `RealFlashChatRepository`. Gated 1:1 reactions with `PeerTrustPolicy.mayReact`; gated group creation with `mayCreateGroupWith` and member additions with `mayAddGroupMember`. Implemented `startColleagueConversation(deviceId)` returning exact user-facing sentences (`org_start_self`, `org_trust_never`, `org_start_expired`, `org_start_not_member`, `org_start_removed`). Implemented `orgDialCandidates(nowMs, limit = 8)`. Verified in `RealFlashChatRepositoryColleagueTest.kt` (`ORGT-U26` through `U30`).
+  - **B2.4 Host Engine Wiring (`:app`, `:desktop`, `:core:engine`):** In `DiscoveryEngineHolder.kt`, `DesktopEngine.kt`, and `Flash.kt`: instantiated `RealOrgPeerResolver`, refreshed in-memory snapshot on start, passed `isOrgPeer` and `orgPeerResolver` into `RealFlashChatRepository`, wired `peerNameResolver` fallback to `orgPeerResolver.displayName(id)`, and wired `chatImpl.orgDialCandidates()` into `LinkView(contacts = ...)`.
+  - **B2.5 UI Lease Math (`:ui:chat`):** Added `OrgTrustState` sealed hierarchy and `orgTrustState(lease, clockOk, hubSupports, nowMs)` in `FlashHubStatusMath.kt`. Tested all 7 states in `FlashHubStatusMathTest.kt`.
+- **Verified Test Suites:**
+  - `:core:messaging:jvmTest`: 415 tests, 0 failures
+  - `:core:messaging:testAndroidHostTest`: 572 tests, 0 failures
+  - `:core:enterprise:jvmTest`: 115 tests, 0 failures
+  - `:core:enterprise:testAndroidHostTest`: 41 tests, 0 failures
+  - `:ui:chat:jvmTest`: 27 tests, 0 failures
+  - `:ui:chat:testAndroidHostTest`: 27 tests, 0 failures
+  - `:app:compileDebugKotlin` & `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL
+- **Mutation Checks Proven:**
+  1. Reaction gate bypass (`RealFlashChatRepository.kt:5508` mutated to `if (false) return`) failed with `AssertionError` at line 535. Restored: passed.
+  2. Group creation check bypass (`RealFlashChatRepository.kt:1987` mutated to `if (false)`) failed with `ComparisonFailure` at line 586. Restored: passed.
+- **Owed Device Tests:** `ORGT-01` through `ORGT-05`, `ORGT-08` through `ORGT-10`, `ORGT-13` tracked in `docs/testing/TEST-BACKLOG.md`.
+- **Recommended next task:** Plan B Phase B3: Colleague trust UX completeness and desktop parity (Nearby page: "Colleague" label after binding, "Message" action, no auto-pair; Chat list colleague trust chip; searching names using snapshot; Settings row; TalkBack a11y; `docs/security.md` section "Organisation tier").
+- **Files most relevant to next task:**
+  - `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` (§4.B3)
+  - `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/`
+  - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/`
+  - `app/src/main/java/com/transfer/flash/`
+  - `docs/security.md`
+
+## Update 2026-10-14 (Plan B Phase B0): Remediation Round Complete
+
+- **Status:** Phase B0 Remediation Round complete adhering strictly to `docs/plans/HUB-QUALITY-CONTRACT.md`. All defects (D1–D5) resolved. Awaiting verifier approval before Phase B1 starts.
+- **Retraction / Current Proof Status:**
+  - **Desktop B0.1:** PROVEN via live TLS client socket handshake in `DesktopEngineTlsBindingTest` connecting to `DesktopEngine.boundPort` over loopback. Asserted presented leaf cert public key equals `crypto.identityPublicKeyEncoded` byte-for-byte and SHA-256 fingerprint matches. Mutation check (`DesktopEngine.kt:1157` mutated to `FlashCertMaker.newEcKeyPair()`) caught and failed with `AssertionError: Live TLS leaf certificate public key must strictly match DesktopEngine.crypto.identityPublicKeyEncoded byte-for-byte. Array elements differ at index 27.`; restored green.
+  - **Android B0.1:** PROVEN on physical handset (Infinix X6882B, Android 14 / API 34, app 2.1.0-beta) via test ORGT-B01 (run by an agent session at the owner's request; owner to confirm). Instrumented test `IdentityKeyBindingInstrumentedTest` proved `crypto.identityPublicKeyEncoded` matches `crypto.selfSignedCertificate().publicKey.encoded` byte-for-byte and under SHA-256 (`F5ACB0C2AC578DE80D5FCCDF4600B316147F4AF6EBC4D37A9C4D28505510E49D`), self-signed verify passes, hardware backing `KeyInfo.isInsideSecureHardware = true`. Live TLS handshake on forwarded TCP port 45822 via `openssl s_client` confirmed the running app presents the exact same public key SHA-256. Mutation check on `KeystoreFlashCrypto.kt` line 51 failed with byte-array mismatch at element [27] and was cleanly restored green (`git diff --stat` empty; restored build installed with `-r`). Observed platform surprise: AndroidKeyStore serializes 25-year validity (2051) using 2-digit UTCTime '51...', which parses as 1951 per RFC 5280 §4.1.2.5.1; Flash's raw fingerprint / TofuPinVerifier correctly bypasses PKIX expiry.
+  - **B0.2 - B0.8:** Investigated, mapped and tested (WebSocket session lifecycle, `savePin` format without source tag, server SQLite tables, delegation expiry vs offline grace period, cross-department rejection unit test in `HubChatBridgeTest`, dial candidate sets, Room schema 14, server directory migration 2).
+  - **D3 Adversarial Review:** Rewritten in exact contract format (10 `path:line` findings with concrete scenarios and fixes, plus 5 extra situations handled).
+  - **D4 Probes:** Added 7 `org.*` probes (`org.gate.allow`, `org.gate.deny`, `org.lease.expired`, `org.pin.replaced`, `org.snapshot.applied`, `org.gossip.accepted`, `org.gossip.ignored`) and reason codes to `docs/testing/PROBES.md`.
+  - **D5 Security Threat Model:** Added 7 threat rows (revoked but offline, stolen unlocked phone, hub operator abuse, key regenerated, TOFU spoof, gossip flooding, statement replay) to `docs/security.md`.
+- **Recommended next task:** Wait for owner/verifier review of Phase B0 Remediation. Do NOT start Phase B1 until approved.
+- **Files most relevant to next task:**
+  - `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` (§4.B1, §5)
+  - `core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hub/protocol/certs/` (`DeviceCert.kt`, `OrgMemberStatement.kt`)
+  - `server/src/main/kotlin/com/transfer/flash/server/directory/` (`DirectoryRoutes.kt`, `OrganizationDirectory.kt`)
+  - `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/` (`FlashDatabase.kt`, `FlashSchemaSteps.kt`, schema 14)
+  - `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/` (`EnterpriseDirectoryClient.kt`, `HubPeerDirectory.kt`)
+
+
+## Update 2026-10-14 (hub hardening round): built, uncommitted until the line below says otherwise
 
 - **Built, unit-tested, NOT device-verified:** FO-13 hashed revocation list v3 (ADR-129), FO-15a sealed mailbox payloads (ADR-130), FO-14 approver phone (ADR-131: server, console card, hub client, Settings dialog "Approve admin requests" on Android and desktop; no QR), desktop chat DB key wrapped with DPAPI (ADR-132). Summary and numbers: `logs/progress.md` 2026-10-14.
 - **Operator notes:** restart the hub from the new install; back up `data.key` apart from the database (losing it loses the queued mailbox); update hub and phones together (older phones ignore a v3 revocation list).

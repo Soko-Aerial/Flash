@@ -2682,6 +2682,27 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
 
+### 2026-10-14 — ORGT-B01 device check (agent session at owner request; owner to confirm)
+
+- **Date:** 2026-10-14
+- **Commit:** `be643a7d`
+- **Device:** Infinix X6882B, Android 14 (API 34), app `versionName=2.1.0-beta` (versionCode 3)
+- **Tests run:**
+  - Instrumented test (`IdentityKeyBindingInstrumentedTest`): PASS
+    - `crypto.identityPublicKeyEncoded` strictly matches `crypto.selfSignedCertificate().publicKey.encoded` byte-for-byte (`assertArrayEquals` passed) and under SHA-256 (`identFp=F5ACB0C2AC578DE8 certFp=F5ACB0C2AC578DE8 equal=true`).
+    - Negative control: unrelated EC P-256 keypair fingerprint differs from identity fingerprint.
+    - Self-signed check: `cert.verify(cert.publicKey)` passes.
+    - Hardware backing: `KeyInfo.isInsideSecureHardware = true`.
+    - Certificate validity probe: `notAfter = Sat Oct 06 08:53:39 GMT 1951`. Platform fact: AndroidKeyStore encoded 2051 (25-year validity from 2026) using 2-digit UTCTime '51...', which parses as 1951 per RFC 5280 §4.1.2.5.1.
+  - Live handshake: YES (`openssl s_client -connect 127.0.0.1:45822 -showcerts`)
+    - Forwarded TCP port 45822 (discovered via `dumpsys package` `uid=10485` and `/proc/net/tcp6` listening socket `0xB2FE`).
+    - Leaf cert public key SHA-256: `F5ACB0C2AC578DE80D5FCCDF4600B316147F4AF6EBC4D37A9C4D28505510E49D`.
+    - Strictly matches full public key SHA-256 printed by instrumented test on device.
+  - Mutation check: YES
+    - Mutated `KeystoreFlashCrypto.kt` line ~51 to return fresh EC keypair: caught and failed with `java.lang.AssertionError: crypto.identityPublicKeyEncoded must match cert.publicKey.encoded byte-for-byte: arrays first differed at element [27]; expected:<-22> but was:<0>`.
+    - Restored `KeystoreFlashCrypto.kt` cleanly (`git diff --stat` empty), reassembled, reinstalled `-r`, and verified test passes. Mutated build not left installed.
+- **Result:** ORGT-B01 PASS (run by an agent session at owner request; owner to confirm).
+
 ### 2026-10-02 — owner-reported, group video size (GRP-01 partial)
 
 - **Build:** not recorded (the repo HEAD that day was `367167a3`; the owner did not say which build was installed).
@@ -3671,3 +3692,330 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Pass:** every command of the plan's section "Verification" passes with the same test counts as before the move (plus none lost); enrolment, directory and relay chat work on a phone as before.
 - **Source:** ADR-128. **Status:** TODO
 - Automated part done 2026-10-13: tests, compiles and publish dry run green (see ADR-128 Result). The phone enrolment and chat exchange are still owed.
+
+
+## 4zzzzzzzzz. Hub integration plans: offline organisation trust, department heads, directory privacy, announcements, Hub tab (ADR-133..138, 2026-10-14)
+
+**PLANNED, NOTHING BUILT.** These tests are written ahead of the work so no owed check is forgotten (AGENTS.md section 35). Each stays `TODO` until its phase exists; the unit-test lists live in the plan files. Roadmap: `docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md`.
+
+### ORGT — Offline organisation trust (Plan B)
+
+#### ORGT-01 — Chat with an unpaired colleague on the LAN with no internet after one online sync
+- **Setup:** Phones A and B enrolled in the same hub, NEVER paired. Both online once (open the app, wait for the colleague list). Then router WAN cable out (LAN only, hub unreachable).
+- **Steps:** Open Hub/People or Nearby on A, message B; reply from B.
+- **Pass:** Messages arrive both ways over the LAN; the conversation header shows the Colleague chip, not the paired shield; logcat `org.gate.allow` for B; no hub traffic.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 engine and gates built and unit/mutation verified in ORGT-U20..U32; physical device check owed)
+
+#### ORGT-02 — Lease expiry
+- **Setup:** As ORGT-01, hub unreachable. Move A's clock forward past the lease (default 30 days).
+- **Steps:** Send from B to A and A to B.
+- **Pass:** ORG refused (same behaviour as an unpaired peer); the app shows the reconnect sentence; pairing still works; after reconnecting to the hub the lease is valid again.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 lease math and expiry gates built and unit verified in ORGT-U24; physical device check owed)
+
+#### ORGT-03 — TOFU spoof attempt
+- **Setup:** Third phone C claims B's device id (debug tool or modified build) and connects to A first.
+- **Steps:** Connect C then B to A.
+- **Pass:** C is never ORG (fingerprint mismatch); B connects and chats; log shows the TOFU pin replaced by the statement fingerprint; no key material in logs.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 resolver pin replacement built and unit verified in ORGT-U22/U23; physical device check owed)
+
+#### ORGT-04 — Revoked colleague
+- **Setup:** B is revoked by the admin console while A is offline and has synced earlier.
+- **Steps:** A and B chat on the LAN, then A reconnects to the hub.
+- **Pass:** Documented behaviour: B is still ORG for A until A syncs; after sync B is refused. Record the time between revocation and refusal.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 documented snapshot semantics verified in ORGT-U30; physical device check owed)
+
+#### ORGT-05 — Hub restored from an older backup
+- **Setup:** Hub database restored from a backup (version goes backwards).
+- **Steps:** Phones sync.
+- **Pass:** Clients detect the epoch/version change and fully resync; no stale colleagues remain; no crash.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B1/B2 epoch and version checks built; physical device check owed)
+
+#### ORGT-06 — 5,000-member sync
+- **Setup:** Hub with 5,000 members (use the load tool or a script).
+- **Steps:** First sync on a mid-range phone; note time, memory, battery.
+- **Pass:** Completes within the documented budget; UI never freezes; numbers go in logs/experiments.md.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B1 engine built, unit benchmark ORGT-U16 passed in EXP-022; physical device check owed)
+
+#### ORGT-07 — Airplane mode in the middle of a sync
+- **Setup:** Large directory.
+- **Steps:** Start sync, enable airplane mode after the first page, then disable.
+- **Pass:** Old snapshot intact during the interruption; next sync completes; no half-applied state.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B1 atomic multi-page staging built, unit verified in ORGT-U10; physical device check owed)
+
+#### ORGT-08 — Desktop and phone offline colleague chat
+- **Setup:** Windows desktop and phone, enrolled, never paired, LAN only.
+- **Steps:** Chat both ways.
+- **Pass:** Works as ORGT-01; desktop parity of the chip and Settings row.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 desktop wiring complete, unit verified in ORGT-U31; physical device check owed)
+
+#### ORGT-09 — Push-to-talk refused for an ORG peer
+- **Setup:** As ORGT-01.
+- **Steps:** Start PTT from B to A.
+- **Pass:** A refuses (paired-only); no audio plays.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 capability separation built, unit verified in ORGT-U25; physical device check owed)
+
+#### ORGT-10 — Call ring from an ORG peer
+- **Setup:** As ORGT-01.
+- **Steps:** B calls A.
+- **Pass:** A rings with the Colleague label; never auto-answers; accepting works.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (B2 mayRing capability built and unit verified in ORGT-U25; physical device check owed)
+
+#### ORGT-11 — Hub group on the LAN (after Plan B phase B4 and owner acceptance of ADR-135)
+- **Setup:** Three enrolled phones in a hub group, joined online, never paired with each other. LAN only.
+- **Steps:** Send in the group from each phone.
+- **Pass:** Members receive each other's messages; non-members are refused; the unsealed line is shown.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ORGT-12 — Removal propagation (after B4/B5)
+- **Setup:** As ORGT-11, admin removes C from the group while A and B are offline.
+- **Steps:** A reconnects to the hub; B only meets A on the LAN.
+- **Pass:** A adopts roster v+1 from the hub; B adopts it from A by gossip; C's frames are refused by both.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ORGT-13 — ECO mode wake for an ORG send
+- **Setup:** A in ECO mode, parked sessions.
+- **Steps:** Send to B (ORG, not paired).
+- **Pass:** The planner dials B within the documented time; message delivered.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ORGT-14 — Identity key regenerated
+- **Setup:** Android device whose identity key is regenerated (IdentityKeyCheck REGENERATE).
+- **Steps:** Open the app after regeneration.
+- **Pass:** The app shows the identity-changed sentence and ORG trust state IDENTITY_MISMATCH; no crash; re-enrolling restores it.
+- **Source:** ADR-134/135, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ORGT-B01 — Physical device Android Keystore certificate public key binding to identityPublicKeyEncoded
+- **Setup:** Physical Android device (running on real hardware with StrongBox or TEE Keystore backing, minSdk 24 / targetSdk 35).
+- **Why:** The plain JVM test environment (`androidHostTest`) lacks the `AndroidKeyStore` provider. On the JVM B0.1 is by-construction reading only (`KeystoreFlashCrypto.kt` lines 74-79 and 104-107); physical verification on real hardware was required to prove certificate-to-identity binding.
+- **Steps:** Run the instrumentation test or execute a debug probe on a physical phone that instantiates `KeystoreFlashCrypto(context)` and compares `KeystoreFlashCrypto.selfSignedCertificate().publicKey.encoded` with `KeystoreFlashCrypto.identityPublicKeyEncoded`.
+- **Pass:**
+  - Both fingerprints (SHA-256 in uppercase hex) printed by the probe or instrumentation test runner are strictly equal.
+  - The raw public key byte arrays match byte-for-byte (`contentEquals == true`).
+- **Source:** ADR-134, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` §4 Step B0.1.
+- **Status:** PASS (run by an agent session at the owner's request; owner to confirm) [2026-10-14, commit be643a7d, Infinix X6882B, Android 14 (API 34), app 2.1.0-beta; instrumented test: yes; live handshake: yes; mutation: yes]
+  - *SUPERSEDED:* `Status: TODO (PLANNED, physical device check owed)`
+
+### DEPH — Department heads and invite roles (Plan A1)
+
+#### DEPH-01 — Head logs into the console
+- **Setup:** Org admin created a DEPT_HEAD login for department X.
+- **Steps:** Log in with password + TOTP in a browser.
+- **Pass:** Only department X appears in Organization, Invites, Groups, Join requests; Audit, Settings, Delegation, Security (other admins) are absent; direct API calls to them return 403/404.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-02 — Head invites an employee
+- **Setup:** Head logged in.
+- **Steps:** Create an invite (Employee) for department X; enrol a phone.
+- **Pass:** Phone joins department X; invites for another department are refused with the sentence.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-03 — Org admin invites a head
+- **Setup:** Org admin creates a Department head invite for X.
+- **Steps:** Enrol a phone with it.
+- **Pass:** Phone shows 'Department head - X'; the department's heads list includes the device.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-04 — Disable a head while logged in
+- **Setup:** Head session open.
+- **Steps:** Org admin disables the login.
+- **Pass:** The head's next request fails and the session is gone.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-05 — Two heads in one department
+- **Setup:** Two heads for X.
+- **Steps:** Both log in and work simultaneously.
+- **Pass:** Both see X only; actions are audited with their usernames.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-06 — Invite first head after creating a department
+- **Setup:** Org admin.
+- **Steps:** Create a department and choose Invite its first head.
+- **Pass:** The invite form opens with role Head and the department preselected.
+- **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+### PRIV — Directory privacy, option C (Plan A2)
+
+#### PRIV-01 — Outsider cannot find a hidden department
+- **Setup:** Department H marked hidden; phone P in another department.
+- **Steps:** Open People/Departments, search H's member names.
+- **Pass:** H and its people never appear; counts do not leak; groups of H not listed.
+- **Source:** ADR-137, `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### PRIV-02 — Insider still sees it
+- **Setup:** Phone Q in H.
+- **Steps:** Open Departments and People.
+- **Pass:** H and its members are visible to Q.
+- **Source:** ADR-137, `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### PRIV-03 — Hidden-department member messages an outsider
+- **Setup:** Member of H sends a message to P (hub path).
+- **Steps:** Send.
+- **Pass:** P's phone accepts and shows the message (lookup by id works); P cannot list H.
+- **Source:** ADR-137, `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### PRIV-04 — Toggling hidden propagates
+- **Setup:** Toggle H hidden then visible in the console.
+- **Steps:** Pull to refresh on P twice.
+- **Pass:** P's list updates both times after a full resync.
+- **Source:** ADR-137, `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### PRIV-05 — Old app with new hub
+- **Setup:** App version before this feature.
+- **Steps:** Open Browse groups and chat.
+- **Pass:** Existing behaviour unchanged.
+- **Source:** ADR-137, `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+### ANN — Announcements (Plan A3)
+
+#### ANN-01 — Admin posts company-wide from the console
+- **Setup:** Several phones online.
+- **Steps:** Compose with preview, post.
+- **Pass:** Phones receive it in News with a notification showing only the title; unread badge on the Hub tab.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-02 — Head posts to own department from the app
+- **Setup:** Head phone and an outsider phone.
+- **Steps:** Post to the department.
+- **Pass:** Department members see it; the outsider never does.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-03 — Head cannot post company-wide
+- **Setup:** Head phone and head console.
+- **Steps:** Try company-wide posting.
+- **Pass:** Refused with the exact sentence; server returns 403.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-04 — Offline phone catches up
+- **Setup:** Phone offline, 3 announcements posted, edit one, delete one.
+- **Steps:** Reconnect.
+- **Pass:** Feed shows the final state; deleted one is gone; unread count correct.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-05 — Search
+- **Setup:** Console and app online and offline.
+- **Steps:** Search a word in a title and a body.
+- **Pass:** Console search is server-side; the app offline searches cached items; outsiders cannot find department-only text.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-06 — Edit and delete propagate
+- **Setup:** Admin edits and deletes.
+- **Steps:** Watch phones.
+- **Pass:** Edited label and delete within seconds when connected; after reconnect otherwise.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-07 — Pinned order and limit
+- **Setup:** Pin four announcements in one scope.
+- **Steps:** Pin.
+- **Pass:** The fourth pin is refused with the sentence; pinned first in the list.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-08 — Hub restored from backup
+- **Setup:** Restore an older hub database.
+- **Steps:** Phones refresh.
+- **Pass:** Epoch change forces a full resync, no duplicates.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-09 — Old app with new hub
+- **Setup:** Previous app version.
+- **Steps:** Chat and browse as usual.
+- **Pass:** No crash, no unknown-frame problem.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-10 — Notification tap on a cold start
+- **Setup:** App swiped away.
+- **Steps:** Tap the notification.
+- **Pass:** Hub > News opens the announcement.
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### ANN-11 — Background delivery (experiment)
+- **Setup:** Screen off 30 minutes on Samsung and Infinix.
+- **Steps:** Post.
+- **Pass:** Record when the notification arrives; do not claim support (record in logs/experiments.md).
+- **Source:** ADR-138, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+### HUBT — Hub tab UI-058 (Plan A4)
+
+#### HUBT-01 — Enrol: Hub replaces Transfers
+- **Setup:** Unenrolled phone on the Transfers tab.
+- **Steps:** Enrol with a link.
+- **Pass:** Tab becomes Hub; user stays on Transfers (pushed) and back goes to Chats; Transfers button with an active indicator appears in the top bar.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-02 — Unenrol or revoke
+- **Setup:** Enrolled phone on Hub.
+- **Steps:** Unenrol (and separately revoke from the console).
+- **Pass:** Tab returns to Transfers; app lands on Chats with the hub notice; no crash.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-03 — 5,000 people
+- **Setup:** Hub with 5,000 members.
+- **Steps:** Scroll and search the People segment.
+- **Pass:** No jank; memory within budget; numbers in logs/experiments.md.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-04 — Message an unpaired colleague (hub online)
+- **Setup:** Two enrolled phones, not paired.
+- **Steps:** People > person > Message.
+- **Pass:** Conversation opens and the message is delivered.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-05 — Same offline on the LAN (needs Plan B)
+- **Setup:** As ORGT-01.
+- **Steps:** People > Message with the hub unreachable.
+- **Pass:** Works from the cached list.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-06 — News flow (needs Plan A3)
+- **Setup:** See ANN-01.
+- **Steps:** Read, open reader, mark read, pin.
+- **Pass:** Matches the design doc.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-07 — Hidden department (needs Plan A2)
+- **Setup:** See PRIV-01.
+- **Steps:** Departments segment.
+- **Pass:** Hidden department not shown to outsiders.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-08 — Tablet rail and detail pane
+- **Setup:** Tablet or large window.
+- **Steps:** Use the Hub tab.
+- **Pass:** List/detail layout works, selection preserved on resize.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-09 — Desktop sidebar and Transfers button
+- **Setup:** Windows app.
+- **Steps:** Use Hub and Transfers.
+- **Pass:** Sidebar shows Hub, Transfers in the list header, shortcuts behave.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-10 — Accessibility pass
+- **Setup:** Dark mode, 200 % font, RTL, reduced motion, TalkBack.
+- **Steps:** Walk through all segments.
+- **Pass:** Everything readable and operable; announcements read in a sensible order.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-11 — Process death on Hub
+- **Setup:** Hub selected.
+- **Steps:** Kill the process and reopen.
+- **Pass:** Hub restored; if unenrolled meanwhile, Chats.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-12 — Notification tap to Hub on a cold start
+- **Setup:** See ANN-10.
+- **Steps:** Tap.
+- **Pass:** Opens the right item.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-13 — Upgrade from the old layout
+- **Setup:** Enrolled phone with the previous build.
+- **Steps:** Update the app.
+- **Pass:** Hub tab present, one-time tip about Transfers shown once.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### HUBT-14 — Older hub fallback
+- **Setup:** Hub without the new routes.
+- **Steps:** Open Hub.
+- **Pass:** People works through the fallback or shows the exact not-supported sentences.
+- **Source:** ADR-133, `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`. **Status:** TODO (PLANNED, not built)
+

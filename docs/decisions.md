@@ -5291,3 +5291,133 @@ The key sat in a plain file next to the database, so a copied profile or a backu
 
 ### Revisit when
 A password or biometric unlock for desktop is wanted, or the Android key storage is audited the same way.
+
+## ADR-133 — The Flash Hub tab replaces Transfers for enrolled devices; Transfers moves to the chat-list top bar (UI-058)
+
+### Status
+ACCEPTED as a direction by the owner 2026-10-14 (decision D1). Design DESIGNED (`docs/ui/flash-hub-tab.md`). **Nothing is built.** Plan: `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`.
+
+### Decision
+- The bottom bar / rail / desktop sidebar is a function of enrolment: enrolled = Chats · **Hub** · Nearby · Settings; not enrolled = Chats · Transfers · Nearby · Settings (unchanged).
+- When enrolled, Transfers is a **pushed** destination opened from an icon button in the chat-list top bar (with an active-transfer indicator). The "Browse department groups" top-bar action moves into the Hub screen (Groups segment).
+- The Hub screen has four segments: News (announcements), People, Departments, Groups.
+
+### Context
+The owner wants the organisation to be a first-class place (colleagues, announcements, departments) once a device joins one, without adding a fifth tab. Today the organisation lives only in Settings → Hub and a Browse sheet; `fetchEnterpriseDirectoryMembers` has no UI caller.
+
+### Alternatives considered
+Five tabs; hiding Transfers visually while keeping `TabOrder` static; a separate Announcements tab; swipeable nested tabs. All rejected (`HUB-TAB-IMPLEMENTATION-PLAN.md` §8).
+
+### Consequences
+`FlashNavigationMath` gains enrolment-aware tab functions and a stack normaliser; every `Transfers` navigation site needs review; saved navigation state must survive enrolment changes; new icons are required (UI-002).
+
+### Revisit when
+The owner wants multi-organisation (FO-18) or more tabs.
+
+## ADR-134 — An organisation trust tier (ORG) lets enrolled colleagues chat on the LAN without the hub
+
+### Status
+ACCEPTED by the owner 2026-10-14 (D8 goal, D10 revocation gossip between phones, D11 "all recommended": the mechanism, the 30-day default lease, Layer 2 later). **Nothing is built.** Plan: `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md`.
+
+### Decision (proposed)
+- A new predicate `isOrgPeer(deviceId)` is true when a persisted, root-verified **member statement** (`OrgMemberStatement`, signed by the hub's delegate key, delivered by `GET /api/v1/directory/sync`) names the same identity-key fingerprint the live session was accepted under, and the **lease** (`lastSuccessfulSync + offlineGraceDays`, default 30, admin-set 1–365) is valid.
+- `isTrustedPeer` keeps its meaning (paired). Every call site is classified in a policy table; PTT, admin, vouching, group creation and v2-group owner trust stay paired-only. An organisation peer may chat, send receipts/typing/reactions, offer files (the receiver still accepts) and ring (never auto-answered).
+- No TLS change: the TLS layer already accepts first-use peers and records a pin (verified by reading `TofuPinVerifier` and `Flash.kt:277`), so the gate is the application. A TOFU pin that disagrees with the statement is replaced by the statement's fingerprint; a PAIRED or VOUCHED pin is never replaced.
+- Layer 2 (membership proof in the handshake) and revocation gossip are later, optional phases.
+
+### Context
+Owner (2026-10-14): a user who paired or joined online must still be able to chat with a colleague on the work Wi-Fi when the server or internet is down. Today only previously paired colleagues work offline; hub groups are silent on the LAN (CLI-16).
+
+### Alternatives considered
+Widen `isTrustedPeer`; write ORG pins into the trust store; custom TLS certificate extension; sync per-member `DeviceCert` chains (7-day expiry makes offline use impossible); dial every colleague. See plan section 8.
+
+### Consequences
+A revoked employee stays trusted by an offline phone until its next sync, the lease ending, or gossip; this is documented in `docs/security.md` and in the UI. The hub operator can already vouch for any device (ADR-120); this adds no new operator power. A colleague in a hidden department is not in outsiders' snapshots (Layer 2 covers it later).
+
+### Revisit when
+Device tests show the mechanism is too weak or too strong, or the owner changes the lease default.
+
+## ADR-135 — Hub groups work on the LAN through a hub-signed roster statement (replaces the FO-17 secret-escrow proposal)
+
+### Status
+ACCEPTED by the owner 2026-10-14 ("all recommended": the hub-signed roster statement, option A; the FO-17 secret escrow is dropped). The review gate demanded by ADR-123 is cleared. Nothing is built.
+
+### Decision (proposed)
+The hub signs `GroupRosterStatement(groupId, name, departmentId, version, members, admins, issuedAt, validUntil)` (tag `flash-hub-roster-v1`, delegate key + chain). Devices persist it and, for hub-linked groups only, accept group frames from a sender who is an ORG peer and a member in the latest valid statement. Statements are portable and self-verifying, so peers may forward a higher version (`HubRosterOffer`, cap `hrs1`). Group messages are not end-to-end sealed on the hub relay path (as today): sent directly between phones on the LAN they are encrypted in transit by the existing TLS channel with pinned identities and never reach the hub; through the hub they are readable by it, and the UI says so only for that path. Offline group chat is supported up to 200 members.
+
+### Context
+Option (a) of ADR-123 (vouched introductions) and FO-17 (roster/secret through sealed hub messages, which needs group sealing that does not exist). A statement needs no secret, no new key distribution and no admin identity key (console-created groups have none).
+
+### Alternatives considered
+Secret escrow on the hub (the hub holds secrets; GM bundle issuance needs an admin identity key); per-group sender keys through sealed messages (needs group sealing); accepting every hub-certified identity for any group (no membership at all).
+
+### Consequences
+Removal reaches offline phones at their next sync or by gossip; until then a removed member's frames are accepted by phones that have not seen the newer version (bounded by `validUntil`; documented residual risk). FO-17 is marked absorbed by this decision if accepted.
+
+### Revisit when
+Group sealing is designed (then sealed groups may replace the unsealed hub group path).
+
+## ADR-136 — Department heads: scoped console logins, scoped admin API and invite roles
+
+### Status
+ACCEPTED as direction by the owner 2026-10-14 (D3, D5, D7); details accepted 2026-10-14 (D11: a head cannot create another head, rename a department or revoke a leaver in v1). **Nothing is built.** Plan: `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`.
+
+### Decision
+- A new console role `DEPT_HEAD` bound to one or more departments (`admin_user_departments`), alongside `ORG_ADMIN`. A department may have several heads (device heads already can: `adminDeviceIds`).
+- The scope is re-read from the database on every request; every `/admin/api/v1/*` route has a declared policy (default deny, enforced by a test); objects outside the scope answer 404.
+- Invite roles in the console: **Employee** (`member`) and **Department head** (`dept_admin`, org admin only); creating a department offers "invite its first head". A head invites only employees to their own department.
+- Heads cannot create logins, departments, revocations, settings, and cannot see the audit log in v1.
+
+### Context
+Today every console login is `ORG_ADMIN` (the `role` column exists but is never compared) and no admin endpoint filters by department.
+
+### Alternatives considered
+Per-department logins implemented only in the client; a generic permission matrix (too large for the need).
+
+### Consequences
+Every admin route needs a policy; console navigation adapts; the Hub tab shows the "Department head" badge from the device certificate.
+
+### Revisit when
+Heads need audit views, revocation rights or department renaming.
+
+## ADR-137 — Directory privacy option C: an organisation-wide directory with hidden departments
+
+### Status
+ACCEPTED as direction by the owner 2026-10-14 (D2). The keys point was **answered by the owner on 2026-10-14 (D9): public keys (identity and sealing) of non-hidden departments are org-visible; hidden departments' keys only to their members, by known-id lookup and in the Layer 2 handshake.** Questions 9 and 11 answered 2026-10-14 (D11): no Layer 2 lookup of hidden members by name for outsiders, no per-department presence switch in v1. **Nothing is built.** Plan: `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md`.
+
+### Decision
+- Names, departments and online dots are visible org-wide, except departments an org admin marked **hidden** (not listed, not searchable, counts withheld, groups hidden; visible to their own members and admins).
+- Hidden means directory listing only: direct messaging by known id stays unscoped (ADR-127 addendum), local-network device names may still be seen, administrators and the hub operator see everything. The docs and console say this.
+- One server function `DirectoryVisibility` decides every directory read and the offline-trust sync. New routes `GET /directory/people` (paged, searchable, no keys) and `GET /directory/people/{deviceId}` (known-id lookup).
+
+### Context
+Today a member sees only their own department; the client directory cache therefore cannot recognise a colleague from another department.
+
+### Alternatives considered
+A: everyone sees everyone; B: own department only (today).
+
+### Consequences
+`HubPeerDirectory` standing improves for cross-department senders (still to be proven, Plan B step B0.6). A per-department presence switch is optional (roadmap question 11).
+
+### Revisit when
+The owner answers questions 10 and 11, or a department-level privacy need beyond "hidden" appears.
+
+## ADR-138 — Announcements are plain text stored on the hub, posted by admins and department heads
+
+### Status
+ACCEPTED as direction by the owner 2026-10-14 (D5: plaintext, server-side search, console previews; posters = org admins and department heads for their department). Details accepted 2026-10-14 (D11: title 120 / body 4,000 characters, no retention by default with an optional expiry per announcement, notifications on for company-wide and own-department announcements, title only). **Nothing is built.** Plan: `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`.
+
+### Decision
+Table `announcement` (+ FTS5 search) on the hub; device REST under `/api/v1/announcements*` authorised from the verified certificate role and department; console routes scoped by `ConsoleScope`; a changes feed (`since=seq`) is the source of truth and a content-free relay frame `AnnouncementEvent` (capability `ann1`) is a best-effort nudge. The app caches announcements in Room and notifies with the title only. Plain text only (no markdown or HTML). Not queued when offline.
+
+### Context
+There is no announcement feature anywhere. The owner chose plaintext so that the server can search and the console can preview.
+
+### Alternatives considered
+Sealed (end-to-end) announcements (parked FO-24); sending the text inside the relay frame; FCM push (rejected earlier).
+
+### Consequences
+The hub operator and administrators can read all announcements; the UI says so. Background notification delivery is only as reliable as the hub connection (no FCM).
+
+### Revisit when
+Sealed announcements, acknowledgements or attachments are wanted (FO-19..FO-26).
