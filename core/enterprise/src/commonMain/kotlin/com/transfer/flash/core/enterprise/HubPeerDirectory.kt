@@ -51,7 +51,11 @@ public class HubPeerDirectory(
         val fresh = loadedAtMs != Long.MIN_VALUE && now - loadedAtMs < ttlMs
         members[deviceId]?.let { if (fresh) return@withLock it }
         refreshLocked(now)
-        members[deviceId]
+        members[deviceId]?.let { return@withLock it }
+        // Plan A2 §3.6: the listing may not contain this id (another department, or a hidden
+        // department's member). Resolve it through the single lookup by known id and cache the hit,
+        // so a cross-department sender becomes MEMBER without another listing fetch.
+        lookupByKnownIdLocked(deviceId)
     }
 
     /** True when the directory lists [deviceId]; see [HubPeerStanding]. */
@@ -78,6 +82,22 @@ public class HubPeerDirectory(
             members = result.value.associateBy { it.deviceId }
             loadedAtMs = now
         }
+    }
+
+    /**
+     * Single lookup by known id (caller already holds the lock). A hit is cached alongside
+     * the listing rows; a miss/404 changes nothing (stays UNKNOWN or UNAVAILABLE).
+     */
+    private suspend fun lookupByKnownIdLocked(deviceId: String): EnterpriseDirectoryMember? {
+        val privacy = directory as? DirectoryPrivacyApi ?: return null
+        val url = hubUrl() ?: return null
+        val result = privacy.lookupPerson(url, deviceId)
+        val hit = (result as? FlashResult.Success)?.value
+        if (hit != null) {
+            members = members + (deviceId to hit)
+            return hit
+        }
+        return null
     }
 
     public companion object {

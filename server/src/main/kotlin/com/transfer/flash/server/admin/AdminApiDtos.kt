@@ -214,10 +214,10 @@ data class BulkInviteRowDto(val line: Int, val name: String, val created: Invite
 data class BulkInviteDto(val rows: List<BulkInviteRowDto>)
 
 @Serializable
-data class DepartmentBody(val id: String? = null, val name: String? = null, val adminDeviceIds: List<String>? = null)
+data class DepartmentBody(val id: String? = null, val name: String? = null, val adminDeviceIds: List<String>? = null, val hidden: Boolean? = null)
 
 @Serializable
-data class AdminDepartmentDto(val id: String, val name: String, val adminDeviceIds: List<String>, val memberCount: Int, val groupCount: Int)
+data class AdminDepartmentDto(val id: String, val name: String, val adminDeviceIds: List<String>, val memberCount: Int, val groupCount: Int, val hidden: Boolean = false)
 
 @Serializable
 data class GroupBody(
