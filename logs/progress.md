@@ -4,6 +4,25 @@
 
 
 
+
+## 2026-10-14 - Hub start commands, wrong setup URL (ERROR-398)
+
+### Worked on
+The owner asked for the commands to start the hub and ran them in PowerShell. The console did not load.
+
+### Changed
+- Gave PowerShell and Git Bash start commands (build `:server:installDist`, `server.bat serve`, setup token, healthcheck, admin-recovery, keytool).
+- Fixed the first-run banner URL (`setupUrlFor`, ERROR-398); added `SetupUrlTest`.
+
+### Verification
+Reproduced on ports 28443/28444 with the owner's settings; `SetupUrlTest` 5/5, `AdminConsoleWebTest` 13/13; installDist rebuilt.
+
+### Remaining
+Owner confirms `http://127.0.0.1:8444/admin/` loads. Deferred items FO-13..FO-17 are unchanged (sizes were estimated in chat, not measured).
+
+### Next AI
+Nothing pending from this entry.
+
 ## 2026-10-13 - ERROR-397 fixed: intermittent reconnect-storm failure was a real race in `FlashRelayClient`
 
 ### Worked on

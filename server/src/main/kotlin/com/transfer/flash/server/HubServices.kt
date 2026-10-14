@@ -55,6 +55,23 @@ import java.util.concurrent.TimeUnit
 class HubStartupException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 /**
+ * The address the first-run banner tells the operator to open. The console lives on the management listener (default
+ * `127.0.0.1:8444`, plain http unless the hub terminates TLS itself), not on the public listener the invites point at, so the
+ * banner must not reuse [ServerConfig.externalUrl] (it opened a 404 on the public port, or an https URL nothing answered).
+ */
+internal fun setupUrlFor(config: ServerConfig): String {
+    if (config.adminOnPublicPort) return "${config.externalUrl.trimEnd('/')}/admin/setup"
+    val scheme = if (config.directTls) "https" else "http"
+    val bind = config.adminHost.removePrefix("[").removeSuffix("]")
+    val host = when {
+        bind == "0.0.0.0" || bind == "::" -> "localhost"
+        bind.contains(':') -> "[$bind]"
+        else -> bind
+    }
+    return "$scheme://$host:${config.adminPort}/admin/setup"
+}
+
+/**
  * Wires one running hub: persistence, keys, delegation, revocation, enrolment, directory, admin console and relay.
  *
  * The organisation ROOT key is never loaded here (SEC-04, ADR-111). The hub holds its own delegate key and a
@@ -193,7 +210,7 @@ class HubServices private constructor(
             val audit = AuditLogger(db, AuditSigner(delegate.pair.private, delegate.publicKey), clock)
             val admins = AdminAuthService(
                 printSetupTokenToConsole = true,
-                setupUrl = "${config.externalUrl}/admin/setup",
+                setupUrl = setupUrlFor(config),
                 db = db,
                 clock = clock,
                 setupTokenFile = config.setupTokenPath.toPath(),
