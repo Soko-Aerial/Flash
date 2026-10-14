@@ -32,7 +32,20 @@ data class AdminUser(
     val createdBy: String? = null,
     /** The enrolled admin phone whose approval the most dangerous actions also need (ADR-131, FO-14); null = browser key only. */
     val approverDeviceId: String? = null,
-)
+    /** Console display name (Plan A1); empty for older rows. */
+    val displayName: String = "",
+    /**
+     * The head's phone/desktop device id, chosen by the org admin (Plan A1 §3.1).
+     * Different from [enrolledDeviceId] (the step-up signer) and [approverDeviceId]
+     * (the FO-14 co-signing phone): this link only aligns announcement authors.
+     */
+    val linkedDeviceId: String? = null,
+) {
+    companion object {
+        const val ROLE_ORG_ADMIN: String = "ORG_ADMIN"
+        const val ROLE_DEPT_HEAD: String = "DEPT_HEAD"
+    }
+}
 
 data class AdminSession(
     val token: String,
@@ -161,6 +174,17 @@ class AdminAuthService(
             },
             Migration(3, "admin: the phone that co-signs the most dangerous actions (ADR-131, FO-14)") { conn ->
                 conn.createStatement().use { it.execute("ALTER TABLE admin_users ADD COLUMN approver_device_id TEXT") }
+            },
+            Migration(4, "admin: department heads with scoped logins (Plan A1)") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE admin_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+                    st.execute("ALTER TABLE admin_users ADD COLUMN linked_device_id TEXT")
+                    st.execute(
+                        "CREATE TABLE IF NOT EXISTS admin_user_departments(username TEXT NOT NULL, department_id TEXT NOT NULL, added_by TEXT NOT NULL, added_at INTEGER NOT NULL, " +
+                            "PRIMARY KEY(username, department_id))",
+                    )
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_admin_user_departments_dept ON admin_user_departments(department_id)")
+                }
             },
         )
     }
@@ -585,10 +609,10 @@ class AdminAuthService(
         db.immediate { conn ->
             if (disabled) {
                 val others = conn.scalarLong("SELECT COUNT(*) FROM admin_users WHERE disabled = 0 AND username <> ?", username)
-                check(others > 0) { "The last enabled administrator can not be disabled" }
+                if (others == 0L) throw IllegalStateException("The last enabled administrator can not be disabled")
             }
             val changed = conn.update("UPDATE admin_users SET disabled = ? WHERE username = ?", if (disabled) 1 else 0, username)
-            check(changed == 1) { "Administrator not found" }
+            if (changed != 1) throw IllegalStateException("Administrator not found")
         }
         if (disabled) revokeAllSessions(username)
     }
@@ -877,13 +901,16 @@ class AdminAuthService(
         createdAtMs = rs.getLong("created_at"),
         createdBy = rs.getString("created_by"),
         approverDeviceId = rs.getString("approver_device_id"),
+        displayName = runCatching { rs.getString("display_name") }.getOrNull().orEmpty(),
+        linkedDeviceId = runCatching { rs.getString("linked_device_id") }.getOrNull(),
     )
 
     private fun insertAdmin(conn: java.sql.Connection, a: AdminUser) {
         conn.update(
-            "INSERT INTO admin_users(username, password_hash, totp_secret, role, enrolled_device_id, disabled, last_totp_step, created_at, created_by) " +
-                "VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO admin_users(username, password_hash, totp_secret, role, enrolled_device_id, disabled, last_totp_step, created_at, created_by, approver_device_id, display_name, linked_device_id) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             a.username, a.passwordHash, sealTotp(a.username, a.totpSecret), a.role, a.enrolledDeviceId, if (a.disabled) 1 else 0, -1L, a.createdAtMs, a.createdBy,
+            a.approverDeviceId, a.displayName, a.linkedDeviceId,
         )
     }
 
@@ -892,6 +919,64 @@ class AdminAuthService(
             conn.update("DELETE FROM admin_users WHERE username = ?", admin.username)
             insertAdmin(conn, admin)
         }
+    }
+
+    // ------------------------------------------------------------------------------------------------ department heads (Plan A1)
+
+    /** The departments a head login is bound to (empty for org admins and for heads with no departments). */
+    fun headDepartments(username: String): Set<String> = db.withConnection { conn ->
+        conn.query("SELECT department_id FROM admin_user_departments WHERE username = ? ORDER BY department_id", username) { it.getString(1) }.toSet()
+    }
+
+    /**
+     * Replaces the departments of [username] (org admin only, enforced by the route).
+     * Removing the last one leaves a login with empty scope ("No departments").
+     */
+    fun setHeadDepartments(username: String, departmentIds: Collection<String>, addedBy: String) {
+        val clean = departmentIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        require(clean.size <= 200) { "Too many departments" }
+        db.immediate { conn ->
+            check(conn.scalarLong("SELECT COUNT(*) FROM admin_users WHERE username = ?", username) == 1L) { "Administrator not found" }
+            conn.update("DELETE FROM admin_user_departments WHERE username = ?", username)
+            val now = clock()
+            for (id in clean) {
+                conn.update("INSERT INTO admin_user_departments(username, department_id, added_by, added_at) VALUES(?,?,?,?)", username, id, addedBy, now)
+            }
+        }
+    }
+
+    /** Deletes every scope row that names [departmentId] (department deletion, same transaction as the caller). */
+    fun removeDepartmentScopes(departmentId: String) {
+        db.withConnection { it.update("DELETE FROM admin_user_departments WHERE department_id = ?", departmentId) }
+    }
+
+    /**
+     * Creates a department-head login (role DEPT_HEAD). The server generates the TOTP
+     * secret and recovery codes (returned once), exactly like [createAdmin].
+     */
+    fun createHead(
+        username: String,
+        password: String,
+        createdBy: String,
+        displayName: String,
+        departments: Collection<String>,
+        linkedDeviceId: String?,
+    ): AdminCredentials {
+        require(USERNAME.matches(username.trim())) { "Username must be 3-64 letters, digits or . _ @ -" }
+        require(password.length >= MIN_PASSWORD_CHARS) { "Password must be at least $MIN_PASSWORD_CHARS characters" }
+        require(displayName.trim().length <= 60) { "Display name is too long" }
+        val cleanName = displayName.trim().filter { it.code >= 0x20 && it.code != 0x7F }
+        val secret = generateTotpSecret()
+        val admin = AdminUser(
+            username.trim(), hashPassword(password), secret, AdminUser.ROLE_DEPT_HEAD, null, false, clock(), createdBy,
+            displayName = cleanName, linkedDeviceId = linkedDeviceId?.trim()?.ifBlank { null },
+        )
+        db.immediate { conn ->
+            check(conn.scalarLong("SELECT COUNT(*) FROM admin_users WHERE username = ?", admin.username) == 0L) { "Administrator already exists" }
+            insertAdmin(conn, admin)
+        }
+        setHeadDepartments(admin.username, departments, createdBy)
+        return AdminCredentials(admin.username, null, secret, getOtpAuthUri(admin.username, secret), generateRecoveryCodes(admin.username))
     }
 }
 

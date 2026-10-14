@@ -451,6 +451,34 @@ class OrganizationDirectory(
     fun setDepartmentHidden(id: String, hidden: Boolean, actor: DirectoryActor): Department =
         updateDepartment(id, null, null, hidden, actor)
 
+    /** Removes [deviceId] from the admin list of [departmentId] (member moved away; idempotent). */
+    fun removeFromAdmins(departmentId: String, deviceId: String) {
+        lock.write {
+            val dept = departments[departmentId] ?: return@write
+            if (deviceId !in dept.adminDeviceIds) return@write
+            val v = bumpVersionLocked()
+            val updated = dept.copy(adminDeviceIds = dept.adminDeviceIds - deviceId, version = v)
+            persist { c -> c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, departmentId) }
+            departments[departmentId] = updated
+        }
+    }
+
+    /**
+     * Adds [deviceId] to the admin list of [departmentId] (head enrolment, Plan A1 §3.8; idempotent).
+     * No-op when the department does not exist (the enrolment validation already refused unknown departments).
+     */
+    fun addDepartmentAdmin(departmentId: String, deviceId: String) {
+        if (departmentId.isBlank() || deviceId.isBlank()) return
+        lock.write {
+            val dept = departments[departmentId] ?: return@write
+            if (deviceId in dept.adminDeviceIds) return@write
+            val v = bumpVersionLocked()
+            val updated = dept.copy(adminDeviceIds = dept.adminDeviceIds + deviceId, version = v)
+            persist { c -> c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, departmentId) }
+            departments[departmentId] = updated
+        }
+    }
+
     /** Deletes an empty department (no groups, no members). Organisation admin only. */
     fun deleteDepartment(id: String, actor: DirectoryActor) {
         if (!actor.isOrgAdmin) throw SecurityException("Only organization admin can delete departments")

@@ -409,7 +409,7 @@ class HubServices private constructor(
             log.warn("##############################################################################")
         }
 
-        /** The directory learns a member from an enrolment event. */
+        /** The directory learns a member from an enrolment event (Plan A1 §3.8: a head device joins its department's admin list). */
         internal fun applyToDirectory(directory: OrganizationDirectory, event: EnrollmentEvent) {
             val device = event.device
             directory.applyEnrollment(
@@ -423,6 +423,9 @@ class HubServices private constructor(
                 autoJoinGroups = event.invite.autoJoinGroups,
                 allowedGroups = event.invite.allowedGroups,
             )
+            if (device.role == HubRoles.DEPT_ADMIN) {
+                directory.addDepartmentAdmin(device.department.orEmpty(), device.deviceId)
+            }
         }
 
         private fun roleOf(role: String): MemberRole = when (role) {
@@ -477,6 +480,9 @@ class HubServices private constructor(
                         autoJoinGroups = emptySet(),
                         allowedGroups = emptySet(),
                     )
+                    if (device.role == HubRoles.DEPT_ADMIN) {
+                        directory.addDepartmentAdmin(device.department.orEmpty(), device.deviceId)
+                    }
                 }
                 if (page.size < 500) break
                 offset += page.size
