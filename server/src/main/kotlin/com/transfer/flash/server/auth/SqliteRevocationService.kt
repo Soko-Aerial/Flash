@@ -36,13 +36,15 @@ class RevocationSigner(
         return cert.delegatePublicKey == delegatePublicKey && cert.hasScope(HubScopes.REVOKE_MEMBER)
     }
 
-    internal fun sign(version: Long, serials: Set<Long>, deviceIds: Set<String>): RevocationList =
+    internal fun sign(version: Long, serials: Set<Long>, deviceIds: Set<String>, audience: String, deviceHashes: Set<String>): RevocationList =
         RevocationList.issue(
             issuerPrivateKey = delegatePrivateKey,
             issuerPublicKey = delegatePublicKey,
             version = version,
             revokedSerials = serials,
             revokedDeviceIds = deviceIds,
+            audience = audience,
+            revokedDeviceHashes = deviceHashes,
         )
 }
 
@@ -96,25 +98,32 @@ class SqliteRevocationService(
     private class Snapshot(
         val serials: Set<Long>,
         val deviceIds: Set<String>,
+        /** Hashes of device ids this hub never saw (they came from an offline root list, ADR-129): checked by hashing the presented id. */
+        val deviceHashes: Set<String>,
         val delegationSerials: Set<Long>,
         val list: RevocationList?,
         val unpublished: Boolean,
     )
 
     @Volatile
-    private var snapshot: Snapshot = Snapshot(emptySet(), emptySet(), emptySet(), null, false)
+    private var snapshot: Snapshot = Snapshot(emptySet(), emptySet(), emptySet(), emptySet(), null, false)
+
+    /** The audience every list of this organisation is issued for (ADR-129). */
+    private val audience: String = RevocationList.audienceOf(rootPublicKey)
 
     private val handlers = CopyOnWriteArrayList<suspend (String, Long?, String) -> Unit>()
 
     init {
         reload()
+        republishPlainList()
     }
 
     // ------------------------------------------------------------------------------------------------ RevocationService
 
     override fun isRevoked(serial: Long?, deviceId: String): Boolean {
         val s = snapshot
-        return deviceId in s.deviceIds || (serial != null && serial in s.serials)
+        if (deviceId in s.deviceIds || (serial != null && serial in s.serials)) return true
+        return s.deviceHashes.isNotEmpty() && RevocationList.deviceHash(audience, deviceId) in s.deviceHashes
     }
 
     override fun current(): RevocationList? = snapshot.list
@@ -132,7 +141,7 @@ class SqliteRevocationService(
         return RevocationStatus(
             listVersion = s.list?.version ?: 0L,
             revokedSerials = s.serials.size,
-            revokedDeviceIds = s.deviceIds.size,
+            revokedDeviceIds = s.deviceIds.size + s.deviceHashes.size,
             revokedDelegationSerials = s.delegationSerials.size,
             unpublishedChanges = s.unpublished,
             canSign = signer?.canSign() == true && s.delegationSerials.isEmpty(),
@@ -234,6 +243,7 @@ class SqliteRevocationService(
         if (list.issuerPublicKey != rootPublicKey || !list.verifySignature()) return false
         val now = clock()
         val fallenDevices = LinkedHashSet<String>()
+        val revokedByList = LinkedHashSet<String>()
         val installed = db.immediate { conn ->
             val top = conn.queryOne("SELECT MAX(version) FROM hub_revocation_lists") { it.getLong(1) } ?: 0L
             if (list.version <= top) return@immediate false
@@ -241,10 +251,23 @@ class SqliteRevocationService(
                 "INSERT INTO hub_revocation_lists(version, body, signer, created_at) VALUES(?,?,?,?)",
                 list.version, HubRestCodec.encode(list), "root", now,
             )
+            // A hashed list (ADR-129) names no ids: the ones this hub knows are found by hashing its own registry; a hash it cannot match is
+            // kept as such and still blocks that id the moment it presents itself (isRevoked hashes the presented id).
+            val named: Set<String> = if (list.isHashed) {
+                conn.query("SELECT device_id FROM hub_devices") { it.getString(1) }
+                    .filter { RevocationList.deviceHash(list.audience, it) in list.revokedDeviceHashes }.toSet()
+            } else {
+                list.revokedDeviceIds
+            }
+            revokedByList += named
             for (s in list.revokedSerials) insert(conn, "SERIAL", s.toString(), "root list", now, "root")
-            for (d in list.revokedDeviceIds) insert(conn, "DEVICE", d, "root list", now, "root")
+            for (d in named) insert(conn, "DEVICE", d, "root list", now, "root")
+            if (list.isHashed) {
+                val matched = named.map { RevocationList.deviceHash(list.audience, it) }.toSet()
+                for (h in list.revokedDeviceHashes - matched) insert(conn, "DEVICE_HASH", h, "root list", now, "root")
+            }
             for (d in list.revokedDelegationSerials) insert(conn, "DELEGATION", d.toString(), "root list", now, "root")
-            for (d in list.revokedDeviceIds) {
+            for (d in named) {
                 conn.update("UPDATE hub_devices SET status = 'REVOKED', status_changed_at = ? WHERE device_id = ? AND status <> 'REVOKED'", now, d)
             }
             // REV-04: a revoked delegation takes every certificate issued under it with it, at once and everywhere (handshake, bearer,
@@ -263,10 +286,27 @@ class SqliteRevocationService(
         }
         if (installed) {
             reload()
-            for (deviceId in list.revokedDeviceIds) fire(deviceId, null, "root list")
+            for (deviceId in revokedByList) fire(deviceId, null, "root list")
             for (deviceId in fallenDevices) fire(deviceId, null, "delegation revoked")
         }
         return installed
+    }
+
+    /**
+     * ADR-129 migration: a list published before the hashed format names device ids in the clear and is still what the public
+     * endpoint serves. When this hub can sign, replace it with a hashed list of the same content (a strictly higher version) at
+     * startup. A hub that cannot sign keeps serving the old list until an administrator revokes something or installs a root list.
+     */
+    private fun republishPlainList() {
+        val current = snapshot.list ?: return
+        if (current.isHashed || current.revokedDeviceIds.isEmpty()) return
+        val published = db.immediate { conn -> publish(conn, clock()) }
+        if (published != null) {
+            reload()
+            log.info("Revocation list republished in the hashed format (version {})", published)
+        } else {
+            log.warn("The published revocation list still names device ids in the clear and this hub cannot sign a hashed one (delegation lacks revoke:member, or a root list revokes a delegation)")
+        }
     }
 
     /** Re-reads the persisted state (startup, tests). */
@@ -284,11 +324,11 @@ class SqliteRevocationService(
 
     /** Builds and stores a new signed list when the delegate may sign one; returns its version or null. */
     private fun publish(conn: java.sql.Connection, now: Long): Long? {
-        val (serials, devices, delegations) = rows(conn)
+        val rows = rows(conn)
         val s = signer
-        if (s == null || !s.canSign() || delegations.isNotEmpty()) return null
+        if (s == null || !s.canSign() || rows.delegations.isNotEmpty()) return null
         val top = conn.queryOne("SELECT MAX(version) FROM hub_revocation_lists") { it.getLong(1) } ?: 0L
-        val list = s.sign(top + 1, serials, devices)
+        val list = s.sign(top + 1, rows.serials, rows.devices, audience, rows.deviceHashes)
         conn.update(
             "INSERT INTO hub_revocation_lists(version, body, signer, created_at) VALUES(?,?,?,?)",
             list.version, HubRestCodec.encode(list), "delegate", now,
@@ -296,31 +336,43 @@ class SqliteRevocationService(
         return list.version
     }
 
-    private fun rows(conn: java.sql.Connection): Triple<Set<Long>, Set<String>, Set<Long>> {
+    private class Rows(val serials: Set<Long>, val devices: Set<String>, val deviceHashes: Set<String>, val delegations: Set<Long>)
+
+    private fun rows(conn: java.sql.Connection): Rows {
         val serials = HashSet<Long>()
         val devices = HashSet<String>()
+        val hashes = HashSet<String>()
         val delegations = HashSet<Long>()
         conn.query("SELECT kind, subject FROM hub_revocations") { rs -> rs.getString(1) to rs.getString(2) }.forEach { (k, v) ->
             when (k) {
                 "SERIAL" -> serials += v.toLong()
                 "DEVICE" -> devices += v
+                "DEVICE_HASH" -> hashes += v
                 "DELEGATION" -> delegations += v.toLong()
             }
         }
-        return Triple(serials, devices, delegations)
+        return Rows(serials, devices, hashes, delegations)
     }
 
     private fun load(conn: java.sql.Connection): Snapshot {
-        val (serials, devices, delegations) = rows(conn)
+        val rows = rows(conn)
+        val serials = rows.serials
+        val devices = rows.devices
+        val delegations = rows.delegations
         val list = conn.queryOne("SELECT body FROM hub_revocation_lists ORDER BY version DESC LIMIT 1") {
             HubRestCodec.decodeOrNull<RevocationList>(it.getString(1), STORED_LIST_MAX_BYTES)
         }
         val unpublished = if (list == null) {
-            serials.isNotEmpty() || devices.isNotEmpty() || delegations.isNotEmpty()
+            serials.isNotEmpty() || devices.isNotEmpty() || rows.deviceHashes.isNotEmpty() || delegations.isNotEmpty()
         } else {
-            list.revokedSerials != serials || list.revokedDeviceIds != devices || list.revokedDelegationSerials != delegations
+            val sameDevices = if (list.isHashed) {
+                list.revokedDeviceHashes == devices.mapTo(HashSet()) { RevocationList.deviceHash(list.audience, it) } + rows.deviceHashes
+            } else {
+                list.revokedDeviceIds == devices && rows.deviceHashes.isEmpty()
+            }
+            list.revokedSerials != serials || !sameDevices || list.revokedDelegationSerials != delegations
         }
-        return Snapshot(serials, devices, delegations, list, unpublished)
+        return Snapshot(serials, devices, rows.deviceHashes, delegations, list, unpublished)
     }
 
     private fun finish(changed: Boolean, serials: Set<Long>, published: Long?): RevocationResult {

@@ -1,5 +1,6 @@
 package com.transfer.flash.server.mailbox
 
+import com.transfer.flash.server.auth.SecretBox
 import com.transfer.flash.server.observability.MailboxStats
 import com.transfer.flash.server.observability.RelayMetrics
 import com.transfer.flash.server.storage.ServerDatabase
@@ -35,6 +36,8 @@ class MailboxQueue(
     private val clock: () -> Long = System::currentTimeMillis,
     private val registry: DeviceRegistry = DeviceRegistry.AcceptAll,
     private val metrics: RelayMetrics? = null,
+    /** The hub data key (ADR-130): payloads are stored sealed when it is active. [SecretBox.None] stores them as given (tests). */
+    private val secrets: SecretBox = SecretBox.None,
 ) : MailboxStore, MailboxStats {
 
     private val logger = LoggerFactory.getLogger(MailboxQueue::class.java)
@@ -44,6 +47,46 @@ class MailboxQueue(
 
     init {
         MailboxSchema.migrate(database, clock)
+        sealLegacyPayloads()
+    }
+
+    /** What a payload is bound to, so a sealed value cannot be moved to another row (length-prefixed: no ambiguous joins). */
+    private fun payloadContext(origin: String, target: String, msgId: String): String =
+        "mailbox_envelopes.payload|${origin.length}:$origin|${target.length}:$target|${msgId.length}:$msgId"
+
+    /**
+     * ADR-130: rows written before the data key was used for payloads are sealed in place at startup, in small transactions. Idempotent
+     * (it only touches `sealed = 0`); a hub without a data key leaves them alone.
+     */
+    private fun sealLegacyPayloads() {
+        if (!secrets.isActive) return
+        var total = 0
+        while (true) {
+            val batch = database.withTransaction { conn ->
+                val rows = conn.prepareStatement(
+                    "SELECT seq, origin_device_id, target_device_id, msg_id, payload FROM mailbox_envelopes WHERE sealed = 0 LIMIT 200",
+                ).use { st ->
+                    st.executeQuery().use { rs ->
+                        val out = ArrayList<Array<Any?>>()
+                        while (rs.next()) out.add(arrayOf(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getBytes(5)))
+                        out
+                    }
+                }
+                conn.prepareStatement("UPDATE mailbox_envelopes SET payload = ?, sealed = 1 WHERE seq = ?").use { up ->
+                    for (r in rows) {
+                        val plain = (r[4] as ByteArray?) ?: ByteArray(0)
+                        up.setBytes(1, secrets.sealBytes(plain, payloadContext(r[1] as String, r[2] as String, r[3] as String)))
+                        up.setLong(2, r[0] as Long)
+                        up.addBatch()
+                    }
+                    up.executeBatch()
+                }
+                rows.size
+            }
+            total += batch
+            if (batch < 200) break
+        }
+        if (total > 0) logger.info("Sealed {} queued message payload(s) that were stored in plain form (ADR-130)", total)
     }
 
     // ---- MailboxStore ----------------------------------------------------------------------------------------
@@ -123,8 +166,8 @@ class MailboxQueue(
         val inserted = conn.prepareStatement(
             """
             INSERT INTO mailbox_envelopes
-                (origin_device_id, target_device_id, msg_id, kind, payload, payload_bytes, group_id, sent_at, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (origin_device_id, target_device_id, msg_id, kind, payload, payload_bytes, group_id, sent_at, created_at, expires_at, sealed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(origin_device_id, msg_id, target_device_id) DO NOTHING
             """.trimIndent(),
         ).use { stmt ->
@@ -132,12 +175,13 @@ class MailboxQueue(
             stmt.setString(2, m.target)
             stmt.setString(3, m.msgId)
             stmt.setString(4, m.type)
-            stmt.setBytes(5, payload)
+            stmt.setBytes(5, if (secrets.isActive) secrets.sealBytes(payload, payloadContext(m.origin, m.target, m.msgId)) else payload)
             stmt.setLong(6, size)
             stmt.setString(7, m.group)
             stmt.setLong(8, sentAt)
             stmt.setLong(9, now)
             stmt.setLong(10, now + lifetime)
+            stmt.setInt(11, if (secrets.isActive) 1 else 0)
             stmt.executeUpdate()
         }
         if (inserted == 0) return EnqueueResult.DuplicateQueued(existingSeq(conn, m) ?: 0L)
@@ -177,7 +221,7 @@ class MailboxQueue(
         return database.io { conn ->
             conn.prepareStatement(
                 """
-                SELECT seq, origin_device_id, target_device_id, msg_id, kind, payload, sent_at, created_at, expires_at, group_id
+                SELECT seq, origin_device_id, target_device_id, msg_id, kind, payload, sent_at, created_at, expires_at, group_id, sealed
                 FROM mailbox_envelopes
                 WHERE target_device_id = ? AND seq > ? AND expires_at > ?
                 ORDER BY seq ASC
@@ -191,6 +235,18 @@ class MailboxQueue(
                 stmt.executeQuery().use { rs ->
                     val rows = ArrayList<QueuedMessage>()
                     while (rs.next()) {
+                        val raw = rs.getBytes(6) ?: ByteArray(0)
+                        val plain = if (rs.getInt(11) == 1) {
+                            try {
+                                secrets.openBytes(raw, payloadContext(rs.getString(2), rs.getString(3), rs.getString(4)))
+                            } catch (e: RuntimeException) {
+                                // Wrong or missing data key, or a tampered row: it cannot be delivered, and one bad row must not block the page.
+                                logger.error("Queued message seq={} cannot be opened ({}): skipped, not deleted", rs.getLong(1), e.javaClass.simpleName)
+                                continue
+                            }
+                        } else {
+                            raw
+                        }
                         rows.add(
                             QueuedMessage(
                                 seq = rs.getLong(1),
@@ -198,7 +254,7 @@ class MailboxQueue(
                                 target = rs.getString(3),
                                 msgId = rs.getString(4),
                                 type = rs.getString(5),
-                                payload = String(rs.getBytes(6) ?: ByteArray(0), Charsets.UTF_8),
+                                payload = String(plain, Charsets.UTF_8),
                                 sentAt = rs.getLong(7),
                                 createdAt = rs.getLong(8),
                                 expiresAt = rs.getLong(9),

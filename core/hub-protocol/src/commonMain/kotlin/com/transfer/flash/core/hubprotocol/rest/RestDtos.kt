@@ -253,6 +253,28 @@ public data class HealthLite(
     public val status: String = "ok",
 )
 
+/**
+ * One confirmation waiting for the administrator's phone (ADR-131, FO-14). The phone signs
+ * `HubStepUp.approvalBytes(challengeId, action, admin, target, nonce)` and shows [action], [target] and [code] first.
+ */
+@FlashInternalApi
+@Serializable
+public data class ApprovalDto(
+    public val challengeId: String,
+    public val action: String,
+    public val admin: String,
+    public val target: String,
+    public val nonce: String,
+    /** The six digits the console shows too ([HubStepUp.approvalCode]). */
+    public val code: String,
+    public val expiresAtMs: Long,
+)
+
+/** `POST /api/v1/approvals/{challengeId}`: the phone's signature, Base64 (DER or IEEE P1363) over the approval bytes. */
+@FlashInternalApi
+@Serializable
+public data class ApprovalSubmitBody(public val signature: String)
+
 /** The string values the directory DTOs carry. Strings (not enums) so a newer hub's new value does not break an older client. */
 @FlashInternalApi
 public object HubDirectoryValues {

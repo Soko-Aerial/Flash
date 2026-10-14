@@ -208,6 +208,12 @@ class KeyTool(
         val lastIssued = rootKeyFile.toAbsolutePath().parent.resolve(SERIAL_FILE).let { f ->
             if (Files.exists(f)) Files.readString(f).trim().toLongOrNull() else null
         }
+        // ADR-129: the list is issued in the hashed format. A plain (v2) base contributes its ids, a hashed one its hashes: the ids
+        // named now are hashed for this organisation's audience, so nothing readable ends up in the public list.
+        val audience = RevocationList.audienceOf(rootPub)
+        if (base != null && base.isHashed && base.audience != audience) {
+            throw KeyToolException("The base list is for another organisation (audience ${base.audience.take(12)}...).")
+        }
         val list = RevocationList.issue(
             issuerPrivateKey = root.private,
             issuerPublicKey = rootPub,
@@ -215,13 +221,15 @@ class KeyTool(
             revokedSerials = (base?.revokedSerials ?: emptySet()) + deviceSerials,
             revokedDeviceIds = (base?.revokedDeviceIds ?: emptySet()) + deviceIds,
             revokedDelegationSerials = (base?.revokedDelegationSerials ?: emptySet()) + delegationSerials,
+            audience = audience,
+            revokedDeviceHashes = base?.revokedDeviceHashes ?: emptySet(),
         )
         Files.createDirectories(outFile.toAbsolutePath().parent)
         Files.write(outFile, HubRestCodec.encode(list).encodeToByteArray())
         out.println("Revocation list signed: ${outFile.toAbsolutePath()}")
         out.println("  version               : ${list.version}")
         out.println("  revoked delegations   : ${list.revokedDelegationSerials.sorted().joinToString(", ").ifEmpty { "-" }}")
-        out.println("  revoked device serials: ${list.revokedSerials.size}, device ids: ${list.revokedDeviceIds.size}")
+        out.println("  revoked device serials: ${list.revokedSerials.size}, devices (hashed): ${list.revokedDeviceHashes.size}")
         if (base == null) {
             out.println("  WARNING: no --base list given. This list replaces the one devices hold: any device already revoked by the hub is NOT")
             out.println("           in it. Re-run with --base <the body of GET /api/v1/revocations> unless the hub has revoked nothing yet.")

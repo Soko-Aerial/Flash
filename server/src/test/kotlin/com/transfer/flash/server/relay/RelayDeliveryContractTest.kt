@@ -147,6 +147,8 @@ class RelayDeliveryContractTest {
         assertEquals(RelaySessionState.CONNECTED, bob2.transport.state.value)
         alice.send(text("after-race", "bob"))
         awaitUntil("bob2 receives") { bob2.all<RelayFrame.Deliver>().any { it.id == "after-race" } }
+        // The hub hands the message to bob2 and answers alice on separate writes: wait for the ack instead of assuming it already arrived.
+        awaitUntil("alice is acknowledged") { alice.all<RelayFrame.Ack>().any { it.id == "after-race" } }
         assertEquals(AckStatus.DELIVERED, alice.all<RelayFrame.Ack>().first { it.id == "after-race" }.status)
     }
 

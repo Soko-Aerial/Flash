@@ -24,7 +24,25 @@ object StepUpActions {
     const val REVOCATION_INSTALL = "revocation.install"
     const val RECOVERY_REGENERATE = "recovery.regenerate"
 
-    val ALL: Set<String> = setOf(REVOKE_DEVICE, UNREVOKE_DEVICE, DELEGATION_INSTALL, DELEGATION_RELOAD, ADMIN_CREATE, ADMIN_DISABLE, SETTINGS_CHANGE, REVOCATION_INSTALL, RECOVERY_REGENERATE)
+    /** Replacing the browser key / bound device of the signer (REV-11). With an approver phone bound this needs the phone, not the browser key. */
+    const val SIGNER_REPLACE = "admin.signer.replace"
+
+    /** Binding or replacing the approver phone itself (ADR-131). */
+    const val APPROVER_CHANGE = "approver.change"
+
+    val ALL: Set<String> = setOf(
+        REVOKE_DEVICE, UNREVOKE_DEVICE, DELEGATION_INSTALL, DELEGATION_RELOAD, ADMIN_CREATE, ADMIN_DISABLE, SETTINGS_CHANGE,
+        REVOCATION_INSTALL, RECOVERY_REGENERATE, SIGNER_REPLACE, APPROVER_CHANGE,
+    )
+
+    /**
+     * The actions an administrator with an approver phone bound must ALSO have approved on that phone (ADR-131, FO-14, option C of
+     * ADR-127 P-2): a stolen browser key plus a stolen session can no longer take over the hub. Everyday actions stay browser-only.
+     */
+    val PHONE_APPROVED: Set<String> = setOf(DELEGATION_INSTALL, ADMIN_CREATE, SIGNER_REPLACE, APPROVER_CHANGE)
+
+    /** Actions where the browser key is NOT asked: its loss is exactly why the signer is being replaced. */
+    val WITHOUT_BROWSER_KEY: Set<String> = setOf(SIGNER_REPLACE)
 }
 
 /** One outstanding step-up challenge; [proofBytes] is exactly what the administrator's device signs. */
@@ -38,10 +56,20 @@ class StepUpChallenge(
     val createdAtMs: Long,
     val expiresAtMs: Long,
     @Volatile var verified: Boolean = false,
+    /** The phone that must approve as well (ADR-131), or null when this challenge needs only the browser key. */
+    val approverDeviceId: String? = null,
+    @Volatile var approved: Boolean = false,
 ) {
     fun isExpired(nowMs: Long = System.currentTimeMillis()): Boolean = nowMs >= expiresAtMs
 
+    val approvalRequired: Boolean get() = approverDeviceId != null
+
+    /** Six digits both the console and the phone show. */
+    val approvalCode: String get() = HubStepUp.approvalCode(challengeId, nonce)
+
     fun proofBytes(): ByteArray = HubStepUp.proofBytes(challengeId, action, adminUsername, target, nonce)
+
+    fun approvalBytes(): ByteArray = HubStepUp.approvalBytes(challengeId, action, adminUsername, target, nonce)
 }
 
 /**
@@ -86,8 +114,24 @@ class StepUpAuth(
      */
     fun createChallenge(adminUsername: String, action: String, target: String): Created {
         if (action !in StepUpActions.ALL) return Created.Refused("ERR_BAD_ACTION", "Unknown action")
-        val signer = resolveSigner(adminUsername)
-            ?: return Created.Refused("ERR_NO_DEVICE", "This administrator has no enrolled admin device to confirm with")
+        val needsBrowserKey = action !in StepUpActions.WITHOUT_BROWSER_KEY
+        val approverId = admins.approverOf(adminUsername)
+        // ADR-131: with a phone bound the dangerous actions need it. If that phone can no longer sign (revoked, disabled), refuse rather
+        // than fall back to the browser key alone: that fallback is the very hole the phone closes. A recovery code unbinds it.
+        val approver = if (approverId != null && action in StepUpActions.PHONE_APPROVED) {
+            resolveApprover(approverId)
+                ?: return Created.Refused("ERR_APPROVER_UNAVAILABLE", "The phone that approves this action is no longer available. Remove it with a recovery code.")
+        } else {
+            null
+        }
+        if (!needsBrowserKey && approver == null) {
+            return Created.Refused("ERR_NO_APPROVER", "This action needs the administrator's approver phone, and none is bound")
+        }
+        val signer = if (needsBrowserKey) {
+            resolveSigner(adminUsername) ?: return Created.Refused("ERR_NO_DEVICE", "This administrator has no enrolled admin device to confirm with")
+        } else {
+            Signer(approver!!.id, approver.spki)
+        }
         val now = clock()
         evict(now)
         if (challenges.values.count { it.adminUsername == adminUsername } >= MAX_PER_ADMIN) {
@@ -103,6 +147,9 @@ class StepUpAuth(
             nonce = ByteArray(32).also(secureRandom::nextBytes).toHex(),
             createdAtMs = now,
             expiresAtMs = now + ttlMs,
+            // A challenge that does not use the browser key is verified by the phone alone: nothing else will ever sign it.
+            verified = !needsBrowserKey,
+            approverDeviceId = approver?.id,
         )
         challenges[challenge.challengeId] = challenge
         return Created.Ok(challenge)
@@ -137,6 +184,31 @@ class StepUpAuth(
         return ok
     }
 
+    /**
+     * The approver phone's answer (ADR-131). Checked against the key the SERVER holds for the device bound to this challenge, over the
+     * approval bytes (their own domain, so a browser proof is not an approval). Accepts once; a wrong signature changes nothing.
+     */
+    fun approve(challengeId: String, deviceId: String, signature: ByteArray): Boolean {
+        val challenge = getChallenge(challengeId) ?: return false
+        if (challenge.approverDeviceId == null || challenge.approverDeviceId != deviceId || challenge.approved) return false
+        // The administrator must still be bound to this phone, and the phone must still be able to sign.
+        if (admins.approverOf(challenge.adminUsername) != deviceId) return false
+        val approver = resolveApprover(deviceId) ?: return false
+        val ok = try {
+            ConsoleKeys.verify(Base64.getDecoder().decode(approver.spki), challenge.approvalBytes(), signature, verifier)
+        } catch (_: Exception) {
+            false
+        }
+        if (ok) challenge.approved = true
+        return ok
+    }
+
+    /** The confirmations waiting for [deviceId] to approve (it is the challenge's approver, the challenge is open and not yet approved). */
+    fun pendingApprovals(deviceId: String): List<StepUpChallenge> {
+        evict(clock())
+        return challenges.values.filter { it.approverDeviceId == deviceId && !it.approved }.sortedBy { it.createdAtMs }
+    }
+
     fun verifyBase64(challengeId: String, signatureBase64: String): Boolean = try {
         verify(challengeId, Base64.getDecoder().decode(signatureBase64))
     } catch (_: IllegalArgumentException) {
@@ -151,6 +223,7 @@ class StepUpAuth(
         val challenge = challenges.remove(challengeId) ?: return false
         if (challenge.isExpired(clock())) return false
         return challenge.verified &&
+            (!challenge.approvalRequired || challenge.approved) &&
             challenge.adminUsername == adminUsername &&
             challenge.action == action &&
             challenge.target == target.take(256)
@@ -163,6 +236,14 @@ class StepUpAuth(
 
     private fun evict(now: Long) {
         challenges.entries.removeIf { it.value.isExpired(now) }
+    }
+
+    /** An approver phone: an ACTIVE, not revoked, admin-role device of this hub (ADR-131). Resolved server-side from the registry. */
+    private fun resolveApprover(deviceId: String): Signer? {
+        val device = identities.device(deviceId) ?: return null
+        if (device.status != DeviceStatus.ACTIVE || device.role != DeviceCert.ROLE_ADMIN) return null
+        if (revocations.isRevoked(device.serial, device.deviceId)) return null
+        return Signer(device.deviceId, device.subjectPublicKey)
     }
 
     /** The key that may sign for an administrator: its id (device id or console key id) and the base64 SPKI. */

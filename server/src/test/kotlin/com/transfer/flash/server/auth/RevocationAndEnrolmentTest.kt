@@ -144,7 +144,14 @@ class RevocationAndEnrolmentTest {
         assertEquals(r1.publishedVersion, v1.version)
         assertEquals(r2.publishedVersion, v2.version)
         assertTrue(v2.verifySignature(), "the list is signed by the hub's delegate key")
-        assertEquals(setOf("dev-a", "dev-b"), v2.revokedDeviceIds)
+        // ADR-129: the public list names no device id, only the hashes for this organisation.
+        assertTrue(v2.isHashed)
+        assertTrue(v2.revokedDeviceIds.isEmpty())
+        assertEquals(
+            setOf("dev-a", "dev-b").map { RevocationList.deviceHash(v2.audience, it) }.toSet(),
+            v2.revokedDeviceHashes,
+        )
+        assertTrue(v2.revokesDevice("dev-a") && v2.revokesDevice("dev-b") && !v2.revokesDevice("dev-c"))
         assertTrue(hub.revocations.listAt(v1.version)?.verifySignature() == true, "older versions stay retrievable")
         assertEquals(v2.version, hub.restart().revocations.current()?.version, "the version survives a restart")
     }
@@ -248,7 +255,8 @@ class RevocationAndEnrolmentTest {
         val hub = Hub()
         hub.enrol("dev-a").getOrThrow()
         hub.revocations.revokeDevice("dev-a", "lost", "boss")
-        val baseList = hub.revocations.current()!!
+        // An OLD plain (v2) list is the base here: its ids are carried over and hashed for the tool's organisation (ADR-129).
+        val baseList = RevocationList.issue(root.private, root.toBase64Spki(), 1L, emptySet(), setOf("dev-a"))
 
         val rootDir = Files.createTempDirectory(dir.toPath(), "root")
         val tool = com.transfer.flash.server.KeyTool(out = java.io.PrintStream(java.io.ByteArrayOutputStream()), kdfIterations = 1000)
@@ -259,13 +267,72 @@ class RevocationAndEnrolmentTest {
         val result = tool.revoke(rootDir.resolve("root-identity.pk8"), delegationSerials = setOf(1L), baseFile = baseFile, outFile = out)
 
         assertEquals(baseList.version + 1, result.list.version)
-        assertTrue(baseList.revokedDeviceIds.all { it in result.list.revokedDeviceIds }, "the earlier revocations are carried over")
+        assertTrue(result.list.isHashed)
+        assertTrue(result.list.revokedDeviceIds.isEmpty(), "the signed list names no device id")
+        assertTrue(result.list.revokesDevice("dev-a"), "the earlier revocations are carried over, now hashed")
         assertTrue(1L in result.list.revokedDelegationSerials)
         // Signed by the tool's root: it verifies against that root's public key, and a hub pinned to ANOTHER root refuses it.
         assertEquals(Files.readString(rootDir.resolve("root-identity.pub")).trim(), result.list.issuerPublicKey)
         assertTrue(result.list.verifySignature())
         assertTrue(Files.exists(out))
         assertFalse(hub.revocations.installRootSigned(result.list))
+    }
+
+    @Test
+    fun theKeytoolRefusesABaseListOfAnotherOrganisation() {
+        val rootDir = Files.createTempDirectory(dir.toPath(), "root3")
+        val tool = com.transfer.flash.server.KeyTool(out = java.io.PrintStream(java.io.ByteArrayOutputStream()), kdfIterations = 1000)
+        tool.initRoot(rootDir, encrypt = false)
+        val foreign = RevocationList.issue(
+            root.private, root.toBase64Spki(), 1L, emptySet(), setOf("dev-a"),
+            audience = RevocationList.audienceOf(root.toBase64Spki()),
+        )
+        val baseFile = rootDir.resolve("base.json")
+        Files.writeString(baseFile, com.transfer.flash.core.hubprotocol.rest.HubRestCodec.encode(foreign))
+        assertFailsWith<com.transfer.flash.server.KeyToolException> {
+            tool.revoke(rootDir.resolve("root-identity.pk8"), delegationSerials = setOf(1L), baseFile = baseFile, outFile = rootDir.resolve("out"))
+        }
+    }
+
+    @Test
+    fun aHashedRootListIsInstalledByMatchingTheHubsOwnDevicesAndKeepsUnknownHashes() {
+        val hub = Hub()
+        hub.enrol("dev-a").getOrThrow()
+        val audience = RevocationList.audienceOf(root.toBase64Spki())
+        val list = RevocationList.issue(
+            root.private, root.toBase64Spki(), 10L, emptySet(), setOf("dev-a", "dev-never-seen"), audience = audience,
+        )
+        assertTrue(hub.revocations.installRootSigned(list))
+        assertTrue(hub.revocations.isRevoked(null, "dev-a"), "a device this hub knows is revoked by id")
+        assertTrue(hub.revocations.isRevoked(null, "dev-never-seen"), "an id the hub has never seen is still blocked by its hash")
+        assertFalse(hub.revocations.isRevoked(null, "dev-other"))
+        assertEquals(2, hub.revocations.status().revokedDeviceIds)
+        assertEquals(list.version, hub.restart().revocations.current()?.version, "and it survives a restart")
+        assertTrue(hub.restart().revocations.isRevoked(null, "dev-never-seen"))
+    }
+
+    @Test
+    fun aHubWithAnOldPlainListRepublishesItHashedAtStartup() {
+        val hub = Hub()
+        hub.enrol("dev-a").getOrThrow()
+        hub.revocations.revokeDevice("dev-a", "lost", "boss")
+        // Replace the stored list by a plain v2 list of the same content, as a hub from before ADR-129 would have published.
+        val plain = RevocationList.issue(delegate.private, delegate.toBase64Spki(), 99L, emptySet(), setOf("dev-a"))
+        hub.db.withConnection { conn ->
+            conn.prepareStatement("INSERT INTO hub_revocation_lists(version, body, signer, created_at) VALUES(?,?,?,?)").use { st ->
+                st.setLong(1, 99L)
+                st.setString(2, com.transfer.flash.core.hubprotocol.rest.HubRestCodec.encode(plain))
+                st.setString(3, "delegate")
+                st.setLong(4, now)
+                st.executeUpdate()
+            }
+        }
+        val restarted = hub.restart()
+        val current = assertNotNull(restarted.revocations.current())
+        assertTrue(current.isHashed, "the plain list is replaced")
+        assertTrue(current.version > 99L)
+        assertTrue(current.revokedDeviceIds.isEmpty())
+        assertTrue(current.revokesDevice("dev-a"))
     }
 
     @Test

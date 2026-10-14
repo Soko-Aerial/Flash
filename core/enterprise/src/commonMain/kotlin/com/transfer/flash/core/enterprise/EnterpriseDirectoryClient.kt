@@ -7,6 +7,8 @@ import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.hubprotocol.HubContract
+import com.transfer.flash.core.hubprotocol.rest.ApprovalDto
+import com.transfer.flash.core.hubprotocol.rest.ApprovalSubmitBody
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
 import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
@@ -84,6 +86,21 @@ public enum class SealingPublishResult {
     /** Any other answer (5xx). */
     SERVER_ERROR,
 }
+
+/**
+ * A dangerous console action waiting for THIS device (the administrator's approver phone) to approve (ADR-131, FO-14).
+ * [code] is the six digits the console shows too: the person compares them before approving.
+ */
+@FlashInternalApi
+public data class EnterpriseApproval(
+    public val challengeId: String,
+    public val action: String,
+    public val admin: String,
+    public val target: String,
+    public val nonce: String,
+    public val code: String,
+    public val expiresAtMs: Long,
+)
 
 /** The two sealing-key calls the key manager needs, so its state machine is tested with a fake hub. */
 @FlashInternalApi
@@ -203,7 +220,13 @@ public class EnterpriseDirectoryClient(
                 ?: FlashResult.Failure(FlashError.Unknown("The hub sent an answer this app does not understand."))
         }
 
-    private suspend fun <T> hubPost(hubUrl: String, path: String, body: String, parse: (String) -> T?): FlashResult<T> =
+    private suspend fun <T> hubPost(
+        hubUrl: String,
+        path: String,
+        body: String,
+        refusalMayCarryBody: Boolean = true,
+        parse: (String) -> T?,
+    ): FlashResult<T> =
         withContext(ioDispatcher) {
             val reply = when (
                 val r = execute(hubUrl) { base, bearer ->
@@ -220,11 +243,27 @@ public class EnterpriseDirectoryClient(
             val status = reply.response.status
             if (status != HttpStatusCode.OK && status != HttpStatusCode.Created && status != HttpStatusCode.Accepted) {
                 // A refusal can still carry a JoinResponse (REJECTED + reason): hand it to the parser first.
+                if (!refusalMayCarryBody) return@withContext friendlyHttpFailure(status)
                 return@withContext runCatching { parse(reply.body) }.getOrNull()?.let { FlashResult.Success(it) } ?: friendlyHttpFailure(status)
             }
             runCatching { parse(reply.body) }.getOrNull()?.let { FlashResult.Success(it) }
                 ?: FlashResult.Failure(FlashError.Unknown("The hub sent an answer this app does not understand."))
         }
+
+    /** The console actions waiting for this device to approve (`GET /api/v1/approvals`). Empty for any device that is nobody's approver. */
+    public suspend fun fetchApprovals(hubUrl: String): FlashResult<List<EnterpriseApproval>> =
+        hubGet(hubUrl, HubContract.PATH_APPROVALS) { body ->
+            HubRestCodec.decodeList<ApprovalDto>(body).map {
+                EnterpriseApproval(it.challengeId, it.action, it.admin, it.target, it.nonce, it.code, it.expiresAtMs)
+            }
+        }
+
+    /**
+     * Sends this device's signature for one approval (`POST /api/v1/approvals/{id}`). [signature] comes from
+     * `HubClientAuth.signApproval`. A refusal (expired, already answered, not this device's) is a 403 failure sentence.
+     */
+    public suspend fun submitApproval(hubUrl: String, challengeId: String, signature: String): FlashResult<Unit> =
+        hubPost(hubUrl, "${HubContract.PATH_APPROVALS}/$challengeId", HubRestCodec.encode(ApprovalSubmitBody(signature = signature)), refusalMayCarryBody = false) { Unit }
 
     override suspend fun fetchVisibleGroups(hubUrl: String, deviceId: String, department: String?): FlashResult<List<EnterpriseDirectoryGroup>> =
         hubGet(hubUrl, HubContract.PATH_DIRECTORY_GROUPS, mapOf("department" to department)) { body ->

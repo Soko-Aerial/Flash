@@ -27,6 +27,7 @@ GET /admin/api/v1/session
 GET /admin/api/v1/sessions
 GET /admin/api/v1/settings
 GET /admin/api/v1/setup/status
+GET /admin/api/v1/stepup/{id}
 GET /admin/audit
 GET /admin/dashboard
 GET /admin/departments
@@ -35,6 +36,7 @@ GET /admin/invites
 GET /admin/login
 GET /admin/setup
 GET /admin/ui/{...}
+GET /api/v1/approvals
 GET /api/v1/auth/challenge
 GET /api/v1/directory/departments
 GET /api/v1/directory/groups
@@ -50,6 +52,8 @@ GET /health
 GET /health/detail
 GET /metrics
 POST /admin/api/v1/admins
+POST /admin/api/v1/admins/me/approver
+POST /admin/api/v1/admins/me/approver/remove
 POST /admin/api/v1/admins/me/console-key
 POST /admin/api/v1/admins/me/device
 POST /admin/api/v1/admins/me/password
@@ -79,6 +83,7 @@ POST /admin/api/v1/setup/begin
 POST /admin/api/v1/setup/complete
 POST /admin/api/v1/stepup/challenge
 POST /admin/api/v1/stepup/verify
+POST /api/v1/approvals/{id}
 POST /api/v1/auth/challenge
 POST /api/v1/auth/verify
 POST /api/v1/departments

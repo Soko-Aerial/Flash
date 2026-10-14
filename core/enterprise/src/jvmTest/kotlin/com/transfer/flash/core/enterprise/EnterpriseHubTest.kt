@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.enterprise
 
+import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.hubprotocol.HubContract
@@ -171,6 +172,38 @@ class EnterpriseHubTest {
         assertEquals(HubLinkState.REVOKED, r.hub.status.value.state)
         r.hub.shutdown()
         assertEquals(setOf("g-1"), r.store.previousHubLinks.value?.groupIds)
+    }
+
+    @Test
+    fun theClientsServerIdIsTheAudienceOfTheHashedList() = hubTest {
+        val r = newRig(this)
+        assertEquals(r.org.fingerprint, RevocationList.audienceOf(r.org.rootKey), "two independent implementations must agree on the audience")
+    }
+
+    @Test
+    fun aHashedListFindsThisDevicesHashAndWipesTheCredentials() = hubTest {
+        val r = newRig(this)
+        r.enrolled()
+        r.fake.on("GET", HubContract.PATH_REVOCATIONS) { HttpStatusCode.OK to HubRestCodec.encode(r.org.hashedRevocations(ids = setOf("dev-1"))) }
+
+        assertTrue(r.hub.confirmRevocation())
+        assertNull(r.store.credentials.value)
+    }
+
+    @Test
+    fun aHashedListThatDoesNotHoldThisDevicesHashOrBelongsToAnotherOrganisationWipesNothing() = hubTest {
+        val r = newRig(this)
+        r.enrolled()
+        r.fake.on("GET", HubContract.PATH_REVOCATIONS) { HttpStatusCode.OK to HubRestCodec.encode(r.org.hashedRevocations(ids = setOf("somebody-else"))) }
+        assertFalse(r.hub.confirmRevocation(), "the hash of another device")
+        assertNotNull(r.store.credentials.value)
+
+        // Signed by our root but issued for another audience: replayed from another hub, so it is not trusted.
+        r.fake.on("GET", HubContract.PATH_REVOCATIONS) {
+            HttpStatusCode.OK to HubRestCodec.encode(r.org.hashedRevocations(ids = setOf("dev-1"), audience = "ANOTHER-ORGANISATION"))
+        }
+        assertFalse(r.hub.confirmRevocation(), "wrong audience")
+        assertNotNull(r.store.credentials.value)
     }
 
     @Test

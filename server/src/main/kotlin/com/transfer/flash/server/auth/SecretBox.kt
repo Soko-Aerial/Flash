@@ -53,6 +53,34 @@ class SecretBox private constructor(private val key: SecretKeySpec?, private val
 
     fun isSealed(stored: String): Boolean = stored.startsWith(PREFIX)
 
+    /**
+     * Binary form of [seal] for blob columns (the mailbox payloads, ADR-130): `nonce || ciphertext+tag`, [context] as associated data.
+     * There is no prefix to recognise it by (a payload is arbitrary bytes), so the caller keeps its own "this row is sealed" marker.
+     * With no key the bytes come back unchanged, like [seal].
+     */
+    fun sealBytes(plain: ByteArray, context: String): ByteArray {
+        val k = key ?: return plain
+        val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, k, GCMParameterSpec(TAG_BITS, nonce))
+        cipher.updateAAD(context.toByteArray(Charsets.UTF_8))
+        return nonce + cipher.doFinal(plain)
+    }
+
+    /** The plain bytes of a [sealBytes] result. Throws [SecurityException] when there is no key or the value does not authenticate. */
+    fun openBytes(sealed: ByteArray, context: String): ByteArray {
+        val k = key ?: throw SecurityException("a sealed value is in the database but no data key is configured")
+        require(sealed.size > NONCE_BYTES) { "sealed value too short" }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, k, GCMParameterSpec(TAG_BITS, sealed.copyOfRange(0, NONCE_BYTES)))
+        cipher.updateAAD(context.toByteArray(Charsets.UTF_8))
+        return try {
+            cipher.doFinal(sealed, NONCE_BYTES, sealed.size - NONCE_BYTES)
+        } catch (e: javax.crypto.AEADBadTagException) {
+            throw SecurityException("a sealed value does not authenticate: wrong data key or tampered database", e)
+        }
+    }
+
     companion object {
         const val PREFIX = "enc1:"
         private const val NONCE_BYTES = 12

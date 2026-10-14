@@ -3,6 +3,8 @@
 package com.transfer.flash.core.enterprise
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.result.FlashError
+import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
@@ -12,6 +14,7 @@ import com.transfer.flash.core.enterprise.relay.RelayIdentity
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
+import com.transfer.flash.core.security.enterprise.HubClientAuth
 import com.transfer.flash.core.security.enterprise.HubSealingKeyStore
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineDispatcher
@@ -366,6 +369,27 @@ public class EnterpriseHub(
         session.invalidate()
         peers.invalidate()
         return cleared.isSuccess
+    }
+
+    /**
+     * The dangerous console actions waiting for THIS device to approve (ADR-131, FO-14). Empty (success) for a device that is
+     * nobody's approver phone; a failure sentence when not enrolled or the hub is unreachable or too old.
+     */
+    public suspend fun pendingApprovals(): FlashResult<List<EnterpriseApproval>> {
+        val creds = trustStore.credentials.value
+            ?: return FlashResult.Failure(FlashError.Unknown("This device is not enrolled in an organisation."))
+        return directory.fetchApprovals(creds.hubUrl)
+    }
+
+    /**
+     * Approves [approval] with this device's identity key. The signed bytes are rebuilt from the fields the hub listed, so
+     * what the person saw on the screen is what was signed. The person has compared [EnterpriseApproval.code] with the console first.
+     */
+    public suspend fun approve(approval: EnterpriseApproval): FlashResult<Unit> {
+        val creds = trustStore.credentials.value
+            ?: return FlashResult.Failure(FlashError.Unknown("This device is not enrolled in an organisation."))
+        val signature = HubClientAuth.signApproval(crypto, approval.challengeId, approval.action, approval.admin, approval.target, approval.nonce)
+        return directory.submitApproval(creds.hubUrl, approval.challengeId, signature)
     }
 
     private fun computeStatus(): HubStatus {

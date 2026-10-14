@@ -18,6 +18,15 @@ import kotlinx.serialization.Serializable
  *
  * Wire/tag change: `flash-revocation-v2` adds [revokedDelegationSerials] to the signed bytes. The v1 tag was never
  * used by any shipped list (the hub never produced one: SEC-05), so there is no v1 list in the field to keep verifying.
+ *
+ * **Hashed device ids (`flash-revocation-v3`, ADR-129, FO-13).** `GET /api/v1/revocations` is public, so a list that names
+ * device ids in the clear tells anyone who can reach the hub which devices were removed. A list with a non-blank [audience]
+ * carries [revokedDeviceHashes] instead of [revokedDeviceIds]: each entry is [deviceHash] = lower-case hex
+ * `SHA-256(canonical("flash-revoked-device-v1", audience, deviceId))`. A device hashes its own id and looks for it
+ * ([isRevoked]); an outsider sees only hashes. [audience] is the organisation's server id (upper-case hex SHA-256 of the root
+ * public key, [audienceOf]) and is signed, so a list of another organisation never verifies as ours ([verifyTrusted]).
+ * A list with a blank [audience] is the plain v2 format and keeps verifying unchanged; a v2 list may not carry hashes and a
+ * v3 list may not carry plain ids ([verifySignature] refuses both).
  */
 @FlashInternalApi
 @Serializable
@@ -28,9 +37,26 @@ public data class RevocationList(
     public val revokedDelegationSerials: Set<Long> = emptySet(),
     public val issuerPublicKey: String,
     public val signature: String,
+    /** The organisation server id this list is for; non-blank selects the hashed v3 format. Empty: the plain v2 format. */
+    public val audience: String = "",
+    /** v3 only: [deviceHash] of every revoked device id (lower-case hex). */
+    public val revokedDeviceHashes: Set<String> = emptySet(),
 ) {
-    /** Canonical bytes (tag `flash-revocation-v2`). [signature] is NOT part of them. */
+    /** True for the hashed v3 format. */
+    public val isHashed: Boolean get() = audience.isNotBlank()
+
+    /** Canonical bytes (tag `flash-revocation-v2`, or `flash-revocation-v3` when [isHashed]). [signature] is NOT part of them. */
     public fun canonicalBytes(): ByteArray {
+        if (isHashed) {
+            return AuthCanonicalWriter(TAG_V3)
+                .long(version)
+                .longSet(revokedSerials)
+                .stringSet(revokedDeviceHashes)
+                .longSet(revokedDelegationSerials)
+                .text(audience)
+                .text(issuerPublicKey)
+                .build()
+        }
         return AuthCanonicalWriter(TAG)
             .long(version)
             .longSet(revokedSerials)
@@ -43,6 +69,9 @@ public data class RevocationList(
     /** True when [signature] verifies against [issuerPublicKey]. Says nothing about whether the issuer is trusted. */
     public fun verifySignature(verifier: EcdsaVerifier): Boolean {
         if (signature.isBlank() || issuerPublicKey.isBlank()) return false
+        // The two formats never mix: the unsigned half of a mixed list would be ignored by one reader and honoured by another.
+        if (isHashed && revokedDeviceIds.isNotEmpty()) return false
+        if (!isHashed && revokedDeviceHashes.isNotEmpty()) return false
         return try {
             verifier.verify(
                 publicKeySpki = Base64.decode(issuerPublicKey),
@@ -69,6 +98,7 @@ public data class RevocationList(
         clockSkewToleranceMs: Long = DeviceCert.DEFAULT_CLOCK_SKEW_MS,
     ): Boolean {
         if (!verifySignature(verifier)) return false
+        if (isHashed && audience != audienceOf(rootPublicKey)) return false
         if (issuerPublicKey == rootPublicKey) return true
         if (delegation == null) return false
         if (revokedDelegationSerials.isNotEmpty()) return false
@@ -84,7 +114,11 @@ public data class RevocationList(
 
     /** True when the certificate serial or the device id is revoked. */
     public fun isRevoked(certSerial: Long, deviceId: String): Boolean =
-        revokedSerials.contains(certSerial) || revokedDeviceIds.contains(deviceId)
+        revokedSerials.contains(certSerial) || revokesDevice(deviceId)
+
+    /** True when [deviceId] is revoked by id (plain list: the id is listed; hashed list: its [deviceHash] is). */
+    public fun revokesDevice(deviceId: String): Boolean =
+        if (isHashed) revokedDeviceHashes.contains(deviceHash(audience, deviceId)) else revokedDeviceIds.contains(deviceId)
 
     public fun isRevoked(cert: DeviceCert): Boolean = isRevoked(cert.serial, cert.deviceId)
 
@@ -92,5 +126,15 @@ public data class RevocationList(
 
     public companion object {
         public const val TAG: String = "flash-revocation-v2"
+        public const val TAG_V3: String = "flash-revocation-v3"
+        private const val DEVICE_HASH_DOMAIN: String = "flash-revoked-device-v1"
+
+        /** The revoked-device entry for [deviceId] in a list for [audience]: lower-case hex of a length-prefixed SHA-256 (no bare concatenation, SEC-14). */
+        public fun deviceHash(audience: String, deviceId: String): String =
+            Sha256.digest(AuthCanonicalWriter(DEVICE_HASH_DOMAIN).text(audience).text(deviceId).build()).toHubHex()
+
+        /** The audience of the organisation whose root key is [rootPublicKey] (Base64 SPKI): the server id, upper-case hex SHA-256 of the key bytes. */
+        public fun audienceOf(rootPublicKey: String): String =
+            Sha256.digest(Base64.decode(rootPublicKey)).toHubHex().uppercase()
     }
 }
