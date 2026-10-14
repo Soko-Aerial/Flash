@@ -130,6 +130,10 @@
 | 12 | Admin and support view | Covered | Server migration 2 and monotonic versioning documented; rate limiting returns 429 Retry-After. |
 
 
+### 2026-10-14 - Integration of the first parallel round into dev
+
+- Merged S1 (B2 remediation + B3), S2 (A2 + A1), S3 (Hub tab H0-H5) and the verifier report; fixed the committed `if (false)` reaction gate; adapted `AdminApiTest` to A1's self-disable guard. Gate details and the still-open B1 defects are in `logs/handoff.md`. Nothing device-verified; fragments not yet folded.
+
 ### 2026-10-14 — Parallel-agent protocol for Plan B / A1-A4 (documents and one tool, nothing built or run on product code)
 
 - **Worked on:** the owner wants up to three implementer agents at once. Checked every B phase and the A/H plans for blockers and wrote `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` (PROPOSED, three owner questions in its section 9).
