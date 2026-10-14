@@ -99,9 +99,11 @@ class HubRateLimits(
     val sealingKey: TokenBucketLimiter = TokenBucketLimiter(5, 1.0 / 30.0, clock = clock),
     /** Per authenticated device on `GET /api/v1/directory/sync`: burst 6, then 1 every 10 s (6/min). */
     val directorySync: TokenBucketLimiter = TokenBucketLimiter(6, 1.0 / 10.0, clock = clock),
+    /** Per authenticated device on `GET /api/v1/directory/people*`: burst 30, then 1 per 2 s (30/min, A2 §3.3). */
+    val directoryPeople: TokenBucketLimiter = TokenBucketLimiter(30, 0.5, clock = clock),
 ) {
     fun sweepAll() {
-        auth.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep()
+        auth.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep()
     }
 
     companion object {
