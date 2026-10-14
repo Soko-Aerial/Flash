@@ -88,14 +88,31 @@ fun RevocationList.Companion.issue(
     revokedSerials: Set<Long>,
     revokedDeviceIds: Set<String>,
     revokedDelegationSerials: Set<Long> = emptySet(),
+    /** Non-blank: the hashed v3 format (ADR-129). [revokedDeviceIds] are then hashed for this audience and the plain field stays empty. */
+    audience: String = "",
+    /** Hashes that are already known (a root list carried them and the hub never saw the id). Only with an [audience]. */
+    revokedDeviceHashes: Set<String> = emptySet(),
 ): RevocationList {
-    val unsigned = RevocationList(
-        version = version,
-        revokedSerials = revokedSerials,
-        revokedDeviceIds = revokedDeviceIds,
-        revokedDelegationSerials = revokedDelegationSerials,
-        issuerPublicKey = issuerPublicKey,
-        signature = "",
-    )
+    require(audience.isNotBlank() || revokedDeviceHashes.isEmpty()) { "device hashes need an audience" }
+    val unsigned = if (audience.isBlank()) {
+        RevocationList(
+            version = version,
+            revokedSerials = revokedSerials,
+            revokedDeviceIds = revokedDeviceIds,
+            revokedDelegationSerials = revokedDelegationSerials,
+            issuerPublicKey = issuerPublicKey,
+            signature = "",
+        )
+    } else {
+        RevocationList(
+            version = version,
+            revokedSerials = revokedSerials,
+            revokedDelegationSerials = revokedDelegationSerials,
+            issuerPublicKey = issuerPublicKey,
+            signature = "",
+            audience = audience,
+            revokedDeviceHashes = revokedDeviceHashes + revokedDeviceIds.map { RevocationList.deviceHash(audience, it) },
+        )
+    }
     return unsigned.copy(signature = FlashCrypto.sign(issuerPrivateKey, unsigned.canonicalBytes()))
 }

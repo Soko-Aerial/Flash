@@ -196,7 +196,7 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
 // ---------------------------------------------------------------------------------------------------------- accounts
 
 private fun AdminUser.toDto(d: AdminApiDeps) = AdminDto(
-    username, role, disabled, enrolledDeviceId, createdAtMs, createdBy, d.admins.recoveryCodesRemaining(username),
+    username, role, disabled, enrolledDeviceId, createdAtMs, createdBy, d.admins.recoveryCodesRemaining(username), approverDeviceId,
 )
 
 private fun AdminSession.toRow() = SessionRowDto(sessionId, username, createdAtMs, lastSeenMs, expiresAtMs)
@@ -325,6 +325,7 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
                 return@post call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many requests. Try again later.")
             }
             if (!validConsoleKeyProof(session.username, ConsoleKeyProof(b.publicKey, b.proof, b.label))) return@post call.badRequest()
+            if (!call.phoneApprovesSignerChange(d, session, "console-key")) return@post
             if (!call.signerChangeAllowed(d, session.username, b.code, "console-key", "admin.consolekey.refused")) return@post
             call.guarded {
                 val keyId = d.admins.registerConsoleKey(session.username, b.publicKey, b.label)
@@ -341,9 +342,61 @@ internal fun Route.adminAccountRoutes(d: AdminApiDeps) {
             if (device == null || device.status != DeviceStatus.ACTIVE || device.role != HubRoles.ADMIN) {
                 return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That device is not an active administrator device of this hub.")
             }
+            if (!call.phoneApprovesSignerChange(d, session, "device")) return@post
             if (!call.signerChangeAllowed(d, session.username, b.code, "device", "admin.device.bind.refused")) return@post
             d.admins.bindDevice(session.username, device.deviceId)
             d.audit.log(session.username, "admin.device.bind", "device=${device.deviceId}")
+            call.respondJson(OkDto())
+        }
+    }
+
+    // ADR-131 (FO-14): the phone that must also approve delegation install, admin creation and signer replacement.
+    route("/admins/me/approver") {
+        post {
+            val session = call.adminSession(d) ?: return@post
+            val b = call.body<ApproverBindBody>() ?: return@post
+            val device = d.identities.device(b.deviceId)
+            if (device == null || device.status != DeviceStatus.ACTIVE || device.role != HubRoles.ADMIN) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "That device is not an active administrator device of this hub.")
+            }
+            val firstPhone = d.admins.approverOf(session.username) == null
+            // The browser key's confirmation comes FIRST (and the old phone's, when replacing one), so a missing one does not spend the
+            // one-time authenticator code and the same code can be used on the retry.
+            if ((!firstPhone || d.admins.hasStepUpSigner(session.username)) &&
+                !call.stepUpOk(d, session, StepUpActions.APPROVER_CHANGE, "approver:${device.deviceId}")
+            ) {
+                return@post
+            }
+            if (firstPhone) {
+                // A fresh authenticator code always: a stolen session alone must not be able to name the attacker's phone.
+                val clean = b.code.replace(Regex("\\s+"), "")
+                if (!d.admins.confirmFreshTotp(session.username, clean)) {
+                    d.audit.logUnauthenticated(session.username, "admin.approver.refused", "wrong code")
+                    return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "The code is not right. Wait for the next code.")
+                }
+            }
+            d.admins.bindApprover(session.username, device.deviceId)
+            d.audit.log(session.username, "admin.approver.bind", "device=${device.deviceId}")
+            call.respondJson(OkDto())
+        }
+
+        // The loss path: a lost phone is unbound with one of the administrator's one-time recovery codes. Nothing else can remove it.
+        post("/remove") {
+            val session = call.adminSession(d) ?: return@post
+            val b = call.body<ApproverRemoveBody>() ?: return@post
+            if (!d.limits.adminLogin.tryAcquire(d.web.clientKey(call))) {
+                call.response.header("Retry-After", "30")
+                return@post call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many requests. Try again later.")
+            }
+            if (d.admins.approverOf(session.username) == null) {
+                return@post call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "No approver phone is bound.")
+            }
+            if (!d.admins.confirmRecoveryCode(session.username, b.code.replace(Regex("\\s+"), ""))) {
+                d.audit.logUnauthenticated(session.username, "admin.approver.remove.refused", "wrong recovery code")
+                return@post call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "That recovery code is not right.")
+            }
+            d.admins.clearApprover(session.username)
+            d.audit.log(session.username, "admin.approver.remove", "removed with a recovery code")
             call.respondJson(OkDto())
         }
     }
@@ -437,4 +490,14 @@ internal suspend fun io.ktor.server.application.ApplicationCall.signerChangeAllo
     d.audit.logUnauthenticated(username, refusedAction, "$what: replacement without a recovery code")
     respondError(HttpStatusCode.Forbidden, "ERR_SIGNER_EXISTS", "This administrator already confirms with a key. To replace it, enter one of your recovery codes.")
     return false
+}
+
+/**
+ * REV-11 plus ADR-131: replacing the signer already needs a recovery code. With an approver phone bound (and a signer to replace) it
+ * needs the phone's approval of a [StepUpActions.SIGNER_REPLACE] confirmation as well, checked FIRST so a missing approval does not
+ * burn a recovery code. The browser key is not asked: its loss is the usual reason to be here.
+ */
+internal suspend fun io.ktor.server.application.ApplicationCall.phoneApprovesSignerChange(d: AdminApiDeps, session: AdminSession, what: String): Boolean {
+    if (d.admins.approverOf(session.username) == null || !d.admins.hasStepUpSigner(session.username)) return true
+    return stepUpOk(d, session, StepUpActions.SIGNER_REPLACE, what)
 }

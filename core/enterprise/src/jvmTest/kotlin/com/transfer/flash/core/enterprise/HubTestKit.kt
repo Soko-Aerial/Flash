@@ -102,6 +102,24 @@ class TestOrg(val rootCrypto: TestCrypto = TestCrypto(), val hubCrypto: TestCryp
         return unsigned.copy(signature = Base64.encode(rootCrypto.sign(unsigned.canonicalBytes())))
     }
 
+    /** A root-signed list in the hashed v3 format (ADR-129): [ids] appear only as hashes for [audience]. */
+    fun hashedRevocations(
+        serials: Set<Long> = emptySet(),
+        ids: Set<String> = emptySet(),
+        version: Long = 1L,
+        audience: String = RevocationList.audienceOf(rootKey),
+    ): RevocationList {
+        val unsigned = RevocationList(
+            version = version,
+            revokedSerials = serials,
+            issuerPublicKey = rootKey,
+            signature = "",
+            audience = audience,
+            revokedDeviceHashes = ids.map { RevocationList.deviceHash(audience, it) }.toSet(),
+        )
+        return unsigned.copy(signature = Base64.encode(rootCrypto.sign(unsigned.canonicalBytes())))
+    }
+
     companion object {
         const val T0: Long = 1_800_000_000_000L
         const val HOUR: Long = 3_600_000L

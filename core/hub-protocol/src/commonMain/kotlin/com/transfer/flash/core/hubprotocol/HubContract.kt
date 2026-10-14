@@ -66,6 +66,12 @@ public object HubContract {
      */
     public const val PATH_DEVICE_SEALING_KEY: String = "$PATH_API/device/sealing-key"
 
+    /**
+     * `GET` lists the step-up approvals waiting for THIS device; `POST <path>/{challengeId}` submits its signature (ADR-131, FO-14).
+     * Only an administrator's enrolled approver phone gets any: for every other device the list is empty and a submit is refused.
+     */
+    public const val PATH_APPROVALS: String = "$PATH_API/approvals"
+
     /** `GET`, Bearer (existing path): departments. */
     public const val PATH_DIRECTORY_DEPARTMENTS: String = "$PATH_API/directory/departments"
 

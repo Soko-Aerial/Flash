@@ -1,7 +1,10 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.server
 
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.certs.HubAuth
+import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.hubprotocol.rest.AuthChallengeResponse
 import com.transfer.flash.core.hubprotocol.rest.AuthVerifyRequest
 import com.transfer.flash.core.hubprotocol.rest.AuthVerifyResponse
@@ -231,7 +234,10 @@ class HubServicesTest {
         val otherToken = client.login(hub, "dev-three", otherKey, enrol(hub, "dev-three", otherKey))
         val list = client.get(HubContract.PATH_REVOCATIONS) { header("Authorization", "Bearer $otherToken") }
         assertEquals(HttpStatusCode.OK, list.status, list.bodyAsText())
-        assertTrue(list.bodyAsText().contains("dev-two"), "an authenticated device can fetch the signed list too")
+        val body = list.bodyAsText()
+        assertFalse(body.contains("dev-two"), "ADR-129: the public list names no device id")
+        val parsed = HubRestCodec.decodeOrNull<RevocationList>(body)
+        assertTrue(parsed != null && parsed.revokesDevice("dev-two"), "an authenticated device can fetch the signed list too, and finds its hash in it")
     }
 
     @Test

@@ -30,6 +30,8 @@ data class AdminUser(
     val disabled: Boolean = false,
     val createdAtMs: Long = 0L,
     val createdBy: String? = null,
+    /** The enrolled admin phone whose approval the most dangerous actions also need (ADR-131, FO-14); null = browser key only. */
+    val approverDeviceId: String? = null,
 )
 
 data class AdminSession(
@@ -156,6 +158,9 @@ class AdminAuthService(
                     )
                     st.execute("CREATE INDEX IF NOT EXISTS idx_admin_console_keys_user ON admin_console_keys(username)")
                 }
+            },
+            Migration(3, "admin: the phone that co-signs the most dangerous actions (ADR-131, FO-14)") { conn ->
+                conn.createStatement().use { it.execute("ALTER TABLE admin_users ADD COLUMN approver_device_id TEXT") }
             },
         )
     }
@@ -594,6 +599,20 @@ class AdminAuthService(
         check(changed == 1) { "Administrator not found" }
     }
 
+    /** Binds the enrolled admin phone that must also approve the most dangerous actions (ADR-131). */
+    fun bindApprover(username: String, deviceId: String) {
+        val changed = db.withConnection { it.update("UPDATE admin_users SET approver_device_id = ? WHERE username = ?", deviceId.trim(), username) }
+        check(changed == 1) { "Administrator not found" }
+    }
+
+    /** Unbinds the approver phone (the loss path: it needs a recovery code, see the route). */
+    fun clearApprover(username: String) {
+        db.withConnection { it.update("UPDATE admin_users SET approver_device_id = NULL WHERE username = ?", username) }
+    }
+
+    /** The device id of [username]'s approver phone, or null. */
+    fun approverOf(username: String): String? = loadAdmin(username)?.approverDeviceId
+
     /**
      * Registers the public key of a browser the administrator confirms dangerous actions with (a WebCrypto P-256 key that never
      * leaves that browser, ADR-125) and binds the administrator to it. One key per administrator: an earlier one is dropped.
@@ -857,6 +876,7 @@ class AdminAuthService(
         disabled = rs.getInt("disabled") != 0,
         createdAtMs = rs.getLong("created_at"),
         createdBy = rs.getString("created_by"),
+        approverDeviceId = rs.getString("approver_device_id"),
     )
 
     private fun insertAdmin(conn: java.sql.Connection, a: AdminUser) {

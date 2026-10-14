@@ -284,7 +284,7 @@ private fun Route.authRoutes(d: AdminApiDeps) {
         call.respondJson(
             SessionDto(
                 session.username, session.role, session.csrfToken, session.expiresAtMs, d.stepUp.hasUsableDevice(session.username),
-                admin?.enrolledDeviceId, session.sessionId, d.clock(),
+                admin?.enrolledDeviceId, session.sessionId, d.clock(), admin?.approverDeviceId,
             ),
         )
     }
@@ -674,7 +674,12 @@ private fun Route.stepUpRoutes(d: AdminApiDeps) {
                 is StepUpAuth.Created.Ok -> {
                     val c = r.challenge
                     call.respondJson(
-                        StepUpChallengeDto(c.challengeId, c.action, c.target, c.deviceId, c.nonce, c.expiresAtMs, Base64.getEncoder().encodeToString(c.proofBytes())),
+                        StepUpChallengeDto(
+                            c.challengeId, c.action, c.target, c.deviceId, c.nonce, c.expiresAtMs, Base64.getEncoder().encodeToString(c.proofBytes()),
+                            approvalRequired = c.approvalRequired,
+                            approvalCode = if (c.approvalRequired) c.approvalCode else "",
+                            browserKeyRequired = c.action !in StepUpActions.WITHOUT_BROWSER_KEY,
+                        ),
                     )
                 }
                 is StepUpAuth.Created.Refused -> call.respondError(
@@ -696,6 +701,16 @@ private fun Route.stepUpRoutes(d: AdminApiDeps) {
                 return@post call.respondError(HttpStatusCode.Forbidden, ERR_STEP_UP, MSG_STEP_UP)
             }
             call.respondJson(OkDto())
+        }
+
+        // The console polls this while the administrator answers on the phone (ADR-131).
+        get("/{id}") {
+            val session = call.adminSession(d) ?: return@get
+            val challenge = d.stepUp.getChallenge(call.parameters["id"].orEmpty())
+            if (challenge == null || challenge.adminUsername != session.username) {
+                return@get call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "That confirmation has expired.")
+            }
+            call.respondJson(StepUpStatusDto(challenge.verified, challenge.approvalRequired, challenge.approved, challenge.expiresAtMs))
         }
     }
 }

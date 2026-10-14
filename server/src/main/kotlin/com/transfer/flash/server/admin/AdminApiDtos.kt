@@ -65,6 +65,8 @@ data class SessionDto(
     /** The public id of THIS session (the row to mark as "this browser" in the session list). */
     val sessionId: String = "",
     val serverTimeMs: Long = 0,
+    /** The bound approver phone (ADR-131), or null. */
+    val approverDeviceId: String? = null,
 )
 
 @Serializable
@@ -266,6 +268,7 @@ data class AdminDto(
     val createdAtMs: Long,
     val createdBy: String? = null,
     val recoveryCodesRemaining: Int = 0,
+    val approverDeviceId: String? = null,
 )
 
 @Serializable
@@ -333,7 +336,28 @@ data class StepUpChallengeDto(
     val expiresAtMs: Long,
     /** Base64 of the exact bytes the device signs ([com.transfer.flash.core.hubprotocol.certs.HubStepUp.proofBytes]). */
     val proofBytes: String,
+    /** True when the administrator's approver phone must approve as well (ADR-131). */
+    val approvalRequired: Boolean = false,
+    /** The six digits the phone shows for this challenge ([com.transfer.flash.core.hubprotocol.certs.HubStepUp.approvalCode]); empty when not required. */
+    val approvalCode: String = "",
+    /** False when the browser key is not asked (signer replacement): the console waits for the phone only. */
+    val browserKeyRequired: Boolean = true,
 )
+
+/** Where a confirmation stands, for the console that is waiting for the phone (ADR-131). */
+@Serializable
+data class StepUpStatusDto(
+    val verified: Boolean,
+    val approvalRequired: Boolean,
+    val approved: Boolean,
+    val expiresAtMs: Long,
+)
+
+@Serializable
+data class ApproverBindBody(val deviceId: String, val code: String = "")
+
+@Serializable
+data class ApproverRemoveBody(val code: String)
 
 @Serializable
 data class StepUpVerifyBody(val challengeId: String, val signature: String)

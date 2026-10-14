@@ -9,6 +9,7 @@ import com.transfer.flash.server.admin.AuditLogger
 import com.transfer.flash.server.admin.AuditSigner
 import com.transfer.flash.server.admin.StepUpAuth
 import com.transfer.flash.server.admin.adminApiRoutes
+import com.transfer.flash.server.admin.approvalRoutes
 import com.transfer.flash.server.admin.adminConsoleRoutes
 import com.transfer.flash.server.auth.BearerPrincipalResolver
 import com.transfer.flash.server.auth.BearerTokenStore
@@ -208,6 +209,7 @@ class HubServices private constructor(
             val addresses = ClientAddressResolver(TrustedProxies(config.trustedProxies))
             val directory = OrganizationDirectory.open(db, pool, clock)
             val audit = AuditLogger(db, AuditSigner(delegate.pair.private, delegate.publicKey), clock)
+            val dataSecrets = com.transfer.flash.server.auth.SecretBox.loadOrCreate(File(dataDir, "data.key").toPath())
             val admins = AdminAuthService(
                 printSetupTokenToConsole = true,
                 setupUrl = setupUrlFor(config),
@@ -216,7 +218,7 @@ class HubServices private constructor(
                 setupTokenFile = config.setupTokenPath.toPath(),
                 explicitSetupToken = config.setupToken,
                 devPrintSetupToken = config.devEmbeddedRoot,
-                secrets = com.transfer.flash.server.auth.SecretBox.loadOrCreate(File(dataDir, "data.key").toPath()),
+                secrets = dataSecrets,
             )
             admins.sealLegacySecrets().let { if (it > 0) log.info("Sealed {} administrator authenticator seed(s) that were stored in plain text", it) }
             val stepUp = StepUpAuth(admins, identities, clock = clock)
@@ -235,6 +237,7 @@ class HubServices private constructor(
                 clock = clock,
                 registry = DatabaseDeviceRegistry(db),
                 metrics = metrics,
+                secrets = dataSecrets,
             )
 
             var revocations: SqliteRevocationService? = null
@@ -348,6 +351,7 @@ class HubServices private constructor(
                         audit = audit,
                         clock = clock,
                     )
+                    approvalRoutes(stepUp = stepUp, principalResolver = resolver, limits = limits, audit = audit)
                     if (authService != null && enrollService != null) {
                         authRoutes(
                             challengeAuth = authService,

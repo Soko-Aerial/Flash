@@ -22,6 +22,9 @@ import java.sql.Connection
  *     quota `(origin_device_id)`;
  *   - `mailbox_totals` (one row) kept exact by triggers, so the global cap is O(1) instead of a table scan.
  *   Rows of the old table that were not delivered are carried over, in their old order, with fresh server times.
+ * - **v3** (ADR-130, FO-15a) adds `sealed`: 1 when `payload` is AES-256-GCM ciphertext under the hub data key. A marker column, not a
+ *   byte prefix, because a payload is arbitrary sender-controlled bytes. `payload_bytes` keeps the PLAIN size, so the quotas and the
+ *   totals triggers do not change.
  */
 object MailboxSchema {
     const val COMPONENT = "mailbox"
@@ -32,6 +35,9 @@ object MailboxSchema {
     fun steps(clock: () -> Long = System::currentTimeMillis): List<Migration> = listOf(
         Migration(1, "baseline mailbox table of the first hub build") { conn -> baseline(conn) },
         Migration(2, "server-clock ordering, unique dedup key, quotas, totals") { conn -> v2(conn, clock()) },
+        Migration(3, "sealed marker: payloads encrypted at rest under the hub data key (ADR-130)") { conn ->
+            conn.createStatement().use { it.execute("ALTER TABLE mailbox_envelopes ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0") }
+        },
     )
 
     /** Registers and applies the mailbox migrations on [database]. Idempotent; throws (fail closed) when a step fails. */

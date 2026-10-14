@@ -3,6 +3,7 @@ package com.transfer.flash.core.security.enterprise
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.hubprotocol.certs.HubAuth
+import com.transfer.flash.core.hubprotocol.certs.HubStepUp
 import com.transfer.flash.core.hubprotocol.certs.toHubHex
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashFingerprint
@@ -56,6 +57,19 @@ public object HubClientAuth {
     ): String = Base64.encode(
         crypto.sign(HubAuth.renewProofBytes(serverId, serverNonce, clientNonce, deviceId, currentCertSerial, subjectPublicKey)),
     )
+
+    /**
+     * Base64 signature with which the administrator's approver phone co-signs a dangerous console action (ADR-131, FO-14).
+     * The bytes are [HubStepUp.approvalBytes] rebuilt from the fields the hub listed, so the phone signs exactly what it showed.
+     */
+    public fun signApproval(
+        crypto: FlashCrypto,
+        challengeId: String,
+        action: String,
+        admin: String,
+        target: String,
+        nonce: String,
+    ): String = Base64.encode(crypto.sign(HubStepUp.approvalBytes(challengeId, action, admin, target, nonce)))
 
     private const val NONCE_BYTES: Int = 18
 }

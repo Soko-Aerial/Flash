@@ -741,7 +741,7 @@ public class RelayFrameRouter(
     private fun isRevokedNow(serial: Long?, deviceId: String): Boolean {
         if (revocation.isRevoked(serial, deviceId)) return true
         val list = revocationListProvider?.invoke() ?: return false
-        return if (serial != null) list.isRevoked(serial, deviceId) else list.revokedDeviceIds.contains(deviceId)
+        return if (serial != null) list.isRevoked(serial, deviceId) else list.revokesDevice(deviceId)
     }
 
     private fun isRevoked(session: RelaySession): Boolean = isRevokedNow(session.principal?.certSerial, session.deviceId)
