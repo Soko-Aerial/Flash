@@ -53,20 +53,24 @@ object FlashChatListSearchMath {
     /**
      * Chats whose title OR preview text contain [rawQuery] (case-insensitive), OR whose id is in
      * [bodyMatchIds] — the set of conversations that have a full-history message-body match (#12),
-     * resolved by the repository via `MessageDao.searchMessages`. Results keep their original list
+     * resolved by the repository via `MessageDao.searchMessages`, OR whose id is in [colleagueMatchIds]
+     * matched against the directory snapshot (Plan B Phase B3). Results keep their original list
      * order (no relevance re-sorting). Blank query returns all items unfiltered.
      */
     fun filterChats(
         items: List<FlashChatListItemUi>,
         rawQuery: String,
         bodyMatchIds: Set<String> = emptySet(),
+        colleagueMatchIds: Set<String> = emptySet(),
     ): List<FlashChatListItemUi> {
         val query = normalizeQuery(rawQuery)
         if (query.isEmpty()) return items
         return items.filter { item ->
             item.id in bodyMatchIds ||
+                item.id in colleagueMatchIds ||
                 item.title.contains(query, ignoreCase = true) ||
-                item.previewText.contains(query, ignoreCase = true)
+                item.previewText.contains(query, ignoreCase = true) ||
+                (item.isColleague && item.orgName?.contains(query, ignoreCase = true) == true)
         }
     }
 

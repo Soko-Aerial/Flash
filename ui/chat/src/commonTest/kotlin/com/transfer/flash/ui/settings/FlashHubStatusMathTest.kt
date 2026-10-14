@@ -196,7 +196,7 @@ class FlashHubStatusMathTest {
     }
 
     @Test
-    fun orgTrustState_maps_all_lease_and_clock_scenarios() {
+    fun ORGT_U24_orgTrustState_maps_all_lease_and_clock_scenarios() {
         val nowMs = 1_000_000_000L
         val validUntil = nowMs + 10 * 86_400_000L // 10 days left
 
@@ -263,6 +263,33 @@ class FlashHubStatusMathTest {
             nowMs = nowMs,
         )
         assertEquals(FlashHubStatusMath.OrgTrustState.ClockWrong, expiredClock)
+    }
+
+    @Test
+    fun orgTrustStatusTextAndDotMatchesPlanSection9Strings() {
+        val validState = FlashHubStatusMath.OrgTrustState.Valid(1_700_000_000_000L)
+        assertEquals("Colleague trust valid until Nov 14", FlashHubStatusMath.orgTrustStatusText(validState) { "Nov 14" })
+        assertEquals(FlashHubDot.GOOD, FlashHubStatusMath.orgTrustDot(validState))
+
+        val expiringState = FlashHubStatusMath.OrgTrustState.Expiring(1_700_000_000_000L, daysLeft = 3)
+        assertEquals("Connect to the company network within 3 days to keep chatting with colleagues offline.", FlashHubStatusMath.orgTrustStatusText(expiringState))
+        assertEquals(FlashHubDot.WARNING, FlashHubStatusMath.orgTrustDot(expiringState))
+
+        val expiredState = FlashHubStatusMath.OrgTrustState.Expired
+        assertEquals("Reconnect to your company network to chat with colleagues who are not paired with you.", FlashHubStatusMath.orgTrustStatusText(expiredState))
+        assertEquals(FlashHubDot.BAD, FlashHubStatusMath.orgTrustDot(expiredState))
+
+        val neverSyncedState = FlashHubStatusMath.OrgTrustState.NeverSynced
+        assertEquals("Connect to the company network once to load your colleagues.", FlashHubStatusMath.orgTrustStatusText(neverSyncedState))
+        assertEquals(FlashHubDot.WARNING, FlashHubStatusMath.orgTrustDot(neverSyncedState))
+
+        val unsupportedState = FlashHubStatusMath.OrgTrustState.NotSupported
+        assertEquals("This company server does not support offline colleague chat yet.", FlashHubStatusMath.orgTrustStatusText(unsupportedState))
+        assertEquals(FlashHubDot.NEUTRAL, FlashHubStatusMath.orgTrustDot(unsupportedState))
+
+        val clockWrongState = FlashHubStatusMath.OrgTrustState.ClockWrong
+        assertEquals("Your device clock looks wrong. Colleague trust may fail until it is fixed.", FlashHubStatusMath.orgTrustStatusText(clockWrongState))
+        assertEquals(FlashHubDot.BAD, FlashHubStatusMath.orgTrustDot(clockWrongState))
     }
 }
 

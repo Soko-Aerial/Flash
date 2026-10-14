@@ -91,6 +91,8 @@ fun FlashChatListScreen(
     /** Conversation ids with a full-history message-body match for [searchQuery] (#12), resolved by
      *  the repository; folded into the client-side title/preview filter so buried matches surface. */
     messageBodyMatches: Set<String> = emptySet(),
+    /** Plan B Phase B3: Colleague device IDs matching the search query against the organisation snapshot. */
+    colleagueMatchIds: Set<String> = emptySet(),
     /**
      * Group Phase 1A: opens the create-group sheet; null HIDES the action.
      *
@@ -122,8 +124,8 @@ fun FlashChatListScreen(
     }
 
     val activeItems = if (viewingArchived) state.archivedItems else state.items
-    val displayItems = remember(activeItems, searchQuery, messageBodyMatches) {
-        FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches)
+    val displayItems = remember(activeItems, searchQuery, messageBodyMatches, colleagueMatchIds) {
+        FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches, colleagueMatchIds)
     }
     val searchActive = FlashChatListSearchMath.isSearchActive(searchQuery)
     val showRecents = isSearching && !searchActive && recentSearches.isNotEmpty()

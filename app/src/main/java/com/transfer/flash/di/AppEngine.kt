@@ -110,6 +110,13 @@ class AppEngine @Inject constructor(
 
     fun setHubContentViaHub(enabled: Boolean) = DiscoveryEngineHolder.setHubContentViaHub(enabled)
 
+    fun isOrgPeer(deviceId: String): Boolean = DiscoveryEngineHolder.isOrgPeer(deviceId)
+
+    fun isKnownColleague(deviceId: String): Boolean = DiscoveryEngineHolder.isKnownColleague(deviceId)
+
+    fun hasAuthenticatedOrgSession(deviceId: String): Boolean =
+        network?.activeSessions?.value?.containsKey(com.transfer.flash.core.common.model.FlashDeviceId(deviceId)) == true && isOrgPeer(deviceId)
+
     /** Device hardware cryptographic provider. */
     val crypto: com.transfer.flash.core.security.crypto.FlashCrypto?
         get() = DiscoveryEngineHolder.currentCrypto()

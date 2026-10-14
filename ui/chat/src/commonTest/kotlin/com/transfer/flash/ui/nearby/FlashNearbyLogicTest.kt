@@ -152,5 +152,31 @@ class FlashNearbyLogicTest {
         }
     }
 
+    @Test
+    fun `ORGT_U33_peerActionLabel_across_trust_and_colleague_combinations`() {
+        // Trusted peer always displays "Chat" (paired trust outranks colleague)
+        assertEquals("Chat", FlashNearbyMath.peerActionLabel(isTrusted = true, isColleague = true))
+        assertEquals("Chat", FlashNearbyMath.peerActionLabel(isTrusted = true, isColleague = false))
+
+        // Unpaired colleague displays "Message"
+        assertEquals("Message", FlashNearbyMath.peerActionLabel(isTrusted = false, isColleague = true))
+
+        // Stranger (neither trusted nor colleague) displays "Pair"
+        assertEquals("Pair", FlashNearbyMath.peerActionLabel(isTrusted = false, isColleague = false))
+    }
+
+    @Test
+    fun `ORGT_U33_isDirectAction_across_trust_and_colleague_combinations`() {
+        // Trusted peers directly open chat without pairing
+        assertTrue(FlashNearbyMath.isDirectAction(isTrusted = true, isColleague = true))
+        assertTrue(FlashNearbyMath.isDirectAction(isTrusted = true, isColleague = false))
+
+        // Unpaired colleagues directly open chat without pairing
+        assertTrue(FlashNearbyMath.isDirectAction(isTrusted = false, isColleague = true))
+
+        // Strangers require bilateral pairing dialog
+        assertFalse(FlashNearbyMath.isDirectAction(isTrusted = false, isColleague = false))
+    }
+
     private fun transport() = FlashNetworkTransport.Lan
 }

@@ -42,10 +42,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashDeviceKind
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
+import com.transfer.flash.ui.chat.FlashOrgStrings
 import com.transfer.flash.ui.chat.FlashPairingDialog
 import com.transfer.flash.ui.chat.FlashPairingPhase
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
@@ -87,6 +89,9 @@ data class NearbyPeerUi(
      * must not be labelled with a guess.
      */
     val deviceKind: FlashDeviceKind = FlashDeviceKind.UNKNOWN,
+    /** Plan B Phase B3: whether this peer is a verified organisation colleague. */
+    val isColleague: Boolean = false,
+    val orgName: String? = null,
 )
 
 data class NearbyTrustedPeerUi(
@@ -161,6 +166,16 @@ object FlashNearbyMath {
         isScanning -> "Scanning…"
         else -> "Scan paused"
     }
+
+    /** Returns the row action label for a nearby peer: "Chat" when trusted, "Message" when an unpaired colleague, else "Pair". */
+    fun peerActionLabel(isTrusted: Boolean, isColleague: Boolean): String = when {
+        isTrusted -> "Chat"
+        isColleague -> "Message"
+        else -> "Pair"
+    }
+
+    /** Returns whether clicking the row action directly opens chat rather than initiating pairing. */
+    fun isDirectAction(isTrusted: Boolean, isColleague: Boolean): Boolean = isTrusted || isColleague
 
     /** How long [NearbyUiState.discoveryQuiet] must hold, on screen, before the quiet-network hint appears (DR5). */
     const val QUIET_HINT_DELAY_MS: Long = 30_000L
@@ -402,9 +417,13 @@ private fun PopulatedContent(
                     peer = peer,
                     modifier = flashAnimateItem(motion),
                     onAction = {
-                        // Trusted peers open a chat; untrusted peers start pairing.
+                        // Trusted peers and colleagues open chat; untrusted peers start pairing.
                         haptics(FlashHaptic.Tick)
-                        if (peer.isTrusted) onChatClick(peer) else onPairClick(peer)
+                        if (FlashNearbyMath.isDirectAction(peer.isTrusted, peer.isColleague)) {
+                            onChatClick(peer)
+                        } else {
+                            onPairClick(peer)
+                        }
                     },
                 )
             }
@@ -627,7 +646,7 @@ private fun PeerRow(
 ) {
     val colors = FlashTheme.colors
     val connectInteraction = remember { MutableInteractionSource() }
-    val ctaLabel = if (peer.isTrusted) "Chat" else "Pair"
+    val ctaLabel = FlashNearbyMath.peerActionLabel(isTrusted = peer.isTrusted, isColleague = peer.isColleague)
     Row(
         modifier
             .fillMaxWidth()
@@ -640,7 +659,8 @@ private fun PeerRow(
                 bottom = FlashSpacing.space12,
             )
             .semantics(mergeDescendants = true) {
-                contentDescription = "${peer.name} nearby, $ctaLabel button"
+                val colleagueSuffix = if (peer.isColleague) ", ${FlashOrgStrings.ORG_CHIP_A11Y}" else ""
+                contentDescription = "${peer.name}$colleagueSuffix nearby, $ctaLabel button"
             },
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -671,6 +691,9 @@ private fun PeerRow(
             ) {
                 FlashTransportBadge(transport = peer.transport)
                 FlashDeviceKindBadge(kind = peer.deviceKind)
+                if (peer.isColleague) {
+                    FlashColleagueBadge(orgName = peer.orgName)
+                }
             }
         }
         Box(
@@ -694,6 +717,32 @@ private fun PeerRow(
                 color = colors.textOnAccent,
             )
         }
+    }
+}
+
+@Composable
+fun FlashColleagueBadge(
+    modifier: Modifier = Modifier,
+    orgName: String? = null,
+) {
+    val colors = FlashTheme.colors
+    val a11yDesc = if (!orgName.isNullOrBlank()) "Colleague verified by $orgName" else FlashOrgStrings.ORG_CHIP_A11Y
+    Box(
+        modifier = modifier
+            .clip(FlashShapes.chip)
+            .background(colors.backgroundSurfaceSubtle)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.chip)
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2)
+            .semantics { contentDescription = a11yDesc },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = FlashOrgStrings.chipText(orgName),
+            style = FlashTheme.typography.captionEmphasis,
+            color = colors.accentPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

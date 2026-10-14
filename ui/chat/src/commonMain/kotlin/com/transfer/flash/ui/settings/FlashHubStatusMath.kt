@@ -354,5 +354,34 @@ public object FlashHubStatusMath {
             }
         }
     }
+
+    /** Formats epoch millisecond timestamp as a human-readable local date (e.g. "12 Nov 2026"). */
+    public fun formatEpochDate(epochMs: Long): String {
+        val calendar = com.transfer.flash.core.messaging.util.platformDayLabelCalendar()
+        return calendar.formatDate(calendar.localDate(epochMs))
+    }
+
+    /** Maps [OrgTrustState] to exact Plan B §9 user-facing strings. */
+    public fun orgTrustStatusText(
+        state: OrgTrustState,
+        formatDate: (Long) -> String = { formatEpochDate(it) },
+    ): String = when (state) {
+        is OrgTrustState.NotSupported -> "This company server does not support offline colleague chat yet."
+        is OrgTrustState.NeverSynced -> "Connect to the company network once to load your colleagues."
+        is OrgTrustState.Valid -> "Colleague trust valid until ${formatDate(state.untilMs)}"
+        is OrgTrustState.Expiring -> "Connect to the company network within ${state.daysLeft} days to keep chatting with colleagues offline."
+        is OrgTrustState.Expired -> "Reconnect to your company network to chat with colleagues who are not paired with you."
+        is OrgTrustState.ClockWrong -> "Your device clock looks wrong. Colleague trust may fail until it is fixed."
+    }
+
+    /** Maps [OrgTrustState] to the corresponding status dot color token. */
+    public fun orgTrustDot(state: OrgTrustState): FlashHubDot = when (state) {
+        is OrgTrustState.NotSupported -> FlashHubDot.NEUTRAL
+        is OrgTrustState.NeverSynced -> FlashHubDot.WARNING
+        is OrgTrustState.Valid -> FlashHubDot.GOOD
+        is OrgTrustState.Expiring -> FlashHubDot.WARNING
+        is OrgTrustState.Expired -> FlashHubDot.BAD
+        is OrgTrustState.ClockWrong -> FlashHubDot.BAD
+    }
 }
 

@@ -20,10 +20,10 @@
   A holder that dies leaves an "abandoned" mutex; Windows hands it to the next waiter, which is correct here.
 #>
 param(
+    [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+    [string[]]$GradleArgs,
     [int]$WaitMinutes = 45,
-    [string]$Runner = "",
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$GradleArgs
+    [string]$Runner = ""
 )
 
 $ErrorActionPreference = "Stop"

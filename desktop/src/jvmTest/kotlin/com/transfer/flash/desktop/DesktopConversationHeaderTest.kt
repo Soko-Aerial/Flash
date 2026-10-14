@@ -192,6 +192,61 @@ class DesktopConversationHeaderTest {
         assertEquals(FlashNetworkTransport.Lan, header.transport)
     }
 
+    @Test
+    fun `ORGT_U37_desktopConversationHeader_preserves_isColleague_and_orgName_for_unpaired_colleague`() {
+        val colleagueId = "colleague-42"
+        val header = assertNotNull(
+            desktopConversationHeader(
+                conversationId = colleagueId,
+                trusted = emptyList(),
+                discovered = listOf(endpoint(colleagueId, "Colleague Alice")),
+                isColleague = true,
+                orgName = "Acme Corp",
+            ),
+        )
+
+        assertEquals("Colleague Alice", header.title)
+        assertEquals(true, header.isColleague)
+        assertEquals("Acme Corp", header.orgName)
+    }
+
+    @Test
+    fun `ORGT_U37_desktopConversationHeader_suppresses_isColleague_when_peer_is_trusted`() {
+        // Paired trust takes precedence over org trust: isColleaguePeer = isColleague && trustedName == null
+        val colleagueId = "colleague-paired"
+        val header = assertNotNull(
+            desktopConversationHeader(
+                conversationId = colleagueId,
+                trusted = listOf(FlashTrustedPeer(colleagueId, "Paired Alice")),
+                discovered = listOf(endpoint(colleagueId, "Paired Alice")),
+                isColleague = true,
+                orgName = "Acme Corp",
+            ),
+        )
+
+        assertEquals("Paired Alice", header.title)
+        assertEquals(false, header.isColleague, "Paired status must outrank colleague badge")
+        assertNull(header.orgName, "orgName must be null when colleague status is suppressed by paired trust")
+    }
+
+    @Test
+    fun `ORGT_U37_desktopConversationHeader_when_isColleague_is_false`() {
+        val strangerId = "stranger-99"
+        val header = assertNotNull(
+            desktopConversationHeader(
+                conversationId = strangerId,
+                trusted = emptyList(),
+                discovered = listOf(endpoint(strangerId, "Stranger Bob")),
+                isColleague = false,
+                orgName = "Acme Corp",
+            ),
+        )
+
+        assertEquals("Stranger Bob", header.title)
+        assertEquals(false, header.isColleague)
+        assertNull(header.orgName)
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private fun endpoint(id: String, name: String) = FlashDiscoveredEndpoint(

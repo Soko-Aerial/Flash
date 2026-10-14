@@ -101,6 +101,44 @@ internal fun FlashHubStatusRow(status: HubStatus, nowMs: Long, onOpenDetails: ()
     }
 }
 
+/** Plan B Phase B3: The Colleague trust row displaying the lease state with a status dot. */
+@Composable
+internal fun FlashOrgTrustStatusRow(
+    state: FlashHubStatusMath.OrgTrustState,
+    formatDate: (Long) -> String = { FlashHubStatusMath.formatEpochDate(it) },
+) {
+    val colors = FlashTheme.colors
+    val dotColor by animateColorAsState(
+        when (FlashHubStatusMath.orgTrustDot(state)) {
+            FlashHubDot.GOOD -> colors.statusOnline
+            FlashHubDot.PROGRESS -> colors.accentPrimary
+            FlashHubDot.WARNING -> colors.statusTransfer
+            FlashHubDot.BAD -> colors.textError
+            FlashHubDot.NEUTRAL -> colors.statusOffline
+        },
+        label = "orgTrustDot",
+    )
+    val text = FlashHubStatusMath.orgTrustStatusText(state, formatDate)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(FlashShapes.radius12))
+            .background(colors.backgroundSurface)
+            .padding(FlashSpacing.space12)
+            .semantics(mergeDescendants = true) { contentDescription = "Colleague trust, $text" },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlashIcon(icon = FlashIcons.Verified, tint = colors.textSecondary, size = FlashDimensions.iconMd, contentDescription = null)
+        Spacer(Modifier.width(FlashSpacing.space12))
+        Column(Modifier.weight(1f)) {
+            FlashText(text = "Colleague trust", style = FlashTheme.typography.bodyDefault, color = colors.textPrimary)
+            FlashText(text = text, style = FlashTheme.typography.metadataDefault, color = colors.textTertiary)
+        }
+        Spacer(Modifier.width(FlashSpacing.space8))
+        Box(Modifier.size(10.dp).clip(CircleShape).background(dotColor))
+    }
+}
+
 /** A short banner for a state that needs the user (revoked, expiring, offline ...). */
 @Composable
 internal fun FlashHubBannerCard(

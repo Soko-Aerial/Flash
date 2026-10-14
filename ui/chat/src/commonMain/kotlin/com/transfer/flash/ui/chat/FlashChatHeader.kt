@@ -2,6 +2,7 @@ package com.transfer.flash.ui.chat
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +41,7 @@ import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
+import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
 import com.transfer.flash.ui.theme.FlashTheme
@@ -160,13 +162,22 @@ fun FlashChatHeader(
                         alpha = titleEntry.value
                     },
             ) {
-                FlashText(
-                    text = state.title,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = FlashTheme.typography.headingMedium,
-                    color = colors.textPrimary,
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+                ) {
+                    FlashText(
+                        text = state.title,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = FlashTheme.typography.headingMedium,
+                        color = colors.textPrimary,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (state.isColleague && !state.isGroup) {
+                        FlashColleagueTrustChip(orgName = state.orgName)
+                    }
+                }
                 FlashChatHeaderStatusLine(
                     state = state,
                     encryptionState = encryptionState,
@@ -435,3 +446,34 @@ private fun FlashChatHeaderDarkPreview() {
         )
     }
 }
+
+/**
+ * Plan B Phase B3: Trust chip displayed in the conversation header and chat list
+ * for verified organisation colleagues.
+ */
+@Composable
+fun FlashColleagueTrustChip(
+    orgName: String?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val a11yDesc = if (!orgName.isNullOrBlank()) "Colleague verified by $orgName" else FlashOrgStrings.ORG_CHIP_A11Y
+    Box(
+        modifier = modifier
+            .clip(FlashShapes.chip)
+            .background(colors.backgroundSurfaceSubtle)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.chip)
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space2)
+            .semantics { contentDescription = a11yDesc },
+        contentAlignment = Alignment.Center,
+    ) {
+        FlashText(
+            text = FlashOrgStrings.chipText(orgName),
+            style = FlashTheme.typography.captionEmphasis,
+            color = colors.accentPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
