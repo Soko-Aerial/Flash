@@ -81,6 +81,9 @@ public object HubContract {
     /** `GET`, Bearer (existing path): members of `?departmentId=`. */
     public const val PATH_DIRECTORY_MEMBERS: String = "$PATH_API/directory/members"
 
+    /** `GET`, Bearer (Plan A2): org-wide people list `?cursor=&limit=&q=&departmentId=`. */
+    public const val PATH_DIRECTORY_PEOPLE: String = "$PATH_API/directory/people"
+
     /** `GET`, Bearer: [com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto] synchronisation stream. */
     public const val PATH_DIRECTORY_SYNC: String = "$PATH_API/directory/sync"
 

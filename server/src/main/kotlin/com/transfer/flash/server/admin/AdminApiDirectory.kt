@@ -35,7 +35,7 @@ private val CONSOLE = DirectoryActor.CONSOLE
 // ---------------------------------------------------------------------------------------------------------- directory
 
 private fun Department.toAdminDto(d: AdminApiDeps) =
-    AdminDepartmentDto(id, name, adminDeviceIds, d.directory.memberCount(id), d.directory.groupCount(id))
+    AdminDepartmentDto(id, name, adminDeviceIds, d.directory.memberCount(id), d.directory.groupCount(id), hidden)
 
 private fun GroupCharter.toAdminDto(d: AdminApiDeps) = AdminGroupDto(
     id, name, departmentId, visibility.name, joinMode.name, adminDeviceIds, memberDeviceIds,
@@ -66,8 +66,13 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
             val session = call.adminSession(d) ?: return@post
             val b = call.body<DepartmentBody>() ?: return@post
             call.guarded {
-                val created = d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), CONSOLE)
+                val created = if (b.hidden == null) {
+                    d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), CONSOLE)
+                } else {
+                    d.directory.createDepartment(b.id.orEmpty(), b.name.orEmpty(), b.adminDeviceIds.orEmpty(), b.hidden, CONSOLE)
+                }
                 d.audit.log(session.username, "department.create", "department=${created.id}")
+                if (created.hidden) d.audit.log(session.username, "directory.department.hidden", "department=${created.id} hidden=true")
                 call.respondJson(created.toAdminDto(d), HttpStatusCode.Created)
             }
         }
@@ -77,8 +82,12 @@ internal fun Route.adminDirectoryRoutes(d: AdminApiDeps) {
             val id = call.parameters["id"].orEmpty()
             val b = call.body<DepartmentBody>() ?: return@put
             call.guarded {
-                val updated = d.directory.updateDepartment(id, b.name, b.adminDeviceIds, CONSOLE)
+                val before = d.directory.getDepartment(id)?.hidden
+                val updated = d.directory.updateDepartment(id, b.name, b.adminDeviceIds, b.hidden, CONSOLE)
                 d.audit.log(session.username, "department.update", "department=$id")
+                if (b.hidden != null && b.hidden != before) {
+                    d.audit.log(session.username, "directory.department.hidden", "department=$id hidden=${updated.hidden}")
+                }
                 call.respondJson(updated.toAdminDto(d))
             }
         }

@@ -47,6 +47,10 @@ public data class EnterpriseDirectoryMember(
     /** The member's end-to-end sealing key and the identity-key signature binding it (ADR-121; served by the hub since ADR-124, null until the member published one). Verify the binding before use. */
     public val sealingPublicKey: String? = null,
     public val sealingSignature: String? = null,
+    /** Plan A2: human-readable department name from the people listing; empty when the hub did not send it. */
+    public val departmentName: String = "",
+    /** Plan A2: true when the hub marks this member's department hidden. */
+    public val hidden: Boolean = false,
 )
 
 /**
@@ -59,6 +63,8 @@ public data class EnterpriseDepartment(
     public val description: String = "",
     public val memberCount: Int = 0,
     public val groupCount: Int = 0,
+    /** Plan A2: true when hidden from outsiders. */
+    public val hidden: Boolean = false,
 )
 
 internal fun GroupDto.toDirectoryGroup(): EnterpriseDirectoryGroup = EnterpriseDirectoryGroup(
@@ -89,4 +95,5 @@ internal fun DepartmentDto.toDepartment(): EnterpriseDepartment = EnterpriseDepa
     name = name.ifBlank { id },
     memberCount = memberCount,
     groupCount = groupCount,
+    hidden = hidden,
 )
