@@ -43,4 +43,13 @@ class RouteTableContractTest {
                 "the route in docs/protocol.md.\nCurrent table:\n$actualText",
         )
     }
+
+    @Test
+    fun directorySyncRouteConstantMatchesContractAndIsPresent() {
+        assertEquals("/api/v1/directory/sync", com.transfer.flash.core.hubprotocol.HubContract.PATH_DIRECTORY_SYNC)
+        val hub = E2eHub(limits = { HubRateLimits.unlimited() }).provision().start().also { hubs += it }
+        val routes = hub.services.engine.routeTable()
+        assertTrue(routes.contains("GET /api/v1/directory/sync"), "Directory sync route missing from route table")
+    }
 }
+

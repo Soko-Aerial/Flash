@@ -2,6 +2,7 @@ package com.transfer.flash.server.directory
 
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
+import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.rest.CreateDepartmentBody
 import com.transfer.flash.core.hubprotocol.rest.CreateGroupBody
@@ -19,15 +20,18 @@ import com.transfer.flash.core.hubprotocol.rest.MemberDto
 import com.transfer.flash.core.hubprotocol.rest.OkResponse
 import com.transfer.flash.core.hubprotocol.rest.UpdateGroupBody
 import com.transfer.flash.server.auth.AuditSink
+import com.transfer.flash.server.auth.HubRateLimits
 import com.transfer.flash.server.auth.respondError
 import com.transfer.flash.server.auth.respondJson
 import com.transfer.flash.server.auth.receiveBoundedText
 import com.transfer.flash.server.auth.requirePrincipal
 import com.transfer.flash.server.identity.HubIdentifiers.isValidEntityId
 import com.transfer.flash.server.relay.HubPrincipalResolver
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.call
+import io.ktor.server.response.header
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -42,6 +46,7 @@ import io.ktor.server.routing.route
  * `department` inputs are gone.
  *
  * - `GET  /api/v1/directory/me`: the caller's own identity and memberships ([MeDto]).
+ * - `GET  /api/v1/directory/sync`: synchronisation stream of departments, members with statements and tombstones (Plan B).
  * - `GET  /api/v1/directory/groups`: groups visible to the caller (a hidden group exists only for its members).
  * - `GET  /api/v1/directory/members?departmentId=|groupId=`: members the caller may see, with their identity keys.
  * - `GET  /api/v1/directory/departments`: departments (member and group counts).
@@ -60,9 +65,43 @@ fun Route.directoryRoutes(
     isOnline: (String) -> Boolean = directory::isOnline,
     audit: AuditSink = AuditSink.None,
     sealingKeys: SealingKeyLookup = SealingKeyLookup.None,
+    limits: HubRateLimits = HubRateLimits.unlimited(),
+    delegationChain: () -> List<DelegationCert> = { emptyList() },
 ) {
     route(HubContract.PATH_API) {
         route("/directory") {
+            get("/sync") {
+                val principal = call.requirePrincipal(principalResolver) ?: return@get
+                if (!limits.directorySync.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.directorySync.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many directory sync requests")
+                    return@get
+                }
+
+                val since = call.request.queryParameters["since"]?.toLongOrNull()
+                    ?: call.request.queryParameters["sinceVersion"]?.toLongOrNull()
+                    ?: 0L
+                val epoch = call.request.queryParameters["epoch"]
+                    ?: call.request.queryParameters["directoryEpoch"]
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull()
+                    ?: call.request.queryParameters["pageSize"]?.toIntOrNull()
+                    ?: 500
+                val cursor = call.request.queryParameters["cursor"]
+
+                val actor = principal.toActor()
+                val chain = delegationChain()
+                val result = directory.getSyncChanges(
+                    since = since,
+                    cursor = cursor,
+                    limit = limit,
+                    actor = actor,
+                    activeDelegationChain = chain,
+                    offlineGraceDays = 30,
+                    requestedEpoch = epoch,
+                )
+                call.respondJson(result)
+            }
             get("/me") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@get
                 val actor = principal.toActor()

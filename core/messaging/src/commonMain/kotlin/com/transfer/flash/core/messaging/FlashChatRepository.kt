@@ -37,6 +37,20 @@ public interface FlashChatRepository {
      */
     public fun retryMessage(localId: String) {}
 
+    /**
+     * Starts or returns an existing 1:1 conversation with a company colleague [deviceId] (Plan B, ADR-134).
+     *
+     * Validates that:
+     * - [deviceId] is not our own device id ("That is you.").
+     * - An organisation directory snapshot has been synced ("Connect to the company network once to load your colleagues.").
+     * - The local organisation lease is currently valid ("Reconnect to your company network to start a chat with this colleague.").
+     * - [deviceId] is present and active in the synced directory ("This person is not in your company directory." or "This person is no longer part of your organisation.").
+     *
+     * Returns the conversation id on success.
+     */
+    public suspend fun startColleagueConversation(deviceId: String): FlashResult<String> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Colleague conversation unavailable"))
+
     /** Creates an ad-hoc trusted group. Phase 1 allows at most six members including this device. */
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))

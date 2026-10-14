@@ -45,6 +45,7 @@ kotlin {
             api(project(":core:common"))
             api(project(":core:hub-protocol"))
             api(project(":core:security"))
+            implementation(project(":core:persistence"))
             api(libs.kotlinx.coroutines.core)
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.cio)
@@ -54,14 +55,21 @@ kotlin {
             implementation(kotlin("test"))
             implementation(libs.kotlinx.coroutines.test)
         }
-        getByName("androidHostTest").dependencies {
-            implementation(libs.junit)
+        getByName("androidHostTest") {
+            kotlin.srcDir("src/sharedTest/kotlin")
+            dependencies {
+                implementation(libs.junit)
+            }
         }
-        jvmTest.dependencies {
-            implementation(libs.junit)
+        jvmTest {
+            kotlin.srcDir("src/sharedTest/kotlin")
+            dependencies {
+                implementation(libs.junit)
+            }
         }
     }
 }
+
 
 publishing {
     publications {

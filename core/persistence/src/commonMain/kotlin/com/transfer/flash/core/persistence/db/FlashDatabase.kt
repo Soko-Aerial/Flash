@@ -6,6 +6,7 @@ import androidx.room.RoomDatabase
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.DraftDao
 import com.transfer.flash.core.persistence.db.dao.MessagePinDao
+import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
 import com.transfer.flash.core.persistence.db.dao.GroupDeliveryDao
 import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
@@ -51,6 +52,9 @@ import com.transfer.flash.core.persistence.db.entity.ReactionEntity
 import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
 import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
+import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
+import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
+import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 
 /**
  * Room 2.x database (androidx.room / SupportSQLite stack — NOT androidx.room3).
@@ -95,6 +99,9 @@ import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
         MessagePinEntity::class,
         GroupHistoryStateEntity::class,
         GroupSyncWatermarkEntity::class,
+        OrgDirectoryMemberEntity::class,
+        OrgDepartmentEntity::class,
+        OrgSyncStateEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -157,6 +164,8 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun groupHistoryDao(): GroupHistoryDao
 
+    public abstract fun orgDirectoryDao(): OrgDirectoryDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -171,6 +180,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v11: MessageEntity gained the swarm offer columns (swarmRoot/swarmPieceSize/swarmRootSig) so a catch-up can relay a file (ERROR-108).
         // v12: message_pins, the device-local pinned messages of a conversation (UI roadmap 3.4).
         // v13: group_settings.historyCeiling, group_history_state and group_sync_watermark (ADR-100, group history sync).
-        public const val DATABASE_VERSION: Int = 13
+        // v14: org_directory_member, org_department and org_sync_state for offline organisation trust (Plan B, ADR-134).
+        public const val DATABASE_VERSION: Int = 14
     }
 }

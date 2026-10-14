@@ -3,6 +3,7 @@ package com.transfer.flash.server.auth
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.hubprotocol.certs.EcdsaVerifier
+import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import java.security.PrivateKey
@@ -29,6 +30,32 @@ fun DelegationCert.verifySignature(): Boolean = verifySignature(JvmEcdsaVerifier
 
 /** Verifies this revocation list's issuer signature with the JDK provider. */
 fun RevocationList.verifySignature(): Boolean = verifySignature(JvmEcdsaVerifier)
+
+/** Verifies this member statement's signature with the JDK provider against [publicKeySpki]. */
+fun OrgMemberStatement.verifySignature(publicKeySpki: String): Boolean =
+    verifySignature(JvmEcdsaVerifier, publicKeySpki)
+
+/** Issues and signs an [OrgMemberStatement] with [issuerPrivateKey]. */
+fun OrgMemberStatement.Companion.issue(
+    issuerPrivateKey: PrivateKey,
+    deviceId: String,
+    subjectPublicKey: String,
+    departmentId: String,
+    role: String,
+    issuedAtMs: Long = System.currentTimeMillis(),
+    statementSerial: Long,
+): OrgMemberStatement {
+    val unsigned = OrgMemberStatement(
+        deviceId = deviceId,
+        subjectPublicKey = subjectPublicKey,
+        departmentId = departmentId,
+        role = role,
+        issuedAtMs = issuedAtMs,
+        statementSerial = statementSerial,
+        issuerSignature = "",
+    )
+    return unsigned.copy(issuerSignature = FlashCrypto.sign(issuerPrivateKey, unsigned.canonicalBytes()))
+}
 
 /** Issues and signs a [DeviceCert] with [issuerPrivateKey] (the root key, or the delegate key named in a delegation). */
 fun DeviceCert.Companion.issue(

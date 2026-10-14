@@ -414,7 +414,8 @@ private class Wiring(
                     available = engine.discoveredEndpoints.value.mapTo(HashSet()) { it.deviceId.value } +
                         presence.reachablePeerIds.value + sessions,
                     contacts = trustStore.getTrustedPeers().keys.mapTo(HashSet()) { it.value } +
-                        presenceChat?.activeGroupRosters().orEmpty().flatten(),
+                        presenceChat?.activeGroupRosters().orEmpty().flatten() +
+                        presenceChat?.orgDialCandidates().orEmpty(),
                     activity = networkImpl.linkActivity(),
                     busy = (facade as? DefaultFlashEngine)?.busyCallPeerIds().orEmpty(),
                     // No Nearby screen of its own: a consumer pairs through its own UI.
@@ -477,10 +478,20 @@ private class Wiring(
             allowed = { modes.dialFilter.value },
             log = { Log.i(TAG, it) },
         )
+        val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
+            dao = db.orgDirectoryDao(),
+            trustStore = trustStore,
+        )
+        scope.launch {
+            orgPeerResolver.refreshFromSnapshot()
+        }
+
         val chatImpl = RealFlashChatRepository(
             scope = scope,
             localDeviceId = localId,
             localDisplayName = identity.friendlyName,
+            isOrgPeer = { peerId -> orgPeerResolver.isOrgPeer(peerId) },
+            orgPeerResolver = orgPeerResolver,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
             outboxDao = db.outboxDao(),
@@ -515,7 +526,7 @@ private class Wiring(
             reachablePeerIds = combine(engine.discoveredEndpoints, presence.reachablePeerIds) { endpoints, reported ->
                 endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
             },
-            peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] },
+            peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
             attachmentProgress = transferImpl.activeTransfers.map { transfers ->
                 transfers.associate { t ->
                     t.id.value to com.transfer.flash.core.messaging.model.FlashAttachmentProgress(

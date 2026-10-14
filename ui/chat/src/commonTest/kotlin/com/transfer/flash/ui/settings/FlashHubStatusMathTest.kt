@@ -8,6 +8,8 @@ import com.transfer.flash.core.enterprise.HubLinkState
 import com.transfer.flash.core.enterprise.HubOfflineReason
 import com.transfer.flash.core.enterprise.HubSealingKeyState
 import com.transfer.flash.core.enterprise.HubStatus
+import com.transfer.flash.core.enterprise.OrgLease
+import com.transfer.flash.core.enterprise.ExpiredReason
 import com.transfer.flash.core.enterprise.UnenrolResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -192,4 +194,75 @@ class FlashHubStatusMathTest {
         assertEquals("Waiting for approval", FlashHubStatusMath.joinButtonLabel(true, false, true))
         assertEquals("Joined", FlashHubStatusMath.joinButtonLabel(true, true, true))
     }
+
+    @Test
+    fun orgTrustState_maps_all_lease_and_clock_scenarios() {
+        val nowMs = 1_000_000_000L
+        val validUntil = nowMs + 10 * 86_400_000L // 10 days left
+
+        // 1. Hub unsupported
+        val unsupported = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Valid(validUntil),
+            clockOk = true,
+            hubSupports = false,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.NotSupported, unsupported)
+
+        // 2. Clock wrong
+        val clockWrong = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Valid(validUntil),
+            clockOk = false,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.ClockWrong, clockWrong)
+
+        // 3. Never synced
+        val neverSynced = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.None,
+            clockOk = true,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.NeverSynced, neverSynced)
+
+        // 4. Valid with > 3 days left
+        val valid = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Valid(validUntil),
+            clockOk = true,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.Valid(validUntil), valid)
+
+        // 5. Expiring with <= 3 days left
+        val expiringUntil = nowMs + 2 * 86_400_000L // 2 days left
+        val expiring = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Valid(expiringUntil),
+            clockOk = true,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.Expiring(expiringUntil, daysLeft = 2), expiring)
+
+        // 6. Expired by TIME
+        val expiredTime = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Expired(sinceMs = nowMs - 1000L, reason = ExpiredReason.TIME),
+            clockOk = true,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.Expired, expiredTime)
+
+        // 7. Expired by CLOCK rollback
+        val expiredClock = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Expired(sinceMs = nowMs, reason = ExpiredReason.CLOCK),
+            clockOk = true,
+            hubSupports = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.ClockWrong, expiredClock)
+    }
 }
+

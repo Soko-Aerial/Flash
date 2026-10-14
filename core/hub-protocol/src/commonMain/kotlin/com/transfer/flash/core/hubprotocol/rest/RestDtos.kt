@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
+import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import kotlinx.serialization.Serializable
 
@@ -313,3 +314,73 @@ public data class StoredEnrollment(
     /** The hub's display name; absent in blobs written before CLIENT Phase 2. */
     public val hubName: String = "",
 )
+
+// ---- directory sync (Plan B, ADR-134) ------------------------------------------------------------------------
+
+/**
+ * Element of `DirectorySyncDto.departments`: synchronised department metadata.
+ * [hidden] is defaulted to false; Plan A2 sets it when hidden departments are enabled.
+ */
+@FlashInternalApi
+@Serializable
+public data class DepartmentSyncDto(
+    public val id: String,
+    public val name: String,
+    public val headDeviceIds: List<String> = emptyList(),
+    public val memberCount: Int = 0,
+    public val hidden: Boolean = false,
+)
+
+/**
+ * Element of `DirectorySyncDto.members`: synchronised member upsert with signed [OrgMemberStatement].
+ */
+@FlashInternalApi
+@Serializable
+public data class DirectoryMemberSyncDto(
+    public val deviceId: String,
+    public val displayName: String = "",
+    public val departmentId: String = "",
+    public val role: String = HubDirectoryValues.ROLE_MEMBER,
+    public val statement: OrgMemberStatement,
+    public val online: Boolean? = null,
+)
+
+/**
+ * Forward-compatibility DTO for Phase B4: synchronised hub group roster statements.
+ */
+@FlashInternalApi
+@Serializable
+public data class GroupRosterDto(
+    public val groupId: String,
+    public val version: Long = 0L,
+    public val statement: String = "",
+    public val validUntilMs: Long = 0L,
+)
+
+/**
+ * Response of `GET /api/v1/directory/sync?since=<version>&cursor=<opaque>&limit=<n>`.
+ */
+@FlashInternalApi
+@Serializable
+public data class DirectorySyncDto(
+    public val directoryEpoch: String,
+    public val version: Long,
+    public val fromVersion: Long,
+    public val fullResync: Boolean,
+    public val nextCursor: String? = null,
+    public val serverTimeMs: Long,
+    public val offlineGraceDays: Int = DEFAULT_OFFLINE_GRACE_DAYS,
+    public val delegationChain: List<DelegationCert> = emptyList(),
+    public val members: List<DirectoryMemberSyncDto> = emptyList(),
+    public val removedDeviceIds: List<String> = emptyList(),
+    public val departments: List<DepartmentSyncDto> = emptyList(),
+    public val removedDepartmentIds: List<String> = emptyList(),
+    public val groupRosters: List<GroupRosterDto> = emptyList(),
+    public val removedGroupIds: List<String> = emptyList(),
+) {
+    public companion object {
+        public const val DEFAULT_OFFLINE_GRACE_DAYS: Int = 30
+        public const val MIN_OFFLINE_GRACE_DAYS: Int = 1
+        public const val MAX_OFFLINE_GRACE_DAYS: Int = 365
+    }
+}

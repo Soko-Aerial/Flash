@@ -122,4 +122,23 @@ class PersistedFlashCryptoTest {
         assertEquals(32, ours.size)
         assertArrayEquals(ours, theirs)
     }
+
+    @Test
+    fun `B0-1 identityPublicKeyEncoded strictly equals javaKeyPair public SPKI and sha256 matches fingerprint`() {
+        val stateDir = stateDir()
+        val crypto = PersistedFlashCrypto(stateDir, IdentityKeyVault.PassThrough)
+        val spkiBytes = crypto.identityPublicKeyEncoded
+        val javaKeyPair = crypto.javaKeyPair()
+        org.junit.Assert.assertNotNull(javaKeyPair.public)
+        assertArrayEquals(spkiBytes, javaKeyPair.public.encoded)
+        assertEquals("X.509", javaKeyPair.public.format)
+        assertEquals("EC", javaKeyPair.public.algorithm)
+
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val expectedFingerprint = digest.digest(spkiBytes).joinToString("") { "%02X".format(it) }
+        val actualFingerprint = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(javaKeyPair.public.encoded).joinToString("") { "%02X".format(it) }
+        assertEquals(expectedFingerprint, actualFingerprint)
+    }
 }
+

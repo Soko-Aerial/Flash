@@ -1,5 +1,12 @@
 package com.transfer.flash.server.directory
 
+import com.transfer.flash.core.hubprotocol.certs.DelegationCert
+import com.transfer.flash.core.hubprotocol.certs.HubRoles
+import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
+import com.transfer.flash.core.hubprotocol.rest.DepartmentSyncDto
+import com.transfer.flash.core.hubprotocol.rest.DirectoryMemberSyncDto
+import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
+import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
 import com.transfer.flash.server.observability.PresenceView
 import com.transfer.flash.server.storage.Migration
 import com.transfer.flash.server.storage.Migrator
@@ -11,6 +18,7 @@ import com.transfer.flash.server.storage.longOrNull
 import com.transfer.flash.server.storage.query
 import com.transfer.flash.server.storage.update
 import java.sql.Connection
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -53,7 +61,8 @@ enum class MemberRole {
 data class Department(
     val id: String,
     val name: String,
-    val adminDeviceIds: List<String> = emptyList()
+    val adminDeviceIds: List<String> = emptyList(),
+    val version: Long = 0L,
 )
 
 /**
@@ -67,7 +76,8 @@ data class GroupCharter(
     val visibility: GroupVisibility,
     val joinMode: JoinMode,
     val adminDeviceIds: List<String> = emptyList(),
-    val memberDeviceIds: List<String> = emptyList()
+    val memberDeviceIds: List<String> = emptyList(),
+    val version: Long = 0L,
 )
 
 /**
@@ -80,7 +90,46 @@ data class DepartmentMember(
     val role: MemberRole = MemberRole.MEMBER,
     /** The device's P-256 identity key (SPKI Base64), shown to authenticated in-scope callers so peers can verify it. */
     val subjectPublicKey: String? = null,
+    val version: Long = 0L,
 )
+
+/** Tombstone tracking deletion of an entity for incremental directory sync. */
+data class DirectoryTombstone(
+    val entityType: String,
+    val entityId: String,
+    val deletedAtVersion: Long,
+    val deletedAtMs: Long,
+)
+
+/** Interface for signing [OrgMemberStatement]s when members are added or updated. */
+fun interface OrgMemberStatementSigner {
+    fun sign(
+        deviceId: String,
+        subjectPublicKey: String,
+        departmentId: String,
+        role: String,
+        nowMs: Long,
+        serial: Long,
+    ): Pair<OrgMemberStatement, Long>? // statement to delegationSerial
+}
+
+/**
+ * Scoping and visibility rules shared between REST directory endpoints and directory sync (Plan B, ADR-134).
+ */
+object DirectoryVisibility {
+    fun canSeeDepartment(department: Department, actor: DirectoryActor): Boolean {
+        return actor.isOrgAdmin || department.id == actor.departmentId || actor.deviceId in department.adminDeviceIds
+    }
+
+    fun canSeeMember(member: DepartmentMember, actor: DirectoryActor, directory: OrganizationDirectory): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (member.deviceId == actor.deviceId) return true
+        if (member.departmentId.isNotBlank() && member.departmentId == actor.departmentId) return true
+        val dept = if (member.departmentId.isNotBlank()) directory.getDepartment(member.departmentId) else null
+        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        return false
+    }
+}
 
 enum class JoinRequestStatus {
     PENDING,
@@ -167,6 +216,79 @@ class OrganizationDirectory(
     /** (groupId, deviceId) pairs an invite pre-authorised: the device joins that group without approval. */
     private val preAuthorized = HashSet<Pair<String, String>>()
 
+    var currentVersion: Long = 0L
+        private set
+    var epochId: String = UUID.randomUUID().toString()
+        private set
+    var statementSigner: OrgMemberStatementSigner? = null
+
+    val tombstones = LinkedHashMap<Pair<String, String>, DirectoryTombstone>()
+    private val memberStatements = LinkedHashMap<String, OrgMemberStatement>()
+
+    private fun bumpVersionLocked(nowMs: Long = clock()): Long {
+        currentVersion += 1
+        persist { c ->
+            c.update(
+                "UPDATE directory_state SET current_version = ?, last_bumped_at_ms = ? WHERE id = 1",
+                currentVersion,
+                nowMs,
+            )
+        }
+        return currentVersion
+    }
+
+    private fun recordTombstoneLocked(type: String, id: String, version: Long, nowMs: Long = clock()) {
+        persist { c ->
+            c.update(
+                "INSERT INTO directory_tombstone(entity_type, entity_id, deleted_at_version, deleted_at_ms) " +
+                    "VALUES(?,?,?,?) ON CONFLICT(entity_type, entity_id) DO UPDATE SET deleted_at_version = excluded.deleted_at_version, deleted_at_ms = excluded.deleted_at_ms",
+                type, id, version, nowMs,
+            )
+        }
+        tombstones[type to id] = DirectoryTombstone(type, id, version, nowMs)
+    }
+
+    fun resetEpoch(newEpoch: String = UUID.randomUUID().toString()) = lock.write {
+        epochId = newEpoch
+        persist { c ->
+            c.update("UPDATE directory_state SET epoch_id = ?, last_bumped_at_ms = ? WHERE id = 1", epochId, clock())
+        }
+    }
+
+    fun getMemberStatement(deviceId: String): OrgMemberStatement? = lock.read { memberStatements[deviceId] }
+
+    fun ensureStatementsSigned() = lock.write {
+        val signer = statementSigner ?: return@write
+        val now = clock()
+        for (member in members.values.toList()) {
+            if (member.subjectPublicKey.isNullOrBlank()) continue
+            if (memberStatements.containsKey(member.deviceId)) continue
+            val roleStr = when (member.role) {
+                MemberRole.ORG_ADMIN -> HubRoles.ADMIN
+                MemberRole.DEPT_ADMIN -> HubRoles.DEPT_ADMIN
+                MemberRole.MEMBER -> HubRoles.MEMBER
+            }
+            val res = signer.sign(
+                deviceId = member.deviceId,
+                subjectPublicKey = member.subjectPublicKey,
+                departmentId = member.departmentId,
+                role = roleStr,
+                nowMs = now,
+                serial = currentVersion + 1,
+            )
+            if (res != null) {
+                val (statement, delegationSerial) = res
+                val ver = bumpVersionLocked(now)
+                memberStatements[member.deviceId] = statement
+                persist { c ->
+                    c.update("UPDATE dir_members SET version = ? WHERE device_id = ?", ver, member.deviceId)
+                    insertMemberStatement(c, statement, delegationSerial, ver)
+                }
+                members[member.deviceId] = member.copy(version = ver)
+            }
+        }
+    }
+
     init {
         if (db != null) load(db)
     }
@@ -196,9 +318,11 @@ class OrganizationDirectory(
         val dept = Department(id = id.trim(), name = name.trim(), adminDeviceIds = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct())
         return lock.write {
             if (departments.containsKey(dept.id)) throw DirectoryConflictException("Department '${dept.id}' already exists")
-            persist { c -> insertDepartment(c, dept) }
-            departments[dept.id] = dept
-            dept
+            val newVer = bumpVersionLocked()
+            val deptWithVer = dept.copy(version = newVer)
+            persist { c -> insertDepartment(c, deptWithVer) }
+            departments[dept.id] = deptWithVer
+            deptWithVer
         }
     }
 
@@ -212,11 +336,13 @@ class OrganizationDirectory(
         return lock.write {
             val existing = departments[id] ?: throw DirectoryNotFoundException("Department '$id' not found")
             if (name != null) requireName(name, "Department name")
+            val newVer = bumpVersionLocked()
             val updated = existing.copy(
                 name = name?.trim() ?: existing.name,
                 adminDeviceIds = adminDeviceIds?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct() ?: existing.adminDeviceIds,
+                version = newVer,
             )
-            persist { c -> c.update("UPDATE dir_departments SET name = ?, admin_ids = ? WHERE id = ?", updated.name, encodeList(updated.adminDeviceIds), id) }
+            persist { c -> c.update("UPDATE dir_departments SET name = ?, admin_ids = ?, version = ? WHERE id = ?", updated.name, encodeList(updated.adminDeviceIds), newVer, id) }
             departments[id] = updated
             updated
         }
@@ -230,6 +356,8 @@ class OrganizationDirectory(
             if (groups.values.any { it.departmentId == id } || members.values.any { it.departmentId == id }) {
                 throw DirectoryConflictException("Department '$id' still has groups or members")
             }
+            val v = bumpVersionLocked()
+            recordTombstoneLocked("department", id, v)
             persist { c -> c.update("DELETE FROM dir_departments WHERE id = ?", id) }
             departments.remove(id)
         }
@@ -283,6 +411,7 @@ class OrganizationDirectory(
             val allAdmins = (adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() } + actor.deviceId)
                 .filter { it != DirectoryActor.CONSOLE.deviceId }
                 .distinct()
+            val newVer = bumpVersionLocked()
             val group = GroupCharter(
                 id = id.trim(),
                 name = name.trim(),
@@ -291,6 +420,7 @@ class OrganizationDirectory(
                 joinMode = joinMode,
                 adminDeviceIds = allAdmins,
                 memberDeviceIds = allAdmins,
+                version = newVer,
             )
             persist { c ->
                 insertGroup(c, group, clock())
@@ -311,15 +441,17 @@ class OrganizationDirectory(
             val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
             requireManager(group, actor, "change")
             if (name != null) requireName(name, "Group name")
+            val newVer = bumpVersionLocked()
             val updated = group.copy(
                 name = name?.trim() ?: group.name,
                 visibility = visibility ?: group.visibility,
                 joinMode = joinMode ?: group.joinMode,
+                version = newVer,
             )
             persist { c ->
                 c.update(
-                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ? WHERE id = ?",
-                    updated.name, updated.visibility.name, updated.joinMode.name, id,
+                    "UPDATE dir_groups SET name = ?, visibility = ?, join_mode = ?, version = ? WHERE id = ?",
+                    updated.name, updated.visibility.name, updated.joinMode.name, newVer, id,
                 )
             }
             groups[id] = updated
@@ -330,6 +462,8 @@ class OrganizationDirectory(
         lock.write {
             val group = groups[id] ?: throw DirectoryNotFoundException("Group '$id' not found")
             requireManager(group, actor, "delete")
+            val v = bumpVersionLocked()
+            recordTombstoneLocked("group", id, v)
             persist { c ->
                 c.update("DELETE FROM dir_group_members WHERE group_id = ?", id)
                 c.update("DELETE FROM dir_join_requests WHERE group_id = ?", id)
@@ -351,9 +485,10 @@ class OrganizationDirectory(
         }
         val admins = adminDeviceIds.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         val newMembers = (group.memberDeviceIds + admins).distinct()
-        val updated = group.copy(adminDeviceIds = admins, memberDeviceIds = newMembers)
+        val newVer = bumpVersionLocked()
+        val updated = group.copy(adminDeviceIds = admins, memberDeviceIds = newMembers, version = newVer)
         persist { c ->
-            c.update("UPDATE dir_groups SET admin_ids = ? WHERE id = ?", encodeList(admins), id)
+            c.update("UPDATE dir_groups SET admin_ids = ?, version = ? WHERE id = ?", encodeList(admins), newVer, id)
             (newMembers - group.memberDeviceIds.toSet()).forEach { insertGroupMember(c, id, it) }
         }
         groups[id] = updated
@@ -426,20 +561,44 @@ class OrganizationDirectory(
 
     /** Inserts or updates a member record; [DepartmentMember.departmentId] may be blank (departmentless). */
     fun registerMember(member: DepartmentMember): DepartmentMember = lock.write {
+        val newVer = bumpVersionLocked()
         val stored = member.copy(
             deviceId = member.deviceId.trim(),
             departmentId = member.departmentId.trim(),
             displayName = member.displayName.trim().take(128),
+            version = newVer,
         )
         persist { c ->
             c.update(
-                "INSERT INTO dir_members(device_id, department_id, display_name, role, subject_public_key) " +
-                    "VALUES(?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET department_id = excluded.department_id, " +
-                    "display_name = excluded.display_name, role = excluded.role, subject_public_key = excluded.subject_public_key",
-                stored.deviceId, stored.departmentId, stored.displayName, stored.role.name, stored.subjectPublicKey,
+                "INSERT INTO dir_members(device_id, department_id, display_name, role, subject_public_key, version) " +
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET department_id = excluded.department_id, " +
+                    "display_name = excluded.display_name, role = excluded.role, subject_public_key = excluded.subject_public_key, version = excluded.version",
+                stored.deviceId, stored.departmentId, stored.displayName, stored.role.name, stored.subjectPublicKey, newVer,
             )
         }
         members[stored.deviceId] = stored
+
+        if (statementSigner != null && !stored.subjectPublicKey.isNullOrBlank()) {
+            val roleStr = when (stored.role) {
+                MemberRole.ORG_ADMIN -> HubRoles.ADMIN
+                MemberRole.DEPT_ADMIN -> HubRoles.DEPT_ADMIN
+                MemberRole.MEMBER -> HubRoles.MEMBER
+            }
+            val res = statementSigner?.sign(
+                deviceId = stored.deviceId,
+                subjectPublicKey = stored.subjectPublicKey,
+                departmentId = stored.departmentId,
+                role = roleStr,
+                nowMs = clock(),
+                serial = newVer,
+            )
+            if (res != null) {
+                val (statement, delegationSerial) = res
+                memberStatements[stored.deviceId] = statement
+                persist { c -> insertMemberStatement(c, statement, delegationSerial, newVer) }
+            }
+        }
+
         stored
     }
 
@@ -447,8 +606,14 @@ class OrganizationDirectory(
         lock.write {
             val existing = members[deviceId]
             if (existing != null && existing.departmentId == departmentId) {
-                persist { c -> c.update("DELETE FROM dir_members WHERE device_id = ?", deviceId) }
+                val v = bumpVersionLocked()
+                recordTombstoneLocked("member", deviceId, v)
+                persist { c ->
+                    c.update("DELETE FROM dir_members WHERE device_id = ?", deviceId)
+                    c.update("DELETE FROM org_member_statement WHERE device_id = ?", deviceId)
+                }
                 members.remove(deviceId)
+                memberStatements.remove(deviceId)
             }
         }
     }
@@ -478,29 +643,34 @@ class OrganizationDirectory(
      */
     fun removeDevice(deviceId: String) {
         lock.write {
+            val v = bumpVersionLocked()
+            recordTombstoneLocked("member", deviceId, v)
             persist { c ->
                 c.update("DELETE FROM dir_members WHERE device_id = ?", deviceId)
+                c.update("DELETE FROM org_member_statement WHERE device_id = ?", deviceId)
                 c.update("DELETE FROM dir_group_members WHERE device_id = ?", deviceId)
                 c.update("DELETE FROM dir_join_requests WHERE device_id = ? AND status = 'PENDING'", deviceId)
                 c.update("DELETE FROM dir_preauth WHERE device_id = ?", deviceId)
                 for (g in groups.values.filter { deviceId in it.adminDeviceIds }) {
-                    c.update("UPDATE dir_groups SET admin_ids = ? WHERE id = ?", encodeList(g.adminDeviceIds - deviceId), g.id)
+                    c.update("UPDATE dir_groups SET admin_ids = ?, version = ? WHERE id = ?", encodeList(g.adminDeviceIds - deviceId), v, g.id)
                 }
                 for (d in departments.values.filter { deviceId in it.adminDeviceIds }) {
-                    c.update("UPDATE dir_departments SET admin_ids = ? WHERE id = ?", encodeList(d.adminDeviceIds - deviceId), d.id)
+                    c.update("UPDATE dir_departments SET admin_ids = ?, version = ? WHERE id = ?", encodeList(d.adminDeviceIds - deviceId), v, d.id)
                 }
             }
             members.remove(deviceId)
+            memberStatements.remove(deviceId)
             for ((id, g) in groups.entries.toList()) {
                 if (deviceId in g.memberDeviceIds || deviceId in g.adminDeviceIds) {
                     groups[id] = g.copy(
                         memberDeviceIds = g.memberDeviceIds - deviceId,
                         adminDeviceIds = g.adminDeviceIds - deviceId,
+                        version = v,
                     )
                 }
             }
             for ((id, d) in departments.entries.toList()) {
-                if (deviceId in d.adminDeviceIds) departments[id] = d.copy(adminDeviceIds = d.adminDeviceIds - deviceId)
+                if (deviceId in d.adminDeviceIds) departments[id] = d.copy(adminDeviceIds = d.adminDeviceIds - deviceId, version = v)
             }
             joinRequests.values.removeIf { it.deviceId == deviceId && it.status == JoinRequestStatus.PENDING }
             preAuthorized.removeIf { it.second == deviceId }
@@ -686,13 +856,15 @@ class OrganizationDirectory(
     fun removeMemberFromGroup(groupId: String, deviceId: String, actor: DirectoryActor): GroupCharter = lock.write {
         val group = groups[groupId] ?: throw DirectoryNotFoundException("Group '$groupId' not found")
         requireManager(group, actor, "remove member from")
+        val v = bumpVersionLocked()
         val updated = group.copy(
             memberDeviceIds = group.memberDeviceIds.filter { it != deviceId },
-            adminDeviceIds = group.adminDeviceIds.filter { it != deviceId }
+            adminDeviceIds = group.adminDeviceIds.filter { it != deviceId },
+            version = v,
         )
         persist { c ->
             c.update("DELETE FROM dir_group_members WHERE group_id = ? AND device_id = ?", groupId, deviceId)
-            c.update("UPDATE dir_groups SET admin_ids = ? WHERE id = ?", encodeList(updated.adminDeviceIds), groupId)
+            c.update("UPDATE dir_groups SET admin_ids = ?, version = ? WHERE id = ?", encodeList(updated.adminDeviceIds), v, groupId)
         }
         groups[groupId] = updated
         updated
@@ -734,8 +906,12 @@ class OrganizationDirectory(
 
     private fun addMemberLocked(group: GroupCharter, deviceId: String): GroupCharter {
         if (deviceId in group.memberDeviceIds) return group
-        persist { c -> insertGroupMember(c, group.id, deviceId) }
-        val updated = group.copy(memberDeviceIds = group.memberDeviceIds + deviceId)
+        val v = bumpVersionLocked()
+        val updated = group.copy(memberDeviceIds = group.memberDeviceIds + deviceId, version = v)
+        persist { c ->
+            insertGroupMember(c, group.id, deviceId)
+            c.update("UPDATE dir_groups SET version = ? WHERE id = ?", v, group.id)
+        }
         groups[group.id] = updated
         return updated
     }
@@ -756,13 +932,13 @@ class OrganizationDirectory(
     }
 
     private fun insertDepartment(c: Connection, d: Department) {
-        c.update("INSERT INTO dir_departments(id, name, admin_ids) VALUES(?,?,?)", d.id, d.name, encodeList(d.adminDeviceIds))
+        c.update("INSERT INTO dir_departments(id, name, admin_ids, version) VALUES(?,?,?,?)", d.id, d.name, encodeList(d.adminDeviceIds), d.version)
     }
 
     private fun insertGroup(c: Connection, g: GroupCharter, now: Long) {
         c.update(
-            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at) VALUES(?,?,?,?,?,?,?)",
-            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now,
+            "INSERT INTO dir_groups(id, name, department_id, visibility, join_mode, admin_ids, created_at, version) VALUES(?,?,?,?,?,?,?,?)",
+            g.id, g.name, g.departmentId, g.visibility.name, g.joinMode.name, encodeList(g.adminDeviceIds), now, g.version,
         )
     }
 
@@ -782,10 +958,123 @@ class OrganizationDirectory(
         c.update("UPDATE dir_join_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?", r.status.name, r.decidedBy, r.decidedAtMs, r.id)
     }
 
+    private fun insertMemberStatement(c: Connection, s: OrgMemberStatement, delegationSerial: Long, version: Long) {
+        c.update(
+            "INSERT INTO org_member_statement(device_id, statement_serial, issued_at_ms, statement_bytes, signature_bytes, delegation_serial, version) " +
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(device_id) DO UPDATE SET " +
+                "statement_serial = excluded.statement_serial, issued_at_ms = excluded.issued_at_ms, " +
+                "statement_bytes = excluded.statement_bytes, signature_bytes = excluded.signature_bytes, " +
+                "delegation_serial = excluded.delegation_serial, version = excluded.version",
+            s.deviceId, s.statementSerial, s.issuedAtMs, s.canonicalBytes(), s.issuerSignature, delegationSerial, version,
+        )
+    }
+
+    /**
+     * Queries incremental or full directory synchronization changes for [actor] (Plan B, ADR-134).
+     */
+    fun getSyncChanges(
+        since: Long,
+        cursor: String?,
+        limit: Int,
+        actor: DirectoryActor,
+        activeDelegationChain: List<DelegationCert> = emptyList(),
+        offlineGraceDays: Int = 30,
+        requestedEpoch: String? = null,
+    ): DirectorySyncDto = lock.read {
+        val now = clock()
+        val isFullResync = since > currentVersion || (requestedEpoch != null && requestedEpoch != epochId)
+        val effectiveSince = if (isFullResync) 0L else since.coerceAtLeast(0L)
+
+        // Filter departments visible to actor
+        val visibleDepts = departments.values.filter { DirectoryVisibility.canSeeDepartment(it, actor) }
+        val changedDepts = visibleDepts.filter { it.version > effectiveSince }.map {
+            DepartmentSyncDto(
+                id = it.id,
+                name = it.name,
+                headDeviceIds = it.adminDeviceIds,
+                memberCount = members.values.count { m -> m.departmentId == it.id },
+                hidden = false,
+            )
+        }
+        val removedDepts = if (isFullResync) emptyList() else tombstones.values
+            .filter { it.entityType == "department" && it.deletedAtVersion > effectiveSince }
+            .map { it.entityId }
+
+        // Filter members visible to actor
+        val visibleMembers = members.values.filter { DirectoryVisibility.canSeeMember(it, actor, this) }
+        val allChangedMembers = visibleMembers
+            .filter { it.version > effectiveSince }
+            .sortedWith(compareBy({ it.version }, { it.deviceId }))
+
+        // Parse cursor: format "$version_$deviceId"
+        val cursorPair: Pair<Long, String>? = cursor?.let { raw ->
+            runCatching {
+                val decoded = String(Base64.getUrlDecoder().decode(raw))
+                val parts = decoded.split("_", limit = 2)
+                parts[0].toLong() to parts[1]
+            }.getOrNull()
+        }
+
+        val pagedMembers = if (cursorPair != null) {
+            allChangedMembers.filter { m ->
+                m.version > cursorPair.first || (m.version == cursorPair.first && m.deviceId > cursorPair.second)
+            }
+        } else {
+            allChangedMembers
+        }
+
+        val pageSize = limit.coerceIn(1, 1000)
+        val membersOnPage = pagedMembers.take(pageSize)
+        val hasMore = pagedMembers.size > pageSize
+        val nextCursor = if (hasMore && membersOnPage.isNotEmpty()) {
+            val last = membersOnPage.last()
+            Base64.getUrlEncoder().withoutPadding().encodeToString("${last.version}_${last.deviceId}".toByteArray())
+        } else null
+
+        val memberDtos = membersOnPage.mapNotNull { m ->
+            val statement = memberStatements[m.deviceId]
+            if (statement != null) {
+                DirectoryMemberSyncDto(
+                    deviceId = m.deviceId,
+                    displayName = m.displayName,
+                    departmentId = m.departmentId,
+                    role = when (m.role) {
+                        MemberRole.ORG_ADMIN -> HubDirectoryValues.ROLE_ORG_ADMIN
+                        MemberRole.DEPT_ADMIN -> HubDirectoryValues.ROLE_DEPT_ADMIN
+                        MemberRole.MEMBER -> HubDirectoryValues.ROLE_MEMBER
+                    },
+                    statement = statement,
+                    online = isOnline(m.deviceId),
+                )
+            } else null
+        }
+
+        val removedMembers = if (isFullResync) emptyList() else tombstones.values
+            .filter { it.entityType == "member" && it.deletedAtVersion > effectiveSince }
+            .map { it.entityId }
+
+        DirectorySyncDto(
+            directoryEpoch = epochId,
+            version = currentVersion,
+            fromVersion = since,
+            fullResync = isFullResync,
+            nextCursor = nextCursor,
+            serverTimeMs = now,
+            offlineGraceDays = offlineGraceDays,
+            delegationChain = activeDelegationChain,
+            members = memberDtos,
+            removedDeviceIds = if (cursorPair == null) removedMembers else emptyList(),
+            departments = if (cursorPair == null) changedDepts else emptyList(),
+            removedDepartmentIds = if (cursorPair == null) removedDepts else emptyList(),
+            groupRosters = emptyList(),
+            removedGroupIds = emptyList(),
+        )
+    }
+
     private fun load(database: ServerDatabase) {
         database.withConnection { c ->
             c.query("SELECT * FROM dir_departments ORDER BY rowid") { rs ->
-                Department(rs.getString("id"), rs.getString("name"), decodeList(rs.getString("admin_ids")))
+                Department(rs.getString("id"), rs.getString("name"), decodeList(rs.getString("admin_ids")), rs.getLong("version"))
             }.forEach { departments[it.id] = it }
             val memberRows = c.query("SELECT group_id, device_id FROM dir_group_members ORDER BY rowid") { it.getString(1) to it.getString(2) }
                 .groupBy({ it.first }, { it.second })
@@ -799,6 +1088,7 @@ class OrganizationDirectory(
                     joinMode = JoinMode.valueOf(rs.getString("join_mode")),
                     adminDeviceIds = decodeList(rs.getString("admin_ids")),
                     memberDeviceIds = memberRows[id].orEmpty(),
+                    version = rs.getLong("version"),
                 )
             }.forEach { groups[it.id] = it }
             c.query("SELECT * FROM dir_members ORDER BY rowid") { rs ->
@@ -808,6 +1098,7 @@ class OrganizationDirectory(
                     displayName = rs.getString("display_name"),
                     role = MemberRole.valueOf(rs.getString("role")),
                     subjectPublicKey = rs.getString("subject_public_key"),
+                    version = rs.getLong("version"),
                 )
             }.forEach { members[it.deviceId] = it }
             c.query("SELECT * FROM dir_join_requests ORDER BY requested_at, rowid") { rs ->
@@ -824,6 +1115,54 @@ class OrganizationDirectory(
                 )
             }.forEach { joinRequests[it.id] = it }
             c.query("SELECT group_id, device_id FROM dir_preauth") { it.getString(1) to it.getString(2) }.forEach { preAuthorized += it }
+
+            // Load directory_state
+            c.query("SELECT current_version, epoch_id FROM directory_state WHERE id = 1") { rs ->
+                rs.getLong("current_version") to rs.getString("epoch_id")
+            }.firstOrNull().let { state ->
+                if (state != null) {
+                    currentVersion = state.first
+                    epochId = state.second
+                } else {
+                    currentVersion = 0L
+                    epochId = UUID.randomUUID().toString()
+                    c.update(
+                        "INSERT OR REPLACE INTO directory_state(id, current_version, epoch_id, last_bumped_at_ms) VALUES(1, ?, ?, ?)",
+                        currentVersion, epochId, clock(),
+                    )
+                }
+            }
+
+            // Load directory_tombstone
+            c.query("SELECT entity_type, entity_id, deleted_at_version, deleted_at_ms FROM directory_tombstone") { rs ->
+                DirectoryTombstone(
+                    entityType = rs.getString("entity_type"),
+                    entityId = rs.getString("entity_id"),
+                    deletedAtVersion = rs.getLong("deleted_at_version"),
+                    deletedAtMs = rs.getLong("deleted_at_ms"),
+                )
+            }.forEach { tombstones[it.entityType to it.entityId] = it }
+
+            // Load org_member_statement
+            c.query("SELECT device_id, statement_serial, issued_at_ms, signature_bytes FROM org_member_statement") { rs ->
+                val devId = rs.getString("device_id")
+                val member = members[devId]
+                if (member != null && !member.subjectPublicKey.isNullOrBlank()) {
+                    OrgMemberStatement(
+                        deviceId = devId,
+                        subjectPublicKey = member.subjectPublicKey,
+                        departmentId = member.departmentId,
+                        role = when (member.role) {
+                            MemberRole.ORG_ADMIN -> HubRoles.ADMIN
+                            MemberRole.DEPT_ADMIN -> HubRoles.DEPT_ADMIN
+                            MemberRole.MEMBER -> HubRoles.MEMBER
+                        },
+                        issuedAtMs = rs.getLong("issued_at_ms"),
+                        statementSerial = rs.getLong("statement_serial"),
+                        issuerSignature = rs.getString("signature_bytes"),
+                    )
+                } else null
+            }.filterNotNull().forEach { memberStatements[it.deviceId] = it }
         }
     }
 
@@ -861,6 +1200,42 @@ class OrganizationDirectory(
                     )
                     st.execute("CREATE INDEX IF NOT EXISTS idx_dir_join_group ON dir_join_requests(group_id, status)")
                     st.execute("CREATE TABLE IF NOT EXISTS dir_preauth(group_id TEXT NOT NULL, device_id TEXT NOT NULL, PRIMARY KEY(group_id, device_id))")
+                }
+            },
+            Migration(2, "directory: versioning, member statements, tombstones, and state for offline org trust") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE dir_departments ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+                    st.execute("ALTER TABLE dir_groups ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+                    st.execute("ALTER TABLE dir_members ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+                    st.execute(
+                        "CREATE TABLE IF NOT EXISTS org_member_statement(" +
+                            "device_id TEXT PRIMARY KEY, " +
+                            "statement_serial INTEGER NOT NULL, " +
+                            "issued_at_ms INTEGER NOT NULL, " +
+                            "statement_bytes BLOB, " +
+                            "signature_bytes TEXT NOT NULL, " +
+                            "delegation_serial INTEGER NOT NULL, " +
+                            "version INTEGER NOT NULL DEFAULT 0" +
+                        ")",
+                    )
+                    st.execute(
+                        "CREATE TABLE IF NOT EXISTS directory_state(" +
+                            "id INTEGER PRIMARY KEY CHECK (id = 1), " +
+                            "current_version INTEGER NOT NULL DEFAULT 0, " +
+                            "epoch_id TEXT NOT NULL, " +
+                            "last_bumped_at_ms INTEGER NOT NULL" +
+                        ")",
+                    )
+                    st.execute(
+                        "CREATE TABLE IF NOT EXISTS directory_tombstone(" +
+                            "entity_type TEXT NOT NULL, " +
+                            "entity_id TEXT NOT NULL, " +
+                            "deleted_at_version INTEGER NOT NULL, " +
+                            "deleted_at_ms INTEGER NOT NULL, " +
+                            "PRIMARY KEY(entity_type, entity_id)" +
+                        ")",
+                    )
+                    st.execute("CREATE INDEX IF NOT EXISTS idx_directory_tombstone_ver ON directory_tombstone(deleted_at_version)")
                 }
             },
         )

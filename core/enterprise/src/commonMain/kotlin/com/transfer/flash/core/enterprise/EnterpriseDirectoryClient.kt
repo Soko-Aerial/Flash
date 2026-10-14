@@ -12,6 +12,7 @@ import com.transfer.flash.core.hubprotocol.rest.ApprovalSubmitBody
 import com.transfer.flash.core.hubprotocol.rest.DepartmentDto
 import com.transfer.flash.core.hubprotocol.rest.GroupDto
 import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
+import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.JoinDecisionBody
 import com.transfer.flash.core.hubprotocol.rest.JoinRequestBody
@@ -31,6 +32,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.CoroutineDispatcher
@@ -134,6 +136,33 @@ public interface HubDirectoryApi {
 }
 
 /**
+ * Outcome of fetching one page of directory sync changes from the hub.
+ */
+@FlashInternalApi
+public sealed interface DirectorySyncPageResult {
+    public data class Success(val dto: DirectorySyncDto) : DirectorySyncPageResult
+    public data object HubUnsupported : DirectorySyncPageResult
+    public data class RateLimited(val retryAfterSeconds: Long?) : DirectorySyncPageResult
+    public data class AuthRefused(val statusCode: Int, val message: String) : DirectorySyncPageResult
+    public data class Unreachable(val message: String) : DirectorySyncPageResult
+    public data class ServerError(val statusCode: Int, val message: String) : DirectorySyncPageResult
+}
+
+/**
+ * Interface for fetching directory sync pages from the hub.
+ */
+@FlashInternalApi
+public interface DirectorySyncApi {
+    public suspend fun fetchDirectorySync(
+        hubUrl: String,
+        since: Long = 0L,
+        epoch: String? = null,
+        cursor: String? = null,
+        limit: Int = 500,
+    ): DirectorySyncPageResult
+}
+
+/**
  * REST HTTP client for the Enterprise Organization Directory and scoped groups.
  *
  * Bodies are the shared `:core:hub-protocol` DTOs; query values are URL-encoded by Ktor. Every call sends
@@ -151,7 +180,7 @@ public class EnterpriseDirectoryClient(
     /** The hub address stored in the credentials, or null when not enrolled. When non-null, every call must match its host. */
     private val pinnedHubUrl: () -> String? = { null },
     private val allowCleartext: () -> Boolean = { false },
-) : HubDirectoryApi, HubSealingKeyApi {
+) : HubDirectoryApi, HubSealingKeyApi, DirectorySyncApi {
 
     private class Reply(val response: HttpResponse, val body: String)
 
@@ -296,6 +325,50 @@ public class EnterpriseDirectoryClient(
         hubPost(hubUrl, HubContract.PATH_GROUP_JOIN_DECISION, HubRestCodec.encode(JoinDecisionBody(requestId = requestId, approve = approve, reason = reason))) { body ->
             HubRestCodec.decodeOrNull<JoinResponse>(body)?.toJoinResult("")
         }
+
+    override suspend fun fetchDirectorySync(
+        hubUrl: String,
+        since: Long,
+        epoch: String?,
+        cursor: String?,
+        limit: Int,
+    ): DirectorySyncPageResult = withContext(ioDispatcher) {
+        val reply = when (
+            val r = execute(hubUrl) { base, bearer ->
+                httpClient.get("$base${HubContract.PATH_DIRECTORY_SYNC}") {
+                    parameter("since", since.toString())
+                    if (!epoch.isNullOrBlank()) parameter("epoch", epoch)
+                    if (!cursor.isNullOrBlank()) parameter("cursor", cursor)
+                    parameter("limit", limit.toString())
+                    authorize(bearer)
+                }
+            }
+        ) {
+            is FlashResult.Failure -> {
+                val msg = (r.error as? FlashError.NetworkUnavailable)?.message
+                    ?: (r.error as? FlashError.Unknown)?.message
+                    ?: "The hub could not be reached."
+                return@withContext DirectorySyncPageResult.Unreachable(msg)
+            }
+            is FlashResult.Success -> r.value
+        }
+        val status = reply.response.status
+        when (status.value) {
+            200 -> {
+                val dto = runCatching { HubRestCodec.decode<DirectorySyncDto>(reply.body) }.getOrNull()
+                if (dto != null) DirectorySyncPageResult.Success(dto)
+                else DirectorySyncPageResult.ServerError(200, "Malformed directory sync response")
+            }
+            404, 405 -> DirectorySyncPageResult.HubUnsupported
+            429 -> {
+                val retryAfter = reply.response.headers[HttpHeaders.RetryAfter]?.toLongOrNull()
+                DirectorySyncPageResult.RateLimited(retryAfter)
+            }
+            401, 403 -> DirectorySyncPageResult.AuthRefused(status.value, reply.body.ifBlank { status.description })
+            in 500..599 -> DirectorySyncPageResult.ServerError(status.value, reply.body.ifBlank { status.description })
+            else -> DirectorySyncPageResult.ServerError(status.value, reply.body.ifBlank { status.description })
+        }
+    }
 
     /**
      * Publishes this device's end-to-end SEALING public key (ADR-121, ADR-124): [sealingPublicKey] is the Base64 SPKI of
