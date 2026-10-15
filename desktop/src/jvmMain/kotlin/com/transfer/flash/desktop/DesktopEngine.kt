@@ -1548,6 +1548,8 @@ public class DesktopEngine(
                 enterpriseDirectoryClient = hub.directory,
                 hubPeers = hub.peers,
                 hubContentViaHub = { _settings.value.hubContentViaHub },
+                hubAnnouncementDao = db.hubAnnouncementDao(),
+                hubAnnouncementsApi = hub.announcements,
                 hubSealing = hubSealingPort,
             )
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->

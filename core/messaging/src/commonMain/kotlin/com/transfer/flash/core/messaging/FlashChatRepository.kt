@@ -9,10 +9,14 @@ import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import com.transfer.flash.core.messaging.model.HubAnnouncementDraft
+import com.transfer.flash.core.messaging.model.HubAnnouncementUi
+import com.transfer.flash.core.messaging.model.HubPostingRights
 import com.transfer.flash.core.messaging.protocol.GroupSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 
 /**
@@ -539,6 +543,54 @@ public interface FlashChatRepository {
      */
     public suspend fun fetchEnterpriseDirectoryGroups(department: String? = null): FlashResult<List<com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup>> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Enterprise directory unavailable"))
+
+    /** Reactive stream of active announcements visible to the current employee (Plan A3 §4.3). */
+    public val hubAnnouncements: Flow<List<HubAnnouncementUi>>
+        get() = emptyFlow()
+
+    /** Dynamic count of unread announcements matching the current visibility (Plan A3 §4.3). */
+    public val hubUnreadAnnouncementCount: Flow<Int>
+        get() = emptyFlow()
+
+    /** Single-flight pull of the changes feed since the last known sequence number (Plan A3 §4.3). */
+    public suspend fun refreshHubAnnouncements(): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Full-text search with transparent fallback to local substring match (Plan A3 §4.3). */
+    public suspend fun searchHubAnnouncements(
+        query: String,
+        online: Boolean = true,
+    ): FlashResult<List<HubAnnouncementUi>> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Acknowledges receipt of an announcement (local state, not synced to hub) (Plan A3 §4.3). */
+    public suspend fun markHubAnnouncementRead(id: String) {}
+
+    /** Authoring: posts a new announcement if the local cert allows it (Plan A3 §4.3). */
+    public suspend fun postHubAnnouncement(
+        draft: HubAnnouncementDraft,
+    ): FlashResult<HubAnnouncementUi> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Authoring: edits an existing announcement under optimistic concurrency (Plan A3 §4.3). */
+    public suspend fun editHubAnnouncement(
+        id: String,
+        draft: HubAnnouncementDraft,
+        expectedSeq: Long,
+    ): FlashResult<HubAnnouncementUi> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Authoring: removes an announcement (broadcasts tombstone) (Plan A3 §4.3). */
+    public suspend fun deleteHubAnnouncement(id: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Authoring: toggles pinned status (enforces max-3 limit) (Plan A3 §4.3). */
+    public suspend fun setHubAnnouncementPinned(id: String, pinned: Boolean): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Announcements unavailable"))
+
+    /** Reactive capability descriptor for the compose FAB (Plan A3 §4.3). */
+    public val canPostHubAnnouncement: Flow<HubPostingRights>
+        get() = flowOf(HubPostingRights.None)
 }
 
 private val EMPTY_PENDING_JOINS: StateFlow<Map<String, String>> = MutableStateFlow(emptyMap())
