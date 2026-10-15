@@ -123,4 +123,24 @@ class OrgSnapshotCoordinatorTest {
     private suspend fun waitFor(cond: () -> Boolean) = withTimeout(5_000) {
         while (!cond()) delay(20)
     }
+
+    @Test
+    fun `ORGT-U66 snapshot from another organisation is discarded at start even when app was not running at change`() = runBlocking {
+        var storedRoot: String? = "OLD-ROOT-FINGERPRINT"
+        val c = OrgSnapshotCoordinator(
+            credentialRoot = MutableStateFlow(null),
+            relayConnected = MutableStateFlow(false),
+            syncOnce = { force -> events += "sync(force=$force)"; outcome },
+            clearSnapshot = { events += "clearSnapshot"; storedRoot = null },
+            refreshResolver = { events += "refresh" },
+            clearResolver = { events += "clearResolver" },
+            scope = CoroutineScope(Dispatchers.Default + Job()),
+            clock = { now },
+            getStoredRootFingerprint = { storedRoot },
+        )
+        // Cold start with new enrollment root "NEW-ROOT-FINGERPRINT"
+        c.onEnrolmentChanged("NEW-ROOT-FINGERPRINT")
+        // Must have cleared snapshot and resolver first, then sync
+        assertEquals(listOf("clearSnapshot", "clearResolver", "sync(force=true)", "refresh"), events)
+    }
 }

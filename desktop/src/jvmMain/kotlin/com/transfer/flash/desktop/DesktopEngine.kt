@@ -1388,6 +1388,7 @@ public class DesktopEngine(
                 clearResolver = { orgPeerResolver.clear() },
                 scope = scope,
                 onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+                getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
             )
             orgSnapshotCoordinatorRef = orgSnapshotCoordinator
             orgSnapshotCoordinator.start()

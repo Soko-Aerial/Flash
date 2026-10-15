@@ -1229,6 +1229,7 @@ object DiscoveryEngineHolder {
             clearResolver = { orgPeerResolver.clear() },
             scope = appScope,
             onOutcome = { reason, outcome -> Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+            getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
         )
         orgSnapshotCoordinatorRef = orgSnapshotCoordinator
         orgSnapshotCoordinator.start()

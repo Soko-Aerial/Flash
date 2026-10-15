@@ -42,6 +42,7 @@ public class OrgSnapshotCoordinator(
     private val periodMs: Long = SIX_HOURS_MS,
     private val minIntervalMs: Long = 60_000L,
     private val onOutcome: (reason: String, outcome: OrgSyncOutcome) -> Unit = { _, _ -> },
+    private val getStoredRootFingerprint: (suspend () -> String?)? = null,
 ) {
     private val lock = Mutex()
     private var lastRoot: String? = null
@@ -72,13 +73,16 @@ public class OrgSnapshotCoordinator(
     /**
      * The enrolment root changed. [root] is the enrolled organisation's root fingerprint, or null when not enrolled.
      * A change away from a known root (null or another organisation) wipes the snapshot first.
+     * A snapshot built for another organisation is discarded at start even when the app was not running at the change.
      */
     public suspend fun onEnrolmentChanged(root: String?) {
         lock.withLock {
             val previous = lastRoot
             val changed = previous != null && !previous.equals(root, ignoreCase = true)
             lastRoot = root
-            if (root == null || changed) {
+            val storedRoot = if (previous == null) getStoredRootFingerprint?.invoke() else null
+            val storedMismatch = storedRoot != null && storedRoot.isNotEmpty() && !storedRoot.equals(root, ignoreCase = true)
+            if (root == null || changed || storedMismatch) {
                 clearSnapshot()
                 clearResolver()
                 lastAttemptMs = Long.MIN_VALUE
@@ -86,7 +90,7 @@ public class OrgSnapshotCoordinator(
             if (root == null) return
             // First sight of an enrolment after start also lands here: a stored snapshot from an earlier run is shown
             // at once, then replaced by the first sync.
-            if (previous == null && !changed) refreshResolver()
+            if (previous == null && !changed && !storedMismatch) refreshResolver()
             syncLocked("enrol", force = true)
         }
     }

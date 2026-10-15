@@ -139,20 +139,24 @@ class OrgDirectoryDaoTest {
 
         val state = OrgSyncStateEntity(
             id = 1,
+            orgRootFingerprint = "FP-ORG-TEST",
             directoryEpoch = "epoch-2026",
             lastSyncedVersion = 105L,
             offlineGraceDays = 30,
             lastSyncSuccessMs = 5000L,
             lastSyncAttemptMs = 5100L,
+            lastErrorKind = "rate_limited",
         )
 
         dao.setSyncState(state)
 
         val loaded = dao.getSyncState()
         assertNotNull(loaded)
+        assertEquals("FP-ORG-TEST", loaded.orgRootFingerprint)
         assertEquals("epoch-2026", loaded.directoryEpoch)
         assertEquals(105L, loaded.lastSyncedVersion)
         assertEquals(30, loaded.offlineGraceDays)
+        assertEquals("rate_limited", loaded.lastErrorKind)
 
         // Add dummy member and department
         dao.upsertMembers(listOf(
@@ -179,5 +183,72 @@ class OrgDirectoryDaoTest {
         assertTrue(dao.listAllMembers().isEmpty())
         assertTrue(dao.listDepartments().isEmpty())
         assertNull(dao.getSyncState())
+    }
+
+    @Test
+    fun `testApplySyncBatch_staleSerialFiltered`() = runBlocking {
+        val dao = db.orgDirectoryDao()
+        val member1 = OrgDirectoryMemberEntity(
+            deviceId = "dev-1",
+            displayName = "General Mensah",
+            displayNameFolded = "general mensah",
+            departmentId = "dept-hq",
+            role = "admin",
+            subjectPublicKeyFingerprint = "FINGERPRINT-MENSAH",
+            statementBytes = byteArrayOf(1),
+            statementSerial = 10L,
+            statementIssuedAtMs = 1000L,
+            statementDelegationSerial = 1L,
+            lastSyncedAtMs = 1500L,
+        )
+        dao.upsertMembers(listOf(member1))
+
+        // Incoming update has older statementSerial = 9L (stale)
+        val staleIncoming = member1.copy(displayName = "Imposter Mensah", statementSerial = 9L)
+        dao.applySyncBatch(
+            fullResync = false,
+            membersToUpsert = listOf(staleIncoming),
+            memberIdsToDelete = emptyList(),
+            departmentsToUpsert = emptyList(),
+            departmentIdsToDelete = emptyList(),
+            newState = OrgSyncStateEntity(
+                id = 1,
+                orgRootFingerprint = "FP",
+                directoryEpoch = "epoch",
+                lastSyncedVersion = 2L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 2000L,
+                lastSyncAttemptMs = 2000L,
+            ),
+        )
+
+        // Member in DB must NOT have been overwritten
+        val current = dao.findMemberByDeviceId("dev-1")
+        assertNotNull(current)
+        assertEquals("General Mensah", current.displayName)
+        assertEquals(10L, current.statementSerial)
+
+        // But incoming update with statementSerial = 11L (newer) must be accepted
+        val newerIncoming = member1.copy(displayName = "Promoted Mensah", statementSerial = 11L)
+        dao.applySyncBatch(
+            fullResync = false,
+            membersToUpsert = listOf(newerIncoming),
+            memberIdsToDelete = emptyList(),
+            departmentsToUpsert = emptyList(),
+            departmentIdsToDelete = emptyList(),
+            newState = OrgSyncStateEntity(
+                id = 1,
+                orgRootFingerprint = "FP",
+                directoryEpoch = "epoch",
+                lastSyncedVersion = 3L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 3000L,
+                lastSyncAttemptMs = 3000L,
+            ),
+        )
+        val updated = dao.findMemberByDeviceId("dev-1")
+        assertNotNull(updated)
+        assertEquals("Promoted Mensah", updated.displayName)
+        assertEquals(11L, updated.statementSerial)
     }
 }

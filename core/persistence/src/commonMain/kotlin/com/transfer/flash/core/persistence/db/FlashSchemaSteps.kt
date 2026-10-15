@@ -310,8 +310,21 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v14 → v15: bound snapshot to organization root fingerprint and record sync error kind.
+     * Adds `orgRootFingerprint` and `lastErrorKind` to `org_sync_state`.
+     */
+    val STEP_14_15: FlashSchemaStep = FlashSchemaStep(
+        from = 14,
+        to = 15,
+        statements = listOf(
+            "ALTER TABLE `org_sync_state` ADD COLUMN `orgRootFingerprint` TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE `org_sync_state` ADD COLUMN `lastErrorKind` TEXT DEFAULT NULL",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15
     )
 }
