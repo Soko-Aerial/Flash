@@ -67,6 +67,8 @@ class AdminApiDeps(
     /** The hub's own public key (base64 SPKI) so the console can print the `keytool issue-delegation` command while awaiting delegation. */
     val hubPublicKey: String = "",
     val startedAtMs: Long = System.currentTimeMillis(),
+    val announcements: com.transfer.flash.server.announcements.AnnouncementStore? = null,
+    val router: com.transfer.flash.server.relay.RelayFrameRouter? = null,
 )
 
 internal const val ERR_STEP_UP = "ERR_STEP_UP"
@@ -100,6 +102,7 @@ fun Route.adminApiRoutes(d: AdminApiDeps) {
         adminDirectoryRoutes(d)
         adminAccountRoutes(d)
         auditRoutes(d)
+        announcementAdminRoutes(d)
     }
 }
 

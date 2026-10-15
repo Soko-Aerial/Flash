@@ -52,9 +52,12 @@ import com.transfer.flash.core.persistence.db.entity.ReactionEntity
 import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
 import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
+import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
+import com.transfer.flash.core.persistence.db.entity.HubAnnouncementEntity
+import com.transfer.flash.core.persistence.db.entity.HubAnnouncementStateEntity
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
-import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 
 /**
@@ -104,6 +107,8 @@ import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
         OrgDepartmentEntity::class,
         OrgSyncStateEntity::class,
         HubGroupRosterEntity::class,
+        HubAnnouncementEntity::class,
+        HubAnnouncementStateEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -168,6 +173,8 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun orgDirectoryDao(): OrgDirectoryDao
 
+    public abstract fun hubAnnouncementDao(): HubAnnouncementDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -184,6 +191,8 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v13: group_settings.historyCeiling, group_history_state and group_sync_watermark (ADR-100, group history sync).
         // v14: org_directory_member, org_department and org_sync_state for offline organisation trust (Plan B, ADR-134).
         // v15: org_sync_state.orgRootFingerprint and org_sync_state.lastErrorKind (Plan B §B1.3/B1.4).
-        public const val DATABASE_VERSION: Int = 16
+        // v16: hub_group_roster for hub-signed group roster statements (Plan B §10, Phase B4).
+        // v17: hub_announcement and hub_announcement_state for organization announcements (Plan A3, ADR-138).
+        public const val DATABASE_VERSION: Int = 17
     }
 }

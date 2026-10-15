@@ -19,6 +19,7 @@ import { mountOverview } from './views/overview.js';
 import { mountDevices } from './views/devices.js';
 import { mountInvites } from './views/invites.js';
 import { mountOrganization } from './views/organization.js';
+import { mountAnnouncements } from './views/announcements.js';
 import { mountAudit } from './views/audit.js';
 import { mountSecurity } from './views/security.js';
 import { mountSettings } from './views/settings.js';
@@ -28,6 +29,7 @@ const VIEWS = {
   devices: mountDevices,
   invites: mountInvites,
   organization: mountOrganization,
+  announcements: mountAnnouncements,
   audit: mountAudit,
   security: mountSecurity,
   settings: mountSettings,

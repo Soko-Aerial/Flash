@@ -128,9 +128,17 @@ public object RelayFrameCodec {
                 if (frame.to != null && !id(frame.to)) return bad("to")
                 if (frame.from != null && !id(frame.from)) return bad("from")
             }
+            is RelayFrame.AnnouncementEvent -> {
+                if (!id(frame.id)) return bad("id")
+                if (!id(frame.scope)) return bad("scope")
+                if (frame.departmentId != null && !id(frame.departmentId)) return bad("departmentId")
+                if (!id(frame.change)) return bad("change")
+                if (!id(frame.epoch)) return bad("epoch")
+            }
             is RelayFrame.Ping, is RelayFrame.Pong, is RelayFrame.Revoked, is RelayFrame.Kick -> Unit
         }
         return Decoded.Ok(frame)
+
     }
 
     /** Pads a [RelayFrame.Meta] so its encoded form is exactly 256 or 512 bytes (P-REF-1); larger frames are left alone. */
@@ -185,7 +193,9 @@ public object RelayFrameCodec {
     private val KNOWN_TYPES: Set<String> = setOf(
         "FLASH_HUB_CHALLENGE", "FLASH_HUB_HELLO", "FLASH_HUB_WELCOME", "FLASH_ERROR", "FLASH_RELAY", "FLASH_DELIVER",
         "FLASH_RECV_ACK", "FLASH_ACK", "FLASH_QUEUE_STATE", "FLASH_META", "FLASH_PING", "FLASH_PONG", "FLASH_REVOKED", "FLASH_KICK",
+        "FLASH_ANNOUNCEMENT",
     )
+
 
     /** UTF-8 byte length of [s] without allocating (an unpaired surrogate is counted as 3 bytes: a safe over-estimate of its 1-byte replacement). */
     public fun utf8Size(s: String): Int {

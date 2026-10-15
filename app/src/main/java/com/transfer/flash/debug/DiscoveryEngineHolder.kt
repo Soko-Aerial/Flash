@@ -1449,6 +1449,8 @@ object DiscoveryEngineHolder {
             enterpriseDirectoryClient = hub.directory,
             hubPeers = hub.peers,
             hubContentViaHub = { hubContentViaHubFlag.value },
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = hub.announcements,
             hubSealing = hubSealingPort,
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->

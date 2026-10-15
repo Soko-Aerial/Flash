@@ -59,6 +59,7 @@ class RelaySession(
     val websocketSession: WebSocketSession,
     /** The identity proven by the handshake (ADR-109); null only for sessions built by tests that bypass it. */
     val principal: HubPrincipal? = null,
+    val features: Set<String> = emptySet(),
     outboundCapacity: Int = 256,
     private val sendTimeoutMs: Long = 10_000L,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),

@@ -40,6 +40,8 @@ import com.transfer.flash.server.relay.RelayAuthenticator
 import com.transfer.flash.server.relay.RelayConnectionPool
 import com.transfer.flash.server.relay.RelayFrameRouter
 import com.transfer.flash.server.relay.RelayPolicy
+import com.transfer.flash.server.announcements.AnnouncementStore
+import com.transfer.flash.server.announcements.announcementRoutes
 import com.transfer.flash.server.storage.ServerDatabase
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -102,6 +104,7 @@ public class FlashServerEngine(
     public val mailboxStats: MailboxStats = (mailboxQueue as? MailboxStats) ?: MailboxStats.Empty,
     /** When set the engine probes it for `/health`, vacuums it after sweeps, and checkpoints and closes it on [stop]. */
     public val database: ServerDatabase? = null,
+    public val announcements: AnnouncementStore? = null,
     /** Who may read `/health/detail` and `/metrics` (loopback without a proxy, or a bearer token). */
     public val managementGuard: ManagementGuard = DefaultManagementGuard(),
     /** Days until the delegation certificate expires (SEC-09 alarm), or null when unknown. */
@@ -126,6 +129,7 @@ public class FlashServerEngine(
     private val serverStartTime: Long = clock()
     private val stopped = AtomicBoolean(false)
     private val sweeperScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val effectiveAnnouncements: AnnouncementStore? = announcements ?: database?.let { AnnouncementStore.open(it, clock) }
 
     public val relayFrameRouter: RelayFrameRouter = RelayFrameRouter(
         connectionPool = connectionPool,
@@ -259,6 +263,17 @@ public class FlashServerEngine(
                 principalResolver = BearerPrincipalResolver(bearerTokens),
                 isOnline = connectionPool::isConnected,
             )
+
+            // Organization Announcements REST routes (/api/v1/announcements/*)
+            effectiveAnnouncements?.let { ann ->
+                announcementRoutes(
+                    store = ann,
+                    principalResolver = BearerPrincipalResolver(bearerTokens),
+                    router = relayFrameRouter,
+                    audit = auditLogger,
+                    clock = clock,
+                )
+            }
 
             // Authentication & Device Enrolment routes (/api/v1/auth/*, /api/v1/enroll)
             val auth = challengeAuth
