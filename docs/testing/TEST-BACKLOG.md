@@ -4162,3 +4162,5 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **Steps:** Open the Hub tab, tap "Browse department groups".
 - **Pass:** The existing groups sheet opens; the chat-list top bar no longer has that icon.
 - **Source:** UI-058 H5 (placeholder keeps the action until H7). **Status:** TODO
+### Server directory sync, night fixes 2026-10-14 (ORGT-S20..S22, unit-level)
+- `ORGT-S20` bad cursor is rejected (400 on the route), `ORGT-S21` 90-day tombstone pruning forces a full resync behind the watermark, `ORGT-S22` the watermark survives a restart. Status: PASS in unit tests 2026-10-14. Owed on a real hub: `DEMO-01` run `docs/plans/HUB-DEMO-RUNBOOK.md` end to end with a real device (admin setup, enrol, directory sync, removal reaching the device). Status: TODO.

@@ -6909,3 +6909,8 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 - `:server:test`: 485 tests, 1 failure `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` (flaky, passes about half the runs, state SUSPENDED/KICKED). Not caused by this change as far as seen; unresolved, OPEN.
 - Demo: `tools/demo-server.ps1`, `docs/plans/HUB-DEMO-RUNBOOK.md`. Smoke run only, no device enrolment tried.
 - Antigravity runs the "Overnight master prompt" (end of `docs/plans/HUB-PARALLEL-LAUNCH-PROMPTS.md`). Merge `agent/S1-org-trust` into dev when `logs/streams/S1-org-trust/DONE` exists, re-run the integration gate, then fold the logs/streams fragments into the canonical logs (ADR 136/137 from S2 become 149/150).
+## 2026-10-15 morning: S1 round 2 merged (Claude Code)
+- `agent/S1-org-trust` merged into dev (resolver race, enrolment gate, B2.5 UX and probes, requestOrgSync on pull-to-refresh/Hub tab, Room schema 15, missing tests). Room schema table in `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` renumbered: B4 = 16, A3 = 17.
+- Stream log fragments folded into the canonical logs/ADRs/backlog/probes/security (stream handoffs and `V-verifier/report.md` stay in `logs/streams/` as the source). S2's ADR-137 text is the BUILD RECORD of the planned ADR-137 (no renumbering needed); S3's ADR-159..161 stand (ADR-160 still needs the owner).
+- ERROR-396 (flaky relay storm test) OPEN.
+- Verifier defects still open after this: 8 SQL-level pagination (not done), 16 hygiene items; re-verification (R2-3) not run.
