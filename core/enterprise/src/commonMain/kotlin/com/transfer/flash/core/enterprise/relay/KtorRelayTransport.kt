@@ -200,6 +200,7 @@ public class KtorRelayTransport(
                 deviceCert = identity.deviceCert,
                 delegationChain = identity.delegationChain,
                 signature = signature,
+                features = listOf(HubContract.FEATURE_ANNOUNCEMENTS_V1),
             )
             send(Frame.Text(RelayFrameCodec.encode(hello)))
 
