@@ -323,8 +323,26 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v15 → v16: hub-signed group roster statements, for hub groups that keep working on the LAN
+     * (Plan B Phase B4, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` section 10).
+     */
+    val STEP_15_16: FlashSchemaStep = FlashSchemaStep(
+        from = 15,
+        to = 16,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS `hub_group_roster` (" +
+                "`groupId` TEXT NOT NULL, " +
+                "`version` INTEGER NOT NULL, " +
+                "`statementJson` TEXT NOT NULL, " +
+                "`delegationChainJson` TEXT NOT NULL, " +
+                "`validUntilMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`groupId`))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16
     )
 }

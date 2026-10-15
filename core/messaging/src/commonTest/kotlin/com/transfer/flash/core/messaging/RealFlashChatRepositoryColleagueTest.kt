@@ -331,6 +331,10 @@ class RealFlashChatRepositoryColleagueTest {
         isOrgPeer: (String) -> Boolean = { false },
         orgPeerResolver: OrgPeerResolver? = null,
         transportSink: MessageTransportSink? = null,
+        enterpriseTrustStore: com.transfer.flash.core.security.enterprise.EnterpriseTrustStore? = null,
+        hubGroupRosters: com.transfer.flash.core.enterprise.HubGroupRosterView? = null,
+        groupTransportSink: GroupTransportSink? = null,
+        peerFeatures: (String) -> Set<String> = { emptySet() },
     ): RealFlashChatRepository {
         val repo = RealFlashChatRepository(
             localDeviceId = localDeviceId,
@@ -349,6 +353,10 @@ class RealFlashChatRepositoryColleagueTest {
             isOrgPeer = isOrgPeer,
             orgPeerResolver = orgPeerResolver,
             transportSink = transportSink,
+            enterpriseTrustStore = enterpriseTrustStore,
+            hubGroupRosters = hubGroupRosters,
+            groupTransportSink = groupTransportSink,
+            peerFeatures = peerFeatures,
             ioDispatcher = Dispatchers.Unconfined,
             timeSource = timeSource,
         )
@@ -1259,5 +1267,179 @@ class RealFlashChatRepositoryColleagueTest {
         repo.onInboundGroupWireFrame(strangerEve, frame)
         assertTrue(repo.chatListState.value.items.none { it.id == "v2:group-swarm" })
     }
-}
 
+    // ---- Phase B4: hub groups on the LAN (plan section 10; ORGT-U42..U50) ----
+
+    private class FakeRosterView(var roster: com.transfer.flash.core.enterprise.HubGroupRoster?) : com.transfer.flash.core.enterprise.HubGroupRosterView {
+        var adoptResult = com.transfer.flash.core.enterprise.RosterAdoption.INVALID
+        var adoptCalls = 0
+        var onAdopt: (() -> Unit)? = null
+
+        // Deliberately ignores the validity window: the repository's own gate must refuse an expired roster.
+        override fun current(groupId: String, nowMs: Long) = roster?.takeIf { it.groupId == groupId }
+        override fun isHubGroup(groupId: String) = roster?.groupId == groupId
+        override fun offerFor(groupId: String, nowMs: Long) =
+            roster?.takeIf { it.groupId == groupId }?.let { com.transfer.flash.core.enterprise.HubRosterOfferPayload(groupId, "{st}", "[]") }
+        override fun groupIds(): Set<String> = setOfNotNull(roster?.groupId)
+        override suspend fun refresh() {}
+        override suspend fun clear() { roster = null }
+        override suspend fun adopt(offer: com.transfer.flash.core.enterprise.HubRosterOfferPayload, offeredBy: String?): com.transfer.flash.core.enterprise.RosterAdoption {
+            adoptCalls++
+            if (adoptResult == com.transfer.flash.core.enterprise.RosterAdoption.ADOPTED) onAdopt?.invoke()
+            return adoptResult
+        }
+    }
+
+    private val hubGroup = "hub-grp-1"
+
+    private fun roster(version: Long, members: Set<String>, validUntil: Long = 5_000_000L, admins: Set<String> = emptySet()) =
+        com.transfer.flash.core.enterprise.HubGroupRoster(hubGroup, "Platform", version, members, admins, validUntil)
+
+    private class B4Rig(
+        val repo: RealFlashChatRepository,
+        val members: FakeGroupMemberDao,
+        val view: FakeRosterView,
+        val trust: com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore,
+        val sent: MutableList<Pair<String, GroupWireFrame>>,
+        val time: MutableTimeSource,
+    )
+
+    private suspend fun b4Rig(
+        roster: com.transfer.flash.core.enterprise.HubGroupRoster? = roster(1L, setOf(localDeviceId, colleagueAlice, colleagueBob)),
+        orgPeers: Set<String> = setOf(colleagueAlice, colleagueBob, strangerEve),
+        linked: Boolean = true,
+        features: Set<String> = setOf("hrs1"),
+        paired: Set<String> = emptySet(),
+    ): B4Rig {
+        val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
+        if (linked) trust.linkGroupToHub(hubGroup)
+        val convDao = FakeConversationDao()
+        convDao.upsert(ConversationEntity(id = hubGroup, title = "Platform", isGroup = true, sortOrder = 1L))
+        val members = FakeGroupMemberDao()
+        val view = FakeRosterView(roster)
+        val sent = mutableListOf<Pair<String, GroupWireFrame>>()
+        val time = MutableTimeSource(1_000_000L)
+        val repo = createRepository(
+            time, FakeMessageDao(), convDao, FakeOutboxDao(), FakeReactionDao(),
+            groupMemberDao = members,
+            isTrustedPeer = { it in paired },
+            isOrgPeer = { it in orgPeers },
+            enterpriseTrustStore = trust,
+            hubGroupRosters = view,
+            groupTransportSink = GroupTransportSink { to, f -> sent += to to f; true },
+            peerFeatures = { features },
+        )
+        return B4Rig(repo, members, view, trust, sent, time)
+    }
+
+    @Test
+    fun ORGT_B4_gate_acceptsOnlyOrgColleaguesNamedByCurrentRosterWhileLocalIsAlsoNamed() = runTest {
+        val rig = b4Rig()
+        assertTrue(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice), "ORG colleague in the roster")
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, strangerEve), "ORG colleague NOT in the roster")
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, "paired-not-org-not-in-roster"), "not a colleague")
+        rig.view.roster = roster(1L, setOf(colleagueAlice, colleagueBob))
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice), "this device is not in the roster")
+        rig.view.roster = roster(1L, setOf(localDeviceId, colleagueAlice))
+        rig.time.timeMs = 5_000_001L
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice), "the statement window is closed")
+        rig.time.timeMs = 1_000_000L
+        assertTrue(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice))
+        rig.trust.unlinkGroupFromHub(hubGroup)
+        assertFalse(rig.repo.isGroupPeerTrusted(hubGroup, colleagueAlice), "a group not linked to the hub uses no roster")
+    }
+
+    @Test
+    fun ORGT_B4_gate_neverGrantsAnOrgOnlyMemberPairedPowers() = runTest {
+        val rig = b4Rig()
+        assertFalse(PeerTrustPolicy.mayPushToTalk(isPaired = false, isOrg = true))
+        assertFalse(PeerTrustPolicy.mayCreateGroupWith(isPaired = false, isOrg = true))
+        assertFalse(PeerTrustPolicy.mayAdministerGroup(isPaired = false, isOrg = true))
+        val add = rig.repo.addGroupMembers(hubGroup, setOf(colleagueAlice))
+        assertTrue(add is FlashResult.Failure)
+        assertEquals("Members of a company group are set by your administrator.", add.errorText())
+        assertTrue(rig.repo.isHubRosterGroup(hubGroup))
+        assertFalse(rig.repo.isHubRosterGroup("g-local"))
+    }
+
+    @Test
+    fun ORGT_B4_rosterRowsAreFilledFromTheStatementAndRemovedMembersAreRefused() = runTest {
+        val rig = b4Rig(roster = roster(1L, setOf(localDeviceId, colleagueAlice, colleagueBob), admins = setOf(colleagueAlice)))
+        rig.repo.refreshHubGroupRosters()
+        val active = rig.members.activeMembers(hubGroup).map { it.deviceId }.toSet()
+        assertEquals(setOf(localDeviceId, colleagueAlice, colleagueBob), active)
+        assertEquals("admin", rig.members.member(hubGroup, colleagueAlice)?.role)
+        assertTrue(rig.repo.isGroupCallPeer(hubGroup, colleagueBob), "gate and rows both pass")
+
+        // Version 2 drops Bob: the next projection tombstones his row, he is refused, nobody else changes.
+        rig.view.roster = roster(2L, setOf(localDeviceId, colleagueAlice))
+        rig.repo.refreshHubGroupRosters()
+        assertEquals(false, rig.members.member(hubGroup, colleagueBob)?.isActive)
+        assertFalse(rig.repo.isGroupCallPeer(hubGroup, colleagueBob), "a removed member is refused")
+        assertTrue(rig.repo.isGroupCallPeer(hubGroup, colleagueAlice))
+
+        // Removing THIS device makes it a removed member here (the composer is replaced by the notice).
+        rig.view.roster = roster(3L, setOf(colleagueAlice))
+        rig.repo.refreshHubGroupRosters()
+        assertEquals(false, rig.members.member(hubGroup, localDeviceId)?.isActive)
+        assertFalse(rig.repo.isGroupCallPeer(hubGroup, colleagueAlice))
+    }
+
+    @Test
+    fun ORGT_B4_unlinkAndOrganisationLeaveClearTheRosterRows() = runTest {
+        val rig = b4Rig()
+        rig.repo.refreshHubGroupRosters()
+        assertEquals(3, rig.members.activeMembers(hubGroup).size)
+        rig.repo.unlinkGroupFromHub(hubGroup)
+        assertEquals(0, rig.members.activeMembers(hubGroup).size, "unlinking clears the rows the roster produced")
+
+        val rig2 = b4Rig()
+        rig2.repo.refreshHubGroupRosters()
+        rig2.repo.clearHubGroupRosters()
+        assertEquals(0, rig2.members.activeMembers(hubGroup).size, "leaving the organisation clears them too")
+        assertNull(rig2.view.roster)
+    }
+
+    @Test
+    fun ORGT_B4_aRosterOfferFromAMemberColleagueIsAdoptedAndAnythingElseIsIgnored() = runTest {
+        val rig = b4Rig(roster = null)
+        val offer = { from: String -> GroupWireFrame.HubRosterOffer(hubGroup, from, "{st}", "[]") }
+
+        // The statement is not verified by the repository: the view says INVALID (tampered) -> nothing changes.
+        rig.view.adoptResult = com.transfer.flash.core.enterprise.RosterAdoption.INVALID
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, offer(colleagueAlice))
+        assertEquals(1, rig.view.adoptCalls)
+        assertEquals(0, rig.members.activeMembers(hubGroup).size)
+
+        // A forged `from` and a non-colleague never reach the verifier.
+        rig.repo.onInboundGroupWireFrame(colleagueBob, offer(colleagueAlice))
+        rig.repo.onInboundGroupWireFrame("not-a-colleague", offer("not-a-colleague"))
+        assertEquals(1, rig.view.adoptCalls)
+
+        // One offer per peer and group per minute: the repeat inside the window is not even looked at.
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, offer(colleagueAlice))
+        assertEquals(1, rig.view.adoptCalls)
+        rig.time.timeMs += 61_000L
+
+        // Verified and newer -> adopted, rows projected, and the other colleagues that speak hrs1 are told.
+        rig.view.adoptResult = com.transfer.flash.core.enterprise.RosterAdoption.ADOPTED
+        rig.view.onAdopt = { rig.view.roster = roster(4L, setOf(localDeviceId, colleagueAlice, colleagueBob), validUntil = 99_000_000L) }
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, offer(colleagueAlice))
+        assertEquals(2, rig.view.adoptCalls)
+        assertEquals(3, rig.members.activeMembers(hubGroup).size)
+        assertEquals(listOf(colleagueBob), rig.sent.filter { it.second is GroupWireFrame.HubRosterOffer }.map { it.first })
+    }
+
+    @Test
+    fun ORGT_B4_sessionUpOffersTheRosterOnlyToHrs1ColleaguesInTheGroup() = runTest {
+        val withFeature = b4Rig(features = setOf("hrs1"))
+        withFeature.repo.notifyPeerSessionUp(colleagueAlice)
+        assertEquals(listOf(colleagueAlice), withFeature.sent.filter { it.second is GroupWireFrame.HubRosterOffer }.map { it.first })
+        withFeature.repo.notifyPeerSessionUp(strangerEve)
+        assertEquals(1, withFeature.sent.count { it.second is GroupWireFrame.HubRosterOffer }, "Eve is a colleague but not in the group")
+
+        val noFeature = b4Rig(features = emptySet())
+        noFeature.repo.notifyPeerSessionUp(colleagueAlice)
+        assertEquals(0, noFeature.sent.count { it.second is GroupWireFrame.HubRosterOffer }, "a peer without hrs1 gets no frame")
+    }
+}

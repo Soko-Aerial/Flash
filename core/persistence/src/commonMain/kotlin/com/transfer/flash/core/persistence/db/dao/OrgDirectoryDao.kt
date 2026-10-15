@@ -6,6 +6,7 @@ import androidx.room.Transaction
 import androidx.room.Upsert
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 
 /**
@@ -59,8 +60,28 @@ public interface OrgDirectoryDao {
     @Query("DELETE FROM org_sync_state")
     public suspend fun clearSyncState()
 
+    @Query("SELECT * FROM hub_group_roster")
+    public suspend fun allGroupRosters(): List<HubGroupRosterEntity>
+
+    @Query("SELECT * FROM hub_group_roster WHERE groupId = :groupId")
+    public suspend fun groupRoster(groupId: String): HubGroupRosterEntity?
+
+    @Upsert
+    public suspend fun upsertGroupRosters(rosters: List<HubGroupRosterEntity>)
+
+    @Query("DELETE FROM hub_group_roster")
+    public suspend fun clearGroupRosters()
+
+    /** Replaces the whole stored roster set in one transaction (the sync's last page, or nothing). */
+    @Transaction
+    public suspend fun replaceGroupRosters(rosters: List<HubGroupRosterEntity>) {
+        clearGroupRosters()
+        if (rosters.isNotEmpty()) upsertGroupRosters(rosters)
+    }
+
     @Transaction
     public suspend fun clearAll() {
+        clearGroupRosters()
         clearMembers()
         clearDepartments()
         clearSyncState()
@@ -107,5 +128,20 @@ public interface OrgDirectoryDao {
             }
         }
         setSyncState(newState)
+    }
+
+    /** [applySyncBatch] and the replacement of the stored hub group rosters in ONE transaction (Plan B B4). */
+    @Transaction
+    public suspend fun applySyncBatchWithRosters(
+        fullResync: Boolean,
+        membersToUpsert: List<OrgDirectoryMemberEntity>,
+        memberIdsToDelete: List<String>,
+        departmentsToUpsert: List<OrgDepartmentEntity>,
+        departmentIdsToDelete: List<String>,
+        newState: OrgSyncStateEntity,
+        rosters: List<HubGroupRosterEntity>,
+    ) {
+        applySyncBatch(fullResync, membersToUpsert, memberIdsToDelete, departmentsToUpsert, departmentIdsToDelete, newState)
+        replaceGroupRosters(rosters)
     }
 }

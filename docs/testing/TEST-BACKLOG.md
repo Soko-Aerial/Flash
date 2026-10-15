@@ -4171,3 +4171,15 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **Pass:** step 2 enrols and the audit log shows `device.enroll` (not `device.enroll.refused`); step 3 shows the authored sentence, no invite is created; a hub that refuses at enrolment shows the "not allowed to enrol this kind of device" sentence, not "check the link".
 - **Source:** ERROR-400, `logs/streams/V-verifier/report-3.md` DEFECT-017.
 - **Status:** TODO
+
+## ORGT B4 - Hub groups on the LAN (Plan B Phase B4, built 2026-10-15, unit-tested only)
+
+- **ORGT-11** Hub group works with no internet. Setup: two enrolled phones that are members of one hub group, synced once, then hub unreachable.
+  Steps: send a group message each way over the LAN. Pass: both arrive; log `org.roster.adopted` or the stored roster is used; header text shows once.
+  Source: plan section 10. Status: TODO
+- **ORGT-12** Removal by gossip. Setup: three members; admin removes C on the hub; A syncs, B does not. Steps: A and B meet on the LAN, then C sends to B.
+  Pass: B adopts the newer roster from A (`org.roster.adopted via=gossip`) and refuses C's message. Status: TODO
+- **ORGT-13** Expired roster. Steps: keep a phone offline past `offlineGraceDays` (or advance the clock). Pass: group messages from members are refused. Status: TODO
+- **ORGT-14** Add member disabled. Steps: open a hub group's members sheet. Pass: no "Add members"; admin text says members are set by your administrator. Status: TODO
+- **ORGT-15** Legacy and v2 groups unchanged after upgrade (schema 15 to 16 on a real install, without clearing data). Pass: old groups still chat. Status: TODO
+- **ORGT-16** ORG-only member in a hub group has no PTT and cannot create groups. Status: TODO
