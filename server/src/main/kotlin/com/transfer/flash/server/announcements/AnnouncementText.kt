@@ -73,6 +73,32 @@ public object AnnouncementText {
         )
     }
 
+    public fun cleanTitle(rawTitle: String?): String {
+        if (rawTitle.isNullOrBlank()) throw ValidationException("title", "Title cannot be empty")
+        val nfcTitle = Normalizer.normalize(rawTitle, Normalizer.Form.NFC)
+        val cleanedTitle = cleanTitleString(nfcTitle).trim()
+        if (cleanedTitle.isEmpty()) throw ValidationException("title", "Title cannot be empty after sanitisation")
+        val titleCodePoints = cleanedTitle.codePointCount(0, cleanedTitle.length)
+        if (titleCodePoints > MAX_TITLE_CODE_POINTS) {
+            throw ValidationException("title", "Title exceeds $MAX_TITLE_CODE_POINTS characters", MAX_TITLE_CODE_POINTS)
+        }
+        return cleanedTitle
+    }
+
+    public fun cleanBody(rawBody: String?): String {
+        if (rawBody.isNullOrBlank()) throw ValidationException("body", "Body cannot be empty")
+        val nfcBody = Normalizer.normalize(rawBody, Normalizer.Form.NFC)
+        val cleanedBody = cleanBodyString(nfcBody).trim()
+        if (cleanedBody.isEmpty()) throw ValidationException("body", "Body cannot be empty after sanitisation")
+        val bodyCodePoints = cleanedBody.codePointCount(0, cleanedBody.length)
+        if (bodyCodePoints > MAX_BODY_CODE_POINTS) {
+            throw ValidationException("body", "Body exceeds $MAX_BODY_CODE_POINTS characters", MAX_BODY_CODE_POINTS)
+        }
+        return cleanedBody
+    }
+
+    public fun codePointCount(s: String): Int = s.codePointCount(0, s.length)
+
     private fun cleanTitleString(input: String): String {
         val sb = java.lang.StringBuilder(input.length)
         var i = 0
