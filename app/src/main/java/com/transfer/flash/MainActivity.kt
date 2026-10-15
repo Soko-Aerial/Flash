@@ -2771,6 +2771,10 @@ private fun FlashShell(
     // UI-058: the Hub tab (H7/H8/H9). Everything it reads and writes goes through the repository.
     val hubHostContext = LocalContext.current
     val hubPrefs = remember { HubUiPrefs(hubHostContext) }
+    // Unsent announcement drafts belong to the organisation: forget them once enrolment is known to have ended (never on the cold-start default).
+    LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
+        if (ready && !settings.isEnterpriseEnrolled) hubPrefs.clearDrafts()
+    }
     val hubCall: (String, String) -> Unit = { id, name ->
         val hasAudio = ContextCompat.checkSelfPermission(hubHostContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         if (hasAudio) {
@@ -2813,6 +2817,7 @@ private fun FlashShell(
                 pendingRoute = hubRoute,
                 onRouteConsumed = { pendingHubRoute.value = null },
                 prefs = hubPrefs,
+                drafts = hubPrefs,
             )
         }
         com.transfer.flash.ui.hub.FlashHubRoute(

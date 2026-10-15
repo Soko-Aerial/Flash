@@ -1143,6 +1143,10 @@ public fun DesktopShell(
     }
     val hubUnread by chatRepository.hubUnreadAnnouncementCount.collectAsState(initial = 0)
     val hubPrefs = remember { DesktopHubUiPrefs() }
+    // Unsent announcement drafts belong to the organisation: forget them once enrolment is known to have ended (never on the cold-start default).
+    LaunchedEffect(ready, enterpriseCredentials != null) {
+        if (ready && enterpriseCredentials == null) hubPrefs.clearDrafts()
+    }
     val hubUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     val hubCall: (String, String) -> Unit = { id, name ->
         scope.launch {
@@ -1738,6 +1742,7 @@ public fun DesktopShell(
                                     pendingRoute = hubRoute,
                                     onRouteConsumed = { pendingHubRoute.value = null },
                                     prefs = hubPrefs,
+                                    drafts = hubPrefs,
                                 )
                             }
                             com.transfer.flash.ui.hub.FlashHubRoute(
