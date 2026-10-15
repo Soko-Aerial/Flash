@@ -53,6 +53,10 @@ import kotlinx.coroutines.launch
 /**
  * Bottom sheet displaying existing groups in the user's department on the Enterprise Hub.
  * Allows newly added organization members to discover and join existing channels.
+ *
+ * SUPERSEDED for browsing and joining by the Groups segment of the Hub tab (UI-058, `ui/hub/FlashHubOrg.kt`). It stays because
+ * administrators still decide join requests here: the Groups segment offers "Review group join requests" (only to
+ * administrators) which opens this sheet. Do not add new browsing features to it.
  */
 @Composable
 public fun FlashBrowseOrgGroupsSheet(

@@ -1462,6 +1462,12 @@ object DiscoveryEngineHolder {
             hubContentViaHub = { hubContentViaHubFlag.value },
             hubAnnouncementDao = db.hubAnnouncementDao(),
             hubAnnouncementsApi = hub.announcements,
+            hubTabSources = com.transfer.flash.core.messaging.hub.HubTabSources(
+                directoryDao = db.orgDirectoryDao(),
+                requestSync = { force -> orgSnapshotCoordinator.requestSync("hub_refresh", force); orgDirectorySync.lastOutcome.value },
+                clockWrong = orgDirectorySync.clockSkewDetected,
+                fetchGroups = { creds -> hub.directory.fetchVisibleGroups(creds.hubUrl, creds.deviceId, null) },
+            ),
             hubSealing = hubSealingPort,
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->

@@ -19,6 +19,8 @@ public fun DesktopSideBar(
     onTabSelected: (FlashDestination) -> Unit,
     modifier: Modifier = Modifier,
     unreadCount: Int = 0,
+    /** Unread announcements, shown on the Hub tab (UI-058). */
+    hubBadge: Int = 0,
     localDisplayName: String? = null,
     onProfileClick: (() -> Unit)? = null,
     footer: (@Composable () -> Unit)? = null,
@@ -28,7 +30,11 @@ public fun DesktopSideBar(
             destination = tab.destination,
             icon = tab.icon,
             label = tab.label,
-            badgeCount = if (tab.destination == FlashDestination.ChatList) unreadCount else 0,
+            badgeCount = when (tab.destination) {
+                FlashDestination.ChatList -> unreadCount
+                FlashDestination.Hub -> hubBadge
+                else -> 0
+            },
         )
     }
 
