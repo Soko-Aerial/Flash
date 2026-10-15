@@ -130,6 +130,15 @@ class HubServices private constructor(
         runCatching { admins.sweepSessions() }.onFailure { log.warn("Session sweep failed: {}", it.toString()) }
         runCatching { delegations.checkExpiryWarnings() }.onFailure { log.warn("Delegation expiry check failed: {}", it.toString()) }
         runCatching { watchDelegationFile() }.onFailure { log.warn("Delegation reload failed: {}", it.toString()) }
+        runCatching {
+            announcements?.let { store ->
+                val retentionDays = admins.getSetting("announcementRetentionDays")?.toIntOrNull() ?: 0
+                val purged = store.purgeExpiredAndOldTombstones(retentionDays = retentionDays)
+                if (purged > 0) {
+                    audit.logUnauthenticated("system", "announcement.purge", "purged $purged announcements/tombstones")
+                }
+            }
+        }.onFailure { log.warn("Announcement purge failed: {}", it.toString()) }
     }
 
     private fun watchDelegationFile() {
