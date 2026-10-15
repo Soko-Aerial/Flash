@@ -591,6 +591,40 @@ public interface FlashChatRepository {
     /** Reactive capability descriptor for the compose FAB (Plan A3 §4.3). */
     public val canPostHubAnnouncement: Flow<HubPostingRights>
         get() = flowOf(HubPostingRights.None)
+
+    // --- Hub tab read model (UI-058, Plan A4 H6). Defaults are inert so previews and tests need no hub. ---
+
+    /** State of the Hub tab: enrolment, organisation, trust lease, last sync. Emits once the first directory read finished. */
+    public val hubState: Flow<com.transfer.flash.core.messaging.model.HubUiState>
+        get() = flowOf(com.transfer.flash.core.messaging.model.HubUiState(loaded = true))
+
+    /** Every colleague the caller may see, sorted by name. Sorting and filtering happen here, never in composition. */
+    public val hubPeople: Flow<List<com.transfer.flash.core.messaging.model.HubPersonUi>>
+        get() = flowOf(emptyList())
+
+    /** [hubPeople] narrowed by [query] (word-prefix, case and accent blind) and optionally one department. */
+    public fun searchHubPeople(
+        query: String,
+        departmentId: String? = null,
+    ): Flow<List<com.transfer.flash.core.messaging.model.HubPersonUi>> = flowOf(emptyList())
+
+    /** One colleague by device id (deep link), or null when not visible. */
+    public fun hubPerson(deviceId: String): Flow<com.transfer.flash.core.messaging.model.HubPersonUi?> = flowOf(null)
+
+    /** Departments the caller may see (hidden ones only to their members and administrators). */
+    public val hubDepartments: Flow<List<com.transfer.flash.core.messaging.model.HubDepartmentUi>>
+        get() = flowOf(emptyList())
+
+    /** Organisation groups with the caller's join state. */
+    public val hubGroups: Flow<List<com.transfer.flash.core.messaging.model.HubGroupUi>>
+        get() = flowOf(emptyList())
+
+    /**
+     * Refreshes directory, groups and announcements. Single-flight, at most one real attempt per 15 s; the failure text is a sentence
+     * for people. [userInitiated] (pull-to-refresh) bypasses the coordinator's own minimum interval.
+     */
+    public suspend fun refreshHub(userInitiated: Boolean = false): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown(com.transfer.flash.core.messaging.hub.HubRefreshText.NOT_ENROLLED))
 }
 
 private val EMPTY_PENDING_JOINS: StateFlow<Map<String, String>> = MutableStateFlow(emptyMap())

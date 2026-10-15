@@ -393,6 +393,8 @@ public class RealFlashChatRepository(
     hubAnnouncementsApi: HubAnnouncementsApi? = null,
     /** Plan A3: Real-time announcement hint push flow. */
     hubAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? = null,
+    /** Plan A4 H6: what the Hub tab read model needs from the host (directory DAO, sync request). Null = no Hub tab data. */
+    hubTabSources: com.transfer.flash.core.messaging.hub.HubTabSources? = null,
 ) : FlashChatRepository, AutoCloseable {
 
     private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
@@ -400,6 +402,24 @@ public class RealFlashChatRepository(
     private val effectiveAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? =
         hubAnnouncementEvents ?: hubRelay?.announcementEvents
     private val refreshAnnouncementsMutex: Mutex = Mutex()
+
+    /** Plan A4 H6: the Hub tab read model (see [com.transfer.flash.core.messaging.hub.HubFacade]). */
+    private val hubFacade: com.transfer.flash.core.messaging.hub.HubFacade? = hubTabSources?.let { src ->
+        com.transfer.flash.core.messaging.hub.HubFacade(
+            sources = src, credentials = enterpriseTrustStore?.credentials ?: flowOf(null), resolver = orgPeerResolver,
+            localDeviceId = localDeviceId, isPaired = isTrustedPeer, liveIds = onlinePeerIds, reachableIds = reachablePeerIds,
+            linkedGroupIds = enterpriseTrustStore?.linkedHubGroups ?: flowOf(emptySet()),
+            pendingJoins = enterpriseTrustStore?.pendingJoins ?: flowOf(emptyMap()),
+            refreshAnnouncements = { refreshHubAnnouncements() }, timeSource = timeSource, scope = scope, ioDispatcher = ioDispatcher,
+        )
+    }
+    override val hubState: Flow<com.transfer.flash.core.messaging.model.HubUiState> get() = hubFacade?.state ?: super.hubState
+    override val hubPeople: Flow<List<com.transfer.flash.core.messaging.model.HubPersonUi>> get() = hubFacade?.people ?: super.hubPeople
+    override fun searchHubPeople(query: String, departmentId: String?): Flow<List<com.transfer.flash.core.messaging.model.HubPersonUi>> = hubFacade?.search(query, departmentId) ?: super.searchHubPeople(query, departmentId)
+    override fun hubPerson(deviceId: String): Flow<com.transfer.flash.core.messaging.model.HubPersonUi?> = hubFacade?.person(deviceId) ?: super.hubPerson(deviceId)
+    override val hubDepartments: Flow<List<com.transfer.flash.core.messaging.model.HubDepartmentUi>> get() = hubFacade?.departments ?: super.hubDepartments
+    override val hubGroups: Flow<List<com.transfer.flash.core.messaging.model.HubGroupUi>> get() = hubFacade?.groups ?: super.hubGroups
+    override suspend fun refreshHub(userInitiated: Boolean): FlashResult<Unit> = hubFacade?.refresh(userInitiated) ?: super.refreshHub(userInitiated)
 
     /** Reactive stream of active announcements visible to the current employee (Plan A3 §4.3). */
     override val hubAnnouncements: Flow<List<HubAnnouncementUi>> =
@@ -5504,6 +5524,7 @@ public class RealFlashChatRepository(
      * each directory sync: the rows drive fan-out and the active-member gate.
      */
     public suspend fun refreshHubGroupRosters() {
+        hubFacade?.invalidate()
         val rosters = hubGroupRosters ?: return
         withContext(ioDispatcher) {
             rosters.refresh()
@@ -5513,6 +5534,7 @@ public class RealFlashChatRepository(
 
     /** Forgets the in-memory rosters (leaving the organisation) and deactivates the rows they produced. */
     public suspend fun clearHubGroupRosters() {
+        hubFacade?.onCleared()
         val rosters = hubGroupRosters ?: return
         withContext(ioDispatcher) {
             val members = groupMemberDao
