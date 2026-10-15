@@ -206,22 +206,22 @@ public class OrgDirectorySync(
                     return OrgSyncOutcome.HubUnsupported
                 }
                 is DirectorySyncPageResult.RateLimited -> {
-                    recordFailure(pageResult.retryAfterSeconds)
+                    recordFailure("rate_limited", pageResult.retryAfterSeconds)
                     FlashProbe.emit("org.sync.fail", "reason" to "rate_limited")
                     return OrgSyncOutcome.RateLimited(pageResult.retryAfterSeconds)
                 }
                 is DirectorySyncPageResult.AuthRefused -> {
-                    recordFailure()
+                    recordFailure("auth_refused")
                     FlashProbe.emit("org.sync.fail", "reason" to "auth_refused", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.AuthFailed(pageResult.statusCode, pageResult.message)
                 }
                 is DirectorySyncPageResult.Unreachable -> {
-                    recordFailure()
+                    recordFailure("unreachable")
                     FlashProbe.emit("org.sync.fail", "reason" to "unreachable")
                     return OrgSyncOutcome.NetworkError(pageResult.message)
                 }
                 is DirectorySyncPageResult.ServerError -> {
-                    recordFailure()
+                    recordFailure("server_error")
                     FlashProbe.emit("org.sync.fail", "reason" to "server_error", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.ServerError(pageResult.statusCode, pageResult.message)
                 }
@@ -384,11 +384,13 @@ public class OrgDirectorySync(
 
         val newState = OrgSyncStateEntity(
             id = 1,
+            orgRootFingerprint = creds.rootFingerprint,
             directoryEpoch = serverEpoch,
             lastSyncedVersion = serverVersion,
             offlineGraceDays = clampedGraceDays,
             lastSyncSuccessMs = successMs,
             lastSyncAttemptMs = now,
+            lastErrorKind = null,
         )
 
         try {
@@ -441,7 +443,7 @@ public class OrgDirectorySync(
         onHardSecurityError?.invoke(reason)
     }
 
-    private fun recordFailure(retryAfterSeconds: Long? = null) {
+    private suspend fun recordFailure(reason: String? = null, retryAfterSeconds: Long? = null) {
         failureAttemptCount++
         val baseSeconds = when (failureAttemptCount) {
             1 -> 30L
@@ -457,6 +459,18 @@ public class OrgDirectorySync(
         val jitter = 0.8 + (Random.nextDouble() * 0.4)
         val backoffMs = (effectiveSeconds * 1000.0 * jitter).toLong()
         nextAllowedAttemptMs = clock() + backoffMs
+        if (reason != null) {
+            runCatching {
+                orgDirectoryDao.getSyncState()?.let { current ->
+                    orgDirectoryDao.setSyncState(
+                        current.copy(
+                            lastSyncAttemptMs = clock(),
+                            lastErrorKind = reason,
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private fun resetBackoff() {

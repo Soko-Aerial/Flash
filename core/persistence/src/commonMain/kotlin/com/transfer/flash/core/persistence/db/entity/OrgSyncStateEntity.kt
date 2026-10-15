@@ -6,13 +6,16 @@ import androidx.room.PrimaryKey
 /**
  * Single-row state table for organization directory sync progress (Plan B, ADR-134).
  * Always stored with [id] = 1.
+ * Bound to the enrolled organization via [orgRootFingerprint].
  */
 @Entity(tableName = "org_sync_state")
 public data class OrgSyncStateEntity(
     @PrimaryKey val id: Int = 1,
+    val orgRootFingerprint: String = "",
     val directoryEpoch: String,
     val lastSyncedVersion: Long,
     val offlineGraceDays: Int,
     val lastSyncSuccessMs: Long,
     val lastSyncAttemptMs: Long,
+    val lastErrorKind: String? = null,
 )

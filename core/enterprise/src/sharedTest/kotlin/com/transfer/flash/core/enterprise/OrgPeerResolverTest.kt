@@ -758,7 +758,6 @@ class OrgPeerResolverTest {
     @Test
     fun ORGT_U63_org_lease_state_probes_emitted() = runBlocking {
         val probes = mutableListOf<String>()
-        val originalSink = com.transfer.flash.core.common.logging.platformLogSink()
         com.transfer.flash.core.common.logging.FlashLog.installSink(
             com.transfer.flash.core.common.logging.FlashLogSink { _, tag, message, _ ->
                 if (tag == "PROBE") probes += message
@@ -796,7 +795,9 @@ class OrgPeerResolverTest {
             assertTrue(probes.any { it.contains("org.lease.state state=NONE") }, "Must emit org.lease.state NONE on clear")
             assertTrue(probes.any { it.contains("org.lease.expired reason=CLEARED") }, "Must emit org.lease.expired CLEARED")
         } finally {
-            com.transfer.flash.core.common.logging.FlashLog.installSink(originalSink)
+            com.transfer.flash.core.common.logging.FlashLog.installSink(
+                com.transfer.flash.core.common.logging.FlashLogSink { _, _, _, _ -> }
+            )
         }
     }
 }
