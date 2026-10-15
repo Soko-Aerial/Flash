@@ -320,3 +320,37 @@ TASK 4 (never independently verified so far): (a) Plan A1 department heads and i
 
 OUTPUT: logs/streams/V-verifier/report-3.md with: gate table, B1 defect table (16 rows), B2/B3/round-2 table, A1/A2/H0-H5 findings, numbered defects with path:line and severity, mutation results (what you changed, which test failed, proof you restored it with git diff showing clean), a clear verdict per phase (B1, B2, B3, A1, A2, H0-H5): ACCEPT or REJECT, and the exact gate commands with the last output lines. Do not fix anything.
 ```
+
+---
+
+# Round 4 (2026-10-15): B1-B3, A1, A2, H0-H5 are ACCEPTED (report-3); build B4 and A3
+
+Start from `dev` at `7401b954` or later (it contains ERROR-400, the invite-role fix). Two implementers can run in parallel because they touch different areas; both use the Gradle lock. Run them one at a time if the PC is slow. After both, run the verifier again with the Round 3 prompt, changing the phases to B4 and A3.
+
+## R4-S1 — Antigravity (this PC), Plan B Phase B4: hub groups on the LAN
+
+```text
+You are implementer stream S1. Create your worktree: git worktree add E:\FlashWork\S1-b4 -b agent/S1-b4 dev. Never edit C:\Users\KaliOxygen\Downloads\Flash.
+Read first, in order: AGENTS.md (all, esp. section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md, docs/plans/HUB-QUALITY-CONTRACT.md,
+docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md (section 4 Phase B4 and section 10 in full, ADR-135 in docs/decisions.md), logs/handoff.md, logs/streams/V-verifier/report-3.md.
+Scope: ONLY Phase B4 (hub-signed roster statement, hub groups usable on the LAN through ORG trust plus a verified roster). Room schema step is 16 (reserved; check the table in docs/protocol.md section 7 and never reuse a number). Do not start A3 or the Hub tab screens.
+Rules: logs ONLY into logs/streams/S1-org-trust/ in the canonical formats (never logs/*.md, docs/decisions.md or TEST-BACKLOG.md); build and test ONLY through tools\flash-gradle.cmd <args> from your worktree root (exit 75 = busy, retry later);
+commit small to agent/S1-b4 only; never merge, rebase, push, stash; never touch the phone, the owner's demo hub (ports 8443/8444) or the app's data; never print keys or tokens; no new dependency or module without asking.
+Hard security rules from the plan: a group member who is only an ORG colleague may chat inside a hub-linked group but NEVER gets push-to-talk, group creation or group administration outside the hub-signed roster; PTT and local/v2 group gates stay PAIRED-only; the roster statement must be verified against the hub delegation chain and the pinned root, with a monotonic version and a lease like member statements.
+Quality contract applies in full: explain-back first, evidence table, adversarial self-review with at least 10 path:line findings, honest "Not done", at least two mutation checks (name them in your report, restore afterwards).
+Stop and ask the owner on any contradiction with the plan. Finish with the contract section 7 report, exact gate commands and last output lines, and every owed device test (add to your stream's backlog fragment).
+```
+
+## R4-S2 — OpenCode or Antigravity second session, Plan A3: announcements (server first)
+
+```text
+You are implementer stream S2. Create your worktree: git worktree add E:\FlashWork\S2-a3 -b agent/S2-a3 dev. Never edit C:\Users\KaliOxygen\Downloads\Flash.
+Read first, in order: AGENTS.md (all, esp. section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md, docs/plans/HUB-QUALITY-CONTRACT.md,
+docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, docs/plans/HUB-ANNOUNCEMENTS-PLAN.md (all), docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md section on roles, logs/handoff.md.
+Scope: ONLY Plan A3 sections 3 (server), 4.1-4.3 (wire library, Room persistence, repository API) and 5 (console UI). Room schema step is 17 (reserved; B4 uses 16). Do NOT build the Hub tab screens or notifications UI (plan A4 / H6+).
+Announcements are PLAINTEXT on the hub (ADR-138): never claim they are encrypted anywhere in code, strings or docs. Department heads may post only to their own department; a hidden department's announcements must never appear for outsiders (same filter as the directory, Plan A2).
+Rules: logs ONLY into logs/streams/S2-server/ in the canonical formats; build and test ONLY through tools\flash-gradle.cmd <args> from your worktree root; commit small to agent/S2-a3 only; never merge, rebase, push, stash; never touch the phone or the owner's demo hub (ports 8443/8444); never print keys or tokens; no new dependency or module without asking.
+Add every new route to docs/protocol-routes.txt and docs/protocol.md; the RouteTableContractTest must stay green. Sanitise all text through one function (plan 3.2).
+Quality contract applies in full: explain-back first, evidence table, adversarial self-review with at least 10 path:line findings, honest "Not done", at least two mutation checks restored afterwards.
+Stop and ask the owner on any contradiction with the plan. Finish with the contract section 7 report, exact gate commands and last output lines, and every owed device test.
+```
