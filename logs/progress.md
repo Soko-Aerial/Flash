@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-10-15 — Independent verification of B1-B3, A1, A2, H0-H5 (ACCEPT) and DEFECT-017 fix (ERROR-400)
+
+### Worked on
+Antigravity ran the round 3 verifier prompt (HUB-PARALLEL-LAUNCH-PROMPTS.md "Round 3") in `E:\FlashWork\V-verify-3`, branch `agent/V-verifier-3`, report `logs/streams/V-verifier/report-3.md`.
+
+### Result
+ACCEPT for B1, B2, B3, A1, A2 and H0-H5. Gate: 13 tasks, 2,261 tests, 0 failures; mutation (a) clearSnapshot on unenrol removed (ORGT-U51/U52/U66 failed) and (b) statement verification skipped (ORGT-U12b/U02/U12 failed), both restored. PTT, group creation and group administration confirmed PAIRED-only. One new defect, DEFECT-017 (high), fixed here as ERROR-400.
+Note: the verifier's per-task counts differ from this session's integration gate (for example `:core:messaging:jvmTest` 247 vs 415; `:ui:chat:jvmTest` 463 vs 27); not explained, so "2,261" is not claimed as the whole suite.
+
+### Changed (ERROR-400)
+Dev delegation scopes, invite-creation scope check with an authored sentence, keytool/doc templates, `HUB_NOT_ALLOWED` client reason and sentence, two unit tests. See `logs/errors.md` ERROR-400.
+
+### Not verified
+Nothing here ran on two phones against a real hub. ORGT-B01 still needs the owner's confirmation. A real enrolment of a department head against the fixed demo hub is DEMO-02.
+
+### Next AI
+B1/B2/B3/A1/A2/H0-H5 are accepted, so start B4 (hub groups on the LAN, schema 16) and A3 (announcements, schema 17), then Hub tab H6+. Read the plans first; do not start them before reading `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` Phase B4.
+
+
 ### 2026-10-14 — Plan B Phase B2: The ORG tier at the application gate: 1:1 chat
 
 #### Phase B2 Report (Contract Section 7 Template)

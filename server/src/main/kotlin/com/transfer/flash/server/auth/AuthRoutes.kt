@@ -295,6 +295,7 @@ private fun refusalStatus(error: Throwable): Pair<HttpStatusCode, String> = when
     error is InviteRefusedException && error.refusal == InviteRefusal.EXPIRED -> HttpStatusCode.Gone to HubErrorCodes.ERR_EXPIRED
     error is InviteRefusedException -> HttpStatusCode.Conflict to HubErrorCodes.ERR_CONFLICT
     error is IllegalArgumentException -> HttpStatusCode.BadRequest to HubErrorCodes.ERR_BAD_REQUEST
+    error is RoleNotAllowedException -> HttpStatusCode.Forbidden to HubErrorCodes.ERR_ROLE_NOT_ALLOWED
     error is SecurityException -> HttpStatusCode.Forbidden to HubErrorCodes.ERR_FORBIDDEN
     error is IllegalStateException && error.message.orEmpty().contains("quota", ignoreCase = true) ->
         HttpStatusCode.TooManyRequests to HubErrorCodes.ERR_QUOTA_EXCEEDED

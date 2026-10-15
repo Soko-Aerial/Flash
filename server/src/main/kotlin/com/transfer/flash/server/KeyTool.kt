@@ -360,7 +360,7 @@ class KeyTool(
                     }
                     else -> {
                         err.println("Usage: keytool init-root --out <dir> [--no-passphrase]")
-                        err.println("       keytool issue-delegation --root-key <file> --server-pub <file|base64> --scopes enrol:member,revoke:member")
+                        err.println("       keytool issue-delegation --root-key <file> --server-pub <file|base64> --scopes enrol:member,enrol:dept_admin,revoke:member")
                         err.println("                                [--max-devices N] [--valid-days N] [--serial N] [--out delegation.cert]")
                         err.println("       keytool revoke --root-key <file> --delegation-serial N[,N] [--serial N,..] [--device-id a,..] [--base current.json] [--out revocations.signed]")
                         err.println("       keytool rotate")

@@ -165,6 +165,7 @@ public class EnterpriseEnrollmentClient(
                 HubErrorCodes.ERR_CONFLICT -> EnrollFailureReason.INVITE_USED
                 HubErrorCodes.ERR_QUOTA_EXCEEDED -> EnrollFailureReason.QUOTA_FULL
                 HubErrorCodes.ERR_RATE_LIMIT -> EnrollFailureReason.RATE_LIMITED
+                HubErrorCodes.ERR_ROLE_NOT_ALLOWED -> EnrollFailureReason.HUB_NOT_ALLOWED
                 HubErrorCodes.ERR_AUTH, HubErrorCodes.ERR_FORBIDDEN, HubErrorCodes.ERR_NOT_FOUND,
                 HubErrorCodes.ERR_BAD_REQUEST, HubErrorCodes.ERR_REVOKED,
                 -> EnrollFailureReason.INVITE_REJECTED

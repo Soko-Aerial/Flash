@@ -4164,3 +4164,10 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **Source:** UI-058 H5 (placeholder keeps the action until H7). **Status:** TODO
 ### Server directory sync, night fixes 2026-10-14 (ORGT-S20..S22, unit-level)
 - `ORGT-S20` bad cursor is rejected (400 on the route), `ORGT-S21` 90-day tombstone pruning forces a full resync behind the watermark, `ORGT-S22` the watermark survives a restart. Status: PASS in unit tests 2026-10-14. Owed on a real hub: `DEMO-01` run `docs/plans/HUB-DEMO-RUNBOOK.md` end to end with a real device (admin setup, enrol, directory sync, removal reaching the device). Status: TODO.
+
+### DEMO-02 — Department-head invite enrols on the fixed demo hub (ERROR-400)
+- **Setup:** restart the demo hub without `-Fresh` (`powershell -File tools\demo-server.ps1`); the dev delegation is reissued with `enrol:dept_admin`.
+- **Steps:** (1) console: create an invite with role department head, department `software`. (2) Join from the app. (3) Also try a hub started with a delegation that lacks `enrol:dept_admin`: creating the same invite must be refused in the console with the sentence naming `enrol:dept_admin`.
+- **Pass:** step 2 enrols and the audit log shows `device.enroll` (not `device.enroll.refused`); step 3 shows the authored sentence, no invite is created; a hub that refuses at enrolment shows the "not allowed to enrol this kind of device" sentence, not "check the link".
+- **Source:** ERROR-400, `logs/streams/V-verifier/report-3.md` DEFECT-017.
+- **Status:** TODO

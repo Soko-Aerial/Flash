@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-15 — Verified: B1, B2, B3, A1, A2, H0-H5 accepted (report-3); DEFECT-017 fixed
+
+- Independent verifier (Antigravity, `agent/V-verifier-3`, report `logs/streams/V-verifier/report-3.md`) ACCEPTED B1, B2, B3, A1, A2, H0-H5. These are unblocked for the next phases. Still owed by the owner: ORGT-B01 confirmation, a two-phone run against a real hub (DEMO-01/DEMO-02).
+- ERROR-400 (DEFECT-017) fixed in code: dev delegation includes `enrol:dept_admin`; invite creation refuses roles the delegation cannot issue; app has its own message (`HUB_NOT_ALLOWED`). Restart the demo hub (no `-Fresh`) to pick up the new delegation, then create a new invite.
+- Recommended next: B4 (hub-signed roster for hub groups on the LAN, schema 16), then A3 (announcements, schema 17), then Hub tab H6+. Open owner decisions: self-disable guard, ADR-160, second handset for ORGT-B01, certificate validity cap before 2050, auto-pair vs "pair from the directory" for colleagues.
+
+
 ## Integration 2026-10-14 (S1 B2+B3, S2 A2+A1, S3 H0-H5, V-verifier merged into dev)
 
 - Merged with `--no-ff`: `agent/S1-org-trust`, `agent/S2-server`, `agent/S3-hubtab` (from the cloud bundle), `agent/V-verifier` (report only). One conflict (1:1 reaction gate in `RealFlashChatRepository.kt`), resolved to S1's version; the committed `if (false) return` (verifier blocking defect 1) is fixed.

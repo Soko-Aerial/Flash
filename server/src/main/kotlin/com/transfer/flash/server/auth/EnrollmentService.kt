@@ -128,9 +128,17 @@ class EnrollmentService(
 
     // ------------------------------------------------------------------------------------------------ invites
 
+    /** True when the hub's delegation holds the scope needed to issue [role]; the same test the enrolment transaction applies. */
+    private fun delegationCanIssue(role: String): Boolean {
+        val needed = HubRoles.enrolScope(role)
+        return if (role == HubRoles.ADMIN) HubScopes.grantsExplicitly(delegationCert.scopes, needed) else delegationCert.hasScope(needed)
+    }
+
     /** Creates an invite and returns its token and deep link; the token can not be read back later. */
     fun createInvite(serverUrl: String, scope: InviteScope, currentTimeMs: Long = System.currentTimeMillis()): CreatedInvite {
         require(HubRoles.isValid(scope.role)) { "Unknown role" }
+        // DEFECT-017: refuse at creation what enrolment would refuse later, so the admin hears it here, in words, not the invitee as "forbidden".
+        require(delegationCanIssue(scope.role)) { roleNotAllowedMessage(scope.role) }
         require(scope.maxUses in 1..MAX_INVITE_USES) { "maxUses must be between 1 and $MAX_INVITE_USES" }
         require(scope.expiry > currentTimeMs) { "Invite expiry must be in the future" }
         if (requireHttpsInvites) {
@@ -263,7 +271,7 @@ class EnrollmentService(
                 } else {
                     delegation.hasScope(needed)
                 }
-                if (!allowed) throw SecurityException("Server delegation lacks authority to issue role '${invite.role}'")
+                if (!allowed) throw RoleNotAllowedException("Server delegation lacks authority to issue role '${invite.role}'")
                 if (revocations.isRevoked(serial, deviceId)) throw SecurityException("This device id has been revoked")
                 signLeaf(delegation, deviceId, subjectPublicKey, invite.role, invite.department, serial, currentTimeMs)
             }
@@ -409,5 +417,20 @@ class EnrollmentService(
         const val TOKEN_BYTES: Int = 32
         const val MAX_TOKEN_CHARS: Int = 128
         const val MAX_INVITE_USES: Int = 1000
+
+        private fun roleWords(role: String): String = when (role) {
+            HubRoles.ADMIN -> "organisation administrator"
+            HubRoles.DEPT_ADMIN -> "department head"
+            else -> "member"
+        }
+
+        /** The sentence an admin sees when the hub's delegation cannot enrol [role] (DEFECT-017). Authored, never an exception text. */
+        fun roleNotAllowedMessage(role: String): String =
+            "This hub is not allowed to enrol a ${roleWords(role)}. Its delegation does not include ${HubRoles.enrolScope(role)}. " +
+                "Ask whoever holds the organisation key to issue a new delegation that includes that scope " +
+                "(keytool issue-delegation --scopes ${HubRoles.enrolScope(role)},...), or invite an employee instead."
     }
 }
+
+/** The hub's delegation cannot issue the invite's role. Its own type so the client gets ERR_ROLE_NOT_ALLOWED, not a bare forbidden. */
+class RoleNotAllowedException(message: String) : SecurityException(message)

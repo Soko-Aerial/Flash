@@ -15,7 +15,7 @@ export function keytoolCommand(hubPublicKey) {
     'server keytool issue-delegation \\',
     '  --root-key ./root/root-identity.pk8 \\',
     '  --server-pub ' + (hubPublicKey || '<hub public key>') + ' \\',
-    '  --scopes enrol:member,revoke:member \\',
+    '  --scopes enrol:member,enrol:dept_admin,revoke:member \\',
     '  --valid-days 90 --max-devices 500 \\',
     '  --out delegation.cert',
   ].join('\n');

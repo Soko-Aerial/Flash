@@ -194,6 +194,9 @@ public object HubErrorCodes {
 
     public const val ERR_QUOTA_EXCEEDED: String = "ERR_QUOTA_EXCEEDED"
     public const val ERR_FORBIDDEN: String = "ERR_FORBIDDEN"
+
+    /** Enrolment: the hub's delegation does not include the scope needed to issue the invite's role (ERROR-400). */
+    public const val ERR_ROLE_NOT_ALLOWED: String = "ERR_ROLE_NOT_ALLOWED"
     public const val ERR_NOT_FOUND: String = "ERR_NOT_FOUND"
     public const val ERR_CONFLICT: String = "ERR_CONFLICT"
 

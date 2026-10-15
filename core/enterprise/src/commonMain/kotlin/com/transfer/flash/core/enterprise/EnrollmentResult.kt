@@ -27,6 +27,9 @@ public enum class EnrollFailureReason {
     /** The hub refused the code (unknown, malformed, wrong organisation). */
     INVITE_REJECTED,
 
+    /** The hub understood the link but is not allowed to enrol this kind of device (its delegation lacks the scope; DEFECT-017). */
+    HUB_NOT_ALLOWED,
+
     /** The hub has no seats left (device or mailbox quota). */
     QUOTA_FULL,
 

@@ -156,6 +156,9 @@ class EnrollmentTrustTest {
         assertEquals(EnrollFailureReason.INVITE_USED, reasonFor(HttpStatusCode.Conflict, HubErrorCodes.ERR_CONFLICT))
         assertEquals(EnrollFailureReason.QUOTA_FULL, reasonFor(HttpStatusCode.Forbidden, HubErrorCodes.ERR_QUOTA_EXCEEDED))
         assertEquals(EnrollFailureReason.RATE_LIMITED, reasonFor(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT))
+        // DEFECT-017: a hub that is not allowed to issue the role says so; it is not "check the link".
+        assertEquals(EnrollFailureReason.HUB_NOT_ALLOWED, reasonFor(HttpStatusCode.Forbidden, HubErrorCodes.ERR_ROLE_NOT_ALLOWED))
+        assertEquals(EnrollFailureReason.INVITE_REJECTED, reasonFor(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN))
         assertEquals(EnrollFailureReason.INVITE_REJECTED, reasonFor(HttpStatusCode.Unauthorized, HubErrorCodes.ERR_AUTH))
         assertEquals(EnrollFailureReason.HUB_ERROR, reasonFor(HttpStatusCode.InternalServerError, HubErrorCodes.ERR_INTERNAL))
     }
