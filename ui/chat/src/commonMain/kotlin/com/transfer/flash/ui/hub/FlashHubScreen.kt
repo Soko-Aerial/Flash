@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -189,7 +190,8 @@ private fun FlashHubBody(
     var deleteConfirmId by rememberSaveable { mutableStateOf<String?>(null) }
     var linkConfirm by remember { mutableStateOf<String?>(null) }
     var composer by remember { mutableStateOf<FlashHubComposerState?>(null) }
-    var personBusy by remember { mutableStateOf(false) }
+    val messageFlight = remember { FlashHubSingleFlight() }
+    val latestSelection by rememberUpdatedState(selection)
     var personNote by remember { mutableStateOf<String?>(null) }
     var actionNote by remember { mutableStateOf<String?>(null) }
     var joiningGroupId by remember { mutableStateOf<String?>(null) }
@@ -244,22 +246,27 @@ private fun FlashHubBody(
     fun closeSearch() { focusManager.clearFocus(); onSelection(selection.copy(searchOpen = false, query = "")) }
 
     fun openPerson(id: String) { personNote = null; onSelection(selection.copy(personId = id)) }
-    fun closePerson() { personNote = null; personBusy = false; onSelection(selection.copy(personId = null)) }
+    fun closePerson() { personNote = null; onSelection(selection.copy(personId = null)) }
 
     fun message(person: HubPersonUi) {
-        if (personBusy) return
+        if (!messageFlight.tryStart()) return
         if (person.paired || person.isSelf) {
+            messageFlight.finish()
             when (val o = FlashHubMath.messageOutcome(person, null)) {
                 is FlashHubMessageOutcome.Open -> { closePerson(); actions.onOpenConversation(o.conversationId) }
                 is FlashHubMessageOutcome.Show -> personNote = o.text
             }
             return
         }
-        personBusy = true
         personNote = null
         scope.launch {
-            val result = actions.startConversation(person.deviceId)
-            personBusy = false
+            val result = try {
+                actions.startConversation(person.deviceId)
+            } finally {
+                messageFlight.finish()
+            }
+            // The sheet was closed or another person opened while the hub answered: the user's intent changed, do nothing.
+            if (latestSelection.personId != person.deviceId) return@launch
             when (val o = FlashHubMath.messageOutcome(person, result)) {
                 is FlashHubMessageOutcome.Open -> { closePerson(); actions.onOpenConversation(o.conversationId) }
                 is FlashHubMessageOutcome.Show -> personNote = o.text
@@ -436,7 +443,7 @@ private fun FlashHubBody(
     val rightsOfOpen = openAnnouncement?.let { FlashHubMath.rights(it, data.posting) } ?: FlashHubAnnouncementRights(false, false, false)
 
     val personPane = FlashHubPersonPaneState(
-        busy = personBusy,
+        busy = messageFlight.busy,
         note = personNote,
         callAllowed = person != null && actions.onCall != null && actions.callAllowed(person),
         pairAvailable = actions.onPairColleague != null,
@@ -641,4 +648,24 @@ private fun HubDepartmentPane(
         joiningGroupId = joiningGroupId,
         modifier = Modifier.verticalScroll(sc),
     )
+}
+
+/**
+ * Allows one request at a time (the Message button on a person: a double tap must not start two conversations). A plain
+ * observable flag so it is unit-testable without composing anything.
+ */
+internal class FlashHubSingleFlight {
+    var busy: Boolean by mutableStateOf(false)
+        private set
+
+    /** True when the caller may start; false while an earlier request is still running. */
+    fun tryStart(): Boolean {
+        if (busy) return false
+        busy = true
+        return true
+    }
+
+    fun finish() {
+        busy = false
+    }
 }

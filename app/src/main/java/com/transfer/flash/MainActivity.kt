@@ -2780,7 +2780,7 @@ private fun FlashShell(
         }
     }
     val hubScreenContent: @Composable () -> Unit = {
-        val hubHost = remember(chatRepository, settings.hubStatus?.hubHost) {
+        val hubHost = remember(chatRepository, settings.hubStatus?.hubHost, hubRoute) {
             com.transfer.flash.ui.hub.FlashHubHost(
                 onOpenConversation = { id ->
                     selectedChatConversationId = id
@@ -2810,7 +2810,8 @@ private fun FlashShell(
                 onCall = hubCall.takeIf { engine.calls != null },
                 orgHost = settings.hubStatus?.hubHost?.takeIf { it.isNotBlank() },
                 onManageGroupRequests = { showBrowseOrgGroups = true },
-                pendingRoute = null,
+                pendingRoute = hubRoute,
+                onRouteConsumed = { pendingHubRoute.value = null },
                 prefs = hubPrefs,
             )
         }

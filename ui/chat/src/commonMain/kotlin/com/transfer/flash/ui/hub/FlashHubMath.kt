@@ -240,8 +240,12 @@ public object FlashHubMath {
         null -> null
     }
 
+    /** Bidi overrides, isolates, zero-width and control characters never become an avatar letter (the server also strips them). */
+    private fun isInvisible(c: Char): Boolean =
+        (c.isISOControl() && c != '\t') || c in '\u200B'..'\u200F' || c in '\u202A'..'\u202E' || c in '\u2066'..'\u2069' || c == '\uFEFF'
+
     public fun initials(name: String): String {
-        val words = name.trim().split(' ', '\t').filter { it.isNotEmpty() }
+        val words = name.filterNot(::isInvisible).trim().split(' ', '\t').filter { it.isNotEmpty() }
         return when {
             words.isEmpty() -> "?"
             words.size == 1 -> firstCodePoint(words[0])
@@ -417,15 +421,15 @@ public object FlashHubMath {
 
     public fun groupButtonEnabled(g: HubGroupUi, busy: Boolean): Boolean = !busy && g.membership != HubGroupMembership.PENDING
 
-    /**
-     * Whether the Groups segment offers "Review group join requests". Only an administrator's groups carry a request count
-     * ([HubGroupUi.pendingRequests] non-null), and only when the host supplied the sheet that decides them.
-     */
     /** Call needs a trusted colleague (paired, or verified through the organisation) on the same network, and the host's own gate. */
     public fun callAllowed(person: HubPersonUi, hostAllows: Boolean): Boolean =
         hostAllows && !person.isSelf && person.reachability == HubReachability.LAN &&
             com.transfer.flash.core.messaging.PeerTrustPolicy.mayRing(isPaired = person.paired, isOrg = person.orgVerified)
 
+    /**
+     * Whether the Groups segment offers "Review group join requests". Only an administrator's groups carry a request count
+     * ([HubGroupUi.pendingRequests] non-null), and only when the host supplied the sheet that decides them.
+     */
     public fun showManageRequests(groups: List<HubGroupUi>, hookAvailable: Boolean): Boolean =
         hookAvailable && groups.any { it.pendingRequests != null }
 
