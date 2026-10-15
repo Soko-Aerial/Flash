@@ -13,6 +13,7 @@ export const NAV = [
   { id: 'devices', glyph: 'devices', key: 'd' },
   { id: 'invites', glyph: 'invites', key: 'i' },
   { id: 'organization', glyph: 'org', key: 'g' },
+  { id: 'announcements', glyph: 'announcements', key: 'n' },
   { id: 'audit', glyph: 'audit', key: 'a' },
   { id: 'security', glyph: 'security', key: 's' },
   { id: 'settings', glyph: 'settings', key: 't' },

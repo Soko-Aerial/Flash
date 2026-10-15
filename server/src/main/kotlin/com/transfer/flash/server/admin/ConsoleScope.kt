@@ -100,6 +100,15 @@ object AdminRoutePolicies {
         "POST /admin/api/v1/invites" to AdminRoutePolicy.OWN,
         "POST /admin/api/v1/invites/bulk" to AdminRoutePolicy.OWN,
         "POST /admin/api/v1/invites/{id}/revoke" to AdminRoutePolicy.OWN,
+        // Announcements (Plan A3, ADR-138).
+        "GET /admin/api/v1/announcements" to AdminRoutePolicy.OWN,
+        "POST /admin/api/v1/announcements" to AdminRoutePolicy.OWN,
+        "POST /admin/api/v1/announcements/preview" to AdminRoutePolicy.OWN,
+        "GET /admin/api/v1/announcements/{id}" to AdminRoutePolicy.OWN,
+        "PUT /admin/api/v1/announcements/{id}" to AdminRoutePolicy.OWN,
+        "DELETE /admin/api/v1/announcements/{id}" to AdminRoutePolicy.OWN,
+        "POST /admin/api/v1/announcements/{id}/pin" to AdminRoutePolicy.OWN,
+        "POST /admin/api/v1/announcements/{id}/unpin" to AdminRoutePolicy.OWN,
         // Hub trust and operations (org admin only).
         "GET /admin/api/v1/overview" to AdminRoutePolicy.OWN,
         "GET /admin/api/v1/metrics" to AdminRoutePolicy.ORG,
