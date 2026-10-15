@@ -1,6 +1,7 @@
 package com.transfer.flash.server
 
 import com.transfer.flash.core.hubprotocol.certs.HubRoles
+import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
 import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.server.admin.AdminApiDeps
 import com.transfer.flash.server.admin.AdminAuthService
@@ -34,6 +35,7 @@ import com.transfer.flash.server.config.TlsSupport
 import com.transfer.flash.server.core.FlashServerEngine
 import com.transfer.flash.server.directory.DepartmentMember
 import com.transfer.flash.server.directory.MemberRole
+import com.transfer.flash.server.directory.GroupRosterSigner
 import com.transfer.flash.server.directory.OrgMemberStatementSigner
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.directory.PublishedSealingKey
@@ -314,6 +316,9 @@ class HubServices private constructor(
                         statementSerial = serial,
                     )
                     statement to d.serial
+                }
+                directory.rosterSigner = GroupRosterSigner { unsigned ->
+                    if (delegations.current == null) null else GroupRosterStatement.issue(delegate.pair.private, unsigned)
                 }
                 directory.ensureStatementsSigned()
                 log.info("Delegation active: serial {}, {} day(s) left, root fingerprint {}", cert.serial, delegations.daysLeft(), DelegationManager.rootFingerprint(cert))

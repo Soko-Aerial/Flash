@@ -834,7 +834,7 @@ object DiscoveryEngineHolder {
             // pinning a tier or switching the mode must reach the next connection and the next
             // redial without restarting the engine; live sessions are re-timed by modeController.
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", FEATURE_VIDEO_UPGRADE) },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE) },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -1211,6 +1211,15 @@ object DiscoveryEngineHolder {
             },
         )
         orgPeerResolverRef = orgPeerResolver
+        // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
+        // lets the directory sync's refresh reach it once it exists.
+        var hubRosterChat: RealFlashChatRepository? = null
+        val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
+            dao = db.orgDirectoryDao(),
+            credentialsProvider = { enterpriseTrustStore.credentials.value },
+            verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+            localDeviceId = { identity.deviceId.value },
+        )
         // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or
         // changes organisation (verifier defect 4, ORGT-U50..U55).
         val orgDirectorySync = com.transfer.flash.core.enterprise.OrgDirectorySync(
@@ -1225,8 +1234,16 @@ object DiscoveryEngineHolder {
             relayConnected = hub.relay.state.map { it.canSend },
             syncOnce = { force -> orgDirectorySync.syncOnce(force) },
             clearSnapshot = { orgDirectorySync.clearSnapshot() },
-            refreshResolver = { orgPeerResolver.refreshFromSnapshot() },
-            clearResolver = { orgPeerResolver.clear() },
+            refreshResolver = {
+                orgPeerResolver.refreshFromSnapshot()
+                hubGroupRosters.refresh()
+                hubRosterChat?.refreshHubGroupRosters()
+            },
+            clearResolver = {
+                orgPeerResolver.clear()
+                hubRosterChat?.clearHubGroupRosters()
+                hubGroupRosters.clear()
+            },
             scope = appScope,
             onOutcome = { reason, outcome -> Log.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
             getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
@@ -1240,6 +1257,7 @@ object DiscoveryEngineHolder {
             localDisplayName = identity.friendlyName,
             isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
             orgPeerResolver = orgPeerResolver,
+            hubGroupRosters = hubGroupRosters,
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
             outboxDao = db.outboxDao(),
@@ -1446,6 +1464,7 @@ object DiscoveryEngineHolder {
         chatImpl.onGroupOfferRefused = { groupId, groupName, message ->
             FlashNotificationManager.showGroupOfferRefused(appContext, groupId, groupName, message)
         }
+        hubRosterChat = chatImpl
         presenceChat = chatImpl
 
         // Sync peer friendly name across paired devices when peer connects with an updated name

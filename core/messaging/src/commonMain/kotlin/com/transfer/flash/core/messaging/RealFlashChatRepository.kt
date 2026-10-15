@@ -25,6 +25,9 @@ import com.transfer.flash.core.enterprise.EnterpriseJoinResult
 import com.transfer.flash.core.enterprise.EnterpriseJoinRequest
 import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.core.enterprise.HubDirectoryApi
+import com.transfer.flash.core.enterprise.HubGroupRosterView
+import com.transfer.flash.core.enterprise.HubRosterOfferPayload
+import com.transfer.flash.core.enterprise.RosterAdoption
 import com.transfer.flash.core.enterprise.HubPeerDirectory
 import com.transfer.flash.core.enterprise.HubPeerStanding
 import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
@@ -382,6 +385,8 @@ public class RealFlashChatRepository(
     private val isOrgPeer: (String) -> Boolean = { false },
     /** B2: Full organisation peer resolver providing lease and metadata queries (Plan B, ADR-134). */
     private val orgPeerResolver: OrgPeerResolver? = null,
+    /** B4: the hub-signed roster statements of hub groups, for the LAN gate and the roster rows (Plan B section 10). */
+    private val hubGroupRosters: HubGroupRosterView? = null,
     /** Plan A3: Organization announcements local Room persistence. */
     hubAnnouncementDao: HubAnnouncementDao? = null,
     /** Plan A3: Organization announcements REST API client. */
@@ -1413,7 +1418,7 @@ public class RealFlashChatRepository(
                     val isV2 = conversationEntity.groupProto == GroupPolicy.V2_PROTOCOL
                     val currentSettings = if (isV2) signedGroups?.currentSettings(conversationId) ?: GroupSettings.defaults(conversationId) else null
                     val canShare = isMemberActive && isV2 && (isOwner || isAdmin || currentSettings?.inviteSharers == GroupSettings.SHARERS_ALL)
-                    val canAdd = isMemberActive && (!isV2 || isOwner || isAdmin || currentSettings?.membersMayAdd == true)
+                    val canAdd = isMemberActive && !isHubRosterGroup(conversationId) && (!isV2 || isOwner || isAdmin || currentSettings?.membersMayAdd == true)
                     val pendingReqs = if (isV2 && (isOwner || isAdmin)) getPendingJoinRequests(conversationId) else emptyList()
                     val localPrefs = if (isV2) getGroupLocalPreferences(conversationId) else null
                     // ADR-100: the join card shows while this member has not chosen how much history to load.
@@ -2199,6 +2204,9 @@ public class RealFlashChatRepository(
         memberIds: Set<String>,
     ): FlashResult<Unit> {
         if (memberIds.isEmpty()) return FlashResult.Success(Unit)
+        if (isHubRosterGroup(groupId)) {
+            return FlashResult.Failure(FlashError.Unknown("Members of a company group are set by your administrator."))
+        }
         if (memberIds.any { !PeerTrustPolicy.mayAddGroupMember(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) }) {
             return FlashResult.Failure(FlashError.Unknown("Every group member must be trusted"))
         }
@@ -3195,6 +3203,11 @@ public class RealFlashChatRepository(
             return
         }
 
+        if (frame is GroupWireFrame.HubRosterOffer) {
+            handleInboundHubRosterOffer(peerDeviceId, frame)
+            return
+        }
+
         if (frame is GroupWireFrame.GsJoinRequest) {
             if (peerDeviceId != frame.from) return
             handleInboundJoinRequest(peerDeviceId, frame)
@@ -3742,7 +3755,8 @@ public class RealFlashChatRepository(
             is GroupWireFrame.GsResult,
             is GroupWireFrame.GsJoinRequest,
             is GroupWireFrame.GsJoinDecision,
-            is GroupWireFrame.GsRosterPreview -> Unit
+            is GroupWireFrame.GsRosterPreview,
+            is GroupWireFrame.HubRosterOffer -> Unit
             is GroupWireFrame.GsStale -> handleInboundGsStale(peerDeviceId, frame)
             is GroupWireFrame.GsSecretRequest -> handleInboundGsSecretRequest(peerDeviceId, frame)
             is GroupWireFrame.GsSecret -> handleInboundGsSecret(peerDeviceId, frame)
@@ -4037,6 +4051,7 @@ public class RealFlashChatRepository(
     }
 
     private suspend fun onPeerSessionUp(peerId: String) {
+        offerHubRostersTo(peerId)
         triggerProofForPendingInvites(peerId)
         // Forward any pending join requests where peerId is an admin in that group
         val pendingRequests = groupJoinRequestDao?.getAll()?.filter { it.state == "PENDING" } ?: emptyList()
@@ -5390,7 +5405,163 @@ public class RealFlashChatRepository(
      */
     public suspend fun isGroupPeerTrusted(groupId: String, deviceId: String): Boolean =
         isTrustedPeer(deviceId) ||
-            signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true
+            signedGroups?.isVouchedMember(groupId, deviceId, peerIdentityKey(deviceId)) == true ||
+            isHubGroupMemberPeer(groupId, deviceId)
+
+    /**
+     * Plan B section 10 gate for a hub group (one linked to the hub that has a hub-signed roster): [deviceId] is an active
+     * organisation colleague, it is named by the latest roster statement still inside its validity window, and so is this
+     * device. Anything else (a colleague outside the group, an expired or missing statement, a removed member) is false.
+     * This grants group TEXT only; it never makes anybody a paired peer (no PTT, no group creation, no administration).
+     */
+    private fun isHubGroupMemberPeer(groupId: String, deviceId: String): Boolean {
+        val rosters = hubGroupRosters ?: return false
+        if (enterpriseTrustStore?.isGroupLinkedToHub(groupId) != true) return false
+        val now = timeSource.nowMs()
+        val roster = rosters.current(groupId, now) ?: return false
+        if (now > roster.validUntilMs) return false
+        return localDeviceId in roster.memberDeviceIds && deviceId in roster.memberDeviceIds && effectiveIsOrgPeer(deviceId)
+    }
+
+    /** True for a hub group whose members are set by the hub's signed roster: nobody adds members on a phone. */
+    public fun isHubRosterGroup(groupId: String): Boolean =
+        hubGroupRosters?.isHubGroup(groupId) == true && enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true
+
+    private val hubRosterOfferSeenAt = SyncMap<String, Long>()
+
+    /**
+     * A colleague offers the newest roster statement it holds (feature `hrs1`). It is ignored unless the sender is an
+     * organisation colleague AND a member of the group its own statement names; at most one offer per peer and group per
+     * minute is looked at; the statement is verified here against the enrolled root and a lower version never replaces a
+     * higher one. An adopted roster updates the roster rows (a removed member is refused from then on).
+     */
+    private suspend fun handleInboundHubRosterOffer(peerDeviceId: String, frame: GroupWireFrame.HubRosterOffer) {
+        val rosters = hubGroupRosters ?: return
+        if (peerDeviceId != frame.from) return
+        if (!effectiveIsOrgPeer(peerDeviceId)) {
+            FlashProbe.emit("org.roster.offer.drop", "group" to FlashProbe.short(frame.groupId), "reason" to "not_org_peer")
+            return
+        }
+        val now = timeSource.nowMs()
+        val key = "$peerDeviceId|${frame.groupId}"
+        val last = hubRosterOfferSeenAt[key]
+        if (last != null && now - last < HUB_ROSTER_OFFER_MIN_INTERVAL_MS) return
+        hubRosterOfferSeenAt[key] = now
+        val outcome = rosters.adopt(
+            HubRosterOfferPayload(frame.groupId, frame.statementJson, frame.delegationChainJson),
+            offeredBy = peerDeviceId,
+        )
+        FlashProbe.emit("org.roster.offer", "group" to FlashProbe.short(frame.groupId), "outcome" to outcome.name)
+        if (outcome != RosterAdoption.ADOPTED) return
+        projectHubRosters()
+        offerHubRostersToMembers(frame.groupId, except = peerDeviceId)
+    }
+
+    /** Sends [groupId]'s statement to the group's members this device is connected to (LAN only, at most the session ceiling). */
+    private suspend fun offerHubRostersToMembers(groupId: String, except: String) {
+        val rosters = hubGroupRosters ?: return
+        val sink = lanGroupTransportSink ?: return
+        val now = timeSource.nowMs()
+        val roster = rosters.current(groupId, now) ?: return
+        val payload = rosters.offerFor(groupId, now) ?: return
+        roster.memberDeviceIds.asSequence()
+            .filter { it != localDeviceId && it != except && peerFeatures(it).contains(FEATURE_HUB_ROSTER) && effectiveIsOrgPeer(it) }
+            .take(HUB_ROSTER_FANOUT_LIMIT)
+            .toList()
+            .forEach {
+                sink.send(it, GroupWireFrame.HubRosterOffer(groupId, localDeviceId, payload.statementJson, payload.delegationChainJson))
+            }
+    }
+
+    /** A peer session came up: tell an organisation colleague that speaks `hrs1` the rosters of the hub groups both are in. */
+    private suspend fun offerHubRostersTo(peerId: String) {
+        val rosters = hubGroupRosters ?: return
+        val sink = lanGroupTransportSink ?: return
+        if (!peerFeatures(peerId).contains(FEATURE_HUB_ROSTER) || !effectiveIsOrgPeer(peerId)) return
+        val now = timeSource.nowMs()
+        for (groupId in rosters.groupIds()) {
+            val roster = rosters.current(groupId, now) ?: continue
+            if (localDeviceId !in roster.memberDeviceIds || peerId !in roster.memberDeviceIds) continue
+            val payload = rosters.offerFor(groupId, now) ?: continue
+            sink.send(peerId, GroupWireFrame.HubRosterOffer(groupId, localDeviceId, payload.statementJson, payload.delegationChainJson))
+        }
+    }
+
+    /**
+     * Reloads the stored hub roster statements and rewrites the roster rows of every hub group from them. Hosts call it after
+     * each directory sync: the rows drive fan-out and the active-member gate.
+     */
+    public suspend fun refreshHubGroupRosters() {
+        val rosters = hubGroupRosters ?: return
+        withContext(ioDispatcher) {
+            rosters.refresh()
+            projectHubRosters()
+        }
+    }
+
+    /** Forgets the in-memory rosters (leaving the organisation) and deactivates the rows they produced. */
+    public suspend fun clearHubGroupRosters() {
+        val rosters = hubGroupRosters ?: return
+        withContext(ioDispatcher) {
+            val members = groupMemberDao
+            val groupIds = rosters.groupIds()
+            rosters.clear()
+            if (members != null) groupIds.forEach { deactivateHubRosterRows(members, it) }
+        }
+    }
+
+    private suspend fun deactivateHubRosterRows(members: GroupMemberDao, groupId: String) {
+        val rows = members.allMembers(groupId).filter { it.isActive && it.operationId.startsWith(HUB_ROSTER_OP_PREFIX) }
+        if (rows.isEmpty()) return
+        val version = rows.maxOf { it.membershipVersion } + 1
+        runInTransaction {
+            rows.forEach { members.upsert(it.copy(isActive = false, membershipVersion = version, operationId = "$HUB_ROSTER_OP_PREFIX$version")) }
+        }
+    }
+
+    private suspend fun projectHubRosters() {
+        val rosters = hubGroupRosters ?: return
+        val members = groupMemberDao ?: return
+        val trust = enterpriseTrustStore ?: return
+        val now = timeSource.nowMs()
+        for (groupId in rosters.groupIds()) {
+            if (!trust.isGroupLinkedToHub(groupId)) continue
+            if (conversationDao.get(groupId) == null) continue
+            // An expired statement changes nothing here: the gate already refuses every colleague outside the window.
+            val roster = rosters.current(groupId, now) ?: continue
+            val existing = members.allMembers(groupId).associateBy { it.deviceId }
+            val op = "$HUB_ROSTER_OP_PREFIX${roster.version}"
+            val writes = ArrayList<GroupMemberEntity>()
+            for (id in roster.memberDeviceIds) {
+                val row = existing[id]
+                val fromHub = row != null && row.operationId.startsWith(HUB_ROSTER_OP_PREFIX)
+                if (fromHub && row!!.membershipVersion > roster.version) continue
+                if (fromHub && row!!.isActive && row.membershipVersion == roster.version) continue
+                writes += GroupMemberEntity(
+                    groupId = groupId,
+                    deviceId = id,
+                    displayName = if (id == localDeviceId) {
+                        localDisplayName
+                    } else {
+                        orgPeerResolver?.displayName(id) ?: peerNameResolver(id)?.ifBlank { null } ?: id
+                    },
+                    role = if (id in roster.adminDeviceIds) "admin" else "member",
+                    joinedAt = row?.joinedAt ?: now,
+                    membershipVersion = roster.version,
+                    operationId = op,
+                    isActive = true,
+                )
+            }
+            for ((id, row) in existing) {
+                if (id in roster.memberDeviceIds || !row.isActive || !row.operationId.startsWith(HUB_ROSTER_OP_PREFIX)) continue
+                if (row.membershipVersion > roster.version) continue
+                writes += row.copy(isActive = false, membershipVersion = roster.version, operationId = op)
+            }
+            if (writes.isEmpty()) continue
+            runInTransaction { writes.forEach { members.upsert(it) } }
+            FlashProbe.emit("org.roster.projected", "group" to FlashProbe.short(groupId), "version" to roster.version, "rows" to writes.size)
+        }
+    }
 
     /**
      * [isGroupPeerTrusted] and an active roster row: what group text, receipts, reads, deletes, typing and sync require.
@@ -6732,6 +6903,11 @@ public class RealFlashChatRepository(
 
         /** ADR-122: how long a LAN-sent message may go without a delivery receipt before the hub also gets it. */
         const val HUB_FALLBACK_GRACE_MS = 2_000L
+        /** Feature token for the hub roster offer frame (Plan B B4). */
+        const val FEATURE_HUB_ROSTER = "hrs1"
+        const val HUB_ROSTER_OP_PREFIX = "hub-roster-v"
+        const val HUB_ROSTER_OFFER_MIN_INTERVAL_MS = 60_000L
+        const val HUB_ROSTER_FANOUT_LIMIT = 24
 
         /** How often undecided join requests are asked again. */
         const val PENDING_JOIN_POLL_MS = 60_000L
@@ -6889,6 +7065,7 @@ public class RealFlashChatRepository(
         val trust = enterpriseTrustStore
             ?: return FlashResult.Failure(FlashError.Unknown("Enterprise trust store unavailable"))
         trust.unlinkGroupFromHub(groupId)
+        groupMemberDao?.let { deactivateHubRosterRows(it, groupId) }
         return FlashResult.Success(Unit)
     }
 

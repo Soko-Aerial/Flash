@@ -19,6 +19,11 @@ public object GroupFrameCodec {
     public const val SYNC_PREFIX: String = "FLASH_GSYNC"
     public const val MEDIA_PREFIX: String = "FLASH_GMEDIA"
     public const val MEMBERSHIP_PREFIX: String = "FLASH_GMEM"
+    public const val HUB_ROSTER_PREFIX: String = "FLASH_GHUBR"
+
+    /** Decoded size caps of a roster offer (plan section 10: the whole frame stays near 16 KB). */
+    public const val MAX_HUB_ROSTER_STATEMENT_BYTES: Int = 14 * 1024
+    public const val MAX_HUB_ROSTER_CHAIN_BYTES: Int = 2 * 1024
 
     public fun encode(frame: GroupWireFrame): String {
         val (prefix, fields) = when (frame) {
@@ -252,6 +257,12 @@ public object GroupFrameCodec {
                 "from" to frame.from,
                 "epoch" to frame.epoch.toString(),
             )
+            is GroupWireFrame.HubRosterOffer -> HUB_ROSTER_PREFIX to listOf(
+                "groupId" to frame.groupId,
+                "from" to frame.from,
+                "st" to Base64.encode(frame.statementJson.encodeToByteArray()),
+                "chain" to Base64.encode(frame.delegationChainJson.encodeToByteArray()),
+            )
             is GroupWireFrame.GsSecret -> MEMBERSHIP_PREFIX to listOf(
                 "op" to "secret",
                 "groupId" to frame.groupId,
@@ -409,6 +420,19 @@ public object GroupFrameCodec {
                 )
                 else -> null
             }
+        }
+        FlashTextFraming.parseFields(text, HUB_ROSTER_PREFIX)?.let { fields ->
+            val groupId = fields.required("groupId") ?: return null
+            if (groupId.length > 64) return null
+            val from = fields.required("from") ?: return null
+            if (from.length > 128) return null
+            val stRaw = fields.required("st") ?: return null
+            val chainRaw = fields.required("chain") ?: return null
+            if (stRaw.length > MAX_HUB_ROSTER_STATEMENT_BYTES * 2 || chainRaw.length > MAX_HUB_ROSTER_CHAIN_BYTES * 2) return null
+            val st = runCatching { Base64.decode(stRaw) }.getOrNull() ?: return null
+            val chain = runCatching { Base64.decode(chainRaw) }.getOrNull() ?: return null
+            if (st.isEmpty() || st.size > MAX_HUB_ROSTER_STATEMENT_BYTES || chain.size > MAX_HUB_ROSTER_CHAIN_BYTES) return null
+            return GroupWireFrame.HubRosterOffer(groupId, from, st.decodeToString(), chain.decodeToString())
         }
         FlashTextFraming.parseFields(text, MEMBERSHIP_PREFIX)?.let { fields ->
             val groupId = fields.required("groupId") ?: return null

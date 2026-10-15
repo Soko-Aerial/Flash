@@ -6,6 +6,7 @@ import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
@@ -27,6 +28,11 @@ import kotlin.test.assertTrue
 class OrgPeerResolverTest {
 
     private class CountingOrgDirectoryDao : OrgDirectoryDao {
+        val storedRosters = LinkedHashMap<String, HubGroupRosterEntity>()
+        override suspend fun allGroupRosters(): List<HubGroupRosterEntity> = storedRosters.values.toList()
+        override suspend fun groupRoster(groupId: String): HubGroupRosterEntity? = storedRosters[groupId]
+        override suspend fun upsertGroupRosters(rosters: List<HubGroupRosterEntity>) { rosters.forEach { storedRosters[it.groupId] = it } }
+        override suspend fun clearGroupRosters() { storedRosters.clear() }
         val members = LinkedHashMap<String, OrgDirectoryMemberEntity>()
         var syncState: OrgSyncStateEntity? = null
         var listAllMembersCount = 0

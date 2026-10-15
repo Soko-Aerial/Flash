@@ -5476,3 +5476,18 @@ Offered, Queued, Transferring, Verifying count; Paused, Completed, Failed, Cance
 
 ## ADR-161 — Transfers entry points go through `openTransfers()`
 Every host path that opens Transfers (notification, shortcut, tray, Ctrl+2, top-bar icon) calls `FlashNavigationState.openTransfers()`: selects the tab when unenrolled, pushes when enrolled. No host calls `selectTab(Transfers)` any more.
+
+## ADR-162 — Hub group rosters on the LAN: statement, gossip and projection (Plan B B4)
+
+### Decision
+The hub signs one roster statement per group (`flash-hub-roster-v1`). Clients verify it independently, store it (Room schema 16), exchange it
+over the LAN (`hrs1`, `FLASH_GHUBR`) and project it into `GroupMemberEntity` rows marked by `operationId = "hub-roster-v<version>"`, so no
+column was added to the member table. The delegation chain is stored with the statement so a gossiped roster verifies offline.
+
+### Consequences
+- Removal reaches offline phones by gossip or sync; an expired window closes the group.
+- Server group version is not strictly +1 (directory version at last change).
+- More than 200 members: not supported offline. Library engine `Flash.kt` is not wired.
+
+### Revisit when
+A second source column is needed, or group size 32 / end-to-end group encryption (FO-27) is built.

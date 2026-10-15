@@ -352,4 +352,23 @@ class GroupFrameCodecTest {
         // Unknown reason
         assertNull(GroupFrameCodec.decode("FLASH_GMEM op=result groupId=g2-crew from=dev1 ok=true reason=bogus"))
     }
+
+    @Test
+    fun hubRosterOffer_roundTripsAndRejectsOversizeOrMalformedInput() { // ORGT-U44 codec half
+        val frame = GroupWireFrame.HubRosterOffer(
+            groupId = "hub-grp-1", from = "dev-a",
+            statementJson = "{\"groupId\":\"hub-grp-1\",\"memberDeviceIds\":[\"a\",\"b\"]}",
+            delegationChainJson = "[]",
+        )
+        assertEquals(frame, GroupFrameCodec.decode(GroupFrameCodec.encode(frame)))
+        assertTrue(GroupFrameCodec.encode(frame).startsWith("FLASH_GHUBR "))
+
+        val big = frame.copy(statementJson = "x".repeat(GroupFrameCodec.MAX_HUB_ROSTER_STATEMENT_BYTES + 1))
+        assertNull(GroupFrameCodec.decode(GroupFrameCodec.encode(big)), "an oversize statement is not decoded")
+        val bigChain = frame.copy(delegationChainJson = "y".repeat(GroupFrameCodec.MAX_HUB_ROSTER_CHAIN_BYTES + 1))
+        assertNull(GroupFrameCodec.decode(GroupFrameCodec.encode(bigChain)))
+        assertNull(GroupFrameCodec.decode("FLASH_GHUBR groupId=g from=a st=NOT_BASE64! chain=W10="))
+        assertNull(GroupFrameCodec.decode("FLASH_GHUBR groupId=g from=a chain=W10="), "a missing statement")
+        assertNull(GroupFrameCodec.decode("FLASH_GHUBR groupId=g from=a st= chain=W10="), "an empty statement")
+    }
 }
