@@ -28,7 +28,7 @@ Windows 11, JVM (OpenJDK 21, 64-bit), software ECDSA P-256 (`java.security`), `O
 
 ### 20,000-Member Scale Considerations
 - **Verification throughput:** Verification scales strictly linearly `O(N)`. At ~450 verifications/second on modern desktop JVM, 20,000 members would require ~44 seconds of compute time for the initial full enrollment resync.
-- **Mobile platform constraint:** On lower-tier Android ARM devices (e.g., 2.0 GHz Cortex-A55), software P-256 ECDSA verification takes ~8-12 ms per signature, requiring up to 3-4 minutes for a 20,000 member initial download if performed synchronously. Therefore, full resyncs must run in a background sync coroutine with foreground service or WorkManager, emitting progress updates per page.
+- **Mobile platform constraint:** On lower-tier Android ARM devices (e.g., 2.0 GHz Cortex-A55), software P-256 ECDSA verification is ESTIMATED at ~8-12 ms per signature (measure; not measured on any ARM device, only on the PC), which would mean up to 3-4 minutes for a 20,000 member initial download if performed synchronously. Therefore, full resyncs must run in a background sync coroutine with foreground service or WorkManager, emitting progress updates per page.
 - **Database scale:** At 20,000 members, SQLite database size will reach approximately **11.3 MB**. SQLite B-trees with 4 KB page sizes remain at depth 3, keeping index lookups (`findMemberByFingerprint` and prefix search `searchMembers`) well under 1 ms even on flash storage.
 - **Delta sync efficiency:** Routine background syncs only fetch changes (`since > lastSyncedVersion`). In a steady-state organization with 20,000 members, periodic polling when no changes occurred executes in < 5 ms and consumes negligible network bandwidth (< 1 KB response).
 
