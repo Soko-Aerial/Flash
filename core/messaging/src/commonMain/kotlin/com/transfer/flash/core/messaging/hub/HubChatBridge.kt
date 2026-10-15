@@ -45,6 +45,12 @@ public enum class HubSealingStatus {
      * it. Nothing may be sent to them through the hub, sealed or readable, until the user decides.
      */
     KEY_CHANGED,
+
+    /**
+     * The directory serves a different identity key than the one saved when this device paired with the colleague
+     * directly. Nothing may be sent through the hub, and the user cannot confirm it away (ADR-164b).
+     */
+    IDENTITY_MISMATCH,
 }
 
 /**
@@ -101,6 +107,9 @@ public enum class HubWaitReason {
 
     /** The sealing key of the colleague changed and waits for the confirmation of the user. */
     KEY_CHANGED,
+
+    /** The hub's directory contradicts the key saved when this device paired with the colleague directly (ADR-164b). */
+    IDENTITY_MISMATCH,
 }
 
 /** A sentence the UI shows under a message the hub is carrying. [failed] means it will not arrive through the hub. */
@@ -214,6 +223,10 @@ public class HubChatBridge(
                 setWaiting(recipientDeviceId, HubWaitReason.KEY_CHANGED)
                 false
             }
+            status == HubSealingStatus.IDENTITY_MISMATCH -> {
+                setWaiting(recipientDeviceId, HubWaitReason.IDENTITY_MISMATCH)
+                false
+            }
             status == HubSealingStatus.AVAILABLE -> {
                 setWaiting(recipientDeviceId, null)
                 true
@@ -270,6 +283,11 @@ public class HubChatBridge(
             // Not sealed and not readable either: the user has to decide about the new key first.
             FlashLog.i("HUB", "key change not confirmed, not sending id=$id")
             setWaiting(to, HubWaitReason.KEY_CHANGED)
+            return false
+        }
+        if (status == HubSealingStatus.IDENTITY_MISMATCH) {
+            FlashLog.w("HUB", "directory identity key contradicts the paired key, not sending id=$id")
+            setWaiting(to, HubWaitReason.IDENTITY_MISMATCH)
             return false
         }
         val sealed = if (status == HubSealingStatus.AVAILABLE) sealing?.seal(to, id, sentAt, innerType, body) else null

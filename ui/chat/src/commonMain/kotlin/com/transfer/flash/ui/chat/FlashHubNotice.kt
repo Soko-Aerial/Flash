@@ -44,6 +44,7 @@ public object FlashHubNoticeMath {
         FlashHubNoticeKind.HUB_SWITCHED_OFF -> "Waiting for ${nameOf(notice)} to be reachable"
         FlashHubNoticeKind.GROUP_READABLE -> "The hub can read this group's messages"
         FlashHubNoticeKind.GROUP_HUB_OFF -> "Group messages through the hub are off"
+        FlashHubNoticeKind.IDENTITY_MISMATCH -> "${nameOf(notice)}'s key does not match"
     }
 
     public fun body(notice: FlashHubNoticeUi): String = when (notice.kind) {
@@ -63,6 +64,9 @@ public object FlashHubNoticeMath {
         FlashHubNoticeKind.GROUP_HUB_OFF ->
             "Colleagues you cannot reach directly get this group's messages when you meet. Allowing the hub to carry them " +
                 "would let it read them, because groups are not sealed yet."
+        FlashHubNoticeKind.IDENTITY_MISMATCH ->
+            "Your organisation's server shows a different key for ${nameOf(notice)} than the one your phone saved when you " +
+                "paired. Nothing is sent to them through the server. Meet to pair again, or ask your administrator."
     }
 
     /** True when the notice asks the user to decide (Continue / Verify). */

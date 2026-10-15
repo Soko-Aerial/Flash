@@ -57,6 +57,7 @@ public object HubNoticeMath {
         return when (waiting) {
             HubWaitReason.NEEDS_UPDATE -> FlashHubNoticeUi(FlashHubNoticeKind.PEER_NEEDS_UPDATE, conversationId, peerName)
             HubWaitReason.SWITCHED_OFF -> FlashHubNoticeUi(FlashHubNoticeKind.HUB_SWITCHED_OFF, conversationId, peerName)
+            HubWaitReason.IDENTITY_MISMATCH -> FlashHubNoticeUi(FlashHubNoticeKind.IDENTITY_MISMATCH, conversationId, peerName)
             HubWaitReason.KEY_CHANGED, null -> null
         }
     }
