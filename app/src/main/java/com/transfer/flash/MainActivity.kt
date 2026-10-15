@@ -89,7 +89,6 @@ import com.transfer.flash.debug.TranssionSetupGuide
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
-import com.transfer.flash.ui.hub.FlashHubPlaceholderScreen
 import com.transfer.flash.ui.shell.FlashShellTabs
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
@@ -212,6 +211,8 @@ class MainActivity : ComponentActivity() {
     private val pendingShortcutTab = MutableStateFlow<FlashDestination?>(null)
     private val pendingJoinLink = MutableStateFlow<String?>(null)
     private val pendingEnrollLink = MutableStateFlow<String?>(null)
+    /** UI-058: `hub/announcement/<id>` or `hub/person/<deviceId>` from a notification (explicit intent extra); validated by the Hub before use. */
+    private val pendingHubRoute = MutableStateFlow<String?>(null)
 
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
     private var receivedStorageJob: Job? = null
@@ -267,6 +268,7 @@ class MainActivity : ComponentActivity() {
         // start) — consume the launch intent here too.
         pendingNotificationConversation.value =
             intent?.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+        intent?.getStringExtra(EXTRA_HUB_ROUTE)?.let { pendingHubRoute.value = it }
         if (intent?.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false) == true) {
             pendingCallAnswer.value = true
         }
@@ -297,6 +299,7 @@ class MainActivity : ComponentActivity() {
                 pendingShortcutTab = pendingShortcutTab,
                 pendingJoinLink = pendingJoinLink,
                 pendingEnrollLink = pendingEnrollLink,
+                pendingHubRoute = pendingHubRoute,
                 onEnableBackgroundTransfers = ::requestIgnoreBatteryOptimizations,
                 ignoringBatteryOptimizations = ignoringBatteryOptimizations,
                 receivedStorageState = receivedStorageState,
@@ -352,6 +355,7 @@ class MainActivity : ComponentActivity() {
         // Bug 7: notification tap while the activity was alive (CLEAR_TOP|SINGLE_TOP resume).
         pendingNotificationConversation.value =
             intent.getStringExtra(FlashNotificationManager.EXTRA_CONVERSATION_ID)
+        intent.getStringExtra(EXTRA_HUB_ROUTE)?.let { pendingHubRoute.value = it }
         if (intent.getBooleanExtra(com.transfer.flash.calling.FlashCallActionReceiver.EXTRA_ANSWER_CALL, false)) {
             pendingCallAnswer.value = true
         }
@@ -670,6 +674,9 @@ class MainActivity : ComponentActivity() {
 }
 
 /** UI-056: how long the system splash takes to fade into the Ink splash. */
+/** Intent extra with a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`); validated before use (UI-058 H9). */
+internal const val EXTRA_HUB_ROUTE: String = "com.transfer.flash.extra.HUB_ROUTE"
+
 private const val SYSTEM_SPLASH_FADE_MS: Long = 200L
 
 /** UI-056: the longest the system splash waits for the "Launch animation" setting before skipping it. */
@@ -711,6 +718,7 @@ fun FlashApp(
     pendingShortcutTab: MutableStateFlow<FlashDestination?> = MutableStateFlow(null),
     pendingJoinLink: MutableStateFlow<String?> = MutableStateFlow(null),
     pendingEnrollLink: MutableStateFlow<String?> = MutableStateFlow(null),
+    pendingHubRoute: MutableStateFlow<String?> = MutableStateFlow(null),
     /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
@@ -941,6 +949,7 @@ fun FlashApp(
                     pendingShortcutTab = pendingShortcutTab,
                     pendingJoinLink = pendingJoinLink,
                     pendingEnrollLink = pendingEnrollLink,
+                    pendingHubRoute = pendingHubRoute,
                     onEnableBackgroundTransfers = onEnableBackgroundTransfers,
                     onRefreshStorageUsage = onRefreshStorageUsage,
                     onClearReceivedFiles = onClearReceivedFiles,
@@ -984,6 +993,7 @@ private fun FlashShell(
     pendingShortcutTab: MutableStateFlow<FlashDestination?>,
     pendingJoinLink: MutableStateFlow<String?>,
     pendingEnrollLink: MutableStateFlow<String?>,
+    pendingHubRoute: MutableStateFlow<String?>,
     onEnableBackgroundTransfers: () -> Unit,
     onRefreshStorageUsage: () -> Unit,
     onClearReceivedFiles: () -> Unit,
@@ -1014,6 +1024,26 @@ private fun FlashShell(
     LaunchedEffect(nav.current.destination) {
         if (nav.current.destination == FlashDestination.Hub) {
             DiscoveryEngineHolder.requestOrgSync("hub_tab_opened")
+        }
+    }
+    // UI-058 H9: a route from a notification or a cold start. It waits until the engine is ready (enrolment unknown before
+    // that), selects the Hub when enrolled, otherwise lands on Chats with a one-line notice. The Hub reports it consumed.
+    val hubRoute by pendingHubRoute.collectAsState()
+    val hubRouteContext = LocalContext.current
+    LaunchedEffect(hubRoute, ready, settings.isEnterpriseEnrolled) {
+        if (hubRoute == null) return@LaunchedEffect
+        when (com.transfer.flash.ui.hub.FlashHubMath.routeDecision(hubRoute, enrolmentKnown = ready, enrolled = settings.isEnterpriseEnrolled)) {
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.Wait -> Unit
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.Drop -> pendingHubRoute.value = null
+            is com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.OpenHub -> {
+                nav.updateHubEnrolled(true)
+                nav.selectTab(FlashDestination.Hub)
+            }
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.NotEnrolled -> {
+                nav.selectTab(FlashDestination.ChatList)
+                Toast.makeText(hubRouteContext, com.transfer.flash.ui.hub.FlashHubCopy.ROUTE_NOT_ENROLLED, Toast.LENGTH_SHORT).show()
+                pendingHubRoute.value = null
+            }
         }
     }
     val chatStartError by engine.startError.collectAsState()
@@ -1870,8 +1900,9 @@ private fun FlashShell(
 
     // UI-058: ONE tab source for the bottom bar and the rail (FlashShellTabs), so they cannot drift
     // from FlashNavigationMath.tabOrder. Hub carries no badge until announcements exist (A3).
-    val shellTabs = remember(totalUnreadCount, nav.hubEnrolled) {
-        FlashShellTabs.of(nav.hubEnrolled, chatsUnread = totalUnreadCount)
+    val hubUnread by chatRepository.hubUnreadAnnouncementCount.collectAsState(initial = 0)
+    val shellTabs = remember(totalUnreadCount, nav.hubEnrolled, hubUnread) {
+        FlashShellTabs.of(nav.hubEnrolled, chatsUnread = totalUnreadCount, hubBadge = hubUnread)
     }
     val liveBottomNavTabs = remember(shellTabs) {
         shellTabs.map { FlashBottomNavItem(it.destination, it.icon, it.label, it.badgeCount) }
@@ -2737,20 +2768,62 @@ private fun FlashShell(
     }
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
-    // UI-058: shell-only Hub screen (H3); the data sections arrive in H7.
-    var isHubRefreshing by remember { mutableStateOf(false) }
+    // UI-058: the Hub tab (H7/H8/H9). Everything it reads and writes goes through the repository.
+    val hubHostContext = LocalContext.current
+    val hubPrefs = remember { HubUiPrefs(hubHostContext) }
+    // Unsent announcement drafts belong to the organisation: forget them once enrolment is known to have ended (never on the cold-start default).
+    LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
+        if (ready && !settings.isEnterpriseEnrolled) hubPrefs.clearDrafts()
+    }
+    val hubCall: (String, String) -> Unit = { id, name ->
+        val hasAudio = ContextCompat.checkSelfPermission(hubHostContext, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        if (hasAudio) {
+            scope.launch(Dispatchers.IO) { engine.calls?.startCall(id, name, video = false) }
+        } else {
+            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     val hubScreenContent: @Composable () -> Unit = {
-        FlashHubPlaceholderScreen(
-            onBrowseGroups = { showBrowseOrgGroups = true },
-            onRefresh = {
-                isHubRefreshing = true
-                DiscoveryEngineHolder.requestOrgSync("pull_to_refresh", force = true)
-                scope.launch {
-                    kotlinx.coroutines.delay(1000)
-                    isHubRefreshing = false
-                }
-            },
-            isRefreshing = isHubRefreshing,
+        val hubHost = remember(chatRepository, settings.hubStatus?.hubHost, hubRoute) {
+            com.transfer.flash.ui.hub.FlashHubHost(
+                onOpenConversation = { id ->
+                    selectedChatConversationId = id
+                    chatRepository.openConversation(id)
+                    nav.navigate(FlashDestination.Conversation, conversationId = id)
+                },
+                onOpenGroup = { groupId ->
+                    selectedChatConversationId = groupId
+                    chatRepository.openConversation(groupId)
+                    nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                },
+                onOpenLink = { url ->
+                    runCatching {
+                        hubHostContext.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                },
+                onSignOut = {
+                    scope.launch {
+                        val result = engine.enterpriseHub?.unenrol()
+                        withContext(Dispatchers.Main) {
+                            val text = if (result == null) "Flash is still starting. Try again in a moment."
+                            else com.transfer.flash.ui.settings.FlashHubStatusMath.unenrolText(result)
+                            Toast.makeText(toastContext, text, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onCall = hubCall.takeIf { engine.calls != null },
+                orgHost = settings.hubStatus?.hubHost?.takeIf { it.isNotBlank() },
+                onManageGroupRequests = { showBrowseOrgGroups = true },
+                pendingRoute = hubRoute,
+                onRouteConsumed = { pendingHubRoute.value = null },
+                prefs = hubPrefs,
+                drafts = hubPrefs,
+            )
+        }
+        com.transfer.flash.ui.hub.FlashHubRoute(
+            repository = chatRepository,
+            link = settings.hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
+            host = hubHost,
             modifier = Modifier.padding(bottom = tabBottomInset),
         )
     }

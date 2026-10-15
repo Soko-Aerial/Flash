@@ -35,6 +35,17 @@ public class SampleFlashChatRepository(
 
     private var activeConversationId: String? = null
 
+    override val hubState: kotlinx.coroutines.flow.Flow<com.transfer.flash.core.messaging.model.HubUiState> =
+        kotlinx.coroutines.flow.flowOf(com.transfer.flash.core.messaging.model.HubSampleData.state)
+    override val hubPeople: kotlinx.coroutines.flow.Flow<List<com.transfer.flash.core.messaging.model.HubPersonUi>> =
+        kotlinx.coroutines.flow.flowOf(com.transfer.flash.core.messaging.model.HubSampleData.people)
+    override val hubDepartments: kotlinx.coroutines.flow.Flow<List<com.transfer.flash.core.messaging.model.HubDepartmentUi>> =
+        kotlinx.coroutines.flow.flowOf(com.transfer.flash.core.messaging.model.HubSampleData.departments)
+    override val hubGroups: kotlinx.coroutines.flow.Flow<List<com.transfer.flash.core.messaging.model.HubGroupUi>> =
+        kotlinx.coroutines.flow.flowOf(com.transfer.flash.core.messaging.model.HubSampleData.groups)
+    override suspend fun refreshHub(userInitiated: Boolean): com.transfer.flash.core.common.result.FlashResult<Unit> =
+        com.transfer.flash.core.common.result.FlashResult.Success(Unit)
+
     override fun openConversation(conversationId: String) {
         conversationMap[conversationId]?.let { state ->
             activeConversationId = conversationId

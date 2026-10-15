@@ -105,6 +105,9 @@ public fun main(args: Array<String> = emptyArray()) {
     val desktopSettings by engine.settings.collectAsState()
     val nav = rememberFlashNavigationState()
 
+    // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
+    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
+
     var pendingFilesToShare by remember {
         mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
     }
@@ -352,6 +355,7 @@ public fun main(args: Array<String> = emptyArray()) {
                                 nav = nav,
                                 externalShareFiles = pendingFilesToShare,
                                 onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
+                                pendingHubRoute = pendingHubRoute,
                             )
                             FlashLaunchSplashOverlay(
                                 gate = launchSplash,

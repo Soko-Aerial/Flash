@@ -1579,6 +1579,12 @@ public class DesktopEngine(
                 hubContentViaHub = { _settings.value.hubContentViaHub },
                 hubAnnouncementDao = db.hubAnnouncementDao(),
                 hubAnnouncementsApi = hub.announcements,
+                hubTabSources = com.transfer.flash.core.messaging.hub.HubTabSources(
+                    directoryDao = db.orgDirectoryDao(),
+                    requestSync = { force -> orgSnapshotCoordinator.requestSync("hub_refresh", force); orgDirectorySync.lastOutcome.value },
+                    clockWrong = orgDirectorySync.clockSkewDetected,
+                    fetchGroups = { creds -> hub.directory.fetchVisibleGroups(creds.hubUrl, creds.deviceId, null) },
+                ),
                 hubSealing = hubSealingPort,
             )
             hubRosterChat = chatImpl
