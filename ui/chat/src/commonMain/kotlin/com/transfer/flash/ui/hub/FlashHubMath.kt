@@ -77,7 +77,7 @@ public sealed interface FlashHubPeopleItem {
 public enum class FlashHubAction {
     NEW_ANNOUNCEMENT, EDIT_ANNOUNCEMENT, DELETE_ANNOUNCEMENT, PIN_ANNOUNCEMENT, COPY_ANNOUNCEMENT, OPEN_ANNOUNCEMENT,
     OPEN_LINK, SEARCH, SELECT_SEGMENT, PULL_REFRESH, RETRY_REFRESH, SHOW_WHY, SIGN_OUT, OPEN_PERSON, MESSAGE_PERSON,
-    CALL_PERSON, PAIR_PERSON, OPEN_DEPARTMENT, MESSAGE_HEAD, JOIN_GROUP, OPEN_GROUP, DISMISS_TIP, FILTER_PEOPLE, MANAGE_GROUP_REQUESTS,
+    CALL_PERSON, PAIR_PERSON, OPEN_DEPARTMENT, MESSAGE_HEAD, JOIN_GROUP, OPEN_GROUP, DISMISS_TIP, FILTER_PEOPLE, MANAGE_GROUP_REQUESTS, RETRY_GROUPS,
 }
 
 /** Which actions a viewer has on one announcement. */
@@ -710,6 +710,12 @@ public object FlashHubMath {
         enrolled -> RouteDecision.OpenHub(raw.trim())
         else -> RouteDecision.NotEnrolled
     }
+
+    /** The value of `--hub-route=<route>` in desktop launch arguments (the first one wins), or null. It is validated later by [routeDecision]. */
+    public fun routeFromArgs(args: Array<String>): String? =
+        args.firstOrNull { it.startsWith(ROUTE_ARG) }?.removePrefix(ROUTE_ARG)?.trim()?.takeIf { it.isNotEmpty() }
+
+    private const val ROUTE_ARG: String = "--hub-route="
 
     public fun routeAnnouncement(id: String): String = ROUTE_ANNOUNCEMENT_PREFIX + id
     public fun routePerson(deviceId: String): String = ROUTE_PERSON_PREFIX + deviceId

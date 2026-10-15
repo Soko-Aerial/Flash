@@ -106,7 +106,7 @@ public fun main(args: Array<String> = emptyArray()) {
     val nav = rememberFlashNavigationState()
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
-    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(hubRouteFromArgs(args)) }
+    val pendingHubRoute = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.ui.hub.FlashHubMath.routeFromArgs(args)) }
 
     var pendingFilesToShare by remember {
         mutableStateOf(SingleInstanceController.consumeInitialShareFiles())
@@ -501,9 +501,3 @@ private fun installDesktopLogSink() {
         },
     )
 }
-
-/** UI-058 H9: the value of `--hub-route=<route>` in the launch arguments, or null. The Hub validates it before use. */
-internal fun hubRouteFromArgs(args: Array<String>): String? =
-    args.firstOrNull { it.startsWith(HUB_ROUTE_ARG) }?.removePrefix(HUB_ROUTE_ARG)?.takeIf { it.isNotBlank() }
-
-private const val HUB_ROUTE_ARG = "--hub-route="
