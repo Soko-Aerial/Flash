@@ -1360,6 +1360,7 @@ public class DesktopEngine(
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),
                 trustStore = trustStore,
+                isEnrolled = { enterpriseTrustStore.isEnrolled },
             )
             orgPeerResolverRef = orgPeerResolver
             // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).

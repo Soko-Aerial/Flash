@@ -1200,6 +1200,7 @@ object DiscoveryEngineHolder {
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
+            isEnrolled = { enterpriseTrustStore.isEnrolled },
         )
         orgPeerResolverRef = orgPeerResolver
         // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or
