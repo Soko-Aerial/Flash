@@ -473,3 +473,15 @@ groups in the directory. They can still message each other if they already know
 each other. Devices on the same Wi-Fi may still see each other's device names.
 Administrators and the department's own members still see it."
 "Applies to everyone's directory at their next update."
+
+## Threat rows — Announcements (Plan A3, ADR-138, 2026-10-15)
+
+| Threat | Attack Scenario | Mitigation (built) | Residual Risk |
+|---|---|---|---|
+| **Eavesdropping by hub operator or database extraction** | Hub administrator or attacker with disk access reads announcement content. | Plaintext on hub by design (ADR-138). No claim of encryption anywhere in code, strings, or docs. Console composer and app show explicit honesty notice: `Announcements are stored as plain text on your company's server. Administrators can read them.` | Anyone with read access to `flash-hub.db` or server memory can read announcements. Not end-to-end encrypted. |
+| **Impersonation of poster** | Malicious device claims to post on behalf of an executive, department head, or other colleague. | Server strictly derives poster device ID, department, and display name from the authenticated bearer token (`HubApiGate`), not request body fields. Any client-supplied poster fields in JSON are ignored. | Compromised device identity private key allows posting as that device until revoked. |
+| **Department head scope spoofing** | Department head attempts to broadcast company-wide (`scope=org`) or to another department. | Server validates caller's role and department. Non-org admins posting with `scope=org` or `departmentId != caller.departmentId` are rejected with `403 ERR_FORBIDDEN` (`org_ann_not_allowed`). | None; role and department membership are enforced authoritatively by the server. |
+| **Hidden department announcement leakage** | Outsider in Department A attempts to discover announcements of hidden Department B. | Search (`AnnouncementStore.search`) and changes feed (`AnnouncementStore.getChangesFeed`) apply SQL predicate: `scope = 'org' OR (scope = 'department' AND department_id = ?)`. Outsiders receive zero results for other departments' announcements. | None; filtered authoritatively at SQL query execution. |
+| **Notification leakage via OS or push** | Lock-screen notification or push preview reveals sensitive body text. | Server and client push payloads omit announcement body entirely; notifications contain only the title. | Title text may still appear on device lock screens if the user enabled lock screen notifications. |
+| **XSS / HTML injection in console or app** | Attacker embeds `<script>` or HTML tags in announcement title or body. | `AnnouncementText.clean` normalizes Unicode, strips bidi overrides (`\u202E`, etc.), zero-width chars, and control chars. Admin console builds DOM strictly via `textContent` and `createElement`, never `innerHTML`. | None; raw HTML/tags are treated as pure literal text. |
+

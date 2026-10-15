@@ -41,6 +41,9 @@ import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.directory.PublishedSealingKey
 import com.transfer.flash.server.directory.SealingKeyLookup
 import com.transfer.flash.server.directory.directoryRoutes
+import com.transfer.flash.server.announcements.AnnouncementStore
+import com.transfer.flash.server.announcements.announcementRoutes
+import com.transfer.flash.server.relay.RelayFrameRouter
 import com.transfer.flash.server.identity.DeviceStatus
 import com.transfer.flash.server.identity.IdentityStore
 import com.transfer.flash.server.identity.sealingKeyRoutes
@@ -93,6 +96,7 @@ class HubServices private constructor(
     val delegations: DelegationManager,
     val identities: IdentityStore,
     val directory: OrganizationDirectory,
+    val announcements: AnnouncementStore? = null,
     val admins: AdminAuthService,
     val audit: AuditLogger,
     val revocations: SqliteRevocationService?,
@@ -128,6 +132,15 @@ class HubServices private constructor(
         runCatching { admins.sweepSessions() }.onFailure { log.warn("Session sweep failed: {}", it.toString()) }
         runCatching { delegations.checkExpiryWarnings() }.onFailure { log.warn("Delegation expiry check failed: {}", it.toString()) }
         runCatching { watchDelegationFile() }.onFailure { log.warn("Delegation reload failed: {}", it.toString()) }
+        runCatching {
+            announcements?.let { store ->
+                val retentionDays = admins.getSetting("announcementRetentionDays")?.toIntOrNull() ?: 0
+                val purged = store.purgeExpiredAndOldTombstones(retentionDays = retentionDays)
+                if (purged > 0) {
+                    audit.logUnauthenticated("system", "announcement.purge", "purged $purged announcements/tombstones")
+                }
+            }
+        }.onFailure { log.warn("Announcement purge failed: {}", it.toString()) }
     }
 
     private fun watchDelegationFile() {
@@ -213,6 +226,8 @@ class HubServices private constructor(
             val metrics = RelayMetrics()
             val addresses = ClientAddressResolver(TrustedProxies(config.trustedProxies))
             val directory = OrganizationDirectory.open(db, pool, clock)
+            val announcements = AnnouncementStore.open(db, clock)
+            var routerRef: RelayFrameRouter? = null
             val audit = AuditLogger(db, AuditSigner(delegate.pair.private, delegate.publicKey), clock)
             val dataSecrets = com.transfer.flash.server.auth.SecretBox.loadOrCreate(File(dataDir, "data.key").toPath())
             val admins = AdminAuthService(
@@ -355,7 +370,17 @@ class HubServices private constructor(
                             clock = clock,
                             metrics = metrics,
                             hubPublicKey = delegate.publicKey,
+                            announcements = announcements,
+                            router = routerRef,
                         ),
+                    )
+                    announcementRoutes(
+                        store = announcements,
+                        principalResolver = resolver,
+                        router = routerRef,
+                        audit = audit,
+                        limits = limits,
+                        clock = clock,
                     )
                     directoryRoutes(
                         directory = directory,
@@ -395,9 +420,10 @@ class HubServices private constructor(
                     }
                 },
             )
+            routerRef = engine.relayFrameRouter
 
             return HubServices(
-                config, engine, db, delegations, identities, directory, admins, audit, revocations, enrollment,
+                config, engine, db, delegations, identities, directory, announcements, admins, audit, revocations, enrollment,
                 challengeAuth, bearerTokens, limits, tls, scheduler, delegationFile,
             )
         }

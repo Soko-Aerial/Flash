@@ -61,6 +61,9 @@ public object FlashMigrations {
     /** v15 -> v16: hub-signed group roster statements (Plan B Phase B4). */
     public val MIGRATION_15_16: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_15_16)
 
+    /** v16 -> v17: organization announcements (Plan A3, ADR-138). */
+    public val MIGRATION_16_17: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_16_17)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

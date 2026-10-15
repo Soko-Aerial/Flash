@@ -10,6 +10,8 @@ const ICONS = {
   invites: ['M4 6h16v12H4z', 'm4 7 8 6 8-6'],
   org: ['M12 3v5', 'M5 21v-5h14v5', 'M12 8H5v8', 'M12 8h7v8', 'M10 3h4v5h-4z'],
   audit: ['M6 3h9l4 4v14H6z', 'M15 3v4h4', 'M9 12h7', 'M9 16h7'],
+  announcements: ['M3 11v2h4l5 5V4L7 9H3z', 'M16 8a5 5 0 0 1 0 8', 'M19 5a8 8 0 0 1 0 14'],
+  pin: ['M16 12V4h1V2H7v2h1v8l-2 2v2h5v6l1 1 1-1v-6h5v-2z'],
   security: ['M12 3 5 6v5.5c0 4.5 3 8 7 9.5 4-1.5 7-5 7-9.5V6z', 'm9 12 2.2 2.2L15.5 10'],
   settings: ['M4 7h10', 'M18 7h2', 'M4 17h2', 'M10 17h10', 'M14 5v4h4V5z', 'M6 15v4h4v-4z'],
   search: ['M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z', 'm20 20-4-4'],
