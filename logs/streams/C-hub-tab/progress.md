@@ -48,7 +48,7 @@ Unread badge on the Hub tab (bottom bar, rail, sidebar). Transfers notification 
 Persistent Hub prefs and draft stores on both hosts (ADR-170).
 
 ## H10 - verification
-Tests added: `FlashHubSituationsTest` (13), `FlashHubSingleFlightTest` (4), `FlashHubRouteLifecycleTest` (14), `FlashHubNoDeadActionsTest` (4, JVM
+Tests added: `FlashHubSituationsTest` (12), `FlashHubSingleFlightTest` (4), `FlashHubRouteLifecycleTest` (11), `FlashHubNoDeadActionsTest` (4, JVM
 source scan), `FlashHubScaleTest` (5, synthetic), `FlashHubSearchCodecTest`, `FlashHubMathTest` (79), `HubFacadeTest` (33), `DesktopHubUiPrefsTest` (6, compiled
 only). Mutation checks (both restored with `git checkout`): (1) `FlashHubMath.callAllowed` without `PeerTrustPolicy.mayRing` -> `FlashHubSituationsTest.anUnverifiedUnpairedPersonOnTheLanIsNeverRung`
 and `FlashHubSearchCodecTest.callNeedsTrustLanReachAndTheHostGate` failed; (2) `routeDecision` without the `!enrolmentKnown -> Wait` line ->
