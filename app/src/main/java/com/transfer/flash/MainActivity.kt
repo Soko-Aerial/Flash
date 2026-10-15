@@ -1011,6 +1011,11 @@ private fun FlashShell(
     LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
         if (ready) nav.updateHubEnrolled(settings.isEnterpriseEnrolled)
     }
+    LaunchedEffect(nav.current.destination) {
+        if (nav.current.destination == FlashDestination.Hub) {
+            DiscoveryEngineHolder.requestOrgSync("hub_tab_opened")
+        }
+    }
     val chatStartError by engine.startError.collectAsState()
     val chatRepository: com.transfer.flash.core.messaging.FlashChatRepository =
         (if (ready) engine.chats else null) ?: EmptyFlashChatRepository
@@ -2733,9 +2738,19 @@ private fun FlashShell(
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
     // UI-058: shell-only Hub screen (H3); the data sections arrive in H7.
+    var isHubRefreshing by remember { mutableStateOf(false) }
     val hubScreenContent: @Composable () -> Unit = {
         FlashHubPlaceholderScreen(
             onBrowseGroups = { showBrowseOrgGroups = true },
+            onRefresh = {
+                isHubRefreshing = true
+                DiscoveryEngineHolder.requestOrgSync("pull_to_refresh", force = true)
+                scope.launch {
+                    kotlinx.coroutines.delay(1000)
+                    isHubRefreshing = false
+                }
+            },
+            isRefreshing = isHubRefreshing,
             modifier = Modifier.padding(bottom = tabBottomInset),
         )
     }

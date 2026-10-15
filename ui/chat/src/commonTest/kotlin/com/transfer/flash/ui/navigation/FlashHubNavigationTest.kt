@@ -196,4 +196,12 @@ class FlashHubNavigationTest {
         val restored = requireNotNull(FlashNavigationStateSaver.restore(listOf("@hubEnrolled|banana", "ChatList|")))
         assertFalse(restored.hubEnrolled)
     }
+
+    @Test
+    fun `ORGT_U64_hubPlaceholder_copy_and_refresh`() {
+        assertEquals("Hub", com.transfer.flash.ui.hub.FlashHubPlaceholderCopy.TITLE)
+        assertEquals("Your organisation's news, people and groups will appear here.", com.transfer.flash.ui.hub.FlashHubPlaceholderCopy.BODY)
+        assertEquals("Browse department groups", com.transfer.flash.ui.hub.FlashHubPlaceholderCopy.BROWSE_GROUPS)
+        assertEquals("Refresh organisation directory", com.transfer.flash.ui.hub.FlashHubPlaceholderCopy.REFRESH)
+    }
 }
