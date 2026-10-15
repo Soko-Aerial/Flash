@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 16,
-    "identityHash": "c8cebc602b5371e3e2167e6128232110",
+    "identityHash": "e4e0d87bd341a17ab521b2761e12a5d0",
     "entities": [
       {
         "tableName": "messages",
@@ -1838,7 +1838,7 @@
       },
       {
         "tableName": "hub_group_roster",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `version` INTEGER NOT NULL, `statementJson` TEXT NOT NULL, `validUntilMs` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`groupId` TEXT NOT NULL, `version` INTEGER NOT NULL, `statementJson` TEXT NOT NULL, `delegationChainJson` TEXT NOT NULL, `validUntilMs` INTEGER NOT NULL, PRIMARY KEY(`groupId`))",
         "fields": [
           {
             "fieldPath": "groupId",
@@ -1859,6 +1859,12 @@
             "notNull": true
           },
           {
+            "fieldPath": "delegationChainJson",
+            "columnName": "delegationChainJson",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
             "fieldPath": "validUntilMs",
             "columnName": "validUntilMs",
             "affinity": "INTEGER",
@@ -1875,7 +1881,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c8cebc602b5371e3e2167e6128232110')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'e4e0d87bd341a17ab521b2761e12a5d0')"
     ]
   }
 }
