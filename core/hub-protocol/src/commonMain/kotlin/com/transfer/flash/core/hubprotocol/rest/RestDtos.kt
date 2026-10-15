@@ -247,7 +247,9 @@ public data class HubInfo(
     public val maxFrameBytes: Int = HubContract.MAX_FRAME_BYTES,
     public val maxPayloadBytes: Int = HubContract.MAX_PAYLOAD_BYTES,
     public val serverTime: Long = 0L,
+    public val announcementLimits: AnnouncementLimitsDto? = null,
 )
+
 
 /** `GET /health`: liveness only. */
 @FlashInternalApi

@@ -111,6 +111,16 @@ public object HubContract {
     /** `POST`, Bearer, group admin: [com.transfer.flash.core.hubprotocol.rest.GroupMemberBody] adds or removes a member. */
     public const val PATH_GROUP_MEMBERS: String = "$PATH_API/groups/members"
 
+    /** `GET`, `POST`: announcements feed and posting (Plan A3, ADR-138). */
+    public const val PATH_ANNOUNCEMENTS: String = "$PATH_API/announcements"
+
+    /** Admin console announcements routes (Plan A3). */
+    public const val PATH_ADMIN_ANNOUNCEMENTS: String = "/admin/api/v1/announcements"
+
+    /** Feature capability for announcement push over WebSocket relay (Plan A3 §3.7). */
+    public const val FEATURE_ANNOUNCEMENTS_V1: String = "ann1"
+
+
     // ---- headers --------------------------------------------------------------------------------------------
 
     public const val HEADER_AUTHORIZATION: String = "Authorization"
@@ -199,6 +209,7 @@ public object HubErrorCodes {
     public const val ERR_ROLE_NOT_ALLOWED: String = "ERR_ROLE_NOT_ALLOWED"
     public const val ERR_NOT_FOUND: String = "ERR_NOT_FOUND"
     public const val ERR_CONFLICT: String = "ERR_CONFLICT"
+    public const val ERR_PIN_LIMIT: String = "ERR_PIN_LIMIT"
 
     /** Request-level validation failure (REST). */
     public const val ERR_BAD_REQUEST: String = "ERR_BAD_REQUEST"

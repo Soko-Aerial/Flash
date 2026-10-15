@@ -60,7 +60,9 @@ public sealed interface RelayFrame {
         public val delegationChain: List<DelegationCert> = emptyList(),
         /** Base64 ECDSA P-256 signature by the device key over (serverId, serverNonce, clientNonce, deviceId, certSerial). */
         public val signature: String,
+        public val features: List<String> = emptyList(),
     ) : RelayFrame
+
 
     /** `FLASH_HUB_WELCOME`, server -> client: the handshake succeeded; the connection is now [principal]. */
     @Serializable
@@ -226,7 +228,23 @@ public sealed interface RelayFrame {
     public data class Kick(
         public val reason: String = "",
     ) : RelayFrame
+
+    /**
+     * `FLASH_ANNOUNCEMENT`, server -> client only: notification of an announcement event (Plan A3 §3.7, ADR-138).
+     * Carries no title or body (the changes feed is the source of truth).
+     */
+    @Serializable
+    @SerialName("FLASH_ANNOUNCEMENT")
+    public data class AnnouncementEvent(
+        public val id: String,
+        public val seq: Long,
+        public val scope: String,
+        public val departmentId: String? = null,
+        public val change: String,
+        public val epoch: String,
+    ) : RelayFrame
 }
+
 
 /** The authenticated identity a connection is bound to after WELCOME. */
 @FlashInternalApi
