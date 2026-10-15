@@ -391,6 +391,52 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `migration from 15 to 16 creates the empty hub group roster table and keeps the sync state`() {
+        helper.createDatabase(15).use { v15 ->
+            v15.execSQL(
+                "INSERT INTO org_sync_state (id, orgRootFingerprint, directoryEpoch, lastSyncedVersion, offlineGraceDays, lastSyncSuccessMs, lastSyncAttemptMs) " +
+                    "VALUES (1, 'ROOT', 'epoch-1', 7, 30, 1000, 2000)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT lastSyncedVersion FROM org_sync_state WHERE id = 1").use { row ->
+                assertTrue(row.step(), "org_sync_state row must survive migration 15->16")
+                assertEquals(7L, row.getLong(0))
+            }
+            upgraded.prepare("SELECT COUNT(*) FROM hub_group_roster").use { row ->
+                assertTrue(row.step())
+                assertEquals(0L, row.getLong(0), "the roster table starts empty")
+            }
+        }
+    }
+
+    @Test
+    fun `ANN-U20 migration from 16 to 17 creates the empty announcement tables and preserves existing state`() {
+        helper.createDatabase(16).use { v16 ->
+            v16.execSQL(
+                "INSERT INTO hub_group_roster (groupId, version, statementJson, delegationChainJson, validUntilMs) " +
+                    "VALUES ('g1', 1, '{}', '[]', 5000)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT groupId FROM hub_group_roster WHERE groupId = 'g1'").use { row ->
+                assertTrue(row.step(), "hub_group_roster row must survive migration 16->17")
+                assertEquals("g1", row.getText(0))
+            }
+            upgraded.prepare("SELECT COUNT(*) FROM hub_announcement").use { row ->
+                assertTrue(row.step())
+                assertEquals(0L, row.getLong(0), "the announcement table starts empty")
+            }
+            upgraded.prepare("SELECT COUNT(*) FROM hub_announcement_state").use { row ->
+                assertTrue(row.step())
+                assertEquals(0L, row.getLong(0), "the announcement state table starts empty")
+            }
+        }
+    }
+
+    @Test
     fun `the public desktop opener upgrades an older file instead of failing`() = runBlocking {
         helper.createDatabase(3).use { v3 -> insertMessage(v3, version = 3) }
 

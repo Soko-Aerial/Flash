@@ -323,8 +323,66 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v15 → v16: hub-signed group roster statements, for hub groups that keep working on the LAN
+     * (Plan B Phase B4, `docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md` section 10).
+     */
+    val STEP_15_16: FlashSchemaStep = FlashSchemaStep(
+        from = 15,
+        to = 16,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS `hub_group_roster` (" +
+                "`groupId` TEXT NOT NULL, " +
+                "`version` INTEGER NOT NULL, " +
+                "`statementJson` TEXT NOT NULL, " +
+                "`delegationChainJson` TEXT NOT NULL, " +
+                "`validUntilMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`groupId`))",
+        ),
+    )
+
+    /**
+     * v16 → v17: organization announcements (Plan A3, ADR-138).
+     * Adds `hub_announcement` and `hub_announcement_state`.
+     */
+    val STEP_16_17: FlashSchemaStep = FlashSchemaStep(
+        from = 16,
+        to = 17,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS `hub_announcement` (" +
+                "`id` TEXT NOT NULL, " +
+                "`scope` TEXT NOT NULL, " +
+                "`departmentId` TEXT, " +
+                "`title` TEXT NOT NULL, " +
+                "`body` TEXT NOT NULL, " +
+                "`authorName` TEXT NOT NULL, " +
+                "`authorRole` TEXT NOT NULL, " +
+                "`createdAtMs` INTEGER NOT NULL, " +
+                "`updatedAtMs` INTEGER NOT NULL, " +
+                "`edited` INTEGER NOT NULL, " +
+                "`pinned` INTEGER NOT NULL, " +
+                "`expiresAtMs` INTEGER, " +
+                "`seq` INTEGER NOT NULL, " +
+                "`readAtMs` INTEGER, " +
+                "`searchFolded` TEXT NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+            "CREATE INDEX IF NOT EXISTS `index_hub_announcement_scope_departmentId_createdAtMs` " +
+                "ON `hub_announcement` (`scope`, `departmentId`, `createdAtMs`)",
+            "CREATE INDEX IF NOT EXISTS `index_hub_announcement_readAtMs` " +
+                "ON `hub_announcement` (`readAtMs`)",
+            "CREATE INDEX IF NOT EXISTS `index_hub_announcement_searchFolded` " +
+                "ON `hub_announcement` (`searchFolded`)",
+            "CREATE TABLE IF NOT EXISTS `hub_announcement_state` (" +
+                "`id` INTEGER NOT NULL, " +
+                "`epoch` TEXT NOT NULL, " +
+                "`seq` INTEGER NOT NULL, " +
+                "`lastSyncAtMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`id`))",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17
     )
 }
