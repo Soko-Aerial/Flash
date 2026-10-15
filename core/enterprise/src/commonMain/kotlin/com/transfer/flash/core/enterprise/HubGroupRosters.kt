@@ -29,7 +29,30 @@ public data class HubGroupRoster(
 /** What a peer is offered about one group: the exact signed statement and the delegation chain it verifies with. */
 public data class HubRosterOfferPayload(val groupId: String, val statementJson: String, val delegationChainJson: String)
 
-public enum class RosterAdoption { ADOPTED, STALE, INVALID, NOT_ENROLLED, NOT_A_MEMBER, TOO_MANY }
+public enum class RosterAdoption { ADOPTED, STALE, INVALID, NOT_ENROLLED, NOT_A_MEMBER, SENDER_NOT_MEMBER, TOO_MANY }
+
+/** What the chat reads and feeds of the hub groups' rosters (implemented by [HubGroupRosters]; faked in chat tests). */
+public interface HubGroupRosterView {
+    /** The group's roster, or null when it is unknown or its validity window is closed (never "everybody"). */
+    public fun current(groupId: String, nowMs: Long): HubGroupRoster?
+
+    /** True when a roster statement is stored for [groupId], current or not. */
+    public fun isHubGroup(groupId: String): Boolean
+
+    /** The stored statement of [groupId] for a peer, only while it is current. */
+    public fun offerFor(groupId: String, nowMs: Long): HubRosterOfferPayload?
+
+    public fun groupIds(): Set<String>
+
+    /** Reloads the in-memory set from storage. */
+    public suspend fun refresh()
+
+    /** Forgets every roster (leaving the organisation). */
+    public suspend fun clear()
+
+    /** Verifies a colleague's offer on its own and adopts it only if it is newer; the sender must be a member. */
+    public suspend fun adopt(offer: HubRosterOfferPayload, offeredBy: String? = null): RosterAdoption
+}
 
 /**
  * The hub groups' roster statements, in memory for the synchronous LAN gate (Plan B Phase B4, plan section 10).
@@ -46,7 +69,7 @@ public class HubGroupRosters(
     private val localDeviceId: () -> String?,
     private val revocationsProvider: () -> RevocationList? = { null },
     private val clock: () -> Long = { SystemTimeSource.nowMs() },
-) {
+) : HubGroupRosterView {
     private val lock = Mutex()
 
     @kotlin.concurrent.Volatile
@@ -55,7 +78,7 @@ public class HubGroupRosters(
     private class Held(val roster: HubGroupRoster, val entity: HubGroupRosterEntity)
 
     /** Reloads the in-memory set from storage (after a directory sync, at start). Unreadable rows are skipped. */
-    public suspend fun refresh() {
+    override suspend fun refresh() {
         lock.withLock {
             val next = HashMap<String, Held>()
             for (row in dao.allGroupRosters()) {
@@ -66,29 +89,29 @@ public class HubGroupRosters(
         }
     }
 
-    public suspend fun clear() {
+    override suspend fun clear() {
         lock.withLock { index = emptyMap() }
     }
 
     /** The group's roster, or null when it is unknown or its window is closed (never "everybody"). */
-    public fun current(groupId: String, nowMs: Long = clock()): HubGroupRoster? {
+    override fun current(groupId: String, nowMs: Long): HubGroupRoster? {
         val r = index[groupId]?.roster ?: return null
         return if (nowMs <= r.validUntilMs) r else null
     }
 
-    public fun isHubGroup(groupId: String): Boolean = index.containsKey(groupId)
+    override fun isHubGroup(groupId: String): Boolean = index.containsKey(groupId)
 
     /** The stored statement of [groupId] for a peer, only while it is current. */
-    public fun offerFor(groupId: String, nowMs: Long = clock()): HubRosterOfferPayload? {
+    override fun offerFor(groupId: String, nowMs: Long): HubRosterOfferPayload? {
         val h = index[groupId] ?: return null
         if (nowMs > h.roster.validUntilMs) return null
         return HubRosterOfferPayload(groupId, h.entity.statementJson, h.entity.delegationChainJson)
     }
 
-    public fun groupIds(): Set<String> = index.keys
+    override fun groupIds(): Set<String> = index.keys
 
     /** Verifies a colleague's offer on its own (root, chain, signature, window) and adopts it only if it is newer. */
-    public suspend fun adopt(offer: HubRosterOfferPayload): RosterAdoption = lock.withLock {
+    override suspend fun adopt(offer: HubRosterOfferPayload, offeredBy: String?): RosterAdoption = lock.withLock {
         val creds = credentialsProvider() ?: return RosterAdoption.NOT_ENROLLED
         if (offer.statementJson.length > MAX_JSON || offer.delegationChainJson.length > MAX_JSON) return RosterAdoption.INVALID
         val statement = decode(offer.statementJson) ?: return RosterAdoption.INVALID
@@ -111,6 +134,7 @@ public class HubGroupRosters(
             FlashProbe.emit("org.roster.rejected", "group" to offer.groupId, "reason" to status.name, "via" to "gossip")
             return RosterAdoption.INVALID
         }
+        if (offeredBy != null && !statement.isMember(offeredBy)) return RosterAdoption.SENDER_NOT_MEMBER
         val me = localDeviceId()
         if (me == null || !statement.isMember(me)) return RosterAdoption.NOT_A_MEMBER
         val held = index[offer.groupId]
