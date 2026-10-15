@@ -170,6 +170,12 @@ public class OrgDirectorySync(
         val sinceVersion = localState?.lastSyncedVersion ?: 0L
         val currentEpoch = localState?.directoryEpoch
 
+        FlashProbe.emit(
+            "org.sync.start",
+            "since" to sinceVersion,
+            "force" to force,
+        )
+
         var cursor: String? = null
         var isFirstPage = true
         var isFullResync = false
@@ -196,22 +202,27 @@ public class OrgDirectorySync(
 
             when (pageResult) {
                 is DirectorySyncPageResult.HubUnsupported -> {
+                    FlashProbe.emit("org.sync.fail", "reason" to "hub_unsupported")
                     return OrgSyncOutcome.HubUnsupported
                 }
                 is DirectorySyncPageResult.RateLimited -> {
                     recordFailure(pageResult.retryAfterSeconds)
+                    FlashProbe.emit("org.sync.fail", "reason" to "rate_limited")
                     return OrgSyncOutcome.RateLimited(pageResult.retryAfterSeconds)
                 }
                 is DirectorySyncPageResult.AuthRefused -> {
                     recordFailure()
+                    FlashProbe.emit("org.sync.fail", "reason" to "auth_refused", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.AuthFailed(pageResult.statusCode, pageResult.message)
                 }
                 is DirectorySyncPageResult.Unreachable -> {
                     recordFailure()
+                    FlashProbe.emit("org.sync.fail", "reason" to "unreachable")
                     return OrgSyncOutcome.NetworkError(pageResult.message)
                 }
                 is DirectorySyncPageResult.ServerError -> {
                     recordFailure()
+                    FlashProbe.emit("org.sync.fail", "reason" to "server_error", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.ServerError(pageResult.statusCode, pageResult.message)
                 }
                 is DirectorySyncPageResult.Success -> {
@@ -245,6 +256,7 @@ public class OrgDirectorySync(
                         val anyValid = dto.delegationChain.any { it.verifySignature(verifier) }
                         if (mismatch || !anyValid) {
                             triggerHardSecurityError("This server is not the one you joined")
+                            FlashProbe.emit("org.sync.fail", "reason" to "hard_security_error")
                             return OrgSyncOutcome.HardSecurityError("This server is not the one you joined")
                         }
                     }
@@ -339,6 +351,7 @@ public class OrgDirectorySync(
                     // If members were present on this page but none verified, fail the sync (never mark success when whole page failed)
                     if (dto.members.isNotEmpty() && pageVerifiedCount == 0) {
                         recordFailure()
+                        FlashProbe.emit("org.sync.fail", "reason" to "all_members_invalid")
                         return OrgSyncOutcome.ServerError(400, "All member statements on page failed verification")
                     }
 
@@ -399,11 +412,19 @@ public class OrgDirectorySync(
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             recordFailure()
+            FlashProbe.emit("org.sync.fail", "reason" to "storage_failed")
             return OrgSyncOutcome.StorageFailed(e.message ?: "Database write failed")
         }
 
         resetBackoff()
         _lastSuccessfulSyncAtMs.value = successMs
+
+        FlashProbe.emit(
+            "org.sync.ok",
+            "version" to serverVersion,
+            "members" to membersToUpsert.size,
+            "fullResync" to isFullResync,
+        )
 
         return OrgSyncOutcome.Success(
             membersUpserted = membersToUpsert.size,

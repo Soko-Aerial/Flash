@@ -703,4 +703,100 @@ class OrgPeerResolverTest {
         assertEquals(setOf("alice"), resolver.searchColleagueIds("alice"), "searchColleagueIds must return colleague when enrolled")
         assertTrue(resolver.lease.value is OrgLease.Valid, "lease must be Valid when enrolled with valid snapshot")
     }
+
+    @Test
+    fun ORGT_U62_orgPeerResolver_detects_identity_mismatch_and_fails_closed() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val me = sampleMember(deviceId = "my-device", displayName = "Me", fingerprint = "ORIGINAL_FP")
+        val alice = sampleMember(deviceId = "alice", displayName = "Alice", fingerprint = "ALICE_FP")
+        dao.upsertMembers(listOf(me, alice))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+        trustStore.savePin("alice", "ALICE_FP")
+
+        var currentOwnFp: String? = "ORIGINAL_FP"
+        val resolver = RealOrgPeerResolver(
+            dao = dao,
+            trustStore = trustStore,
+            localDeviceId = "my-device",
+            ownFingerprintProvider = { currentOwnFp },
+            clock = { 1_100_000L },
+        )
+        resolver.refreshFromSnapshot()
+
+        // 1. Initially matching fingerprint: identityMismatch is false, colleague queries succeed
+        assertFalse(resolver.identityMismatch.value, "identityMismatch must be false when fingerprint matches")
+        assertTrue(resolver.isKnownColleague("alice"))
+        assertNotNull(resolver.resolve("alice"))
+        assertTrue(resolver.isOrgPeer("alice"))
+
+        // 2. Local device key regenerated (e.g. IdentityKeyCheck REGENERATE verdict):
+        // Own identity key fingerprint changes, diverging from the snapshot statement
+        currentOwnFp = "REGENERATED_FP"
+        resolver.refreshFromSnapshot()
+
+        // Must detect mismatch and fail closed
+        assertTrue(resolver.identityMismatch.value, "identityMismatch must be true when key regenerated")
+        assertFalse(resolver.isKnownColleague("alice"), "isKnownColleague must fail closed on identity mismatch")
+        assertNull(resolver.resolve("alice"), "resolve must return null on identity mismatch")
+        assertFalse(resolver.isOrgPeer("alice"), "isOrgPeer must be false on identity mismatch")
+        assertTrue(resolver.searchColleagueIds("alice").isEmpty(), "searchColleagueIds must be empty on identity mismatch")
+
+        // 3. Clear (e.g. on un-enrollment / rejoining) resets mismatch flag
+        resolver.clear()
+        assertFalse(resolver.identityMismatch.value, "clear() must reset identityMismatch to false")
+    }
+
+    @Test
+    fun ORGT_U63_org_lease_state_probes_emitted() = runBlocking {
+        val probes = mutableListOf<String>()
+        val originalSink = com.transfer.flash.core.common.logging.platformLogSink()
+        com.transfer.flash.core.common.logging.FlashLog.installSink(
+            com.transfer.flash.core.common.logging.FlashLogSink { _, tag, message, _ ->
+                if (tag == "PROBE") probes += message
+            }
+        )
+        try {
+            val dao = CountingOrgDirectoryDao()
+            val trustStore = TestTrustStore()
+            val alice = sampleMember(deviceId = "alice", displayName = "Alice", fingerprint = "ALICE_FP")
+            dao.upsertMembers(listOf(alice))
+            dao.setSyncState(
+                OrgSyncStateEntity(
+                    directoryEpoch = "epoch-1",
+                    lastSyncedVersion = 1L,
+                    offlineGraceDays = 30,
+                    lastSyncSuccessMs = 1_000_000L,
+                    lastSyncAttemptMs = 1_000_000L,
+                )
+            )
+
+            var simulatedClock = 1_100_000L
+            val resolver = RealOrgPeerResolver(
+                dao = dao,
+                trustStore = trustStore,
+                clock = { simulatedClock },
+            )
+
+            // 1. Refresh to Valid: emits org.lease.state state=VALID
+            resolver.refreshFromSnapshot()
+            assertTrue(probes.any { it.contains("org.lease.state state=VALID") }, "Must emit org.lease.state VALID")
+
+            // 2. Clear: emits org.lease.state state=NONE and org.lease.expired reason=CLEARED
+            probes.clear()
+            resolver.clear()
+            assertTrue(probes.any { it.contains("org.lease.state state=NONE") }, "Must emit org.lease.state NONE on clear")
+            assertTrue(probes.any { it.contains("org.lease.expired reason=CLEARED") }, "Must emit org.lease.expired CLEARED")
+        } finally {
+            com.transfer.flash.core.common.logging.FlashLog.installSink(originalSink)
+        }
+    }
 }

@@ -291,5 +291,37 @@ class FlashHubStatusMathTest {
         assertEquals("Your device clock looks wrong. Colleague trust may fail until it is fixed.", FlashHubStatusMath.orgTrustStatusText(clockWrongState))
         assertEquals(FlashHubDot.BAD, FlashHubStatusMath.orgTrustDot(clockWrongState))
     }
+
+    @Test
+    fun ORGT_U61_orgTrustState_identityMismatch_and_banner() {
+        val nowMs = 1_000_000_000L
+        val validUntil = nowMs + 10 * 86_400_000L
+
+        // 8. Identity mismatch
+        val mismatch = FlashHubStatusMath.orgTrustState(
+            lease = OrgLease.Valid(validUntil),
+            clockOk = true,
+            hubSupports = true,
+            identityMismatch = true,
+            nowMs = nowMs,
+        )
+        assertEquals(FlashHubStatusMath.OrgTrustState.IdentityMismatch, mismatch)
+
+        assertEquals(
+            "Your device identity changed. Rejoin your organisation to chat with colleagues again.",
+            FlashHubStatusMath.orgTrustStatusText(FlashHubStatusMath.OrgTrustState.IdentityMismatch),
+        )
+        assertEquals(FlashHubDot.BAD, FlashHubStatusMath.orgTrustDot(FlashHubStatusMath.OrgTrustState.IdentityMismatch))
+
+        val banner = FlashHubStatusMath.orgTrustBanner(FlashHubStatusMath.OrgTrustState.IdentityMismatch)
+        kotlin.test.assertNotNull(banner)
+        assertEquals("Your device identity changed", banner.title)
+        assertEquals(
+            "Your device identity changed. Rejoin your organisation to chat with colleagues again.",
+            banner.body,
+        )
+        assertEquals(FlashHubBannerAction.RE_ENROL, banner.primary)
+        assertEquals("Re-enrol", banner.primaryLabel)
+    }
 }
 

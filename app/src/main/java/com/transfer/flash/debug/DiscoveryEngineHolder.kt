@@ -1201,6 +1201,14 @@ object DiscoveryEngineHolder {
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
             isEnrolled = { enterpriseTrustStore.isEnrolled },
+            localDeviceId = identity.deviceId.value,
+            ownFingerprintProvider = {
+                crypto.identityPublicKeyEncoded.let {
+                    com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(it).joinToString("") { b ->
+                        (b.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
+                    }
+                }
+            },
         )
         orgPeerResolverRef = orgPeerResolver
         // Plan B B1: the one caller of the directory sync. It also deletes the snapshot when the enrolment ends or

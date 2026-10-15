@@ -487,6 +487,14 @@ private class Wiring(
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
             isEnrolled = { enterpriseTrustStore.isEnrolled },
+            localDeviceId = localId,
+            ownFingerprintProvider = {
+                crypto.identityPublicKeyEncoded.let {
+                    com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(it).joinToString("") { b ->
+                        (b.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
+                    }
+                }
+            },
         )
         orgPeerResolverRef = orgPeerResolver
         scope.launch {

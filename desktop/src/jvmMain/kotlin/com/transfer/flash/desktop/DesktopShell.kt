@@ -1008,7 +1008,11 @@ public fun DesktopShell(
         engine.orgPeerResolver?.lease ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.OrgLease>(com.transfer.flash.core.enterprise.OrgLease.None)
     }
     val orgLease by orgLeaseFlow.collectAsState()
-    val orgTrustState = remember(orgLease, enterpriseCredentials) {
+    val orgMismatchFlow = remember(engine, ready) {
+        engine.orgPeerResolver?.identityMismatch ?: kotlinx.coroutines.flow.MutableStateFlow(false)
+    }
+    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCredentials, orgIdentityMismatch) {
         if (enterpriseCredentials == null) null
         else {
             val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
@@ -1016,6 +1020,7 @@ public fun DesktopShell(
                 lease = orgLease,
                 clockOk = clockOk,
                 hubSupports = true,
+                identityMismatch = orgIdentityMismatch,
                 nowMs = System.currentTimeMillis(),
             )
         }
