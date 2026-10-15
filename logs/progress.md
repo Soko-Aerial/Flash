@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-10-15 - Verifier fixes for B4 (report-4) and A3 (report-a3), A3 merged into dev (Claude Code, branch agent/C-fix)
+
+### Worked on
+Merged `agent/S2-a3` (via the verifier's conflict-resolved merge, schema 15/16/17 chain) and fixed what both verifiers found.
+
+### Fixed
+- A3 critical 1: a department head's device role is `dept_admin`, not `dept_head` (`RealFlashChatRepository.derivePostingRights`, `postHubAnnouncement`); tests now use `HubRoles.DEPT_ADMIN` (ANN-U28).
+- A3 critical 2: a full feed page now continues from its last item (`nextCursor`), not from the hub's highest seq; the fake API sets `nextCursor` like the server (ANN-U27, 250 items).
+- A3 major 4: `callerDeptId` is escaped in the search SQL. Major 5: the store's forbidden/not-found exceptions answer 403/404 on edit, delete, pin and unpin (was 500). Major 6: `pruneOldAnnouncements` covers every scope and drops read before unread (`findBeyondKeepLimit`). Minor 8: console honesty text is the canonical `org_ann_honesty` sentence. Minor 9: pin limit answers 409 (client maps 409 + `ERR_PIN_LIMIT` to PinLimit).
+- A3 major 3 (phantom docs): there is no `AnnouncementPurgeJob`; the purge is `AnnouncementStore.purgeExpiredAndOldTombstones`, called from `HubServices.housekeeping`. Earlier log lines that name the job or `AnnouncementPurgeJobTest` are SUPERSEDED by this note (they stay as history).
+- B4 DEFECT-018: ORGT-U46 asserts `SENDER_NOT_MEMBER`. DEFECT-019: after a full resync the hub's versions win (ORGT-U43b). DEFECT-021: a roster-verification error keeps the stored rosters instead of wiping them. DEFECT-020: a stale offer is answered with our newer statement. DEFECT-022: server cap per sync raised from 64 to 256 (client limit). Finding 6: the offer rate-limit map drops old entries.
+
+### Not fixed (on purpose)
+A3 minor 7 (unenrol wipe is a separate coroutine), 10 (offline search is LIKE without NFC parity), 11 (no push hint when no relay router, which only exists in a hub without a relay); B4 finding 5 (admins not required to be members), 8 (no conversation for a hub group added before joining), 9 (`Flash.kt`), 10 (JSON nesting depth guard). Nothing device-verified.
+
 ## 2026-10-15 - Plan B Phase B4: hub groups on the LAN (Claude Code, branch agent/C-b4)
 
 ### Worked on

@@ -433,7 +433,7 @@ public class RealFlashChatRepository(
         }
         return when (creds.role) {
             "org_admin", "admin" -> HubPostingRights.OrgWide(allDepartments = emptyList())
-            "dept_head" -> {
+            "dept_admin" -> {
                 val dept = creds.department
                 if (dept.isNullOrBlank()) HubPostingRights.None else HubPostingRights.Department(listOf(dept))
             }
@@ -5447,11 +5447,23 @@ public class RealFlashChatRepository(
         val last = hubRosterOfferSeenAt[key]
         if (last != null && now - last < HUB_ROSTER_OFFER_MIN_INTERVAL_MS) return
         hubRosterOfferSeenAt[key] = now
+        // Bounded memory (verifier B4 finding 6): drop entries older than the interval, they no longer limit anything.
+        hubRosterOfferSeenAt.toMap().forEach { (k, t) -> if (now - t >= HUB_ROSTER_OFFER_MIN_INTERVAL_MS) hubRosterOfferSeenAt.remove(k) }
         val outcome = rosters.adopt(
             HubRosterOfferPayload(frame.groupId, frame.statementJson, frame.delegationChainJson),
             offeredBy = peerDeviceId,
         )
         FlashProbe.emit("org.roster.offer", "group" to FlashProbe.short(frame.groupId), "outcome" to outcome.name)
+        if (outcome == RosterAdoption.STALE) {
+            // Plan 10.4 (verifier B4 defect 20): the peer holds an older or equal statement; answer with ours so a removal spreads.
+            val mine = rosters.current(frame.groupId, now)
+            val payload = rosters.offerFor(frame.groupId, now)
+            val sink = lanGroupTransportSink
+            if (mine != null && payload != null && sink != null && peerDeviceId in mine.memberDeviceIds) {
+                sink.send(peerDeviceId, GroupWireFrame.HubRosterOffer(frame.groupId, localDeviceId, payload.statementJson, payload.delegationChainJson))
+            }
+            return
+        }
         if (outcome != RosterAdoption.ADOPTED) return
         projectHubRosters()
         offerHubRostersToMembers(frame.groupId, except = peerDeviceId)
@@ -7302,7 +7314,14 @@ public class RealFlashChatRepository(
                     }
                 }
 
-                val nextSeq = maxOf(currentSince, feed.seq)
+                // A full page continues from its last item, not from the hub's highest seq (ANN verifier defect 2):
+                // jumping to feed.seq would skip every announcement between this page and the end.
+                val pageEndSeq = feed.nextCursor?.toLongOrNull() ?: feed.items.maxOfOrNull { it.seq }
+                val nextSeq = if (feed.nextCursor != null && pageEndSeq != null) {
+                    maxOf(currentSince, pageEndSeq)
+                } else {
+                    maxOf(currentSince, feed.seq)
+                }
                 val newState = HubAnnouncementStateEntity(
                     id = 1,
                     epoch = feed.epoch,
@@ -7378,7 +7397,7 @@ public class RealFlashChatRepository(
         val role = creds.role
         val allowed = when (role) {
             "org_admin", "admin" -> true
-            "dept_head" -> draft.scope == "department" && draft.departmentId == creds.department
+            "dept_admin" -> draft.scope == "department" && draft.departmentId == creds.department
             else -> false
         }
         if (!allowed) {

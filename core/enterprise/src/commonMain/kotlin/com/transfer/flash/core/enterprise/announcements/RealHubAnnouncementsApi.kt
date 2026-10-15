@@ -95,7 +95,9 @@ public class RealHubAnnouncementsApi(
             401 -> HubAnnouncementError.Revoked
             403 -> HubAnnouncementError.NotAllowed
             404 -> HubAnnouncementError.Removed
-            409 -> {
+            409 -> if (code == HubErrorCodes.ERR_PIN_LIMIT) {
+                HubAnnouncementError.PinLimit
+            } else {
                 val current = runCatching { HubRestCodec.decodeOrNull<AnnouncementItemDto>(body) }.getOrNull()
                 HubAnnouncementError.Conflict(current)
             }

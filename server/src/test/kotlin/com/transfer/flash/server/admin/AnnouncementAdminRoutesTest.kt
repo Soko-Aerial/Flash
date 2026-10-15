@@ -133,7 +133,7 @@ class AnnouncementAdminRoutesTest {
         assertEquals(listOf("https://example.com/handbook"), preview.links)
         assertEquals("Entire organisation", preview.audienceScope)
         assertTrue(preview.honestyNotice.contains("plain text", ignoreCase = true))
-        assertTrue(preview.honestyNotice.contains("ADR-138"))
+        assertEquals("Announcements are stored as plain text on your company's server. Administrators can read them.", preview.honestyNotice)
     }
 
     @Test
