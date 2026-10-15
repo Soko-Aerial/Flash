@@ -6954,3 +6954,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 - Unit-tested and mutation-checked, not device-verified. Tests ORGPAIR-01..03, CERT-01 in the backlog. Next: Plan B small gaps, then merge the cloud branch `agent/C-h6-h10` and wire `onPairColleague`.
 
 ## 2026-10-15: ADR-165 built (paired identity vs hub directory), see progress. Uncommitted until committed below; tests SEALID-01..03 owed.
+
+## 2026-10-15: Plan B small gaps built (ADR-166), see progress. Next: merge cloud branch agent/C-h6-h10 when DONE exists, wire onPairColleague, the unsealed header, verifier for H6-H10.

@@ -1304,6 +1304,8 @@ class RealFlashChatRepositoryColleagueTest {
         val trust: com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore,
         val sent: MutableList<Pair<String, GroupWireFrame>>,
         val time: MutableTimeSource,
+        val conversations: FakeConversationDao,
+        val messages: FakeMessageDao,
     )
 
     private suspend fun b4Rig(
@@ -1312,17 +1314,19 @@ class RealFlashChatRepositoryColleagueTest {
         linked: Boolean = true,
         features: Set<String> = setOf("hrs1"),
         paired: Set<String> = emptySet(),
+        withConversation: Boolean = true,
     ): B4Rig {
         val trust = com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore()
         if (linked) trust.linkGroupToHub(hubGroup)
         val convDao = FakeConversationDao()
-        convDao.upsert(ConversationEntity(id = hubGroup, title = "Platform", isGroup = true, sortOrder = 1L))
+        if (withConversation) convDao.upsert(ConversationEntity(id = hubGroup, title = "Platform", isGroup = true, sortOrder = 1L))
+        val messageDao = FakeMessageDao()
         val members = FakeGroupMemberDao()
         val view = FakeRosterView(roster)
         val sent = mutableListOf<Pair<String, GroupWireFrame>>()
         val time = MutableTimeSource(1_000_000L)
         val repo = createRepository(
-            time, FakeMessageDao(), convDao, FakeOutboxDao(), FakeReactionDao(),
+            time, messageDao, convDao, FakeOutboxDao(), FakeReactionDao(),
             groupMemberDao = members,
             isTrustedPeer = { it in paired },
             isOrgPeer = { it in orgPeers },
@@ -1331,7 +1335,7 @@ class RealFlashChatRepositoryColleagueTest {
             groupTransportSink = GroupTransportSink { to, f -> sent += to to f; true },
             peerFeatures = { features },
         )
-        return B4Rig(repo, members, view, trust, sent, time)
+        return B4Rig(repo, members, view, trust, sent, time, convDao, messageDao)
     }
 
     @Test
@@ -1495,5 +1499,46 @@ class RealFlashChatRepositoryColleagueTest {
         assertTrue(repo.pairColleagueFromDirectory(" ") is FlashResult.Failure)
         assertTrue(pairRepo(paired, withPairer = false).pairColleagueFromDirectory(colleagueAlice) is FlashResult.Failure)
         assertTrue(pairRepo(paired, saveOk = false).pairColleagueFromDirectory(colleagueAlice) is FlashResult.Failure)
+    }
+
+    @Test
+    fun ORGT_B4_aHubGroupTheAdminAddedUsToGetsAChatAndALinkOnTheNextRosterRefresh() = runTest {
+        val rig = b4Rig(linked = false, withConversation = false)
+        assertEquals(null, rig.conversations.get(hubGroup))
+        rig.repo.refreshHubGroupRosters()
+        val conversation = rig.conversations.get(hubGroup)
+        assertTrue(conversation?.isGroup == true)
+        assertEquals("Platform", conversation?.title)
+        assertTrue(rig.trust.isGroupLinkedToHub(hubGroup))
+        assertEquals(setOf(localDeviceId, colleagueAlice, colleagueBob), rig.members.activeMembers(hubGroup).map { it.deviceId }.toSet())
+    }
+
+    @Test
+    fun ORGT_B4_noChatIsCreatedWhenThisDeviceIsNotNamedByTheRoster() = runTest {
+        val rig = b4Rig(roster = roster(1L, setOf(colleagueAlice, colleagueBob)), linked = false, withConversation = false)
+        rig.repo.refreshHubGroupRosters()
+        assertEquals(null, rig.conversations.get(hubGroup))
+        assertFalse(rig.trust.isGroupLinkedToHub(hubGroup))
+    }
+
+    @Test
+    fun ORGT_B4_aGroupMessageIsStoredOnlyFromAMemberOfTheCurrentRoster() = runTest {
+        val rig = b4Rig()
+        rig.repo.refreshHubGroupRosters()
+        fun msg(id: String, from: String) = GroupWireFrame.Message(hubGroup, id, from, "Sender", 2_000L, "hello $id")
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, msg("m-alice", colleagueAlice))
+        rig.repo.onInboundGroupWireFrame(strangerEve, msg("m-eve", strangerEve))
+        assertEquals(setOf("m-alice"), rig.messages.messages.values.map { it.localId }.toSet(), "only the roster member is stored")
+
+        // Bob is removed in version 2: his next message is refused.
+        rig.view.roster = roster(2L, setOf(localDeviceId, colleagueAlice))
+        rig.repo.refreshHubGroupRosters()
+        rig.repo.onInboundGroupWireFrame(colleagueBob, msg("m-bob", colleagueBob))
+        assertFalse(rig.messages.messages.values.any { it.localId == "m-bob" }, "a removed member is refused")
+
+        // The statement window closes: even Alice is refused.
+        rig.time.timeMs = 5_000_001L
+        rig.repo.onInboundGroupWireFrame(colleagueAlice, msg("m-late", colleagueAlice))
+        assertFalse(rig.messages.messages.values.any { it.localId == "m-late" }, "an expired roster accepts nobody")
     }
 }

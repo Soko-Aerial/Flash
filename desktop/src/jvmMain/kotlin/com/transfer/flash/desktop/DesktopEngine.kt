@@ -1377,10 +1377,12 @@ public class DesktopEngine(
             // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
             // lets the directory sync's refresh reach it once it exists.
             var hubRosterChat: RealFlashChatRepository? = null
+            val hubRevocations = com.transfer.flash.core.enterprise.HubRevocationCache { hub.session.fetchRevocations() }
             val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
                 dao = db.orgDirectoryDao(),
                 credentialsProvider = { enterpriseTrustStore.credentials.value },
                 verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+                revocationsProvider = { hubRevocations.current() },
                 localDeviceId = { localId },
             )
             // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).
@@ -1389,12 +1391,16 @@ public class DesktopEngine(
                 orgDirectoryDao = db.orgDirectoryDao(),
                 credentialsProvider = { enterpriseTrustStore.credentials.value },
                 verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+                revocationsProvider = { hubRevocations.current() },
                 scope = scope,
             )
             val orgSnapshotCoordinator = com.transfer.flash.core.enterprise.OrgSnapshotCoordinator(
                 credentialRoot = enterpriseTrustStore.credentials.map { it?.rootFingerprint },
                 relayConnected = hub.relay.state.map { it.canSend },
-                syncOnce = { force -> orgDirectorySync.syncOnce(force) },
+                syncOnce = { force ->
+                hubRevocations.refresh()
+                orgDirectorySync.syncOnce(force)
+            },
                 clearSnapshot = { orgDirectorySync.clearSnapshot() },
                 refreshResolver = {
                     orgPeerResolver.refreshFromSnapshot()
@@ -1402,6 +1408,7 @@ public class DesktopEngine(
                     hubRosterChat?.refreshHubGroupRosters()
                 },
                 clearResolver = {
+                hubRevocations.clear()
                     orgPeerResolver.clear()
                     hubRosterChat?.clearHubGroupRosters()
                     hubGroupRosters.clear()

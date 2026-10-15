@@ -114,6 +114,7 @@ public class HubGroupRosters(
     override suspend fun adopt(offer: HubRosterOfferPayload, offeredBy: String?): RosterAdoption = lock.withLock {
         val creds = credentialsProvider() ?: return RosterAdoption.NOT_ENROLLED
         if (offer.statementJson.length > MAX_JSON || offer.delegationChainJson.length > MAX_JSON) return RosterAdoption.INVALID
+        if (jsonTooDeep(offer.statementJson) || jsonTooDeep(offer.delegationChainJson)) return RosterAdoption.INVALID
         val statement = decode(offer.statementJson) ?: return RosterAdoption.INVALID
         if (statement.groupId != offer.groupId) return RosterAdoption.INVALID
         val chain = try {
@@ -168,4 +169,30 @@ public class HubGroupRosters(
         public const val MAX_CHAIN: Int = 8
         public const val MAX_GROUPS: Int = 256
     }
+}
+
+/**
+ * True when [json] nests objects or arrays deeper than [max] (brackets inside strings do not count). A roster statement and
+ * a delegation chain are flat, so a deeper document is hostile; it is refused before a recursive decoder sees it.
+ */
+internal fun jsonTooDeep(json: String, max: Int = 16): Boolean {
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (c in json) {
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                c == '\\' -> escaped = true
+                c == '"' -> inString = false
+            }
+            continue
+        }
+        when (c) {
+            '"' -> inString = true
+            '{', '[' -> if (++depth > max) return true
+            '}', ']' -> depth--
+        }
+    }
+    return false
 }

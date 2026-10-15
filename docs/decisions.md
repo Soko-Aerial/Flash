@@ -5537,3 +5537,13 @@ Sealing trusted the chain hub directory -> identity key -> sealing key. A hub th
 
 ### Revisit when
 FO-27, or when a QR/in-person verification step is added for unpaired colleagues.
+
+## ADR-166 - Plan B small gaps closed: revocations in the roster path, chat for admin-added hub groups, stricter roster statement
+
+### Decision
+- `HubRevocationCache` (`:core:enterprise`) holds the last verified hub revocation list in memory (never replaced by an older version; a failed fetch keeps the old one). Both hosts refresh it before each directory sync and pass `current()` to `OrgDirectorySync` and `HubGroupRosters` as `revocationsProvider`; it is cleared when the organisation snapshot is cleared.
+- `projectHubRosters` creates the group chat and links it to the hub when a verified current roster names this device and no conversation exists (an administrator added the device). A removed device is not named, so nothing comes back for it. Deleting the chat while still a member brings it back on the next sync.
+- `GroupRosterStatement.verify` returns MALFORMED when an administrator is not also a member (the server already folds admins into members); roster JSON nested deeper than 16 levels is refused before decoding (`jsonTooDeep`).
+
+### Not done on purpose
+Library engine `Flash.kt` (no hub sync there); the `org_group_unsealed` header (chat UI, after the Hub tab branch lands); A3 minors 7 and 10.

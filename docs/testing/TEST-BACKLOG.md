@@ -4275,3 +4275,8 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **SEALID-01** Pair two phones by code, send a 1:1 through the hub (peer offline). Pass: delivered sealed as before. Source: ADR-165. Status: TODO
 - **SEALID-02** Mismatch. Setup: paired colleague; a test hub whose directory serves a different identity key for them (dev hub only). Pass: message held, notice "key does not match", nothing in the relay log, no Continue button. Status: TODO
 - **SEALID-03** Unpaired colleague unchanged (TOFU pin and Continue flow on key change). Status: TODO
+
+## ORGT B4 follow-ups (built 2026-10-15, unit-tested only)
+
+- **ORGT-17** Admin adds me to a hub group: after the next directory sync the chat appears (no join step) and works over the LAN. Status: TODO
+- **ORGT-18** Revoke a delegate on the hub; after the next sync a roster signed by it is refused (probe `org.roster.rejected reason=REVOKED`). Status: TODO
