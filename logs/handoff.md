@@ -6922,3 +6922,7 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 - ERROR-396 (flaky relay storm test) OPEN.
 - Verifier defects still open after this: 8 SQL-level pagination (not done), 16 hygiene items; re-verification (R2-3) not run.
 - Integration gate on the merged tree (2026-10-15, 13m55s): green except three timing flakes that all PASS in isolation (ORGT-U16, FlashDatabaseInvariantTest.groupDeliveryRowsOfOneMessageAreObservableAndScopedToIt, GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect). Server suite, hub-protocol, ui:chat, desktop and app compiles green. :desktop:jvmTest not run (ERROR-106).
+
+## 2026-10-15: Plan B B4 built on agent/C-b4 (Claude Code), not yet merged to dev
+- Hub groups on the LAN: roster statement, sync (last page), gossip `hrs1`, gate, projection. Schema 16. ADR-162. Tests ORGT-U40..U50 and `ORGT_B4_*` green; mutation checks done.
+- Next: merge `agent/C-b4` into dev (A3 uses schema 17), run the verifier on B4 and A3, wire `org_group_unsealed`, device tests ORGT-11..16.
