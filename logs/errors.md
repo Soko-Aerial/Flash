@@ -10716,3 +10716,26 @@ Node tests; headless load of the fixed page is owed after the hub is rebuilt and
 
 ### Status
 RESOLVED in code; owner to rebuild and restart the hub and confirm the console renders (ANN-01).
+
+## ERROR-409 - The bottom navigation bar disappeared when the Hub tab opened
+
+### Date
+2026-10-15
+
+### Area
+Android shell (`MainActivity.kt`), `FlashNavigationMath`
+
+### Symptoms
+Owner: "the bottom nav goes when i enter the hub". The bar was shown on Chats / Calls / Settings but not on the Hub.
+
+### Root cause
+`MainActivity` decided bar visibility with `FlashNavigationMath.isTabRoot(destination)` and left out the `hubEnrolled` argument. The Hub is a tab only for an enrolled device (tab index -1 otherwise), so for the Hub the call answered "not a tab root" and the bar was dropped. `rememberAutoNavVisible` also kept the previous hidden state when no list was attached (a screen without a scrolling list).
+
+### Working fix
+New `FlashNavigationMath.showsBottomBar(destination, hubEnrolled, railMode)` used by `MainActivity`; `rememberAutoNavVisible` resets to visible when no list state is attached. Regression test in `FlashHubNavigationTest`.
+
+### Verification
+`:ui:chat:jvmTest --tests *FlashHubNavigationTest*` and `:app:compileDebugKotlin` green. NOT device-verified (HUBT-34).
+
+### Status
+RESOLVED in code; confirm on the device.

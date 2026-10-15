@@ -101,6 +101,13 @@ object FlashNavigationMath {
         tabIndex(destination, hubEnrolled) >= 0
 
     /**
+     * Whether the phone's bottom bar is on screen. The Hub is a tab only for an enrolled device, so the enrolment flag must
+     * reach this decision: without it the bar vanished the moment the Hub opened (ERROR-409).
+     */
+    fun showsBottomBar(destination: FlashDestination, hubEnrolled: Boolean, railMode: Boolean): Boolean =
+        !railMode && isTabRoot(destination, hubEnrolled)
+
+    /**
      * Stack size after an operation: pushing adds one entry capped at [MAX_STACK_DEPTH],
      * any other operation keeps the current size.
      */

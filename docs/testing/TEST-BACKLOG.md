@@ -4371,3 +4371,5 @@ New rows. Every Pass condition is something the owner can see on the screen or i
 - **Source:** UI-058 H9. **Status:** TODO
 
 - **HUBT-33** Pair from the person sheet (wired 2026-10-15 to `pairColleagueFromDirectory`, ADR-164). Setup: two enrolled phones, same org, connected on the LAN, not paired. Steps: Hub > People > the colleague > Pair. Pass: toast/snackbar "Paired." and the colleague shows as paired; when not connected: the sentence "Flash can pair with a colleague only while you are connected to them. Try again when they are nearby." Source: ADR-164 + UI-058. Status: TODO
+
+- **HUBT-34** Bottom bar on the Hub. Setup: an enrolled phone. Steps: open Hub, open People, Org, News and back. Pass: the bottom bar is visible on every Hub screen that is a tab root and returns after scrolling stops or reverses; Hub is highlighted. Source: ERROR-409. Status: TODO

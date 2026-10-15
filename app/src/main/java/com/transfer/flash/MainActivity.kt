@@ -1928,7 +1928,7 @@ private fun FlashShell(
     // hand `contentInset + system nav inset` to the page, which folds it into its own
     // contentPadding so rows scroll UNDER the capsule; pushed screens (Conversation) drop the
     // bar entirely and manage their own bottom insets. In rail mode, there is no bottom nav.
-    val showBar = !useNavRail && FlashNavigationMath.isTabRoot(nav.current.destination)
+    val showBar = FlashNavigationMath.showsBottomBar(nav.current.destination, nav.hubEnrolled, useNavRail)
     val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val tabBottomInset = if (useNavRail) 0.dp else (FlashBottomNavDefaults.contentInset + systemBottomInset)
 

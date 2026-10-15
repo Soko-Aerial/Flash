@@ -210,9 +210,14 @@ fun rememberAutoNavVisible(
     listState: LazyListState?,
 ): State<Boolean> {
     val isVisible = remember { mutableStateOf(true) }
-    if (listState == null) return isVisible
+    if (listState == null) {
+        // A tab with no list to watch (the Hub scrolls inside its own panes) must never inherit a hidden bar from the tab before it.
+        LaunchedEffect(Unit) { isVisible.value = true }
+        return isVisible
+    }
 
     LaunchedEffect(listState) {
+        isVisible.value = true
         var previousIndex = listState.firstVisibleItemIndex
         var previousOffset = listState.firstVisibleItemScrollOffset
         var previousMark = TimeSource.Monotonic.markNow()

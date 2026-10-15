@@ -39,6 +39,10 @@ class FlashHubNavigationTest {
     fun `tab roots follow enrolment`() {
         assertTrue(FlashNavigationMath.isTabRoot(FlashDestination.Transfers))
         assertFalse(FlashNavigationMath.isTabRoot(FlashDestination.Transfers, true))
+        assertTrue(FlashNavigationMath.showsBottomBar(FlashDestination.Hub, hubEnrolled = true, railMode = false), "the bar stays on the Hub")
+        assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Hub, hubEnrolled = false, railMode = false))
+        assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Hub, hubEnrolled = true, railMode = true), "rail mode has no bottom bar")
+        assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Conversation, hubEnrolled = true, railMode = false))
         assertTrue(FlashNavigationMath.isTabRoot(FlashDestination.Hub, true))
         assertFalse(FlashNavigationMath.isTabRoot(FlashDestination.Hub, false))
     }
