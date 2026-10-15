@@ -111,6 +111,12 @@ class GroupRosterStatementTest {
     }
 
     @Test
+    fun anAdministratorWhoIsNotAMemberIsMalformed() {
+        assertEquals(RosterStatus.OK, status(signed(members = listOf("dev-a", "dev-b"), admins = listOf("dev-a", "dev-b"))))
+        assertEquals(RosterStatus.MALFORMED, status(signed(members = listOf("dev-a", "dev-b"), admins = listOf("dev-z"))))
+    }
+
+    @Test
     fun theSizeLimitIsTwoHundredMembers() { // ORGT-U49
         fun ids(n: Int) = (0 until n).map { "dev-" + it.toString().padStart(4, '0') }
         assertEquals(RosterStatus.OK, status(signed(members = ids(GroupRosterStatement.MAX_MEMBERS), admins = emptyList())))

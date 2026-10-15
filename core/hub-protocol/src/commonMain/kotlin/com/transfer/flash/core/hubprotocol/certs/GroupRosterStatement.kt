@@ -59,6 +59,8 @@ public data class GroupRosterStatement(
         if (groupId.isBlank() || rootPublicKey.isBlank() || issuerSignature.isBlank() || version < 0L) return RosterStatus.MALFORMED
         if (memberDeviceIds.any { it.isBlank() } || adminDeviceIds.any { it.isBlank() }) return RosterStatus.MALFORMED
         if (!isSortedUnique(memberDeviceIds) || !isSortedUnique(adminDeviceIds)) return RosterStatus.MALFORMED
+        // Every administrator is also a member (the hub folds them in); anything else is a statement no honest hub makes.
+        if (!memberDeviceIds.containsAll(adminDeviceIds)) return RosterStatus.MALFORMED
         if (memberDeviceIds.size > MAX_MEMBERS) return RosterStatus.TOO_LARGE
         if (canonicalBytes().size > MAX_CANONICAL_BYTES) return RosterStatus.TOO_LARGE
         if (validUntilMs <= issuedAtMs) return RosterStatus.MALFORMED

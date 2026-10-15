@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-10-15 - Plan B small gaps (ADR-166, Claude Code)
+
+### Changed
+`HubRevocationCache` + host wiring; chat and link created for an admin-added hub group; roster verify requires admins to be members; JSON depth guard on roster offers; two new tests of the full ingestion path through the roster gate (`ORGT_B4_aGroupMessageIsStored...`), conversation creation (2 tests), cache (2), depth guard (2), admin rule (1).
+
+### Verification
+hub-protocol, enterprise (jvm + android host), messaging (jvm + android host), server tests, app and desktop compiles green; `E2eRelayContractTest` (ERROR-396 flake) failed once under load and passed alone. Mutation: removing both the membership check and the active-row check made the ingestion test fail; restored. Not device-verified.
+
+### Remaining
+`org_group_unsealed` header (after the cloud Hub tab merges), `Flash.kt` wiring, A3 minors 7 and 10.
+
 ## 2026-10-15 - Paired identity outranks the hub directory for sealing (ADR-165, Claude Code)
 
 ### Changed

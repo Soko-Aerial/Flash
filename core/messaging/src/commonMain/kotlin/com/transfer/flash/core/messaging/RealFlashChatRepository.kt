@@ -5561,10 +5561,27 @@ public class RealFlashChatRepository(
         val trust = enterpriseTrustStore ?: return
         val now = timeSource.nowMs()
         for (groupId in rosters.groupIds()) {
-            if (!trust.isGroupLinkedToHub(groupId)) continue
-            if (conversationDao.get(groupId) == null) continue
             // An expired statement changes nothing here: the gate already refuses every colleague outside the window.
             val roster = rosters.current(groupId, now) ?: continue
+            if (conversationDao.get(groupId) == null) {
+                // An administrator added this device to a hub group it never joined (Plan B small gap): the verified roster that
+                // names this device is the authority, so the chat appears and is linked. A removed device is not named, so no
+                // chat comes back for it. Deleting the chat locally while still a member brings it back on the next sync.
+                if (localDeviceId !in roster.memberDeviceIds) continue
+                conversationDao.upsert(
+                    ConversationEntity(
+                        id = groupId,
+                        title = roster.groupName.ifBlank { groupId },
+                        isGroup = true,
+                        sortOrder = now,
+                        groupCreatedBy = roster.adminDeviceIds.firstOrNull().orEmpty(),
+                        groupCreatedAt = now,
+                    ),
+                )
+                trust.linkGroupToHub(groupId)
+                FlashProbe.emit("org.roster.conversation", "group" to FlashProbe.short(groupId))
+            }
+            if (!trust.isGroupLinkedToHub(groupId)) continue
             val existing = members.allMembers(groupId).associateBy { it.deviceId }
             val op = "$HUB_ROSTER_OP_PREFIX${roster.version}"
             val writes = ArrayList<GroupMemberEntity>()
