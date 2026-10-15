@@ -53,21 +53,21 @@ public data class AnnouncementSearchResponseDto(
 @FlashInternalApi
 @Serializable
 public data class PostAnnouncementRequestDto(
-    public val clientRequestId: String,
     public val scope: String, // "org" | "department"
     public val departmentId: String? = null,
-    public val title: String,
-    public val body: String,
+    public val title: String = "",
+    public val body: String = "",
     public val pinned: Boolean = false,
     public val expiresAtMs: Long? = null,
+    public val clientRequestId: String = "",
 )
 
 @FlashInternalApi
 @Serializable
 public data class UpdateAnnouncementRequestDto(
-    public val expectedSeq: Long,
-    public val title: String,
-    public val body: String,
+    public val title: String = "",
+    public val body: String = "",
+    public val expectedSeq: Long = 0L,
     public val pinned: Boolean? = null,
     public val expiresAtMs: Long? = null,
 )

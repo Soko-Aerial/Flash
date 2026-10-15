@@ -66,16 +66,20 @@ public class AnnouncementStore(
         readState(conn, "epoch") ?: UUID.randomUUID().toString()
     }
 
+    public val epoch: String get() = currentEpoch()
+
     public fun currentSeq(): Long = db.withConnection { conn ->
         readState(conn, "seq")?.toLongOrNull() ?: 0L
     }
+
+    public val seq: Long get() = currentSeq()
 
     // ---------------------------------------------------------------------------------------------
     // Writes (Create, Update, Delete, Pin/Unpin)
     // ---------------------------------------------------------------------------------------------
 
     public fun createAnnouncement(
-        clientRequestId: String,
+        clientRequestId: String = UUID.randomUUID().toString(),
         scope: String, // "org" | "department"
         departmentId: String?,
         title: String,
@@ -175,17 +179,16 @@ public class AnnouncementStore(
 
     public fun updateAnnouncement(
         id: String,
-        expectedSeq: Long,
-        title: String,
-        body: String,
+        expectedSeq: Long? = null,
+        title: String? = null,
+        body: String? = null,
         pinned: Boolean? = null,
         expiresAtMs: Long? = null,
         actorRole: String, // "admin" | "dept_admin" | "ORG_ADMIN" | "DEPT_HEAD"
         actorDeptId: String? = null,
         actorRef: String = "",
+        clientRequestId: String? = null,
     ): AnnouncementItemDto {
-        val cleaned = AnnouncementText.clean(title, body)
-
         return db.withConnection { conn ->
             val current = getByIdInternal(conn, id)
                 ?: throw AnnouncementNotFoundException("Announcement $id does not exist")
@@ -194,12 +197,15 @@ public class AnnouncementStore(
             }
 
             // Optimistic concurrency check
-            if (current.seq != expectedSeq) {
+            if (expectedSeq != null && current.seq != expectedSeq) {
                 throw AnnouncementConflictException(current)
             }
 
             // Authorization: org admin can edit any; dept head can edit only in own department authored by a head
             checkCanModify(current, actorRole, actorDeptId, actorRef)
+
+            val cleanedTitle = if (title != null) AnnouncementText.cleanTitle(title) else current.title
+            val cleanedBody = if (body != null) AnnouncementText.cleanBody(body) else current.body
 
             val now = clock()
             val newPinned = pinned ?: current.pinned
@@ -224,8 +230,8 @@ public class AnnouncementStore(
             """.trimIndent()
 
             conn.prepareStatement(sql).use { stmt ->
-                stmt.setString(1, cleaned.title)
-                stmt.setString(2, cleaned.body)
+                stmt.setString(1, cleanedTitle)
+                stmt.setString(2, cleanedBody)
                 stmt.setInt(3, if (newPinned) 1 else 0)
                 if (newPinnedAt != null) stmt.setLong(4, newPinnedAt) else stmt.setNull(4, java.sql.Types.INTEGER)
                 if (expiresAtMs != null) stmt.setLong(5, expiresAtMs) else stmt.setNull(5, java.sql.Types.INTEGER)
@@ -236,8 +242,8 @@ public class AnnouncementStore(
             }
 
             current.copy(
-                title = cleaned.title,
-                body = cleaned.body,
+                title = cleanedTitle,
+                body = cleanedBody,
                 pinned = newPinned,
                 pinnedAt = newPinnedAt,
                 expiresAt = expiresAtMs,
@@ -342,6 +348,20 @@ public class AnnouncementStore(
             )
         }
     }
+
+    public fun pinAnnouncement(
+        id: String,
+        actorRole: String,
+        actorDeptId: String? = null,
+        actorRef: String = "",
+    ): AnnouncementItemDto = setPinned(id, true, actorRole, actorDeptId, actorRef)
+
+    public fun unpinAnnouncement(
+        id: String,
+        actorRole: String,
+        actorDeptId: String? = null,
+        actorRef: String = "",
+    ): AnnouncementItemDto = setPinned(id, false, actorRole, actorDeptId, actorRef)
 
     // ---------------------------------------------------------------------------------------------
     // Reads (Get, Changes Feed, Search)
