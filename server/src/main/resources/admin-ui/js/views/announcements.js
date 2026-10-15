@@ -4,7 +4,8 @@
 
 import { h, mount } from '../dom.js';
 import { t } from '../i18n.js';
-import { api, ApiError } from '../app.js';
+import { api } from '../app.js';
+import { ApiError } from '../api.js';
 import { session } from '../state.js';
 import { formatDateTime, formatNumber } from '../format.js';
 import { pageHeader, button, badge, emptyState, textInput, selectInput, field, withBusy, banner } from '../ui/widgets.js';

@@ -10687,3 +10687,32 @@ device check HUBT-21; the desktop store's test (`DesktopHubUiPrefsTest`) is writ
 ## ERROR-407 - `FlashHubAction` enum was dead documentation
 The enum existed but nothing used it; `onRetryGroups` had no action row. `FlashHubNoDeadActionsTest` now ties every action to a `FlashHubActions`
 member and scans the screens for its use; `RETRY_GROUPS` was added. Status RESOLVED.
+
+## ERROR-408 - Admin console showed a black page (announcements.js imported ApiError from the wrong module)
+
+### Date
+2026-10-15
+
+### Area
+Hub server admin console (`server/src/main/resources/admin-ui`)
+
+### Symptoms
+Owner started the hub and the console at `/admin/` was a blank dark page. All assets answered 200.
+
+### Error
+```text
+Uncaught SyntaxError: The requested module '../app.js' does not provide an export named 'ApiError' (views/announcements.js:7)
+```
+Found by loading the page in headless Edge and reading the console.
+
+### Root cause
+`views/announcements.js` (Plan A3) imported `ApiError` from `../app.js`; it is exported by `../api.js`. A bad named import is a link-time error, so the whole module graph failed and nothing rendered. The A3 Node tests import single modules and never loaded the whole app, so nothing caught it.
+
+### Working fix
+Import `ApiError` from `../api.js`. New `server/admin-ui-tests/imports.test.mjs` checks every named relative import against the target's exports (fails on the broken file, passes on the fixed one).
+
+### Verification
+Node tests; headless load of the fixed page is owed after the hub is rebuilt and restarted (the running hub serves the old bundled file).
+
+### Status
+RESOLVED in code; owner to rebuild and restart the hub and confirm the console renders (ANN-01).
