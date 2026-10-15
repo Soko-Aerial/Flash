@@ -60,7 +60,7 @@ private fun usage(code: Int): Int {
         Flash Enterprise Hub
           serve                          run the hub (default)
           keytool init-root --out DIR [--no-passphrase]
-          keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,revoke:member
+          keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member
                   [--max-devices N] [--valid-days N] [--serial N] [--out FILE]
           keytool rotate
           healthcheck                    probe /health on loopback (exit 0 = healthy)

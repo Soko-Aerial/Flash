@@ -10564,3 +10564,36 @@ NOT diagnosed. Suspect: a late kick for an older session of the same device appl
 
 ### Status
 OPEN (not caused by the 2026-10-14 directory changes as far as seen; the earlier integration gate was green once). Avoid fast hub toggling in the demo.
+
+## ERROR-400 — Hub refused a department-head enrolment as "forbidden" (verifier DEFECT-017)
+
+### Date
+2026-10-15
+
+### Area
+Hub enrolment / delegation scopes / invite creation / client message
+
+### Symptoms
+Owner joined the local demo hub with a `dept_admin` invite and the app said "forbidden" (later: "The hub did not accept this link"). The hub audit log showed four `device.enroll.refused reason=forbidden`.
+
+### Root cause
+The hub's delegation (dev embedded root, and every keytool template and doc) held only `enrol:member,revoke:member`. The console created a `dept_admin` invite without checking the delegation; enrolment then threw `SecurityException("Server delegation lacks authority to issue role ...")` (HTTP 403 ERR_FORBIDDEN), which the client mapped to the generic INVITE_REJECTED sentence. Independent verifier report: `logs/streams/V-verifier/report-3.md` DEFECT-017.
+
+### Failed attempts
+None. The audit chain (`device.enroll.refused`) was read from `server/data/demo/flash-hub.db`.
+
+### Working fix
+1. `HubKeyStore` dev delegation now carries `enrol:member`, `enrol:dept_admin`, `revoke:member` (never `enrol:admin`); an older dev delegation is reissued when a scope is missing.
+2. `EnrollmentService.createInvite` refuses a role the delegation cannot issue, with an authored sentence naming the missing scope (`roleNotAllowedMessage`); same rule as the enrolment transaction (admin needs the scope explicitly).
+3. keytool usage, `Main.kt` help, the console's delegation command and `docs/protocol.md` now show `--scopes enrol:member,enrol:dept_admin,revoke:member`.
+4. New wire code `ERR_ROLE_NOT_ALLOWED` (HTTP 403; thrown as `RoleNotAllowedException`) so a refused role is told apart from a bad proof of possession (also 403 `ERR_FORBIDDEN`, which stays INVITE_REJECTED). Client: it maps to the new `EnrollFailureReason.HUB_NOT_ALLOWED` with its own sentence ("not allowed to enrol this kind of device ... permissions need updating").
+
+### Verification
+Unit tests: `RevocationAndEnrolmentTest.anInviteForARoleTheDelegationCannotIssueIsRefusedAtCreationInWords`, `EnrollmentTrustTest.hubAnswersAreMappedToPlainReasons` (extended). NOT device-verified: see DEMO-02 in `docs/testing/TEST-BACKLOG.md`.
+
+### Related files
+- `server/.../auth/HubKeyStore.kt`, `EnrollmentService.kt`, `KeyTool.kt`, `Main.kt`, `admin-ui/js/views/delegation.js`
+- `core/enterprise/.../EnrollmentResult.kt`, `EnterpriseEnrollmentClient.kt`, `ui/chat/.../FlashHubStatusMath.kt`
+
+### Status
+RESOLVED in code 2026-10-15 (unit-tested); stays open for the device check DEMO-02.

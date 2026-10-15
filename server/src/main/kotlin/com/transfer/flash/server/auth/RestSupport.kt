@@ -48,7 +48,7 @@ internal suspend fun ApplicationCall.respondError(status: HttpStatusCode, code: 
 /** The HTTP status that goes with a [HubErrorCodes] code. */
 internal fun statusFor(code: String): HttpStatusCode = when (code) {
     HubErrorCodes.ERR_AUTH, HubErrorCodes.ERR_EXPIRED -> HttpStatusCode.Unauthorized
-    HubErrorCodes.ERR_REVOKED, HubErrorCodes.ERR_FORBIDDEN, HubErrorCodes.ERR_NOT_MEMBER -> HttpStatusCode.Forbidden
+    HubErrorCodes.ERR_REVOKED, HubErrorCodes.ERR_FORBIDDEN, HubErrorCodes.ERR_NOT_MEMBER, HubErrorCodes.ERR_ROLE_NOT_ALLOWED -> HttpStatusCode.Forbidden
     HubErrorCodes.ERR_NOT_FOUND, HubErrorCodes.ERR_UNKNOWN_RECIPIENT -> HttpStatusCode.NotFound
     HubErrorCodes.ERR_CONFLICT -> HttpStatusCode.Conflict
     HubErrorCodes.ERR_RATE_LIMIT, HubErrorCodes.ERR_QUOTA_EXCEEDED -> HttpStatusCode.TooManyRequests

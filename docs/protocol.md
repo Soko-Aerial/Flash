@@ -1414,6 +1414,7 @@ certificate has a new serial, so the revocation of the old serial does not revok
 | `ERR_NOT_MEMBER` | not a member of the group addressed | no |
 | `ERR_UNKNOWN_RECIPIENT` | recipient id is not enrolled | no |
 | `ERR_QUOTA_EXCEEDED` | mailbox or device quota full | no |
+| `ERR_ROLE_NOT_ALLOWED` | enrolment: the hub's delegation lacks the `enrol:<role>` scope of the invite (HTTP 403, ERROR-400) | no |
 | `ERR_FORBIDDEN` | authenticated but not allowed | no |
 | `ERR_NOT_FOUND`, `ERR_CONFLICT`, `ERR_BAD_REQUEST` | REST resource or request problems | no |
 | `ERR_INTERNAL` | hub fault; the message is a fixed sentence, details only in the hub's log | no |
@@ -1473,7 +1474,7 @@ Step-up actions (the `action` of a challenge): `device.revoke`, `device.unrevoke
 `admin.disable`, `settings.change`, `revocation.install`, `recovery.regenerate`.
 
 **Command line** (`server <command>`, the launcher of `:server:installDist` or `java -jar`): `serve` (default); `keytool init-root --out DIR
-[--no-passphrase]`; `keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,revoke:member [--max-devices N]
+[--no-passphrase]`; `keytool issue-delegation --root-key FILE --server-pub FILE_OR_BASE64 --scopes enrol:member,enrol:dept_admin,revoke:member [--max-devices N]
 [--valid-days N] [--serial N] [--out FILE]`; `keytool rotate`; `healthcheck` (exit 0 only when the hub's own `/health` answers 200); `admin-recovery
 --username NAME` (console only, prints a new password, authenticator secret and recovery codes once). Exit codes: 0 ok, 1 refused to start or
 failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keytool pass-phrase non-interactively.

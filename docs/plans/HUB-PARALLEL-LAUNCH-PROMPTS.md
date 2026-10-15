@@ -284,3 +284,39 @@ FINISH
 ```
 
 Claude Code's side of the same night (so Antigravity knows what not to touch): server defects 8/9 (tombstone pruning, cursor 400, unsigned members reported, `offlineGraceDays` setting), the demo kit (`tools/demo-server.ps1`, `docs/plans/HUB-DEMO-RUNBOOK.md`), folding the three log fragments into the canonical logs and ADR renumbering, then merging S1 and re-running the integration gate.
+
+---
+
+# Round 3 (2026-10-15): verifier prompt for Antigravity (local, this PC)
+
+R2-3 above assumed a cloud sandbox and `flash-dev.bundle`. This version runs on THIS PC under the Gradle lock, reads the current `dev` directly, adds the S1 round 2 and S2/S3 work that no independent agent has checked yet, and never starts the owner's demo hub. Paste the block below into Antigravity.
+
+```text
+You are the independent VERIFIER (stream V). You verify; you do NOT fix. Work only in your own worktree:
+  git worktree add E:\FlashWork\V-verify-3 -b agent/V-verifier-3 dev
+Never edit C:\Users\KaliOxygen\Downloads\Flash. Write only into logs/streams/V-verifier/ (report-3.md) and commit only to agent/V-verifier-3. Do not merge, rebase, push, stash.
+
+READ FIRST, in order: AGENTS.md (all, esp. section 36), docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md, docs/plans/HUB-QUALITY-CONTRACT.md,
+docs/plans/FLASH-HUB-INTEGRATION-ROADMAP.md, docs/plans/HUB-OFFLINE-ORG-TRUST-PLAN.md, logs/streams/V-verifier/report.md (the first verification, 16 defects), logs/handoff.md.
+The plan text wins over any handoff description. The quality contract applies to YOU too: explain-back first, evidence table, adversarial self-review with at least 10 path:line findings, an honest "Not verified" list.
+
+RULES: build and test ONLY through tools\flash-gradle.cmd <args> run from your worktree root; exit 75 means another agent is building, do other work and retry.
+Never touch the phone or the owner's running demo hub (ports 8443 and 8444 are in use): do not start a server on them; use the :server:test end-to-end tests instead.
+Never uninstall or clear the app, never print keys, tokens or full key bytes. No new dependency or module. On any contradiction with the plan, stop and ask the owner. Never claim a task you did not run.
+A failure counts as a flake only if it passes when rerun in isolation, with the evidence shown. Known baseline red: ERROR-106 (:desktop:jvmTest hangs, do not run it; run :desktop:compileTestKotlinJvm), ERROR-396 (flaky E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession).
+
+TASK 1 (gate): run the gate of HUB-PARALLEL-AGENTS-PROTOCOL.md section 6 plus :ui:chat jvmTest and :desktop:compileTestKotlinJvm. Report per task: executed / pass / fail counts.
+
+TASK 2 (B1): for each of the 16 defects in report.md say FIXED or STILL OPEN with path:line. Specifically prove by reading that OrgSnapshotCoordinator is constructed AND started in DesktopEngine.kt and DiscoveryEngineHolder.kt (and Flash.kt if it is a host). Re-run two mutations and restore each afterwards: (a) remove the clearSnapshot call on unenrol, expect ORGT-U51/U52 to fail; (b) skip statement verification, expect ORGT-U12b to fail. Also check defect 3 (DirectorySyncLimitTest) and defect 6 (ORGT-U57/U58). Known accepted gap: server directory pagination is in memory, not SQL.
+
+TASK 3 (B2, B3 and the S1 round 2 changes): verify against plan section 4 (Phases B2/B3), the call-site table of section 6, the user-facing strings of section 9 verbatim, TalkBack labels, lock-screen privacy (ORGT-U44). Then check these round 2 items one by one, each with a mutation or a test that fails without the fix:
+  - resolver race: generation counter (ORGT-U59);
+  - enrolment gate isEnrolled wired in ALL THREE hosts (ORGT-U60);
+  - requestOrgSync on pull-to-refresh and Hub tab open (ORGT-U64/U65);
+  - Room schema 15 (orgRootFingerprint, lastErrorKind) and migration 14 to 15 (ORGT-U66), and that no schema number is used twice (B4 = 16, A3 = 17).
+Check PeerTrustPolicy: PTT, group creation and group administration must stay PAIRED-only; list any path where an unpaired ORG colleague could reach them.
+
+TASK 4 (never independently verified so far): (a) Plan A1 department heads and invite roles, Plan A2 hidden departments: read the server code and tests against their plans, and try to break scoping (a head acting outside their department, a hidden department visible to an outsider in the directory sync). (b) Hub tab shell H0-H5 (docs/ui/flash-hub-tab.md, HUB-TAB-IMPLEMENTATION-PLAN.md): navigation, Transfers moved to the top bar, empty/offline/expired states. (c) Fresh finding from the owner's demo today: enrolling a dept_admin invite on the demo hub (--dev-embedded-root) was refused as "forbidden" because the dev delegation only had enrol:member. Check the PRODUCTION path: which scopes does the keytool delegation issue by default, and can a real hub issue dept_admin invites without the owner knowing a scope is missing? Is the failure message shown to the user helpful or just "forbidden"? Report it as a defect with path:line if not.
+
+OUTPUT: logs/streams/V-verifier/report-3.md with: gate table, B1 defect table (16 rows), B2/B3/round-2 table, A1/A2/H0-H5 findings, numbered defects with path:line and severity, mutation results (what you changed, which test failed, proof you restored it with git diff showing clean), a clear verdict per phase (B1, B2, B3, A1, A2, H0-H5): ACCEPT or REJECT, and the exact gate commands with the last output lines. Do not fix anything.
+```

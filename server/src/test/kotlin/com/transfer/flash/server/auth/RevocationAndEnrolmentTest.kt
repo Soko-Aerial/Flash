@@ -446,6 +446,26 @@ class RevocationAndEnrolmentTest {
     }
 
     @Test
+    fun anInviteForARoleTheDelegationCannotIssueIsRefusedAtCreationInWords() {
+        // DEFECT-017: the demo hub could create a dept_admin invite that enrolment then refused as "forbidden".
+        val hub = Hub()   // default delegation: enrol:member + revoke:member only
+        val e = assertFailsWith<IllegalArgumentException> {
+            hub.enrollment.createInvite("https://hub.test", InviteScope(role = "dept_admin", expiry = now + 60_000), now)
+        }
+        assertTrue(e.message.orEmpty().contains("enrol:dept_admin"), e.message)
+        assertFailsWith<IllegalArgumentException> {
+            hub.enrollment.createInvite("https://hub.test", InviteScope(role = "admin", expiry = now + 60_000), now)
+        }
+        assertTrue(hub.enrollment.createInvite("https://hub.test", InviteScope(role = "member", expiry = now + 60_000), now).link.isNotBlank())
+        val withHeads = Hub(cert = delegation(scopes = setOf("enrol:member", "enrol:dept_admin", "revoke:member")))
+        assertTrue(withHeads.enrollment.createInvite("https://hub.test", InviteScope(role = "dept_admin", expiry = now + 60_000), now).link.isNotBlank())
+        // enrol:admin is never implied by a wildcard-free scope list
+        assertFailsWith<IllegalArgumentException> {
+            withHeads.enrollment.createInvite("https://hub.test", InviteScope(role = "admin", expiry = now + 60_000), now)
+        }
+    }
+
+    @Test
     fun inviteSecretsAreStoredHashedOnly() {
         val hub = Hub()
         val token = hub.invite()

@@ -226,6 +226,8 @@ public object FlashHubStatusMath {
         EnrollFailureReason.INVITE_EXPIRED -> "This link has expired. Ask your administrator for a new one."
         EnrollFailureReason.INVITE_USED -> "This link was already used. Ask your administrator for a new one."
         EnrollFailureReason.INVITE_REJECTED -> "The hub did not accept this link. Check it is copied completely, or ask for a new one."
+        EnrollFailureReason.HUB_NOT_ALLOWED ->
+            "The hub understood this link but is not allowed to enrol this kind of device. Tell your administrator: the hub's permissions need updating."
         EnrollFailureReason.QUOTA_FULL -> "Your organisation has no free places left. Ask your administrator to make room."
         EnrollFailureReason.RATE_LIMITED -> "Too many attempts. Wait a few minutes and try again."
         EnrollFailureReason.WRONG_ORGANISATION ->

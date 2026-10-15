@@ -56,7 +56,7 @@ class HubKeyStore(val dataDir: Path) {
     /** Text the operator must run on the machine that holds the root key. */
     fun issueDelegationHint(delegatePublicKey: String): String =
         "java -jar flash-hub.jar keytool issue-delegation --root-key <offline-dir>/root-identity.pk8 " +
-            "--server-pub $delegatePublicKey --scopes enrol:member,revoke:member --max-devices 1000 --valid-days 90 " +
+            "--server-pub $delegatePublicKey --scopes enrol:member,enrol:dept_admin,revoke:member --max-devices 1000 --valid-days 90 " +
             "--out delegation.cert   (then copy delegation.cert to ${delegationFile.toAbsolutePath()})"
 
     /**
@@ -71,7 +71,8 @@ class HubKeyStore(val dataDir: Path) {
             ?: FlashCrypto.generateEcKeyPair().also { KeyFiles.writePair(legacyRootPrivFile, legacyRootPubFile, it) }
         val existing = runCatching { HubRestCodec.decode<DelegationCert>(Files.readString(delegationFile)) }.getOrNull()
         if (existing != null && existing.delegatePublicKey == delegate.publicKey &&
-            existing.rootPublicKey == root.toBase64Spki() && existing.validTo - nowMs > 2 * DelegationManager.DAY_MS
+            existing.rootPublicKey == root.toBase64Spki() && existing.validTo - nowMs > 2 * DelegationManager.DAY_MS &&
+            DEV_SCOPES.all { it in existing.scopes }
         ) {
             return existing
         }
@@ -79,7 +80,7 @@ class HubKeyStore(val dataDir: Path) {
             rootPrivateKey = root.private,
             rootPublicKey = root.toBase64Spki(),
             delegatePublicKey = delegate.publicKey,
-            scopes = setOf(DelegationCert.SCOPE_ENROL_MEMBER, DelegationCert.SCOPE_REVOKE_MEMBER),
+            scopes = DEV_SCOPES,
             validFrom = nowMs - 10_000,
             validTo = nowMs + validDays * DelegationManager.DAY_MS,
             maxDevices = 1000,
@@ -88,6 +89,13 @@ class HubKeyStore(val dataDir: Path) {
         SecureFiles.writeOwnerOnly(delegationFile, HubRestCodec.encode(cert).encodeToByteArray())
         return cert
     }
+
+    /** Dev delegation scopes: members and department heads (the demo invites a head); never `enrol:admin`. */
+    private val DEV_SCOPES = setOf(
+        DelegationCert.SCOPE_ENROL_MEMBER,
+        DelegationCert.SCOPE_ENROL_DEPT_ADMIN,
+        DelegationCert.SCOPE_REVOKE_MEMBER,
+    )
 
     private fun fingerprint(pair: KeyPair): String = FlashCrypto.sha256FingerprintHex(pair.toBase64Spki()).take(16)
 }
