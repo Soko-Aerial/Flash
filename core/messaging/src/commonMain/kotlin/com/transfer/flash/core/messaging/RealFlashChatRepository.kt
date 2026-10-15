@@ -387,7 +387,19 @@ public class RealFlashChatRepository(
             contentViaHub = hubContentViaHub,
             sealing = hubSealing,
             standing = { id -> hubPeers?.standing(id) ?: HubPeerStanding.UNKNOWN },
-            isPaired = { PeerTrustPolicy.mayChat(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) },
+            isPaired = { id ->
+                val paired = isTrustedPeer(id)
+                val org = effectiveIsOrgPeer(id)
+                val allowed = PeerTrustPolicy.mayChat(isPaired = paired, isOrg = org)
+                if (allowed) {
+                    if (org && !paired) {
+                        FlashProbe.emit("org.gate.allow", "peer" to FlashProbe.short(id), "policy" to "mayChat", "source" to "snapshot")
+                    }
+                } else {
+                    FlashProbe.emit("org.gate.deny", "peer" to FlashProbe.short(id), "reason" to "unknown_member")
+                }
+                allowed
+            },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
         )
     }
@@ -5522,7 +5534,15 @@ public class RealFlashChatRepository(
                     if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                 } else {
                     val peerId = transportPeerId ?: frame.memberId
-                    if (!PeerTrustPolicy.mayReact(isPaired = isTrustedPeer(peerId), isOrg = effectiveIsOrgPeer(peerId))) return
+                    val isPaired = isTrustedPeer(peerId)
+                    val isOrg = effectiveIsOrgPeer(peerId)
+                    if (!PeerTrustPolicy.mayReact(isPaired = isPaired, isOrg = isOrg)) {
+                        FlashProbe.emit("org.gate.deny", "peer" to FlashProbe.short(peerId), "reason" to "reaction_not_trusted")
+                        return
+                    }
+                    if (isOrg && !isPaired) {
+                        FlashProbe.emit("org.gate.allow", "peer" to FlashProbe.short(peerId), "policy" to "mayReact", "source" to "snapshot")
+                    }
                 }
                 val msg = messageDao.getByLocalId(frame.messageId)
                 if (msg != null && msg.conversationId != frame.conversationId) return

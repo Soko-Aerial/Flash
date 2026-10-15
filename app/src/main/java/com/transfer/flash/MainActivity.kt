@@ -781,11 +781,16 @@ fun FlashApp(
     val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
     val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks ?: remember { MutableStateFlow(null) }).collectAsState()
     val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCreds) { hubObject?.relinkableGroups()?.size ?: 0 }
-    val orgLeaseFlow = remember(ready) {
-        DiscoveryEngineHolder.currentOrgPeerResolver()?.lease ?: MutableStateFlow(com.transfer.flash.core.enterprise.OrgLease.None)
+    val orgResolver = remember(ready) { DiscoveryEngineHolder.currentOrgPeerResolver() }
+    val orgLeaseFlow = remember(orgResolver) {
+        orgResolver?.lease ?: MutableStateFlow(com.transfer.flash.core.enterprise.OrgLease.None)
     }
     val orgLease by orgLeaseFlow.collectAsState()
-    val orgTrustState = remember(orgLease, enterpriseCreds) {
+    val orgMismatchFlow = remember(orgResolver) {
+        orgResolver?.identityMismatch ?: MutableStateFlow(false)
+    }
+    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCreds, orgIdentityMismatch) {
         if (enterpriseCreds == null) null
         else {
             val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
@@ -793,6 +798,7 @@ fun FlashApp(
                 lease = orgLease,
                 clockOk = clockOk,
                 hubSupports = true,
+                identityMismatch = orgIdentityMismatch,
                 nowMs = System.currentTimeMillis(),
             )
         }

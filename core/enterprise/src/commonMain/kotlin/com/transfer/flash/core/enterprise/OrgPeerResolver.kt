@@ -97,6 +97,11 @@ public interface OrgPeerResolver {
     public val lease: StateFlow<OrgLease>
 
     /**
+     * Whether the local device's identity key has diverged from the certified statement in the snapshot.
+     */
+    public val identityMismatch: StateFlow<Boolean> get() = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /**
      * Reloads in-memory index from the persisted directory snapshot.
      */
     public suspend fun refreshFromSnapshot()
@@ -114,9 +119,14 @@ public class RealOrgPeerResolver(
     private val dao: OrgDirectoryDao,
     private val trustStore: FlashTrustStore,
     private val isEnrolled: () -> Boolean = { true },
+    private val localDeviceId: String? = null,
+    private val ownFingerprintProvider: (() -> String?)? = null,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : OrgPeerResolver {
+
+    private val _identityMismatch = MutableStateFlow(false)
+    override val identityMismatch: StateFlow<Boolean> = _identityMismatch.asStateFlow()
 
     private data class SnapshotPeer(
         val deviceId: String,
@@ -170,9 +180,18 @@ public class RealOrgPeerResolver(
             )
         }
 
+        val ownPeer = if (localDeviceId != null) newIndex[localDeviceId] else null
+        val mismatch = if (ownPeer != null && ownFingerprintProvider != null) {
+            val ownFp = ownFingerprintProvider.invoke()
+            ownFp != null && !ownPeer.keyFingerprint.equals(ownFp, ignoreCase = true)
+        } else {
+            false
+        }
+
         synchronized(lock) {
             if (currentGen == generation) {
                 snapshotIndex = newIndex
+                _identityMismatch.value = mismatch
                 if (syncState != null) {
                     lastSyncSuccessMs = syncState.lastSyncSuccessMs
                     graceDays = syncState.offlineGraceDays.coerceIn(1, 365)
@@ -191,8 +210,12 @@ public class RealOrgPeerResolver(
             snapshotIndex = emptyMap()
             lastSyncSuccessMs = 0L
             graceDays = DEFAULT_GRACE_DAYS
+            _identityMismatch.value = false
             val oldLease = _lease.value
             _lease.value = OrgLease.None
+            if (oldLease !is OrgLease.None) {
+                FlashProbe.emit("org.lease.state", "state" to "NONE")
+            }
             if (oldLease is OrgLease.Valid) {
                 FlashProbe.emit("org.lease.expired", "reason" to "CLEARED")
             }
@@ -200,7 +223,7 @@ public class RealOrgPeerResolver(
     }
 
     override fun isKnownColleague(deviceId: String): Boolean {
-        if (!isEnrolled()) return false
+        if (!isEnrolled() || _identityMismatch.value) return false
         val now = clock()
         val currentLease = synchronized(lock) {
             calculateLeaseLocked(now)
@@ -209,7 +232,7 @@ public class RealOrgPeerResolver(
     }
 
     override fun searchColleagueIds(query: String, limit: Int): Set<String> {
-        if (!isEnrolled()) return emptySet()
+        if (!isEnrolled() || _identityMismatch.value) return emptySet()
         val q = query.trim().lowercase()
         if (q.isEmpty()) return emptySet()
         val now = clock()
@@ -234,7 +257,7 @@ public class RealOrgPeerResolver(
     }
 
     override fun resolve(deviceId: String): OrgPeer? {
-        if (!isEnrolled()) return null
+        if (!isEnrolled() || _identityMismatch.value) return null
         val now = clock()
         val currentLease = synchronized(lock) {
             calculateLeaseLocked(now)
@@ -278,7 +301,7 @@ public class RealOrgPeerResolver(
     }
 
     private fun calculateLeaseLocked(now: Long): OrgLease {
-        if (!isEnrolled()) return OrgLease.None
+        if (!isEnrolled() || _identityMismatch.value) return OrgLease.None
         if (lastSyncSuccessMs <= 0L) {
             return OrgLease.None
         }
@@ -301,6 +324,12 @@ public class RealOrgPeerResolver(
         val oldLease = _lease.value
         if (oldLease != newLease) {
             _lease.value = newLease
+            val stateName = when (newLease) {
+                is OrgLease.Valid -> "VALID"
+                is OrgLease.Expired -> if (newLease.reason == ExpiredReason.CLOCK) "CLOCK_WRONG" else "EXPIRED"
+                is OrgLease.None -> "NONE"
+            }
+            FlashProbe.emit("org.lease.state", "state" to stateName)
             if (oldLease is OrgLease.Valid && newLease is OrgLease.Expired) {
                 FlashProbe.emit("org.lease.expired", "reason" to newLease.reason.name)
             }
