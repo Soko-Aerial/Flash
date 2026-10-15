@@ -6914,3 +6914,4 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 - Stream log fragments folded into the canonical logs/ADRs/backlog/probes/security (stream handoffs and `V-verifier/report.md` stay in `logs/streams/` as the source). S2's ADR-137 text is the BUILD RECORD of the planned ADR-137 (no renumbering needed); S3's ADR-159..161 stand (ADR-160 still needs the owner).
 - ERROR-396 (flaky relay storm test) OPEN.
 - Verifier defects still open after this: 8 SQL-level pagination (not done), 16 hygiene items; re-verification (R2-3) not run.
+- Integration gate on the merged tree (2026-10-15, 13m55s): green except three timing flakes that all PASS in isolation (ORGT-U16, FlashDatabaseInvariantTest.groupDeliveryRowsOfOneMessageAreObservableAndScopedToIt, GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect). Server suite, hub-protocol, ui:chat, desktop and app compiles green. :desktop:jvmTest not run (ERROR-106).
