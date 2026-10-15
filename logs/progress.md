@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-10-15 - Plan B Phase B4: hub groups on the LAN (Claude Code, branch agent/C-b4)
+
+### Worked on
+Signed roster statements, sync, gossip and the LAN gate for hub groups (plan section 10).
+
+### Changed
+- `:core:hub-protocol` `GroupRosterStatement` (+8 tests). `:server` `signedRostersFor` on the last sync page (+6 tests). Room schema 16 `hub_group_roster`.
+- `:core:enterprise` roster verification in `OrgDirectorySync`, new `HubGroupRosters` (ORGT-U42/U43/U46).
+- `:core:messaging` `FLASH_GHUBR` frame, `isHubGroupMemberPeer` in `isGroupPeerTrusted`, roster projection, add-member disabled (6 `ORGT_B4_*` tests).
+- Hosts (`DiscoveryEngineHolder`, `DesktopEngine`) wire rosters and advertise `hrs1`.
+
+### Verification
+Gate: hub-protocol, server, persistence, enterprise, messaging (jvm + android host), ui:chat, desktop test compile all green after one test-compile fix (`current(..., nowMs)`); `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green. Mutation checks done and restored: dropping the member check and dropping the expiry check each failed `ORGT_B4_gate_acceptsOnly...`. Nothing device-verified.
+
+### Not done
+`org_group_unsealed` header not wired into the UI; no conversation created for a hub group the admin added me to before I joined; `Flash.kt` not wired; no end-to-end Message ingestion test through the gate; revocations not passed to `HubGroupRosters` in hosts; over-200-member groups are skipped server-side.
+
+### Next AI
+Wire the header string, then device tests ORGT-11..16.
+
 ## 2026-10-15 — Independent verification of B1-B3, A1, A2, H0-H5 (ACCEPT) and DEFECT-017 fix (ERROR-400)
 
 ### Worked on

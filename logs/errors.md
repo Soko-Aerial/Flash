@@ -10597,3 +10597,23 @@ Unit tests: `RevocationAndEnrolmentTest.anInviteForARoleTheDelegationCannotIssue
 
 ### Status
 RESOLVED in code 2026-10-15 (unit-tested); stays open for the device check DEMO-02.
+
+## ERROR-401 - Room schema export "Inconsistency detected" after adding schema 16
+
+### Date
+2026-10-15
+
+### Area
+Build / Room schema export (`:core:persistence`)
+
+### Symptoms
+Schema export failed with "Inconsistency detected exporting Room schema" in the new worktree.
+
+### Root cause
+Stale `core/persistence/build/intermediates/room` from an earlier build of schema 15.
+
+### Working fix
+Deleted that intermediates directory and rebuilt; `16.json` generated.
+
+### Status
+RESOLVED
