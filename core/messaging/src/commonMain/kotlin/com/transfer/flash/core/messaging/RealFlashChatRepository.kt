@@ -486,6 +486,7 @@ public class RealFlashChatRepository(
             return@withContext FlashResult.Failure(FlashError.Unknown("Pairing could not be saved. Try again."))
         }
         FlashProbe.emit("org.pair.directory", "peer" to FlashProbe.short(deviceId))
+        hubFacade?.invalidate()
         FlashResult.Success(Unit)
     }
 

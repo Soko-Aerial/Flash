@@ -2812,6 +2812,19 @@ private fun FlashShell(
                     }
                 },
                 onCall = hubCall.takeIf { engine.calls != null },
+                onPairColleague = { id ->
+                    scope.launch {
+                        val result = chatRepository.pairColleagueFromDirectory(id)
+                        withContext(Dispatchers.Main) {
+                            val text = when (result) {
+                                is com.transfer.flash.core.common.result.FlashResult.Success -> "Paired."
+                                is com.transfer.flash.core.common.result.FlashResult.Failure ->
+                                    (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message ?: "Pairing failed."
+                            }
+                            Toast.makeText(toastContext, text, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
                 orgHost = settings.hubStatus?.hubHost?.takeIf { it.isNotBlank() },
                 onManageGroupRequests = { showBrowseOrgGroups = true },
                 pendingRoute = hubRoute,
