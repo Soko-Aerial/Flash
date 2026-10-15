@@ -1,5 +1,16 @@
 # Progress Log
 
+## 2026-10-15 - Cloud Hub tab H6-H10 merged, Pair wired (Claude Code)
+
+### Changed
+Merged `agent/C-h6-h10` (delivered as a zip with a git bundle; no conflicts with dev). Wired the person sheet's Pair button on Android (toast) and desktop (snackbar) to `pairColleagueFromDirectory` (ADR-164); a successful pair refreshes the Hub read model. Folded the stream logs into canonical files: ADR-170..172 (PROPOSED), ERROR-403..407 (stream ids C-1..C-5), HUBT-01..32 plus HUBT-33 (pair) in the backlog, experiments. Full stream logs stay in `logs/streams/C-hub-tab/` (report-section7.md first).
+
+### Verification
+`:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest`, `:core:messaging:testAndroidHostTest`, `:core:messaging:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` green here. `DesktopHubUiPrefsTest` has never been run (`:desktop:jvmTest` hangs, ERROR-106). Not device-verified.
+
+### Next AI
+Run an independent verifier on H6-H10; owner decides ADR-170..172; owner runs HUBT-01..33.
+
 ## 2026-10-15 - Plan B small gaps (ADR-166, Claude Code)
 
 ### Changed

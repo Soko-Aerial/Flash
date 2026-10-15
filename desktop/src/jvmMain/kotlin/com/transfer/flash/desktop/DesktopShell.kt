@@ -1737,6 +1737,19 @@ public fun DesktopShell(
                                         }
                                     },
                                     onCall = hubCall.takeIf { calls != null },
+                                    onPairColleague = { id ->
+                                        scope.launch {
+                                            val result = chatRepository.pairColleagueFromDirectory(id)
+                                            snackbarHostState.showSnackbar(
+                                                when (result) {
+                                                    is com.transfer.flash.core.common.result.FlashResult.Success -> "Paired."
+                                                    is com.transfer.flash.core.common.result.FlashResult.Failure ->
+                                                        (result.error as? com.transfer.flash.core.common.result.FlashError.Unknown)?.message ?: "Pairing failed."
+                                                },
+                                                duration = SnackbarDuration.Short,
+                                            )
+                                        }
+                                    },
                                     orgHost = hubStatus?.hubHost?.takeIf { it.isNotBlank() },
                                     onManageGroupRequests = { showBrowseOrgGroups = true },
                                     pendingRoute = hubRoute,
