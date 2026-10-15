@@ -108,7 +108,7 @@ class HubFacadeTest {
         sources: HubTabSources? = null,
         resolver: OrgPeerResolver? = null,
         paired: Set<String> = emptySet(),
-        announcements: suspend () -> Unit = {},
+        announcements: suspend () -> FlashResult<Unit> = { FlashResult.Success(Unit) },
         pending: Map<String, String> = emptyMap(),
         linked: Set<String> = emptySet(),
     ): Rig {
@@ -480,6 +480,43 @@ class HubFacadeTest {
         assertTrue(r.await(r.facade.people).isEmpty())
         dao.members = listOf(member("d1", "Solo")); r.facade.invalidate()
         assertEquals(1, r.await(r.facade.people) { it.size == 1 }.size)
+        r.scope.cancel()
+    }
+    @Test fun `U31 a hub without announcements sets newsUnsupported and a later success clears it`() {
+        val dao = FakeDao().apply { departments = listOf(dept("eng", "Eng")) }
+        var unsupported = true; val clock = Clock()
+        val r = rig(dao, clock = clock, announcements = {
+            if (unsupported) FlashResult.Failure(FlashError.Domain("UNSUPPORTED", "no")) else FlashResult.Success(Unit)
+        })
+        runBlocking { r.facade.refresh() }
+        assertTrue(r.await(r.facade.state) { it.newsUnsupported }.newsUnsupported)
+        unsupported = false; clock.now += 20_000
+        runBlocking { r.facade.refresh() }
+        assertFalse(r.await(r.facade.state) { !it.newsUnsupported }.newsUnsupported)
+        r.scope.cancel()
+    }
+
+    @Test fun `U32 another announcements failure does not claim the hub lacks announcements`() {
+        val dao = FakeDao().apply { departments = listOf(dept("eng", "Eng")) }
+        val r = rig(dao, announcements = { FlashResult.Failure(FlashError.NetworkUnavailable("offline")) })
+        runBlocking { r.facade.refresh() }
+        assertFalse(r.await(r.facade.state).newsUnsupported)
+        r.scope.cancel()
+    }
+
+    @Test fun `U33 groupsLoadFailed is set only while no earlier groups are cached`() {
+        val dao = FakeDao().apply { departments = listOf(dept("eng", "Eng")) }
+        var fail = true; val clock = Clock()
+        val src = HubTabSources(dao, fetchGroups = { if (fail) FlashResult.Failure(FlashError.Unknown("x")) else FlashResult.Success(listOf(EnterpriseDirectoryGroup("g1", "A", "Eng", "listed"))) })
+        val r = rig(dao, clock = clock, sources = src)
+        runBlocking { r.facade.refresh() }
+        assertTrue(r.await(r.facade.state) { it.groupsLoadFailed }.groupsLoadFailed)
+        fail = false; clock.now += 20_000
+        runBlocking { r.facade.refresh() }
+        assertFalse(r.await(r.facade.state) { !it.groupsLoadFailed }.groupsLoadFailed)
+        fail = true; clock.now += 20_000
+        runBlocking { r.facade.refresh() }
+        assertFalse(r.await(r.facade.state).groupsLoadFailed, "a failed refresh keeps the cached groups, so it is not a load failure")
         r.scope.cancel()
     }
 }

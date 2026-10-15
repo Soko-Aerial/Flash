@@ -410,7 +410,7 @@ public class RealFlashChatRepository(
             localDeviceId = localDeviceId, isPaired = isTrustedPeer, liveIds = onlinePeerIds, reachableIds = reachablePeerIds,
             linkedGroupIds = enterpriseTrustStore?.linkedHubGroups ?: flowOf(emptySet()),
             pendingJoins = enterpriseTrustStore?.pendingJoins ?: flowOf(emptyMap()),
-            refreshAnnouncements = { refreshHubAnnouncements() }, timeSource = timeSource, scope = scope, ioDispatcher = ioDispatcher,
+            refreshAnnouncements = ::refreshHubAnnouncements, timeSource = timeSource, scope = scope, ioDispatcher = ioDispatcher,
         )
     }
     override val hubState: Flow<com.transfer.flash.core.messaging.model.HubUiState> get() = hubFacade?.state ?: super.hubState
