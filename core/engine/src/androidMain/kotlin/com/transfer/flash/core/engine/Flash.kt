@@ -486,6 +486,7 @@ private class Wiring(
         val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
             dao = db.orgDirectoryDao(),
             trustStore = trustStore,
+            isEnrolled = { enterpriseTrustStore.isEnrolled },
         )
         orgPeerResolverRef = orgPeerResolver
         scope.launch {

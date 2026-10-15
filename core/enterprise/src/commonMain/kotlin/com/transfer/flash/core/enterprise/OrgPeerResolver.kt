@@ -113,6 +113,7 @@ public interface OrgPeerResolver {
 public class RealOrgPeerResolver(
     private val dao: OrgDirectoryDao,
     private val trustStore: FlashTrustStore,
+    private val isEnrolled: () -> Boolean = { true },
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : OrgPeerResolver {
@@ -127,6 +128,9 @@ public class RealOrgPeerResolver(
 
     private val lock = Any()
     @Volatile
+    private var generation: Long = 0L
+
+    @Volatile
     private var snapshotIndex: Map<String, SnapshotPeer> = emptyMap()
     @Volatile
     private var lastSyncSuccessMs: Long = 0L
@@ -137,7 +141,7 @@ public class RealOrgPeerResolver(
     override val lease: StateFlow<OrgLease> = object : StateFlow<OrgLease> {
         override val replayCache: List<OrgLease> get() = listOf(value)
         override val value: OrgLease
-            get() = synchronized(lock) { evaluateLeaseLocked(clock()) }
+            get() = synchronized(lock) { calculateLeaseLocked(clock()) }
 
         override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<OrgLease>): Nothing {
             _lease.collect(collector)
@@ -151,6 +155,7 @@ public class RealOrgPeerResolver(
     }
 
     override suspend fun refreshFromSnapshot(): Unit = withContext(dispatcher) {
+        val currentGen = synchronized(lock) { ++generation }
         val syncState = dao.getSyncState()
         val members = dao.listAllMembers()
 
@@ -166,20 +171,23 @@ public class RealOrgPeerResolver(
         }
 
         synchronized(lock) {
-            snapshotIndex = newIndex
-            if (syncState != null) {
-                lastSyncSuccessMs = syncState.lastSyncSuccessMs
-                graceDays = syncState.offlineGraceDays.coerceIn(1, 365)
-            } else {
-                lastSyncSuccessMs = 0L
-                graceDays = DEFAULT_GRACE_DAYS
+            if (currentGen == generation) {
+                snapshotIndex = newIndex
+                if (syncState != null) {
+                    lastSyncSuccessMs = syncState.lastSyncSuccessMs
+                    graceDays = syncState.offlineGraceDays.coerceIn(1, 365)
+                } else {
+                    lastSyncSuccessMs = 0L
+                    graceDays = DEFAULT_GRACE_DAYS
+                }
+                updateLeaseLocked(clock())
             }
-            evaluateLeaseLocked(clock())
         }
     }
 
     override suspend fun clear(): Unit = withContext(dispatcher) {
         synchronized(lock) {
+            ++generation
             snapshotIndex = emptyMap()
             lastSyncSuccessMs = 0L
             graceDays = DEFAULT_GRACE_DAYS
@@ -192,19 +200,21 @@ public class RealOrgPeerResolver(
     }
 
     override fun isKnownColleague(deviceId: String): Boolean {
+        if (!isEnrolled()) return false
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         return currentLease is OrgLease.Valid && snapshotIndex.containsKey(deviceId)
     }
 
     override fun searchColleagueIds(query: String, limit: Int): Set<String> {
+        if (!isEnrolled()) return emptySet()
         val q = query.trim().lowercase()
         if (q.isEmpty()) return emptySet()
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         if (currentLease !is OrgLease.Valid) return emptySet()
         return snapshotIndex.values
@@ -218,13 +228,16 @@ public class RealOrgPeerResolver(
             .toSet()
     }
 
-    override fun displayName(deviceId: String): String? =
-        snapshotIndex[deviceId]?.displayName
+    override fun displayName(deviceId: String): String? {
+        if (!isEnrolled()) return null
+        return snapshotIndex[deviceId]?.displayName
+    }
 
     override fun resolve(deviceId: String): OrgPeer? {
+        if (!isEnrolled()) return null
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         if (currentLease !is OrgLease.Valid) {
             return null
@@ -264,24 +277,27 @@ public class RealOrgPeerResolver(
         )
     }
 
-    private fun evaluateLeaseLocked(now: Long): OrgLease {
-        val newLease = if (lastSyncSuccessMs <= 0L) {
-            OrgLease.None
-        } else {
-            val graceMs = graceDays * 86_400_000L
-            when {
-                now < lastSyncSuccessMs - SKEW_TOLERANCE_MS -> {
-                    OrgLease.Expired(sinceMs = now, reason = ExpiredReason.CLOCK)
-                }
-                now > lastSyncSuccessMs + graceMs -> {
-                    OrgLease.Expired(sinceMs = now, reason = ExpiredReason.TIME)
-                }
-                else -> {
-                    OrgLease.Valid(untilMs = lastSyncSuccessMs + graceMs)
-                }
+    private fun calculateLeaseLocked(now: Long): OrgLease {
+        if (!isEnrolled()) return OrgLease.None
+        if (lastSyncSuccessMs <= 0L) {
+            return OrgLease.None
+        }
+        val graceMs = graceDays * 86_400_000L
+        return when {
+            now < lastSyncSuccessMs - SKEW_TOLERANCE_MS -> {
+                OrgLease.Expired(sinceMs = now, reason = ExpiredReason.CLOCK)
+            }
+            now > lastSyncSuccessMs + graceMs -> {
+                OrgLease.Expired(sinceMs = now, reason = ExpiredReason.TIME)
+            }
+            else -> {
+                OrgLease.Valid(untilMs = lastSyncSuccessMs + graceMs)
             }
         }
+    }
 
+    private fun updateLeaseLocked(now: Long): OrgLease {
+        val newLease = calculateLeaseLocked(now)
         val oldLease = _lease.value
         if (oldLease != newLease) {
             _lease.value = newLease
