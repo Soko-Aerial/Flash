@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.text.foldForSearch
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
@@ -250,5 +251,18 @@ class OrgDirectoryDaoTest {
         assertNotNull(updated)
         assertEquals("Promoted Mensah", updated.displayName)
         assertEquals(11L, updated.statementSerial)
+    }
+
+    @Test
+    fun hubGroupRostersAreReplacedAsOneSetAndWipedWithTheSnapshot() = runBlocking {
+        val dao = db.orgDirectoryDao()
+        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 1L, "{a}", "[]", 9L), HubGroupRosterEntity("g2", 4L, "{b}", "[]", 9L)))
+        assertEquals(2, dao.allGroupRosters().size)
+        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 2L, "{c}", "[]", 10L)))
+        assertEquals(listOf("g1"), dao.allGroupRosters().map { it.groupId }, "the old set is replaced, not merged")
+        assertEquals(2L, dao.groupRoster("g1")?.version)
+        assertNull(dao.groupRoster("g2"))
+        dao.clearAll()
+        assertTrue(dao.allGroupRosters().isEmpty(), "leaving the organisation wipes the rosters too")
     }
 }

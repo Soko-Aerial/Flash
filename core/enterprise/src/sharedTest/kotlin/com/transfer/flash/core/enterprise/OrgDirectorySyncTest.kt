@@ -4,6 +4,9 @@ package com.transfer.flash.core.enterprise
 
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
+import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
+import com.transfer.flash.core.hubprotocol.rest.GroupRosterDto
+import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.certs.HubRoles
 import com.transfer.flash.core.hubprotocol.certs.HubScopes
 import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
@@ -11,6 +14,7 @@ import com.transfer.flash.core.hubprotocol.rest.DepartmentSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectoryMemberSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
@@ -72,6 +76,11 @@ class OrgDirectorySyncTest {
     }
 
     private class FakeOrgDirectoryDao : OrgDirectoryDao {
+        val storedRosters = LinkedHashMap<String, HubGroupRosterEntity>()
+        override suspend fun allGroupRosters(): List<HubGroupRosterEntity> = storedRosters.values.toList()
+        override suspend fun groupRoster(groupId: String): HubGroupRosterEntity? = storedRosters[groupId]
+        override suspend fun upsertGroupRosters(rosters: List<HubGroupRosterEntity>) { rosters.forEach { storedRosters[it.groupId] = it } }
+        override suspend fun clearGroupRosters() { storedRosters.clear() }
         val members = LinkedHashMap<String, OrgDirectoryMemberEntity>()
         val departments = LinkedHashMap<String, OrgDepartmentEntity>()
         var syncState: OrgSyncStateEntity? = null
@@ -1207,5 +1216,76 @@ class OrgDirectorySyncTest {
         assertEquals("epoch-initial", sentEpoch, "Request epoch must match directoryEpoch in sync state")
         assertNull(sentCursor, "First page cursor must be null")
     }
-}
 
+    // ---- Phase B4: hub-signed group rosters (ORGT-U42, U43, U46) ----
+
+    private fun signedRoster(
+        version: Long,
+        members: List<String> = listOf("dev-1", "local-device"),
+        validUntilMs: Long = nowMs + 30L * 24 * 3_600_000,
+        signer: TestCrypto = testOrg.hubCrypto,
+        groupId: String = "grp-1",
+    ): GroupRosterStatement {
+        val unsigned = GroupRosterStatement(
+            groupId = groupId, groupName = "Platform", departmentId = "dept-1", version = version,
+            memberDeviceIds = members.sorted(), adminDeviceIds = emptyList(),
+            issuedAtMs = nowMs, validUntilMs = validUntilMs,
+        )
+        return unsigned.copy(issuerSignature = Base64.encode(signer.sign(unsigned.canonicalBytes())))
+    }
+
+    private fun rosterPage(vararg rosters: GroupRosterStatement) = DirectorySyncDto(
+        directoryEpoch = "epoch-1", version = 10L, fromVersion = 0L, fullResync = true, nextCursor = null,
+        serverTimeMs = nowMs, delegationChain = listOf(testOrg.delegation()),
+        groupRosters = rosters.map { GroupRosterDto(it.groupId, it.version, HubRestCodec.encode(it), it.validUntilMs) },
+    )
+
+    private fun TestScope2.syncWith(dao: FakeOrgDirectoryDao, page: DirectorySyncDto): OrgSyncOutcome = runBlocking {
+        val api = FakeDirectorySyncApi()
+        api.pages.add(DirectorySyncPageResult.Success(page))
+        OrgDirectorySync(api, dao, { creds }, verifier, this, { nowMs }).syncOnce()
+    }
+
+    private object TestScope2
+
+    @Test
+    fun `ORGT-U42 a verified roster is stored with its chain and an invalid one is dropped`() {
+        val dao = FakeOrgDirectoryDao()
+        val forged = signedRoster(version = 5L, signer = TestCrypto(), groupId = "grp-forged")
+        val expired = signedRoster(version = 5L, validUntilMs = nowMs - 1L, groupId = "grp-expired")
+        val outcome = TestScope2.syncWith(dao, rosterPage(signedRoster(2L), forged, expired))
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertEquals(setOf("grp-1"), dao.storedRosters.keys, "the forged and the expired statement are not stored")
+        assertTrue(dao.storedRosters.getValue("grp-1").delegationChainJson.isNotBlank())
+    }
+
+    @Test
+    fun `ORGT-U43 a lower version never replaces a higher stored one and a group the hub drops is removed`() {
+        val dao = FakeOrgDirectoryDao()
+        TestScope2.syncWith(dao, rosterPage(signedRoster(7L), signedRoster(1L, groupId = "grp-2")))
+        assertEquals(setOf("grp-1", "grp-2"), dao.storedRosters.keys)
+        TestScope2.syncWith(dao, rosterPage(signedRoster(3L)))
+        assertEquals(7L, dao.storedRosters.getValue("grp-1").version, "version 3 must not replace 7")
+        assertEquals(setOf("grp-1"), dao.storedRosters.keys, "grp-2 is gone from the hub's set")
+    }
+
+    @Test
+    fun `ORGT-U46 a gossip offer is adopted only when verified newer and the local device is a member`() = runBlocking {
+        val dao = FakeOrgDirectoryDao()
+        val rosters = HubGroupRosters(dao, { creds }, verifier, { "local-device" }, clock = { nowMs })
+        val chain = HubRestCodec.encode(listOf(testOrg.delegation()))
+        fun offer(st: GroupRosterStatement) = HubRosterOfferPayload(st.groupId, HubRestCodec.encode(st), chain)
+
+        assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer(signedRoster(2L))))
+        assertEquals(setOf("dev-1", "local-device"), rosters.current("grp-1", nowMs)?.memberDeviceIds)
+        assertEquals(RosterAdoption.STALE, rosters.adopt(offer(signedRoster(2L))), "the same version adds nothing")
+        assertEquals(RosterAdoption.STALE, rosters.adopt(offer(signedRoster(1L))), "a lower version never replaces")
+        assertEquals(RosterAdoption.INVALID, rosters.adopt(offer(signedRoster(9L, signer = TestCrypto()))), "tampered / foreign signer")
+        assertEquals(RosterAdoption.INVALID, rosters.adopt(offer(signedRoster(9L, validUntilMs = nowMs - 1L))), "expired")
+        assertEquals(RosterAdoption.INVALID, rosters.adopt(HubRosterOfferPayload("grp-1", "{not json", chain)))
+        assertEquals(RosterAdoption.NOT_A_MEMBER, rosters.adopt(offer(signedRoster(9L, members = listOf("dev-1"), groupId = "grp-x"))))
+        assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer(signedRoster(3L, members = listOf("dev-1", "local-device")))))
+        assertEquals(3L, rosters.current("grp-1", nowMs)?.version)
+        assertNull(rosters.current("grp-1", nowMs + 31L * 24 * 3_600_000), "an expired window answers nobody")
+    }
+}

@@ -391,7 +391,7 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
-    fun `migration from 15 to 16 creates the empty hub group roster table and keeps the sync state`() {
+    fun `ORGT-U50 migration from 15 to 16 creates the empty hub group roster table and keeps the sync state`() {
         helper.createDatabase(15).use { v15 ->
             v15.execSQL(
                 "INSERT INTO org_sync_state (id, orgRootFingerprint, directoryEpoch, lastSyncedVersion, offlineGraceDays, lastSyncSuccessMs, lastSyncAttemptMs) " +

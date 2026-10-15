@@ -58,7 +58,7 @@ public object FlashMigrations {
     /** v14 -> v15: bound snapshot to organization root and record error kind (Plan B §B1.3/B1.4). */
     public val MIGRATION_14_15: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_14_15)
 
-    /** v15 -> v16: hub group roster statements (Plan B Phase B4). */
+    /** v15 -> v16: hub-signed group roster statements (Plan B Phase B4). */
     public val MIGRATION_15_16: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_15_16)
 
     /** v16 -> v17: organization announcements (Plan A3, ADR-138). */

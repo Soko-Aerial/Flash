@@ -362,6 +362,19 @@ public sealed interface GroupWireFrame : ChatWireFrame {
     ) : GroupWireFrame
 
     /**
+     * A colleague's offer of the hub-signed roster statement of a hub group (Plan B Phase B4, feature `hrs1`).
+     * Prefix FLASH_GHUBR. [statementJson] is the exact signed `GroupRosterStatement`, [delegationChainJson] the delegation
+     * chain it verifies with; the receiver checks both against the organisation root it enrolled under and trusts nothing
+     * else in the frame. Hub group ids are not `g2-` ids, so this frame has its own prefix.
+     */
+    public data class HubRosterOffer(
+        override val groupId: String,
+        override val from: String,
+        val statementJson: String,
+        val delegationChainJson: String,
+    ) : GroupWireFrame
+
+    /**
      * Stale epoch response sending the latest rotation notice to an active member (GM-6).
      */
     public data class GsStale(

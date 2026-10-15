@@ -1,11 +1,14 @@
 package com.transfer.flash.server.directory
 
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
+import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
 import com.transfer.flash.core.hubprotocol.certs.HubRoles
 import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.core.hubprotocol.rest.DepartmentSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectoryMemberSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
+import com.transfer.flash.core.hubprotocol.rest.GroupRosterDto
+import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.HubDirectoryValues
 import com.transfer.flash.server.observability.PresenceView
 import com.transfer.flash.server.storage.Migration
@@ -119,6 +122,11 @@ fun interface OrgMemberStatementSigner {
         nowMs: Long,
         serial: Long,
     ): Pair<OrgMemberStatement, Long>? // statement to delegationSerial
+}
+
+/** Signs a [GroupRosterStatement] with the hub's delegate key (Plan B Phase B4); null when the hub has no active delegation. */
+fun interface GroupRosterSigner {
+    fun sign(unsigned: GroupRosterStatement): GroupRosterStatement?
 }
 
 /**
@@ -299,6 +307,10 @@ class OrganizationDirectory(
     var epochId: String = UUID.randomUUID().toString()
         private set
     var statementSigner: OrgMemberStatementSigner? = null
+    var rosterSigner: GroupRosterSigner? = null
+
+    /** Groups of the newest sync that were too large for an offline roster (more than [GroupRosterStatement.MAX_MEMBERS]). */
+    @Volatile var rostersSkippedTooLarge: Int = 0
 
     val tombstones = LinkedHashMap<Pair<String, String>, DirectoryTombstone>()
     private val memberStatements = LinkedHashMap<String, OrgMemberStatement>()
@@ -1251,9 +1263,46 @@ class OrganizationDirectory(
             removedDeviceIds = if (cursorPair == null) removedMembers else emptyList(),
             departments = if (cursorPair == null) changedDepts else emptyList(),
             removedDepartmentIds = if (cursorPair == null) removedDepts else emptyList(),
-            groupRosters = emptyList(),
+            // B4: every sync that ends (no next page) carries the FULL current set of the caller's group rosters, freshly signed.
+            // The client replaces its stored set, so a group the device left simply is not in it (removedGroupIds stays empty).
+            groupRosters = if (nextCursor == null) signedRostersFor(actor, now, offlineGraceDays) else emptyList(),
             removedGroupIds = emptyList(),
         )
+    }
+
+    /**
+     * The signed roster statements of the groups [actor] belongs to (member or admin). A group above
+     * [GroupRosterStatement.MAX_MEMBERS] gets none (plan section 10.2: "not supported offline"). Needs [rosterSigner].
+     */
+    private fun signedRostersFor(actor: DirectoryActor, nowMs: Long, offlineGraceDays: Int): List<GroupRosterDto> {
+        val signer = rosterSigner ?: return emptyList()
+        val ttlMs = offlineGraceDays.coerceIn(1, 365) * 86_400_000L
+        var skipped = 0
+        val out = groups.values
+            .filter { actor.deviceId in it.memberDeviceIds || actor.deviceId in it.adminDeviceIds }
+            .sortedBy { it.id }
+            .take(MAX_ROSTERS_PER_SYNC)
+            .mapNotNull { g ->
+                val members = (g.memberDeviceIds + g.adminDeviceIds).distinct().sorted()
+                if (members.size > GroupRosterStatement.MAX_MEMBERS) {
+                    skipped++
+                    return@mapNotNull null
+                }
+                val unsigned = GroupRosterStatement(
+                    groupId = g.id,
+                    groupName = g.name,
+                    departmentId = g.departmentId,
+                    version = g.version,
+                    memberDeviceIds = members,
+                    adminDeviceIds = g.adminDeviceIds.distinct().sorted(),
+                    issuedAtMs = nowMs,
+                    validUntilMs = nowMs + ttlMs,
+                )
+                val signed = signer.sign(unsigned) ?: return@mapNotNull null
+                GroupRosterDto(groupId = g.id, version = g.version, statement = HubRestCodec.encode(signed), validUntilMs = signed.validUntilMs)
+            }
+        rostersSkippedTooLarge = skipped
+        return out
     }
 
     private fun load(database: ServerDatabase) {
@@ -1372,6 +1421,9 @@ class OrganizationDirectory(
 
     companion object {
         const val COMPONENT: String = "directory"
+
+        /** A device belongs to few hub groups; a sync carries at most this many rosters (bounds the response and the signing work). */
+        const val MAX_ROSTERS_PER_SYNC: Int = 64
 
         /** Tombstones older than this are pruned; a client further behind gets a full resync (90 days). */
         const val TOMBSTONE_RETENTION_MS: Long = 90L * 24 * 60 * 60 * 1000

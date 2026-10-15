@@ -3,6 +3,7 @@ package com.transfer.flash.server.auth
 import com.transfer.flash.core.hubprotocol.certs.DelegationCert
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.hubprotocol.certs.EcdsaVerifier
+import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
 import com.transfer.flash.core.hubprotocol.certs.OrgMemberStatement
 import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.security.crypto.FlashCrypto
@@ -56,6 +57,10 @@ fun OrgMemberStatement.Companion.issue(
     )
     return unsigned.copy(issuerSignature = FlashCrypto.sign(issuerPrivateKey, unsigned.canonicalBytes()))
 }
+
+/** Signs [unsigned] with the hub's delegate key (Plan B Phase B4). The signature field of [unsigned] is ignored. */
+fun GroupRosterStatement.Companion.issue(issuerPrivateKey: PrivateKey, unsigned: GroupRosterStatement): GroupRosterStatement =
+    unsigned.copy(issuerSignature = FlashCrypto.sign(issuerPrivateKey, unsigned.copy(issuerSignature = "").canonicalBytes()))
 
 /** Issues and signs a [DeviceCert] with [issuerPrivateKey] (the root key, or the delegate key named in a delegation). */
 fun DeviceCert.Companion.issue(
