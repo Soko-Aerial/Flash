@@ -40,9 +40,12 @@ public class FlashHubHost(
     public val onOpenLink: (String) -> Unit,
     public val onSignOut: () -> Unit,
     /** Voice call over the LAN; null hides Call. */
-    public val onCall: ((String) -> Unit)? = null,
-    /** The host's existing call gate for this person (pairing, busy, calls enabled). */
-    public val callAllowed: (HubPersonUi) -> Boolean = { false },
+    public val onCall: ((deviceId: String, displayName: String) -> Unit)? = null,
+    /**
+     * The host's own extra call gate for this person (for example "already in a call"). The trust rule itself
+     * ([FlashHubMath.callAllowed]: paired or verified organisation colleague, reachable on the LAN) is applied by the route.
+     */
+    public val callAllowed: (HubPersonUi) -> Boolean = { true },
     /** Pairing hook owned by the pairing track. Null while that track is not built; non-null shows Pair for unpaired people. */
     public val onPairColleague: ((String) -> Unit)? = null,
     /** Opens the existing group sheet for administrators to decide join requests (Hub shows the action only to them). */
@@ -52,13 +55,32 @@ public class FlashHubHost(
     /** A raw route (`hub/announcement/<id>`, `hub/person/<deviceId>`) waiting to be applied, or null. */
     public val pendingRoute: String? = null,
     public val onRouteConsumed: () -> Unit = {},
-    /** The persisted `hubLastSegment` value, or null. */
-    public val lastSegment: String? = null,
-    public val onSegmentChanged: (String) -> Unit = {},
-    public val showMovedTip: Boolean = false,
-    public val onDismissTip: () -> Unit = {},
+    /** The little this tab remembers between runs (last segment, the one-time "Transfers moved" tip). */
+    public val prefs: FlashHubUiPrefs = FlashHubUiPrefs.inMemory(),
     public val drafts: FlashHubDraftStore = FlashHubDraftStore.inMemory(),
 )
+
+/** What the Hub tab remembers between runs. Each host backs it with its own small store. */
+public interface FlashHubUiPrefs {
+    /** The `hubLastSegment` value (a [FlashHubSegment] name), or null. */
+    public fun lastSegment(): String?
+    public fun setLastSegment(name: String)
+
+    /** True once the one-time "Transfers moved to the top bar" tip was dismissed. */
+    public fun movedTipSeen(): Boolean
+    public fun setMovedTipSeen()
+
+    public companion object {
+        public fun inMemory(): FlashHubUiPrefs = object : FlashHubUiPrefs {
+            private var segment: String? = null
+            private var tip = false
+            override fun lastSegment(): String? = segment
+            override fun setLastSegment(name: String) { segment = name }
+            override fun movedTipSeen(): Boolean = tip
+            override fun setMovedTipSeen() { tip = true }
+        }
+    }
+}
 
 /** Saves a [FlashHubSelection] across rotation and process death. Unknown or damaged values restore to the default. */
 internal object FlashHubSelectionCodec {
@@ -110,6 +132,7 @@ public fun FlashHubRoute(
     val scope = rememberCoroutineScope()
     var selection by rememberSaveable(stateSaver = FlashHubSelectionCodec.saver) { mutableStateOf(FlashHubSelection()) }
     var chosenSegment by rememberSaveable { mutableStateOf(false) }
+    var tipSeen by remember(host) { mutableStateOf(host.prefs.movedTipSeen()) }
 
     val state by remember(repository) { repository.hubState }.collectAsState(initial = HubUiState(enrolled = true, loaded = false))
     val news by remember(repository) { repository.hubAnnouncements }.collectAsState(initial = emptyList<HubAnnouncementUi>())
@@ -142,14 +165,14 @@ public fun FlashHubRoute(
     LaunchedEffect(state.loaded, chosenSegment) {
         if (state.loaded && !chosenSegment) {
             chosenSegment = true
-            val first = FlashHubMath.defaultSegment(unreadCount, FlashHubMath.segmentFromName(host.lastSegment))
+            val first = FlashHubMath.defaultSegment(unreadCount, FlashHubMath.segmentFromName(host.prefs.lastSegment()))
             if (selection.personId == null && selection.announcementId == null && selection.departmentId == null) {
                 selection = selection.copy(segment = first)
             }
         }
     }
     LaunchedEffect(selection.segment, chosenSegment) {
-        if (chosenSegment) host.onSegmentChanged(selection.segment.name)
+        if (chosenSegment) host.prefs.setLastSegment(selection.segment.name)
     }
 
     val actions = remember(repository, host) {
@@ -167,10 +190,10 @@ public fun FlashHubRoute(
             groupAction = { g -> repository.joinEnterpriseGroup(g.groupId, g.name) },
             onOpenGroup = host.onOpenGroup,
             onRetryGroups = { scope.launch { repository.refreshHub(userInitiated = true) } },
-            onDismissTip = host.onDismissTip,
+            onDismissTip = { tipSeen = true; host.prefs.setMovedTipSeen() },
             onRouteConsumed = host.onRouteConsumed,
             onCall = host.onCall,
-            callAllowed = host.callAllowed,
+            callAllowed = { p -> FlashHubMath.callAllowed(p, host.callAllowed(p)) },
             onPairColleague = host.onPairColleague,
             onManageGroupRequests = host.onManageGroupRequests,
             drafts = host.drafts,
@@ -191,7 +214,7 @@ public fun FlashHubRoute(
         openedPerson = openedPerson,
         departmentMembers = departmentMembers,
         orgHost = host.orgHost,
-        showMovedTip = host.showMovedTip,
+        showMovedTip = !tipSeen,
         pendingRoute = FlashHubMath.parseRoute(host.pendingRoute),
     )
     FlashHubScreen(data = data, selection = selection, onSelection = { selection = it }, actions = actions, modifier = modifier)

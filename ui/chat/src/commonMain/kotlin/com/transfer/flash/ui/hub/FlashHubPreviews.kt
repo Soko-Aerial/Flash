@@ -36,7 +36,7 @@ private fun actions(): FlashHubActions = FlashHubActions(
     pinAnnouncement = { _, _ -> FlashResult.Success(Unit) },
     onOpenLink = {}, groupAction = { FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("preview")) },
     onOpenGroup = {}, onRetryGroups = {}, onDismissTip = {}, onRouteConsumed = {},
-    onCall = {}, callAllowed = { true }, onPairColleague = null,
+    onCall = { _, _ -> }, callAllowed = { true }, onPairColleague = null,
 )
 
 private fun data(

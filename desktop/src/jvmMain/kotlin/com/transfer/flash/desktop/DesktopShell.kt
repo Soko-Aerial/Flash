@@ -104,7 +104,6 @@ import com.transfer.flash.core.network.sweep.SweepState
 import com.transfer.flash.ui.settings.FlashHubStatusMath
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsScreen
-import com.transfer.flash.ui.hub.FlashHubPlaceholderScreen
 import com.transfer.flash.ui.shell.FlashBottomNav
 import com.transfer.flash.ui.shell.FlashShellTabs
 import com.transfer.flash.ui.shell.FlashBottomNavItem
@@ -153,6 +152,8 @@ public fun DesktopShell(
     nav: FlashNavigationState = rememberFlashNavigationState(),
     externalShareFiles: List<java.io.File> = emptyList(),
     onClearExternalShareFiles: () -> Unit = {},
+    /** UI-058 H9: a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`) to open, set at launch or by a notification. */
+    pendingHubRoute: kotlinx.coroutines.flow.MutableStateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
 ) {
     val scope = rememberCoroutineScope()
 
@@ -1121,6 +1122,39 @@ public fun DesktopShell(
     }
     val tabBottomInset = if (twoPane) 0.dp else FLASH_BOTTOM_NAV_INSET
 
+    // UI-058 H9: a route waits until enrolment is known (engine ready), opens the Hub when enrolled, else lands on Chats
+    // with a one-line notice. The Hub reports it consumed.
+    val hubRoute by pendingHubRoute.collectAsState()
+    LaunchedEffect(hubRoute, ready, enterpriseCredentials != null) {
+        if (hubRoute == null) return@LaunchedEffect
+        when (com.transfer.flash.ui.hub.FlashHubMath.routeDecision(hubRoute, enrolmentKnown = ready, enrolled = enterpriseCredentials != null)) {
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.Wait -> Unit
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.Drop -> pendingHubRoute.value = null
+            is com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.OpenHub -> {
+                nav.updateHubEnrolled(true)
+                nav.selectTab(FlashDestination.Hub)
+            }
+            com.transfer.flash.ui.hub.FlashHubMath.RouteDecision.NotEnrolled -> {
+                nav.selectTab(FlashDestination.ChatList)
+                pendingHubRoute.value = null
+                snackbarHostState.showSnackbar(com.transfer.flash.ui.hub.FlashHubCopy.ROUTE_NOT_ENROLLED, duration = SnackbarDuration.Short)
+            }
+        }
+    }
+    val hubUnread by chatRepository.hubUnreadAnnouncementCount.collectAsState(initial = 0)
+    val hubPrefs = remember { DesktopHubUiPrefs() }
+    val hubUriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    val hubCall: (String, String) -> Unit = { id, name ->
+        scope.launch {
+            if (calls?.startCall(id, name, video = false) != true) {
+                snackbarHostState.showSnackbar(
+                    message = "Couldn't start the call. Make sure the peer is reachable, then try again.",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        }
+    }
+
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
     // Chat list content shared by listPaneContent in both single-pane and two-pane modes.
     val chatListPaneContent: @Composable () -> Unit = {
@@ -1673,20 +1707,43 @@ public fun DesktopShell(
                 FlashAnimatedScreen(targetState = nav.current, hubEnrolled = nav.hubEnrolled) { entry ->
                     when (entry.destination) {
                         FlashDestination.ChatList -> chatListPaneContent()
-                        // UI-058: shell-only Hub (H4); the data sections arrive with H7.
+                        // UI-058 (H7/H8/H9): the Hub tab. Everything it reads and writes goes through the repository.
                         FlashDestination.Hub -> {
-                            var isHubRefreshing by remember { mutableStateOf(false) }
-                            FlashHubPlaceholderScreen(
-                                onBrowseGroups = { showBrowseOrgGroups = true },
-                                onRefresh = {
-                                    isHubRefreshing = true
-                                    engine.requestOrgSync("pull_to_refresh", force = true)
-                                    scope.launch {
-                                        kotlinx.coroutines.delay(1000)
-                                        isHubRefreshing = false
-                                    }
-                                },
-                                isRefreshing = isHubRefreshing,
+                            val hubHost = remember(chatRepository, hubStatus?.hubHost, calls, hubRoute) {
+                                com.transfer.flash.ui.hub.FlashHubHost(
+                                    onOpenConversation = { id ->
+                                        selectedChatConversationId = id
+                                        chatRepository.openConversation(id)
+                                        nav.navigate(FlashDestination.Conversation, conversationId = id)
+                                    },
+                                    onOpenGroup = { groupId ->
+                                        selectedChatConversationId = groupId
+                                        chatRepository.openConversation(groupId)
+                                        nav.navigate(FlashDestination.Conversation, conversationId = groupId)
+                                    },
+                                    onOpenLink = { url -> runCatching { hubUriHandler.openUri(url) } },
+                                    onSignOut = {
+                                        scope.launch {
+                                            val result = engine.enterpriseHub?.unenrol()
+                                            snackbarHostState.showSnackbar(
+                                                if (result == null) "Flash is still starting. Try again in a moment."
+                                                else com.transfer.flash.ui.settings.FlashHubStatusMath.unenrolText(result),
+                                                duration = SnackbarDuration.Short,
+                                            )
+                                        }
+                                    },
+                                    onCall = hubCall.takeIf { calls != null },
+                                    orgHost = hubStatus?.hubHost?.takeIf { it.isNotBlank() },
+                                    onManageGroupRequests = { showBrowseOrgGroups = true },
+                                    pendingRoute = hubRoute,
+                                    onRouteConsumed = { pendingHubRoute.value = null },
+                                    prefs = hubPrefs,
+                                )
+                            }
+                            com.transfer.flash.ui.hub.FlashHubRoute(
+                                repository = chatRepository,
+                                link = hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
+                                host = hubHost,
                                 modifier = Modifier.padding(bottom = tabBottomInset),
                             )
                         }
@@ -2405,6 +2462,7 @@ public fun DesktopShell(
             Row(Modifier.fillMaxSize()) {
                 DesktopSideBar(
                     tabs = desktopSideTabs(nav.hubEnrolled),
+                    hubBadge = hubUnread,
                     selectedTab = nav.shellTab,
                     onTabSelected = { destination ->
                         if (destination == FlashDestination.ChatList) {
@@ -2439,7 +2497,7 @@ public fun DesktopShell(
             if (FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
                 Box(Modifier.align(Alignment.BottomCenter)) {
                     FlashBottomNav(
-                        items = desktopBottomTabs(nav.hubEnrolled),
+                        items = desktopBottomTabs(nav.hubEnrolled, hubUnread),
                         selectedTab = nav.shellTab,
                         onTabSelected = nav::selectTab,
                         onTabReselected = { destination ->
@@ -2580,8 +2638,8 @@ private fun TransfersUiState.Companion.fromDomain(
     .copy(isLoading = isLoading, isError = isError)
 
 /** UI-058: the compact bottom bar's tabs, from the one shared source (see [desktopSideTabs]). */
-private fun desktopBottomTabs(hubEnrolled: Boolean): List<FlashBottomNavItem> =
-    FlashShellTabs.of(hubEnrolled).map { FlashBottomNavItem(it.destination, it.icon, it.label) }
+private fun desktopBottomTabs(hubEnrolled: Boolean, hubBadge: Int = 0): List<FlashBottomNavItem> =
+    FlashShellTabs.of(hubEnrolled, hubBadge = hubBadge).map { FlashBottomNavItem(it.destination, it.icon, it.label, it.badgeCount) }
 
 /** Same pacing window the app shell derives from the theme's animation duration. */
 private const val FLASH_TRANSFERS_THROTTLE_MS = 75L

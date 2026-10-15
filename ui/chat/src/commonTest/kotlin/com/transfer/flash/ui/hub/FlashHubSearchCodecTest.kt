@@ -140,4 +140,41 @@ class FlashHubSearchCodecTest {
         assertTrue(!FlashHubMath.showManageRequests(listOf(admin), hookAvailable = false))
         assertTrue(!FlashHubMath.showManageRequests(emptyList(), hookAvailable = true))
     }
+
+    // --- Call gate (H8) -----------------------------------------------------------------------------------
+
+    private fun callee(paired: Boolean, org: Boolean, reach: HubReachability, self: Boolean = false) =
+        person("x").copy(paired = paired, orgVerified = org, reachability = reach, isSelf = self)
+
+    @Test fun callNeedsTrustLanReachAndTheHostGate() {
+        assertTrue(FlashHubMath.callAllowed(callee(true, false, HubReachability.LAN), true))
+        assertTrue(FlashHubMath.callAllowed(callee(false, true, HubReachability.LAN), true))
+        assertTrue(!FlashHubMath.callAllowed(callee(false, false, HubReachability.LAN), true), "an unverified stranger on the LAN may not ring")
+        assertTrue(!FlashHubMath.callAllowed(callee(true, true, HubReachability.HUB), true), "through the hub is not a LAN call")
+        assertTrue(!FlashHubMath.callAllowed(callee(true, true, HubReachability.OFFLINE), true))
+        assertTrue(!FlashHubMath.callAllowed(callee(true, true, HubReachability.UNKNOWN), true))
+        assertTrue(!FlashHubMath.callAllowed(callee(true, true, HubReachability.LAN), false), "the host gate (already in a call) wins")
+        assertTrue(!FlashHubMath.callAllowed(callee(true, true, HubReachability.LAN, self = true), true), "no calling yourself")
+    }
+
+    // --- Routes from notifications and cold starts (H9) ---------------------------------------------------------
+
+    @Test fun routeWaitsUntilEnrolmentIsKnownThenOpensTheHubOrSaysNotEnrolled() {
+        val r = FlashHubMath.routeAnnouncement("a1")
+        assertEquals(FlashHubMath.RouteDecision.Wait, FlashHubMath.routeDecision(r, enrolmentKnown = false, enrolled = false))
+        assertEquals(FlashHubMath.RouteDecision.Wait, FlashHubMath.routeDecision(r, enrolmentKnown = false, enrolled = true))
+        assertEquals(FlashHubMath.RouteDecision.OpenHub(r), FlashHubMath.routeDecision(r, enrolmentKnown = true, enrolled = true))
+        assertEquals(FlashHubMath.RouteDecision.NotEnrolled, FlashHubMath.routeDecision(r, enrolmentKnown = true, enrolled = false))
+    }
+
+    @Test fun damagedOrForeignRoutesAreDroppedImmediately() {
+        listOf(null, "", "hub/announcement/", "hub/person/" + "x".repeat(129), "chat/abc", "hub/person/a b", "hub/announcement/../x").forEach {
+            assertEquals(FlashHubMath.RouteDecision.Drop, FlashHubMath.routeDecision(it, enrolmentKnown = true, enrolled = true), "route=$it")
+        }
+    }
+
+    @Test fun routesRoundTripThroughTheBuildersAndParser() {
+        assertEquals(FlashHubMath.Route.Announcement("a-1_2:3"), FlashHubMath.parseRoute(FlashHubMath.routeAnnouncement("a-1_2:3")))
+        assertEquals(FlashHubMath.Route.Person("dev.01"), FlashHubMath.parseRoute(FlashHubMath.routePerson("dev.01")))
+    }
 }

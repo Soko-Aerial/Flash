@@ -12,6 +12,7 @@ public object FlashHubCopy {
     public const val CLOSE_SEARCH: String = "Close search"
     public const val SEARCH_HINT: String = "Search the organisation"
     public const val TRANSFERS_MOVED_TIP: String = "Transfers moved to the top bar."
+    public const val ROUTE_NOT_ENROLLED: String = "This device is not part of an organisation."
     public const val TIP_DISMISS: String = "Got it"
 
     // --- Segments ----------------------------------------------------------------------------------------
