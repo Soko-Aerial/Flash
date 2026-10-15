@@ -47,6 +47,8 @@ class RelayFrameCodecTest {
             RelayFrame.Pong(2),
             RelayFrame.Revoked("revoked", 12),
             RelayFrame.Kick("superseded"),
+            RelayFrame.AnnouncementEvent("ann-1", 10L, "org", null, "new", "ep-1"),
+            RelayFrame.AnnouncementEvent("ann-2", 11L, "department", "dept-1", "edit", "ep-1"),
         )
         for (f in frames) assertEquals(f, roundTrip(f), f::class.simpleName)
     }
@@ -57,6 +59,34 @@ class RelayFrameCodecTest {
         assertTrue(text.contains("\"t\":\"FLASH_RECV_ACK\""), text)
         assertTrue(RelayFrameCodec.encode(RelayFrame.Challenge(serverId = "S", serverNonce = "N", issuedAt = 1)).contains("\"v\":2"))
     }
+
+    @Test
+    fun announcementEventRoundTripsAndValidates() {
+        val ann = RelayFrame.AnnouncementEvent(
+            id = "ann-uuid-1",
+            seq = 42L,
+            scope = "department",
+            departmentId = "dept-engineering",
+            change = "new",
+            epoch = "epoch-12345",
+        )
+        val encoded = RelayFrameCodec.encode(ann)
+        assertTrue(encoded.contains("\"t\":\"FLASH_ANNOUNCEMENT\""))
+        assertTrue(encoded.contains("\"id\":\"ann-uuid-1\""))
+        assertTrue(encoded.contains("\"seq\":42"))
+        val decoded = RelayFrameCodec.decode(encoded)
+        assertEquals(ann, decoded)
+    }
+
+    @Test
+    fun helloWithFeaturesRoundTrips() {
+        val helloWithFeat = hello.copy(features = listOf("ann1"))
+        val encoded = RelayFrameCodec.encode(helloWithFeat)
+        assertTrue(encoded.contains("\"features\":[\"ann1\"]"))
+        val decoded = RelayFrameCodec.decode(encoded)
+        assertEquals(helloWithFeat, decoded)
+    }
+
 
     @Test
     fun sendFrameHasNoSenderField() {
