@@ -228,13 +228,13 @@ class AnnouncementRoutesTest {
             pinnedIds += HubRestCodec.decode<AnnouncementItemDto>(r.bodyAsText()).id
         }
 
-        // 4th pin at creation fails with 400 ERR_PIN_LIMIT
+        // 4th pin at creation fails with 409 ERR_PIN_LIMIT
         val r4 = client.postAs(
             "/api/v1/announcements",
             adminToken,
             PostAnnouncementRequestDto("org", null, "Pinned 4", "Body 4", pinned = true),
         )
-        assertEquals(HttpStatusCode.BadRequest, r4.status)
+        assertEquals(HttpStatusCode.Conflict, r4.status)
         val err = HubRestCodec.decode<ErrorBody>(r4.bodyAsText())
         assertEquals(HubErrorCodes.ERR_PIN_LIMIT, err.code)
 
@@ -246,9 +246,9 @@ class AnnouncementRoutesTest {
         )
         val unpinnedId = HubRestCodec.decode<AnnouncementItemDto>(r4Unpinned.bodyAsText()).id
 
-        // Attempting to pin the 4th via /pin route also fails with 400 ERR_PIN_LIMIT
+        // Attempting to pin the 4th via /pin route also fails with 409 ERR_PIN_LIMIT
         val rPinFail = client.postAs("/api/v1/announcements/$unpinnedId/pin", adminToken, "")
-        assertEquals(HttpStatusCode.BadRequest, rPinFail.status)
+        assertEquals(HttpStatusCode.Conflict, rPinFail.status)
 
         // Unpin one
         val rUnpin = client.postAs("/api/v1/announcements/${pinnedIds[0]}/unpin", adminToken, "")
@@ -347,5 +347,31 @@ class AnnouncementRoutesTest {
             assertFalse(entry.contains(sensitiveTitle), "Audit log must never contain announcement title: $entry")
             assertFalse(entry.contains(sensitiveBody), "Audit log must never contain announcement body: $entry")
         }
+    }
+
+    @Test
+    fun departmentHeadCannotChangeAnAdminsAnnouncementAndGetsForbiddenNotServerError() = testApplication {
+        val w = World()
+        mount(w)
+        val adminToken = w.token("admin-01", "ORG_ADMIN", null)
+        val headToken = w.token("head-eng", "DEPT_HEAD", "dept-eng")
+        val created = HubRestCodec.decode<AnnouncementItemDto>(
+            client.postAs(
+                "/api/v1/announcements",
+                adminToken,
+                PostAnnouncementRequestDto("department", "dept-eng", "From the admin", "Body"),
+            ).bodyAsText(),
+        )
+        assertEquals(HttpStatusCode.Forbidden, client.deleteAs("/api/v1/announcements/${created.id}", headToken).status)
+        assertEquals(HttpStatusCode.Forbidden, client.postAs("/api/v1/announcements/${created.id}/unpin", headToken, "").status)
+        assertEquals(HttpStatusCode.Forbidden, client.postAs("/api/v1/announcements/${created.id}/pin", headToken, "").status)
+    }
+
+    @Test
+    fun aDepartmentIdWithAQuoteCannotBreakTheSearchQuery() = testApplication {
+        val w = World()
+        mount(w)
+        val token = w.token("emp", "member", "dept-eng' OR '1'='1")
+        assertEquals(HttpStatusCode.OK, client.getAs("/api/v1/announcements?q=anything", token).status)
     }
 }

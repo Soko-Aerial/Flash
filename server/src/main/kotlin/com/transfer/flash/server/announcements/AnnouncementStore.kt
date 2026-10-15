@@ -507,7 +507,7 @@ public class AnnouncementStore(
         val visibilityClause = when {
             isOrgAdmin -> "1=1"
             callerDeptId.isNullOrBlank() -> "a.scope = 'org'"
-            else -> "(a.scope = 'org' OR (a.scope = 'department' AND a.department_id = '$callerDeptId'))"
+            else -> "(a.scope = 'org' OR (a.scope = 'department' AND a.department_id = '${escapeSql(callerDeptId)}'))"
         }
 
         // Optional filter constraint from query params

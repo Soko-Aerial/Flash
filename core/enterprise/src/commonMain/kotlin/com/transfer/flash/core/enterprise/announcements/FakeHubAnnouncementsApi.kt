@@ -40,6 +40,8 @@ public class FakeHubAnnouncementsApi : HubAnnouncementsApi {
                 epoch = currentEpoch,
                 seq = items.values.maxOfOrNull { it.seq } ?: 0L,
                 items = feedItems,
+                // Same as the server (AnnouncementStore.getChangesFeed): a full page names where the next one starts.
+                nextCursor = if (feedItems.size == limit) feedItems.last().seq.toString() else null,
             ),
         )
     }

@@ -59,10 +59,13 @@ public interface HubAnnouncementDao {
     @Query("SELECT id FROM hub_announcement WHERE scope = :scope AND (:departmentId IS NULL OR departmentId = :departmentId) ORDER BY pinned DESC, createdAtMs DESC LIMIT -1 OFFSET :keepCount")
     public suspend fun findOlderThanKeepLimit(scope: String, departmentId: String?, keepCount: Int): List<String>
 
+    /** Every scope together; pinned first, then unread, then newest, so a read old item goes before an unread one (plan 3.4). */
+    @Query("SELECT id FROM hub_announcement ORDER BY pinned DESC, (readAtMs IS NULL) DESC, createdAtMs DESC LIMIT -1 OFFSET :keepCount")
+    public suspend fun findBeyondKeepLimit(keepCount: Int): List<String>
+
     @Transaction
     public suspend fun pruneOldAnnouncements(maxKeep: Int = 500) {
-        val idsToDelete = mutableListOf<String>()
-        idsToDelete += findOlderThanKeepLimit("org", null, maxKeep)
+        val idsToDelete = findBeyondKeepLimit(maxKeep)
         if (idsToDelete.isNotEmpty()) {
             deleteByIds(idsToDelete)
         }

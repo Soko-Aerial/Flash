@@ -95,7 +95,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                     audienceScope = audienceScope,
                     departmentName = deptName,
                     estimatedRecipients = recipientCount,
-                    honestyNotice = "Stored in plain text on the hub (ADR-138). Hub administrators can read this announcement.",
+                    honestyNotice = "Announcements are stored as plain text on your company's server. Administrators can read them.",
                 ),
             )
         }

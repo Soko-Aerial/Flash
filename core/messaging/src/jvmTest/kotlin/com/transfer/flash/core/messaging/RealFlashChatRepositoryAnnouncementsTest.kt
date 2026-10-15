@@ -245,7 +245,7 @@ class RealFlashChatRepositoryAnnouncementsTest {
         assertEquals(HubPostingRights.OrgWide(emptyList()), repo.canPostHubAnnouncement.first())
 
         // 3. Department Head
-        trustStore.saveCredentials(sampleCredentials(role = "dept_head", department = "Design"))
+        trustStore.saveCredentials(sampleCredentials(role = "dept_admin", department = "Design"))
         assertEquals(HubPostingRights.Department(listOf("Design")), repo.canPostHubAnnouncement.first())
 
         // 4. Regular Employee
@@ -261,7 +261,7 @@ class RealFlashChatRepositoryAnnouncementsTest {
     fun `ANN-U26 postHubAnnouncement enforces role gating and persists created item`(): Unit = runBlocking {
         val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
         val api = FakeHubAnnouncementsApi()
-        val trustStore = MemoryEnterpriseTrustStore(sampleCredentials(role = "dept_head", department = "Sales"))
+        val trustStore = MemoryEnterpriseTrustStore(sampleCredentials(role = "dept_admin", department = "Sales"))
 
         val repo = RealFlashChatRepository(
             localDeviceId = "dev-self",
@@ -503,5 +503,56 @@ class RealFlashChatRepositoryAnnouncementsTest {
         val remaining = repo.hubAnnouncements.first()
         assertTrue(remaining.isEmpty(), "Stored announcements must be wiped when unenrolled")
         assertEquals(null, db.hubAnnouncementDao().getState(), "Sync state must be wiped when unenrolled")
+    }
+
+    @Test
+    fun `ANN-U27 a feed longer than one page is read to the end and skips nothing`(): Unit = runBlocking {
+        val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val api = FakeHubAnnouncementsApi()
+        for (i in 1..250) api.items["ann-$i"] = sampleItem("ann-$i", seq = i.toLong())
+        val repo = RealFlashChatRepository(
+            localDeviceId = "dev-self",
+            localDisplayName = "Self",
+            messageDao = db.messageDao(),
+            conversationDao = db.conversationDao(),
+            outboxDao = db.outboxDao(),
+            receiptDao = db.receiptDao(),
+            draftDao = db.draftDao(),
+            recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials()),
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+        )
+        assertTrue(repo.refreshHubAnnouncements() is FlashResult.Success)
+        assertEquals(250, db.hubAnnouncementDao().observeAll().first().size)
+        assertEquals(250L, db.hubAnnouncementDao().getState()?.seq)
+    }
+
+    @Test
+    fun `ANN-U28 a department head issued as dept_admin may post to its own department only`(): Unit = runBlocking {
+        val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val api = FakeHubAnnouncementsApi()
+        val repo = RealFlashChatRepository(
+            localDeviceId = "dev-self",
+            localDisplayName = "Self",
+            messageDao = db.messageDao(),
+            conversationDao = db.conversationDao(),
+            outboxDao = db.outboxDao(),
+            receiptDao = db.receiptDao(),
+            draftDao = db.draftDao(),
+            recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(
+                sampleCredentials(role = com.transfer.flash.core.hubprotocol.certs.HubRoles.DEPT_ADMIN, department = "Design"),
+            ),
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubAnnouncementEvents = MutableSharedFlow<RelayFrame.AnnouncementEvent>(),
+        )
+        assertTrue(repo.canPostHubAnnouncement.first() is HubPostingRights.Department)
     }
 }

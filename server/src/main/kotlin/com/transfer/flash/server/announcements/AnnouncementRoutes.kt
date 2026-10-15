@@ -195,7 +195,7 @@ fun Route.announcementRoutes(
                         expiresAtMs = req.expiresAtMs,
                     )
                 } catch (e: AnnouncementPinLimitException) {
-                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
+                    call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
                     return@post
                 } catch (e: IllegalStateException) {
                     val msg = e.message.orEmpty()
@@ -292,7 +292,13 @@ fun Route.announcementRoutes(
                         clientRequestId = null,
                     )
                 } catch (e: AnnouncementPinLimitException) {
-                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
+                    call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
+                    return@put
+                } catch (e: AnnouncementForbiddenException) {
+                    call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to change this announcement")
+                    return@put
+                } catch (e: AnnouncementNotFoundException) {
+                    call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "Announcement not found")
                     return@put
                 } catch (_: AnnouncementConflictException) {
                     call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_CONFLICT, "Concurrent edit conflict")
@@ -352,12 +358,20 @@ fun Route.announcementRoutes(
                     return@delete
                 }
 
-                val deleted = store.deleteAnnouncement(
-                    id = id,
-                    actorRole = principal.role,
-                    actorDeptId = principal.departmentId,
-                    actorRef = principal.deviceId,
-                )
+                val deleted = try {
+                    store.deleteAnnouncement(
+                        id = id,
+                        actorRole = principal.role,
+                        actorDeptId = principal.departmentId,
+                        actorRef = principal.deviceId,
+                    )
+                } catch (e: AnnouncementForbiddenException) {
+                    call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to change this announcement")
+                    return@delete
+                } catch (e: AnnouncementNotFoundException) {
+                    call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "Announcement not found")
+                    return@delete
+                }
                 router?.broadcastAnnouncement(
                     RelayFrame.AnnouncementEvent(
                         id = deleted.id,
@@ -403,7 +417,13 @@ fun Route.announcementRoutes(
                         actorRef = principal.deviceId,
                     )
                 } catch (e: AnnouncementPinLimitException) {
-                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
+                    call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
+                    return@post
+                } catch (e: AnnouncementForbiddenException) {
+                    call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to change this announcement")
+                    return@post
+                } catch (e: AnnouncementNotFoundException) {
+                    call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "Announcement not found")
                     return@post
                 } catch (e: IllegalStateException) {
                     val msg = e.message.orEmpty()
@@ -448,12 +468,20 @@ fun Route.announcementRoutes(
                     return@post
                 }
 
-                val unpinned = store.unpinAnnouncement(
-                    id = id,
-                    actorRole = principal.role,
-                    actorDeptId = principal.departmentId,
-                    actorRef = principal.deviceId,
-                )
+                val unpinned = try {
+                    store.unpinAnnouncement(
+                        id = id,
+                        actorRole = principal.role,
+                        actorDeptId = principal.departmentId,
+                        actorRef = principal.deviceId,
+                    )
+                } catch (e: AnnouncementForbiddenException) {
+                    call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to change this announcement")
+                    return@post
+                } catch (e: AnnouncementNotFoundException) {
+                    call.respondError(HttpStatusCode.NotFound, HubErrorCodes.ERR_NOT_FOUND, "Announcement not found")
+                    return@post
+                }
                 router?.broadcastAnnouncement(
                     RelayFrame.AnnouncementEvent(
                         id = unpinned.id,
