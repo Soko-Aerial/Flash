@@ -1,5 +1,13 @@
 # Progress Log
 
+## 2026-10-15 - Paired identity outranks the hub directory for sealing (ADR-165, Claude Code)
+
+### Changed
+`DirectoryHubSealing.pairedIdentityFingerprint`, new `HubSealingStatus.IDENTITY_MISMATCH`, `HubWaitReason.IDENTITY_MISMATCH`, `FlashHubNoticeKind.IDENTITY_MISMATCH` with calm copy; bridge holds and never downgrades; inbound sealed messages from a mismatching sender are not opened; both hosts wired from the trust store (trusted + verified + pin).
+
+### Verification
+`HubSealingPairedIdentityTest` 6 tests; mutation (drop the check in `statusFor`) fails 2 of them, restored. `:core:messaging` jvm and android host suites, `:ui:chat:jvmTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` green. Not device-verified (SEALID-01..03).
+
 ## 2026-10-15 - One-tap pair from directory and certificate cap (Claude Code)
 
 ### Worked on

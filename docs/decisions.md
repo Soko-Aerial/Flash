@@ -5521,3 +5521,19 @@ The statement already authenticates the key as strongly as the commit-then-revea
 
 ### Revisit when
 FO-27 (end-to-end encryption of hub messages) is built, or if the owner wants pairing to follow org membership.
+
+## ADR-165 - A directly paired colleague's identity key outranks the hub directory for sealing (ADR-164b)
+
+### Decision
+`DirectoryHubSealing` takes `pairedIdentityFingerprint(deviceId)`: the fingerprint saved when this device paired with the colleague (trusted AND verified). If the hub directory serves an identity key whose SHA-256 differs, the status is `IDENTITY_MISMATCH`: nothing is sealed, sent or opened for that colleague, the bridge never falls back to readable text, and the user cannot confirm it away (unlike `KEY_CHANGED`). The notice says to meet and pair again or ask the administrator.
+
+### Why
+Sealing trusted the chain hub directory -> identity key -> sealing key. A hub that is dishonest from the first sight could pin its own keys for a colleague (TOFU). A direct pairing is an independent source of the real identity key.
+
+### Limits (be honest in the UI and in sales talk)
+- Only protects colleagues the user paired with; unpaired colleagues stay trust-on-first-use against the hub.
+- A pairing made with `pairColleagueFromDirectory` (ADR-164) is anchored on the live TLS key plus the hub statement, so it adds no check against a hub that colludes with a LAN attacker; a code pairing in person does.
+- Groups remain unsealed (FO-27).
+
+### Revisit when
+FO-27, or when a QR/in-person verification step is added for unpaired colleagues.

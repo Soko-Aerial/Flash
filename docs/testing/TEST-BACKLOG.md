@@ -4269,3 +4269,9 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **ORGPAIR-01** Pair from directory. Setup: two enrolled phones, same org, connected on the LAN, not paired. Steps: (UI hook comes with the Hub tab H8) call pair on the colleague. Pass: probe `org.pair.directory`; colleague appears under paired devices. Source: ADR-164. Status: TODO
 - **ORGPAIR-02** Refused when not connected. Steps: colleague offline, try to pair. Pass: sentence "Flash can pair with a colleague only while you are connected to them..." and probe `org.pair.refused`. Status: TODO
 - **ORGPAIR-03** One-sided pairing: A paired B, B did not pair A. Pass: PTT from A to B is refused on B until B pairs A. Status: TODO
+
+## SEALID - paired identity vs hub directory (built 2026-10-15, unit-tested only)
+
+- **SEALID-01** Pair two phones by code, send a 1:1 through the hub (peer offline). Pass: delivered sealed as before. Source: ADR-165. Status: TODO
+- **SEALID-02** Mismatch. Setup: paired colleague; a test hub whose directory serves a different identity key for them (dev hub only). Pass: message held, notice "key does not match", nothing in the relay log, no Continue button. Status: TODO
+- **SEALID-03** Unpaired colleague unchanged (TOFU pin and Continue flow on key change). Status: TODO

@@ -28,6 +28,11 @@ import kotlinx.coroutines.flow.StateFlow
  *
  * @param ownKey this device's own sealing key for opening messages (loaded from the key store on demand); null when
  *   the device has none yet.
+ * [pairedIdentityFingerprint] (ADR-164b) is the identity-key fingerprint this device saved when it PAIRED with a colleague
+ * directly, without the hub. When the directory serves a different identity key for a paired colleague, the status is
+ * [HubSealingStatus.IDENTITY_MISMATCH]: nothing is sealed, sent or opened for them, and the user cannot click it away,
+ * because the directory (the hub) is contradicting what the phone saw with its own eyes.
+ *
  * @param lookup the directory entry of a device (cached by the caller).
  */
 @FlashInternalApi
@@ -36,6 +41,7 @@ public class DirectoryHubSealing(
     private val localDeviceId: String,
     private val ownKey: suspend () -> HubSealingKeyPair?,
     private val pins: HubSealingPins? = null,
+    private val pairedIdentityFingerprint: (deviceId: String) -> String? = { null },
     private val lookup: suspend (deviceId: String) -> EnterpriseDirectoryMember?,
 ) : HubSealingPort {
 
@@ -50,7 +56,15 @@ public class DirectoryHubSealing(
         return Verified(sealing, identity)
     }
 
+    /** True when the directory's identity key for a directly paired colleague differs from the key saved at pairing. */
+    private suspend fun identityMismatch(deviceId: String): Boolean {
+        val saved = pairedIdentityFingerprint(deviceId)?.normalisedFingerprint() ?: return false
+        val identity = lookup(deviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return false
+        return identity.sha256Hex() != saved
+    }
+
     override suspend fun statusFor(recipientDeviceId: String): HubSealingStatus {
+        if (identityMismatch(recipientDeviceId)) return HubSealingStatus.IDENTITY_MISMATCH
         val key = verified(recipientDeviceId)
         if (key != null && pins != null) {
             pins.check(recipientDeviceId, HubSealingFingerprint.of(key.sealingKey))
@@ -75,7 +89,15 @@ public class DirectoryHubSealing(
 
     override suspend fun open(senderDeviceId: String, msgId: String, sentAt: Long, payload: String): UnsealedPayload? {
         val key = ownKey() ?: return null
+        if (identityMismatch(senderDeviceId)) return null
         val sender = lookup(senderDeviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return null
         return HubSealing.open(key, sender, senderDeviceId, localDeviceId, msgId, sentAt, payload)
     }
 }
+
+private fun String.normalisedFingerprint(): String = filter { it.isLetterOrDigit() }.uppercase()
+
+private fun ByteArray.sha256Hex(): String =
+    com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(this)
+        .joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0') }
+        .uppercase()

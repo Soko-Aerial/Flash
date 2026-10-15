@@ -1354,6 +1354,9 @@ public class DesktopEngine(
                 localDeviceId = localId,
                 ownKey = { hub.sealingKeys?.key() },
                 pins = hubSealingPins,
+                pairedIdentityFingerprint = { id ->
+                    if (trustStore.isTrusted(id) && trustStore.isVerified(com.transfer.flash.core.common.model.FlashDeviceId(id))) trustStore.getPin(id) else null
+                },
                 lookup = { hub.peers.lookup(it) },
             )
 

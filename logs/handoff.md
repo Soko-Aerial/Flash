@@ -6952,3 +6952,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 
 ## 2026-10-15: pair-from-directory (ADR-164) and cert cap (ERROR-402) built, uncommitted until the owner says
 - Unit-tested and mutation-checked, not device-verified. Tests ORGPAIR-01..03, CERT-01 in the backlog. Next: Plan B small gaps, then merge the cloud branch `agent/C-h6-h10` and wire `onPairColleague`.
+
+## 2026-10-15: ADR-165 built (paired identity vs hub directory), see progress. Uncommitted until committed below; tests SEALID-01..03 owed.

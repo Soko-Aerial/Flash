@@ -1194,6 +1194,9 @@ object DiscoveryEngineHolder {
             localDeviceId = identity.deviceId.value,
             ownKey = { hub.sealingKeys?.key() },
             pins = hubSealingPins,
+            pairedIdentityFingerprint = { id ->
+                if (trustStore.isTrusted(id) && trustStore.isVerified(com.transfer.flash.core.common.model.FlashDeviceId(id))) trustStore.getPin(id) else null
+            },
             lookup = { hub.peers.lookup(it) },
         )
 

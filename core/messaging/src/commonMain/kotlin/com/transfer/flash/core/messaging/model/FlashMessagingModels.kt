@@ -507,6 +507,9 @@ public enum class FlashHubNoticeKind {
 
     /** A hub-linked group, and readable group messages through the hub are switched off. */
     GROUP_HUB_OFF,
+
+    /** The hub's directory contradicts the key saved when this device paired with the colleague directly (ADR-164b). */
+    IDENTITY_MISMATCH,
 }
 
 /**
