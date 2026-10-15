@@ -106,8 +106,11 @@ public class OrgDirectorySync(
     private val _lastSuccessfulSyncAtMs = MutableStateFlow(0L)
     public val lastSuccessfulSyncAtMs: StateFlow<Long> = _lastSuccessfulSyncAtMs.asStateFlow()
 
+    @kotlin.concurrent.Volatile
     private var failureAttemptCount: Int = 0
+    @kotlin.concurrent.Volatile
     private var nextAllowedAttemptMs: Long = 0L
+    @kotlin.concurrent.Volatile
     private var hardErrorUntilMs: Long = 0L
 
     public val isBackedOff: Boolean get() = nextAllowedAttemptMs > clock()
@@ -170,6 +173,12 @@ public class OrgDirectorySync(
         val sinceVersion = localState?.lastSyncedVersion ?: 0L
         val currentEpoch = localState?.directoryEpoch
 
+        FlashProbe.emit(
+            "org.sync.start",
+            "since" to sinceVersion,
+            "force" to force,
+        )
+
         var cursor: String? = null
         var isFirstPage = true
         var isFullResync = false
@@ -183,7 +192,7 @@ public class OrgDirectorySync(
         val accumulatedRemovedMemberIds = LinkedHashSet<String>()
         val accumulatedDepartments = LinkedHashMap<String, OrgDepartmentEntity>()
         val accumulatedRemovedDeptIds = LinkedHashSet<String>()
-        val accumulatedDelegations = ArrayList<DelegationCert>()
+        val accumulatedDelegations = LinkedHashMap<Long, DelegationCert>()
 
         while (true) {
             val pageResult = directoryClient.fetchDirectorySync(
@@ -196,22 +205,27 @@ public class OrgDirectorySync(
 
             when (pageResult) {
                 is DirectorySyncPageResult.HubUnsupported -> {
+                    FlashProbe.emit("org.sync.fail", "reason" to "hub_unsupported")
                     return OrgSyncOutcome.HubUnsupported
                 }
                 is DirectorySyncPageResult.RateLimited -> {
-                    recordFailure(pageResult.retryAfterSeconds)
+                    recordFailure("rate_limited", pageResult.retryAfterSeconds)
+                    FlashProbe.emit("org.sync.fail", "reason" to "rate_limited")
                     return OrgSyncOutcome.RateLimited(pageResult.retryAfterSeconds)
                 }
                 is DirectorySyncPageResult.AuthRefused -> {
-                    recordFailure()
+                    recordFailure("auth_refused")
+                    FlashProbe.emit("org.sync.fail", "reason" to "auth_refused", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.AuthFailed(pageResult.statusCode, pageResult.message)
                 }
                 is DirectorySyncPageResult.Unreachable -> {
-                    recordFailure()
+                    recordFailure("unreachable")
+                    FlashProbe.emit("org.sync.fail", "reason" to "unreachable")
                     return OrgSyncOutcome.NetworkError(pageResult.message)
                 }
                 is DirectorySyncPageResult.ServerError -> {
-                    recordFailure()
+                    recordFailure("server_error")
+                    FlashProbe.emit("org.sync.fail", "reason" to "server_error", "status" to pageResult.statusCode)
                     return OrgSyncOutcome.ServerError(pageResult.statusCode, pageResult.message)
                 }
                 is DirectorySyncPageResult.Success -> {
@@ -235,8 +249,10 @@ public class OrgDirectorySync(
                         }
                     }
 
-                    // Accumulate delegation certs
-                    accumulatedDelegations.addAll(dto.delegationChain)
+                    // Accumulate delegation certs, deduplicating by serial across pages
+                    for (cert in dto.delegationChain) {
+                        accumulatedDelegations[cert.serial] = cert
+                    }
 
                     // Hard security check on delegation chain:
                     // If delegations were sent, verify that none claim a different root key than enrolled
@@ -245,6 +261,7 @@ public class OrgDirectorySync(
                         val anyValid = dto.delegationChain.any { it.verifySignature(verifier) }
                         if (mismatch || !anyValid) {
                             triggerHardSecurityError("This server is not the one you joined")
+                            FlashProbe.emit("org.sync.fail", "reason" to "hard_security_error")
                             return OrgSyncOutcome.HardSecurityError("This server is not the one you joined")
                         }
                     }
@@ -265,7 +282,7 @@ public class OrgDirectorySync(
                     }
 
                     // Process members
-                    val preVerifiedDelegations = accumulatedDelegations.filter {
+                    val preVerifiedDelegations = accumulatedDelegations.values.filter {
                         it.rootPublicKey == creds.rootPublicKey && it.verifySignature(verifier)
                     }.toSet()
 
@@ -278,7 +295,7 @@ public class OrgDirectorySync(
                         }
 
                         val (verifyStatus, matchingDelegation) = statement.verifyWithDelegation(
-                            delegationChain = accumulatedDelegations,
+                            delegationChain = accumulatedDelegations.values.toList(),
                             rootPublicKey = creds.rootPublicKey,
                             verifier = verifier,
                             nowMs = now,
@@ -339,6 +356,7 @@ public class OrgDirectorySync(
                     // If members were present on this page but none verified, fail the sync (never mark success when whole page failed)
                     if (dto.members.isNotEmpty() && pageVerifiedCount == 0) {
                         recordFailure()
+                        FlashProbe.emit("org.sync.fail", "reason" to "all_members_invalid")
                         return OrgSyncOutcome.ServerError(400, "All member statements on page failed verification")
                     }
 
@@ -371,11 +389,13 @@ public class OrgDirectorySync(
 
         val newState = OrgSyncStateEntity(
             id = 1,
+            orgRootFingerprint = creds.rootFingerprint,
             directoryEpoch = serverEpoch,
             lastSyncedVersion = serverVersion,
             offlineGraceDays = clampedGraceDays,
             lastSyncSuccessMs = successMs,
             lastSyncAttemptMs = now,
+            lastErrorKind = null,
         )
 
         try {
@@ -390,20 +410,28 @@ public class OrgDirectorySync(
             )
             FlashProbe.emit(
                 "org.snapshot.applied",
-                "org" to creds.hubName,
+                "org" to creds.rootFingerprint,
                 "version" to serverVersion,
                 "membersCount" to membersToUpsert.size,
-                "revocationsCount" to accumulatedRemovedDeptIds.size,
+                "revocationsCount" to accumulatedRemovedMemberIds.size,
                 "signer" to "hub-root",
             )
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             recordFailure()
+            FlashProbe.emit("org.sync.fail", "reason" to "storage_failed")
             return OrgSyncOutcome.StorageFailed(e.message ?: "Database write failed")
         }
 
         resetBackoff()
         _lastSuccessfulSyncAtMs.value = successMs
+
+        FlashProbe.emit(
+            "org.sync.ok",
+            "version" to serverVersion,
+            "members" to membersToUpsert.size,
+            "fullResync" to isFullResync,
+        )
 
         return OrgSyncOutcome.Success(
             membersUpserted = membersToUpsert.size,
@@ -420,7 +448,7 @@ public class OrgDirectorySync(
         onHardSecurityError?.invoke(reason)
     }
 
-    private fun recordFailure(retryAfterSeconds: Long? = null) {
+    private suspend fun recordFailure(reason: String? = null, retryAfterSeconds: Long? = null) {
         failureAttemptCount++
         val baseSeconds = when (failureAttemptCount) {
             1 -> 30L
@@ -436,6 +464,18 @@ public class OrgDirectorySync(
         val jitter = 0.8 + (Random.nextDouble() * 0.4)
         val backoffMs = (effectiveSeconds * 1000.0 * jitter).toLong()
         nextAllowedAttemptMs = clock() + backoffMs
+        if (reason != null) {
+            runCatching {
+                orgDirectoryDao.getSyncState()?.let { current ->
+                    orgDirectoryDao.setSyncState(
+                        current.copy(
+                            lastSyncAttemptMs = clock(),
+                            lastErrorKind = reason,
+                        )
+                    )
+                }
+            }
+        }
     }
 
     private fun resetBackoff() {

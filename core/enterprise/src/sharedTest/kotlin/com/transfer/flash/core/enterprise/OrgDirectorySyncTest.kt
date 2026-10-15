@@ -915,5 +915,297 @@ class OrgDirectorySyncTest {
         assertEquals(false, outcome2.fullResync)
         assertEquals(5000L, dao.getSyncState()?.lastSyncedVersion)
     }
+
+    @Test
+    fun `ORGT-U02 statement verification rejects wrong root, tampered signature, and invalid times`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+
+        // 1. Wrong root key in delegation
+        val wrongOrg = TestOrg()
+        val (stmtWrongRoot, _) = createStatement(deviceId = "dev-wrong-root", signerCrypto = wrongOrg.hubCrypto)
+
+        // 2. Tampered signature on statement
+        val (validStmt, _) = createStatement(deviceId = "dev-tampered")
+        val tamperedStmt = validStmt.copy(issuerSignature = Base64.encode(byteArrayOf(0, 1, 2, 3, 4)))
+
+        // 3. Valid statement for control
+        val (goodStmt, _) = createStatement(deviceId = "dev-good")
+
+        val page = DirectorySyncDto(
+            directoryEpoch = "epoch-1",
+            version = 10L,
+            fromVersion = 0L,
+            fullResync = true,
+            nextCursor = null,
+            serverTimeMs = nowMs,
+            delegationChain = listOf(testOrg.delegation()),
+            members = listOf(
+                DirectoryMemberSyncDto("dev-wrong-root", "Wrong Root", "dept-1", statement = stmtWrongRoot),
+                DirectoryMemberSyncDto("dev-tampered", "Tampered", "dept-1", statement = tamperedStmt),
+                DirectoryMemberSyncDto("dev-good", "Good Member", "dept-1", statement = goodStmt),
+            ),
+        )
+        fakeApi.pages.add(DirectorySyncPageResult.Success(page))
+
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        // Only the valid member is upserted; wrong root and tampered signature are rejected
+        assertEquals(1, outcome.membersUpserted)
+        assertNotNull(dao.findMemberByDeviceId("dev-good"))
+        assertNull(dao.findMemberByDeviceId("dev-wrong-root"))
+        assertNull(dao.findMemberByDeviceId("dev-tampered"))
+    }
+
+    @Test
+    fun `ORGT-U06 epoch change forces full resync and updates directoryEpoch`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+
+        // Initial sync at epoch-1
+        val (s1, _) = createStatement(deviceId = "dev-1")
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                id = 1,
+                orgRootFingerprint = creds.rootFingerprint,
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 50L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = nowMs - 10_000L,
+                lastSyncAttemptMs = nowMs - 10_000L,
+            ),
+        )
+        dao.upsertMembers(listOf(
+            OrgDirectoryMemberEntity(
+                deviceId = "dev-old",
+                displayName = "Old Member",
+                displayNameFolded = "old member",
+                departmentId = "dept-1",
+                role = "member",
+                subjectPublicKeyFingerprint = "FP_OLD",
+                statementBytes = byteArrayOf(1),
+                statementSerial = 1L,
+                statementIssuedAtMs = nowMs - 20_000L,
+                statementDelegationSerial = 1L,
+                lastSyncedAtMs = nowMs - 10_000L,
+            ),
+        ))
+
+        // Server responds with new epoch-2 and fullResync = true
+        val page = DirectorySyncDto(
+            directoryEpoch = "epoch-2",
+            version = 10L,
+            fromVersion = 0L,
+            fullResync = true,
+            nextCursor = null,
+            serverTimeMs = nowMs,
+            delegationChain = listOf(testOrg.delegation()),
+            members = listOf(
+                DirectoryMemberSyncDto("dev-1", "New Member", "dept-1", statement = s1),
+            ),
+        )
+        fakeApi.pages.add(DirectorySyncPageResult.Success(page))
+
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertTrue(outcome.fullResync)
+        assertEquals("epoch-2", dao.getSyncState()?.directoryEpoch)
+        assertEquals(10L, dao.getSyncState()?.lastSyncedVersion)
+        assertNotNull(dao.findMemberByDeviceId("dev-1"))
+        assertNull(dao.findMemberByDeviceId("dev-old"), "Full resync under new epoch must wipe stale members")
+    }
+
+    @Test
+    fun `ORGT-U07 server requesting full resync replaces existing members and resets lastSyncedVersion`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+
+        // Pre-populate with stale member
+        val (sNew, _) = createStatement(deviceId = "dev-fresh")
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                id = 1,
+                orgRootFingerprint = creds.rootFingerprint,
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 999L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = nowMs - 50_000L,
+                lastSyncAttemptMs = nowMs - 50_000L,
+            ),
+        )
+        dao.upsertMembers(listOf(
+            OrgDirectoryMemberEntity(
+                deviceId = "dev-stale",
+                displayName = "Stale Member",
+                displayNameFolded = "stale member",
+                departmentId = "dept-1",
+                role = "member",
+                subjectPublicKeyFingerprint = "FP_STALE",
+                statementBytes = byteArrayOf(9),
+                statementSerial = 1L,
+                statementIssuedAtMs = nowMs - 50_000L,
+                statementDelegationSerial = 1L,
+                lastSyncedAtMs = nowMs - 50_000L,
+            ),
+        ))
+
+        // Server forces full resync with lower version
+        fakeApi.pages.add(DirectorySyncPageResult.Success(
+            DirectorySyncDto(
+                directoryEpoch = "epoch-1",
+                version = 100L,
+                fromVersion = 0L,
+                fullResync = true,
+                nextCursor = null,
+                serverTimeMs = nowMs,
+                delegationChain = listOf(testOrg.delegation()),
+                members = listOf(
+                    DirectoryMemberSyncDto("dev-fresh", "Fresh Member", "dept-1", statement = sNew),
+                ),
+            ),
+        ))
+
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertTrue(outcome.fullResync)
+        assertEquals(100L, dao.getSyncState()?.lastSyncedVersion)
+        assertNotNull(dao.findMemberByDeviceId("dev-fresh"))
+        assertNull(dao.findMemberByDeviceId("dev-stale"))
+    }
+
+    @Test
+    fun `ORGT-U08 removed device ids are deleted in the same transaction as member upserts`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+
+        // Existing members dev-keep and dev-remove
+        val (sKeep, _) = createStatement(deviceId = "dev-keep", serial = 2)
+        dao.upsertMembers(listOf(
+            OrgDirectoryMemberEntity(
+                deviceId = "dev-keep", displayName = "Keep Me", displayNameFolded = "keep me", departmentId = "dept-1", role = "member",
+                subjectPublicKeyFingerprint = "FP_KEEP", statementBytes = byteArrayOf(1), statementSerial = 1L,
+                statementIssuedAtMs = nowMs - 1000L, statementDelegationSerial = 1L, lastSyncedAtMs = nowMs - 1000L,
+            ),
+            OrgDirectoryMemberEntity(
+                deviceId = "dev-remove", displayName = "Remove Me", displayNameFolded = "remove me", departmentId = "dept-1", role = "member",
+                subjectPublicKeyFingerprint = "FP_REMOVE", statementBytes = byteArrayOf(2), statementSerial = 1L,
+                statementIssuedAtMs = nowMs - 1000L, statementDelegationSerial = 1L, lastSyncedAtMs = nowMs - 1000L,
+            ),
+        ))
+
+        fakeApi.pages.add(DirectorySyncPageResult.Success(
+            DirectorySyncDto(
+                directoryEpoch = "epoch-1",
+                version = 20L,
+                fromVersion = 10L,
+                fullResync = false,
+                nextCursor = null,
+                serverTimeMs = nowMs,
+                delegationChain = listOf(testOrg.delegation()),
+                members = listOf(
+                    DirectoryMemberSyncDto("dev-keep", "Keep Me Updated", "dept-1", statement = sKeep),
+                ),
+                removedDeviceIds = listOf("dev-remove"),
+            ),
+        ))
+
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertEquals(1, outcome.membersUpserted)
+        assertEquals(1, outcome.membersRemoved)
+        assertNotNull(dao.findMemberByDeviceId("dev-keep"))
+        assertNull(dao.findMemberByDeviceId("dev-remove"), "Tombstoned member must be deleted atomically")
+    }
+
+    @Test
+    fun `ORGT-U09 rate limit 429 records backoff and honors retry-after header`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+
+        fakeApi.pages.add(DirectorySyncPageResult.RateLimited(retryAfterSeconds = 120L))
+        val outcome = sync.syncOnce(force = false)
+        assertTrue(outcome is OrgSyncOutcome.RateLimited)
+        assertEquals(120L, outcome.retryAfterSeconds)
+        assertTrue(sync.isBackedOff, "Sync engine must enter backed off state")
+
+        // Non-forced call while backed off must return RateLimited without calling API
+        val callCountBefore = fakeApi.callCount.get()
+        val backedOffOutcome = sync.syncOnce(force = false)
+        assertTrue(backedOffOutcome is OrgSyncOutcome.RateLimited)
+        assertEquals(callCountBefore, fakeApi.callCount.get(), "No API call should be made while backed off")
+
+        // Force call bypasses rate limit backoff
+        fakeApi.pages.add(DirectorySyncPageResult.Success(
+            DirectorySyncDto(
+                directoryEpoch = "epoch-1",
+                version = 1L,
+                fromVersion = 0L,
+                fullResync = true,
+                nextCursor = null,
+                serverTimeMs = nowMs,
+                delegationChain = emptyList(),
+                members = emptyList(),
+            ),
+        ))
+        val forceOutcome = sync.syncOnce(force = true)
+        assertTrue(forceOutcome is OrgSyncOutcome.Success)
+        assertFalse(sync.isBackedOff, "Successful sync must clear backoff")
+    }
+
+    @Test
+    fun `ORGT-U17 directory sync client requests respect since, epoch, and cursor parameters`() = runBlocking {
+        val recordedRequests = mutableListOf<Triple<Long, String?, String?>>()
+        val trackingApi = object : DirectorySyncApi {
+            override suspend fun fetchDirectorySync(
+                hubUrl: String,
+                since: Long,
+                epoch: String?,
+                cursor: String?,
+                limit: Int,
+            ): DirectorySyncPageResult {
+                recordedRequests.add(Triple(since, epoch, cursor))
+                return DirectorySyncPageResult.Success(
+                    DirectorySyncDto(
+                        directoryEpoch = "epoch-target",
+                        version = since + 10L,
+                        fromVersion = since,
+                        fullResync = false,
+                        nextCursor = null,
+                        serverTimeMs = nowMs,
+                        delegationChain = emptyList(),
+                        members = emptyList(),
+                    ),
+                )
+            }
+        }
+
+        val dao = FakeOrgDirectoryDao()
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                id = 1,
+                orgRootFingerprint = creds.rootFingerprint,
+                directoryEpoch = "epoch-initial",
+                lastSyncedVersion = 350L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = nowMs,
+                lastSyncAttemptMs = nowMs,
+            ),
+        )
+
+        val sync = OrgDirectorySync(trackingApi, dao, { creds }, verifier, this, { nowMs })
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+
+        assertEquals(1, recordedRequests.size)
+        val (sentSince, sentEpoch, sentCursor) = recordedRequests.first()
+        assertEquals(350L, sentSince, "Request since must match lastSyncedVersion in sync state")
+        assertEquals("epoch-initial", sentEpoch, "Request epoch must match directoryEpoch in sync state")
+        assertNull(sentCursor, "First page cursor must be null")
+    }
 }
 

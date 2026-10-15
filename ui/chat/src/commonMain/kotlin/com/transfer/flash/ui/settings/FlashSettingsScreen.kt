@@ -880,6 +880,7 @@ fun FlashSettingsScreen(
                     forceExpanded = searching,
                 ) {
                     val hubBanner = hubStatus?.let { FlashHubStatusMath.banner(it, hubNow) }
+                        ?: model.orgTrustState?.let { FlashHubStatusMath.orgTrustBanner(it) }
                     if (hubBanner != null) {
                         FlashHubBannerCard(
                             banner = hubBanner,

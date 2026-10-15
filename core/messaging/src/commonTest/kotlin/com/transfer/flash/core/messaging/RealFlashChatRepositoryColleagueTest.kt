@@ -7,11 +7,15 @@ import com.transfer.flash.core.enterprise.ExpiredReason
 import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.core.enterprise.OrgPeer
 import com.transfer.flash.core.enterprise.OrgPeerResolver
+import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
+import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
 import com.transfer.flash.core.persistence.db.dao.ConversationUnread
 import com.transfer.flash.core.persistence.db.dao.DraftDao
+import com.transfer.flash.core.persistence.db.dao.GroupJoinRequestDao
+import com.transfer.flash.core.persistence.db.dao.GroupMemberDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.OutboxDao
 import com.transfer.flash.core.persistence.db.dao.ReactionDao
@@ -19,6 +23,8 @@ import com.transfer.flash.core.persistence.db.dao.ReceiptDao
 import com.transfer.flash.core.persistence.db.dao.RecentSearchDao
 import com.transfer.flash.core.persistence.db.entity.ConversationEntity
 import com.transfer.flash.core.persistence.db.entity.DraftEntity
+import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.OutboxEntity
 import com.transfer.flash.core.persistence.db.entity.ReactionEntity
@@ -279,12 +285,48 @@ class RealFlashChatRepositoryColleagueTest {
         else -> e.toString()
     }
 
+    private class FakeGroupJoinRequestDao : GroupJoinRequestDao {
+        val requests = mutableListOf<GroupJoinRequestEntity>()
+        override suspend fun upsert(entity: GroupJoinRequestEntity) { requests.add(entity) }
+        override suspend fun get(groupId: String, subjectId: String, subjectKey: String): GroupJoinRequestEntity? =
+            requests.firstOrNull { it.groupId == groupId && it.subjectId == subjectId && it.subjectKey == subjectKey }
+        override suspend fun getAllForGroup(groupId: String): List<GroupJoinRequestEntity> =
+            requests.filter { it.groupId == groupId }
+        override suspend fun updateDecision(groupId: String, subjectId: String, subjectKey: String, state: String, decidedBy: String?, decidedAtMs: Long?) {}
+        override suspend fun deleteExpired(olderThanMs: Long) {}
+        override suspend fun deleteForGroup(groupId: String) {}
+        override suspend fun getAll(): List<GroupJoinRequestEntity> = requests
+    }
+
+    private class FakeGroupMemberDao : GroupMemberDao {
+        val members = mutableMapOf<Pair<String, String>, GroupMemberEntity>()
+        override suspend fun upsert(member: GroupMemberEntity) {
+            members[member.groupId to member.deviceId] = member
+        }
+        override fun observeMembers(groupId: String): Flow<List<GroupMemberEntity>> =
+            flowOf(members.values.filter { it.groupId == groupId })
+        override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
+            members.values.filter { it.groupId == groupId && it.isActive }
+        override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
+            members.values.filter { it.groupId == groupId }
+        override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =
+            members[groupId to deviceId]
+        override suspend fun activeCount(groupId: String): Int =
+            members.values.count { it.groupId == groupId && it.isActive }
+        override suspend fun activeGroupIdsFor(deviceId: String): List<String> =
+            members.values.filter { it.deviceId == deviceId && it.isActive }.map { it.groupId }.distinct()
+        override suspend fun updateMemberDisplayName(deviceId: String, newName: String) {}
+    }
+
     private fun createRepository(
         timeSource: FlashTimeSource,
         messageDao: MessageDao,
         conversationDao: ConversationDao,
         outboxDao: OutboxDao,
         reactionDao: ReactionDao,
+        groupMemberDao: GroupMemberDao? = null,
+        groupJoinRequestDao: GroupJoinRequestDao? = null,
+        peerNameResolver: (String) -> String? = { null },
         isTrustedPeer: (String) -> Boolean = { false },
         isOrgPeer: (String) -> Boolean = { false },
         orgPeerResolver: OrgPeerResolver? = null,
@@ -300,6 +342,9 @@ class RealFlashChatRepositoryColleagueTest {
             draftDao = FakeDraftDao(),
             recentSearchDao = FakeRecentSearchDao(),
             reactionDao = reactionDao,
+            groupMemberDao = groupMemberDao,
+            groupJoinRequestDao = groupJoinRequestDao,
+            peerNameResolver = peerNameResolver,
             isTrustedPeer = isTrustedPeer,
             isOrgPeer = isOrgPeer,
             orgPeerResolver = orgPeerResolver,
@@ -1001,4 +1046,218 @@ class RealFlashChatRepositoryColleagueTest {
         )
         assertTrue(expiredRepo.searchColleagues("Alice").isEmpty(), "searchColleagues must return empty when lease is expired")
     }
+
+    @Test
+    fun ORGT_U27_startColleagueConversation_pairedPeerWithExistingConversation_notInDirectory_saysNotMemberNotRemoved() = runTest {
+        val convDao = FakeConversationDao()
+        val pairedFriend = "paired-charlie"
+        // Paired friend has an existing direct conversation
+        convDao.upsert(ConversationEntity(id = pairedFriend, title = "Charlie", isGroup = false, sortOrder = 100L))
+
+        // Directory snapshot has only Alice
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(
+                colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
+            ),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            convDao,
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { it == pairedFriend },
+            orgPeerResolver = resolver,
+        )
+        val result = repo.startColleagueConversation(pairedFriend)
+        assertTrue(result is FlashResult.Failure)
+        // Defect 15: Must return "This person is not in your company directory.", NOT "This person is no longer part of your organisation."
+        assertEquals("This person is not in your company directory.", (result as FlashResult.Failure).errorText())
+    }
+
+    @Test
+    fun ORGT_U29_orgDialCandidates_notStarvedByUnrelatedOutboxEntries() = runTest {
+        val outboxDao = FakeOutboxDao()
+        val msgDao = FakeMessageDao()
+        val resolver = FakeOrgPeerResolver(
+            members = mapOf(
+                colleagueAlice to OrgPeer(colleagueAlice, "Alice", "eng", "dev", "FP_ALICE", true),
+            ),
+            leaseState = OrgLease.Valid(untilMs = 9_999_999L),
+        )
+        val repo = createRepository(
+            MutableTimeSource(),
+            msgDao,
+            FakeConversationDao(),
+            outboxDao,
+            FakeReactionDao(),
+            orgPeerResolver = resolver,
+        )
+
+        // Populate outbox with 25 messages for non-colleague / groups
+        for (i in 1..25) {
+            val localId = "msg-unrelated-$i"
+            val target = if (i % 2 == 0) "v2:group-$i" else "stranger-$i"
+            msgDao.insert(MessageEntity(localId, target, localDeviceId, "Me", "hi", i * 1000L, "QUEUED"))
+            outboxDao.enqueue(OutboxEntity(localId = localId, attempts = 0, nextAttemptAt = 0L, payloadJson = "{}", createdAt = i * 1000L))
+        }
+
+        // Message 26 is for colleagueAlice
+        val aliceMsgId = "msg-alice-outbox"
+        msgDao.insert(MessageEntity(aliceMsgId, colleagueAlice, localDeviceId, "Me", "Colleague update", 26_000L, "QUEUED"))
+        outboxDao.enqueue(OutboxEntity(localId = aliceMsgId, attempts = 0, nextAttemptAt = 0L, payloadJson = "{}", createdAt = 26_000L))
+
+        // Call orgDialCandidates with default limit = 8
+        val candidates = repo.orgDialCandidates(nowMs = 30_000L, limit = 8)
+
+        // Verifier defect 15: scan of maxOf(limit * 20, 200) prevents preceding non-colleague rows from starving Alice
+        assertTrue(candidates.contains(colleagueAlice), "orgDialCandidates must find Alice even when preceding outbox entries are for non-colleagues")
+    }
+
+    @Test
+    fun ORGT_CALLSITE_1975_getPendingJoinRequests_distinguishes_paired_peer_from_stranger() = runTest {
+        val joinDao = FakeGroupJoinRequestDao()
+        val pairedFriend = "paired-charlie"
+        val stranger = "stranger-dave"
+        val groupId = "v2:group-alpha"
+
+        joinDao.upsert(
+            GroupJoinRequestEntity(
+                groupId = groupId,
+                subjectId = pairedFriend,
+                subjectKey = "KEY_CHARLIE",
+                label = "Charlie Requested Name",
+                requestSig = "SIG_1",
+                viaPeerId = null,
+                requestedAtMs = 1000L,
+                state = "PENDING",
+                decidedBy = null,
+                decidedAtMs = null,
+            ),
+        )
+        joinDao.upsert(
+            GroupJoinRequestEntity(
+                groupId = groupId,
+                subjectId = stranger,
+                subjectKey = "KEY_DAVE",
+                label = "Dave Requested Name",
+                requestSig = "SIG_2",
+                viaPeerId = null,
+                requestedAtMs = 2000L,
+                state = "PENDING",
+                decidedBy = null,
+                decidedAtMs = null,
+            ),
+        )
+
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            groupJoinRequestDao = joinDao,
+            isTrustedPeer = { it == pairedFriend },
+            peerNameResolver = { id -> if (id == pairedFriend) "Charlie Trusted Friend" else null },
+        )
+
+        val requests = repo.getPendingJoinRequests(groupId)
+        assertEquals(2, requests.size)
+
+        val pairedReq = requests.first { it.subjectId == pairedFriend }
+        assertTrue(pairedReq.isKnownDevice, "Paired friend must be recognized as known device (line 1975)")
+        assertEquals("Charlie Trusted Friend", pairedReq.label, "Paired friend must use friendly name from peerNameResolver")
+
+        val strangerReq = requests.first { it.subjectId == stranger }
+        assertFalse(strangerReq.isKnownDevice, "Stranger must NOT be recognized as known device (mutation S1 check)")
+        assertEquals("Dave Requested Name", strangerReq.label, "Stranger must keep requested label, not peerNameResolver")
+    }
+
+    @Test
+    fun ORGT_CALLSITE_5348_isGroupCallMember_returnsFalseForActiveMemberNeitherPairedNorVouched() = runTest {
+        val memberDao = FakeGroupMemberDao()
+        val groupId = "v2:group-beta"
+        val stranger = "stranger-untrusted"
+        val pairedFriend = "paired-trusted"
+
+        // Both are active members in the group
+        memberDao.upsert(
+            GroupMemberEntity(
+                groupId = groupId,
+                deviceId = stranger,
+                displayName = "Stranger Dave",
+                joinedAt = 1000L,
+                membershipVersion = 1L,
+                operationId = "op-1",
+                isActive = true,
+            ),
+        )
+        memberDao.upsert(
+            GroupMemberEntity(
+                groupId = groupId,
+                deviceId = pairedFriend,
+                displayName = "Paired Bob",
+                joinedAt = 1000L,
+                membershipVersion = 1L,
+                operationId = "op-2",
+                isActive = true,
+            ),
+        )
+
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            groupMemberDao = memberDao,
+            isTrustedPeer = { it == pairedFriend },
+        )
+
+        // Paired active member is accepted
+        assertTrue(repo.isGroupCallMember(groupId, pairedFriend), "Paired active group member must be accepted for group calls")
+
+        // Active member who is neither paired nor vouched MUST return false (mutation S3 check: return true || survived)
+        assertFalse(
+            repo.isGroupCallMember(groupId, stranger),
+            "Active group member who is neither paired nor vouched must NOT be a group call member (line 5348)",
+        )
+    }
+
+    @Test
+    fun ORGT_CALLSITE_3558_inboundGroupFrame_fromUnpairedStranger_dropsUnusableSwarmOffer() = runTest {
+        val repo = createRepository(
+            MutableTimeSource(),
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { false },
+            isOrgPeer = { false },
+        )
+
+        // Frame from stranger where swarm == 1, but missing required pieceSize / rootSig
+        val frame = GroupWireFrame.GroupMedia(
+            groupId = "v2:group-swarm",
+            messageId = "swarm-msg-1",
+            transferId = "transfer-1",
+            wireFileId = "wire-1",
+            from = strangerEve,
+            senderName = "Eve",
+            fileName = "payload.bin",
+            mimeType = "application/octet-stream",
+            sizeBytes = 1024L,
+            sentAt = 1000L,
+            swarm = 1,
+            root = "ROOT_HASH",
+            pieceSize = null,
+            rootSig = null,
+        )
+
+        // Should return early at line 3558 because PeerTrustPolicy.mayServeSwarm is false for unpaired/non-org stranger
+        repo.onInboundGroupWireFrame(strangerEve, frame)
+        assertTrue(repo.chatListState.value.items.none { it.id == "v2:group-swarm" })
+    }
 }
+

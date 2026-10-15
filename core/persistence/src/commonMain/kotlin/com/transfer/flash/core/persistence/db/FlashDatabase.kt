@@ -181,6 +181,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v12: message_pins, the device-local pinned messages of a conversation (UI roadmap 3.4).
         // v13: group_settings.historyCeiling, group_history_state and group_sync_watermark (ADR-100, group history sync).
         // v14: org_directory_member, org_department and org_sync_state for offline organisation trust (Plan B, ADR-134).
-        public const val DATABASE_VERSION: Int = 14
+        // v15: org_sync_state.orgRootFingerprint and org_sync_state.lastErrorKind (Plan B §B1.3/B1.4).
+        public const val DATABASE_VERSION: Int = 15
     }
 }

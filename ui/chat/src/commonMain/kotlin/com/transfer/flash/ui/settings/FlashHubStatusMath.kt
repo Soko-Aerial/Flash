@@ -323,18 +323,21 @@ public object FlashHubStatusMath {
         public data class Expiring(val untilMs: Long, val daysLeft: Int) : OrgTrustState()
         public data object Expired : OrgTrustState()
         public data object ClockWrong : OrgTrustState()
+        public data object IdentityMismatch : OrgTrustState()
     }
 
     /**
      * Calculates the presentation state for colleague trust (Plan B §4 Step B2.5).
-     * Maps lease, clock skew, and server support to user-facing states.
+     * Maps lease, clock skew, identity mismatch, and server support to user-facing states.
      */
     public fun orgTrustState(
         lease: OrgLease,
         clockOk: Boolean,
         hubSupports: Boolean,
+        identityMismatch: Boolean = false,
         nowMs: Long = System.currentTimeMillis(),
     ): OrgTrustState {
+        if (identityMismatch) return OrgTrustState.IdentityMismatch
         if (!hubSupports) return OrgTrustState.NotSupported
         if (!clockOk) return OrgTrustState.ClockWrong
         return when (lease) {
@@ -372,6 +375,7 @@ public object FlashHubStatusMath {
         is OrgTrustState.Expiring -> "Connect to the company network within ${state.daysLeft} days to keep chatting with colleagues offline."
         is OrgTrustState.Expired -> "Reconnect to your company network to chat with colleagues who are not paired with you."
         is OrgTrustState.ClockWrong -> "Your device clock looks wrong. Colleague trust may fail until it is fixed."
+        is OrgTrustState.IdentityMismatch -> "Your device identity changed. Rejoin your organisation to chat with colleagues again."
     }
 
     /** Maps [OrgTrustState] to the corresponding status dot color token. */
@@ -382,6 +386,20 @@ public object FlashHubStatusMath {
         is OrgTrustState.Expiring -> FlashHubDot.WARNING
         is OrgTrustState.Expired -> FlashHubDot.BAD
         is OrgTrustState.ClockWrong -> FlashHubDot.BAD
+        is OrgTrustState.IdentityMismatch -> FlashHubDot.BAD
+    }
+
+    /** Generates an actionable banner when colleague trust requires user intervention (e.g. IdentityMismatch). */
+    public fun orgTrustBanner(state: OrgTrustState): FlashHubBanner? = when (state) {
+        is OrgTrustState.IdentityMismatch -> FlashHubBanner(
+            kind = HubLinkState.SERVER_MISMATCH,
+            title = "Your device identity changed",
+            body = orgTrustStatusText(state),
+            primary = FlashHubBannerAction.RE_ENROL,
+            primaryLabel = "Re-enrol",
+            dismissible = false,
+        )
+        else -> null
     }
 }
 

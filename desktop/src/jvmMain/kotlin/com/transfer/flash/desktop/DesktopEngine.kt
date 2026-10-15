@@ -1360,6 +1360,15 @@ public class DesktopEngine(
             val orgPeerResolver = com.transfer.flash.core.enterprise.RealOrgPeerResolver(
                 dao = db.orgDirectoryDao(),
                 trustStore = trustStore,
+                isEnrolled = { enterpriseTrustStore.isEnrolled },
+                localDeviceId = localId,
+                ownFingerprintProvider = {
+                    crypto.identityPublicKeyEncoded.let {
+                        com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(it).joinToString("") { b ->
+                            (b.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
+                        }
+                    }
+                },
             )
             orgPeerResolverRef = orgPeerResolver
             // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).
@@ -1379,6 +1388,7 @@ public class DesktopEngine(
                 clearResolver = { orgPeerResolver.clear() },
                 scope = scope,
                 onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
+                getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
             )
             orgSnapshotCoordinatorRef = orgSnapshotCoordinator
             orgSnapshotCoordinator.start()
