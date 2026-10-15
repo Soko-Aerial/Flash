@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-10-15 - One-tap pair from directory and certificate cap (Claude Code)
+
+### Worked on
+Pairing a verified colleague without a code (ADR-164) and the identity certificate year-2050 wrap (ERROR-402).
+
+### Changed
+- `pairColleagueFromDirectory` in `FlashChatRepository` and `RealFlashChatRepository`; `pairVerifiedColleague` on the Android and desktop pairing coordinators; hosts wired in `DiscoveryEngineHolder` and `DesktopEngine`.
+- `KeystoreFlashCrypto` caps notAfter at 2049-12-31.
+
+### Verification
+`RealFlashChatRepositoryColleagueTest` 33 tests green (4 new `ORGPAIR_U01..U04`), `IdentityCertValidityTest` 3 green, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` green. Mutation check: bypassing the live key check fails `ORGPAIR_U02`; restored. Not device-verified.
+
+### Remaining
+No UI calls it yet (Hub tab H8 `onPairColleague` hook, to be wired after the cloud branch lands). Plan B small gaps still open (see handoff).
+
+### Next AI
+Wire `onPairColleague` to `pairColleagueFromDirectory`; do the Plan B small gaps.
+
 ## 2026-10-15 - Verifier fixes for B4 (report-4) and A3 (report-a3), A3 merged into dev (Claude Code, branch agent/C-fix)
 
 ### Worked on

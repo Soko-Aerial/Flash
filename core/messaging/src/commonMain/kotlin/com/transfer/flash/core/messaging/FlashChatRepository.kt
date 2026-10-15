@@ -55,6 +55,15 @@ public interface FlashChatRepository {
     public suspend fun startColleagueConversation(deviceId: String): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Colleague conversation unavailable"))
 
+    /**
+     * One-tap pairing from the company directory (Plan B follow-up, ADR-164). Marks [deviceId] as paired on THIS device
+     * (the same local trust a code pairing records) when, and only when, it is an organisation colleague whose key is verified
+     * against its hub-signed statement on the live session. No code is shown because the statement already authenticates the key.
+     * It grants no encryption key, so frames stay plain inside TLS until a code pairing is done. Returns success when already paired.
+     */
+    public suspend fun pairColleagueFromDirectory(deviceId: String): FlashResult<Unit> =
+        FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Pairing unavailable"))
+
     /** Creates an ad-hoc trusted group. Phase 1 allows at most six members including this device. */
     public suspend fun createGroup(name: String, memberIds: Set<String>): FlashResult<String> =
         FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Unknown("Groups unavailable"))

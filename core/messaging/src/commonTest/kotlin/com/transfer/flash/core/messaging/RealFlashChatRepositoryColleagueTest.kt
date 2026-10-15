@@ -333,6 +333,7 @@ class RealFlashChatRepositoryColleagueTest {
         transportSink: MessageTransportSink? = null,
         enterpriseTrustStore: com.transfer.flash.core.security.enterprise.EnterpriseTrustStore? = null,
         hubGroupRosters: com.transfer.flash.core.enterprise.HubGroupRosterView? = null,
+        pairVerifiedColleague: ((String, String) -> Boolean)? = null,
         groupTransportSink: GroupTransportSink? = null,
         peerFeatures: (String) -> Set<String> = { emptySet() },
     ): RealFlashChatRepository {
@@ -355,6 +356,7 @@ class RealFlashChatRepositoryColleagueTest {
             transportSink = transportSink,
             enterpriseTrustStore = enterpriseTrustStore,
             hubGroupRosters = hubGroupRosters,
+            pairVerifiedColleague = pairVerifiedColleague,
             groupTransportSink = groupTransportSink,
             peerFeatures = peerFeatures,
             ioDispatcher = Dispatchers.Unconfined,
@@ -1441,5 +1443,57 @@ class RealFlashChatRepositoryColleagueTest {
         val noFeature = b4Rig(features = emptySet())
         noFeature.repo.notifyPeerSessionUp(colleagueAlice)
         assertEquals(0, noFeature.sent.count { it.second is GroupWireFrame.HubRosterOffer }, "a peer without hrs1 gets no frame")
+    }
+
+    private fun pairRepo(
+        paired: MutableList<Pair<String, String>>,
+        orgLive: Boolean = true,
+        alreadyTrusted: Boolean = false,
+        saveOk: Boolean = true,
+        withPairer: Boolean = true,
+    ) = createRepository(
+        MutableTimeSource(),
+        FakeMessageDao(),
+        FakeConversationDao(),
+        FakeOutboxDao(),
+        FakeReactionDao(),
+        isTrustedPeer = { alreadyTrusted },
+        isOrgPeer = { orgLive },
+        pairVerifiedColleague = if (withPairer) { id, name -> paired.add(id to name); saveOk } else null,
+    )
+
+    @Test
+    fun ORGPAIR_U01_pairsALiveVerifiedColleagueOnce() = runTest {
+        val paired = mutableListOf<Pair<String, String>>()
+        val result = pairRepo(paired).pairColleagueFromDirectory(colleagueAlice)
+        assertTrue(result is FlashResult.Success)
+        assertEquals(1, paired.size)
+        assertEquals(colleagueAlice, paired[0].first)
+    }
+
+    @Test
+    fun ORGPAIR_U02_refusesAColleagueWhoseKeyIsNotVerifiedNow() = runTest {
+        val paired = mutableListOf<Pair<String, String>>()
+        val result = pairRepo(paired, orgLive = false).pairColleagueFromDirectory(colleagueAlice)
+        assertTrue(result is FlashResult.Failure)
+        assertTrue(paired.isEmpty(), "nothing may be trusted without a live key binding")
+    }
+
+    @Test
+    fun ORGPAIR_U03_alreadyPairedIsASuccessWithoutRewriting() = runTest {
+        val paired = mutableListOf<Pair<String, String>>()
+        val result = pairRepo(paired, alreadyTrusted = true, orgLive = false).pairColleagueFromDirectory(colleagueAlice)
+        assertTrue(result is FlashResult.Success)
+        assertTrue(paired.isEmpty())
+    }
+
+    @Test
+    fun ORGPAIR_U04_selfBlankAndMissingPairerFail() = runTest {
+        val paired = mutableListOf<Pair<String, String>>()
+        val repo = pairRepo(paired)
+        assertEquals("That is you.", (repo.pairColleagueFromDirectory(localDeviceId) as FlashResult.Failure).errorText())
+        assertTrue(repo.pairColleagueFromDirectory(" ") is FlashResult.Failure)
+        assertTrue(pairRepo(paired, withPairer = false).pairColleagueFromDirectory(colleagueAlice) is FlashResult.Failure)
+        assertTrue(pairRepo(paired, saveOk = false).pairColleagueFromDirectory(colleagueAlice) is FlashResult.Failure)
     }
 }

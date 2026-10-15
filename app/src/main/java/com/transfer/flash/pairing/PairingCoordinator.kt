@@ -236,6 +236,18 @@ class PairingCoordinator(
         }
     }
 
+    /**
+     * One-tap pairing from the company directory (ADR-164): the caller verified that the live TLS key of [peerId] matches
+     * its hub-signed statement. Records the same local trust as a code pairing, without a session key.
+     */
+    fun pairVerifiedColleague(peerId: String, name: String): Boolean {
+        val r = trustStore.trustPeer(FlashDeviceId(peerId), name)
+        if (r !is com.transfer.flash.core.common.result.FlashResult.Success) return false
+        trustStore.markVerified(FlashDeviceId(peerId))
+        _trustedPeers.value = loadTrusted()
+        return true
+    }
+
     /** Forget a trusted peer (persisted). */
     fun revoke(peerId: String) {
         trustStore.revokeTrust(FlashDeviceId(peerId))

@@ -150,7 +150,7 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
             .setCertificateSubject(X500_PRINCIPAL)
             .setCertificateSerialNumber(BigInteger.valueOf(now))
             .setCertificateNotBefore(Date(now - CERT_BACKDATE_MS))
-            .setCertificateNotAfter(Date(now + CERT_VALIDITY_MS))
+            .setCertificateNotAfter(Date(identityCertNotAfterMs(now)))
             // No user-auth gate on signing; explicit false keeps identity stable across
             // biometric re-enrollment (method itself is API 24+, i.e. >= minSdk).
             .setInvalidatedByBiometricEnrollment(false)
@@ -179,7 +179,17 @@ public class KeystoreFlashCrypto(private val context: Context) : FlashCrypto {
         const val STRONGBOX_FEATURE = "android.software.keystore.strongbox"
         const val CERT_SUBJECT = "CN=Flash Identity"
         const val CERT_BACKDATE_MS = 24L * 60 * 60 * 1000 // tolerate clock skew between peers
-        const val CERT_VALIDITY_MS = 25L * 365 * 24 * 60 * 60 * 1000
         val X500_PRINCIPAL = X500Principal(CERT_SUBJECT)
     }
 }
+
+private const val CERT_VALIDITY_MS = 25L * 365 * 24 * 60 * 60 * 1000
+
+/** 2049-12-31T00:00:00Z. AOSP writes notAfter as a 2-digit UTCTime, which RFC 5280 reads as 19YY from year 2050 on. */
+internal const val CERT_LATEST_NOT_AFTER_MS = 2_524_521_600_000L
+
+/**
+ * The identity certificate's end date: 25 years, but never past [CERT_LATEST_NOT_AFTER_MS], so no parser reads it as 1951
+ * (ERROR-402). Only newly generated keys get it; an existing key keeps its certificate (peers pin the key, not the date).
+ */
+internal fun identityCertNotAfterMs(nowMs: Long): Long = minOf(nowMs + CERT_VALIDITY_MS, CERT_LATEST_NOT_AFTER_MS)

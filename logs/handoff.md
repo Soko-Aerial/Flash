@@ -6949,3 +6949,6 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-15: Plan B B4 built on agent/C-b4 (Claude Code), not yet merged to dev
 - Hub groups on the LAN: roster statement, sync (last page), gossip `hrs1`, gate, projection. Schema 16. ADR-162. Tests ORGT-U40..U50 and `ORGT_B4_*` green; mutation checks done.
 - Next: merge `agent/C-b4` into dev (A3 uses schema 17), run the verifier on B4 and A3, wire `org_group_unsealed`, device tests ORGT-11..16.
+
+## 2026-10-15: pair-from-directory (ADR-164) and cert cap (ERROR-402) built, uncommitted until the owner says
+- Unit-tested and mutation-checked, not device-verified. Tests ORGPAIR-01..03, CERT-01 in the backlog. Next: Plan B small gaps, then merge the cloud branch `agent/C-h6-h10` and wire `onPairColleague`.
