@@ -1,15 +1,19 @@
 # The REST surface of the hub, one "METHOD /path" per line, generated from the running server by
 # server/src/test/.../core/RouteTableContractTest.kt. Describe every route in docs/protocol.md.
 # To update: run :server:test --tests *RouteTableContractTest, then copy server/build/route-table.txt below this header.
+DELETE /admin/api/v1/announcements/{id}
 DELETE /admin/api/v1/departments/{id}
 DELETE /admin/api/v1/groups/{id}
 DELETE /admin/api/v1/groups/{id}/members/{deviceId}
+DELETE /api/v1/announcements/{id}
 DELETE /api/v1/device/sealing-key
 DELETE /api/v1/groups/{id}
 GET /
 GET /admin
 GET /admin/api/v1/admins
 GET /admin/api/v1/admins/{username}/departments
+GET /admin/api/v1/announcements
+GET /admin/api/v1/announcements/{id}
 GET /admin/api/v1/audit
 GET /admin/api/v1/audit/export
 GET /admin/api/v1/audit/head
@@ -37,6 +41,8 @@ GET /admin/invites
 GET /admin/login
 GET /admin/setup
 GET /admin/ui/{...}
+GET /api/v1/announcements
+GET /api/v1/announcements/{id}
 GET /api/v1/approvals
 GET /api/v1/auth/challenge
 GET /api/v1/directory/departments
@@ -66,6 +72,10 @@ POST /admin/api/v1/admins/{username}/disable
 POST /admin/api/v1/admins/{username}/enable
 POST /admin/api/v1/admins/{username}/password
 POST /admin/api/v1/admins/{username}/totp-reset
+POST /admin/api/v1/announcements
+POST /admin/api/v1/announcements/preview
+POST /admin/api/v1/announcements/{id}/pin
+POST /admin/api/v1/announcements/{id}/unpin
 POST /admin/api/v1/delegation
 POST /admin/api/v1/delegation/reload
 POST /admin/api/v1/departments
@@ -87,6 +97,9 @@ POST /admin/api/v1/setup/begin
 POST /admin/api/v1/setup/complete
 POST /admin/api/v1/stepup/challenge
 POST /admin/api/v1/stepup/verify
+POST /api/v1/announcements
+POST /api/v1/announcements/{id}/pin
+POST /api/v1/announcements/{id}/unpin
 POST /api/v1/approvals/{id}
 POST /api/v1/auth/challenge
 POST /api/v1/auth/verify
@@ -99,9 +112,11 @@ POST /api/v1/groups/join-request
 POST /api/v1/groups/join-requests/decision
 POST /api/v1/groups/members
 PUT /admin/api/v1/admins/{username}/departments
+PUT /admin/api/v1/announcements/{id}
 PUT /admin/api/v1/departments/{id}
 PUT /admin/api/v1/devices/{id}
 PUT /admin/api/v1/groups/{id}
 PUT /admin/api/v1/settings
+PUT /api/v1/announcements/{id}
 PUT /api/v1/device/sealing-key
 PUT /api/v1/groups/{id}

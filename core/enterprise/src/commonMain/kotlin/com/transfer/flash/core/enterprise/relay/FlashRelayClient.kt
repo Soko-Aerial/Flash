@@ -116,6 +116,10 @@ public class FlashRelayClient(
     public val metaEvents: Flow<RelayFrame.Meta> = transport.incomingFrames
         .filterIsInstance<RelayFrame.Meta>()
 
+    /** Live announcement events pushed from the hub (Plan A3 §3.7). */
+    public val announcementEvents: Flow<RelayFrame.AnnouncementEvent> = transport.incomingFrames
+        .filterIsInstance<RelayFrame.AnnouncementEvent>()
+
     private val lifecycleLock = Any()
 
     @kotlin.concurrent.Volatile

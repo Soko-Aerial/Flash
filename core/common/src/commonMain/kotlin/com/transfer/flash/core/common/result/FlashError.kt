@@ -28,6 +28,9 @@ public sealed interface FlashError {
     /** Operation was explicitly cancelled by the user or system. */
     public data class Cancelled(val reason: String? = null) : FlashError
 
+    /** Domain-specific failure with structured details (Plan A3). */
+    public data class Domain(val code: String, val message: String, val details: Any? = null) : FlashError
+
     /** General or unexpected error. */
     public data class Unknown(val message: String, val cause: Throwable? = null) : FlashError
 }

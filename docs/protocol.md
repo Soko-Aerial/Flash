@@ -1381,6 +1381,34 @@ discovery. The hub operator and org admins see everything.
 | `GET /api/v1/directory/groups` (changed) | bearer | none | `listVisibleGroups` AND the hidden-department filter (`canSeeGroup`) | served (A2 changed) |
 | Plan B sync `/directory/sync` (changed) | bearer | unchanged | member rows use `canListMember` (hidden never delivered to outsiders); `DepartmentSyncDto.hidden` now carries the flag; every `hidden` change bumps `directoryEpoch` (full resync) | served (A2 changed) |
 
+### Announcements API (Plan A3, ADR-138)
+
+**Honesty Notice (ADR-138):**
+Announcements are stored and broadcast in **plain text** on the hub. Hub administrators can read all announcements. Encryption is NEVER claimed in code, UI strings, or documentation.
+
+**Scoping and Hidden Departments:**
+- `scope`: `"org"` (organization-wide) or `"department"`.
+- Org administrators can post organization-wide announcements or to any department.
+- Department heads can post ONLY to their assigned department.
+- Hidden departments (Plan A2): announcements belonging to a hidden department are NEVER delivered to outsiders in feeds, search queries, or direct ID lookups.
+
+**Limits & Optimistic Concurrency:**
+- Title: max 120 Unicode code points (sanitised via `AnnouncementText`).
+- Body: max 4000 Unicode code points (sanitised via `AnnouncementText`).
+- Pins: max 3 pinned announcements per scope. Exceeding 3 returns `400 ERR_PIN_LIMIT`.
+- Concurrency: Updates specify `expectedSeq`. A mismatch returns `409 ERR_CONFLICT`.
+- WebSocket push: When an announcement is created, updated, deleted, or pinned, the hub broadcasts an `AnnouncementEvent` frame to active relay sessions advertising the `ann1` feature (filtered by department scoping).
+
+| Method and path | Auth | Request | Response | State |
+|---|---|---|---|---|
+| `GET /api/v1/announcements?since=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned), or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
+| `GET /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` (404 if deleted or caller lacks access) | served (A3) |
+| `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
+| `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` | `AnnouncementItemDto` (409 if `expectedSeq` mismatch) | served (A3) |
+| `DELETE /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` tombstone (soft deleted, seq incremented) | served (A3) |
+| `POST /api/v1/announcements/{id}/pin` | bearer | announcement ID | `AnnouncementItemDto` (400 `ERR_PIN_LIMIT` if already 3 pinned) | served (A3) |
+| `POST /api/v1/announcements/{id}/unpin` | bearer | announcement ID | `AnnouncementItemDto` | served (A3) |
+
 Keys (D9, `DIRECTORY_KEYS_ORG_WIDE=true`): identity + sealing keys are org-visible
 for non-hidden departments and never for hidden ones to outsiders (delivered only
 to members/admins of that department, through the lookup by known id, and in the
@@ -1452,6 +1480,7 @@ Errors are `{"code": "...", "message": "<fixed sentence>", "correlationId": "...
 | Step-up | `POST stepup/challenge`, `POST stepup/verify` | challenge bound to (admin, action, target); the admin's enrolled device signs `HubStepUp.proofBytes`; a verified challenge is used once as the header `X-Step-Up: <challengeId>` within 5 minutes |
 | Directory | `GET/POST departments`, `PUT/DELETE departments/{id}`, `GET/POST groups`, `PUT/DELETE groups/{id}`, `POST groups/{id}/members`, `DELETE groups/{id}/members/{deviceId}`, `GET join-requests`, `POST join-requests/{id}/approve`, `POST join-requests/{id}/reject` | department admins act only inside their department |
 | Admins | `GET/POST admins`, `POST admins/{name}/password`, `POST admins/{name}/disable`, `POST admins/{name}/enable`, `POST admins/me/password`, `POST admins/me/recovery-codes`, `POST admins/me/device` | create, reset and disable need step-up; `me/device` binds the admin to an enrolled device for step-up |
+| Announcements | `GET/POST announcements`, `GET/PUT/DELETE announcements/{id}`, `POST announcements/{id}/pin`, `POST announcements/{id}/unpin`, `POST announcements/preview` | Plaintext broadcast messages (ADR-138). Org admins act org-wide or per-department; department heads act only inside their department. Preview calculates length and extracted links. |
 | Sessions | `GET sessions`, `POST sessions/{id}/revoke` | |
 | Audit | `GET audit`, `GET audit/head`, `GET audit/verify`, `GET audit/export` (CSV) | signed hash chain |
 

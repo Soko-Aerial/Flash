@@ -70,3 +70,72 @@ tests; e2e head-invite-enrol-invite-employee.
 - V6 admin migration 3 added approver_device_id: TRUE.
 - V7 old console + new server: session adds fields only; old pages get the
   standard 403 error DTO on scoped routes (test U16).
+
+---
+
+## 2026-10-15 — Plan A3 Explain-Back (quality contract section 2, no code yet)
+
+### What the phase must achieve and why
+Plan A3 implements organization announcements: one-way broadcast messages with a title and plaintext body stored unencrypted on the hub (ADR-138). Org admins can post company-wide or to any department; department heads can post only to their assigned department(s); regular employees can only read and search. The server provides a migration (component "announcements", version 1), SQLite FTS5 full-text indexing, strict input sanitization (`AnnouncementText.clean`), authenticated REST routes for devices and console admins, an idempotent changes feed (`since=<seq>`), optimistic concurrency on edits (`expectedSeq`), pin limits (max 3 org, max 3 dept), optional expiry/retention cleanup, capability-gated live WebSocket push via `RelayFrame.AnnouncementEvent` with `ann1` feature negotiation, and console management UI with live rendering preview. On the client side, it adds DTOs, Room schema step 17 with `HubAnnouncementEntity` and `HubAnnouncementStateEntity`, `HubAnnouncementsApi`, and repository operations in `FlashChatRepository` with typed error handling.
+
+### Files I will touch / create
+1. `server/.../announcements/AnnouncementText.kt`: text sanitization. Similar: `TextSearchFold.kt`, `RelayFrameCodec.kt`, `AuditLogger.kt`. Reuse Unicode code-point normalization, strip bidi overrides & zero-width chars, collapse excessive newlines.
+2. `server/.../announcements/AnnouncementStore.kt` & `AnnouncementRoutes.kt`: SQLite persistence, migrations, REST device routes. Similar: `OrganizationDirectory.kt`, `DirectoryRoutes.kt`, `MailboxStore.kt`. Reuse `ServerDatabase`, transaction management, monotonic `seq`, token bucket limits, `HubApiGate`.
+3. `server/.../announcements/AnnouncementAdminRoutes.kt`: console admin endpoints. Similar: `AdminApi.kt`, `AdminApiDirectory.kt`, `ConsoleScope.kt`. Reuse `ConsoleScope.allows(deptId)` and `requireSession`.
+4. `core/hub-protocol/.../rest/AnnouncementDtos.kt`: DTO models. Similar: `RestDtos.kt`, `DirectorySyncDto.kt`, `RelayFrame.kt`. Reuse `@Serializable`, `@FlashInternalApi`, `HubContract`.
+5. `core/hub-protocol/.../relay/RelayFrame.kt`: `AnnouncementEvent` and `Hello.features`. Similar: other `RelayFrame` definitions, `RelayFrameCodec.kt`.
+6. `core/persistence/.../db/`: Room schema step 17, `HubAnnouncementEntity.kt`, `HubAnnouncementStateEntity.kt`, `HubAnnouncementDao.kt`, `FlashSchemaSteps.kt`, `FlashDatabase.kt`. Similar: `OrgDirectoryMemberEntity.kt`, `OrgSyncStateEntity.kt`, `DraftEntity.kt`. Reuse Room annotations, transactions, flow queries.
+7. `core/enterprise/.../announcements/`: `HubAnnouncementsApi.kt`, `RealHubAnnouncementsApi.kt`. Similar: `EnterpriseDirectoryClient.kt`, `HubSession.kt`, `HubPeerDirectory.kt`. Reuse Ktor client, bearer provider, `FlashResult`.
+8. `core/messaging/.../`: `FlashChatRepository.kt`, `RealFlashChatRepository.kt` announcement additions.
+9. `server/src/main/resources/admin-ui/`: `js/views/announcements.js`, `strings/en.js`. Similar: `organization.js`, `invites.js`, `overview.js`. Reuse safe DOM building (`textContent`, NO `innerHTML`), API helper.
+
+### Five likeliest failures
+1. Concurrency: Simultaneous edits colliding. Guarded by atomic SQLite transactions and `expectedSeq` optimistic locking (returning 409 Conflict with current item).
+2. Wire & Backward Compatibility: Older clients crashing on new frame. Guarded by capability gating `ann1` in `Hello.features` and forward-compatible codec ignoring unknown frames/fields. Old hubs communicating with new clients guarded by feature discovery and `org_ann_unsupported`.
+3. Security & Scope Leaks: Department head posting or viewing cross-department or hidden department announcements. Guarded by enforcing department match against authenticated session/cert, not request body, and filtering inside SQL. Announcements explicitly stored in plaintext (ADR-138) with no false encryption claims.
+4. Scale & FTS injection: Malformed search queries breaking FTS5. Guarded by parameterization and escaping of FTS operators, query length bounds (<= 64 chars), and SQL pagination.
+5. Platform & Unicode Differences: Code-point counting vs Java string length (surrogate pairs / emoji). Guarded by Unicode code point counting, NFC normalization, stripping bidi overrides.
+
+### Tests first
+`AnnouncementTextTest`, `AnnouncementAuthorizationTest`, `AnnouncementVisibilityTest`, `AnnouncementFtsTest`, `AnnouncementConcurrencyTest`, `AnnouncementIdempotencyTest`, `RelayAnnouncementEventContractTest`, `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`.
+
+---
+
+## 2026-10-15 — Plan A3 Announcements Engine, Console, Persistence & Repository (COMPLETE)
+
+### Worked on
+Implemented full Plan A3 scope across server engine, admin console UI, Room persistence step 17, client API, and chat repository.
+
+### Changed
+- **Text sanitization**: Added `AnnouncementText.kt` with NFC normalization, bidi override stripping, zero-width stripping, control character removal, and Unicode code-point length checks.
+- **Protocol & DTOs**: Added announcement DTOs, query parameters, limits, and `RelayFrame.AnnouncementEvent` with `ann1` capability negotiation.
+- **Server Store & Routes**: Implemented `AnnouncementStore.kt` with SQLite migration 1 (schema `announcement`, FTS5 virtual table `announcement_fts`, triggers, indices), FTS5 with LIKE fallback, `expectedSeq` optimistic locking, pin limits (max 3 org, max 3 dept), changes feed `since=<seq>`, soft delete tombstones, and `AnnouncementPurgeJob.kt` retention cleanup. Added authenticated REST routes `/api/v1/announcements*` and admin routes `/admin/api/v1/announcements*`.
+- **Admin Console UI**: Implemented `admin-ui/js/views/announcements.js` with pure DOM construction (`textContent`, no `innerHTML`), preview drawer, department-head scoping, optimistic concurrency conflict prompt, and Node test suite `announcements.test.mjs`.
+- **Persistence**: Added Room schema step 17 with `HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubAnnouncementDao`, migrations 15->16 placeholder and 16->17, and verified migrations in `FlashMigrationsChainTest` and `FlashJvmMigrationsTest`.
+- **Client API & Repository**: Added `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, and `FakeHubAnnouncementsApi` in `:core:enterprise`. Added announcement methods and models to `FlashChatRepository` and `RealFlashChatRepository`, wired `hubAnnouncementDao` and `hubAnnouncementsApi` in `DiscoveryEngineHolder` (Android) and `DesktopEngine` (Desktop), and added integration tests in `RealFlashChatRepositoryAnnouncementsTest`.
+- **Security & Routes**: Registered all new routes in `docs/protocol-routes.txt` and `docs/protocol.md` (verified via `RouteTableContractTest`). Documented plaintext threat model in `docs/security.md` (ADR-138).
+
+### Verification
+- `:server:test`: BUILD SUCCESSFUL (20 tasks executed/up-to-date, 0 failures, 3m 34s).
+- `node --test server/admin-ui-tests/announcements.test.mjs`: 6 passed, 0 failures (263ms).
+- `:core:messaging:jvmTest`: BUILD SUCCESSFUL (21 tasks executed, 0 failures, 1m 23s).
+- `:core:persistence:jvmTest`: BUILD SUCCESSFUL (8 tasks executed/up-to-date, 0 failures, 10s).
+- `:core:enterprise:jvmTest`: BUILD SUCCESSFUL (13 tasks executed, 0 failures, 59s).
+- `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL (0 compilation errors).
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL (0 compilation errors).
+- Mutation Check 1: Disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Restored.
+- Mutation Check 2: Removed department visibility check in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. Restored.
+
+### Problems & Fixes
+- Room migration step 16 was reserved for B4. Created a schema placeholder for step 16 and full schema step 17 to keep migrations strictly linear and testable.
+- JUnit 4 test runner failed with `InvalidTestClassError: Method should be void` when tests inferred non-Unit return types from `= runBlocking { ... }`. Added explicit `: Unit` return type to all test methods.
+- Kotlin prohibited cross-module smart casting of `expiresAtMs`. Extracted to local variable before null check.
+
+### Remaining
+- Plan A4 / H6+: Hub tab screens, Compose announcement card list, and system notification UI.
+- Physical device testing (`ANN-01`..`ANN-11` recorded in `docs/testing/TEST-BACKLOG.md`).
+
+### Next AI
+Build Plan A4 / H6+ UI screens and notification receiver utilizing the `FlashChatRepository` announcements API and Room database established in Plan A3.
+
+

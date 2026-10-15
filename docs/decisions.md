@@ -5491,3 +5491,14 @@ column was added to the member table. The delegation chain is stored with the st
 
 ### Revisit when
 A second source column is needed, or group size 32 / end-to-end group encryption (FO-27) is built.
+
+## ADR-163 — Announcement feed paging, pin-limit status and roster version after a full resync
+
+### Decision
+1. A full announcement feed page continues from its last item (`nextCursor`); the hub's highest seq is only used when there is no next page.
+2. Pin limit is HTTP 409 with `ERR_PIN_LIMIT` (a state conflict), mapped to PinLimit by the client.
+3. A directory full resync (epoch reset, restored hub database) makes the hub's roster versions authoritative; otherwise a lower roster version never replaces a higher one (ADR-162).
+4. Department heads are the device role `dept_admin` (`HubRoles.DEPT_ADMIN`); `dept_head` was never issued.
+
+### Revisit when
+Roster versions get an explicit epoch field, or announcements move to a signed form.
