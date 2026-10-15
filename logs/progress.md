@@ -1,5 +1,8 @@
 # Progress Log
 
+## 2026-10-15 - Black admin console fixed (ERROR-408)
+`announcements.js` imported `ApiError` from the wrong module; fixed and added `imports.test.mjs` so a bad import cannot ship. The hub must be rebuilt and restarted to serve the fix. Not yet seen rendering after the fix.
+
 ## 2026-10-15 - Cloud Hub tab H6-H10 merged, Pair wired (Claude Code)
 
 ### Changed
