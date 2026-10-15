@@ -125,6 +125,7 @@ public object HubContract {
 
     public const val HEADER_AUTHORIZATION: String = "Authorization"
     public const val BEARER_PREFIX: String = "Bearer "
+    public const val HEADER_RETRY_AFTER: String = "Retry-After"
 
     /** Optional request header; the server echoes it (or invents one) into [com.transfer.flash.core.hubprotocol.rest.ErrorBody.correlationId]. */
     public const val HEADER_CORRELATION_ID: String = "X-Correlation-Id"
