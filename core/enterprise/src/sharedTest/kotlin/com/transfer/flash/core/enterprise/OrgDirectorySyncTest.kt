@@ -1277,7 +1277,7 @@ class OrgDirectorySyncTest {
         fun offer(st: GroupRosterStatement) = HubRosterOfferPayload(st.groupId, HubRestCodec.encode(st), chain)
 
         assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer(signedRoster(2L))))
-        assertEquals(setOf("dev-1", "local-device"), rosters.current("grp-1")?.memberDeviceIds)
+        assertEquals(setOf("dev-1", "local-device"), rosters.current("grp-1", nowMs)?.memberDeviceIds)
         assertEquals(RosterAdoption.STALE, rosters.adopt(offer(signedRoster(2L))), "the same version adds nothing")
         assertEquals(RosterAdoption.STALE, rosters.adopt(offer(signedRoster(1L))), "a lower version never replaces")
         assertEquals(RosterAdoption.INVALID, rosters.adopt(offer(signedRoster(9L, signer = TestCrypto()))), "tampered / foreign signer")
@@ -1285,7 +1285,7 @@ class OrgDirectorySyncTest {
         assertEquals(RosterAdoption.INVALID, rosters.adopt(HubRosterOfferPayload("grp-1", "{not json", chain)))
         assertEquals(RosterAdoption.NOT_A_MEMBER, rosters.adopt(offer(signedRoster(9L, members = listOf("dev-1"), groupId = "grp-x"))))
         assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer(signedRoster(3L, members = listOf("dev-1", "local-device")))))
-        assertEquals(3L, rosters.current("grp-1")?.version)
+        assertEquals(3L, rosters.current("grp-1", nowMs)?.version)
         assertNull(rosters.current("grp-1", nowMs + 31L * 24 * 3_600_000), "an expired window answers nobody")
     }
 }
