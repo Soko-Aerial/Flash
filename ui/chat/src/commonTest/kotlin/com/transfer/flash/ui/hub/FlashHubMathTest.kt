@@ -605,6 +605,22 @@ class FlashHubMathTest {
         assertEquals("Hub, 3 unread announcements", FlashHubCopy.tabBadgeDescription(3))
     }
 
+    // --- overview card -----------------------------------------------------------------------------------
+
+    @Test fun overviewRoleLineNamesTheRoleAndTheDepartment() {
+        assertEquals("Member · Software", FlashHubMath.overviewRoleLine(HubPersonRole.PERSON, "Software"))
+        assertEquals("Member", FlashHubMath.overviewRoleLine(HubPersonRole.PERSON, null))
+        assertEquals("Member", FlashHubMath.overviewRoleLine(HubPersonRole.PERSON, "  "))
+        assertEquals("Department head · Finance", FlashHubMath.overviewRoleLine(HubPersonRole.HEAD, "Finance"))
+        assertEquals("Administrator", FlashHubMath.overviewRoleLine(HubPersonRole.ADMIN, "Finance"))
+    }
+
+    @Test fun overviewSummaryPluralisesAndSkipsEmptyParts() {
+        assertEquals("1 colleague · 1 department", FlashHubMath.overviewSummary(1, 1, 0))
+        assertEquals("42 colleagues · 5 departments · 3 groups", FlashHubMath.overviewSummary(42, 5, 3))
+        assertEquals("", FlashHubMath.overviewSummary(0, 0, 0))
+    }
+
     // --- scale -------------------------------------------------------------------------------------------
 
     @Test fun fiveThousandPeopleBuildOneHeaderPerLetterInOnePass() {

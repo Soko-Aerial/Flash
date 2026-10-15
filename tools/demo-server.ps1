@@ -8,7 +8,7 @@
 
  The console is on http://127.0.0.1:8444 (management port, loopback only). Phones/laptops enrol against the LAN address printed below.
 #>
-param([switch]$Fresh, [switch]$NoBuild, [int]$Port = 8443, [string]$SetupToken = "demo-setup-token")
+param([switch]$Fresh, [switch]$NoBuild, [int]$Port = 8443, [string]$SetupToken = "demo-setup-token", [string]$HubName = "Flash Hub")
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -29,7 +29,7 @@ $env:FLASH_PORT = "$Port"
 $env:FLASH_HOST = "0.0.0.0"
 $env:FLASH_EXTERNAL_URL = "http://${ip}:$Port"
 $env:FLASH_SETUP_TOKEN = $SetupToken
-$env:FLASH_HUB_NAME = "Flash Demo Hub"
+$env:FLASH_HUB_NAME = $HubName
 Write-Host ""
 Write-Host "Flash demo hub  (INSECURE, development only)"
 Write-Host "  Hub (devices enrol here):  $($env:FLASH_EXTERNAL_URL)"

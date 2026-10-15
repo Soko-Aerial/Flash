@@ -278,3 +278,18 @@ Built as designed except for the following, each deliberate and listed so the ne
 - "Review group join requests" in the Groups segment reaches the old `FlashBrowseOrgGroupsSheet` (marked SUPERSEDED, still used by administrators).
 - Tests: view maths in `FlashHubMath*Test`, `FlashHubSituationsTest`, `FlashHubRouteLifecycleTest`, `FlashHubSingleFlightTest`, the
   no-dead-actions checklist `FlashHubNoDeadActionsTest` (JVM source scan), synthetic scale `FlashHubScaleTest`; repository facade in `HubFacadeTest`.
+
+## Visual refresh (2026-10-15, owner: "underwhelming ... make it professional")
+
+Status: IMPLEMENTED, unit-tested (`FlashHubMathTest` overview cases), NOT seen on a device (HUBT-35).
+
+- **Overview card** at the top of every segment (not in search): organisation monogram tile, organisation name, "42 colleagues · 5 departments · 3 groups",
+  a role chip ("Member · Software", "Department head · Finance", "Administrator"), a "Can post announcements" chip for people who may post and a
+  Connected / Offline dot. The top bar title is now "Hub" (the name moved into the card, so it is not shown twice).
+- **Segments** carry an icon and, except News, a count (News keeps its unread badge).
+- **News**: people who may post get a "Share an update" row (audience hint); everyone else gets one calm sentence saying announcements come from
+  administrators and department heads (the old screen showed nothing, which looked like a bug). "Pinned" and "Latest" sections; cards show the
+  author's avatar, role chip and time, a coloured edge for unread (strong) or pinned (soft), and a scope chip; empty states say who posts.
+- **Composer**: "Visible to: <audience>" line, a real switch for "Pin to the top", the failure banner is a tinted box with an icon.
+- **Departments**: monogram tile per department. **Groups**: avatar per group.
+- No new dependency, no new colour tokens, no wire or repository change.

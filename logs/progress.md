@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-10-15 - Hub tab visual refresh and bottom-bar fix (Claude Code)
+
+### Worked on
+Owner: "the bottom nav goes when I enter the hub ... redesign it and make it more functional and nice, not a demo".
+
+### Changed
+- ERROR-409: bottom bar vanished on the Hub because `MainActivity` called `isTabRoot` without the enrolment flag. New `FlashNavigationMath.showsBottomBar`, regression test, commit `82f8859d`.
+- Hub UI (`ui/chat/.../ui/hub/`): overview card, segments with icons and counts, News with composer entry or an explanation for members, Pinned / Latest sections, richer announcement cards, composer switch and banner, department and group tiles (see `docs/ui/flash-hub-tab.md` "Visual refresh").
+- `tools/demo-server.ps1` takes `-HubName` (default "Flash Hub") instead of the fixed "Flash Demo Hub".
+
+### Verification
+`:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest` (incl. `FlashHubNoDeadActionsTest`), `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The look has not been seen on a device (HUBT-35).
+
+### Finding about "announcements do not work"
+The demo database has one enrolled phone with role `member`; the app lets only administrators and department heads post, so a member's phone correctly has no composer (now explained on screen). Posting from the console needs the rebuilt console (ERROR-408). To post from the phone, enrol it with an admin invite.
+
+### Next AI
+Look at the screens on a device, then adjust spacing; Hub admin-console redesign only if the owner asks.
+
 ## 2026-10-15 - Black admin console fixed (ERROR-408)
 `announcements.js` imported `ApiError` from the wrong module; fixed and added `imports.test.mjs` so a bad import cannot ship. The hub must be rebuilt and restarted to serve the fix. Not yet seen rendering after the fix.
 
