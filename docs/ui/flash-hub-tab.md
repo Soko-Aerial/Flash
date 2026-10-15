@@ -1,6 +1,8 @@
 # Component Research & Design Document — Flash Hub tab (UI-058)
 
-**Status:** DESIGNED (2026-10-14). Nothing is implemented. Implementation plan: `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`.
+**Status:** IMPLEMENTED 2026-10-15 (H0-H10, branch `agent/C-h6-h10`); unit-tested only, NOT device-verified (HUBT-01..32 owed). Implementation plan: `docs/plans/HUB-TAB-IMPLEMENTATION-PLAN.md`.
+The shell (tab swap, Transfers button) is H0-H5; the screens, repository facade, Message/Call, routes, badge and previews are H6-H10
+(`ui/chat/.../ui/hub/`, `core/messaging/.../hub/`). Differences from this design are listed in "Implementation notes (H6-H10)" at the end.
 
 **Component ID:** UI-058
 **Last updated:** 2026-10-14
@@ -255,3 +257,24 @@ Acknowledge-required announcements, scheduled posts, attachments, reactions, org
 It is not a corporate intranet bolted onto a chat app: the same people list tells you, per colleague, whether they are one tap away on your Wi-Fi, reachable only
 through the company server, or offline, and it keeps working when the server is not (Plan B). The tab disappears completely for people who never joined an
 organisation, so the consumer app stays what it is.
+
+---
+
+## Implementation notes (H6-H10, 2026-10-15)
+
+Built as designed except for the following, each deliberate and listed so the next reader does not take them for omissions.
+
+- **Per-device memory is host-side, not in `core/persistence`.** The last segment, the one-time "Transfers moved" tip and unsent announcement
+  drafts live in `FlashHubUiPrefs` / `FlashHubDraftStore`, backed by SharedPreferences on Android (`HubUiPrefs`) and a properties file on the PC
+  (`DesktopHubUiPrefs`), because the persistence module was off limits for this stream. Drafts are cleared when enrolment is known to have ended.
+- **Routes** (`hub/announcement/<id>`, `hub/person/<deviceId>`): Android takes them from the explicit intent extra
+  `com.transfer.flash.extra.HUB_ROUTE` (no new manifest filter, nothing exported that was not already), the PC from `--hub-route=<route>`.
+  They wait until enrolment is known, so the cold-start default "not enrolled" never throws a route away. A second desktop instance does not forward
+  `--hub-route` to the running one (not built).
+- **Detail panes.** The Hub lays out its own two-pane view at 840 dp and above (person, department, announcement); below that the detail is a
+  sheet or a full-screen reader. It does not use the shell's shared detail pane.
+- **Pairing** is not implemented: `onPairColleague` is a hook the hosts leave null, so "Pair with this colleague" is never shown today.
+- **Online people search** (people the local snapshot does not contain) is not built; there is no API for it in `:core:enterprise`.
+- "Review group join requests" in the Groups segment reaches the old `FlashBrowseOrgGroupsSheet` (marked SUPERSEDED, still used by administrators).
+- Tests: view maths in `FlashHubMath*Test`, `FlashHubSituationsTest`, `FlashHubRouteLifecycleTest`, `FlashHubSingleFlightTest`, the
+  no-dead-actions checklist `FlashHubNoDeadActionsTest` (JVM source scan), synthetic scale `FlashHubScaleTest`; repository facade in `HubFacadeTest`.

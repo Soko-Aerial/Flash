@@ -33,3 +33,29 @@ mutation check. (5) `refreshHub` called twice at once or twice in 15 s: Mutex pl
 **Tests first.** `HubFacadeTest`: ordering/folding (diacritics, case), hidden-department filter (own dept, admin, other), search (word prefix,
 department, empty query, no match), role mapping (admin/dept_admin/heads list), paired/reachability join, unenrol empties, 0/1/5,000 rows,
 `refreshHub` single-flight / min interval / outcome mapping / announcements refresh, and a fuzz of malformed `headDeviceIdsJson`.
+
+## H7 - screens (commit 78fee77)
+Built `ui/chat/.../ui/hub/`: `FlashHubScreen` (status strip, four segments, wide two-pane), News (cards, reader, composer with audience and
+counters), People (filters, sticky letters, person sheet / pane), Departments, Groups, combined search, empty/error/revoked states, ~25 previews, all
+strings in `FlashHubCopy` shared by both hosts, pure logic in `FlashHubMath` (tests first). `FlashBrowseOrgGroupsSheet` stays, marked SUPERSEDED.
+
+## H8/H9 - hosts (commits 8829905, c3d8003)
+Message colleague through `startColleagueConversation` (single-flight, ignores a result for a person no longer selected, a paired person opens the
+existing conversation, exact Plan B sentences); Call only on the LAN when `PeerTrustPolicy.mayRing` and the host's call gate agree; `onPairColleague`
+hook left null (pairing is not this stream). Routes `hub/announcement/<id>` / `hub/person/<deviceId>` via the intent extra
+`com.transfer.flash.extra.HUB_ROUTE` (Android) and `--hub-route=` (PC), waiting for enrolment to be known; unenrolled lands on Chats with a notice.
+Unread badge on the Hub tab (bottom bar, rail, sidebar). Transfers notification actions still go through `nav.openTransfers()`.
+Persistent Hub prefs and draft stores on both hosts (ADR-170).
+
+## H10 - verification
+Tests added: `FlashHubSituationsTest` (13), `FlashHubSingleFlightTest` (4), `FlashHubRouteLifecycleTest` (14), `FlashHubNoDeadActionsTest` (4, JVM
+source scan), `FlashHubScaleTest` (5, synthetic), `FlashHubSearchCodecTest`, `FlashHubMathTest` (79), `HubFacadeTest` (33), `DesktopHubUiPrefsTest` (6, compiled
+only). Mutation checks (both restored with `git checkout`): (1) `FlashHubMath.callAllowed` without `PeerTrustPolicy.mayRing` -> `FlashHubSituationsTest.anUnverifiedUnpairedPersonOnTheLanIsNeverRung`
+and `FlashHubSearchCodecTest.callNeedsTrustLanReachAndTheHostGate` failed; (2) `routeDecision` without the `!enrolmentKnown -> Wait` line ->
+`FlashHubRouteLifecycleTest.coldStartWaitsForEnrolmentThenOpensTheHub`, `.anUnknownEnrolmentNeverReportsNotEnrolled` and `FlashHubSearchCodecTest.routeWaitsUntilEnrolmentIsKnownThenOpensTheHubOrSaysNotEnrolled`
+failed (5 failures of 46 in the three classes). Earlier, H6's own mutation checks are in the H6 section above.
+
+Gate results (last full runs, see the final report for exact lines):
+`:ui:chat:jvmTest` 601 passed; `:ui:chat:testAndroidHostTest` 592 passed; `:core:messaging:testAndroidHostTest` 594 passed;
+`:desktop:compileTestKotlinJvm` and `:app:compileDebugKotlin` compile clean; `:core:messaging:jvmTest` 298 completed with 1 failure that is a
+pre-existing flake (errors.md C-1, reproduced on a clean origin/dev worktree, the affected classes pass in isolation).
