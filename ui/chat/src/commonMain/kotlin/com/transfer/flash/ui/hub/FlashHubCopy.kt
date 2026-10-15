@@ -100,6 +100,26 @@ public object FlashHubCopy {
     public const val ANN_LINK_CANCEL: String = "Cancel"
     public const val ANN_READER_BACK: String = "Back to news"
     public const val ANN_TIP_PIN_LIMIT_SCOPE: String = "Unpin one first."
+    public const val ANN_SECTION_PINNED: String = "Pinned"
+    public const val ANN_SECTION_LATEST: String = "Latest"
+    public const val ANN_MEMBERS_CANT_POST: String =
+        "Announcements come from your administrators and department heads. You will see them here as soon as they are posted."
+    public const val ANN_COMPOSE_TITLE: String = "Share an update"
+    public const val ANN_COMPOSE_SUB_ORG: String = "Reach the whole company or one department"
+    public const val ANN_COMPOSE_SUB_DEPT: String = "Reach the people in your department"
+    public const val ANN_EMPTY_POSTER: String = "Be the first to share an update with your colleagues."
+    public const val ANN_EMPTY_MEMBER: String = "Updates from your administrators and department heads will appear here."
+    public const val ANN_EMPTY_HEADLINE: String = "No announcements yet"
+    public fun annVisibleTo(audience: String): String = "Visible to: $audience"
+
+    // --- Overview card -----------------------------------------------------------------------------------
+    public const val OVERVIEW_ROLE_ADMIN: String = "Administrator"
+    public const val OVERVIEW_ROLE_HEAD: String = "Department head"
+    public const val OVERVIEW_ROLE_MEMBER: String = "Member"
+    public const val OVERVIEW_CAN_POST: String = "Can post announcements"
+    public const val OVERVIEW_CONNECTED: String = "Connected"
+    public const val OVERVIEW_OFFLINE: String = "Offline"
+    public fun plural(count: Int, one: String, many: String): String = if (count == 1) "$count $one" else "$count $many"
 
     public fun annRate(seconds: Int): String = "You are posting too fast. Try again in $seconds seconds."
     public fun annTooLong(maxChars: Int): String = "This announcement is too long. Shorten it to $maxChars characters."

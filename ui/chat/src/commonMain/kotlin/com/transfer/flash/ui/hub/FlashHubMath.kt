@@ -487,6 +487,24 @@ public object FlashHubMath {
         }
     }
 
+    /** "Administrator", "Department head · Finance" or "Member · Finance": what the overview card says about this device's person. */
+    public fun overviewRoleLine(role: com.transfer.flash.core.messaging.model.HubPersonRole, departmentName: String?): String {
+        val base = when (role) {
+            com.transfer.flash.core.messaging.model.HubPersonRole.ADMIN -> FlashHubCopy.OVERVIEW_ROLE_ADMIN
+            com.transfer.flash.core.messaging.model.HubPersonRole.HEAD -> FlashHubCopy.OVERVIEW_ROLE_HEAD
+            com.transfer.flash.core.messaging.model.HubPersonRole.PERSON -> FlashHubCopy.OVERVIEW_ROLE_MEMBER
+        }
+        val dept = departmentName?.trim().orEmpty()
+        return if (dept.isEmpty() || role == com.transfer.flash.core.messaging.model.HubPersonRole.ADMIN) base else "$base · $dept"
+    }
+
+    /** The one line under the organisation name: "42 colleagues · 5 departments · 3 groups". Empty parts are left out. */
+    public fun overviewSummary(people: Int, departments: Int, groups: Int): String = buildList {
+        if (people > 0) add(FlashHubCopy.plural(people, "colleague", "colleagues"))
+        if (departments > 0) add(FlashHubCopy.plural(departments, "department", "departments"))
+        if (groups > 0) add(FlashHubCopy.plural(groups, "group", "groups"))
+    }.joinToString(" · ")
+
     public fun canPost(posting: HubPostingRights): Boolean = when (posting) {
         HubPostingRights.None -> false
         is HubPostingRights.OrgWide -> true

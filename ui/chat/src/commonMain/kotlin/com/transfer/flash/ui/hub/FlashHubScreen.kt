@@ -363,7 +363,7 @@ private fun FlashHubBody(
     val listPane: @Composable () -> Unit = {
         Column(Modifier.fillMaxSize()) {
             FlashHubTopBar(
-                title = state.orgName.ifBlank { FlashHubCopy.TAB_LABEL },
+                title = FlashHubCopy.TAB_LABEL,
                 searchOpen = selection.searchOpen,
                 query = selection.query,
                 onQueryChange = { onSelection(selection.copy(query = it.take(FlashHubMath.QUERY_MAX * 2))) },
@@ -375,7 +375,16 @@ private fun FlashHubBody(
             )
             LaunchedEffect(selection.searchOpen) { if (selection.searchOpen) runCatching { searchFocus.requestFocus() } }
             FlashHubStrip(data, mode, actions, onWhy = { whyOpen = true })
-            if (!selection.searchOpen) FlashHubSegments(selection.segment, ::select, unreadNews = unread)
+            if (!selection.searchOpen) {
+                FlashHubSegments(
+                    selection.segment, ::select, unreadNews = unread,
+                    counts = mapOf(
+                        FlashHubSegment.PEOPLE to state.peopleCount,
+                        FlashHubSegment.DEPARTMENTS to orderedDepartments.size,
+                        FlashHubSegment.GROUPS to data.groups.size,
+                    ),
+                )
+            }
             actionNote?.let { NoticeLine(it) }
             if (data.showMovedTip) FlashHubTip(actions.onDismissTip)
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
@@ -394,6 +403,20 @@ private fun FlashHubBody(
                             state = activeState,
                             modifier = Modifier.fillMaxSize().widthIn(max = FlashHubContentMaxWidth),
                         ) {
+                            if (!searching) {
+                                item(key = "hub-overview", contentType = "overview") {
+                                    FlashHubOverview(
+                                        orgName = state.orgName,
+                                        summary = FlashHubMath.overviewSummary(state.peopleCount, orderedDepartments.size, data.groups.size),
+                                        roleLine = FlashHubMath.overviewRoleLine(state.myRole, state.myDepartmentId?.let(deptName)),
+                                        canPost = FlashHubMath.canPost(data.posting),
+                                        connected = when (mode) {
+                                            FlashHubMode.LOADING -> null
+                                            else -> data.link == HubLinkState.ONLINE || data.link == HubLinkState.CERT_EXPIRING
+                                        },
+                                    )
+                                }
+                            }
                             when {
                                 searching -> hubSearchItems(
                                     query = query, people = searchPeople, departments = searchDepartments, news = searchNews, groups = searchGroups,

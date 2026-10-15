@@ -6958,3 +6958,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-15: Plan B small gaps built (ADR-166), see progress. Next: merge cloud branch agent/C-h6-h10 when DONE exists, wire onPairColleague, the unsealed header, verifier for H6-H10.
 
 ## 2026-10-15: Hub tab H6-H10 merged into dev (cloud branch), Pair wired. Open: ADR-170..172 owner decision, verifier pass, HUBT-01..33 on devices, the "company server can read group messages" header in the group chat.
+
+## 2026-10-15: Hub tab visual refresh built (HUBT-35 owed), bottom-bar fix ERROR-409 committed. Local commits not pushed; owner must rebuild and restart the demo hub for the console fix (ERROR-408).

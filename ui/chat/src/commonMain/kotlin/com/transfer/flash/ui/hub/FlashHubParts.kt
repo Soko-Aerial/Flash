@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -231,13 +232,14 @@ internal fun FlashHubButton(
     }
 }
 
-/** The segmented control: a scrolling row of pills with tab semantics. Switching is by tap only, never by swipe. */
+/** The segmented control: a scrolling row of pills (icon, label, count) with tab semantics. Switching is by tap only, never by swipe. */
 @Composable
 internal fun FlashHubSegments(
     selected: FlashHubSegment,
     onSelect: (FlashHubSegment) -> Unit,
     unreadNews: Int,
     modifier: Modifier = Modifier,
+    counts: Map<FlashHubSegment, Int> = emptyMap(),
 ) {
     val colors = FlashTheme.colors
     Row(
@@ -251,6 +253,14 @@ internal fun FlashHubSegments(
             val isSelected = segment == selected
             val label = FlashHubMath.segmentLabel(segment)
             val badge = if (segment == FlashHubSegment.NEWS && unreadNews > 0) unreadNews else 0
+            val count = if (segment == FlashHubSegment.NEWS) 0 else counts[segment] ?: 0
+            val icon = when (segment) {
+                FlashHubSegment.NEWS -> FlashIcons.Announcement
+                FlashHubSegment.PEOPLE -> FlashIcons.Group
+                FlashHubSegment.DEPARTMENTS -> FlashIcons.Hub
+                FlashHubSegment.GROUPS -> FlashIcons.Chat
+            }
+            val tint = if (isSelected) colors.accentPrimary else colors.textSecondary
             Row(
                 modifier = Modifier
                     .heightIn(min = FlashDimensions.minTouchTarget)
@@ -261,14 +271,19 @@ internal fun FlashHubSegments(
                         FlashShapes.navBar,
                     )
                     .clickable(role = Role.Tab) { onSelect(segment) }
-                    .padding(horizontal = FlashSpacing.space16)
+                    .padding(horizontal = FlashSpacing.space12)
                     .semantics {
                         semanticsSelected = isSelected
-                        contentDescription = if (badge > 0) "$label, $badge unread" else label
+                        contentDescription = when {
+                            badge > 0 -> "$label, $badge unread"
+                            count > 0 -> "$label, $count"
+                            else -> label
+                        }
                     },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             ) {
+                FlashIcon(icon = icon, contentDescription = null, tint = tint, size = FlashDimensions.iconSm)
                 FlashText(
                     label,
                     style = if (isSelected) FlashTheme.typography.bodyEmphasis else FlashTheme.typography.bodyDefault,
@@ -287,10 +302,137 @@ internal fun FlashHubSegments(
                     ) {
                         FlashText(if (badge > 99) "99+" else badge.toString(), style = FlashTheme.typography.metadataEmphasis, color = colors.textOnAccent, maxLines = 1)
                     }
+                } else if (count > 0) {
+                    FlashText(
+                        if (count > 999) "999+" else count.toString(),
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textTertiary,
+                        maxLines = 1,
+                    )
                 }
             }
         }
     }
+}
+
+/**
+ * The card at the top of every segment: the organisation's monogram and name, what it holds, how this device stands
+ * (role, whether it may post announcements) and whether the company server is reachable right now.
+ */
+@Composable
+internal fun FlashHubOverview(
+    orgName: String,
+    summary: String,
+    roleLine: String,
+    canPost: Boolean,
+    connected: Boolean?,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val shape = RoundedCornerShape(20.dp)
+    val name = orgName.ifBlank { FlashHubCopy.TAB_LABEL }
+    val spoken = buildString {
+        append(name)
+        if (summary.isNotEmpty()) append(", ").append(summary)
+        append(", ").append(roleLine)
+        if (canPost) append(", ").append(FlashHubCopy.OVERVIEW_CAN_POST)
+        if (connected != null) append(", ").append(if (connected) FlashHubCopy.OVERVIEW_CONNECTED else FlashHubCopy.OVERVIEW_OFFLINE)
+    }
+    Column(
+        modifier = modifier
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(colors.accentPrimary.copy(alpha = 0.08f))
+            .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.30f), shape)
+            .padding(FlashSpacing.space16)
+            .semantics(mergeDescendants = true) { contentDescription = spoken },
+        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
+            Box(
+                modifier = Modifier.size(52.dp).clip(RoundedCornerShape(16.dp)).background(colors.accentPrimary),
+                contentAlignment = Alignment.Center,
+            ) {
+                FlashText(
+                    FlashHubMath.initials(name).take(2).uppercase(),
+                    style = FlashTheme.typography.headingSmall,
+                    color = colors.textOnAccent,
+                    maxLines = 1,
+                )
+            }
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
+                FlashText(name, style = FlashTheme.typography.headingMedium, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (summary.isNotEmpty()) {
+                    FlashText(summary, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), verticalAlignment = Alignment.CenterVertically) {
+            FlashHubChip(roleLine, emphasised = true, modifier = Modifier.weight(1f, fill = false))
+            if (canPost) FlashHubChip(FlashHubCopy.OVERVIEW_CAN_POST, modifier = Modifier.weight(1f, fill = false))
+            if (connected != null) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(if (connected) colors.statusOnline else colors.statusOffline))
+                    FlashText(
+                        if (connected) FlashHubCopy.OVERVIEW_CONNECTED else FlashHubCopy.OVERVIEW_OFFLINE,
+                        style = FlashTheme.typography.metadataDefault,
+                        color = colors.textSecondary,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** A quiet information card: icon medallion and one calm sentence (e.g. why a member sees no composer). */
+@Composable
+internal fun FlashHubNoteCard(icon: FlashIconSpec, text: String, modifier: Modifier = Modifier) {
+    val colors = FlashTheme.colors
+    val shape = FlashShapes.attachment
+    Row(
+        modifier = modifier
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(colors.backgroundSurfaceSubtle)
+            .padding(FlashSpacing.space12)
+            .semantics(mergeDescendants = true) { contentDescription = text },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(colors.accentPrimary.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+            FlashIcon(icon = icon, contentDescription = null, tint = colors.accentPrimary, size = FlashDimensions.iconSm)
+        }
+        FlashText(text, modifier = Modifier.weight(1f), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
+    }
+}
+
+/** A real on / off switch (track + thumb) for the composer; the whole row is the touch target, this only draws. */
+@Composable
+internal fun FlashHubSwitch(on: Boolean, modifier: Modifier = Modifier) {
+    val colors = FlashTheme.colors
+    Box(
+        modifier = modifier.size(width = 46.dp, height = 28.dp).clip(CircleShape)
+            .background(if (on) colors.accentPrimary else colors.backgroundSurfaceStrong)
+            .border(FlashDimensions.borderHairline, if (on) colors.accentPrimary else colors.borderStrong, CircleShape)
+            .padding(3.dp),
+        contentAlignment = if (on) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
+        Box(Modifier.size(22.dp).clip(CircleShape).background(if (on) colors.textOnAccent else colors.textTertiary))
+    }
+}
+
+/** A section title inside a list ("Pinned", "Latest"). */
+@Composable
+internal fun FlashHubSectionTitle(text: String, modifier: Modifier = Modifier) {
+    FlashText(
+        text.uppercase(),
+        modifier = modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8).semantics { heading() },
+        style = FlashTheme.typography.metadataEmphasis,
+        color = FlashTheme.colors.textSecondary,
+    )
 }
 
 

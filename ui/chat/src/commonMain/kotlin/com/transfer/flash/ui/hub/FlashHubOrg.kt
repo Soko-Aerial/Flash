@@ -4,7 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -14,6 +16,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
+import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.avatar.flashAvatarColorsFor
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -55,7 +60,8 @@ internal fun LazyListScope.hubDepartmentItems(
 @Composable
 internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
-    Column(
+    val (tileBg, tileFg) = flashAvatarColorsFor(d.id)
+    Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .fillMaxWidth()
@@ -63,17 +69,23 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
             .background(colors.backgroundSurface)
             .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentPrimary else colors.borderSubtle, FlashShapes.attachment)
             .clickable(role = Role.Button, onClick = onClick)
-            .padding(FlashSpacing.space16)
+            .padding(FlashSpacing.space12)
             .semantics(mergeDescendants = true) { contentDescription = FlashHubMath.departmentAccessibility(d) },
-        verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
-            FlashText(d.name, modifier = Modifier.weight(1f, fill = false), style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary,
-                maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (d.isMine) FlashHubChip(FlashHubCopy.DEPT_YOURS, emphasised = true)
+        Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(tileBg), contentAlignment = Alignment.Center) {
+            FlashText(FlashHubMath.initials(d.name).take(2).uppercase(), style = FlashTheme.typography.bodyEmphasis, color = tileFg, maxLines = 1)
         }
-        FlashText(FlashHubMath.departmentSummary(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
-        FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+                FlashText(d.name, modifier = Modifier.weight(1f, fill = false), style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (d.isMine) FlashHubChip(FlashHubCopy.DEPT_YOURS, emphasised = true)
+            }
+            FlashText(FlashHubMath.departmentSummary(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
+            FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
     }
 }
 
@@ -210,6 +222,7 @@ internal fun FlashHubGroupRow(g: HubGroupUi, busy: Boolean, onAction: () -> Unit
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
+        FlashAvatar(initials = FlashHubMath.initials(g.name), size = 44.dp, seed = g.groupId)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
             FlashText(g.name, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             FlashText(FlashHubMath.groupMeta(g), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
