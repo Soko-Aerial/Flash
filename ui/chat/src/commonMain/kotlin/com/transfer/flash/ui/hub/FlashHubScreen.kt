@@ -132,7 +132,7 @@ public class FlashHubActions(
     public val onDismissTip: () -> Unit,
     public val onRouteConsumed: () -> Unit,
     /** Voice call over the LAN; null hides Call. */
-    public val onCall: ((String) -> Unit)? = null,
+    public val onCall: ((deviceId: String, displayName: String) -> Unit)? = null,
     /** The host's existing call gate for this person; a call button needs both this and [onCall]. */
     public val callAllowed: (HubPersonUi) -> Boolean = { false },
     /** Pairing hook owned by the pairing track (H8 leaves it null); non-null shows "Pair" for unpaired colleagues. */
@@ -445,7 +445,7 @@ private fun FlashHubBody(
     val detailPane: @Composable () -> Unit = {
         when {
             person != null && selection.personId != null -> FlashHubPersonContent(
-                person, personPane, onMessage = { message(person) }, onCall = { actions.onCall?.invoke(person.deviceId) },
+                person, personPane, onMessage = { message(person) }, onCall = { actions.onCall?.invoke(person.deviceId, person.displayName) },
                 onPair = { actions.onPairColleague?.invoke(person.deviceId) }, onClose = ::closePerson,
             )
             openAnnouncement != null -> FlashAnnouncementReader(
@@ -501,7 +501,7 @@ private fun FlashHubBody(
     if (!twoPane && person != null && selection.personId != null) {
         FlashSheetHost(onDismiss = ::closePerson, containerColor = FlashTheme.colors.sheetSurface) {
             FlashHubPersonContent(
-                person, personPane, onMessage = { message(person) }, onCall = { actions.onCall?.invoke(person.deviceId) },
+                person, personPane, onMessage = { message(person) }, onCall = { actions.onCall?.invoke(person.deviceId, person.displayName) },
                 onPair = { actions.onPairColleague?.invoke(person.deviceId) }, onClose = null,
             )
         }

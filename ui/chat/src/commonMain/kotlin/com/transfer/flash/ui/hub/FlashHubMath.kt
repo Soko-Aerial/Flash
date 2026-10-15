@@ -421,6 +421,11 @@ public object FlashHubMath {
      * Whether the Groups segment offers "Review group join requests". Only an administrator's groups carry a request count
      * ([HubGroupUi.pendingRequests] non-null), and only when the host supplied the sheet that decides them.
      */
+    /** Call needs a trusted colleague (paired, or verified through the organisation) on the same network, and the host's own gate. */
+    public fun callAllowed(person: HubPersonUi, hostAllows: Boolean): Boolean =
+        hostAllows && !person.isSelf && person.reachability == HubReachability.LAN &&
+            com.transfer.flash.core.messaging.PeerTrustPolicy.mayRing(isPaired = person.paired, isOrg = person.orgVerified)
+
     public fun showManageRequests(groups: List<HubGroupUi>, hookAvailable: Boolean): Boolean =
         hookAvailable && groups.any { it.pendingRequests != null }
 
@@ -678,6 +683,29 @@ public object FlashHubMath {
     public const val ROUTE_ANNOUNCEMENT_PREFIX: String = "hub/announcement/"
     public const val ROUTE_PERSON_PREFIX: String = "hub/person/"
     private const val ROUTE_ID_MAX: Int = 128
+
+    /** What the shell does with a route that arrived from a notification or a cold start. */
+    public sealed interface RouteDecision {
+        /** The shell does not know yet whether this device is enrolled (engine still starting): keep the route and decide later. */
+        public data object Wait : RouteDecision
+
+        /** Not a Hub route at all, or damaged: forget it. */
+        public data object Drop : RouteDecision
+
+        /** Select the Hub tab; the Hub screen applies [route] and then reports it consumed. */
+        public data class OpenHub(public val route: String) : RouteDecision
+
+        /** The device is not (or no longer) enrolled: land on Chats and say so. The route is forgotten. */
+        public data object NotEnrolled : RouteDecision
+    }
+
+    public fun routeDecision(raw: String?, enrolmentKnown: Boolean, enrolled: Boolean): RouteDecision = when {
+        raw == null -> RouteDecision.Drop
+        parseRoute(raw) == null -> RouteDecision.Drop
+        !enrolmentKnown -> RouteDecision.Wait
+        enrolled -> RouteDecision.OpenHub(raw.trim())
+        else -> RouteDecision.NotEnrolled
+    }
 
     public fun routeAnnouncement(id: String): String = ROUTE_ANNOUNCEMENT_PREFIX + id
     public fun routePerson(deviceId: String): String = ROUTE_PERSON_PREFIX + deviceId
