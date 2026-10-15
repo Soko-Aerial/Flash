@@ -54,6 +54,7 @@ import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 
 /**
@@ -102,6 +103,7 @@ import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
         OrgDirectoryMemberEntity::class,
         OrgDepartmentEntity::class,
         OrgSyncStateEntity::class,
+        HubGroupRosterEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -182,6 +184,6 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v13: group_settings.historyCeiling, group_history_state and group_sync_watermark (ADR-100, group history sync).
         // v14: org_directory_member, org_department and org_sync_state for offline organisation trust (Plan B, ADR-134).
         // v15: org_sync_state.orgRootFingerprint and org_sync_state.lastErrorKind (Plan B §B1.3/B1.4).
-        public const val DATABASE_VERSION: Int = 15
+        public const val DATABASE_VERSION: Int = 16
     }
 }
