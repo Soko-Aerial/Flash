@@ -4263,3 +4263,9 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **Source:** Plan A3 §10, §21 of AGENTS.md.
 - **Status:** TODO
 
+## ORGPAIR and CERT - one-tap pairing and certificate cap (built 2026-10-15, unit-tested only)
+
+- **CERT-01** New install's identity certificate ends no later than 2049. Steps: fresh install on a handset (owner does this, never wipe an existing install), read the certificate notAfter from the debug screen or `IdentityKeyBindingInstrumentedTest`. Pass: notAfter year is at most 2049 and not 19xx. Source: ERROR-402. Status: TODO
+- **ORGPAIR-01** Pair from directory. Setup: two enrolled phones, same org, connected on the LAN, not paired. Steps: (UI hook comes with the Hub tab H8) call pair on the colleague. Pass: probe `org.pair.directory`; colleague appears under paired devices. Source: ADR-164. Status: TODO
+- **ORGPAIR-02** Refused when not connected. Steps: colleague offline, try to pair. Pass: sentence "Flash can pair with a colleague only while you are connected to them..." and probe `org.pair.refused`. Status: TODO
+- **ORGPAIR-03** One-sided pairing: A paired B, B did not pair A. Pass: PTT from A to B is refused on B until B pairs A. Status: TODO

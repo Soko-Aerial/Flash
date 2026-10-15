@@ -232,6 +232,14 @@ public class FlashPairingCoordinator(
     }
 
     /** Forget a trusted peer (persisted via the trust store). */
+    public fun pairVerifiedColleague(peerId: String, name: String): Boolean {
+        val r = trustStore.trustPeer(FlashDeviceId(peerId), name)
+        if (r !is com.transfer.flash.core.common.result.FlashResult.Success) return false
+        trustStore.markVerified(FlashDeviceId(peerId))
+        _trustedPeers.value = loadTrusted()
+        return true
+    }
+
     public fun revoke(peerId: String) {
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()

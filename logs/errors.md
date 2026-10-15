@@ -10617,3 +10617,26 @@ Deleted that intermediates directory and rebuilt; `16.json` generated.
 
 ### Status
 RESOLVED
+
+## ERROR-402 - Identity certificate notAfter wrapped to 1951
+
+### Date
+2026-10-15
+
+### Area
+Security / Android Keystore identity certificate (`KeystoreFlashCrypto`)
+
+### Symptoms
+A 100-year-class validity ran past 2049; AOSP writes notAfter as a 2-digit UTCTime, so a year of 2050 or later reads back as 19YY (documented in `docs/android-platform-notes.md`).
+
+### Root cause
+`setCertificateNotAfter` was given now + a very long period without a cap.
+
+### Working fix
+`identityCertNotAfterMs(now) = min(now + 25 years, 2049-12-31T00:00:00Z)`. Only newly generated keys get it; an existing key keeps its certificate because peers pin the key, not the certificate. Unit test `IdentityCertValidityTest` (3 tests) passes.
+
+### Verification
+Host unit tests only. Device check `CERT-01` owed.
+
+### Status
+RESOLVED in code; device check owed

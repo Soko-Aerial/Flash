@@ -5502,3 +5502,22 @@ A second source column is needed, or group size 32 / end-to-end group encryption
 
 ### Revisit when
 Roster versions get an explicit epoch field, or announcements move to a signed form.
+
+## ADR-164 - One-tap pairing from the company directory (Plan B follow-up)
+
+### Decision
+A person may pair with an organisation colleague without a code. `FlashChatRepository.pairColleagueFromDirectory(deviceId)` records the same local
+trust as a code pairing (`trustPeer` + `markVerified`, no session key) but only while the colleague is connected right now and its live TLS key
+matches its hub-signed statement (`effectiveIsOrgPeer`). Otherwise it fails with an honest sentence.
+
+### Why
+The statement already authenticates the key as strongly as the commit-then-reveal code (ADR-042), so a code adds nothing for a colleague. Pairing unlocks PTT and groups.
+
+### Consequences
+- Pairing stays local per side: the colleague must pair back for PTT or group powers.
+- Stays paired until the user unpairs, even if the colleague leaves the organisation.
+- No end-to-end session key until a code pairing is done; frames stay plain inside TLS.
+- ORG-only members still get no PTT or group powers without pairing (ADR-134 gates unchanged).
+
+### Revisit when
+FO-27 (end-to-end encryption of hub messages) is built, or if the owner wants pairing to follow org membership.

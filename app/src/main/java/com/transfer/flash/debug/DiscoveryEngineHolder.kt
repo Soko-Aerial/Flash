@@ -1258,6 +1258,7 @@ object DiscoveryEngineHolder {
             isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
             orgPeerResolver = orgPeerResolver,
             hubGroupRosters = hubGroupRosters,
+            pairVerifiedColleague = { id, name -> pairing?.pairVerifiedColleague(id, name) ?: false },
             conversationDao = db.conversationDao(),
             messageDao = db.messageDao(),
             outboxDao = db.outboxDao(),

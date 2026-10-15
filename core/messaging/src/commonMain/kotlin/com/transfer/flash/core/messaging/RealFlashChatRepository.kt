@@ -387,6 +387,8 @@ public class RealFlashChatRepository(
     private val orgPeerResolver: OrgPeerResolver? = null,
     /** B4: the hub-signed roster statements of hub groups, for the LAN gate and the roster rows (Plan B section 10). */
     private val hubGroupRosters: HubGroupRosterView? = null,
+    /** Records local trust (paired + verified, no session key) for a directory-verified colleague: (deviceId, name) -> saved. Null = not offered. */
+    private val pairVerifiedColleague: ((String, String) -> Boolean)? = null,
     /** Plan A3: Organization announcements local Room persistence. */
     hubAnnouncementDao: HubAnnouncementDao? = null,
     /** Plan A3: Organization announcements REST API client. */
@@ -444,6 +446,28 @@ public class RealFlashChatRepository(
     /** Derives whether [deviceId] is an active organisation colleague via resolver or capability lambda. */
     private fun effectiveIsOrgPeer(deviceId: String): Boolean =
         orgPeerResolver?.isOrgPeer(deviceId) ?: isOrgPeer(deviceId)
+
+    override suspend fun pairColleagueFromDirectory(deviceId: String): FlashResult<Unit> = withContext(ioDispatcher) {
+        if (deviceId.isBlank() || deviceId == localDeviceId) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("That is you."))
+        }
+        if (isTrustedPeer(deviceId)) return@withContext FlashResult.Success(Unit)
+        val pair = pairVerifiedColleague
+            ?: return@withContext FlashResult.Failure(FlashError.Unknown("Pairing is not available here."))
+        // The live TLS key must match the hub-signed statement (resolver.isOrgPeer = lease valid AND key binding ok).
+        if (!effectiveIsOrgPeer(deviceId)) {
+            FlashProbe.emit("org.pair.refused", "peer" to FlashProbe.short(deviceId), "reason" to "not_verified_now")
+            return@withContext FlashResult.Failure(
+                FlashError.Unknown("Flash can pair with a colleague only while you are connected to them. Try again when they are nearby."),
+            )
+        }
+        val name = orgPeerResolver?.displayName(deviceId)?.ifBlank { null } ?: deviceId.take(8)
+        if (!pair(deviceId, name)) {
+            return@withContext FlashResult.Failure(FlashError.Unknown("Pairing could not be saved. Try again."))
+        }
+        FlashProbe.emit("org.pair.directory", "peer" to FlashProbe.short(deviceId))
+        FlashResult.Success(Unit)
+    }
 
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
