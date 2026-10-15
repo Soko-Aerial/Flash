@@ -57,6 +57,10 @@ public data class HubUiState(
     public val isRefreshing: Boolean = false,
     /** Colleagues in the snapshot that this device may see. */
     public val peopleCount: Int = 0,
+    /** The last group fetch failed and no earlier result is cached: the Groups segment then says so instead of "no groups". */
+    public val groupsLoadFailed: Boolean = false,
+    /** The hub answered that it has no announcements feature (older server): the News segment says so. */
+    public val newsUnsupported: Boolean = false,
 )
 
 /** One colleague. [online] is null when presence is withheld or unknown (the UI then shows NO dot, not a grey one). */

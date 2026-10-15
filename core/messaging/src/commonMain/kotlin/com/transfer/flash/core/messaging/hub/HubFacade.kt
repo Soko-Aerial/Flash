@@ -67,8 +67,11 @@ public class HubFacade(
     private val reachableIds: Flow<Set<String>>,
     private val linkedGroupIds: Flow<Set<String>>,
     private val pendingJoins: Flow<Map<String, String>>,
-    /** Refreshes the announcements feed as part of [refresh]; failures never fail the directory refresh. */
-    private val refreshAnnouncements: suspend () -> Unit,
+    /**
+     * Refreshes the announcements feed as part of [refresh]. A failure never fails the directory refresh; only the typed
+     * `UNSUPPORTED` answer is remembered, so the News segment can say the hub has no announcements instead of looking empty.
+     */
+    private val refreshAnnouncements: suspend () -> FlashResult<Unit>,
     private val timeSource: FlashTimeSource,
     private val scope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher,
@@ -79,6 +82,8 @@ public class HubFacade(
     private val refreshing = MutableStateFlow(false)
     private val lastOutcome = MutableStateFlow<OrgSyncOutcome?>(null)
     private val groupsCache = MutableStateFlow<List<EnterpriseDirectoryGroup>?>(null)
+    private val groupsFailed = MutableStateFlow(false)
+    private val newsUnsupported = MutableStateFlow(false)
 
     private var lastAttemptMs: Long = Long.MIN_VALUE
     private var lastResult: FlashResult<Unit> = FlashResult.Success(Unit)
@@ -92,6 +97,8 @@ public class HubFacade(
     /** The snapshot was wiped (un-enrol): forget cached groups too; the next read sees an empty directory. */
     public fun onCleared() {
         groupsCache.value = null
+        groupsFailed.value = false
+        newsUnsupported.value = false
         lastOutcome.value = null
         invalidate()
     }
@@ -112,8 +119,10 @@ public class HubFacade(
         resolver?.lease ?: flowOf(OrgLease.None),
         resolver?.identityMismatch ?: flowOf(false),
         sources.clockWrong,
-        combine(refreshing, lastOutcome) { r, o -> r to o },
-    ) { snap, lease, mismatch, clock, (isRefreshing, outcome) ->
+        combine(refreshing, lastOutcome, groupsFailed, newsUnsupported, groupsCache) { r, o, gf, nu, gc ->
+            RefreshView(r, o, groupsLoadFailed = gf && gc == null, newsUnsupported = nu)
+        },
+    ) { snap, lease, mismatch, clock, view ->
         if (!snap.enrolled) {
             HubUiState(loaded = true)
         } else {
@@ -127,10 +136,12 @@ public class HubFacade(
                 lease = lease,
                 identityMismatch = mismatch,
                 clockWrong = clock,
-                syncStatus = syncStatusOf(snap, outcome),
+                syncStatus = syncStatusOf(snap, view.outcome),
                 lastSyncedAtMs = snap.lastSyncedAtMs,
-                isRefreshing = isRefreshing,
+                isRefreshing = view.refreshing,
                 peopleCount = snap.people.size,
+                groupsLoadFailed = view.groupsLoadFailed,
+                newsUnsupported = view.newsUnsupported,
             )
         }
     }.distinctUntilChanged()
@@ -247,8 +258,11 @@ public class HubFacade(
             invalidate()
             sources.fetchGroups?.let { fetch ->
                 when (val g = fetch(creds)) {
-                    is FlashResult.Success -> groupsCache.value = g.value
-                    is FlashResult.Failure -> Unit
+                    is FlashResult.Success -> {
+                        groupsCache.value = g.value
+                        groupsFailed.value = false
+                    }
+                    is FlashResult.Failure -> groupsFailed.value = true
                 }
             }
             runAnnouncementsRefresh()
@@ -261,7 +275,13 @@ public class HubFacade(
 
     private suspend fun runAnnouncementsRefresh() {
         try {
-            refreshAnnouncements()
+            when (val r = refreshAnnouncements()) {
+                is FlashResult.Success -> newsUnsupported.value = false
+                is FlashResult.Failure -> {
+                    val e = r.error
+                    if (e is FlashError.Domain && e.code == "UNSUPPORTED") newsUnsupported.value = true
+                }
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -339,6 +359,14 @@ public class HubFacade(
         public const val MIN_REFRESH_INTERVAL_MS: Long = 15_000L
     }
 }
+
+/** What the last refresh left behind, as the state flow reads it. */
+private class RefreshView(
+    val refreshing: Boolean,
+    val outcome: OrgSyncOutcome?,
+    val groupsLoadFailed: Boolean,
+    val newsUnsupported: Boolean,
+)
 
 /** Plain sentences for the result of a refresh (the UI shows [FlashError.Unknown.message] as is). */
 public object HubRefreshText {
