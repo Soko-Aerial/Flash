@@ -1,37 +1,39 @@
 # S2-server handoff (fragment; integrator folds into `logs/handoff.md`)
 
 ## Current branch
-`agent/S2-server` (worktree `E:\FlashWork\S2-server`; base `b717ea50`)
+`agent/S2-a3` (worktree `E:\FlashWork\S2-a3`; base `dev`)
 
-## A2 status (2026-10-14)
-Plan A2 (directory privacy, option C) BUILT and unit-tested, NOT
-device-verified, NOT merged. Fragments in `logs/streams/S2-server/`
-(progress with §7 report, errors ERROR-430, decisions ADR-137, backlog
-PRIV-01..05, experiments EXP-030, security + probes).
+## A3 status (2026-10-15)
+Plan A3 (Announcements engine, console, persistence step 17, client API & repository) BUILT and unit-tested, NOT device-verified (tests ANN-01..ANN-11 added to `docs/testing/TEST-BACKLOG.md`).
+Scope boundary strictly adhered to: Sections 3, 4.1-4.3, 5 built; Hub tab screens and notifications UI left for Plan A4 / H6+.
+Plaintext on hub: ADR-138 strictly followed with no claims of encryption anywhere.
 
 ## Working (this stream)
-- `Department.hidden` + directory migration 3 + epoch bump.
-- `DirectoryVisibility` single decider; `GET /directory/people{,/{id}}`;
-  widened departments/members/groups/sync; keys flag true.
-- Admin API + console toggle; enterprise client + `HubPeerDirectory` fallback.
-- `docs/protocol.md` subsection; `docs/protocol-routes.txt` regenerated.
+- Text sanitization: `AnnouncementText.clean` (Unicode NFC normalization, strips bidi overrides, zero-width chars, control chars).
+- Protocol & DTOs: `AnnouncementItemDto`, `AnnouncementFeedDto`, `PostAnnouncementRequestDto`, `UpdateAnnouncementRequestDto`, `AnnouncementEvent` relay frame.
+- Server store & routes: `AnnouncementStore.kt` (migration 1, FTS5 with LIKE fallback, `expectedSeq` optimistic locking, pin limits 3 org / 3 dept, changes feed `since=<seq>`, soft delete tombstones, `AnnouncementPurgeJob.kt` retention cleanup). REST endpoints `/api/v1/announcements*` and `/admin/api/v1/announcements*`.
+- Admin console UI: `admin-ui/js/views/announcements.js` (DOM textContent only, no innerHTML), navigation, preview drawer, department head scoping, conflict reload handling, Node tests.
+- Persistence: Room schema step 17 (`HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubAnnouncementDao`, migrations 15->16 placeholder and 16->17, verified via migrations test).
+- Client API & Repository: `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, `FlashChatRepository`, `RealFlashChatRepository` announcement flow, cached search fallback, unread counters, unenrol data wipe, wired in `DiscoveryEngineHolder` (Android) and `DesktopEngine` (Desktop).
+- Routes & Docs: `docs/protocol-routes.txt`, `docs/protocol.md`, `docs/security.md` (ADR-138 plaintext threat model).
 
 ## Verified
-- `:server:test --rerun-tasks` BUILD SUCCESSFUL (20 executed).
-- `DirectoryPrivacyTest` 12/12 executed green; `DirectoryPrivacyClientTest`
-  4/4; enterprise jvmTest 150/150; hub-protocol jvmTest green.
-- Node admin-ui 62/62. Mutations M1 + M2b proven (M2a documented
-  unreachable-control finding).
-- Banned-pattern grep: only pre-existing hit.
+- `:server:test`: BUILD SUCCESSFUL (20 tasks, 0 failures, 3m 34s).
+- `node --test server/admin-ui-tests/announcements.test.mjs`: 6 passed, 0 failures (263ms).
+- `:core:messaging:jvmTest`: BUILD SUCCESSFUL (21 tasks executed, 0 failures, 1m 23s).
+- `:core:persistence:jvmTest`: BUILD SUCCESSFUL (8 tasks, 0 failures, 10s).
+- `:core:enterprise:jvmTest`: BUILD SUCCESSFUL (13 tasks executed, 0 failures, 59s).
+- `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL (0 errors).
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL (0 errors).
+- Two mutation checks executed and restored:
+  1. Disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Restored.
+  2. Removed department visibility check in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. Restored.
 
-## Next
-Commit A2 on `agent/S2-server`, then start Plan A1
-(`docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`) per task order.
-Do NOT start A3. Shared-file hunks listed in progress.md (largest:
-`DirectoryRoutes.kt` +205, `OrganizationDirectory.kt` +164).
+## Next Task
+Integrate or merge stream S2-a3 into dev, then implement Plan A4 / H6+ (Hub tab screens and notification UI).
+Do NOT modify `C:\Users\KaliOxygen\Downloads\Flash`.
 
-## Watch out for
-- `tools/flash-gradle.ps1` bare-args bug (ERROR-430): use
-  `& .\tools\flash-gradle.ps1 -WaitMinutes 45 -GradleArgs '...'`.
-- Three existing tests updated to plan-mandated A2 behavior (cited); S1/S3
-  rebases will see them.
+## Files most relevant to next task
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt`
+- `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/HubAnnouncementDao.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/`
