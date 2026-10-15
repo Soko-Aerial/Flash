@@ -106,8 +106,11 @@ public class OrgDirectorySync(
     private val _lastSuccessfulSyncAtMs = MutableStateFlow(0L)
     public val lastSuccessfulSyncAtMs: StateFlow<Long> = _lastSuccessfulSyncAtMs.asStateFlow()
 
+    @kotlin.concurrent.Volatile
     private var failureAttemptCount: Int = 0
+    @kotlin.concurrent.Volatile
     private var nextAllowedAttemptMs: Long = 0L
+    @kotlin.concurrent.Volatile
     private var hardErrorUntilMs: Long = 0L
 
     public val isBackedOff: Boolean get() = nextAllowedAttemptMs > clock()
@@ -189,7 +192,7 @@ public class OrgDirectorySync(
         val accumulatedRemovedMemberIds = LinkedHashSet<String>()
         val accumulatedDepartments = LinkedHashMap<String, OrgDepartmentEntity>()
         val accumulatedRemovedDeptIds = LinkedHashSet<String>()
-        val accumulatedDelegations = ArrayList<DelegationCert>()
+        val accumulatedDelegations = LinkedHashMap<Long, DelegationCert>()
 
         while (true) {
             val pageResult = directoryClient.fetchDirectorySync(
@@ -246,8 +249,10 @@ public class OrgDirectorySync(
                         }
                     }
 
-                    // Accumulate delegation certs
-                    accumulatedDelegations.addAll(dto.delegationChain)
+                    // Accumulate delegation certs, deduplicating by serial across pages
+                    for (cert in dto.delegationChain) {
+                        accumulatedDelegations[cert.serial] = cert
+                    }
 
                     // Hard security check on delegation chain:
                     // If delegations were sent, verify that none claim a different root key than enrolled
@@ -277,7 +282,7 @@ public class OrgDirectorySync(
                     }
 
                     // Process members
-                    val preVerifiedDelegations = accumulatedDelegations.filter {
+                    val preVerifiedDelegations = accumulatedDelegations.values.filter {
                         it.rootPublicKey == creds.rootPublicKey && it.verifySignature(verifier)
                     }.toSet()
 
@@ -290,7 +295,7 @@ public class OrgDirectorySync(
                         }
 
                         val (verifyStatus, matchingDelegation) = statement.verifyWithDelegation(
-                            delegationChain = accumulatedDelegations,
+                            delegationChain = accumulatedDelegations.values.toList(),
                             rootPublicKey = creds.rootPublicKey,
                             verifier = verifier,
                             nowMs = now,
@@ -405,10 +410,10 @@ public class OrgDirectorySync(
             )
             FlashProbe.emit(
                 "org.snapshot.applied",
-                "org" to creds.hubName,
+                "org" to creds.rootFingerprint,
                 "version" to serverVersion,
                 "membersCount" to membersToUpsert.size,
-                "revocationsCount" to accumulatedRemovedDeptIds.size,
+                "revocationsCount" to accumulatedRemovedMemberIds.size,
                 "signer" to "hub-root",
             )
         } catch (e: Throwable) {

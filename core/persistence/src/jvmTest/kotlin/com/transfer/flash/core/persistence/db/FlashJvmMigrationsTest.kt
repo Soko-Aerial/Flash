@@ -370,7 +370,7 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
-    fun `migration from 14 to 15 adds orgRootFingerprint and lastErrorKind with expected defaults`() {
+    fun `ORGT-U19 migration from 14 to 15 adds orgRootFingerprint and lastErrorKind with expected defaults`() {
         helper.createDatabase(14).use { v14 ->
             v14.execSQL(
                 "INSERT INTO org_sync_state (id, directoryEpoch, lastSyncedVersion, offlineGraceDays, lastSyncSuccessMs, lastSyncAttemptMs) " +

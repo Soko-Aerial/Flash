@@ -6927,7 +6927,7 @@ public class RealFlashChatRepository(
 
         if (!resolver.isKnownColleague(deviceId)) {
             val existing = conversationDao.get(deviceId)
-            val errorMessage = if (existing != null) {
+            val errorMessage = if (existing != null && !isTrustedPeer(deviceId)) {
                 "This person is no longer part of your organisation."
             } else {
                 "This person is not in your company directory."
@@ -6969,8 +6969,9 @@ public class RealFlashChatRepository(
             candidates.add(openId)
         }
 
-        // 2. Peers with unsent outbox messages
-        val outboxRows = outboxDao.dueForDelivery(Long.MAX_VALUE, limit * 2)
+        // 2. Peers with unsent outbox messages: scan up to 200 outbox entries so that
+        // non-colleague outbox entries do not starve colleague discovery (verifier defect 15).
+        val outboxRows = outboxDao.dueForDelivery(Long.MAX_VALUE, maxOf(limit * 20, 200))
         for (row in outboxRows) {
             val msg = messageDao.getByLocalId(row.localId) ?: continue
             val target = msg.conversationId
