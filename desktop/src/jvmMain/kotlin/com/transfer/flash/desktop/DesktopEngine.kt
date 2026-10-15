@@ -1200,7 +1200,7 @@ public class DesktopEngine(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", FEATURE_VIDEO_UPGRADE) },
+            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE) },
         )
         networkImpl = network
 
@@ -1371,6 +1371,15 @@ public class DesktopEngine(
                 },
             )
             orgPeerResolverRef = orgPeerResolver
+            // Plan B B4: the hub-signed group rosters (hub groups keep working on the LAN). The chat is built below; the holder
+            // lets the directory sync's refresh reach it once it exists.
+            var hubRosterChat: RealFlashChatRepository? = null
+            val hubGroupRosters = com.transfer.flash.core.enterprise.HubGroupRosters(
+                dao = db.orgDirectoryDao(),
+                credentialsProvider = { enterpriseTrustStore.credentials.value },
+                verifier = com.transfer.flash.core.security.enterprise.FlashCryptoEcdsaVerifier(crypto),
+                localDeviceId = { localId },
+            )
             // Plan B B1: the one caller of the directory sync, and the unenrol / other-organisation wipe (ORGT-U50..U55).
             val orgDirectorySync = com.transfer.flash.core.enterprise.OrgDirectorySync(
                 directoryClient = hub.directory,
@@ -1384,8 +1393,16 @@ public class DesktopEngine(
                 relayConnected = hub.relay.state.map { it.canSend },
                 syncOnce = { force -> orgDirectorySync.syncOnce(force) },
                 clearSnapshot = { orgDirectorySync.clearSnapshot() },
-                refreshResolver = { orgPeerResolver.refreshFromSnapshot() },
-                clearResolver = { orgPeerResolver.clear() },
+                refreshResolver = {
+                    orgPeerResolver.refreshFromSnapshot()
+                    hubGroupRosters.refresh()
+                    hubRosterChat?.refreshHubGroupRosters()
+                },
+                clearResolver = {
+                    orgPeerResolver.clear()
+                    hubRosterChat?.clearHubGroupRosters()
+                    hubGroupRosters.clear()
+                },
                 scope = scope,
                 onOutcome = { reason, outcome -> FlashLog.i("ORG_SYNC", "reason=$reason outcome=${outcome::class.simpleName}") },
                 getStoredRootFingerprint = { db.orgDirectoryDao().getSyncState()?.orgRootFingerprint },
@@ -1398,6 +1415,7 @@ public class DesktopEngine(
                 localDisplayName = friendlyName,
                 isOrgPeer = { peerId -> if (enterpriseTrustStore.isEnrolled) orgPeerResolver.isOrgPeer(peerId) else false },
                 orgPeerResolver = orgPeerResolver,
+                hubGroupRosters = hubGroupRosters,
                 conversationDao = db.conversationDao(),
                 messageDao = db.messageDao(),
                 outboxDao = db.outboxDao(),
@@ -1550,6 +1568,7 @@ public class DesktopEngine(
                 hubContentViaHub = { _settings.value.hubContentViaHub },
                 hubSealing = hubSealingPort,
             )
+            hubRosterChat = chatImpl
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
                 FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")
                 onJoinRequestNotification?.invoke(groupId, groupTitle, requesterName)
