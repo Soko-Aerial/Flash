@@ -99,3 +99,43 @@ Plan A3 implements organization announcements: one-way broadcast messages with a
 ### Tests first
 `AnnouncementTextTest`, `AnnouncementAuthorizationTest`, `AnnouncementVisibilityTest`, `AnnouncementFtsTest`, `AnnouncementConcurrencyTest`, `AnnouncementIdempotencyTest`, `RelayAnnouncementEventContractTest`, `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`.
 
+---
+
+## 2026-10-15 — Plan A3 Announcements Engine, Console, Persistence & Repository (COMPLETE)
+
+### Worked on
+Implemented full Plan A3 scope across server engine, admin console UI, Room persistence step 17, client API, and chat repository.
+
+### Changed
+- **Text sanitization**: Added `AnnouncementText.kt` with NFC normalization, bidi override stripping, zero-width stripping, control character removal, and Unicode code-point length checks.
+- **Protocol & DTOs**: Added announcement DTOs, query parameters, limits, and `RelayFrame.AnnouncementEvent` with `ann1` capability negotiation.
+- **Server Store & Routes**: Implemented `AnnouncementStore.kt` with SQLite migration 1 (schema `announcement`, FTS5 virtual table `announcement_fts`, triggers, indices), FTS5 with LIKE fallback, `expectedSeq` optimistic locking, pin limits (max 3 org, max 3 dept), changes feed `since=<seq>`, soft delete tombstones, and `AnnouncementPurgeJob.kt` retention cleanup. Added authenticated REST routes `/api/v1/announcements*` and admin routes `/admin/api/v1/announcements*`.
+- **Admin Console UI**: Implemented `admin-ui/js/views/announcements.js` with pure DOM construction (`textContent`, no `innerHTML`), preview drawer, department-head scoping, optimistic concurrency conflict prompt, and Node test suite `announcements.test.mjs`.
+- **Persistence**: Added Room schema step 17 with `HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubAnnouncementDao`, migrations 15->16 placeholder and 16->17, and verified migrations in `FlashMigrationsChainTest` and `FlashJvmMigrationsTest`.
+- **Client API & Repository**: Added `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, and `FakeHubAnnouncementsApi` in `:core:enterprise`. Added announcement methods and models to `FlashChatRepository` and `RealFlashChatRepository`, wired `hubAnnouncementDao` and `hubAnnouncementsApi` in `DiscoveryEngineHolder` (Android) and `DesktopEngine` (Desktop), and added integration tests in `RealFlashChatRepositoryAnnouncementsTest`.
+- **Security & Routes**: Registered all new routes in `docs/protocol-routes.txt` and `docs/protocol.md` (verified via `RouteTableContractTest`). Documented plaintext threat model in `docs/security.md` (ADR-138).
+
+### Verification
+- `:server:test`: BUILD SUCCESSFUL (20 tasks executed/up-to-date, 0 failures, 3m 34s).
+- `node --test server/admin-ui-tests/announcements.test.mjs`: 6 passed, 0 failures (263ms).
+- `:core:messaging:jvmTest`: BUILD SUCCESSFUL (21 tasks executed, 0 failures, 1m 23s).
+- `:core:persistence:jvmTest`: BUILD SUCCESSFUL (8 tasks executed/up-to-date, 0 failures, 10s).
+- `:core:enterprise:jvmTest`: BUILD SUCCESSFUL (13 tasks executed, 0 failures, 59s).
+- `:desktop:compileKotlinJvm`: BUILD SUCCESSFUL (0 compilation errors).
+- `:app:compileDebugKotlin`: BUILD SUCCESSFUL (0 compilation errors).
+- Mutation Check 1: Disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Restored.
+- Mutation Check 2: Removed department visibility check in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. Restored.
+
+### Problems & Fixes
+- Room migration step 16 was reserved for B4. Created a schema placeholder for step 16 and full schema step 17 to keep migrations strictly linear and testable.
+- JUnit 4 test runner failed with `InvalidTestClassError: Method should be void` when tests inferred non-Unit return types from `= runBlocking { ... }`. Added explicit `: Unit` return type to all test methods.
+- Kotlin prohibited cross-module smart casting of `expiresAtMs`. Extracted to local variable before null check.
+
+### Remaining
+- Plan A4 / H6+: Hub tab screens, Compose announcement card list, and system notification UI.
+- Physical device testing (`ANN-01`..`ANN-11` recorded in `docs/testing/TEST-BACKLOG.md`).
+
+### Next AI
+Build Plan A4 / H6+ UI screens and notification receiver utilizing the `FlashChatRepository` announcements API and Room database established in Plan A3.
+
+

@@ -263,3 +263,85 @@ Plan A3 implements organization announcements: one-way broadcast messages with a
 - `RelayAnnouncementEventContractTest`: capability gating and golden frame serialization.
 - `FlashMigrationsChainTest` & `FlashJvmMigrationsTest`: Room migration 17 verification.
 
+### 2026-10-15 — Plan A3 Evidence Table & Phase Report
+
+#### Evidence Table
+
+| Step | Files changed (`path:line`) | Tests (full names) | Mutation (what I broke, which test failed) | Compile / test commands and result |
+|---|---|---|---|---|
+| ANN-U01 | `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementText.kt:1` | `com.transfer.flash.server.announcements.AnnouncementTextTest` | Mutation: disabled bidi stripping in `clean` -> `sanitizesBidiAndControlCharacters` FAILED | `tools\flash-gradle.cmd :server:test --tests "*AnnouncementTextTest*"`: 8 tests, 0 failures (PASS) |
+| ANN-U02..U10 | `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementStore.kt:1`, `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementPurgeJob.kt:1`, `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementRoutes.kt:1`, `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementAdminRoutes.kt:1` | `com.transfer.flash.server.announcements.AnnouncementStoreTest`, `com.transfer.flash.server.announcements.AnnouncementPurgeJobTest`, `com.transfer.flash.server.announcements.AnnouncementRoutesTest`, `com.transfer.flash.server.core.RouteTableContractTest` | Mutation Check 1: disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Mutation Check 2: removed department visibility filter in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. | `tools\flash-gradle.cmd :server:test`: 20 actionable tasks, 0 failures (BUILD SUCCESSFUL in 3m 34s) |
+| ANN-U09, U30 | `server/src/main/resources/admin-ui/js/views/announcements.js:1`, `server/src/main/resources/admin-ui/js/strings/en.js:1`, `server/admin-ui-tests/announcements.test.mjs:1` | `server/admin-ui-tests/announcements.test.mjs` | Mutation: replaced `textContent` with `innerHTML` in `announcements.js` preview -> XSS safety test FAILED | `node --test server/admin-ui-tests/announcements.test.mjs`: 6 tests, 0 failures (PASS in 263ms) |
+| ANN-U20..U25 | `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/entity/HubAnnouncementEntity.kt:1`, `core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/HubAnnouncementDao.kt:1`, `core/persistence/schemas/17.json:1`, `core/persistence/src/jvmTest/kotlin/com/transfer/flash/core/persistence/db/FlashJvmMigrationsTest.kt:1` | `com.transfer.flash.core.persistence.db.FlashJvmMigrationsTest`, `com.transfer.flash.core.persistence.db.FlashMigrationsChainTest` | Mutation: omitted `hub_announcement_state` from migration step 17 -> `FlashJvmMigrationsTest` FAILED with SQLite missing table | `tools\flash-gradle.cmd :core:persistence:jvmTest`: 8 actionable tasks, 0 failures (BUILD SUCCESSFUL in 10s) |
+| ANN-U26 | `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/announcements/HubAnnouncementsApi.kt:1`, `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/announcements/RealHubAnnouncementsApi.kt:1` | `com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApiTest` | Mutation: changed error code mapping for 409 Conflict to generic exception -> `editAnnouncementThrowsConflictOnSeqMismatch` FAILED | `tools\flash-gradle.cmd :core:enterprise:jvmTest`: 13 actionable tasks, 0 failures (BUILD SUCCESSFUL in 59s) |
+| ANN-U21..U26 | `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/FlashChatRepository.kt:1`, `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt:3870`, `core/messaging/src/jvmTest/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepositoryAnnouncementsTest.kt:1` | `com.transfer.flash.core.messaging.RealFlashChatRepositoryAnnouncementsTest` | Mutation: inverted posting rights check `canPostHubAnnouncement` -> `postingRightsReflectsAdminAndDepartmentHead` FAILED | `tools\flash-gradle.cmd :core:messaging:jvmTest`: 21 actionable tasks, 0 failures (BUILD SUCCESSFUL in 1m 23s) |
+
+#### Adversarial Self-Review (10 Findings)
+
+1. **`AnnouncementStore.kt:338` (in `editAnnouncement`)**: Simultaneous concurrent edits by two admins. Handled in atomic SQL statement `UPDATE announcement SET ... WHERE id = ? AND seq = ? AND deleted_at IS NULL`. Row count 0 throws `AnnouncementConflictException(current)` mapping to HTTP 409 Conflict, verified by `optimisticConcurrencyOnUpdate`.
+2. **`AnnouncementStore.kt:414` (in `getChangesFeed`)**: Hidden department announcement leakage to outsiders. Handled via SQL filter `AND (scope = 'org' OR (scope = 'department' AND department_id = ?))`. Outsiders never receive tombstones or feed items for other departments, verified by `visibilityFilterInSearchAndFeed` and Mutation Check 2.
+3. **`AnnouncementRoutes.kt:127` (in `postAnnouncement`)**: Scope spoofing by department head. Route checks caller claims against `isOrgAdmin` and rejects `scope=org` or mismatched `departmentId` with `403 ERR_FORBIDDEN` before reaching store, verified by `departmentHeadCannotPostCompanyWide`.
+4. **`AnnouncementStore.kt:454` (in `pinAnnouncement`)**: Pin limit exhaustion denial of service. Evaluated in exclusive transaction checking active pin count for scope. Count >= 3 throws `AnnouncementPinLimitException` returning `400 ERR_PIN_LIMIT`, verified by `pinLimitsEnforcedPerScope`.
+5. **`AnnouncementText.kt:33` (in `clean`)**: Bidi override phishing and Unicode spoofing. Normalizes Unicode via NFC, strips directional overrides (`\u202A-\u202E`, `\u2066-\u2069`), zero-width characters, and control characters, verified by `sanitizesBidiAndControlCharacters`.
+6. **`AnnouncementStore.kt:183` (in `search`)**: SQLite FTS parser syntax crashes on hostile query tokens (`"`, `*`, `NEAR`). FTS parser exceptions are caught with automatic fallback to parameterised `LIKE %query%` search, bounded to 64 code points, verified by `ftsSearchFallbackOnSyntaxError`.
+7. **`RealFlashChatRepository.kt:3901` (in `applyChangesFeed`)**: Out-of-order changes feed replay overwriting newer local edits. Sequence check compares incoming `item.seq` against local `existing.seq` and ignores older items unless `fullResync` is asserted, verified by `feedApplyOutOfOrderSeqPreservesNewest`.
+8. **`RealFlashChatRepository.kt:3948` (in unenrol listener)**: Confidential announcements remaining in SQLite after employee unenrolment. `RealFlashChatRepository` observes `enrolmentState` flow and executes `hubAnnouncementDao.clearAll()` when unenrolled, wiping data from disk, verified by `unenrolWipesAllStoredAnnouncements`.
+9. **`admin-ui/js/views/announcements.js:210` (in `renderItem`)**: Admin console DOM XSS via malicious announcement payloads. Console view strictly creates DOM elements via `document.createElement` and assigns `.textContent`, never using `innerHTML` or `eval`, verified by Node test `announcements.test.mjs`.
+10. **`AnnouncementStore.kt:384` (in `deleteAnnouncement`)**: Offline clients missing deletions if hard-deleted. Soft-delete preserves tombstone (`deleted_at != null`) and increments monotonic `seq`, allowing syncing clients to purge their local Room caches, verified by `softDeleteTombstonePropagatesInFeed`.
+
+#### Extra Situations Handled Beyond the Plan (5 Situations)
+
+1. **Clock rollback during server retention purge**: `AnnouncementPurgeJob` validates monotonic time constraints (`Math.max(nowMs, lastPurgeTimeMs)`) to ensure historical clock jumps do not purge active announcements prematurely.
+2. **Duplicate post protection via `clientRequestId`**: `PostAnnouncementRequestDto` supports client-supplied UUID idempotency keys; duplicate submissions within 1 hour return the existing item without re-incrementing `seq`.
+3. **Empty / whitespace-only content**: `AnnouncementText.clean` trims inputs and rejects whitespace-only titles/bodies with `400 ERR_BAD_REQUEST` (`org_ann_empty`).
+4. **Offline client search fallback**: When disconnected from the hub, `FlashChatRepository.searchHubAnnouncements` executes a local Room LIKE query across cached titles and bodies with "last updated" indicator.
+5. **Local read state preserved across admin edits**: User read/unread status in `hub_announcement_state` is preserved when an admin updates announcement content, maintaining user context.
+
+#### Phase A3 Report
+
+- **Done**:
+  - Section 3: Server announcements engine, SQLite migration 1, FTS5 with LIKE fallback, `AnnouncementText.clean`, REST routes `/api/v1/announcements*`, `expectedSeq` concurrency, pin limits (3 org, 3 dept), changes feed `since=<seq>`, admin console routes `/admin/api/v1/announcements*`, relay WebSocket push `AnnouncementEvent` with `ann1` feature, retention purge job.
+  - Section 5: Admin console UI (`admin-ui/js/views/announcements.js`, navigation, `strings/en.js`, Node tests).
+  - Section 4.2: Client persistence (Room schema step 17: `HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubAnnouncementDao`, migrations 15->16 placeholder and 16->17, Room schemas `16.json` and `17.json`).
+  - Section 4.1 & 4.3: Client API & Repository (`HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi`, `FlashChatRepository`, `RealFlashChatRepository`, `DiscoveryEngineHolder`, `DesktopEngine`).
+- **Done but only unit-tested (device checks added to backlog as ANN-01..ANN-11)**:
+  - `ANN-01` Admin posts company-wide from console
+  - `ANN-02` Department head posts to own department from app
+  - `ANN-03` Department head cannot post company-wide
+  - `ANN-04` Offline phone catches up on reconnect
+  - `ANN-05` Search in console and app
+  - `ANN-06` Edit and delete propagate to devices
+  - `ANN-07` Pinned announcements display order and pin limits
+  - `ANN-08` Hub restore from backup / epoch drop
+  - `ANN-09` Old app + new hub interoperability
+  - `ANN-10` Notification tap cold start
+  - `ANN-11` Transsion / background delivery observation
+- **Not done, and why**:
+  - Hub tab UI screens and notification system UI (explicitly scoped to Plan A4 / H6+).
+  - Physical multi-device verification (deferred to owner backlog per §35 of AGENTS.md).
+- **Surprises**:
+  1. Room schema migration: `15.json` was the highest existing schema in `:core:persistence`. Step 16 is reserved for Plan B4. A schema placeholder for step 16 and full schema step 17 had to be created to keep migrations contiguous without colliding with B4.
+  2. Kotlin JUnit 4 runner: methods using `= runBlocking { ... }` inferred non-Unit return types when ending with assertions returning values, causing JUnit 4 `InvalidTestClassError: Method should be void`. Required explicit `: Unit` signatures on test methods.
+  3. Kotlin cross-module smart cast: `expiresAtMs` declared in another module could not be smart-cast after null check, requiring local val extraction.
+- **Decisions taken**:
+  - ADR-138 (plaintext on hub) strictly adhered to; zero claims of encryption in any code, string, or doc.
+  - FTS5 fallback to parameterised LIKE queries ensures robust operation across heterogeneous SQLite builds.
+  - Idempotency key `clientRequestId` implemented on post endpoint to prevent duplicate posts on mobile network retry.
+- **Mutation checks**:
+  - Mutation Check 1: Disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Restored.
+  - Mutation Check 2: Removed department visibility check in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. Restored.
+- **Self-score against section 3 of Quality Contract**:
+  1. Failure paths: Covered (network errors, 400/401/403/404/409/429 mapped to typed `AnnouncementResult` and plan strings).
+  2. Hostile input: Covered (`AnnouncementText.clean` normalizes Unicode, strips bidi overrides, zero-width chars; FTS parser fallback).
+  3. Concurrency and ordering: Covered (optimistic concurrency via `expectedSeq`, monotonic `seq` changes feed).
+  4. Lifecycle: Covered (wipe on unenrol, offline caching in Room step 17, recovery on reconnect).
+  5. Scale: Covered (paged search and changes feed, indexed queries, synthetic tests).
+  6. Security: Covered (department scoping enforced on server, no claims of encryption per ADR-138, 2 mutation checks verified).
+  7. Compatibility: Covered (capability gating `ann1` in `RelayFrame.Hello`, forward-compatible JSON and frame decoders).
+  8. Both hosts: Covered (shared code in `commonMain`, wired in both `DiscoveryEngineHolder` [Android] and `DesktopEngine` [Desktop]).
+  9. Accessibility and honesty of UI: Covered (honest notice "Announcements are stored as plain text", text nodes in console, semantic strings).
+  10. Observability: Covered (structured logs with `TAG = "ANNOUNCEMENTS"`, audit logging for create/edit/delete/pin).
+  11. Documentation: Covered (`docs/protocol.md`, `docs/protocol-routes.txt`, `docs/security.md`, `TEST-BACKLOG.md`, progress/handoff logs).
+  12. Admin and support view: Covered (admin console view with preview, distinct error messages for pin limits and conflicts).
+
+

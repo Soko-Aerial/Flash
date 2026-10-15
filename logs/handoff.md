@@ -1,6 +1,29 @@
 # Current Handoff
 
+## 2026-10-15 — Plan A3 Announcements Engine, Console, Persistence & Repository Complete (Stream S2-a3)
+
+- **Status:** Plan A3 (`docs/plans/HUB-ANNOUNCEMENTS-PLAN.md` §3, §4.1-§4.3, §5) is COMPLETE and unit-tested on branch `agent/S2-a3`. Strict scope boundary maintained: server engine, admin console UI, Room schema step 17, and repository integration built; Hub tab screens and notification UI deferred to Plan A4 / H6+. ADR-138 (plaintext on hub) strictly respected.
+- **Components Built & Verified:**
+  - **Server Store & Routes:** `AnnouncementStore.kt` (migration 1, FTS5 with LIKE fallback, `expectedSeq` optimistic locking, pin limits 3 org / 3 dept, changes feed `since=<seq>`, soft delete tombstones, `AnnouncementPurgeJob.kt` retention purge). REST routes `/api/v1/announcements*` and `/admin/api/v1/announcements*`. Tested in `AnnouncementStoreTest`, `AnnouncementRoutesTest`, `AnnouncementPurgeJobTest`, and `RouteTableContractTest`.
+  - **Text Sanitization:** `AnnouncementText.clean` (NFC normalization, bidi override stripping, zero-width stripping, control character removal, code-point limits). Tested in `AnnouncementTextTest`.
+  - **Admin Console UI:** `admin-ui/js/views/announcements.js` (DOM `textContent` only, zero `innerHTML`), preview drawer, department-head scoping, conflict reload modal, English strings in `strings/en.js`. Verified via Node test `announcements.test.mjs` (6/6 pass).
+  - **Client Persistence (Room Step 17):** `HubAnnouncementEntity`, `HubAnnouncementStateEntity`, `HubAnnouncementDao`, Room schemas `16.json` (placeholder for B4) and `17.json`. Verified in `FlashMigrationsChainTest` and `FlashJvmMigrationsTest`.
+  - **Client API & Repository:** `HubAnnouncementsApi`, `RealHubAnnouncementsApi`, `FakeHubAnnouncementsApi` in `:core:enterprise`. Added announcement methods to `FlashChatRepository` and `RealFlashChatRepository`, wired in `DiscoveryEngineHolder` (Android) and `DesktopEngine` (Desktop), verified in `RealFlashChatRepositoryAnnouncementsTest` (9 integration tests).
+- **Gate Commands & Proof:**
+  - `:server:test`: BUILD SUCCESSFUL (20 tasks, 0 failures, 3m 34s).
+  - `node --test server/admin-ui-tests/announcements.test.mjs`: 6 passed, 0 failures (263ms).
+  - `:core:messaging:jvmTest`: BUILD SUCCESSFUL (21 tasks, 0 failures, 1m 23s).
+  - `:core:persistence:jvmTest`: BUILD SUCCESSFUL (8 tasks, 0 failures, 10s).
+  - `:core:enterprise:jvmTest`: BUILD SUCCESSFUL (13 tasks, 0 failures, 59s).
+  - `:desktop:compileKotlinJvm` & `:app:compileDebugKotlin`: BUILD SUCCESSFUL (0 errors).
+- **Mutation Checks Proven:**
+  1. Disabled `expectedSeq` in `AnnouncementStore.editAnnouncement` -> `optimisticConcurrencyOnUpdate` FAILED. Restored.
+  2. Removed department visibility filter in `AnnouncementStore.getChangesFeed` -> `visibilityFilterInSearchAndFeed` FAILED. Restored.
+- **Owed Device Tests:** `ANN-01`..`ANN-11` added to `docs/testing/TEST-BACKLOG.md`.
+- **Recommended Next Task:** Merge `agent/S2-a3` into dev, then build Plan A4 / H6+ (Hub tab Compose screens and notification receiver UI).
+
 ## 2026-10-15 — Verified: B1, B2, B3, A1, A2, H0-H5 accepted (report-3); DEFECT-017 fixed
+
 
 - Independent verifier (Antigravity, `agent/V-verifier-3`, report `logs/streams/V-verifier/report-3.md`) ACCEPTED B1, B2, B3, A1, A2, H0-H5. These are unblocked for the next phases. Still owed by the owner: ORGT-B01 confirmation, a two-phone run against a real hub (DEMO-01/DEMO-02).
 - ERROR-400 (DEFECT-017) fixed in code: dev delegation includes `enrol:dept_admin`; invite creation refuses roles the delegation cannot issue; app has its own message (`HUB_NOT_ALLOWED`). Restart the demo hub (no `-Fresh`) to pick up the new delegation, then create a new invite.
