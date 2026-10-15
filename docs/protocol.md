@@ -1545,3 +1545,26 @@ What a phone or desktop does with the relay wire above. Unit-tested, not device-
 - **Frame limits.** A WebSocket frame over 256 KiB is closed by the WebSocket layer (close code 1009) with no error frame; a frame under that whose payload is over 64 KiB gets `FLASH_ERROR ERR_TOO_LARGE` and then the close; more than the frame budget (burst 120, 60 per second) per session gets `FLASH_ERROR ERR_RATE_LIMIT` for the excess frames (ADR-124 contract tests).
 - **Group join.** `POST /api/v1/groups/join-request` answers `JOINED`, `PENDING` or `REJECTED`; a repeated request answers `PENDING` until decided; after an admin REJECTED the request, the NEXT request from that device answers `REJECTED` once (status `REJECTED_SEEN` in the hub) and a request after that starts a new `PENDING` row (ADR-124, ERROR-332). Admins list with `GET /api/v1/groups/join-requests` and decide with `POST /api/v1/groups/join-requests/decision`. The client polls pending joins every 60 s.
 - **Unenrol.** `POST /api/v1/device/unenroll` with the bearer (`404` counts as already done); when the hub cannot be reached the intention is stored and retried.
+
+## Hub group rosters on the LAN (Plan B Phase B4, ADR-135 section 10)
+
+**Signed roster statement** (`GroupRosterStatement`, domain tag `flash-hub-roster-v1`): fields `groupId`, `groupName`, `departmentId`,
+`version`, `memberDeviceIds` (sorted, unique), `adminDeviceIds` (sorted, unique), `issuedAtMs`, `validUntilMs`; signed by a delegate holding
+scope `enrol:member`, chained to the root. Verification result `RosterStatus`: OK, MALFORMED, TOO_LARGE (more than 200 members or more than
+16 KiB canonical), NOT_YET_VALID, EXPIRED, DELEGATION_INVALID, DELEGATION_EXPIRED, SCOPE_DENIED, REVOKED. The window is the organisation's
+`offlineGraceDays`; an expired roster accepts nobody.
+
+**Sync.** `GET /api/v1/directory/sync` carries `groupRosters` (`GroupRosterDto`) on the LAST page only: the caller's full current set of groups
+(at most 64 per sync). Groups above 200 members are skipped and counted (`rostersSkippedTooLarge`): "not supported offline". Deviation from
+the plan: the server group `version` is the directory version at the group's last change, so it increases but not strictly by 1. A client
+stores a roster only if it verifies, and a lower version never replaces a higher one; the set is replaced in the same transaction as the
+member batch (Room schema 16, table `hub_group_roster`).
+
+**Gossip.** Feature token `hrs1`. Frame `FLASH_GHUBR` (`GroupWireFrame.HubRosterOffer`: `groupId`, `from`, base64 `st` statement JSON, base64
+`chain` delegation chain JSON; caps 14 KiB and 2 KiB). The receiver accepts it only from an ORG peer whose `from` equals the transport peer,
+verifies it itself, requires sender and local device to be members, adopts it only if newer, at most one offer per peer and group per 60 s,
+and passes it on to at most 24 `hrs1` members. Offers are also sent when a peer session comes up.
+
+**Gate.** `isGroupPeerTrusted(groupId, peer)` additionally accepts a peer of a hub-linked group when the roster is current, both local device
+and peer are members, and the peer is ORG. Legacy and `g2-` groups use their own gates, unchanged. ORG-only members never get PTT, group
+creation or administration. "Add member" is disabled for hub groups. Roster rows are written with `operationId = "hub-roster-v<version>"`.

@@ -2,6 +2,10 @@
 
 package com.transfer.flash.core.enterprise
 
+import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
+import com.transfer.flash.core.hubprotocol.certs.RosterStatus
+import com.transfer.flash.core.hubprotocol.rest.GroupRosterDto
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.text.foldForSearch
@@ -193,6 +197,7 @@ public class OrgDirectorySync(
         val accumulatedDepartments = LinkedHashMap<String, OrgDepartmentEntity>()
         val accumulatedRemovedDeptIds = LinkedHashSet<String>()
         val accumulatedDelegations = LinkedHashMap<Long, DelegationCert>()
+        val offeredRosters = ArrayList<GroupRosterDto>()
 
         while (true) {
             val pageResult = directoryClient.fetchDirectorySync(
@@ -265,6 +270,8 @@ public class OrgDirectorySync(
                             return OrgSyncOutcome.HardSecurityError("This server is not the one you joined")
                         }
                     }
+
+                    offeredRosters.addAll(dto.groupRosters)
 
                     // Process departments
                     for (dept in dto.departments) {
@@ -398,8 +405,15 @@ public class OrgDirectorySync(
             lastErrorKind = null,
         )
 
+        val rosters = try {
+            verifiedRosters(offeredRosters, accumulatedDelegations.values.toList(), creds, now)
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            emptyList()
+        }
+
         try {
-            orgDirectoryDao.applySyncBatch(
+            orgDirectoryDao.applySyncBatchWithRosters(
                 fullResync = isFullResync,
                 membersToUpsert = membersToUpsert,
                 // A conflicted device is dropped from the snapshot, so a row stored by an earlier sync goes too.
@@ -407,6 +421,7 @@ public class OrgDirectorySync(
                 departmentsToUpsert = accumulatedDepartments.values.toList(),
                 departmentIdsToDelete = accumulatedRemovedDeptIds.toList(),
                 newState = newState,
+                rosters = rosters,
             )
             FlashProbe.emit(
                 "org.snapshot.applied",
@@ -441,6 +456,52 @@ public class OrgDirectorySync(
             fullResync = isFullResync,
             partialFailures = totalPartialFailures,
         )
+    }
+
+    /**
+     * Every roster offered by the hub, checked here on its own (root, chain, signature, window, revocations; plan section 10),
+     * never trusting the hub's say-so. A group's stored statement is replaced only by one with a version at least as high
+     * (a lower version never replaces a higher one), and a group the hub no longer lists is dropped with this commit.
+     */
+    private suspend fun verifiedRosters(
+        offered: List<GroupRosterDto>,
+        delegations: List<DelegationCert>,
+        creds: EnrollmentCredentials,
+        now: Long,
+    ): List<HubGroupRosterEntity> {
+        if (offered.isEmpty()) return emptyList()
+        val stored = orgDirectoryDao.allGroupRosters().associateBy { it.groupId }
+        val preVerified = delegations.filter { it.rootPublicKey == creds.rootPublicKey && it.verifySignature(verifier) }.toSet()
+        val best = LinkedHashMap<String, Pair<GroupRosterStatement, String>>()
+        for (dto in offered) {
+            val statement = try {
+                HubRestCodec.decode<GroupRosterStatement>(dto.statement)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                continue
+            }
+            if (statement.groupId != dto.groupId) continue
+            val status = statement.verify(
+                delegationChain = delegations,
+                rootPublicKey = creds.rootPublicKey,
+                verifier = verifier,
+                nowMs = now,
+                revocations = revocationsProvider(),
+                preVerifiedDelegations = preVerified,
+            )
+            if (status != RosterStatus.OK) {
+                FlashProbe.emit("org.roster.rejected", "group" to dto.groupId, "reason" to status.name)
+                continue
+            }
+            val current = best[statement.groupId]
+            if (current == null || statement.version > current.first.version) best[statement.groupId] = statement to dto.statement
+        }
+        val chainJson = HubRestCodec.encode(preVerified.toList().sortedBy { it.serial })
+        return best.values.mapNotNull { (statement, json) ->
+            val old = stored[statement.groupId]
+            if (old != null && old.version > statement.version) old
+            else HubGroupRosterEntity(statement.groupId, statement.version, json, chainJson, statement.validUntilMs)
+        }
     }
 
     private fun triggerHardSecurityError(reason: String) {
