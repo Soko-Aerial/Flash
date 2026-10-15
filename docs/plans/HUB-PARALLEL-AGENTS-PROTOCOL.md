@@ -76,7 +76,7 @@ Planning table; the integrator renumbers if the merge order differs and re-runs 
 
 | Resource | Used now | Reserved |
 |---|---|---|
-| Room schema (`FlashDatabase`, `FlashSchemaSteps`, `FlashMigrations`, `schemas/*.json`) | 14 (B1) | **15** B4 (`HubGroupRosterEntity`), **16** A3 (announcement cache). Anything else: ask. |
+| Room schema (`FlashDatabase`, `FlashSchemaSteps`, `FlashMigrations`, `schemas/*.json`) | 15 (B1 state columns `orgRootFingerprint` + `lastErrorKind`, merged 2026-10-15) | **16** B4 (`HubGroupRosterEntity`), **17** A3 (announcement cache). Anything else: ask. (Renumbered 2026-10-15: S1 took 15 for verifier defect 7.) |
 | Server migrations, component `directory` | 2 (B1) | **3** A2 (`departments.hidden`), **4** B4 (group roster statements) |
 | Server migrations, component `admin` | 3 (approver phone) | **4** A1 (department head role + scope) |
 | Server migrations, new component `announcements` | – | **1** A3 |

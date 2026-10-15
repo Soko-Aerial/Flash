@@ -5421,3 +5421,58 @@ The hub operator and administrators can read all announcements; the UI says so. 
 
 ### Revisit when
 Sealed announcements, acknowledgements or attachments are wanted (FO-19..FO-26).
+
+
+<!-- folded 2026-10-15 from logs/streams/S2-server/decisions-additions.md; ADR numbers kept as written there -->
+## Folded from stream S2-server (decisions-additions)
+
+# S2-server decisions additions (fragment; integrator folds into `docs/decisions.md`)
+
+## ADR-137 — Directory privacy option C (status: direction ACCEPTED, keys point D9 ACCEPTED 2026-10-14; now BUILT by S2/A2, needs verifier ACCEPT)
+
+### Decision
+Org-wide names/departments/online dots; per-department `hidden` flag for
+listing-only secrecy. Identity + sealing keys org-visible for non-hidden
+departments (`DIRECTORY_KEYS_ORG_WIDE=true`, D9 2026-10-14), insiders-only for
+hidden ones (via membership, known-id lookup, Plan B Layer 2 handshake).
+
+### Built (A2, 2026-10-14, branch `agent/S2-server`)
+- `Department.hidden` persisted (directory migration 3), admin API + console
+  toggle with the plan's exact help text, audit `directory.department.hidden`,
+  epoch bump on every change (full resync).
+- `DirectoryVisibility` is the single decider (all reads route through it;
+  architecture test proves it).
+- New routes `GET /directory/people`, `GET /directory/people/{id}`; widened
+  `departments`/`members`/`groups`/sync; `docs/protocol.md` "Directory privacy
+  v1"; `docs/protocol-routes.txt` regenerated.
+- Client `fetchPeople`/`lookupPerson`, standing rules, hub-too-old fallback
+  sentence (exact).
+- Owner answer recorded: §3.5 presence switch NOT built in v1 (D11).
+
+### Deviations from the plan text (with reasons)
+- `DepartmentDto` counts stay non-null Ints; hidden outsiders get `0` (plan said
+  null) — null would break old clients' non-null decode. Hidden rows are
+  filtered before counts anyway.
+- `/members?departmentId=<missing>` changed 403→404 (same body as hidden) to
+  remove the existence oracle.
+
+### Revisit when
+Owner flips `DIRECTORY_KEYS_ORG_WIDE` (one const); per-department presence
+switch if asked.
+
+
+<!-- folded 2026-10-15 from logs/streams/S3-hubtab/decisions-additions.md; ADR numbers kept as written there -->
+## Folded from stream S3-hubtab (decisions-additions)
+
+# S3 decisions (numbers from the reserved range 159-168)
+
+## ADR-159 — Enrolment lives in the navigation state and is saved with it
+**Decision.** `FlashNavigationState` holds `hubEnrolled`, saved as a marker entry `@hubEnrolled|0/1` in the existing list saver; `normalised(entries, hubEnrolled)` rewrites any stack for the current tab set. Hosts call `updateHubEnrolled` only once the engine is `ready`.
+**Why.** Enrolment is unknown until the engine boots; restoring a Hub position on process death must not be lost or crash. Alternatives: host-held flag passed into every call (rejected: nine call sites, easy to forget); persisting in settings (rejected: a second source of truth).
+**Revisit when** a cold start of an enrolled device must show Hub on the first frame (limitation: it shows the old tab set until ready).
+
+## ADR-160 — PROPOSED: what counts as an "active" transfer in the top-bar indicator
+Offered, Queued, Transferring, Verifying count; Paused, Completed, Failed, Cancelled do not. **Owner to confirm** (a paused transfer currently shows no indicator).
+
+## ADR-161 — Transfers entry points go through `openTransfers()`
+Every host path that opens Transfers (notification, shortcut, tray, Ctrl+2, top-bar icon) calls `FlashNavigationState.openTransfers()`: selects the tab when unenrolled, pushes when enrolled. No host calls `selectTab(Transfers)` any more.
