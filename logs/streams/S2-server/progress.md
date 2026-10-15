@@ -70,3 +70,32 @@ tests; e2e head-invite-enrol-invite-employee.
 - V6 admin migration 3 added approver_device_id: TRUE.
 - V7 old console + new server: session adds fields only; old pages get the
   standard 403 error DTO on scoped routes (test U16).
+
+---
+
+## 2026-10-15 — Plan A3 Explain-Back (quality contract section 2, no code yet)
+
+### What the phase must achieve and why
+Plan A3 implements organization announcements: one-way broadcast messages with a title and plaintext body stored unencrypted on the hub (ADR-138). Org admins can post company-wide or to any department; department heads can post only to their assigned department(s); regular employees can only read and search. The server provides a migration (component "announcements", version 1), SQLite FTS5 full-text indexing, strict input sanitization (`AnnouncementText.clean`), authenticated REST routes for devices and console admins, an idempotent changes feed (`since=<seq>`), optimistic concurrency on edits (`expectedSeq`), pin limits (max 3 org, max 3 dept), optional expiry/retention cleanup, capability-gated live WebSocket push via `RelayFrame.AnnouncementEvent` with `ann1` feature negotiation, and console management UI with live rendering preview. On the client side, it adds DTOs, Room schema step 17 with `HubAnnouncementEntity` and `HubAnnouncementStateEntity`, `HubAnnouncementsApi`, and repository operations in `FlashChatRepository` with typed error handling.
+
+### Files I will touch / create
+1. `server/.../announcements/AnnouncementText.kt`: text sanitization. Similar: `TextSearchFold.kt`, `RelayFrameCodec.kt`, `AuditLogger.kt`. Reuse Unicode code-point normalization, strip bidi overrides & zero-width chars, collapse excessive newlines.
+2. `server/.../announcements/AnnouncementStore.kt` & `AnnouncementRoutes.kt`: SQLite persistence, migrations, REST device routes. Similar: `OrganizationDirectory.kt`, `DirectoryRoutes.kt`, `MailboxStore.kt`. Reuse `ServerDatabase`, transaction management, monotonic `seq`, token bucket limits, `HubApiGate`.
+3. `server/.../announcements/AnnouncementAdminRoutes.kt`: console admin endpoints. Similar: `AdminApi.kt`, `AdminApiDirectory.kt`, `ConsoleScope.kt`. Reuse `ConsoleScope.allows(deptId)` and `requireSession`.
+4. `core/hub-protocol/.../rest/AnnouncementDtos.kt`: DTO models. Similar: `RestDtos.kt`, `DirectorySyncDto.kt`, `RelayFrame.kt`. Reuse `@Serializable`, `@FlashInternalApi`, `HubContract`.
+5. `core/hub-protocol/.../relay/RelayFrame.kt`: `AnnouncementEvent` and `Hello.features`. Similar: other `RelayFrame` definitions, `RelayFrameCodec.kt`.
+6. `core/persistence/.../db/`: Room schema step 17, `HubAnnouncementEntity.kt`, `HubAnnouncementStateEntity.kt`, `HubAnnouncementDao.kt`, `FlashSchemaSteps.kt`, `FlashDatabase.kt`. Similar: `OrgDirectoryMemberEntity.kt`, `OrgSyncStateEntity.kt`, `DraftEntity.kt`. Reuse Room annotations, transactions, flow queries.
+7. `core/enterprise/.../announcements/`: `HubAnnouncementsApi.kt`, `RealHubAnnouncementsApi.kt`. Similar: `EnterpriseDirectoryClient.kt`, `HubSession.kt`, `HubPeerDirectory.kt`. Reuse Ktor client, bearer provider, `FlashResult`.
+8. `core/messaging/.../`: `FlashChatRepository.kt`, `RealFlashChatRepository.kt` announcement additions.
+9. `server/src/main/resources/admin-ui/`: `js/views/announcements.js`, `strings/en.js`. Similar: `organization.js`, `invites.js`, `overview.js`. Reuse safe DOM building (`textContent`, NO `innerHTML`), API helper.
+
+### Five likeliest failures
+1. Concurrency: Simultaneous edits colliding. Guarded by atomic SQLite transactions and `expectedSeq` optimistic locking (returning 409 Conflict with current item).
+2. Wire & Backward Compatibility: Older clients crashing on new frame. Guarded by capability gating `ann1` in `Hello.features` and forward-compatible codec ignoring unknown frames/fields. Old hubs communicating with new clients guarded by feature discovery and `org_ann_unsupported`.
+3. Security & Scope Leaks: Department head posting or viewing cross-department or hidden department announcements. Guarded by enforcing department match against authenticated session/cert, not request body, and filtering inside SQL. Announcements explicitly stored in plaintext (ADR-138) with no false encryption claims.
+4. Scale & FTS injection: Malformed search queries breaking FTS5. Guarded by parameterization and escaping of FTS operators, query length bounds (<= 64 chars), and SQL pagination.
+5. Platform & Unicode Differences: Code-point counting vs Java string length (surrogate pairs / emoji). Guarded by Unicode code point counting, NFC normalization, stripping bidi overrides.
+
+### Tests first
+`AnnouncementTextTest`, `AnnouncementAuthorizationTest`, `AnnouncementVisibilityTest`, `AnnouncementFtsTest`, `AnnouncementConcurrencyTest`, `AnnouncementIdempotencyTest`, `RelayAnnouncementEventContractTest`, `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`.
+
