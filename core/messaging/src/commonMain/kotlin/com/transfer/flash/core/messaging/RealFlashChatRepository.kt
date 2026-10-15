@@ -110,6 +110,20 @@ import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
 import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.MessagePinDao
+import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
+import com.transfer.flash.core.persistence.db.entity.HubAnnouncementStateEntity
+import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
+import com.transfer.flash.core.enterprise.announcements.HubAnnouncementError
+import com.transfer.flash.core.hubprotocol.rest.PostAnnouncementRequestDto
+import com.transfer.flash.core.hubprotocol.rest.UpdateAnnouncementRequestDto
+import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.core.messaging.model.HubAnnouncementUi
+import com.transfer.flash.core.messaging.model.HubAnnouncementDraft
+import com.transfer.flash.core.messaging.model.HubPostingRights
+import com.transfer.flash.core.messaging.model.toUi
+import com.transfer.flash.core.messaging.model.toEntity
+import com.transfer.flash.core.common.text.foldForSearch
+import com.transfer.flash.core.security.enterprise.EnrollmentCredentials
 import com.transfer.flash.core.messaging.group.GroupLocalPreferences
 import com.transfer.flash.core.messaging.group.toEntity
 import com.transfer.flash.core.messaging.group.toPreferences
@@ -373,7 +387,59 @@ public class RealFlashChatRepository(
     private val orgPeerResolver: OrgPeerResolver? = null,
     /** B4: the hub-signed roster statements of hub groups, for the LAN gate and the roster rows (Plan B section 10). */
     private val hubGroupRosters: HubGroupRosterView? = null,
+    /** Plan A3: Organization announcements local Room persistence. */
+    hubAnnouncementDao: HubAnnouncementDao? = null,
+    /** Plan A3: Organization announcements REST API client. */
+    hubAnnouncementsApi: HubAnnouncementsApi? = null,
+    /** Plan A3: Real-time announcement hint push flow. */
+    hubAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? = null,
 ) : FlashChatRepository, AutoCloseable {
+
+    private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
+    private val hubAnnouncementsApi: HubAnnouncementsApi? = hubAnnouncementsApi
+    private val effectiveAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? =
+        hubAnnouncementEvents ?: hubRelay?.announcementEvents
+    private val refreshAnnouncementsMutex: Mutex = Mutex()
+
+    /** Reactive stream of active announcements visible to the current employee (Plan A3 §4.3). */
+    override val hubAnnouncements: Flow<List<HubAnnouncementUi>> =
+        hubAnnouncementDao?.observeAll()?.map { list ->
+            val now = timeSource.nowMs()
+            list.filter {
+                val exp = it.expiresAtMs
+                exp == null || exp > now
+            }.map { it.toUi() }
+        } ?: flowOf(emptyList())
+
+    /** Dynamic count of unread announcements matching the current visibility (Plan A3 §4.3). */
+    override val hubUnreadAnnouncementCount: Flow<Int> =
+        hubAnnouncementDao?.observeAll()?.map { list ->
+            val now = timeSource.nowMs()
+            list.count {
+                val exp = it.expiresAtMs
+                it.readAtMs == null && (exp == null || exp > now)
+            }
+        } ?: flowOf(0)
+
+    /** Reactive capability descriptor for the compose FAB (Plan A3 §4.3). */
+    override val canPostHubAnnouncement: Flow<HubPostingRights> =
+        enterpriseTrustStore?.credentials?.map { creds ->
+            derivePostingRights(creds)
+        } ?: flowOf(HubPostingRights.None)
+
+    private fun derivePostingRights(creds: EnrollmentCredentials?): HubPostingRights {
+        if (creds == null || creds.isExpiredAt(timeSource.nowMs())) {
+            return HubPostingRights.None
+        }
+        return when (creds.role) {
+            "org_admin", "admin" -> HubPostingRights.OrgWide(allDepartments = emptyList())
+            "dept_admin" -> {
+                val dept = creds.department
+                if (dept.isNullOrBlank()) HubPostingRights.None else HubPostingRights.Department(listOf(dept))
+            }
+            else -> HubPostingRights.None
+        }
+    }
 
     /** Derives whether [deviceId] is an active organisation colleague via resolver or capability lambda. */
     private fun effectiveIsOrgPeer(deviceId: String): Boolean =
@@ -1115,6 +1181,26 @@ public class RealFlashChatRepository(
                         changed > 0 || messageDao.existsAttachment(transferId) || (groupMsgId != null && messageDao.existsAttachment(groupMsgId))
                     }.getOrDefault(false)
                     if (written) stamped.add("$transferId|$path")
+                }
+            }
+        }
+
+        // Plan A3 §3.6: Announcement hints pushed over WebSocket
+        effectiveAnnouncementEvents?.let { events ->
+            scope.launch(ioDispatcher) {
+                events.collect {
+                    runCatching { refreshHubAnnouncements() }
+                }
+            }
+        }
+
+        // Plan A3 §6.11: Unenrol or credentials wiped clears stored announcements
+        enterpriseTrustStore?.let { trust ->
+            scope.launch(ioDispatcher) {
+                trust.credentials.collect { creds ->
+                    if (creds == null) {
+                        hubAnnouncementDao?.clearAll()
+                    }
                 }
             }
         }
@@ -5361,11 +5447,23 @@ public class RealFlashChatRepository(
         val last = hubRosterOfferSeenAt[key]
         if (last != null && now - last < HUB_ROSTER_OFFER_MIN_INTERVAL_MS) return
         hubRosterOfferSeenAt[key] = now
+        // Bounded memory (verifier B4 finding 6): drop entries older than the interval, they no longer limit anything.
+        hubRosterOfferSeenAt.toMap().forEach { (k, t) -> if (now - t >= HUB_ROSTER_OFFER_MIN_INTERVAL_MS) hubRosterOfferSeenAt.remove(k) }
         val outcome = rosters.adopt(
             HubRosterOfferPayload(frame.groupId, frame.statementJson, frame.delegationChainJson),
             offeredBy = peerDeviceId,
         )
         FlashProbe.emit("org.roster.offer", "group" to FlashProbe.short(frame.groupId), "outcome" to outcome.name)
+        if (outcome == RosterAdoption.STALE) {
+            // Plan 10.4 (verifier B4 defect 20): the peer holds an older or equal statement; answer with ours so a removal spreads.
+            val mine = rosters.current(frame.groupId, now)
+            val payload = rosters.offerFor(frame.groupId, now)
+            val sink = lanGroupTransportSink
+            if (mine != null && payload != null && sink != null && peerDeviceId in mine.memberDeviceIds) {
+                sink.send(peerDeviceId, GroupWireFrame.HubRosterOffer(frame.groupId, localDeviceId, payload.statementJson, payload.delegationChainJson))
+            }
+            return
+        }
         if (outcome != RosterAdoption.ADOPTED) return
         projectHubRosters()
         offerHubRostersToMembers(frame.groupId, except = peerDeviceId)
@@ -7173,6 +7271,225 @@ public class RealFlashChatRepository(
             }
         }
         candidates
+    }
+
+    override suspend fun refreshHubAnnouncements(): FlashResult<Unit> = withContext(ioDispatcher) {
+        refreshAnnouncementsMutex.withLock {
+            val api = hubAnnouncementsApi
+                ?: return@withContext FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
+            val dao = hubAnnouncementDao
+                ?: return@withContext FlashResult.Failure(FlashError.Unknown("Announcements persistence unavailable"))
+            val creds = enterpriseTrustStore?.getCredentials()
+                ?: return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+            if (creds.isExpiredAt(timeSource.nowMs())) {
+                return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+            }
+
+            var state = dao.getState()
+            var currentSince = state?.seq ?: 0L
+            val initialEpoch = state?.epoch
+            var loopCount = 0
+            val maxLoops = 20
+
+            while (loopCount < maxLoops) {
+                loopCount++
+                val result = api.fetchFeed(creds.hubUrl, since = currentSince, limit = 100)
+                val feed = when (result) {
+                    is FlashResult.Failure -> return@withContext result
+                    is FlashResult.Success -> result.value
+                }
+
+                if (feed.fullResync || (initialEpoch != null && feed.epoch != initialEpoch && currentSince > 0L)) {
+                    dao.clearAnnouncements()
+                    currentSince = 0L
+                }
+
+                for (item in feed.items) {
+                    if (item.deleted) {
+                        dao.deleteById(item.id)
+                    } else {
+                        val existing = dao.getById(item.id)
+                        val entity = item.toEntity(existingReadAtMs = existing?.readAtMs)
+                        dao.upsertOne(entity)
+                    }
+                }
+
+                // A full page continues from its last item, not from the hub's highest seq (ANN verifier defect 2):
+                // jumping to feed.seq would skip every announcement between this page and the end.
+                val pageEndSeq = feed.nextCursor?.toLongOrNull() ?: feed.items.maxOfOrNull { it.seq }
+                val nextSeq = if (feed.nextCursor != null && pageEndSeq != null) {
+                    maxOf(currentSince, pageEndSeq)
+                } else {
+                    maxOf(currentSince, feed.seq)
+                }
+                val newState = HubAnnouncementStateEntity(
+                    id = 1,
+                    epoch = feed.epoch,
+                    seq = nextSeq,
+                    lastSyncAtMs = timeSource.nowMs(),
+                )
+                dao.setState(newState)
+                currentSince = nextSeq
+
+                if (feed.nextCursor == null || feed.items.isEmpty()) {
+                    break
+                }
+            }
+
+            dao.pruneOldAnnouncements(maxKeep = 500)
+            FlashResult.Success(Unit)
+        }
+    }
+
+    override suspend fun searchHubAnnouncements(
+        query: String,
+        online: Boolean,
+    ): FlashResult<List<HubAnnouncementUi>> = withContext(ioDispatcher) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) {
+            return@withContext FlashResult.Success(emptyList())
+        }
+
+        val dao = hubAnnouncementDao
+        val now = timeSource.nowMs()
+
+        if (online) {
+            val api = hubAnnouncementsApi
+            val creds = enterpriseTrustStore?.getCredentials()
+            if (api != null && creds != null && !creds.isExpiredAt(now)) {
+                val onlineResult = api.search(creds.hubUrl, trimmed)
+                if (onlineResult is FlashResult.Success) {
+                    val items = onlineResult.value.items.map { dto ->
+                        val localEntity = dao?.getById(dto.id)
+                        dto.toUi(isRead = localEntity?.readAtMs != null)
+                    }
+                    return@withContext FlashResult.Success(items)
+                }
+            }
+        }
+
+        if (dao != null) {
+            val folded = foldForSearch(trimmed)
+            val localResults = dao.search(folded, now).map { it.toUi() }
+            FlashResult.Success(localResults)
+        } else {
+            FlashResult.Success(emptyList())
+        }
+    }
+
+    override suspend fun markHubAnnouncementRead(id: String) {
+        withContext(ioDispatcher) {
+            hubAnnouncementDao?.markRead(id, timeSource.nowMs())
+        }
+    }
+
+    override suspend fun postHubAnnouncement(
+        draft: HubAnnouncementDraft,
+    ): FlashResult<HubAnnouncementUi> = withContext(ioDispatcher) {
+        val api = hubAnnouncementsApi
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
+        val creds = enterpriseTrustStore?.getCredentials()
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        if (creds.isExpiredAt(timeSource.nowMs())) {
+            return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        }
+
+        val role = creds.role
+        val allowed = when (role) {
+            "org_admin", "admin" -> true
+            "dept_admin" -> draft.scope == "department" && draft.departmentId == creds.department
+            else -> false
+        }
+        if (!allowed) {
+            return@withContext FlashResult.Failure(HubAnnouncementError.NotAllowed.toFlashError())
+        }
+
+        val request = PostAnnouncementRequestDto(
+            clientRequestId = UuidIdGenerator.newId(),
+            scope = draft.scope,
+            departmentId = draft.departmentId,
+            title = draft.title,
+            body = draft.body,
+            pinned = draft.pinned,
+            expiresAtMs = draft.expiresAtMs,
+        )
+
+        when (val result = api.post(creds.hubUrl, request)) {
+            is FlashResult.Failure -> result
+            is FlashResult.Success -> {
+                val entity = result.value.toEntity(existingReadAtMs = timeSource.nowMs())
+                hubAnnouncementDao?.upsertOne(entity)
+                FlashResult.Success(entity.toUi())
+            }
+        }
+    }
+
+    override suspend fun editHubAnnouncement(
+        id: String,
+        draft: HubAnnouncementDraft,
+        expectedSeq: Long,
+    ): FlashResult<HubAnnouncementUi> = withContext(ioDispatcher) {
+        val api = hubAnnouncementsApi
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
+        val creds = enterpriseTrustStore?.getCredentials()
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        if (creds.isExpiredAt(timeSource.nowMs())) {
+            return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        }
+
+        val request = UpdateAnnouncementRequestDto(
+            expectedSeq = expectedSeq,
+            title = draft.title,
+            body = draft.body,
+            pinned = draft.pinned,
+            expiresAtMs = draft.expiresAtMs,
+        )
+
+        when (val result = api.update(creds.hubUrl, id, request)) {
+            is FlashResult.Failure -> result
+            is FlashResult.Success -> {
+                val existing = hubAnnouncementDao?.getById(id)
+                val entity = result.value.toEntity(existingReadAtMs = existing?.readAtMs ?: timeSource.nowMs())
+                hubAnnouncementDao?.upsertOne(entity)
+                FlashResult.Success(entity.toUi())
+            }
+        }
+    }
+
+    override suspend fun deleteHubAnnouncement(id: String): FlashResult<Unit> = withContext(ioDispatcher) {
+        val api = hubAnnouncementsApi
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
+        val creds = enterpriseTrustStore?.getCredentials()
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        if (creds.isExpiredAt(timeSource.nowMs())) {
+            return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        }
+
+        when (val result = api.delete(creds.hubUrl, id)) {
+            is FlashResult.Failure -> result
+            is FlashResult.Success -> {
+                hubAnnouncementDao?.deleteById(id)
+                FlashResult.Success(Unit)
+            }
+        }
+    }
+
+    override suspend fun setHubAnnouncementPinned(id: String, pinned: Boolean): FlashResult<Unit> = withContext(ioDispatcher) {
+        val api = hubAnnouncementsApi
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.NotSupportedByHub.toFlashError())
+        val creds = enterpriseTrustStore?.getCredentials()
+            ?: return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        if (creds.isExpiredAt(timeSource.nowMs())) {
+            return@withContext FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
+        }
+
+        when (val result = api.setPinned(creds.hubUrl, id, pinned)) {
+            is FlashResult.Failure -> result
+            is FlashResult.Success -> {
+                hubAnnouncementDao?.setPinned(id, pinned)
+                FlashResult.Success(Unit)
+            }
+        }
     }
 
     internal fun signedGroupsForTesting(): SignedGroups? = signedGroups

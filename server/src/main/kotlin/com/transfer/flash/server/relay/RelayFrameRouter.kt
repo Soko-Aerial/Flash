@@ -634,6 +634,7 @@ public class RelayFrameRouter(
             remoteAddress = remoteAddress,
             websocketSession = session,
             principal = principal,
+            features = hello.features.toSet(),
             outboundCapacity = policy.outboundQueueCapacity,
             sendTimeoutMs = policy.sendTimeoutMs,
         )
@@ -794,6 +795,28 @@ public class RelayFrameRouter(
         return true
     }
 
+    /**
+     * Broadcasts an announcement event to all active sessions that negotiated [HubContract.FEATURE_ANNOUNCEMENTS_V1]
+     * and satisfy scope visibility.
+     *
+     * @return Number of sessions the frame was queued for.
+     */
+    public fun broadcastAnnouncement(event: RelayFrame.AnnouncementEvent): Int {
+        val text = RelayFrameCodec.encode(event)
+        return connectionPool.broadcastText(text) { session ->
+            if (!session.features.contains(HubContract.FEATURE_ANNOUNCEMENTS_V1)) {
+                false
+            } else if (event.scope == "org") {
+                true
+            } else {
+                val role = session.role
+                val isOrgAdmin = role.equals("admin", ignoreCase = true) || role.equals("ORG_ADMIN", ignoreCase = true)
+                val memberDept = session.principal?.departmentId
+                isOrgAdmin || (event.departmentId != null && memberDept == event.departmentId)
+            }
+        }
+    }
+
     // =====================================================================================================
     // Shutdown
     // =====================================================================================================
@@ -852,6 +875,7 @@ public class RelayFrameRouter(
         is RelayFrame.Pong -> "FLASH_PONG"
         is RelayFrame.Revoked -> "FLASH_REVOKED"
         is RelayFrame.Kick -> "FLASH_KICK"
+        is RelayFrame.AnnouncementEvent -> "FLASH_ANNOUNCEMENT"
     }
 
     private fun reasonLabel(reason: String): String = when (reason) {

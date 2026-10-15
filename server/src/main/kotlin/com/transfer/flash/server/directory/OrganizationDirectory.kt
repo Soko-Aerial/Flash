@@ -1423,7 +1423,7 @@ class OrganizationDirectory(
         const val COMPONENT: String = "directory"
 
         /** A device belongs to few hub groups; a sync carries at most this many rosters (bounds the response and the signing work). */
-        const val MAX_ROSTERS_PER_SYNC: Int = 64
+        const val MAX_ROSTERS_PER_SYNC: Int = 256
 
         /** Tombstones older than this are pruned; a client further behind gets a full resync (90 days). */
         const val TOMBSTONE_RETENTION_MS: Long = 90L * 24 * 60 * 60 * 1000

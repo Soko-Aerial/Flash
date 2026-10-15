@@ -1234,8 +1234,8 @@ class OrgDirectorySyncTest {
         return unsigned.copy(issuerSignature = Base64.encode(signer.sign(unsigned.canonicalBytes())))
     }
 
-    private fun rosterPage(vararg rosters: GroupRosterStatement) = DirectorySyncDto(
-        directoryEpoch = "epoch-1", version = 10L, fromVersion = 0L, fullResync = true, nextCursor = null,
+    private fun rosterPage(vararg rosters: GroupRosterStatement, fullResync: Boolean = true) = DirectorySyncDto(
+        directoryEpoch = "epoch-1", version = 10L, fromVersion = 0L, fullResync = fullResync, nextCursor = null,
         serverTimeMs = nowMs, delegationChain = listOf(testOrg.delegation()),
         groupRosters = rosters.map { GroupRosterDto(it.groupId, it.version, HubRestCodec.encode(it), it.validUntilMs) },
     )
@@ -1264,9 +1264,17 @@ class OrgDirectorySyncTest {
         val dao = FakeOrgDirectoryDao()
         TestScope2.syncWith(dao, rosterPage(signedRoster(7L), signedRoster(1L, groupId = "grp-2")))
         assertEquals(setOf("grp-1", "grp-2"), dao.storedRosters.keys)
-        TestScope2.syncWith(dao, rosterPage(signedRoster(3L)))
+        TestScope2.syncWith(dao, rosterPage(signedRoster(3L), fullResync = false))
         assertEquals(7L, dao.storedRosters.getValue("grp-1").version, "version 3 must not replace 7")
         assertEquals(setOf("grp-1"), dao.storedRosters.keys, "grp-2 is gone from the hub's set")
+    }
+
+    @Test
+    fun `ORGT-U43b after a full resync the hub's versions win even when lower (restored hub, epoch reset)`() {
+        val dao = FakeOrgDirectoryDao()
+        TestScope2.syncWith(dao, rosterPage(signedRoster(7L)))
+        TestScope2.syncWith(dao, rosterPage(signedRoster(2L), fullResync = true))
+        assertEquals(2L, dao.storedRosters.getValue("grp-1").version)
     }
 
     @Test
@@ -1286,6 +1294,7 @@ class OrgDirectorySyncTest {
         assertEquals(RosterAdoption.NOT_A_MEMBER, rosters.adopt(offer(signedRoster(9L, members = listOf("dev-1"), groupId = "grp-x"))))
         assertEquals(RosterAdoption.ADOPTED, rosters.adopt(offer(signedRoster(3L, members = listOf("dev-1", "local-device")))))
         assertEquals(3L, rosters.current("grp-1", nowMs)?.version)
+        assertEquals(RosterAdoption.SENDER_NOT_MEMBER, rosters.adopt(offer(signedRoster(10L)), offeredBy = "stranger"), "an offer from a non-member is refused")
         assertNull(rosters.current("grp-1", nowMs + 31L * 24 * 3_600_000), "an expired window answers nobody")
     }
 }

@@ -32,6 +32,9 @@ public interface HubRelayPort {
     /** Ephemeral typing signals (never queued by the hub). */
     public val typing: Flow<HubTypingEvent>
 
+    /** Real-time announcement event hints pushed from the hub over WebSocket (Plan A3 §3.6). */
+    public val announcementEvents: Flow<RelayFrame.AnnouncementEvent>? get() = null
+
     /** Hands one message to the hub. True means the frame was written to the hub socket, not that anyone got it. */
     public suspend fun send(to: String, id: String, type: String, sentAt: Long, payload: String): Boolean
 
@@ -140,6 +143,8 @@ public class FlashRelayHubPort(
         val from = meta.from?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
         HubTypingEvent(from, meta.conversationId, meta.ts)
     }
+
+    override val announcementEvents: Flow<RelayFrame.AnnouncementEvent> = client.announcementEvents
 
     override suspend fun send(to: String, id: String, type: String, sentAt: Long, payload: String): Boolean =
         client.sendEnvelope(to, FlashEnvelope(id = id, type = type, payloadJson = payload, senderId = client.deviceId, sentAt = sentAt))

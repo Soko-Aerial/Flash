@@ -25,6 +25,8 @@ export function setSession(dto) {
   session.stepUpAvailable = !!dto.stepUpAvailable;
   session.enrolledDeviceId = dto.enrolledDeviceId || null;
   session.approverDeviceId = dto.approverDeviceId || null;
+  session.displayName = dto.displayName || '';
+  session.departments = Array.isArray(dto.departments) ? dto.departments : [];
   if (dto.serverTimeMs) session.skewMs = dto.serverTimeMs - Date.now();
   session.lastActivity = Date.now();
   emit();
@@ -44,6 +46,8 @@ export function clearSession() {
   session.stepUpAvailable = false;
   session.enrolledDeviceId = null;
   session.approverDeviceId = null;
+  session.displayName = '';
+  session.departments = [];
   emit();
 }
 

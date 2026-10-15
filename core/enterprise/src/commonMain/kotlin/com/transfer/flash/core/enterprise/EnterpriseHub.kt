@@ -8,6 +8,8 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite
+import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
+import com.transfer.flash.core.enterprise.announcements.RealHubAnnouncementsApi
 import com.transfer.flash.core.enterprise.relay.FlashRelayClient
 import com.transfer.flash.core.enterprise.relay.RelayFailureKind
 import com.transfer.flash.core.enterprise.relay.RelayIdentity
@@ -99,6 +101,14 @@ public class EnterpriseHub(
     public val session: HubSession = HubSession(httpClient, { trustStore.credentials.value }, crypto, trustStore, ioDispatcher, clock, allowCleartext)
 
     public val directory: EnterpriseDirectoryClient = EnterpriseDirectoryClient(
+        httpClient = httpClient,
+        ioDispatcher = ioDispatcher,
+        bearerSource = session,
+        pinnedHubUrl = { trustStore.credentials.value?.hubUrl },
+        allowCleartext = allowCleartext,
+    )
+
+    public val announcements: HubAnnouncementsApi = RealHubAnnouncementsApi(
         httpClient = httpClient,
         ioDispatcher = ioDispatcher,
         bearerSource = session,

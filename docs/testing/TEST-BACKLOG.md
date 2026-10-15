@@ -4183,3 +4183,83 @@ Existing HUBT-01, 02, 08, 09, 11, 12, 13 are now BUILT for the shell (H0-H5), un
 - **ORGT-14** Add member disabled. Steps: open a hub group's members sheet. Pass: no "Add members"; admin text says members are set by your administrator. Status: TODO
 - **ORGT-15** Legacy and v2 groups unchanged after upgrade (schema 15 to 16 on a real install, without clearing data). Pass: old groups still chat. Status: TODO
 - **ORGT-16** ORG-only member in a hub group has no PTT and cannot create groups. Status: TODO
+
+## 4zzzzzzzzz — Announcements (Plan A3, Stream S2, 2026-10-15)
+
+### ANN-01 — Admin posts company-wide from console
+- **Setup:** Hub running; Android phone and desktop enrolled and connected over relay.
+- **Steps:** In console (/admin/ui/#announcements), org admin posts a company-wide announcement.
+- **Pass:** Both phone and desktop receive push hint, fetch changes feed, display announcement in News, and trigger local notification (Plan A4/H6+ UI).
+- **Source:** Plan A3 §10.
+- **Status:** TODO
+
+### ANN-02 — Department head posts to own department from app; outsiders do not see it
+- **Setup:** User A is head of Engineering; User B is member of Marketing; User C is member of Engineering.
+- **Steps:** User A posts announcement scoped to Engineering.
+- **Pass:** User C receives and sees announcement; User B does not receive it and search/feed queries from User B return 0 results.
+- **Source:** Plan A3 §10, §3.3.
+- **Status:** TODO
+
+### ANN-03 — Department head cannot post company-wide
+- **Setup:** User A is department head (not org admin).
+- **Steps:** User A attempts to post an announcement with `scope="org"`.
+- **Pass:** Hub returns `403 ERR_FORBIDDEN` (`org_ann_not_allowed`); app displays "You can only post announcements for your own department."
+- **Source:** Plan A3 §10, §3.3.
+- **Status:** TODO
+
+### ANN-04 — Offline phone catches up on reconnect
+- **Setup:** Phone goes into airplane mode; admin posts 3 announcements and deletes 1 on hub.
+- **Steps:** Phone reconnects to Wi-Fi/relay.
+- **Pass:** Phone catches up via `since=<seq>`, downloads 2 active announcements and 1 tombstone, stores in Room, updates unread counter.
+- **Source:** Plan A3 §10, §3.4.
+- **Status:** TODO
+
+### ANN-05 — Search in console and app
+- **Setup:** 20 announcements posted across org and departments with distinct keywords.
+- **Steps:** Search keywords in console search bar and app search query (`q=<query>`).
+- **Pass:** FTS5/LIKE fallback matches keywords; punctuation and operators do not crash; department scoping filters correctly.
+- **Source:** Plan A3 §10, §3.1.
+- **Status:** TODO
+
+### ANN-06 — Edit and delete propagate to devices
+- **Setup:** Active announcement on hub.
+- **Steps:** Admin edits text, then later deletes it.
+- **Pass:** Edits update Room cache on devices with updated seq; delete marks item tombstoned/deleted locally; unread count decrements if unread.
+- **Source:** Plan A3 §10, §4.2.
+- **Status:** TODO
+
+### ANN-07 — Pinned announcements display order and pin limits
+- **Setup:** 5 announcements posted.
+- **Steps:** Admin pins 3 announcements; attempts to pin a 4th; unpins one and pins the 4th.
+- **Pass:** Pinned items sort to the top; 4th pin attempt returns `400 ERR_PIN_LIMIT`; unpinning succeeds; pin order persists across restarts.
+- **Source:** Plan A3 §10, §3.1.
+- **Status:** TODO
+
+### ANN-08 — Hub restore from backup / epoch drop
+- **Setup:** Hub restored from backup where monotonic `seq` is lower than client's cached seq.
+- **Steps:** Client attempts changes sync with `since=<higherSeq>`.
+- **Pass:** Hub returns `fullResync=true`; client clears local announcements and performs fresh full resync without data corruption.
+- **Source:** Plan A3 §10, §3.4.
+- **Status:** TODO
+
+### ANN-09 — Old app + new hub interoperability
+- **Setup:** Old client build without announcements feature connecting to Plan A3 hub.
+- **Steps:** Hub broadcasts `AnnouncementEvent` frame to relay sessions.
+- **Pass:** Old client ignores frame without closing session; old client functionality unaffected; new hub serves existing routes unchanged.
+- **Source:** Plan A3 §10, §3.5.
+- **Status:** TODO
+
+### ANN-10 — Notification tap cold start
+- **Setup:** App killed in background.
+- **Steps:** Tap on incoming announcement system notification.
+- **Pass:** App cold-starts and deep-links directly to News / Announcement detail view (Plan A4).
+- **Source:** Plan A3 §10.
+- **Status:** TODO
+
+### ANN-11 — Transsion / background delivery observation
+- **Setup:** Infinix / Transsion device with background freezer active.
+- **Steps:** Send announcement while screen is off.
+- **Pass:** Observe whether FCM or persistent relay wake delivers announcement; record behavior in logs/experiments.md without claiming universal background support.
+- **Source:** Plan A3 §10, §21 of AGENTS.md.
+- **Status:** TODO
+

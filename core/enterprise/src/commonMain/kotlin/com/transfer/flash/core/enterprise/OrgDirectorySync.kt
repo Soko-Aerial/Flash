@@ -406,10 +406,12 @@ public class OrgDirectorySync(
         )
 
         val rosters = try {
-            verifiedRosters(offeredRosters, accumulatedDelegations.values.toList(), creds, now)
+            verifiedRosters(offeredRosters, accumulatedDelegations.values.toList(), creds, now, authoritative = isFullResync)
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            emptyList()
+            // Failure atomicity (verifier B4 defect 21): a decode or storage error while checking the rosters keeps what is
+            // stored; it must never wipe every group roster.
+            runCatching { orgDirectoryDao.allGroupRosters() }.getOrDefault(emptyList())
         }
 
         try {
@@ -468,6 +470,7 @@ public class OrgDirectorySync(
         delegations: List<DelegationCert>,
         creds: EnrollmentCredentials,
         now: Long,
+        authoritative: Boolean = false,
     ): List<HubGroupRosterEntity> {
         if (offered.isEmpty()) return emptyList()
         val stored = orgDirectoryDao.allGroupRosters().associateBy { it.groupId }
@@ -499,7 +502,9 @@ public class OrgDirectorySync(
         val chainJson = HubRestCodec.encode(preVerified.toList().sortedBy { it.serial })
         return best.values.mapNotNull { (statement, json) ->
             val old = stored[statement.groupId]
-            if (old != null && old.version > statement.version) old
+            // After a full resync (epoch reset, restored hub database) the hub's versions start over, so its statement wins
+            // (verifier B4 defect 19); otherwise a lower version never replaces a higher one.
+            if (!authoritative && old != null && old.version > statement.version) old
             else HubGroupRosterEntity(statement.groupId, statement.version, json, chainJson, statement.validUntilMs)
         }
     }
