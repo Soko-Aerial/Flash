@@ -256,9 +256,9 @@ class OrgDirectoryDaoTest {
     @Test
     fun hubGroupRostersAreReplacedAsOneSetAndWipedWithTheSnapshot() = runBlocking {
         val dao = db.orgDirectoryDao()
-        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 1L, "{a}", 9L), HubGroupRosterEntity("g2", 4L, "{b}", 9L)))
+        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 1L, "{a}", "[]", 9L), HubGroupRosterEntity("g2", 4L, "{b}", "[]", 9L)))
         assertEquals(2, dao.allGroupRosters().size)
-        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 2L, "{c}", 10L)))
+        dao.replaceGroupRosters(listOf(HubGroupRosterEntity("g1", 2L, "{c}", "[]", 10L)))
         assertEquals(listOf("g1"), dao.allGroupRosters().map { it.groupId }, "the old set is replaced, not merged")
         assertEquals(2L, dao.groupRoster("g1")?.version)
         assertNull(dao.groupRoster("g2"))

@@ -335,6 +335,7 @@ internal object FlashSchemaSteps {
                 "`groupId` TEXT NOT NULL, " +
                 "`version` INTEGER NOT NULL, " +
                 "`statementJson` TEXT NOT NULL, " +
+                "`delegationChainJson` TEXT NOT NULL, " +
                 "`validUntilMs` INTEGER NOT NULL, " +
                 "PRIMARY KEY(`groupId`))",
         ),

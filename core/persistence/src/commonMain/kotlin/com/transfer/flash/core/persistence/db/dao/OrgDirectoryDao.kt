@@ -129,4 +129,19 @@ public interface OrgDirectoryDao {
         }
         setSyncState(newState)
     }
+
+    /** [applySyncBatch] and the replacement of the stored hub group rosters in ONE transaction (Plan B B4). */
+    @Transaction
+    public suspend fun applySyncBatchWithRosters(
+        fullResync: Boolean,
+        membersToUpsert: List<OrgDirectoryMemberEntity>,
+        memberIdsToDelete: List<String>,
+        departmentsToUpsert: List<OrgDepartmentEntity>,
+        departmentIdsToDelete: List<String>,
+        newState: OrgSyncStateEntity,
+        rosters: List<HubGroupRosterEntity>,
+    ) {
+        applySyncBatch(fullResync, membersToUpsert, memberIdsToDelete, departmentsToUpsert, departmentIdsToDelete, newState)
+        replaceGroupRosters(rosters)
+    }
 }

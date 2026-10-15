@@ -8,6 +8,7 @@ import com.transfer.flash.core.enterprise.OrgLease
 import com.transfer.flash.core.enterprise.RealOrgPeerResolver
 import com.transfer.flash.core.messaging.PeerTrustPolicy
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
+import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
 import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
@@ -51,6 +52,11 @@ class DesktopOrgTrustParityTest {
     }
 
     private class DesktopCountingDao : OrgDirectoryDao {
+        val storedRosters = LinkedHashMap<String, HubGroupRosterEntity>()
+        override suspend fun allGroupRosters(): List<HubGroupRosterEntity> = storedRosters.values.toList()
+        override suspend fun groupRoster(groupId: String): HubGroupRosterEntity? = storedRosters[groupId]
+        override suspend fun upsertGroupRosters(rosters: List<HubGroupRosterEntity>) { rosters.forEach { storedRosters[it.groupId] = it } }
+        override suspend fun clearGroupRosters() { storedRosters.clear() }
         val members = LinkedHashMap<String, OrgDirectoryMemberEntity>()
         var syncState: OrgSyncStateEntity? = null
 

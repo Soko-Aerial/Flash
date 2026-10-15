@@ -13,5 +13,7 @@ public data class HubGroupRosterEntity(
     @PrimaryKey val groupId: String,
     val version: Long,
     val statementJson: String,
+    /** The verified delegation chain the statement was checked with; a peer offered the roster needs it to verify too. */
+    val delegationChainJson: String,
     val validUntilMs: Long,
 )
