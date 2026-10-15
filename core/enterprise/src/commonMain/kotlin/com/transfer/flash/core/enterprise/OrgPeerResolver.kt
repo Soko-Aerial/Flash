@@ -97,6 +97,11 @@ public interface OrgPeerResolver {
     public val lease: StateFlow<OrgLease>
 
     /**
+     * Whether the local device's identity key has diverged from the certified statement in the snapshot.
+     */
+    public val identityMismatch: StateFlow<Boolean> get() = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /**
      * Reloads in-memory index from the persisted directory snapshot.
      */
     public suspend fun refreshFromSnapshot()
@@ -113,9 +118,15 @@ public interface OrgPeerResolver {
 public class RealOrgPeerResolver(
     private val dao: OrgDirectoryDao,
     private val trustStore: FlashTrustStore,
+    private val isEnrolled: () -> Boolean = { true },
+    private val localDeviceId: String? = null,
+    private val ownFingerprintProvider: (() -> String?)? = null,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) : OrgPeerResolver {
+
+    private val _identityMismatch = MutableStateFlow(false)
+    override val identityMismatch: StateFlow<Boolean> = _identityMismatch.asStateFlow()
 
     private data class SnapshotPeer(
         val deviceId: String,
@@ -127,6 +138,9 @@ public class RealOrgPeerResolver(
 
     private val lock = Any()
     @Volatile
+    private var generation: Long = 0L
+
+    @Volatile
     private var snapshotIndex: Map<String, SnapshotPeer> = emptyMap()
     @Volatile
     private var lastSyncSuccessMs: Long = 0L
@@ -137,7 +151,7 @@ public class RealOrgPeerResolver(
     override val lease: StateFlow<OrgLease> = object : StateFlow<OrgLease> {
         override val replayCache: List<OrgLease> get() = listOf(value)
         override val value: OrgLease
-            get() = synchronized(lock) { evaluateLeaseLocked(clock()) }
+            get() = synchronized(lock) { calculateLeaseLocked(clock()) }
 
         override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<OrgLease>): Nothing {
             _lease.collect(collector)
@@ -151,6 +165,7 @@ public class RealOrgPeerResolver(
     }
 
     override suspend fun refreshFromSnapshot(): Unit = withContext(dispatcher) {
+        val currentGen = synchronized(lock) { ++generation }
         val syncState = dao.getSyncState()
         val members = dao.listAllMembers()
 
@@ -165,26 +180,42 @@ public class RealOrgPeerResolver(
             )
         }
 
+        val ownPeer = if (localDeviceId != null) newIndex[localDeviceId] else null
+        val mismatch = if (ownPeer != null && ownFingerprintProvider != null) {
+            val ownFp = ownFingerprintProvider.invoke()
+            ownFp != null && !ownPeer.keyFingerprint.equals(ownFp, ignoreCase = true)
+        } else {
+            false
+        }
+
         synchronized(lock) {
-            snapshotIndex = newIndex
-            if (syncState != null) {
-                lastSyncSuccessMs = syncState.lastSyncSuccessMs
-                graceDays = syncState.offlineGraceDays.coerceIn(1, 365)
-            } else {
-                lastSyncSuccessMs = 0L
-                graceDays = DEFAULT_GRACE_DAYS
+            if (currentGen == generation) {
+                snapshotIndex = newIndex
+                _identityMismatch.value = mismatch
+                if (syncState != null) {
+                    lastSyncSuccessMs = syncState.lastSyncSuccessMs
+                    graceDays = syncState.offlineGraceDays.coerceIn(1, 365)
+                } else {
+                    lastSyncSuccessMs = 0L
+                    graceDays = DEFAULT_GRACE_DAYS
+                }
+                updateLeaseLocked(clock())
             }
-            evaluateLeaseLocked(clock())
         }
     }
 
     override suspend fun clear(): Unit = withContext(dispatcher) {
         synchronized(lock) {
+            ++generation
             snapshotIndex = emptyMap()
             lastSyncSuccessMs = 0L
             graceDays = DEFAULT_GRACE_DAYS
+            _identityMismatch.value = false
             val oldLease = _lease.value
             _lease.value = OrgLease.None
+            if (oldLease !is OrgLease.None) {
+                FlashProbe.emit("org.lease.state", "state" to "NONE")
+            }
             if (oldLease is OrgLease.Valid) {
                 FlashProbe.emit("org.lease.expired", "reason" to "CLEARED")
             }
@@ -192,19 +223,21 @@ public class RealOrgPeerResolver(
     }
 
     override fun isKnownColleague(deviceId: String): Boolean {
+        if (!isEnrolled() || _identityMismatch.value) return false
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         return currentLease is OrgLease.Valid && snapshotIndex.containsKey(deviceId)
     }
 
     override fun searchColleagueIds(query: String, limit: Int): Set<String> {
+        if (!isEnrolled() || _identityMismatch.value) return emptySet()
         val q = query.trim().lowercase()
         if (q.isEmpty()) return emptySet()
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         if (currentLease !is OrgLease.Valid) return emptySet()
         return snapshotIndex.values
@@ -218,13 +251,16 @@ public class RealOrgPeerResolver(
             .toSet()
     }
 
-    override fun displayName(deviceId: String): String? =
-        snapshotIndex[deviceId]?.displayName
+    override fun displayName(deviceId: String): String? {
+        if (!isEnrolled()) return null
+        return snapshotIndex[deviceId]?.displayName
+    }
 
     override fun resolve(deviceId: String): OrgPeer? {
+        if (!isEnrolled() || _identityMismatch.value) return null
         val now = clock()
         val currentLease = synchronized(lock) {
-            evaluateLeaseLocked(now)
+            calculateLeaseLocked(now)
         }
         if (currentLease !is OrgLease.Valid) {
             return null
@@ -264,27 +300,36 @@ public class RealOrgPeerResolver(
         )
     }
 
-    private fun evaluateLeaseLocked(now: Long): OrgLease {
-        val newLease = if (lastSyncSuccessMs <= 0L) {
-            OrgLease.None
-        } else {
-            val graceMs = graceDays * 86_400_000L
-            when {
-                now < lastSyncSuccessMs - SKEW_TOLERANCE_MS -> {
-                    OrgLease.Expired(sinceMs = now, reason = ExpiredReason.CLOCK)
-                }
-                now > lastSyncSuccessMs + graceMs -> {
-                    OrgLease.Expired(sinceMs = now, reason = ExpiredReason.TIME)
-                }
-                else -> {
-                    OrgLease.Valid(untilMs = lastSyncSuccessMs + graceMs)
-                }
+    private fun calculateLeaseLocked(now: Long): OrgLease {
+        if (!isEnrolled() || _identityMismatch.value) return OrgLease.None
+        if (lastSyncSuccessMs <= 0L) {
+            return OrgLease.None
+        }
+        val graceMs = graceDays * 86_400_000L
+        return when {
+            now < lastSyncSuccessMs - SKEW_TOLERANCE_MS -> {
+                OrgLease.Expired(sinceMs = now, reason = ExpiredReason.CLOCK)
+            }
+            now > lastSyncSuccessMs + graceMs -> {
+                OrgLease.Expired(sinceMs = now, reason = ExpiredReason.TIME)
+            }
+            else -> {
+                OrgLease.Valid(untilMs = lastSyncSuccessMs + graceMs)
             }
         }
+    }
 
+    private fun updateLeaseLocked(now: Long): OrgLease {
+        val newLease = calculateLeaseLocked(now)
         val oldLease = _lease.value
         if (oldLease != newLease) {
             _lease.value = newLease
+            val stateName = when (newLease) {
+                is OrgLease.Valid -> "VALID"
+                is OrgLease.Expired -> if (newLease.reason == ExpiredReason.CLOCK) "CLOCK_WRONG" else "EXPIRED"
+                is OrgLease.None -> "NONE"
+            }
+            FlashProbe.emit("org.lease.state", "state" to stateName)
             if (oldLease is OrgLease.Valid && newLease is OrgLease.Expired) {
                 FlashProbe.emit("org.lease.expired", "reason" to newLease.reason.name)
             }

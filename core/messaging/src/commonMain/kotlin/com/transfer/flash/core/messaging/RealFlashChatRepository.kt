@@ -387,7 +387,19 @@ public class RealFlashChatRepository(
             contentViaHub = hubContentViaHub,
             sealing = hubSealing,
             standing = { id -> hubPeers?.standing(id) ?: HubPeerStanding.UNKNOWN },
-            isPaired = { PeerTrustPolicy.mayChat(isPaired = isTrustedPeer(it), isOrg = effectiveIsOrgPeer(it)) },
+            isPaired = { id ->
+                val paired = isTrustedPeer(id)
+                val org = effectiveIsOrgPeer(id)
+                val allowed = PeerTrustPolicy.mayChat(isPaired = paired, isOrg = org)
+                if (allowed) {
+                    if (org && !paired) {
+                        FlashProbe.emit("org.gate.allow", "peer" to FlashProbe.short(id), "policy" to "mayChat", "source" to "snapshot")
+                    }
+                } else {
+                    FlashProbe.emit("org.gate.deny", "peer" to FlashProbe.short(id), "reason" to "unknown_member")
+                }
+                allowed
+            },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
         )
     }
@@ -5522,7 +5534,15 @@ public class RealFlashChatRepository(
                     if (!isActiveGroupMember(members, frame.conversationId, frame.memberId)) return
                 } else {
                     val peerId = transportPeerId ?: frame.memberId
-                    if (!PeerTrustPolicy.mayReact(isPaired = isTrustedPeer(peerId), isOrg = effectiveIsOrgPeer(peerId))) return
+                    val isPaired = isTrustedPeer(peerId)
+                    val isOrg = effectiveIsOrgPeer(peerId)
+                    if (!PeerTrustPolicy.mayReact(isPaired = isPaired, isOrg = isOrg)) {
+                        FlashProbe.emit("org.gate.deny", "peer" to FlashProbe.short(peerId), "reason" to "reaction_not_trusted")
+                        return
+                    }
+                    if (isOrg && !isPaired) {
+                        FlashProbe.emit("org.gate.allow", "peer" to FlashProbe.short(peerId), "policy" to "mayReact", "source" to "snapshot")
+                    }
                 }
                 val msg = messageDao.getByLocalId(frame.messageId)
                 if (msg != null && msg.conversationId != frame.conversationId) return
@@ -6907,7 +6927,7 @@ public class RealFlashChatRepository(
 
         if (!resolver.isKnownColleague(deviceId)) {
             val existing = conversationDao.get(deviceId)
-            val errorMessage = if (existing != null) {
+            val errorMessage = if (existing != null && !isTrustedPeer(deviceId)) {
                 "This person is no longer part of your organisation."
             } else {
                 "This person is not in your company directory."
@@ -6949,8 +6969,9 @@ public class RealFlashChatRepository(
             candidates.add(openId)
         }
 
-        // 2. Peers with unsent outbox messages
-        val outboxRows = outboxDao.dueForDelivery(Long.MAX_VALUE, limit * 2)
+        // 2. Peers with unsent outbox messages: scan up to 200 outbox entries so that
+        // non-colleague outbox entries do not starve colleague discovery (verifier defect 15).
+        val outboxRows = outboxDao.dueForDelivery(Long.MAX_VALUE, maxOf(limit * 20, 200))
         for (row in outboxRows) {
             val msg = messageDao.getByLocalId(row.localId) ?: continue
             val target = msg.conversationId

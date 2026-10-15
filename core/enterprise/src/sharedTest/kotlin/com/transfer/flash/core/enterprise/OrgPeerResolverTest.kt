@@ -12,6 +12,7 @@ import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.security.trust.PinSource
 import com.transfer.flash.core.security.trust.VouchVerdict
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ class OrgPeerResolverTest {
         var syncState: OrgSyncStateEntity? = null
         var listAllMembersCount = 0
         var getSyncStateCount = 0
+        var onListAllMembers: suspend () -> Unit = {}
 
         override suspend fun upsertMembers(members: List<OrgDirectoryMemberEntity>) {
             members.forEach { this.members[it.deviceId] = it }
@@ -53,6 +55,7 @@ class OrgPeerResolverTest {
 
         override suspend fun listAllMembers(): List<OrgDirectoryMemberEntity> {
             listAllMembersCount++
+            onListAllMembers()
             return members.values.toList()
         }
 
@@ -594,5 +597,207 @@ class OrgPeerResolverTest {
         // 3. Expired lease -> returns empty
         time = now + (31 * 86_400_000L)
         assertTrue(resolver.searchColleagueIds("alice").isEmpty(), "searchColleagueIds must return empty set when lease expired")
+    }
+
+    @Test
+    fun ORGT_U59_clear_races_with_in_flight_refresh_ensuring_snapshot_remains_cleared() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        dao.upsertMembers(listOf(sampleMember("alice"), sampleMember("bob")))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+        trustStore.savePin("alice", "STATEMENT_FINGERPRINT_1234567890")
+
+        val refreshStarted = CompletableDeferred<Unit>()
+        val clearFinished = CompletableDeferred<Unit>()
+
+        dao.onListAllMembers = {
+            refreshStarted.complete(Unit)
+            // Wait until clear() has fully executed before completing listAllMembers
+            clearFinished.await()
+        }
+
+        val resolver = RealOrgPeerResolver(
+            dao = dao,
+            trustStore = trustStore,
+            clock = { 1_100_000L },
+        )
+
+        // Launch refresh which will pause inside listAllMembers()
+        val refreshJob = launch(Dispatchers.Default) {
+            resolver.refreshFromSnapshot()
+        }
+
+        // Wait until refresh has started and is reading DAO
+        refreshStarted.await()
+
+        // Call clear() concurrently while refresh is in flight
+        resolver.clear()
+        clearFinished.complete(Unit)
+
+        refreshJob.join()
+
+        // Post-condition: Stale in-flight refresh MUST NOT repopulate snapshot after clear()
+        assertFalse(
+            resolver.isKnownColleague("alice"),
+            "Stale refresh must not repopulate in-memory index after clear()",
+        )
+        assertNull(
+            resolver.resolve("alice"),
+            "resolve() must return null when cleared even if refresh completed later",
+        )
+        assertEquals(
+            OrgLease.None,
+            resolver.lease.value,
+            "Lease must remain None after clear()",
+        )
+    }
+
+    @Test
+    fun ORGT_U60_unenrolled_device_resolver_answers_not_a_colleague() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val member = sampleMember(deviceId = "alice", displayName = "Alice Smith", fingerprint = "AA11BB22")
+        dao.upsertMembers(listOf(member))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+        trustStore.savePin("alice", "AA11BB22")
+
+        var enrolled = false
+        val resolver = RealOrgPeerResolver(
+            dao = dao,
+            trustStore = trustStore,
+            isEnrolled = { enrolled },
+            clock = { 1_100_000L },
+        )
+        resolver.refreshFromSnapshot()
+
+        // When not enrolled: must answer "not a colleague" unconditionally across all queries
+        assertFalse(resolver.isOrgPeer("alice"), "isOrgPeer must be false when unenrolled")
+        assertFalse(resolver.isKnownColleague("alice"), "isKnownColleague must be false when unenrolled")
+        assertNull(resolver.resolve("alice"), "resolve() must return null when unenrolled")
+        assertNull(resolver.displayName("alice"), "displayName() must return null when unenrolled")
+        assertTrue(resolver.searchColleagueIds("alice").isEmpty(), "searchColleagueIds must return empty set when unenrolled")
+        assertEquals(OrgLease.None, resolver.lease.value, "lease must be None when unenrolled")
+
+        // When enrolled: returns true and valid colleague peer data
+        enrolled = true
+        assertTrue(resolver.isOrgPeer("alice"), "isOrgPeer must be true when enrolled and bound")
+        assertTrue(resolver.isKnownColleague("alice"), "isKnownColleague must be true when enrolled")
+        assertNotNull(resolver.resolve("alice"), "resolve() must return valid peer when enrolled")
+        assertEquals("Alice Smith", resolver.displayName("alice"), "displayName() must return colleague name when enrolled")
+        assertEquals(setOf("alice"), resolver.searchColleagueIds("alice"), "searchColleagueIds must return colleague when enrolled")
+        assertTrue(resolver.lease.value is OrgLease.Valid, "lease must be Valid when enrolled with valid snapshot")
+    }
+
+    @Test
+    fun ORGT_U62_orgPeerResolver_detects_identity_mismatch_and_fails_closed() = runBlocking {
+        val dao = CountingOrgDirectoryDao()
+        val trustStore = TestTrustStore()
+        val me = sampleMember(deviceId = "my-device", displayName = "Me", fingerprint = "ORIGINAL_FP")
+        val alice = sampleMember(deviceId = "alice", displayName = "Alice", fingerprint = "ALICE_FP")
+        dao.upsertMembers(listOf(me, alice))
+        dao.setSyncState(
+            OrgSyncStateEntity(
+                directoryEpoch = "epoch-1",
+                lastSyncedVersion = 1L,
+                offlineGraceDays = 30,
+                lastSyncSuccessMs = 1_000_000L,
+                lastSyncAttemptMs = 1_000_000L,
+            )
+        )
+        trustStore.savePin("alice", "ALICE_FP")
+
+        var currentOwnFp: String? = "ORIGINAL_FP"
+        val resolver = RealOrgPeerResolver(
+            dao = dao,
+            trustStore = trustStore,
+            localDeviceId = "my-device",
+            ownFingerprintProvider = { currentOwnFp },
+            clock = { 1_100_000L },
+        )
+        resolver.refreshFromSnapshot()
+
+        // 1. Initially matching fingerprint: identityMismatch is false, colleague queries succeed
+        assertFalse(resolver.identityMismatch.value, "identityMismatch must be false when fingerprint matches")
+        assertTrue(resolver.isKnownColleague("alice"))
+        assertNotNull(resolver.resolve("alice"))
+        assertTrue(resolver.isOrgPeer("alice"))
+
+        // 2. Local device key regenerated (e.g. IdentityKeyCheck REGENERATE verdict):
+        // Own identity key fingerprint changes, diverging from the snapshot statement
+        currentOwnFp = "REGENERATED_FP"
+        resolver.refreshFromSnapshot()
+
+        // Must detect mismatch and fail closed
+        assertTrue(resolver.identityMismatch.value, "identityMismatch must be true when key regenerated")
+        assertFalse(resolver.isKnownColleague("alice"), "isKnownColleague must fail closed on identity mismatch")
+        assertNull(resolver.resolve("alice"), "resolve must return null on identity mismatch")
+        assertFalse(resolver.isOrgPeer("alice"), "isOrgPeer must be false on identity mismatch")
+        assertTrue(resolver.searchColleagueIds("alice").isEmpty(), "searchColleagueIds must be empty on identity mismatch")
+
+        // 3. Clear (e.g. on un-enrollment / rejoining) resets mismatch flag
+        resolver.clear()
+        assertFalse(resolver.identityMismatch.value, "clear() must reset identityMismatch to false")
+    }
+
+    @Test
+    fun ORGT_U63_org_lease_state_probes_emitted() = runBlocking {
+        val probes = mutableListOf<String>()
+        com.transfer.flash.core.common.logging.FlashLog.installSink(
+            com.transfer.flash.core.common.logging.FlashLogSink { _, tag, message, _ ->
+                if (tag == "PROBE") probes += message
+            }
+        )
+        try {
+            val dao = CountingOrgDirectoryDao()
+            val trustStore = TestTrustStore()
+            val alice = sampleMember(deviceId = "alice", displayName = "Alice", fingerprint = "ALICE_FP")
+            dao.upsertMembers(listOf(alice))
+            dao.setSyncState(
+                OrgSyncStateEntity(
+                    directoryEpoch = "epoch-1",
+                    lastSyncedVersion = 1L,
+                    offlineGraceDays = 30,
+                    lastSyncSuccessMs = 1_000_000L,
+                    lastSyncAttemptMs = 1_000_000L,
+                )
+            )
+
+            var simulatedClock = 1_100_000L
+            val resolver = RealOrgPeerResolver(
+                dao = dao,
+                trustStore = trustStore,
+                clock = { simulatedClock },
+            )
+
+            // 1. Refresh to Valid: emits org.lease.state state=VALID
+            resolver.refreshFromSnapshot()
+            assertTrue(probes.any { it.contains("org.lease.state state=VALID") }, "Must emit org.lease.state VALID")
+
+            // 2. Clear: emits org.lease.state state=NONE and org.lease.expired reason=CLEARED
+            probes.clear()
+            resolver.clear()
+            assertTrue(probes.any { it.contains("org.lease.state state=NONE") }, "Must emit org.lease.state NONE on clear")
+            assertTrue(probes.any { it.contains("org.lease.expired reason=CLEARED") }, "Must emit org.lease.expired CLEARED")
+        } finally {
+            com.transfer.flash.core.common.logging.FlashLog.installSink(
+                com.transfer.flash.core.common.logging.FlashLogSink { _, _, _, _ -> }
+            )
+        }
     }
 }

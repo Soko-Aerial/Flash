@@ -178,6 +178,11 @@ public fun DesktopShell(
             selectedChatConversationId = cid
         }
     }
+    LaunchedEffect(nav.current.destination) {
+        if (nav.current.destination == FlashDestination.Hub) {
+            engine.requestOrgSync("hub_tab_opened")
+        }
+    }
 
     // ── Chats: the real repository once boot builds it, honest-empty before that ──
     // Keyed on `ready` (not just `engine`): `engine.chats` swaps from the empty stand-in
@@ -1008,7 +1013,11 @@ public fun DesktopShell(
         engine.orgPeerResolver?.lease ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.OrgLease>(com.transfer.flash.core.enterprise.OrgLease.None)
     }
     val orgLease by orgLeaseFlow.collectAsState()
-    val orgTrustState = remember(orgLease, enterpriseCredentials) {
+    val orgMismatchFlow = remember(engine, ready) {
+        engine.orgPeerResolver?.identityMismatch ?: kotlinx.coroutines.flow.MutableStateFlow(false)
+    }
+    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCredentials, orgIdentityMismatch) {
         if (enterpriseCredentials == null) null
         else {
             val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
@@ -1016,6 +1025,7 @@ public fun DesktopShell(
                 lease = orgLease,
                 clockOk = clockOk,
                 hubSupports = true,
+                identityMismatch = orgIdentityMismatch,
                 nowMs = System.currentTimeMillis(),
             )
         }
@@ -1664,10 +1674,22 @@ public fun DesktopShell(
                     when (entry.destination) {
                         FlashDestination.ChatList -> chatListPaneContent()
                         // UI-058: shell-only Hub (H4); the data sections arrive with H7.
-                        FlashDestination.Hub -> FlashHubPlaceholderScreen(
-                            onBrowseGroups = { showBrowseOrgGroups = true },
-                            modifier = Modifier.padding(bottom = tabBottomInset),
-                        )
+                        FlashDestination.Hub -> {
+                            var isHubRefreshing by remember { mutableStateOf(false) }
+                            FlashHubPlaceholderScreen(
+                                onBrowseGroups = { showBrowseOrgGroups = true },
+                                onRefresh = {
+                                    isHubRefreshing = true
+                                    engine.requestOrgSync("pull_to_refresh", force = true)
+                                    scope.launch {
+                                        kotlinx.coroutines.delay(1000)
+                                        isHubRefreshing = false
+                                    }
+                                },
+                                isRefreshing = isHubRefreshing,
+                                modifier = Modifier.padding(bottom = tabBottomInset),
+                            )
+                        }
                         FlashDestination.Conversation -> conversationPaneContent()
                         FlashDestination.Transfers -> FlashTransfersScreen(
                         state = transfersUi,

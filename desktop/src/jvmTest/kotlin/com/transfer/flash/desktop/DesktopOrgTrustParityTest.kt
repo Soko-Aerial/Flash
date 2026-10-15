@@ -226,4 +226,12 @@ class DesktopOrgTrustParityTest {
         assertFalse(resolver.isOrgPeer(colleagueId), "Expired lease must deny ORG trust on Desktop JVM")
         assertNull(resolver.resolve(colleagueId))
     }
+
+    @Test
+    fun `ORGT_U65_desktopEngine_requestOrgSync_callable`() = runBlocking {
+        val engine = createEngine()
+        // requestOrgSync must be callable for both tab open and pull-to-refresh without error even before enrolled
+        engine.requestOrgSync("hub_tab_opened")
+        engine.requestOrgSync("pull_to_refresh", force = true)
+    }
 }

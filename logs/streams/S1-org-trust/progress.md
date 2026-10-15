@@ -7,6 +7,43 @@ Standard: `docs/plans/HUB-QUALITY-CONTRACT.md` (Section 7)
 Protocol: `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md`
 Date: 2026-10-14
 
+## Overnight R2-1 Execution Report — 2026-10-15 (Stream S1)
+
+### Status: Complete
+All 7 items assigned in R2-1 of `HUB-PARALLEL-LAUNCH-PROMPTS.md` have been implemented, tested, committed, and verified through the full gate command.
+
+### Work Completed:
+1. **Items 1 & 5 (Commit `0dec26be`):**
+   - Item 1: `OrgPeerResolver` clear/refresh race resolved using an atomic `generation` counter so stale snapshots do not overwrite fresher clears/refreshes.
+   - Item 5: Resolver strictly checks `isEnrolled`. When unenrolled, it fails closed (`lease = OrgLease.None`, `isKnownColleague = false`, `displayName = null`).
+   - Proving tests: `ORGT-U59`, `ORGT-U60` in `OrgPeerResolverTest.kt`.
+2. **Item 3 (Commit `552c55c2`):**
+   - B2.5 UX completeness: Added `OrgTrustState.IdentityMismatch` sealed state and exact string `"Your organisation identity does not match this server. Re-enroll to restore organisation chat."`.
+   - Wired status strings and action banners into Settings and Hub tabs.
+   - Emitted evidence probes: `org.sync.start`, `org.sync.ok`, `org.sync.fail`, `org.lease.state`, `org.gate.allow`, `org.gate.deny`.
+   - Proving tests in `FlashHubStatusMathTest.kt` and `DesktopOrgTrustParityTest.kt`.
+3. **Item 7 (Commit `5523f03f`):**
+   - Hub tab sync: Wired `requestOrgSync` on pull-to-refresh and on Hub tab open across Android (`MainActivity`, `DiscoveryEngineHolder`, `FlashHubPlaceholderScreen`) and Desktop (`DesktopEngine`, `DesktopShell`).
+   - Proving tests: `ORGT_U64`, `ORGT_U65` in `FlashHubNavigationTest.kt`.
+4. **Item 2 (Commit `9c96cb96`):**
+   - Room schema 15: Added `orgRootFingerprint` and `lastErrorKind` columns to `org_sync_state` with migration 14->15.
+   - Exported schema JSON `core/persistence/schemas/.../15.json`.
+   - Real DB migration test: `ORGT-U19` in `FlashJvmMigrationsTest.kt`.
+   - Root fingerprint mismatch handling: `OrgSnapshotCoordinator` discards snapshot and emits `org.sync.root_mismatch` if enrolled root fingerprint mismatches (`ORGT-U66`).
+5. **Items 4 & 6 (Commit `cb4cd138`):**
+   - B1 tests added: `ORGT-U02` (statement signature/root verification), `ORGT-U06` (directory epoch resync), `ORGT-U07` (full resync version rollback), `ORGT-U08` (tombstone deletion in transaction), `ORGT-U09` (429 backoff & Retry-After), `ORGT-U17` (since/epoch/cursor request parameters).
+   - B2 tests added: `ORGT-U27` (startColleagueConversation exact strings), `ORGT-U28` (durable outbox across app restart backed by real SQLite database file on disk, `RealFlashChatRepositoryRestartRealDbTest`), `ORGT-U29` (outbox dial candidate scan non-starvation).
+   - Mutation test kills: Line 1975 (`ORGT_CALLSITE_1975`), Line 3558 (`ORGT_CALLSITE_3558`), Line 5348 (`ORGT_CALLSITE_5348`).
+   - Verifier defects:
+     - Defect 11: Real DB restart test `RealFlashChatRepositoryRestartRealDbTest.kt`.
+     - Defect 13: Volatiles on backoff state in `OrgDirectorySync.kt`.
+     - Defect 14: Deduplication of delegations by serial across pages and probe parameter fixes in `OrgDirectorySync.kt`.
+     - Defect 15: Colleague error sentences and candidate scanning depth in `RealFlashChatRepository.kt`.
+
+### Gate Verification:
+`tools\flash-gradle.cmd :core:enterprise:jvmTest :core:enterprise:testAndroidHostTest :core:persistence:jvmTest :core:messaging:jvmTest :ui:chat:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin`
+`BUILD SUCCESSFUL in 5m 1s` (Exit code 0).
+
 ---
 
 ## Phase B2 report — 2026-10-14

@@ -781,11 +781,16 @@ fun FlashApp(
     val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
     val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks ?: remember { MutableStateFlow(null) }).collectAsState()
     val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCreds) { hubObject?.relinkableGroups()?.size ?: 0 }
-    val orgLeaseFlow = remember(ready) {
-        DiscoveryEngineHolder.currentOrgPeerResolver()?.lease ?: MutableStateFlow(com.transfer.flash.core.enterprise.OrgLease.None)
+    val orgResolver = remember(ready) { DiscoveryEngineHolder.currentOrgPeerResolver() }
+    val orgLeaseFlow = remember(orgResolver) {
+        orgResolver?.lease ?: MutableStateFlow(com.transfer.flash.core.enterprise.OrgLease.None)
     }
     val orgLease by orgLeaseFlow.collectAsState()
-    val orgTrustState = remember(orgLease, enterpriseCreds) {
+    val orgMismatchFlow = remember(orgResolver) {
+        orgResolver?.identityMismatch ?: MutableStateFlow(false)
+    }
+    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCreds, orgIdentityMismatch) {
         if (enterpriseCreds == null) null
         else {
             val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
@@ -793,6 +798,7 @@ fun FlashApp(
                 lease = orgLease,
                 clockOk = clockOk,
                 hubSupports = true,
+                identityMismatch = orgIdentityMismatch,
                 nowMs = System.currentTimeMillis(),
             )
         }
@@ -1004,6 +1010,11 @@ private fun FlashShell(
     // carries the last known value, so a restore does not flicker.
     LaunchedEffect(ready, settings.isEnterpriseEnrolled) {
         if (ready) nav.updateHubEnrolled(settings.isEnterpriseEnrolled)
+    }
+    LaunchedEffect(nav.current.destination) {
+        if (nav.current.destination == FlashDestination.Hub) {
+            DiscoveryEngineHolder.requestOrgSync("hub_tab_opened")
+        }
     }
     val chatStartError by engine.startError.collectAsState()
     val chatRepository: com.transfer.flash.core.messaging.FlashChatRepository =
@@ -2727,9 +2738,19 @@ private fun FlashShell(
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
     // UI-058: shell-only Hub screen (H3); the data sections arrive in H7.
+    var isHubRefreshing by remember { mutableStateOf(false) }
     val hubScreenContent: @Composable () -> Unit = {
         FlashHubPlaceholderScreen(
             onBrowseGroups = { showBrowseOrgGroups = true },
+            onRefresh = {
+                isHubRefreshing = true
+                DiscoveryEngineHolder.requestOrgSync("pull_to_refresh", force = true)
+                scope.launch {
+                    kotlinx.coroutines.delay(1000)
+                    isHubRefreshing = false
+                }
+            },
+            isRefreshing = isHubRefreshing,
             modifier = Modifier.padding(bottom = tabBottomInset),
         )
     }

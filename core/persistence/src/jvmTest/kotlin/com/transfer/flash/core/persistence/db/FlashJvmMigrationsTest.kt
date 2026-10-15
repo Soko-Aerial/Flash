@@ -49,7 +49,7 @@ class FlashJvmMigrationsTest {
     @Test
     fun `the exported schemas the tests depend on are present`() {
         // A missing schema would make the helper fail with a message about JSON, not about this.
-        listOf(1, 3, 4, 5, 6, 7, 8, 9, FlashDatabase.DATABASE_VERSION).forEach { version ->
+        listOf(1, 3, 4, 5, 6, 7, 8, 9, 14, FlashDatabase.DATABASE_VERSION).forEach { version ->
             assertTrue(
                 Files.exists(SCHEMA_DIR.resolve("com.transfer.flash.core.persistence.db.FlashDatabase/$version.json")),
                 "schemas/…/$version.json is missing; the tests run from the module directory",
@@ -365,6 +365,27 @@ class FlashJvmMigrationsTest {
                 assertEquals(0L, row.getLong(1), "attachmentSize must default to 0 (NOT NULL column)")
                 assertTrue(row.isNull(2), "attachmentName must default to NULL")
                 assertTrue(row.isNull(3), "replyToId must default to NULL")
+            }
+        }
+    }
+
+    @Test
+    fun `ORGT-U19 migration from 14 to 15 adds orgRootFingerprint and lastErrorKind with expected defaults`() {
+        helper.createDatabase(14).use { v14 ->
+            v14.execSQL(
+                "INSERT INTO org_sync_state (id, directoryEpoch, lastSyncedVersion, offlineGraceDays, lastSyncSuccessMs, lastSyncAttemptMs) " +
+                    "VALUES (1, 'epoch-1', 42, 30, 1000, 2000)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT id, directoryEpoch, lastSyncedVersion, orgRootFingerprint, lastErrorKind FROM org_sync_state WHERE id = 1").use { row ->
+                assertTrue(row.step(), "org_sync_state row must survive migration 14->15")
+                assertEquals(1L, row.getLong(0))
+                assertEquals("epoch-1", row.getText(1))
+                assertEquals(42L, row.getLong(2))
+                assertEquals("", row.getText(3), "orgRootFingerprint must default to empty string")
+                assertTrue(row.isNull(4), "lastErrorKind must default to NULL")
             }
         }
     }

@@ -55,6 +55,9 @@ public object FlashMigrations {
     /** v13 -> v14: offline organization directory trust (Plan B, ADR-134). */
     public val MIGRATION_13_14: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_13_14)
 
+    /** v14 -> v15: bound snapshot to organization root and record error kind (Plan B §B1.3/B1.4). */
+    public val MIGRATION_14_15: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_14_15)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }
