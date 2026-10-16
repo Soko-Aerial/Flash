@@ -1036,7 +1036,11 @@ public fun DesktopShell(
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped, orgTrustState) {
+    val radioGatewayController = remember {
+        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(scope = scope)
+    }
+    val radioUiState by radioGatewayController.state.collectAsState()
+    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped, orgTrustState, radioUiState.enabled) {
         FlashSettingsModel(
             displayName = localFriendlyName,
             deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
@@ -1076,6 +1080,7 @@ public fun DesktopShell(
             ),
             hubRelinkableGroups = hubRelinkable,
             orgTrustState = orgTrustState,
+            radioGatewayEnabled = radioUiState.enabled,
         )
     }
 
@@ -2058,6 +2063,7 @@ public fun DesktopShell(
                         onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
                         isEnrollingDevice = isEnrollingDevice,
                         enrollDeviceError = enrollDeviceError,
+                        radioGatewayController = radioGatewayController,
                         modifier = Modifier.fillMaxSize(),
                         listState = settingsScroll,
                         bottomInset = tabBottomInset,
