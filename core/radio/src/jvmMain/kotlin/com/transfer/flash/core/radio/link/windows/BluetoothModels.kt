@@ -1,7 +1,9 @@
-package com.transfer.flash.desktop.radiospike
+package com.transfer.flash.core.radio.link.windows
+
+import com.transfer.flash.core.radio.link.maskBluetoothAddress
 
 /**
- * Common models for BT-R11 Windows Bluetooth radio spike tool.
+ * Common models for Windows Bluetooth radio support (ADR-182).
  */
 
 public enum class DeviceCategory {
@@ -95,23 +97,6 @@ public data class MaskedDeviceReport(
     val isAuthenticated: Boolean,
     val installedServices: List<String>
 )
-
-/**
- * Truncate/mask Bluetooth address to preserve only the last 3 bytes (6 hex chars)
- * in compliance with safety rules for persistent outputs.
- * Example: "38:D2:00:01:35:B5" -> "**:**:**:01:35:B5"
- */
-public fun maskBluetoothAddress(address: String): String {
-    val clean = address.trim()
-    val parts = clean.split(':', '-')
-    return if (parts.size == 6) {
-        "**:**:**:${parts[3]}:${parts[4]}:${parts[5]}"
-    } else if (clean.length == 12) {
-        "******" + clean.takeLast(6)
-    } else {
-        "***" + clean.takeLast(8.coerceAtMost(clean.length))
-    }
-}
 
 /**
  * Format a 64-bit raw Bluetooth address into standard colon-separated hex string.

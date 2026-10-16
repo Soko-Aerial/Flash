@@ -1,4 +1,4 @@
-package com.transfer.flash.desktop.radiospike
+package com.transfer.flash.core.radio.link.windows
 
 import com.sun.jna.platform.win32.Advapi32Util
 import com.sun.jna.platform.win32.WinReg
@@ -78,8 +78,6 @@ public class RealWindowsRegistryPortReader : WindowsRegistryPortReader {
                     // Extract 12-hex MAC address:
                     // UniqueId format: "{00001101-0000-1000-8000-00805f9b34fb}#38D2000135B5_C00000000"
                     // Instance key format: "7&342a290&0&38D2000135B5_C00000000"
-                    // Notice the GUID suffix (00805f9b34fb) is also 12 hex chars, so we must extract specifically
-                    // from the part after '#' in UniqueId, or after '&' and before '_' in instKey.
                     val targetSection = if (uniqueId.contains('#')) {
                         uniqueId.substringAfter('#')
                     } else {
