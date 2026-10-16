@@ -33,14 +33,14 @@ Phase R1a — Hardware Radio Spike BT-R11 (Plan R, `docs/plans/RADIO-GATEWAY-PLA
 
 ## Verification & Gate Commands Run
 1. `:desktop:jvmTest --tests com.transfer.flash.desktop.radiospike.RadioSpikeTest`
-   - Result: BUILD SUCCESSFUL (6/6 tests passed).
-   - Last line: `[flash-gradle] finished with exit code 0 after 71s of running`
+   - Result: BUILD SUCCESSFUL (7/7 tests passed, including `testWin32BluetoothNativeInstanceLoads`).
+   - Last line: `[flash-gradle] finished with exit code 0 after 14s of running`
 2. `:desktop:radioSpike` (Read-only execution on this PC)
    - Result: BUILD SUCCESSFUL. 4 COM ports enumerated, `COM16` and `COM6` mapped via `REGISTRY_BTHENUM` to masked MACs.
    - Last line: `[flash-gradle] finished with exit code 0 after 22s of running`
-3. `:desktop:radioSpike -PradioArgs="--json"`
-   - Result: BUILD SUCCESSFUL. Clean JSON emitted with masked MAC addresses.
-   - Last line: `[flash-gradle] finished with exit code 0 after 18s of running`
+3. `:desktop:radioSpike -PradioArgs="--json --out report-readonly.json"`
+   - Result: BUILD SUCCESSFUL. Loaded `bthprops.cpl` via resolved path, enumerated 2 Bluetooth devices (`TQ-EJ12`, `AA-ER3`), listed service GUIDs (including SPP), mapped `COM6` to `TQ-EJ12` (`**:**:**:DE:49:1F`) via `REGISTRY_BTHENUM`, identified `COM7` as incoming listener, wrote `report-readonly.json`.
+   - Last line: `[flash-gradle] finished with exit code 0 after 10s of running`
 4. `:app:compileDebugKotlin`
    - Result: BUILD SUCCESSFUL.
    - Last line: `[flash-gradle] finished with exit code 0 after 301s of running`

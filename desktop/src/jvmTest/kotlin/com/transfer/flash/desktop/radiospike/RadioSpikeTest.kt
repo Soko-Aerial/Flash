@@ -277,4 +277,12 @@ class RadioSpikeTest {
         assertEquals(SPP_SERVICE_GUID_STRING, srvCalls[0].guid)
         assertTrue(srvCalls[0].enable)
     }
+
+    @Test
+    fun testWin32BluetoothNativeInstanceLoads() {
+        val instance = Win32BluetoothNative.INSTANCE
+        assertNotNull(instance)
+    }
 }
+
+
