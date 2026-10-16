@@ -5638,6 +5638,9 @@ Phase R0-R6 execution begins in accordance with `docs/plans/RADIO-GATEWAY-PLAN.m
 3. **Find, pair and connect** is specified (plan section 6, revision 3, owner 2026-10-16): Flash detects an already-paired radio by itself (confirmation once, then automatic reconnect) and shows a live list of nearby devices with in-app pairing, so the user does not have to open Bluetooth settings. The radio is identified by its Bluetooth address, OS pairing is not Flash trust, nothing transmits as a probe. This reverses the 2026-10-09 code decision "paired devices only, no scanning" on Android (needs `BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`, `createBond`). On Windows the candidate is the Win32 Bluetooth API through JNA (already shipped); unverified until spike `BT-R11`.
 4. **Item 5 stays: encryption is required** (owner, military use). Profile M remains the default. Because the same radio can sit on an amateur band, where encrypted traffic is usually forbidden, the first enable asks the user once to confirm they are authorised to use encrypted traffic on the frequency; without it only Profile A is selectable. Local law was not researched.
 
+### Owner decision (2026-10-16)
+ADR-173 **as amended is APPROVED** by the owner (plan O-5 answered yes). The plan `docs/plans/RADIO-GATEWAY-PLAN.md` moves from "design only" to approved: the code phases R1..R6 are authorised, built by the streams of `docs/plans/RADIO-PROMPTS-2.md`. The owner also answered O-4 **yes** (R3 may add `FlashTransportType.BLUETOOTH`, one planner hook, one outbox port and small host hooks; nothing else in engine files) and adopted ADR-182 and ADR-183 (O-6, O-7). Hardware status: the radios are at the owner's workplace and available only later (O-2), so every test that needs a radio stays TODO until then. The regulatory caution stands: the encrypted profile is selectable only after the recorded authorisation confirmation, and the test radio's frequency (144.625 MHz) is an amateur band, so Profile M is not to be tested there.
+
 ## ADR-174 - A colleague chat becomes a pairing once both sides have written (ACCEPTED by the owner, 2026-10-16)
 
 ### Decision
@@ -5733,10 +5736,10 @@ These proposed Architecture Decision Records (ADRs) address questions O-6 and O-
 
 ---
 
-## ADR-182 (PROPOSED) — Windows Bluetooth Radio Discovery, Pairing, and COM Port Mapping Architecture (O-6)
+## ADR-182 (ACCEPTED 2026-10-16) — Windows Bluetooth Radio Discovery, Pairing, and COM Port Mapping Architecture (O-6)
 
 ### Status
-VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
+ACCEPTED by the owner (2026-10-16: "adopt both, yes"). Validated by device evidence (Stream R-spike, 2026-10-16); owner runbook executed and passed.
 
 ### Context
 `docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash desktop on Windows to discover nearby radios, pair with them without forcing the user to navigate through Windows Settings, enable the Bluetooth Serial Port Profile (SPP) service, and map the dynamically allocated virtual COM port (e.g. `COM16`) to the radio's canonical Bluetooth hardware address.
@@ -5793,10 +5796,10 @@ Adopt **Win32 Bluetooth API through JNA** as implemented in `:desktop:radiospike
 
 ---
 
-## ADR-183 (PROPOSED) — Android In-App Radio Discovery, Permissions, and Bonding Architecture (O-7)
+## ADR-183 (ACCEPTED 2026-10-16) — Android In-App Radio Discovery, Permissions, and Bonding Architecture (O-7)
 
 ### Status
-VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
+ACCEPTED by the owner (2026-10-16: "adopt both, yes"). Validated by device evidence (Stream R-spike, 2026-10-16); owner runbook executed and passed.
 
 ### Context
 `docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash Android to provide an in-app discovery list and pairing flow for the radio.

@@ -21,16 +21,16 @@ Per stream the cycle is the same as before: paste the prompt into an Antigravity
 (replace the stream name; the verifier checks the scope rules written in the prompt), then say "merge" and the integrator merges, runs the gate
 and folds the log fragments. Waves 2 and 3 prompts assume the earlier waves are merged; their STEP 0 checks that and stops otherwise.
 
-## 1. Assumptions to confirm (the prompts depend on them)
+## 1. Owner decisions (answered 2026-10-16)
 
-| # | Assumption | If you disagree |
+| # | Item | Answer |
 |---|---|---|
-| 1 | ADR-182 and ADR-183 (Win32 via JNA + registry mapping on Windows; Flash's own scan/pair list on Android) are ADOPTED. They are still marked PROPOSED in `docs/decisions.md`; the BT-R11 device evidence supports both. | Say so before Wave 1; R-link would change. |
-| 2 | ADR-173 as amended is approved (O-5), and the plan stays PROPOSED until you say otherwise. | Wave 1 can still run, it only builds the connection layer. |
-| 3 | O-4: starting the R-chat prompt is your yes to touching `FlashTransportType`, one planner hook, one outbox port and host hooks. | Do not start R-chat. |
-| 4 | O-2: a second radio exists for BT-R05, BT-R07, BT-R08, BT-R12. Without it those stay design-only / simulated and cannot be called verified. | Streams still build and simulate; the runbooks stay TODO. |
-| 5 | Radio tests that transmit are run by you only, on a frequency and under an authorisation that allows the profile you test. The agents never transmit. | n/a |
-| 6 | UI ids UI-070..UI-079 and the number ranges below are free (they were, on 2026-10-16). | The integrator renumbers. |
+| 1 | ADR-182 and ADR-183 (Win32 via JNA + registry mapping on Windows; Flash's own scan/pair list on Android) | **ADOPTED** (ACCEPTED in `docs/decisions.md`). |
+| 2 | ADR-173 as amended (O-5) | **APPROVED.** The plan status is APPROVED; code phases are authorised. |
+| 3 | O-4: `FlashTransportType.BLUETOOTH`, one planner hook, one outbox port, small host hooks | **YES, given now.** R-chat still waits for Wave 1 in time (its STEP 0 checks the prerequisite merges); the hooks stay minimal and non-radio users must see no change. |
+| 4 | O-2: second radio | Two radios exist but are at the owner's workplace and available **later**. Until then no hardware step can be run: every runbook step (BT-R03, BT-R04, BT-R05, BT-R07, BT-R08, BT-R12, RADCON-*, and the "Send a test message" flow) stays TODO. Streams build, simulate and compile; they never call anything verified. BT-R08 may need a third receiver (UNPROVEN whether two stations suffice). |
+| 5 | Radio tests that transmit are run by the owner only, on a frequency and under an authorisation that allows the profile tested (the test frequency 144.625 MHz is an amateur band: Profile A with callsign there, Profile M only where authorised). Agents never transmit. | Standing rule. |
+| 6 | UI ids UI-070..UI-079 and the number ranges below are free | Checked for ADR and UI ids on 2026-10-16; the integrator renumbers on any collision. |
 
 ## 2. Reserved numbers
 

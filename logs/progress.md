@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-10-16 - Radio plan approved; remaining-phase prompts written (Claude Code, integrator)
+
+### Worked on
+Wrote `docs/plans/RADIO-PROMPTS-2.md` (streams R-link, R-ui, R-wire, R-chat, R-audio, R-relay, R-radar) and recorded the owner's answers.
+
+### Changed
+- Owner answers (2026-10-16): ADR-182 and ADR-183 adopted (ACCEPTED), ADR-173 as amended approved (O-5), O-4 yes (R3 may touch `FlashTransportType`, one planner hook, one outbox port, host hooks), O-2: radios are at the owner's workplace, available later.
+- `docs/decisions.md` (ADR-173 owner-decision block, ADR-182/183 ACCEPTED), `docs/plans/RADIO-GATEWAY-PLAN.md` (status APPROVED, O-2/O-4..O-7 answered), `docs/plans/RADIO-PROMPTS-2.md` section 1.
+
+### Verification
+Docs only; nothing built or run. ADR and UI number ranges were grepped free; ERROR and EXP ranges were not re-grepped.
+
+### Remaining
+No stream has been started. All radio hardware tests are TODO until the owner has the radios again. Regulatory caution: Profile M must not be tested on the amateur-band test frequency.
+
+### Next AI
+Wave 1 (R-link, R-ui) and R-audio can start from `RADIO-PROMPTS-2.md`; Wave 2/3 wait for their prerequisite merges.
+
 ## 2026-10-16 - Radio streams R-move and R-spike integrated into dev (Claude Code, integrator)
 
 ### Worked on

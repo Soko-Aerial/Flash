@@ -1,7 +1,7 @@
 # Plan R: Hardware Radio KISS TNC Gateway (`:core:radio`)
 
 **Date:** 2026-10-16 (revision 3, same day)
-**Status:** PROPOSED, DESIGN ONLY. No code is written for this plan until the owner authorises it. Hardware spike `BT-00` passed (`EXP-023`).
+**Status:** APPROVED by the owner on 2026-10-16 (ADR-173 as amended, O-4, O-5, O-6, O-7 answered; code phases are built by the streams of `docs/plans/RADIO-PROMPTS-2.md`). Earlier status was PROPOSED, DESIGN ONLY. Hardware spike `BT-00` passed (`EXP-023`).
 **Owner decision target:** approve (1) the dedicated `:core:radio` module, built by **moving** the radio code that already exists, (2) the "find, pair and connect" flow in section 6 (automatic detection, in-app scan and pairing), (3) the open decisions in section 12.
 **Decision record:** ADR-173 in `docs/decisions.md` (amended by this revision).
 **Parent blueprint:** `Project Goal and Blueprint/android-lan-wifi-direct-transfer-app-plan.md`
@@ -252,12 +252,12 @@ The older `BT-00` and `BT-09`..`BT-17` entries in the backlog stay as they are (
 | ID | Question | Recommendation |
 |---|---|---|
 | O-1 | **ANSWERED by the owner 2026-10-16:** encryption is needed (military use); Profile M is the default. | Done in section 8. The one-time authorisation confirmation stays, because the same radio can be on an amateur band. |
-| O-2 | Is a second radio available for R3 and R5 tests? | If not, R3 and R5 stay "design only, simulated" and cannot be called verified. |
+| O-2 | Is a second radio available for R3 and R5 tests? | **ANSWERED 2026-10-16:** two radios exist but are at the owner's workplace, available later. Until then R3 and R5 are built and simulated only; every radio test stays TODO and nothing is called verified. |
 | O-3 | Move `ReconnectPolicy` to `:core:common` (section 4.2)? | Yes if it has no network types. |
-| O-4 | May `:core:engine` and the connection planner be touched for `FlashTransportType.BLUETOOTH` (R3)? | Yes, as separate small commits after R2 passes. |
-| O-5 | Approve ADR-173 as amended (revision 3). | Yes. |
-| O-6 | How does the PC scan and pair in-app: Win32 Bluetooth API through JNA (already shipped), or a Windows Runtime helper? | Decide after `BT-R11`. JNA first because it adds no dependency. |
-| O-7 | Android scan/pair UI: Flash's own list (`BLUETOOTH_SCAN`, `createBond`) or the system Companion Device Manager chooser? | Flash's own list if `BT-R11` shows the radio appears with `neverForLocation`; otherwise the chooser. |
+| O-4 | May `:core:engine` and the connection planner be touched for `FlashTransportType.BLUETOOTH` (R3)? | **ANSWERED yes by the owner 2026-10-16** ("yes now"): separate small commits, hooks only; the prompt requires proof that users who never enable the radio see no change. |
+| O-5 | Approve ADR-173 as amended (revision 3). | **ANSWERED yes by the owner 2026-10-16.** |
+| O-6 | How does the PC scan and pair in-app: Win32 Bluetooth API through JNA (already shipped), or a Windows Runtime helper? | **ANSWERED 2026-10-16:** Win32 through JNA + registry COM mapping (ADR-182 ACCEPTED, BT-R11 PASS). |
+| O-7 | Android scan/pair UI: Flash's own list (`BLUETOOTH_SCAN`, `createBond`) or the system Companion Device Manager chooser? | **ANSWERED 2026-10-16:** Flash's own list (ADR-183 ACCEPTED, BT-R11 PASS: radio found with `neverForLocation`). |
 
 ## 13. Not in this plan
 
