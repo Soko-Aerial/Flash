@@ -4,7 +4,7 @@
 `agent/R-wire` (worktree `E:\FlashWork\R-wire`)
 
 ## Last verified build
-`b141483f` (tests added & verified)
+`c189d900` (implementation, tests, and documentation complete)
 
 ## Current phase
 Stream R-wire Tasks 1–6 COMPLETE. Ready for review and physical device runbook execution.
