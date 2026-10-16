@@ -79,6 +79,9 @@ kotlin {
                 // Linux plan L1 (D-L2): D-Bus client for the Secret Service keyring (ADR-092). Used only on Linux at run time.
                 implementation(libs.dbus.java.core)
                 implementation(libs.dbus.java.transport.native.unixsocket)
+                // Windows Bluetooth Win32 API access for BT-R11 radio spike (ADR-035 JNA 5.17.0).
+                implementation(libs.jna)
+                implementation(libs.jna.platform)
                 // Phase 33a: the NATIVE libwebrtc for THIS host at product runtime.
                 // `webrtc-java`'s main jar (arriving transitively via `:core:calling`) is the
                 // Java API only; the native library is a per-OS/arch classified artifact that
@@ -265,13 +268,14 @@ run {
     }
     registerRadioTool("radioLinkTest", "com.transfer.flash.desktop.RadioLinkTestApp", "Opens the experimental radio link test window (BT-00).")
     registerRadioTool("radioLinkTestCli", "com.transfer.flash.core.radio.diag.RadioLinkTestCliKt", "Headless radio link test; pass options with -PradioArgs=\"--list\" (BT-00).")
+    registerRadioTool("radioSpike", "com.transfer.flash.desktop.radiospike.RadioSpikeCliKt", "Runs the BT-R11 Windows Bluetooth radio spike tool (read-only by default; active mode needs owner flag).")
 }
 
-// The BT-00 window is a hardware-spike tool (ADR-101), not a feature: keep its classes out of the desktop jar, and so out of the
-// MSI/EXE and the uber jar, without moving or renaming the source. The two tasks above run from the compiled classes directory
+// The BT-00 window and BT-R11 spike tools are hardware-spike tools (ADR-101), not features: keep their classes out of the desktop jar, and so out of the
+// MSI/EXE and the uber jar, without moving or renaming the source. The tasks above run from the compiled classes directory
 // (radioMain.output.allOutputs), not from this jar, so they are unaffected. `RadioLinkTest*` covers RadioLinkTestApp and the
 // file class RadioLinkTestMainKt (+ its lambdas); the Compose compiler also emits ComposableSingletons$RadioLinkTestMainKt.
 // The headless CLI lives in :core:radio (core/radio/.../diag), outside this module.
 tasks.named<Jar>("jvmJar") {
-    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*")
+    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*")
 }
