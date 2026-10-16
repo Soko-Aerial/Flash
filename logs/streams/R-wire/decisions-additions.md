@@ -29,3 +29,9 @@ The host integration must satisfy strict platform, power, and security constrain
 - Prevents battery drain and unauthorized Bluetooth activity at boot.
 - Eliminates hard dependencies on real hardware in CI / unit tests.
 - Keeps shared UI modules pure and isolated from platform internals.
+
+### Amendment 2026-10-16 (integrator audit)
+- Lifetime: the Android controller is owned by a process singleton (`RadioGatewayHolder`), not by the Activity's composition scope (ERROR-681). "Created lazily" still holds: the manager object is only created when the stored switch is ON or the user turns it ON.
+- The foreground service is driven through `RadioServiceTracker` and guarded calls (ERROR-682).
+- The desktop switch has its own file (ERROR-683).
+

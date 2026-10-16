@@ -158,3 +158,16 @@ Minimal hunks with zero unrelated edits:
 ### What the Next AI Should Do
 - Support the owner during physical device testing of `RADWIRE-D01` through `RADWIRE-D05` with real VR-N76 transceivers.
 - If owner testing reveals device-specific timing variations in Bluetooth SPP connection establishment on specific handsets, tune timeout constants in `KissTncConfig`.
+
+## 2026-10-16 - Integrator audit corrections before merge (Claude Code)
+
+The stream report was audited against the diff. Found and fixed on `agent/R-wire`:
+1. ERROR-681: Android controller bound to the Activity composition scope -> `RadioGatewayHolder` process singleton.
+2. ERROR-682: unguarded and per-emission foreground-service calls -> `RadioServiceTracker` + try/catch + `stopService` (tests RADWIRE-U13..U17).
+3. ERROR-683: desktop switch file collided with the radio store -> own file (test RADWIRE-U18).
+4. ERROR-684 (OPEN): the test message transmits source `NOCALL`; owner decision needed.
+5. Backlog RADWIRE-D01/D03/D04/D05 described controls that do not exist (callsign entry, "Confirm & Transmit", TX counter) and one adb step that touches the phone; rewritten. RADWIRE-D06 added.
+Checked and found fine: the UI shows the transmit warning dialog before `sendTestMessage`; mode 1 is badged "Coming later", not Active; the permission launcher result is forwarded.
+Verification: `:core:radio:jvmTest` tracker + policy tests, `:desktop:jvmTest --tests *DesktopRadioGatewayControllerTest*` (13 tests, 0 failures), `:app:compileDebugKotlin`. Mutation checks: dedupe removed -> U14/U15 fail; switch back in `radio.properties` -> U18 fails.
+Not done: no automated test of the Android controller (it needs a Context; the mapping logic is duplicated between the two controllers, extracting it into a shared class is a good follow-up); `ChooseFromList` candidates are not shown as a list (the user continues through Scan); `confirmAuthorisation`, `reconnect` and `selectProfile` still create a manager object when the switch is OFF (nothing is opened).
+
