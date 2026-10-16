@@ -1,5 +1,10 @@
 # Current Handoff
 
+## 2026-10-16 - R-link and R-ui merged into dev (reviewed and corrected)
+
+- **Status:** `dev` has the radio connection layer (`RadioGatewayManager`, discovery for Windows and Android, persistence) and the Radio gateway screens (against a fake controller, hidden in real builds until a host supplies a real one). Gate green on the merged result (see `logs/progress.md`). Radios are not available to the owner now, so nothing is device-verified.
+- **Recommended next task:** start stream R-wire (glue: real controllers for Android and desktop), then R-chat; R-audio can run any time.
+
 ## 2026-10-16 - Radio plan APPROVED, prompts for R1..R6 ready
 
 - **Status:** plan approved (ADR-173 amended, ADR-182/183 accepted, O-4 yes). Prompts: `docs/plans/RADIO-PROMPTS-2.md`. Nothing started. Radios are unavailable until the owner is back at the workplace, so no hardware test can run yet.
