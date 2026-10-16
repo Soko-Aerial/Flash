@@ -6960,3 +6960,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-15: Hub tab H6-H10 merged into dev (cloud branch), Pair wired. Open: ADR-170..172 owner decision, verifier pass, HUBT-01..33 on devices, the "company server can read group messages" header in the group chat.
 
 ## 2026-10-15: Hub tab visual refresh built (HUBT-35 owed), bottom-bar fix ERROR-409 committed. Local commits not pushed; owner must rebuild and restart the demo hub for the console fix (ERROR-408).
+
+## 2026-10-16: ERROR-410 fixed (announcements now reach the phone; client-only change, rebuild and reinstall the app with `adb install -r`). ANN-12 owed.

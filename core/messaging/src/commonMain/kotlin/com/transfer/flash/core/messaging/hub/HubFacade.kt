@@ -280,6 +280,7 @@ public class HubFacade(
                 is FlashResult.Failure -> {
                     val e = r.error
                     if (e is FlashError.Domain && e.code == "UNSUPPORTED") newsUnsupported.value = true
+                    else FlashLog.w("HUB_UI", "announcements refresh failed: ${e::class.simpleName} ${(e as? FlashError.Domain)?.code.orEmpty()}")
                 }
             }
         } catch (e: CancellationException) {
