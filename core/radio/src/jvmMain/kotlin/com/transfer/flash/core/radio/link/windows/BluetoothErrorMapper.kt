@@ -1,4 +1,4 @@
-package com.transfer.flash.desktop.radiospike
+package com.transfer.flash.core.radio.link.windows
 
 /**
  * Maps Windows Win32 error codes to plain-language, single-sentence descriptions

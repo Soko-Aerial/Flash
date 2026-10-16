@@ -1,4 +1,4 @@
-package com.transfer.flash.desktop.radiospike
+package com.transfer.flash.core.radio.link.windows
 
 import com.sun.jna.Library
 import com.sun.jna.Memory
@@ -254,61 +254,82 @@ public class RealWindowsBluetoothApi : WindowsBluetoothApi {
         val deviceInfo = Win32BluetoothNative.BLUETOOTH_DEVICE_INFO().apply {
             ullLong = deviceAddressLong
         }
-        val countRef = IntByReference(0)
-        // First probe call to query required count
-        val firstRet = lib.BluetoothEnumerateInstalledServices(null, deviceInfo, countRef, null)
-        val count = countRef.value
-        if (count <= 0) return emptyList()
 
-        val mem = Memory((count * 16).toLong())
-        val secondRet = lib.BluetoothEnumerateInstalledServices(null, deviceInfo, countRef, mem)
-        if (secondRet != 0) return emptyList()
-
-        val list = mutableListOf<String>()
-        val actualCount = countRef.value
-        for (i in 0 until actualCount) {
-            val offset = (i * 16).toLong()
-            val d1 = mem.getInt(offset)
-            val d2 = mem.getShort(offset + 4).toInt() and 0xFFFF
-            val d3 = mem.getShort(offset + 6).toInt() and 0xFFFF
-            val d4_0 = mem.getByte(offset + 8).toInt() and 0xFF
-            val d4_1 = mem.getByte(offset + 9).toInt() and 0xFF
-            val d4_2 = mem.getByte(offset + 10).toInt() and 0xFF
-            val d4_3 = mem.getByte(offset + 11).toInt() and 0xFF
-            val d4_4 = mem.getByte(offset + 12).toInt() and 0xFF
-            val d4_5 = mem.getByte(offset + 13).toInt() and 0xFF
-            val d4_6 = mem.getByte(offset + 14).toInt() and 0xFF
-            val d4_7 = mem.getByte(offset + 15).toInt() and 0xFF
-
-            val guidStr = String.format(
-                "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
-                d1, d2, d3, d4_0, d4_1, d4_2, d4_3, d4_4, d4_5, d4_6, d4_7
-            )
-            list.add(guidStr)
+        // First call with null to obtain count
+        val numServices = IntByReference(0)
+        val initialResult = lib.BluetoothEnumerateInstalledServices(null, deviceInfo, numServices, null)
+        val count = numServices.value
+        if (initialResult != 0 || count <= 0) {
+            return emptyList()
         }
-        return list
+
+        // GUID is 16 bytes
+        val guidSize = 16
+        val buffer = Memory((count * guidSize).toLong())
+        val queryResult = lib.BluetoothEnumerateInstalledServices(null, deviceInfo, numServices, buffer)
+        if (queryResult != 0) {
+            return emptyList()
+        }
+
+        val actualCount = numServices.value
+        val guids = mutableListOf<String>()
+        for (i in 0 until actualCount) {
+            val offset = (i * guidSize).toLong()
+            val data1 = buffer.getInt(offset)
+            val data2 = buffer.getShort(offset + 4)
+            val data3 = buffer.getShort(offset + 6)
+            val data4 = ByteArray(8)
+            buffer.read(offset + 8, data4, 0, 8)
+
+            val guidString = String.format(
+                "%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X",
+                data1,
+                data2.toInt() and 0xFFFF,
+                data3.toInt() and 0xFFFF,
+                data4[0].toInt() and 0xFF,
+                data4[1].toInt() and 0xFF,
+                data4[2].toInt() and 0xFF,
+                data4[3].toInt() and 0xFF,
+                data4[4].toInt() and 0xFF,
+                data4[5].toInt() and 0xFF,
+                data4[6].toInt() and 0xFF,
+                data4[7].toInt() and 0xFF
+            )
+            guids.add(guidString)
+        }
+        return guids
     }
 
     override fun authenticateDevice(deviceAddressLong: Long, pin: String?): AuthenticateOutcome {
         val lib = try {
             Win32BluetoothNative.INSTANCE
         } catch (t: Throwable) {
-            return AuthenticateOutcome.Failed(-1, "Native library bthprops.cpl unavailable: ${t.message}")
+            return AuthenticateOutcome.Failed(-1, "bthprops.cpl not available: ${t.message}")
         }
 
         val deviceInfo = Win32BluetoothNative.BLUETOOTH_DEVICE_INFO().apply {
             ullLong = deviceAddressLong
         }
-        val passkeyW = if (pin != null) WString(pin) else null
+
+        // Refresh device info
+        val getInfoRes = lib.BluetoothGetDeviceInfo(null, deviceInfo)
+        if (getInfoRes != 0) {
+            val err = Native.getLastError()
+            return AuthenticateOutcome.Failed(err, "BluetoothGetDeviceInfo failed with code $err (${BluetoothErrorMapper.mapErrorCode(err)})")
+        }
+
+        val passkeyW = pin?.let { WString(it) }
         val passkeyLen = pin?.length ?: 0
 
-        val ret = lib.BluetoothAuthenticateDevice(null, null, deviceInfo, passkeyW, passkeyLen)
-        return when (ret) {
+        val result = lib.BluetoothAuthenticateDevice(null, null, deviceInfo, passkeyW, passkeyLen)
+        return when (result) {
             0 -> AuthenticateOutcome.Success
-            1244 -> AuthenticateOutcome.Failed(ret, "Device rejected authentication credentials.")
             1223 -> AuthenticateOutcome.Cancelled
-            87 -> AuthenticateOutcome.Failed(ret, "Invalid parameter passed to authentication.")
-            else -> AuthenticateOutcome.Failed(ret, BluetoothErrorMapper.mapErrorCode(ret))
+            1244 -> AuthenticateOutcome.Failed(1244, BluetoothErrorMapper.mapErrorCode(1244))
+            else -> {
+                val err = if (result != 0) result else Native.getLastError()
+                AuthenticateOutcome.Failed(err, BluetoothErrorMapper.mapErrorCode(err))
+            }
         }
     }
 
@@ -316,78 +337,36 @@ public class RealWindowsBluetoothApi : WindowsBluetoothApi {
         val lib = try {
             Win32BluetoothNative.INSTANCE
         } catch (t: Throwable) {
-            return ServiceStateOutcome.Failed(-1, "Native library bthprops.cpl unavailable: ${t.message}")
+            return ServiceStateOutcome.Failed(-1, "bthprops.cpl not available: ${t.message}")
         }
 
         val deviceInfo = Win32BluetoothNative.BLUETOOTH_DEVICE_INFO().apply {
             ullLong = deviceAddressLong
         }
+
+        val getInfoRes = lib.BluetoothGetDeviceInfo(null, deviceInfo)
+        if (getInfoRes != 0) {
+            val err = Native.getLastError()
+            return ServiceStateOutcome.Failed(err, "BluetoothGetDeviceInfo failed: ${BluetoothErrorMapper.mapErrorCode(err)}")
+        }
+
         val guid = Guid.GUID.fromString(serviceGuid)
+        // BLUETOOTH_SERVICE_DISABLE = 0x00, BLUETOOTH_SERVICE_ENABLE = 0x01
         val flags = if (enable) 0x01 else 0x00
 
-        val ret = lib.BluetoothSetServiceState(null, deviceInfo, guid, flags)
-        return when (ret) {
+        val result = lib.BluetoothSetServiceState(null, deviceInfo, guid, flags)
+        return when (result) {
             0 -> ServiceStateOutcome.Success
-            87 -> ServiceStateOutcome.AlreadyInDesiredState
-            else -> ServiceStateOutcome.Failed(ret, BluetoothErrorMapper.mapErrorCode(ret))
-        }
-    }
-}
-
-/**
- * Recording fake for unit testing.
- * Proves that read-only runs invoke zero mutating/active functions,
- * and allows unit testing of active flows without any hardware.
- */
-public class FakeWindowsBluetoothApi : WindowsBluetoothApi {
-
-    public sealed interface CallRecord {
-        public data class ListRemembered(val timestamp: Long = System.currentTimeMillis()) : CallRecord
-        public data class SearchDevices(val params: BluetoothSearchParams) : CallRecord
-        public data class EnumerateServices(val address: Long) : CallRecord
-        public data class Authenticate(val address: Long, val pin: String?) : CallRecord
-        public data class SetServiceState(val address: Long, val guid: String, val enable: Boolean) : CallRecord
-    }
-
-    public val recordedCalls: MutableList<CallRecord> = mutableListOf()
-
-    public val rememberedDevices: MutableList<DiscoveredBluetoothDevice> = mutableListOf()
-    public val inquiryDevices: MutableList<DiscoveredBluetoothDevice> = mutableListOf()
-    public val servicesMap: MutableMap<Long, List<String>> = mutableMapOf()
-
-    public var nextAuthenticateOutcome: AuthenticateOutcome = AuthenticateOutcome.Success
-    public var nextServiceStateOutcome: ServiceStateOutcome = ServiceStateOutcome.Success
-
-    override fun listRememberedDevices(): List<DiscoveredBluetoothDevice> {
-        recordedCalls.add(CallRecord.ListRemembered())
-        return rememberedDevices.toList()
-    }
-
-    override fun searchDevices(params: BluetoothSearchParams): List<DiscoveredBluetoothDevice> {
-        recordedCalls.add(CallRecord.SearchDevices(params))
-        return inquiryDevices.toList()
-    }
-
-    override fun enumerateInstalledServices(deviceAddressLong: Long): List<String> {
-        recordedCalls.add(CallRecord.EnumerateServices(deviceAddressLong))
-        return servicesMap[deviceAddressLong] ?: emptyList()
-    }
-
-    override fun authenticateDevice(deviceAddressLong: Long, pin: String?): AuthenticateOutcome {
-        recordedCalls.add(CallRecord.Authenticate(deviceAddressLong, pin))
-        return nextAuthenticateOutcome
-    }
-
-    override fun setServiceState(deviceAddressLong: Long, serviceGuid: String, enable: Boolean): ServiceStateOutcome {
-        recordedCalls.add(CallRecord.SetServiceState(deviceAddressLong, serviceGuid, enable))
-        return nextServiceStateOutcome
-    }
-
-    public fun verifyNoMutationsCalled() {
-        val mutatingCalls = recordedCalls.filterIsInstance<CallRecord.Authenticate>() +
-                recordedCalls.filterIsInstance<CallRecord.SetServiceState>()
-        check(mutatingCalls.isEmpty()) {
-            "Safety violation: Mutating Bluetooth API calls were recorded: $mutatingCalls"
+            // ERROR_SERVICE_ALREADY_RUNNING / ERROR_ALREADY_EXISTS / 1056
+            1056, 183 -> ServiceStateOutcome.AlreadyInDesiredState
+            else -> {
+                val err = if (result != 0) result else Native.getLastError()
+                if (err == 1056 || err == 183) {
+                    ServiceStateOutcome.AlreadyInDesiredState
+                } else {
+                    ServiceStateOutcome.Failed(err, BluetoothErrorMapper.mapErrorCode(err))
+                }
+            }
         }
     }
 }
