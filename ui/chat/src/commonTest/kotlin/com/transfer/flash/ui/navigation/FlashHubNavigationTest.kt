@@ -43,6 +43,9 @@ class FlashHubNavigationTest {
         assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Hub, hubEnrolled = false, railMode = false))
         assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Hub, hubEnrolled = true, railMode = true), "rail mode has no bottom bar")
         assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Conversation, hubEnrolled = true, railMode = false))
+        assertTrue(FlashNavigationMath.showsBottomBar(FlashDestination.Transfers, hubEnrolled = true, railMode = false), "a pushed Transfers keeps the bar")
+        assertTrue(FlashNavigationMath.showsBottomBar(FlashDestination.Transfers, hubEnrolled = false, railMode = false), "Transfers is a tab when not enrolled")
+        assertFalse(FlashNavigationMath.showsBottomBar(FlashDestination.Transfers, hubEnrolled = true, railMode = true))
         assertTrue(FlashNavigationMath.isTabRoot(FlashDestination.Hub, true))
         assertFalse(FlashNavigationMath.isTabRoot(FlashDestination.Hub, false))
     }

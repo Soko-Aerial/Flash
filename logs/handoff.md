@@ -6964,3 +6964,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-16: ERROR-410 fixed (announcements now reach the phone; client-only change, rebuild and reinstall the app with `adb install -r`). ANN-12 owed.
 
 ## 2026-10-16: ERROR-411 fixed in code (announcements fetched on relay reconnect and when the Hub tab opens). ANN-13 owed; app rebuild only.
+
+## 2026-10-16 (later): owner decisions applied (ADR-160 count Paused, ADR-170/172 accepted, ADR-174 auto-pair on reply, ADR-175 guard kept, ADR-176 draggable PC divider), ERROR-412 fixed in code. Verifier prompt for H6..H10: `docs/plans/HUB-H6-H10-VERIFIER-PROMPT.md`. Device checks HUBT-36/37, ORGPAIR-04, PANE-01 owed.

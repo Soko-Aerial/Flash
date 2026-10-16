@@ -2916,12 +2916,7 @@ private fun FlashShell(
             onBrowseOrgGroupsClick = null,
             onTransfersClick = if (nav.hubEnrolled) { { nav.openTransfers() } } else null,
             transfersActiveCount = if (nav.hubEnrolled) {
-                domainTransfers.count {
-                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Queued ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
-                }
+                domainTransfers.count { com.transfer.flash.ui.chat.FlashChatListTopBarMath.countsAsActive(it.state) }
             } else 0,
             pendingApprovalGroupNames = hubPendingJoins.values.toList(),
             modifier = Modifier.fillMaxSize(),
@@ -3239,6 +3234,11 @@ private fun FlashShell(
                         visible = autoNavVisible,
                         // Telegram behaviour: tapping the tab you are already on returns it to the top.
                         onTabReselected = { destination ->
+                            // A pushed Transfers (enrolled device) keeps the bar; the highlighted tab under it is a way back, not a scroll.
+                            if (!com.transfer.flash.ui.navigation.FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
+                                nav.selectTab(destination)
+                                return@FlashBottomNav
+                            }
                             val listState = when (destination) {
                                 FlashDestination.ChatList -> chatListScroll
                                 FlashDestination.Transfers -> transfersScroll

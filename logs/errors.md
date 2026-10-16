@@ -10785,3 +10785,26 @@ The hub does push (the equivalent of a webhook, over the relay WebSocket: `Relay
 
 ### Status
 RESOLVED in code; confirm on the device.
+
+## ERROR-412 - The bottom bar disappeared on the Transfers screen of an enrolled device
+
+### Date
+2026-10-16
+
+### Area
+Navigation shell: `FlashNavigationMath.showsBottomBar`, phone `MainActivity`
+
+### Symptoms
+Owner: the Transfers button moved to the top bar; opening it made the bottom navigation vanish.
+
+### Root cause
+For an enrolled device Transfers is pushed from the chat-list top bar and is no longer a tab root (Hub took its place, UI-058 H5), and the bar was shown only on tab roots. A pushed screen drops the bar by design, but Transfers is a place people navigate from, so the design was wrong for it.
+
+### Working fix
+`FlashNavigationMath.keepsBarWhenPushed(Transfers, hubEnrolled)` keeps the bar on a pushed Transfers; the bar highlights the tab underneath. Tapping the highlighted tab there leaves Transfers (instead of scrolling a list that is not on screen). The page already received the bottom inset. Test `FlashHubNavigationTest` (tab roots follow enrolment).
+
+### Verification
+`:ui:chat:jvmTest` / `testAndroidHostTest`, `:app:compileDebugKotlin` green. NOT device-verified (HUBT-36). Desktop is not affected (its side rail and compact bar are separate; the compact desktop bar is shown on tab roots only and was not changed).
+
+### Status
+RESOLVED in code; confirm on the device.

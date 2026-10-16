@@ -54,6 +54,37 @@ object FlashAdaptiveMath {
     const val ListPaneMaxWidthDp = 480f
     const val DetailPaneMinWidthDp = 480f
 
+    /**
+     * AD-2 / AD-D3 (owner request 2026-10-16): a person who drags the desktop splitter may go beyond the automatic clamp,
+     * within these limits. The chat list stays readable (min) and never swallows the window (max); the conversation keeps
+     * at least [DetailPaneUserMinWidthDp] unless the window itself is too narrow, in which case the list gets its minimum.
+     */
+    const val ListPaneUserMinWidthDp = 280f
+    const val ListPaneUserMaxWidthDp = 720f
+    const val DetailPaneUserMinWidthDp = 360f
+
+    /** Step of the keyboard / screen-reader "Wider" and "Narrower" actions. */
+    const val SplitterStepDp = 24f
+
+    /**
+     * The width a dragged (or restored) list pane gets. [availableWidthDp] is what the two panes share (the window minus the
+     * side rail). A non-finite request falls back to the minimum, so a corrupt saved value can never break the layout.
+     */
+    fun clampListPaneWidthDp(requestedDp: Float, availableWidthDp: Float): Float {
+        val lower = ListPaneUserMinWidthDp
+        val upper = (availableWidthDp - DetailPaneUserMinWidthDp).coerceIn(lower, ListPaneUserMaxWidthDp)
+        val request = if (requestedDp.isNaN() || requestedDp.isInfinite()) lower else requestedDp
+        return request.coerceIn(lower, upper)
+    }
+
+    /** The list-pane width to draw: the person's saved width when there is one, the tested automatic width otherwise. */
+    fun effectiveListPaneWidthDp(totalWidthDp: Float, availableWidthDp: Float, preferredDp: Float?): Float =
+        if (preferredDp == null || !isTwoPaneAllowed(windowSizeForWidth(totalWidthDp))) {
+            listPaneWidthDp(totalWidthDp)
+        } else {
+            clampListPaneWidthDp(preferredDp, availableWidthDp)
+        }
+
     fun windowSizeForWidth(widthDp: Float): FlashWindowSizeClass = when {
         widthDp >= ExpandedMinWidthDp -> FlashWindowSizeClass.Expanded
         widthDp >= MediumMinWidthDp -> FlashWindowSizeClass.Medium
