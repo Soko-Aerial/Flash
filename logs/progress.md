@@ -1,5 +1,24 @@
 # Progress Log
 
+## 2026-10-16 - Radio streams R-link and R-ui reviewed, corrected and merged into dev (Claude Code, integrator)
+
+### Worked on
+Audited both stream reports against their diffs, fixed the defects found on the stream branches, merged both into `dev` (no separate verifier pass; the audit was done by the integrator).
+
+### Changed
+- R-link (`agent/R-link`): `:core:radio` now has the production find/pair/connect layer: Windows JNA + registry catalogue promoted from the spike, Android scan/bond (`AndroidRadioDiscovery`), the `RadioDeviceDiscovery` port with a fake, `RadioGatewayManager` (state flow, auto-reconnect, switch-off teardown, retry limit), atomic persistence (desktop properties file, Android SharedPreferences), `RadioServicePolicy` and a `connectedDevice` `RadioLinkService` (nothing starts it yet). ADR-187..191, ERROR-640/641, EXP-050.
+- R-ui (`agent/R-ui`): design doc `docs/ui/radio-gateway.md` (UI-070..074), `RadioGatewayController` port + `FakeRadioGatewayController`, `FlashRadioCopy`/`FlashRadioMath`, the Radio gateway screens and a Settings entry, Android debug and desktop `--radio-demo` demo entry points. ADR-192.
+- Integrator fixes: (1) the test message was refused on every real link by class-name sniffing and never checked the authorisation: now `requestTestMessage(text, userConfirmedTransmit): TestMessageResult` (connected, user confirmation, authorisation record, 1..64 bytes, single-flight; ERROR-642, ADR-189 amended); (2) two lost spike-CLI safety tests restored (`RadioSpikeCliSafetyTest`, ERROR-643); (3) stop-after-start scan race (ERROR-644) and non-atomic state updates (ERROR-645); (4) the Settings entry opened a FAKE controller in real builds: it is now hidden without a real controller (ERROR-660, test RADUI-U07). Runbook step W6 and RADLNK-D06 were rewritten (the old text expected suppression). The R-ui report's claim about a known-radio prefix list was wrong; corrected in the stream's errors fragment.
+
+### Verification (executed, `toolslash-gradle.cmd`, merged result)
+`:core:radio:jvmTest` 160 tests, `:core:radio:testAndroidHostTest` 103, `:ui:chat:jvmTest` and `:ui:chat:testAndroidHostTest` radio classes (29 and 21), `:desktop:jvmTest --tests *RadioSpikeCliSafetyTest* *RadioSpikeTest*` 3, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm`, `:app:compileDebugKotlin`: all green, 0 failures. Mutation checks (each fails a named test): authorisation check removed (RADLNK-U09a), confirmation check removed (U09a), scan job stored late (U09d), single-flight lock removed (U09c), Settings gating removed (RADUI-U07).
+
+### Remaining
+No radio hardware test was run (the radios are at the owner's workplace): RADLNK-D01..D10, RADUI-01..10 and the R-move/R-spike items stay TODO. `RadioLinkService` is not started by anything yet; the manager's failure sentences and the UI's `RadioFailureReason` still need mapping (stream R-wire). Settings search still lists the "Radio gateway (beta)" keyword when the row is hidden. Not re-run: whole `:desktop:jvmTest` (ERROR-106), `:app:testDebugUnitTest`, the jitpack publish line.
+
+### Next AI
+Next streams from `docs/plans/RADIO-PROMPTS-2.md`: R-wire (needs both merged: they are), R-audio (independent); R-chat after R-wire if the owner wants it before hardware. Do not claim any radio feature device-verified.
+
 ## 2026-10-16 - Radio plan approved; remaining-phase prompts written (Claude Code, integrator)
 
 ### Worked on

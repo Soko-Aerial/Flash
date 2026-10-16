@@ -1920,3 +1920,38 @@ Executed: `RadioSpikeActivity` launched on phone; permissions requested at point
 
 ### Conclusion
 Hardware Radio BT-R11 spike is 100% complete and empirically validated across all 5 questions on both target operating systems. Flash can discover, classify, rank, pair, and bind virtual COM ports to physical radios without requiring users to navigate external operating system settings.
+
+<!-- folded 2026-10-16 from logs/streams/R-link/experiments.md (integration of agent/R-link, with integrator corrections); the fragment stays as the full record -->
+
+# Experiment Log Additions — Stream R-link
+
+## EXP-050 — Simulated Power-Cycle & Flapping Recovery under Backoff
+
+### Date
+2026-10-16
+
+### Objective
+Measure behavior and thread stability of `KissTncDriver` reconnect loop and `RadioGatewayManager` state machine during link drops, rapid flapping, and power-cycle recovery using simulated in-memory byte links.
+
+### Configuration
+- Host: JVM 17
+- Link: `InMemoryLink` pair
+- Config: `reconnectBaseMs = 1L`, `reconnectCapMs = 5L`, `maxRetryAttempts = 15`
+- Test condition 1: Power-cycle (single drop, wait 30ms, re-supply fresh link).
+- Test condition 2: Flapping link (10 consecutive immediate link breaks upon connect).
+
+### Observations
+1. **Power-cycle:** Driver detected link EOF immediately, entered `Waiting(attempt = 1, retryInMs = 20)`, transitioned smoothly back to `Connected` once the fresh link became available. Recovery completed in ~100ms without state machine desynchronization.
+2. **Flapping:** 10 consecutive link drops did not cause thread starvation, busy-wait CPU spiking, or coroutine leakage. Exponential backoff paced attempts cleanly.
+3. **Retry limit:** When all attempts failed without link recovery, retries ceased at the configured limit (`maxRetryAttempts`), stopping all background polling until user intervention.
+
+### Conclusion
+The combination of `KissTncDriver` exponential backoff with `RadioGatewayManager` retry limit is stable against erratic radio connections and prevents runaway connection loops.
+
+<!-- folded 2026-10-16 from logs/streams/R-ui/experiments.md (integration of agent/R-ui, with integrator corrections); the fragment stays as the full record -->
+
+# Experiment Log — Stream R-ui
+
+Reserved EXP range: EXP-055 through EXP-059.
+
+(No experiments recorded yet.)
