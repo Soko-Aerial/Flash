@@ -19,6 +19,7 @@ import com.transfer.flash.core.radio.link.FakeRadioDeviceDiscovery
 import com.transfer.flash.core.radio.sim.InMemoryLink
 import com.transfer.flash.core.radio.sim.inMemoryLinkPair
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceTimeBy
@@ -343,67 +344,129 @@ class RadioGatewayManagerTest {
         assertEquals(RadioSecurityProfile.PROFILE_M_ENCRYPTED, manager.state.value.currentProfile)
     }
 
-    @Test
-    fun radlnkU09_requestTestMessageSuppressedOnRealRfAndTransmitsOnTestLink() = runTest {
-        val remembered = RememberedRadio("38:D2:00:01:35:B5", "VR-N76")
+    /** A link that looks like a real COM port (not "in-memory", not "fake") and records every write: no radio is touched. */
+    private class RecordingComLink : ByteLink {
+        override val description: String = "COM16 (Silicon Labs CP210x)"
+        val writes = mutableListOf<ByteArray>()
 
-        // 1. Real link (non-in-memory): must suppress test message
-        class RealMockByteLink : ByteLink {
-            override val description: String = "COM16 (Silicon Labs CP210x)"
-            override suspend fun read(buffer: ByteArray, timeoutMs: Long): Int {
-                delay(timeoutMs)
-                return 0
-            }
-            override suspend fun write(data: ByteArray) {
-                // Command frames (port parameters) are allowed, data frames forbidden!
-                val cmd = data.getOrNull(1)?.toInt()?.and(0x0F) ?: 0
-                if (cmd == 0) { // Command 0 is DATA
-                    throw AssertionError("Rule 4 violation: test bytes written to real RF link!")
-                }
-            }
-            override fun close() {}
+        /** When set, a DATA frame write waits for it (keeps a send "in flight"). */
+        var dataGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        override suspend fun read(buffer: ByteArray, timeoutMs: Long): Int {
+            delay(timeoutMs)
+            return 0
         }
+        override suspend fun write(data: ByteArray) {
+            val isData = (data.getOrNull(1)?.toInt() ?: -1) and 0x0F == 0
+            if (isData) dataGate?.await()
+            writes += data.copyOf()
+        }
+        override fun close() {}
 
-        val discoveryReal = FakeRadioDeviceDiscovery(linkSupplier = { RealMockByteLink() })
-        val authStore = InMemoryRadioAuthorisationStore(
-            AuthorisationConfirmation(1729000000000L, "W1AW")
-        )
+        /** KISS command nibble 0 = DATA frame (the kind that makes a radio transmit). */
+        fun dataFrames(): Int = writes.count { (it.getOrNull(1)?.toInt() ?: -1) and 0x0F == 0 }
+    }
 
-        val managerReal = RadioGatewayManager(
+    private suspend fun kotlinx.coroutines.test.TestScope.connectedManager(
+        link: ByteLink,
+        auth: AuthorisationConfirmation?,
+    ): RadioGatewayManager {
+        val remembered = RememberedRadio("38:D2:00:01:35:B5", "VR-N76")
+        val manager = RadioGatewayManager(
             scope = backgroundScope,
-            discovery = discoveryReal,
+            discovery = FakeRadioDeviceDiscovery(linkSupplier = { link }),
             rememberedStore = InMemoryRememberedRadioStore(remembered),
-            authorisationStore = authStore,
+            authorisationStore = InMemoryRadioAuthorisationStore(auth),
             driverFactory = { openLink -> KissTncDriver(scope = backgroundScope, openLink = openLink) }
         )
-
-        managerReal.enable()
+        manager.enable()
         runCurrent()
+        assertTrue(manager.state.value.isConnectedAndReady, "link must be connected for this test")
+        return manager
+    }
 
-        val sentOnReal = managerReal.requestTestMessage("Hello Radio")
-        assertFalse(sentOnReal, "Rule 4: test message MUST be suppressed on real RF link")
-        managerReal.disable()
-        runCurrent()
-
-        // 2. In-memory test link: allowed to transmit
-        val testPair = inMemoryLinkPair("mem-test")
-        val discoveryTest = FakeRadioDeviceDiscovery(linkSupplier = { testPair.first })
-
-        val managerTest = RadioGatewayManager(
+    @Test
+    fun radlnkU09a_noDataFrameUnlessConnectedConfirmedAuthorisedAndValid() = runTest {
+        // Not connected (gateway never enabled): nothing to write to.
+        val offManager = RadioGatewayManager(
             scope = backgroundScope,
-            discovery = discoveryTest,
-            rememberedStore = InMemoryRememberedRadioStore(remembered),
-            authorisationStore = authStore,
-            driverFactory = { openLink -> KissTncDriver(scope = backgroundScope, openLink = openLink) }
+            discovery = FakeRadioDeviceDiscovery(),
+            rememberedStore = InMemoryRememberedRadioStore(null),
+            authorisationStore = InMemoryRadioAuthorisationStore(AuthorisationConfirmation(1729000000000L, "W1AW")),
         )
+        assertEquals(TestMessageResult.NOT_CONNECTED, offManager.requestTestMessage("Hello", userConfirmedTransmit = true))
 
-        managerTest.enable()
+        // Connected, authorised, but the user did not confirm the transmit warning.
+        val link1 = RecordingComLink()
+        val m1 = connectedManager(link1, AuthorisationConfirmation(1729000000000L, "W1AW"))
+        assertEquals(TestMessageResult.NOT_CONFIRMED, m1.requestTestMessage("Hello", userConfirmedTransmit = false))
+        assertEquals(0, link1.dataFrames(), "no data frame without the user's confirmation")
+
+        // Connected and confirmed, but no authorisation record.
+        val link2 = RecordingComLink()
+        val m2 = connectedManager(link2, null)
+        assertEquals(TestMessageResult.NOT_AUTHORISED, m2.requestTestMessage("Hello", userConfirmedTransmit = true))
+        assertEquals(0, link2.dataFrames(), "no data frame without the authorisation record")
+
+        // Connected, confirmed, authorised, but invalid text.
+        val link3 = RecordingComLink()
+        val m3 = connectedManager(link3, AuthorisationConfirmation(1729000000000L, "W1AW"))
+        assertEquals(TestMessageResult.INVALID_TEXT, m3.requestTestMessage("", userConfirmedTransmit = true))
+        val tooLong = "x".repeat(RadioGatewayManager.MAX_TEST_MESSAGE_BYTES + 1)
+        assertEquals(TestMessageResult.INVALID_TEXT, m3.requestTestMessage(tooLong, userConfirmedTransmit = true))
+        assertEquals(0, link3.dataFrames(), "no data frame for empty or oversized text")
+    }
+
+    @Test
+    fun radlnkU09b_confirmedAuthorisedMessageIsWrittenOnAnyLinkType() = runTest {
+        // The decision is the user's: a real-looking COM link must NOT be refused by guessing the link type.
+        val link = RecordingComLink()
+        val manager = connectedManager(link, AuthorisationConfirmation(1729000000000L, "W1AW"))
+        val pending = async { manager.requestTestMessage("Hello Radio", userConfirmedTransmit = true) }
+        advanceUntilIdle()
+        assertEquals(TestMessageResult.SENT, pending.await())
+        assertEquals(1, link.dataFrames(), "exactly one data frame is written for one confirmed test message")
+        manager.disable()
+    }
+
+    @Test
+    fun radlnkU09c_secondTestMessageWhileOneIsInFlightIsBusy() = runTest {
+        val link = RecordingComLink()
+        val manager = connectedManager(link, AuthorisationConfirmation(1729000000000L, "W1AW"))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        link.dataGate = gate // the first data frame stays "in flight" until the gate opens
+        val first = async { manager.requestTestMessage("one", userConfirmedTransmit = true) }
+        advanceTimeBy(5_000L)
+        runCurrent()
+        val second = manager.requestTestMessage("two", userConfirmedTransmit = true)
+        assertEquals(TestMessageResult.BUSY, second)
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(TestMessageResult.SENT, first.await())
+        assertEquals(1, link.dataFrames(), "the busy request must not add a second data frame")
+        manager.disable()
+    }
+
+    @Test
+    fun radlnkU09d_stopScanRightAfterStartScanNeverLeavesAScanRunning() = runTest {
+        val discovery = FakeRadioDeviceDiscovery(
+            discoveredOnScan = listOf(DiscoveredDevice("VR-N76", "38:D2:00:01:35:B5", isPaired = false))
+        )
+        val manager = RadioGatewayManager(
+            scope = backgroundScope,
+            discovery = discovery,
+            rememberedStore = InMemoryRememberedRadioStore(null),
+            authorisationStore = InMemoryRadioAuthorisationStore(null)
+        )
+        manager.enable()
         runCurrent()
 
-        assertTrue(managerTest.state.value.isConnectedAndReady, "In-memory test link must be connected")
-        val sentOnTest = managerTest.requestTestMessage("Test message in-memory")
-        assertTrue(sentOnTest, "Test message must succeed on in-memory test link")
-        managerTest.disable()
+        manager.startScan(10_000L)
+        manager.stopScan() // before the scan coroutine had a chance to run
+        runCurrent()
+        advanceTimeBy(20_000L)
+        runCurrent()
+
+        assertFalse(discovery.isScanning, "a stop issued immediately after start must win")
     }
 
     @Test

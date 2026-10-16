@@ -35,7 +35,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 
 /**
  * Common facade and manager for the Flash Radio Gateway (Plan R §3 and §6).
@@ -43,8 +45,10 @@ import kotlinx.coroutines.launch
  * Core Safety Rules:
  * - Rule 3: Detecting is not trusting and not connecting blindly. No port is opened
  *   before user confirmation.
- * - Rule 4: Flash never sends a data frame to "see if it is a TNC". Test messages are
- *   strictly user-requested, require authorization, and are NEVER transmitted to real RF.
+ * - Rule 4: Flash never sends a data frame to "see if it is a TNC". The only transmitting
+ *   call is [requestTestMessage]: it needs a connected radio, the recorded authorisation, the
+ *   user's explicit confirmation of the transmit warning, and it is single-flight and size-capped.
+ *   Automated tests exercise it only on in-memory or recording links.
  * - Switch Off: While switch is off, nothing opens, scans or polls.
  * - Single candidate auto-detect preselects with confirmation; multiple candidates show list.
  * - Power-cycle recovery: Reconnects automatically using driver backoff up to [maxRetryAttempts].
@@ -70,6 +74,7 @@ public class RadioGatewayManager(
     private var driverStateJob: Job? = null
     private var scanJob: Job? = null
     private var consecutiveReconnectAttempts: Int = 0
+    private val testMessageLock = Mutex()
 
     init {
         scope.launch {
@@ -146,9 +151,12 @@ public class RadioGatewayManager(
      */
     public fun startScan(timeoutMs: Long = 12_000L) {
         if (!_state.value.isEnabled) return
-        stopScanInternal()
+        // Cancel a previous scan without a StopScanning transition: the new job moves the machine itself.
+        scanJob?.cancel()
 
-        scope.launch {
+        // The job handle is stored synchronously, so a stopScan() right after startScan() always finds it
+        // (a job cancelled before its first run never opens the discovery flow).
+        scanJob = scope.launch {
             stateMachine.transition(RadioConnectEvent.StartScanning)
             updateState {
                 copy(
@@ -157,36 +165,34 @@ public class RadioGatewayManager(
                 )
             }
 
-            scanJob = scope.launch {
-                discovery.scan(timeoutMs).collect { device ->
-                    val currentList = _state.value.scanResults.toMutableList()
-                    val idx = currentList.indexOfFirst {
-                        it.bluetoothAddress.equals(device.bluetoothAddress, ignoreCase = true)
-                    }
-                    if (idx >= 0) {
-                        currentList[idx] = device
-                    } else {
-                        currentList.add(device)
-                    }
-
-                    // Rank with radios first
-                    val ranked = RadioCandidateRanker.rank(currentList.map { it.toCandidateDevice() })
-                    val sorted = currentList.sortedBy { devItem ->
-                        val pos = ranked.indexOfFirst { it.device.addressOrPort.equals(devItem.bluetoothAddress, ignoreCase = true) }
-                        if (pos >= 0) pos else 999
-                    }
-
-                    updateState {
-                        copy(
-                            scanResults = sorted,
-                            connectState = RadioConnectState.Scanning(sorted.map { it.toCandidateDevice() })
-                        )
-                    }
-                    stateMachine.transition(RadioConnectEvent.DeviceDiscovered(device.toCandidateDevice()))
+            discovery.scan(timeoutMs).collect { device ->
+                val currentList = _state.value.scanResults.toMutableList()
+                val idx = currentList.indexOfFirst {
+                    it.bluetoothAddress.equals(device.bluetoothAddress, ignoreCase = true)
                 }
-                // Scan finished or timed out
-                stopScanInternal()
+                if (idx >= 0) {
+                    currentList[idx] = device
+                } else {
+                    currentList.add(device)
+                }
+
+                // Rank with radios first
+                val ranked = RadioCandidateRanker.rank(currentList.map { it.toCandidateDevice() })
+                val sorted = currentList.sortedBy { devItem ->
+                    val pos = ranked.indexOfFirst { it.device.addressOrPort.equals(devItem.bluetoothAddress, ignoreCase = true) }
+                    if (pos >= 0) pos else 999
+                }
+
+                updateState {
+                    copy(
+                        scanResults = sorted,
+                        connectState = RadioConnectState.Scanning(sorted.map { it.toCandidateDevice() })
+                    )
+                }
+                stateMachine.transition(RadioConnectEvent.DeviceDiscovered(device.toCandidateDevice()))
             }
+            // Scan finished or timed out
+            stopScanInternal()
         }
     }
 
@@ -323,47 +329,48 @@ public class RadioGatewayManager(
     }
 
     /**
-     * Sends a user-requested test message (Plan R §6 Step 6 & §8).
+     * Sends a user-requested test message (Plan R section 6 step 6 and section 8). THIS TRANSMITS when the
+     * link is a real radio.
      *
-     * Strict Safety Enforcement (Rule 4):
-     * NEVER transmits test frames over real RF.
-     * This method succeeds and writes bytes to the wire ONLY when connected to an
-     * in-memory simulated test link. On real serial / Bluetooth links, it records
-     * a PROBE and suppresses transmission without sending any bytes.
+     * Every one of these must hold, otherwise nothing is written (checked in this order):
+     * 1. the gateway is connected and ready ([TestMessageResult.NOT_CONNECTED]);
+     * 2. the user confirmed the transmit warning in this very request ([TestMessageResult.NOT_CONFIRMED]);
+     * 3. an authorisation record with a positive date exists ([TestMessageResult.NOT_AUTHORISED]);
+     * 4. the text is not empty and at most [MAX_TEST_MESSAGE_BYTES] UTF-8 bytes ([TestMessageResult.INVALID_TEXT]);
+     * 5. no other test message is in flight ([TestMessageResult.BUSY]).
+     *
+     * The link type is deliberately NOT inspected: the permission comes from the user, never from guessing
+     * what kind of link this is. Automated tests use in-memory or recording links. The text is never logged.
      */
-    public suspend fun requestTestMessage(text: String): Boolean {
+    public suspend fun requestTestMessage(text: String, userConfirmedTransmit: Boolean): TestMessageResult {
+        val result = sendTestMessageInternal(text, userConfirmedTransmit)
+        FlashProbe.emit(
+            "radio.tx.test_message",
+            "result" to result.name,
+            "textLength" to text.length
+        )
+        return result
+    }
+
+    private suspend fun sendTestMessageInternal(text: String, userConfirmedTransmit: Boolean): TestMessageResult {
         val current = _state.value
-        if (!current.isConnectedAndReady) return false
-        val driver = activeDriver ?: return false
-        val link = currentByteLink
-
-        // Security check: strictly prohibit live RF test transmissions
-        val isTestLink = link != null && (
-            link::class.simpleName?.contains("InMemory") == true ||
-            link.description.contains("mem") ||
-            link.description.contains("fake")
-        )
-
-        if (!isTestLink) {
-            FlashProbe.emit(
-                "radio.tx.suppressed_on_real_rf",
-                "reason" to "Rule 4: no live probe frames on real RF",
-                "textLength" to text.length
-            )
-            return false
+        if (!current.isEnabled || !current.isConnectedAndReady) return TestMessageResult.NOT_CONNECTED
+        val driver = activeDriver ?: return TestMessageResult.NOT_CONNECTED
+        if (!userConfirmedTransmit) return TestMessageResult.NOT_CONFIRMED
+        val auth = authorisationStore.load()
+        if (auth == null || auth.confirmedAtEpochMs <= 0) return TestMessageResult.NOT_AUTHORISED
+        val bytes = text.encodeToByteArray()
+        if (bytes.isEmpty() || bytes.size > MAX_TEST_MESSAGE_BYTES) return TestMessageResult.INVALID_TEXT
+        if (!testMessageLock.tryLock()) return TestMessageResult.BUSY
+        try {
+            val dest = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
+            val src = auth.operatorCallsign?.let { Ax25Address.parseOrNull(it) } ?: Ax25Address("NOCALL", 0)
+            val ax25 = Ax25FrameCodec.encodeUi(destination = dest, source = src, info = bytes)
+            val res = driver.sendAx25(ax25, label = "test-msg")
+            return if (res is TxResult.Sent) TestMessageResult.SENT else TestMessageResult.FAILED
+        } finally {
+            testMessageLock.unlock()
         }
-
-        // On in-memory simulated links only: encode UI frame and send
-        val dest = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
-        val callsign = current.authorisation?.operatorCallsign ?: "NOCALL"
-        val src = Ax25Address.parseOrNull(callsign) ?: Ax25Address("NOCALL", 0)
-        val ax25 = Ax25FrameCodec.encodeUi(
-            destination = dest,
-            source = src,
-            info = text.encodeToByteArray()
-        )
-        val res = driver.sendAx25(ax25, label = "test-msg")
-        return res is TxResult.Sent
     }
 
     private suspend fun executeCommands(commands: List<RadioConnectCommand>) {
@@ -398,7 +405,8 @@ public class RadioGatewayManager(
                     updateState { copy(rememberedRadio = cmd.radio) }
                 }
                 is RadioConnectCommand.UserRequestedTestMessage -> {
-                    requestTestMessage(cmd.text)
+                    // The state machine emits this command only for an explicit, authorised user event.
+                    requestTestMessage(cmd.text, userConfirmedTransmit = true)
                 }
             }
         }
@@ -496,13 +504,18 @@ public class RadioGatewayManager(
         currentByteLink = null
     }
 
+    /** Atomic read-modify-write: the driver collector and user commands update from different coroutines. */
     private fun updateState(transform: RadioGatewayState.() -> RadioGatewayState) {
-        val next = _state.value.transform()
-        val (sentence, step) = derivePlainSentenceAndNextStep(next)
-        _state.value = next.copy(
-            plainSentence = sentence,
-            nextStep = step
-        )
+        _state.update { current ->
+            val next = current.transform()
+            val (sentence, step) = derivePlainSentenceAndNextStep(next)
+            next.copy(plainSentence = sentence, nextStep = step)
+        }
+    }
+
+    public companion object {
+        /** Upper bound of a test message (UTF-8 bytes): one short line, never a payload. */
+        public const val MAX_TEST_MESSAGE_BYTES: Int = 64
     }
 
     private fun derivePlainSentenceAndNextStep(s: RadioGatewayState): Pair<String, String> {

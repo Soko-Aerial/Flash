@@ -27,13 +27,22 @@ Plan R §3 and §6 require a unified flow and common state model on both Windows
 
 ---
 
-## ADR-189 — Strict In-Memory Seam Enforcement of Rule 4 (No Test Frames on Real RF)
+## ADR-189 — Strict In-Memory Seam Enforcement of Rule 4 (No Test Frames on Real RF) — SUPERSEDED 2026-10-16 by the amendment below
 
 ### Decision
 Enforce Plan R §6 Rule 4 and §8 mechanically within `RadioGatewayManager.requestTestMessage()`: test transmissions succeed and emit bytes to the wire ONLY when `currentByteLink` is verified to be an in-memory simulated link (`InMemoryLink`). On any real RF or serial port link, `requestTestMessage()` suppresses transmission and emits `FlashProbe.emit("radio.tx.suppressed_on_real_rf", ...)` without keying the transmitter.
 
 ### Context
 Amateur radio and transmission regulations prohibit unauthorized or unattended transmissions. KISS TNCs key the transmitter upon receiving data frames. Mechanical enforcement guarantees no accidental RF transmissions during development or debugging.
+
+---
+
+### Amendment 2026-10-16 (integrator review; the decision above is SUPERSEDED, kept for history)
+The original rule suppressed every test message on any link not recognised as in-memory, by matching the class name and a description substring ("mem", "fake"). That made the plan's "Send a test message" user action impossible on real hardware, never checked the authorisation record, and relied on string sniffing. Replacement rule (implemented in `RadioGatewayManager.requestTestMessage(text, userConfirmedTransmit)` returning `TestMessageResult`):
+- Nothing is written unless: the gateway is connected and ready; the user confirmed the transmit warning in that very request; an authorisation record with a positive date exists; the text is 1..64 UTF-8 bytes; no other test message is in flight (single-flight lock).
+- The link type is NOT inspected. Automated tests use in-memory or recording links; the "never transmit" rule for agents and tests is enforced by the tests, not by guessing in product code.
+- The text is never logged; the probe `radio.tx.test_message` carries the result name and the length only.
+Mutation-checked: removing the authorisation check, the confirmation check or the single-flight lock each fails a named test (RADLNK-U09a, U09c).
 
 ---
 

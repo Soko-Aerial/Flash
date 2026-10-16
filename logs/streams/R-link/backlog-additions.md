@@ -37,10 +37,10 @@ All device tests owed on physical hardware for Phase R1 & R2 (`runbook-R1-R2.md`
 - **Source:** Plan R §6 Reconnecting; `runbook-R1-R2.md` Step W5.
 - **Status:** TODO
 
-### RADLNK-D06 — Windows Physical Radio Rule 4 Test Message Suppression on Real RF
-- **Setup:** Connected to VR-N76 over physical Bluetooth serial port.
-- **Steps:** Tap "Send test message".
-- **Pass:** Radio does not key up (no RF emitted); log outputs `PROBE: radio.tx.suppressed_on_real_rf`.
+### RADLNK-D06 — Windows test message gates, then one real transmit (THIS TRANSMITS)
+- **Setup:** Connected to VR-N76 over physical Bluetooth serial port; legal frequency and Profile A (amateur band: never Profile M).
+- **Steps:** (1) without authorisation, request a test message with the warning confirmed; (2) with authorisation, request without confirming; (3) confirm and send.
+- **Pass:** (1) and (2) do not key the radio (probe `radio.tx.test_message result=NOT_AUTHORISED` / `NOT_CONFIRMED`); (3) keys once (`result=SENT`).
 - **Source:** Plan R §6 Step 6 & §8; `runbook-R1-R2.md` Step W6.
 - **Status:** TODO
 

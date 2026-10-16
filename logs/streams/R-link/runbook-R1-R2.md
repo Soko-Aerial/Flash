@@ -2,7 +2,7 @@
 
 **Document:** `logs/streams/R-link/runbook-R1-R2.md`  
 **Purpose:** Numbered manual test procedure for the repository owner with the physical Vero Telecom VR-N76 / BTECH UV-Pro radio, Windows 11 PC, and Android test phone.  
-**Safety Notice:** Strictly NO KISS data frames or test messages are transmitted over live RF (Plan R §8, Rule 4). All RF keying remains disabled during connection verification.
+**Safety Notice:** Everything in this runbook except Step W6 sends nothing on air. Step W6 TRANSMITS once and needs a frequency and an authorisation that allow the profile you use (the test radio's 144.625 MHz is an amateur band: use Profile A with your callsign there, never Profile M). Corrected 2026-10-16: the earlier text said test messages are suppressed on real links; that rule was replaced (ADR-189 amendment).
 
 ---
 
@@ -67,10 +67,10 @@ This runbook validates the end-to-end Phase R1 ("Find, pair and connect") and R2
 2. Observe retry attempts 1 through 5 with exponential backoff.
 3. **Pass:** After attempt 5, retries cease. Status displays: "Radio disconnected after repeated attempts. Ensure your radio is turned on and in range, then tap Reconnect."
 
-#### Step W6 — Rule 4 Test Message Suppression on Real RF
-1. Turn the radio ON and tap "Reconnect".
-2. Once reconnected, click "Send test message".
-3. **Pass:** Radio does NOT key up (PTT LED does not illuminate; no RF emitted). Status/log emits `PROBE: radio.tx.suppressed_on_real_rf reason=Rule_4:_no_live_probe_frames_on_real_RF`.
+#### Step W6 — Test message gates, then one real transmit (THIS TRANSMITS; ask before running)
+1. With NO authorisation recorded, request a test message with the warning confirmed. **Pass:** the radio does not key; probe `radio.tx.test_message result=NOT_AUTHORISED`.
+2. Record the authorisation, request a test message WITHOUT confirming the warning. **Pass:** the radio does not key; probe `result=NOT_CONFIRMED`.
+3. Only on a legal frequency with Profile A: confirm the warning and send. **Pass:** the radio keys once; probe `result=SENT`; a second radio or scanner may hear the short frame.
 
 ---
 

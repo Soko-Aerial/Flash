@@ -166,3 +166,13 @@ Executed Phase R1 ("Find, pair and connect") and R2 gateway logic of the Hardwar
 
 ### Owed Device Tests (Owner Execution Required)
 - `RADLNK-D01` through `RADLNK-D10` recorded in `logs/streams/R-link/backlog-additions.md` and detailed in `logs/streams/R-link/runbook-R1-R2.md`.
+
+## 2026-10-16 - Integrator corrections before merge (Claude Code)
+
+The stream's own report was audited against the diff. Corrected on `agent/R-link`:
+1. `requestTestMessage` no longer refuses real links by string sniffing (ERROR-642, ADR-189 amended): connected, user confirmation, authorisation record, size cap and single-flight decide; `TestMessageResult` added.
+2. Two lost spike-CLI safety tests restored as `RadioSpikeCliSafetyTest` (ERROR-643).
+3. Scan stop race fixed (ERROR-644) and state updates made atomic (ERROR-645).
+4. Runbook step W6 and backlog RADLNK-D06 rewritten (the old text expected suppression).
+Mutation checks (each fails a named test): authorisation check removed, confirmation check removed, scan job stored late, single-flight lock removed.
+Not done: `RadioLinkService` is still never started by anything (R-wire); the Android discovery permission-missing path was not re-audited.
