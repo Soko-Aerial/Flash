@@ -85,6 +85,6 @@ logcat PROBE lines (`radio.link.up`, `radio.link.down`, `radio.tnc.params`) carr
 ## Files
 
 - `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/RadioLinkTestMain.kt` (window, `RadioLinkTestApp`)
-- `core/network/src/jvmMain/.../radio/diag/RadioLinkTestHarness.kt`, `RadioLinkTestCli.kt`
-- `core/network/src/commonMain/.../radio/diag/RadioLinkTester.kt` (logic, unit-tested)
+- `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/diag/RadioLinkTestHarness.kt`, `RadioLinkTestCli.kt` (moved from `core/network` in R0, plan rev 3 §4)
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/diag/RadioLinkTester.kt` (logic, unit-tested; moved from `core/network` in R0)
 - `desktop/build.gradle.kts` (tasks `radioLinkTest`, `radioLinkTestCli`)
