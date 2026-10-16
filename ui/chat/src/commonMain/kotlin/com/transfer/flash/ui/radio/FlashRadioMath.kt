@@ -179,6 +179,13 @@ public object FlashRadioMath {
     ): Boolean = status == RadioConnectionStatus.CONNECTED && !isSending
 
     /**
+     * Whether the Settings entry for the radio gateway is shown at all: only when the host provides a real
+     * controller or its own opener. Without a backend the entry is hidden (no fake states in real builds).
+     */
+    public fun isGatewayEntryAvailable(hasController: Boolean, hasOpenHandler: Boolean): Boolean =
+        hasController || hasOpenHandler
+
+    /**
      * Whether "Scan for radios" is enabled.
      */
     public fun canScan(enabled: Boolean, isScanning: Boolean): Boolean =
