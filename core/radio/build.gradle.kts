@@ -53,6 +53,9 @@ kotlin {
         jvmMain.dependencies {
             // ADR-101: serial port access for the KISS TNC radio link (Windows COM / Linux rfcomm). Apache-2.0 OR LGPL-3.0.
             implementation(libs.jserialcomm)
+            // ADR-182: Win32 Bluetooth API and registry access for Windows radio discovery and port mapping
+            implementation(libs.jna)
+            implementation(libs.jna.platform)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
