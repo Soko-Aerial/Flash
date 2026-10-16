@@ -6962,3 +6962,5 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-15: Hub tab visual refresh built (HUBT-35 owed), bottom-bar fix ERROR-409 committed. Local commits not pushed; owner must rebuild and restart the demo hub for the console fix (ERROR-408).
 
 ## 2026-10-16: ERROR-410 fixed (announcements now reach the phone; client-only change, rebuild and reinstall the app with `adb install -r`). ANN-12 owed.
+
+## 2026-10-16: ERROR-411 fixed in code (announcements fetched on relay reconnect and when the Hub tab opens). ANN-13 owed; app rebuild only.

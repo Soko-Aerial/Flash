@@ -10762,3 +10762,26 @@ The client sent `since` only when it was greater than 0. The first fetch of a ph
 
 ### Status
 RESOLVED in code; confirm on the device.
+
+## ERROR-411 - A new announcement needed a manual refresh after the phone connected
+
+### Date
+2026-10-16
+
+### Area
+Hub announcements: relay hint (`AnnouncementEvent`, feature `ann1`) and the Hub tab refresh
+
+### Symptoms
+Owner: after connecting the phone, announcements posted on the console appeared only after a pull-to-refresh on the Hub page.
+
+### Root cause
+The hub does push (the equivalent of a webhook, over the relay WebSocket: `RelayFrameRouter.broadcastAnnouncement` sends a hint, the repository answers it with `refreshHubAnnouncements()`), but a hint reaches only a session that is live at that moment. Nothing fetched on a relay (re)connect, and opening the Hub tab did not refresh (the facade refreshed only on pull-to-refresh and actions). Anything posted while the phone was offline, asleep, still connecting, or while the app was closed stayed invisible until a manual refresh. A real webhook is impossible here: a hub cannot call a phone behind NAT, and the phone would need a push service (FCM is out, see the Transsion notes).
+
+### Working fix
+`HubRelayPort.connected` (default `null`; `FlashRelayHubPort` maps the client session state); `RealFlashChatRepository` collects it and calls `refreshHubAnnouncements()` on every transition to connected. `FlashHubRoute` calls `repository.refreshHub(userInitiated = false)` when the tab opens (the facade throttles at 15 s).
+
+### Verification
+`:core:messaging:jvmTest` and `:core:messaging:testAndroidHostTest` green, new `ANN-U29` (reconnect fetches what was posted while away). Mutation: disabling the connect collector made ANN-U29 fail; restored. `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. NOT device-verified (ANN-13). Hub unchanged: only the app needs rebuilding.
+
+### Status
+RESOLVED in code; confirm on the device.

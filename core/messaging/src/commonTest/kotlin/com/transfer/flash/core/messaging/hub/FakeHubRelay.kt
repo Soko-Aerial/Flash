@@ -21,6 +21,10 @@ class FakeHubRelay(private val log: MutableList<String> = mutableListOf()) : Hub
     val ackEvents = MutableSharedFlow<HubAckEvent>(extraBufferCapacity = 64)
     override val acks: Flow<HubAckEvent> = ackEvents
 
+    /** Whether the fake relay session is signed in; flip it to model a (re)connect. */
+    val connectedState = kotlinx.coroutines.flow.MutableStateFlow(false)
+    override val connected: Flow<Boolean> = connectedState
+
     val typingEvents = MutableSharedFlow<HubTypingEvent>(extraBufferCapacity = 64)
     override val typing: Flow<HubTypingEvent> = typingEvents
 

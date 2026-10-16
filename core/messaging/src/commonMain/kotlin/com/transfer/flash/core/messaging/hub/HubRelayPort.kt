@@ -35,6 +35,13 @@ public interface HubRelayPort {
     /** Real-time announcement event hints pushed from the hub over WebSocket (Plan A3 §3.6). */
     public val announcementEvents: Flow<RelayFrame.AnnouncementEvent>? get() = null
 
+    /**
+     * True while the relay session is signed in. A change to true is the moment to catch up on what was pushed while the
+     * device was away: a hint is only sent to a live session, so an announcement posted during an offline spell is
+     * never announced again. Null when the port cannot tell.
+     */
+    public val connected: Flow<Boolean>? get() = null
+
     /** Hands one message to the hub. True means the frame was written to the hub socket, not that anyone got it. */
     public suspend fun send(to: String, id: String, type: String, sentAt: Long, payload: String): Boolean
 
@@ -145,6 +152,9 @@ public class FlashRelayHubPort(
     }
 
     override val announcementEvents: Flow<RelayFrame.AnnouncementEvent> = client.announcementEvents
+
+    override val connected: Flow<Boolean> =
+        client.state.mapNotNull { it == com.transfer.flash.core.enterprise.relay.RelaySessionState.CONNECTED }
 
     override suspend fun send(to: String, id: String, type: String, sentAt: Long, payload: String): Boolean =
         client.sendEnvelope(to, FlashEnvelope(id = id, type = type, payloadJson = payload, senderId = client.deviceId, sentAt = sentAt))

@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-10-16 - Announcements need no manual refresh after connecting (ERROR-411, Claude Code)
+
+### Worked on
+Owner: "after connecting the phone I had to refresh the hub page, shouldn't it have a webhook?"
+
+### Changed
+- Webhook is not possible (the hub cannot call a phone); the hub already pushes a hint over the relay WebSocket, but a hint reaches only a live session and nothing caught up on connect. `HubRelayPort.connected` + a collector in `RealFlashChatRepository` fetch announcements on every relay (re)connect; `FlashHubRoute` refreshes when the Hub tab opens (throttled by the facade).
+- Test `ANN-U29`; `FakeHubRelay.connectedState`.
+
+### Verification
+`:core:messaging:jvmTest` (hub tests), `:core:messaging:testAndroidHostTest`, `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green; mutation (collector disabled) fails ANN-U29, restored. Not device-verified (ANN-13).
+
+### Next AI
+Owner must rebuild and reinstall the app (`adb install -r`); the hub needs no change.
+
 ## 2026-10-16 - Announcements never reached the phone (ERROR-410, Claude Code)
 
 ### Worked on
