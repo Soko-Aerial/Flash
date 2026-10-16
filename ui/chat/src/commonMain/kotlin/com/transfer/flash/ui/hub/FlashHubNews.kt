@@ -438,7 +438,7 @@ internal fun FlashAnnouncementComposer(
             Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = FlashDimensions.minTouchTarget)
                     .clickable(role = Role.Switch) { onChange(state.copy(pinned = !state.pinned, failure = null)) }
-                    .semantics(mergeDescendants = true) { stateDescription = if (state.pinned) "On" else "Off" },
+                    .semantics(mergeDescendants = true) { stateDescription = if (state.pinned) FlashHubCopy.SWITCH_ON else FlashHubCopy.SWITCH_OFF },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
             ) {

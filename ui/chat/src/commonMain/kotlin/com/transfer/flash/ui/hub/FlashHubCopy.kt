@@ -146,6 +146,9 @@ public object FlashHubCopy {
     public const val PERSON_CALL: String = "Call"
     public const val PERSON_PAIR: String = "Pair with this colleague"
     public const val PERSON_CLOSE: String = "Close"
+    public const val SWITCH_ON: String = "On"
+    public const val SWITCH_OFF: String = "Off"
+    public fun reachabilityAccessibility(line: String): String = "Reachability: $line"
     public const val PERSON_UNPAIRED_FOOTER: String =
         "Not paired with you. Messages go through the company server and can be read there unless you turn on private messages in Settings → Hub."
     public const val PERSON_HONESTY: String =

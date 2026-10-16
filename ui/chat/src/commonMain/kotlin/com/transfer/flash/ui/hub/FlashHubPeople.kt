@@ -212,7 +212,7 @@ internal fun FlashHubPersonContent(
             if (onClose != null) FlashHubIconButton(FlashIcons.Close, FlashHubCopy.PERSON_CLOSE, onClose)
         }
         FlashText(sheet.reachabilityLine, style = FlashTheme.typography.bodyDefault, color = colors.textPrimary,
-            modifier = Modifier.semantics { contentDescription = "Reachability: ${sheet.reachabilityLine}" })
+            modifier = Modifier.semantics { contentDescription = FlashHubCopy.reachabilityAccessibility(sheet.reachabilityLine) })
         Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), modifier = Modifier.fillMaxWidth()) {
             FlashHubButton(
                 label = if (pane.busy) FlashHubCopy.PERSON_MESSAGING else sheet.messageLabel,
