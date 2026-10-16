@@ -213,6 +213,12 @@
             android:exported="false"
             android:foregroundServiceType="microphone|mediaPlayback|connectedDevice" />
 
+        <!-- Hardware Radio Gateway background service (Plan R §4 & §6) -->
+        <service
+            android:name=".service.RadioLinkService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
         <!-- PTT session Stop/Leave notification button routes here to the session engine. -->
         <receiver
             android:name=".ptt.PttSessionActionReceiver"
