@@ -164,3 +164,6 @@ Specifically:
 - **Backend radio manager wiring (`RealRadioGatewayController`):** Stream R-link owns the hardware manager implementation. Stream R-ui defined the clean controller port (`RadioGatewayController`); a later integration step will bind `RealRadioGatewayController` to `RadioManager`.
 - **Mode 3 (Walkie-talkie audio bridge):** Hidden per specification pending the audio spike decision.
 
+
+## 2026-10-16 - Integrator correction before merge (Claude Code)
+Settings entry no longer opens a fake controller in real builds (ERROR-660); test RADUI-U07 added; mutation-checked.

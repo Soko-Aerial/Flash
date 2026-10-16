@@ -462,9 +462,15 @@ fun FlashSettingsScreen(
 ) {
     var query by remember { mutableStateOf("") }
     var showRadioGateway by remember { mutableStateOf(false) }
-    if (showRadioGateway) {
+    // The entry exists only when a host supplied a real controller (or its own opener): a build without a
+    // radio backend must never show a screen that plays fake states. Fakes live in demo entry points only.
+    val radioGatewayAvailable = com.transfer.flash.ui.radio.FlashRadioMath.isGatewayEntryAvailable(
+        hasController = radioGatewayController != null,
+        hasOpenHandler = onOpenRadioGateway != null,
+    )
+    if (showRadioGateway && radioGatewayController != null) {
         com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
-            controller = radioGatewayController ?: remember { com.transfer.flash.ui.radio.FakeRadioGatewayController() },
+            controller = radioGatewayController,
             onBack = { showRadioGateway = false },
         )
         return
@@ -759,13 +765,13 @@ fun FlashSettingsScreen(
                         value = FlashSettingsMath.batteryExemptionValue(model.ignoringBatteryOptimizations),
                         onClick = onOpenBatterySettings,
                     )
-                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Radio gateway (beta)")) ValueRow(
+                    if (radioGatewayAvailable && FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Radio gateway (beta)")) ValueRow(
                         iconSpec = FlashIcons.Bluetooth,
                         title = com.transfer.flash.ui.radio.FlashRadioCopy.SETTINGS_ROW_TITLE,
                         subtitle = com.transfer.flash.ui.radio.FlashRadioCopy.SETTINGS_ROW_SUBTITLE,
                         value = if (model.radioGatewayEnabled) com.transfer.flash.ui.radio.FlashRadioCopy.VALUE_ON else com.transfer.flash.ui.radio.FlashRadioCopy.VALUE_OFF,
                         onClick = {
-                            if (onOpenRadioGateway != null) onOpenRadioGateway() else showRadioGateway = true
+                            if (onOpenRadioGateway != null) onOpenRadioGateway() else showRadioGateway = radioGatewayController != null
                         },
                     )
                 }
