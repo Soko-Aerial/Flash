@@ -1,0 +1,554 @@
+package com.transfer.flash.radio
+
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.Settings
+import androidx.core.content.ContextCompat
+import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
+import com.transfer.flash.core.radio.connect.CandidateCategory
+import com.transfer.flash.core.radio.connect.CandidateKind
+import com.transfer.flash.core.radio.connect.RadioAuthorisationStore
+import com.transfer.flash.core.radio.connect.RadioCandidateDevice
+import com.transfer.flash.core.radio.connect.RadioConnectFailureReason
+import com.transfer.flash.core.radio.connect.RadioConnectState
+import com.transfer.flash.core.radio.connect.RememberedRadioStore
+import com.transfer.flash.core.radio.connect.AndroidSharedPreferencesRadioStore
+import com.transfer.flash.core.radio.driver.KissTncDriver
+import com.transfer.flash.core.radio.driver.TncLinkState
+import com.transfer.flash.core.radio.gateway.RadioGatewayManager
+import com.transfer.flash.core.radio.gateway.RadioGatewayState
+import com.transfer.flash.core.radio.gateway.TestMessageResult
+import com.transfer.flash.core.radio.link.ByteLink
+import com.transfer.flash.core.radio.link.DiscoveredDevice
+import com.transfer.flash.core.radio.link.RadioDeviceDiscovery
+import com.transfer.flash.core.radio.link.android.AndroidRadioDiscovery
+import com.transfer.flash.core.radio.service.RadioServicePolicy
+import com.transfer.flash.service.RadioLinkService
+import com.transfer.flash.ui.radio.DiscoveredRadioDevice
+import com.transfer.flash.ui.radio.FlashRadioMath
+import com.transfer.flash.ui.radio.RadioConnectionStatus
+import com.transfer.flash.ui.radio.RadioDeviceCategory
+import com.transfer.flash.ui.radio.RadioFailureReason
+import com.transfer.flash.ui.radio.RadioGatewayController
+import com.transfer.flash.ui.radio.RadioGatewayMode
+import com.transfer.flash.ui.radio.RadioGatewayUiState
+import com.transfer.flash.ui.radio.RadioSecurityProfile
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/**
+ * Android implementation of [RadioGatewayController] (Plan R §6 & §8, Task 2).
+ *
+ * Architecture and Lifetime Contract:
+ * - Bridges [RadioGatewayState] from `:core:radio` to [RadioGatewayUiState] in `:ui:chat`.
+ * - Created lazily when the Radio Gateway screen is shown or when the switch is stored ON.
+ * - If the gateway switch is stored OFF at startup, [RadioGatewayManager] is NOT instantiated.
+ * - When the switch is toggled OFF, [RadioGatewayManager.disable] is called and the manager is released.
+ * - Listens to [RadioGatewayManager.state] and starts/stops [RadioLinkService] per [RadioServicePolicy.shouldServiceRun].
+ * - Handles Android 12+ runtime Nearby devices permissions (`BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN`).
+ * - Provides redirect to system Bluetooth settings.
+ */
+public class AndroidRadioGatewayController(
+    private val context: Context,
+    private val scope: CoroutineScope,
+    private val clock: FlashTimeSource = SystemTimeSource,
+    private val permissionRequester: (() -> Unit)? = null,
+    private val discoveryFactory: () -> RadioDeviceDiscovery = { AndroidRadioDiscovery(context) },
+    private val rememberedStoreFactory: () -> RememberedRadioStore = {
+        AndroidSharedPreferencesRadioStore(context).rememberedStore
+    },
+    private val authorisationStoreFactory: () -> RadioAuthorisationStore = {
+        AndroidSharedPreferencesRadioStore(context).authorisationStore
+    },
+    private val isSwitchEnabledStored: () -> Boolean = {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_GATEWAY_ENABLED, false)
+    },
+    private val setSwitchEnabledStored: (Boolean) -> Unit = { enabled ->
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_GATEWAY_ENABLED, enabled)
+            .commit()
+    },
+    private val driverFactory: ((suspend () -> ByteLink) -> KissTncDriver)? = null,
+    private val onServiceStateChanged: ((shouldRun: Boolean, state: RadioGatewayState) -> Unit)? = null,
+    private val openSettingsHandler: (() -> Unit)? = null,
+) : RadioGatewayController {
+
+    private val _uiState = MutableStateFlow(
+        RadioGatewayUiState(
+            enabled = false,
+            connectionStatus = RadioConnectionStatus.OFF,
+            failureReason = RadioFailureReason.NONE,
+            statusSentence = FlashRadioMath.statusSentence(RadioConnectionStatus.OFF, RadioFailureReason.NONE),
+            statusNextStep = FlashRadioMath.statusNextStep(RadioConnectionStatus.OFF, RadioFailureReason.NONE),
+            nearbyDevicesPermissionGranted = checkNearbyPermissions(),
+        )
+    )
+    override val state: StateFlow<RadioGatewayUiState> = _uiState.asStateFlow()
+
+    private var activeManager: RadioGatewayManager? = null
+    private var managerStateJob: Job? = null
+    private var scanCountdownJob: Job? = null
+
+    private var isSendingTestMsg: Boolean = false
+    private var testMsgSuccess: Boolean? = null
+    private var selectedGatewayMode: RadioGatewayMode = RadioGatewayMode.FIELD_COMPANION
+    private var scanCountdownRemaining: Int = 0
+
+    init {
+        // Startup evaluation: only start if stored switch is explicitly enabled
+        if (isSwitchEnabledStored()) {
+            val mgr = getOrCreateManager()
+            scope.launch {
+                mgr.enable()
+            }
+        }
+    }
+
+    private fun checkNearbyPermissions(): Boolean {
+        if (Build.VERSION.SDK_INT < 31) return true
+        val connect = ContextCompat.checkSelfPermission(
+            context,
+            "android.permission.BLUETOOTH_CONNECT"
+        ) == PackageManager.PERMISSION_GRANTED
+        val scan = ContextCompat.checkSelfPermission(
+            context,
+            "android.permission.BLUETOOTH_SCAN"
+        ) == PackageManager.PERMISSION_GRANTED
+        return connect && scan
+    }
+
+    @Synchronized
+    private fun getOrCreateManager(): RadioGatewayManager {
+        activeManager?.let { return it }
+
+        val discovery = discoveryFactory()
+        val remStore = rememberedStoreFactory()
+        val authStore = authorisationStoreFactory()
+
+        val mgr = if (driverFactory != null) {
+            RadioGatewayManager(
+                scope = scope,
+                discovery = discovery,
+                rememberedStore = remStore,
+                authorisationStore = authStore,
+                driverFactory = driverFactory,
+                clock = clock,
+            )
+        } else {
+            RadioGatewayManager(
+                scope = scope,
+                discovery = discovery,
+                rememberedStore = remStore,
+                authorisationStore = authStore,
+                clock = clock,
+            )
+        }
+
+        activeManager = mgr
+        managerStateJob?.cancel()
+        managerStateJob = scope.launch {
+            mgr.state.collect { managerState ->
+                handleManagerStateChange(managerState)
+            }
+        }
+
+        return mgr
+    }
+
+    private fun handleManagerStateChange(managerState: RadioGatewayState) {
+        // Service lifecycle per RadioServicePolicy
+        val shouldRun = RadioServicePolicy.shouldServiceRun(managerState)
+        if (onServiceStateChanged != null) {
+            onServiceStateChanged.invoke(shouldRun, managerState)
+        } else {
+            if (shouldRun) {
+                val notification = RadioServicePolicy.notificationContent(managerState)
+                RadioLinkService.start(context, notification)
+            } else {
+                RadioLinkService.stop(context)
+            }
+        }
+
+        // If scan stopped in manager, cancel countdown timer
+        if (managerState.connectState !is RadioConnectState.Scanning && scanCountdownJob != null) {
+            stopScanCountdown()
+        }
+
+        updateUi(managerState)
+    }
+
+    private fun updateUi(managerState: RadioGatewayState) {
+        val permissionGranted = checkNearbyPermissions()
+        val connectionStatus = mapConnectionStatus(
+            isEnabled = managerState.isEnabled,
+            connectState = managerState.connectState,
+            linkState = managerState.linkState,
+            isRetryingStopped = managerState.isRetryingStopped,
+        )
+
+        val failureReason = mapFailureReason(
+            connectState = managerState.connectState,
+            isRetryingStopped = managerState.isRetryingStopped,
+            nearbyPermissionGranted = permissionGranted,
+        )
+
+        val radioName = managerState.rememberedRadio?.displayName
+            ?: (managerState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate?.name
+            ?: (managerState.connectState as? RadioConnectState.Connected)?.radio?.displayName
+
+        val sentence = when {
+            managerState.plainSentence.isNotBlank() -> managerState.plainSentence
+            else -> FlashRadioMath.statusSentence(connectionStatus, failureReason, radioName)
+        }
+
+        val nextStep = when {
+            managerState.nextStep.isNotBlank() -> managerState.nextStep
+            else -> FlashRadioMath.statusNextStep(connectionStatus, failureReason)
+        }
+
+        val candidateRadio = (managerState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate?.let { cand ->
+            DiscoveredRadioDevice(
+                id = cand.addressOrPort,
+                name = cand.name ?: cand.addressOrPort,
+                category = when (cand.kind) {
+                    CandidateKind.BLUETOOTH_SERIAL, CandidateKind.USB_SERIAL -> RadioDeviceCategory.KNOWN_RADIO
+                    else -> RadioDeviceCategory.OTHER
+                },
+                isPaired = cand.isPaired,
+                rssi = cand.rssi,
+            )
+        }
+
+        val discovered = managerState.scanResults.map { dev ->
+            val isPairingThis = managerState.connectState is RadioConnectState.Pairing &&
+                    (managerState.connectState as RadioConnectState.Pairing).candidate.addressOrPort == dev.bluetoothAddress
+            DiscoveredRadioDevice(
+                id = dev.bluetoothAddress,
+                name = dev.name,
+                category = when (dev.category) {
+                    CandidateCategory.KNOWN_RADIO -> RadioDeviceCategory.KNOWN_RADIO
+                    CandidateCategory.SERIAL_CAPABLE -> RadioDeviceCategory.SERIAL_SPP
+                    CandidateCategory.OTHER -> RadioDeviceCategory.OTHER
+                },
+                isPaired = dev.isPaired,
+                rssi = dev.rssi,
+                isPairing = isPairingThis,
+            )
+        }
+
+        val selectedProfile = when (managerState.currentProfile) {
+            com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED ->
+                RadioSecurityProfile.PROFILE_M
+            com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED ->
+                RadioSecurityProfile.PROFILE_A
+        }
+
+        val auth = managerState.authorisation
+        val isAuthorised = auth != null && auth.confirmedAtEpochMs > 0L
+        val authEpoch = auth?.confirmedAtEpochMs ?: 0L
+
+        _uiState.update { current ->
+            current.copy(
+                enabled = managerState.isEnabled,
+                connectionStatus = connectionStatus,
+                failureReason = failureReason,
+                statusSentence = sentence,
+                statusNextStep = nextStep,
+                candidateRadio = candidateRadio,
+                rememberedRadioName = managerState.rememberedRadio?.displayName,
+                rememberedRadioAddress = managerState.rememberedRadio?.bluetoothAddress,
+                isScanning = managerState.connectState is RadioConnectState.Scanning || scanCountdownRemaining > 0,
+                scanCountdownSeconds = scanCountdownRemaining,
+                discoveredDevices = discovered,
+                selectedProfile = selectedProfile,
+                isAuthorisedForEncryption = isAuthorised,
+                authorisationConfirmedAtEpochMs = authEpoch,
+                selectedMode = selectedGatewayMode,
+                availableModes = setOf(RadioGatewayMode.FIELD_COMPANION),
+                isSendingTestMessage = isSendingTestMsg,
+                testMessageSentSuccess = testMsgSuccess,
+                nearbyDevicesPermissionGranted = permissionGranted,
+            )
+        }
+    }
+
+    override fun setEnabled(enabled: Boolean) {
+        setSwitchEnabledStored(enabled)
+        if (enabled) {
+            val mgr = getOrCreateManager()
+            scope.launch {
+                mgr.enable()
+                // If there's no remembered radio, acknowledge checklist to start auto-detecting paired radios
+                if (mgr.state.value.rememberedRadio == null && mgr.state.value.connectState is RadioConnectState.ChecklistShown) {
+                    mgr.acknowledgeChecklist()
+                }
+            }
+        } else {
+            val mgr = activeManager
+            scope.launch {
+                mgr?.disable()
+                if (onServiceStateChanged != null) {
+                    onServiceStateChanged.invoke(false, mgr?.state?.value ?: RadioGatewayState())
+                } else {
+                    RadioLinkService.stop(context)
+                }
+            }
+            stopScanCountdown()
+            managerStateJob?.cancel()
+            managerStateJob = null
+            activeManager = null
+
+            _uiState.update {
+                it.copy(
+                    enabled = false,
+                    connectionStatus = RadioConnectionStatus.OFF,
+                    failureReason = RadioFailureReason.NONE,
+                    statusSentence = FlashRadioMath.statusSentence(RadioConnectionStatus.OFF, RadioFailureReason.NONE),
+                    statusNextStep = FlashRadioMath.statusNextStep(RadioConnectionStatus.OFF, RadioFailureReason.NONE),
+                    isScanning = false,
+                    scanCountdownSeconds = 0,
+                )
+            }
+        }
+    }
+
+    override fun startScan() {
+        if (!_uiState.value.enabled) return
+        if (!checkNearbyPermissions()) {
+            requestNearbyDevicesPermission()
+            return
+        }
+
+        val mgr = getOrCreateManager()
+        startScanCountdown(12)
+        mgr.startScan(timeoutMs = 12_000L)
+    }
+
+    override fun stopScan() {
+        stopScanCountdown()
+        activeManager?.stopScan()
+    }
+
+    private fun startScanCountdown(seconds: Int) {
+        scanCountdownJob?.cancel()
+        scanCountdownRemaining = seconds
+        _uiState.update { it.copy(isScanning = true, scanCountdownSeconds = scanCountdownRemaining) }
+
+        scanCountdownJob = scope.launch {
+            while (scanCountdownRemaining > 0) {
+                delay(1000L)
+                scanCountdownRemaining--
+                _uiState.update { it.copy(scanCountdownSeconds = scanCountdownRemaining) }
+            }
+            stopScanCountdown()
+        }
+    }
+
+    private fun stopScanCountdown() {
+        scanCountdownJob?.cancel()
+        scanCountdownJob = null
+        scanCountdownRemaining = 0
+        _uiState.update { it.copy(scanCountdownSeconds = 0) }
+    }
+
+    override fun confirmCandidate(id: String) {
+        val mgr = activeManager ?: return
+        val currentMgrState = mgr.state.value
+        val cand = (currentMgrState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate
+        val device = currentMgrState.scanResults.firstOrNull { it.bluetoothAddress.equals(id, ignoreCase = true) }
+            ?: if (cand != null && cand.addressOrPort.equals(id, ignoreCase = true)) {
+                DiscoveredDevice(
+                    name = cand.name ?: cand.addressOrPort,
+                    bluetoothAddress = cand.addressOrPort,
+                    isPaired = cand.isPaired,
+                    rssi = cand.rssi,
+                    kind = cand.kind,
+                    category = CandidateCategory.KNOWN_RADIO,
+                    rawAddressHex = cand.addressOrPort.replace(":", "").replace("-", "").uppercase(),
+                )
+            } else null
+
+        if (device != null) {
+            scope.launch {
+                mgr.confirmCandidate(device)
+            }
+        }
+    }
+
+    override fun pair(id: String) {
+        val mgr = activeManager ?: return
+        val device = mgr.state.value.scanResults.firstOrNull { it.bluetoothAddress.equals(id, ignoreCase = true) }
+        if (device != null) {
+            scope.launch {
+                mgr.pair(device)
+            }
+        }
+    }
+
+    override fun reconnect() {
+        val mgr = getOrCreateManager()
+        scope.launch {
+            mgr.connectRemembered()
+        }
+    }
+
+    override fun forget() {
+        val mgr = activeManager ?: return
+        scope.launch {
+            mgr.forget()
+        }
+    }
+
+    override fun selectProfile(profile: RadioSecurityProfile) {
+        val mgr = getOrCreateManager()
+        val coreProfile = when (profile) {
+            RadioSecurityProfile.PROFILE_M ->
+                com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED
+            RadioSecurityProfile.PROFILE_A ->
+                com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED
+        }
+        scope.launch {
+            runCatching {
+                mgr.setProfile(coreProfile)
+            }
+        }
+    }
+
+    override fun confirmAuthorisation() {
+        val mgr = getOrCreateManager()
+        val now = clock.nowMs()
+        val confirmation = AuthorisationConfirmation(
+            confirmedAtEpochMs = now,
+            operatorCallsign = null,
+        )
+        scope.launch {
+            mgr.recordAuthorisation(confirmation)
+            mgr.setProfile(com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED)
+        }
+    }
+
+    override fun selectMode(mode: RadioGatewayMode) {
+        selectedGatewayMode = mode
+        _uiState.update { it.copy(selectedMode = mode) }
+    }
+
+    override fun sendTestMessage() {
+        val mgr = activeManager ?: return
+        scope.launch {
+            isSendingTestMsg = true
+            testMsgSuccess = null
+            _uiState.update { it.copy(isSendingTestMessage = true, testMessageSentSuccess = null) }
+
+            val result = mgr.requestTestMessage("FLASH TEST DE RADIO", userConfirmedTransmit = true)
+            isSendingTestMsg = false
+            testMsgSuccess = (result == TestMessageResult.SENT)
+            _uiState.update { it.copy(isSendingTestMessage = false, testMessageSentSuccess = testMsgSuccess) }
+        }
+    }
+
+    override fun openSystemBluetoothSettings() {
+        if (openSettingsHandler != null) {
+            openSettingsHandler.invoke()
+        } else {
+            runCatching {
+                val intent = Intent(Settings.ACTION_BLUETOOTH_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+            }
+        }
+    }
+
+    override fun requestNearbyDevicesPermission() {
+        permissionRequester?.invoke()
+    }
+
+    public fun onNearbyDevicesPermissionResult(granted: Boolean) {
+        _uiState.update { current ->
+            current.copy(
+                nearbyDevicesPermissionGranted = granted,
+                failureReason = if (!granted) RadioFailureReason.PERMISSION_DENIED else RadioFailureReason.NONE,
+            )
+        }
+        if (granted && _uiState.value.enabled) {
+            startScan()
+        }
+    }
+
+    public fun updateNearbyPermissionStatus() {
+        val granted = checkNearbyPermissions()
+        _uiState.update { it.copy(nearbyDevicesPermissionGranted = granted) }
+    }
+
+    private fun mapConnectionStatus(
+        isEnabled: Boolean,
+        connectState: RadioConnectState,
+        linkState: TncLinkState,
+        isRetryingStopped: Boolean,
+    ): RadioConnectionStatus {
+        if (!isEnabled) return RadioConnectionStatus.OFF
+        return when (connectState) {
+            is RadioConnectState.Off -> RadioConnectionStatus.OFF
+            is RadioConnectState.ChecklistShown -> RadioConnectionStatus.CHECKLIST_READY
+            is RadioConnectState.Detecting -> RadioConnectionStatus.DETECTING
+            is RadioConnectState.ConfirmCandidate -> RadioConnectionStatus.CONFIRMING_CANDIDATE
+            is RadioConnectState.ChooseFromList -> RadioConnectionStatus.CHECKLIST_READY
+            is RadioConnectState.Scanning -> RadioConnectionStatus.SCANNING
+            is RadioConnectState.Pairing -> RadioConnectionStatus.PAIRING
+            is RadioConnectState.Connecting -> RadioConnectionStatus.CONNECTING
+            is RadioConnectState.Connected -> {
+                when {
+                    isRetryingStopped -> RadioConnectionStatus.LINK_LOST
+                    linkState is TncLinkState.Connected -> RadioConnectionStatus.CONNECTED
+                    linkState is TncLinkState.Waiting -> RadioConnectionStatus.LINK_LOST
+                    else -> RadioConnectionStatus.CONNECTING
+                }
+            }
+            is RadioConnectState.Failed -> RadioConnectionStatus.FAILED
+        }
+    }
+
+    private fun mapFailureReason(
+        connectState: RadioConnectState,
+        isRetryingStopped: Boolean,
+        nearbyPermissionGranted: Boolean,
+    ): RadioFailureReason {
+        if (!nearbyPermissionGranted) {
+            return RadioFailureReason.PERMISSION_MISSING
+        }
+        if (isRetryingStopped) {
+            return RadioFailureReason.LINK_LOST
+        }
+        if (connectState is RadioConnectState.Failed) {
+            return when (connectState.reason) {
+                RadioConnectFailureReason.NO_ADAPTER -> RadioFailureReason.NO_ADAPTER
+                RadioConnectFailureReason.BLUETOOTH_OFF -> RadioFailureReason.BLUETOOTH_OFF
+                RadioConnectFailureReason.PERMISSION_MISSING -> RadioFailureReason.PERMISSION_MISSING
+                RadioConnectFailureReason.RADIO_NOT_FOUND -> RadioFailureReason.RADIO_NOT_FOUND
+                RadioConnectFailureReason.PAIRING_REFUSED -> RadioFailureReason.PAIRING_REFUSED
+                RadioConnectFailureReason.WRONG_PIN -> RadioFailureReason.WRONG_PIN
+                RadioConnectFailureReason.PORT_IN_USE -> RadioFailureReason.PORT_IN_USE
+                RadioConnectFailureReason.KISS_TNC_NOT_ENABLED -> RadioFailureReason.KISS_NOT_ENABLED
+                RadioConnectFailureReason.LINK_LOST -> RadioFailureReason.LINK_LOST
+            }
+        }
+        return RadioFailureReason.NONE
+    }
+
+    public companion object {
+        public const val PREFS_NAME: String = "flash_radio_settings"
+        public const val KEY_GATEWAY_ENABLED: String = "gateway_enabled"
+    }
+}
