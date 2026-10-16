@@ -1,5 +1,11 @@
 # Current Handoff
 
+## 2026-10-16 - Radio streams merged into dev (R-move + R-spike)
+
+- **Status:** `dev` contains `:core:radio` (the moved radio stack plus the pure connect logic) and the BT-R11 spike tools. Gate on the merged result is green (see `logs/progress.md` top entry). No verifier pass was run on either stream (owner's choice).
+- **Device evidence:** the owner ran the BT-R11 runbook on the PC, the phone and two VR-N76 radios: PASS for Windows inquiry/pairing/COM mapping and Android scan/`createBond` (details: `logs/streams/R-spike/runbook-BT-R11.md`, EXP-046).
+- **Recommended next task:** wait for the owner's go for R1 (find, pair and connect in the app). Plan: `docs/plans/RADIO-GATEWAY-PLAN.md`; prompts: `docs/plans/RADIO-PROMPTS.md`.
+
 ## 2026-10-16 — Hub Tab Phases H6–H10 Independent Verification Complete (Stream V, report-5.md)
 - **Status:** Independent verification report filed at `logs/streams/V-verifier/report-5.md`; verdicts: H6 ACCEPT, H7 ACCEPT WITH FIXES (minor a11y strings), H8 ACCEPT, H9 ACCEPT, H10 ACCEPT.
 
