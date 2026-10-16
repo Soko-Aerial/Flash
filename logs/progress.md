@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-10-16 - Verifier report-5 (Hub tab H6-H10) applied: DEFECT-018 and DEFECT-019 fixed (Claude Code)
+
+### Worked on
+Second-AI verification of Hub tab phases H6-H10 (`logs/streams/V-verifier/report-5.md`): H6, H8, H9, H10 ACCEPT; H7 ACCEPT WITH FIXES; no blocking or major defects, 3 minor.
+
+### Changed
+- DEFECT-018: the person sheet's reachability screen-reader text now comes from `FlashHubCopy.reachabilityAccessibility(...)` (was an inline `"Reachability: "` in `FlashHubPeople.kt`).
+- DEFECT-019: the announcement composer's pin switch state text now uses `FlashHubCopy.SWITCH_ON` / `SWITCH_OFF` (was inline `"On"` / `"Off"` in `FlashHubNews.kt`).
+- Test `accessibilityStringsComeFromTheCopyObject` in `FlashHubMathTest`.
+- DEFECT-020 (debt, not a code defect): `:desktop:jvmTest` stays unrunnable as a whole (ERROR-106); `DesktopHubUiPrefsTest` and `DesktopPaneLayoutPrefsTest` are run with `--tests`. Test filtering in Gradle was NOT changed; left to the ERROR-106 fix.
+
+### Verification
+`:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The string is still English only: Flash has no localisation layer yet, so these two moves make a future translation possible but translate nothing. Nothing device-verified.
+
+### Remaining
+H7 verdict can be treated as ACCEPT once the owner agrees. Device checks `HUBT-*` still owed.
+
+### Next AI
+Do not start new Hub tab work without the owner. ERROR-106 would also resolve DEFECT-020.
+
 ## 2026-10-16 - Owner decisions applied: Paused counts, Transfers keeps the bar, draggable desktop divider, auto-pair on reply (Claude Code)
 
 ### Worked on

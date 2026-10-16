@@ -629,4 +629,11 @@ class FlashHubMathTest {
         assertEquals(5000 + 26, items.size)
         assertEquals(items.size, items.map { it.key }.toSet().size)
     }
+
+    // Verifier report-5 DEFECT-018/019: screen-reader strings come from FlashHubCopy, not inline literals.
+    @Test fun accessibilityStringsComeFromTheCopyObject() {
+        assertEquals("Reachability: On the same network", FlashHubCopy.reachabilityAccessibility("On the same network"))
+        assertEquals("On", FlashHubCopy.SWITCH_ON)
+        assertEquals("Off", FlashHubCopy.SWITCH_OFF)
+    }
 }
