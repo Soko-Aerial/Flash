@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-10-16 - Radio stream R-wire reviewed, corrected and merged into dev (Claude Code, integrator)
+
+### Worked on
+Audited the R-wire report against its diff (Android and desktop radio gateway controllers, host wiring, 12 desktop tests), fixed the defects found on `agent/R-wire`, merged it into `dev`. Not pushed.
+
+### Changed
+- ERROR-681: the Android controller lived in the Activity's composition scope, so the radio link died with the Activity while the foreground service kept its notification. Now `RadioGatewayHolder` (process singleton).
+- ERROR-682: foreground-service start/stop were unguarded and called on every state emission. Now `RadioServiceTracker` (`:core:radio`, RADWIRE-U13..U17), try/catch, `stopService`.
+- ERROR-683: the desktop on/off switch shared `radio.properties` (and its temp file) with the radio store. Now `radio-gateway.properties` (RADWIRE-U18).
+- ERROR-684 (OPEN, owner decision): the test message is transmitted with source callsign `NOCALL`; no callsign field exists.
+- Backlog RADWIRE-D01/D03/D04/D05 rewritten (they described controls that do not exist); RADWIRE-D06 added.
+- Folded the stream logs: ADR-197, ERROR-680..684, RADWIRE-D01..D06.
+
+### Verification
+`:core:radio:jvmTest` (tracker, policy), `:desktop:jvmTest --tests *DesktopRadioGatewayControllerTest*` (13 tests, 0 failures), `:app:compileDebugKotlin`. Mutation checks: tracker dedupe removed -> U14/U15 fail; switch moved back into `radio.properties` -> U18 fails. Gate on the merged `dev`: `:core:radio:jvmTest`, `:ui:chat:jvmTest --tests *Radio*`, the desktop controller and spike-CLI tests, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` all green.
+
+### Remaining
+No automated test of `AndroidRadioGatewayController` (needs a Context; mapping logic is duplicated with the desktop controller, shared extraction is a good follow-up). `ChooseFromList` candidates are not shown as a list. Hardware tests RADWIRE-D01..D06 are the owner's.
+
+### Next AI
+R-chat may start (it needs the R-wire controllers on `dev`). Do not push without the owner's word.
+
 ## 2026-10-16 - Radio streams R-link and R-ui reviewed, corrected and merged into dev (Claude Code, integrator)
 
 ### Worked on

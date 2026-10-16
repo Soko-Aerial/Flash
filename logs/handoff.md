@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-16 - R-wire merged into dev (reviewed and corrected), not pushed
+
+- **Status:** `dev` has the real radio gateway controllers for Android (`AndroidRadioGatewayController` owned by `RadioGatewayHolder`) and Windows (`DesktopRadioGatewayController`), wired into Settings. The "Radio gateway (beta)" row now appears in real builds. Foreground service driven by `RadioServiceTracker`. Details and fixes: `logs/progress.md` top entry, ERROR-681..684.
+- **Open owner decision:** ERROR-684, the test message goes out as `NOCALL`; add a callsign field before the first on-air test? (recommended: yes). Until then the on-air test is the owner's call only.
+- **Device checks owed:** `RADWIRE-D01..D06` in `docs/testing/TEST-BACKLOG.md` (radios needed; D03 transmits; D04 has an adb step for the owner).
+- **Recommended next task:** start R-chat (O-4 approved); R-audio can run any time. Push when the owner says so.
+
 ## 2026-10-16 - R-link and R-ui merged into dev (reviewed and corrected)
 
 - **Status:** `dev` has the radio connection layer (`RadioGatewayManager`, discovery for Windows and Android, persistence) and the Radio gateway screens (against a fake controller, hidden in real builds until a host supplies a real one). Gate green on the merged result (see `logs/progress.md`). Radios are not available to the owner now, so nothing is device-verified.
