@@ -23,5 +23,11 @@
             android:exported="true"
             android:label="Radio Spike"
             android:theme="@android:style/Theme.DeviceDefault" />
+
+        <activity
+            android:name="com.transfer.flash.debug.radiospike.RadioGatewayDemoActivity"
+            android:exported="true"
+            android:label="Radio Gateway Demo"
+            android:theme="@android:style/Theme.DeviceDefault" />
     </application>
 </manifest>
