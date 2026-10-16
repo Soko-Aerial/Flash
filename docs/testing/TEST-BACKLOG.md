@@ -2874,7 +2874,7 @@ Nothing below is runnable yet: the plans are design only (`docs/ENTERPRISE-HYBRI
 - **Setup:** one VR-N76 / UV-Pro / GA-5WB, one Android phone, one Windows PC; a serial/KISS logger (APRSDroid, WINTNC or a throwaway script).
 - **Steps:** (1) pair and note whether the link is Bluetooth Classic SPP, BLE, or both; (2) try 9600 baud on UHF; (3) with KISS on, send an APRS text message to the radio and look at its LCD, with "Digital Mode" both on and off; (4) try two apps at once; (5) send 220-byte frames and time them at 1200 baud.
 - **Pass:** results written to `logs/experiments.md` as an EXP entry with firmware versions; each UNVERIFIED marker in the radio plan (sections 0.2, 4.1, 4.5, 5.2) updated to measured fact or struck.
-- **Source:** radio plan sections 0.2 and 8 (BT-H). **Status:** TODO
+- **Source:** radio plan sections 0.2 and 8 (BT-H). **Status:** PASSED (EXP-023, 2026-10-16)
 
 ### ENT-01 - Realm gate refuses a stranger (stage E1)
 - **Pass:** a strict-mode device ignores a Flash device without the realm secret on the same LAN, including inbound dials; a device with it connects. **Source:** ENTERPRISE-HYBRID-PLAN E1. **Status:** TODO
@@ -3051,7 +3051,7 @@ disappears), the camera is free for the next call. Status: TODO
 - **Setup:** radio paired in Windows (Outgoing COM port noted), the Flash checkout, optionally a second radio/PC and a monitor receiver. Commands: `./gradlew :desktop:radioLinkTest`, `./gradlew :desktop:radioLinkTestCli -PradioArgs="--list"` (full list in `docs/reports/2026-10-09-bluetooth-radio.md` section 8).
 - **Steps:** report section 8 steps 1 to 12 (list ports, simulated run, open the real port, KISS on, KISS/AX.25/Flash frames, two-station burst, two apps, power cycle, optional 9600, export logs).
 - **Pass:** the exported logs plus the answers to the plan's open questions (Classic SPP vs BLE, KISS accepted, LCD behaviour with Digital Mode on/off, 220-byte frame accepted, goodput) written to `logs/experiments.md` as EXP-023; each UNVERIFIED marker in the radio plan (sections 0.2, 4.1, 4.5, 5.2) updated to measured fact or struck.
-- **Source:** radio plan sections 0.2 and 8; ADR-101. **Status:** TODO
+- **Source:** radio plan sections 0.2 and 8; ADR-101. **Status:** PASSED (EXP-023, 2026-10-16)
 
 ### BT-09 - Spike window opens and the simulated radio runs (no hardware)
 - **Setup:** the dev laptop. **Steps:** `./gradlew :desktop:radioLinkTest`; click Simulated radio, the three test buttons, a burst of 3. **Pass:** window readable (no clipped controls at 1100x820 and at a smaller window), feed and raw panes fill, the burst result shows `acked=3`, Export log writes a file that starts with `# Flash radio link test`. **Source:** `docs/ui/radio-link-test.md`. **Status:** TODO

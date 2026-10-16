@@ -5606,6 +5606,38 @@ selection (person, department, announcement) is local to the Hub and is saved wi
 ### Revisit when
 The integrator wants one detail-pane abstraction for the whole shell (ADAPTIVE-UI-PLAN AD-7).
 
+## ADR-173 — Optional Multi-Mode Hardware Radio TNC Gateway (`:core:radio`)
+
+### Decision
+1. **Dedicated Module (`:core:radio`):** All radio hardware protocols (KISS framing, AX.25 Level 2.2, serial communications via `jSerialComm` on Desktop and Android RFCOMM sockets, CSMA backoff pacing) are encapsulated in a new Gradle module: `:core:radio`. Core networking, transfer engines, and Room schemas remain completely untouched.
+2. **100% Optional & Feature-Gated:** Radio functionality is strictly opt-in behind a setting in **Settings $\rightarrow$ Radio Gateway** (default = OFF). When disabled, zero background services, serial ports, or audio redirects run.
+3. **Dual-Channel Radio Architecture:**
+   - **Digital Data Channel (Bluetooth SPP / COM port):** AX.25 packets at 1200-baud Bell 202 AFSK for chat, cryptographic delivery ACKs and GPS beacons. (Store-and-forward voice notes were removed by the owner on 2026-10-16, see Amendment.)
+   - **Analog Voice Channel (Bluetooth HFP Audio):** Streams real-time audio over the Hands-Free Profile (`VR-N76 Hands-Free HF`), keying the RF transmitter for analog FM walkie-talkie cross-patching.
+4. **Five Operational Modes:**
+   - **Mode 1: Field Companion** (Individual Operator - Chat & Voice Notes over RF)
+   - **Mode 2: Base Station Relay** (Wi-Fi $\leftrightarrow$ Radio Mesh Bridge)
+   - **Mode 3: Walkie-Talkie Voice Bridge** (Analog FM PTT Cross-Patch)
+   - **Mode 4: Tactical GPS Radar** (Offline Presence & Tracking)
+   - **Mode 5: All-in-One Dual Mode** (Simultaneous Data + Voice)
+5. **Security Profiles:** Profile M (Tactical / Military - Encrypted, silent, rotating IDs, replay protection) by default; Profile A (Civilian Amateur - Plaintext, callsign, APRS) as selectable mode.
+
+### Context
+Physical hardware spike `BT-00` (`EXP-023`) with the Vero Telecom VGC VR-N76 confirmed that Bluetooth Classic SPP (`COM16`), KISS modulation, transmitter keying, and Bluetooth HFP audio operate reliably. 9600 baud was disproven (fixed at 1200 baud). Making the feature optional and modular in its own module keeps Flash lightweight for civilian consumers while enabling military and off-grid emergency capabilities.
+
+### Alternatives considered
+- Embedding radio code directly into `:core:network`: Rejected to prevent bloating core networking with serial dependencies (`jSerialComm`) and amateur radio/KISS protocols.
+- Forcing all users to run radio discovery: Rejected; standard users don't have radios and should not suffer battery drain or Bluetooth permission prompts.
+
+### Revisit when
+Phase R0-R6 execution begins in accordance with `docs/plans/RADIO-GATEWAY-PLAN.md`.
+
+### Amendment (2026-10-16, revision 2 of `docs/plans/RADIO-GATEWAY-PLAN.md`, still PROPOSED)
+1. **The existing radio code is moved, not rewritten.** The KISS/AX.25 codecs, `ByteLink` and the serial/Bluetooth catalogues, `KissTncDriver` and pacing, the Flash radio frame and crypto, the simulator and the BT-00 diagnostics (all built 2026-10-09 in `:core:network`, ADR-101) move with their tests into `:core:radio` (package `com.transfer.flash.core.radio`), and jSerialComm leaves `:core:network`. Item 1 above ("encapsulated in a new module") therefore means a move, in one behaviour-free commit (phase R0). ADR-101's session-layer recommendation stands.
+2. **Voice notes are out of scope** (owner): no recorded clips, no Codec2/Opus, no audio-note codec. Real-time digital voice stays impossible at 1200 baud. The analog walkie-talkie bridge (Modes 3 and 5) stays but only after a spike (`BT-R10`) shows the Bluetooth audio path works.
+3. **Find, pair and connect** is specified (plan section 6, revision 3, owner 2026-10-16): Flash detects an already-paired radio by itself (confirmation once, then automatic reconnect) and shows a live list of nearby devices with in-app pairing, so the user does not have to open Bluetooth settings. The radio is identified by its Bluetooth address, OS pairing is not Flash trust, nothing transmits as a probe. This reverses the 2026-10-09 code decision "paired devices only, no scanning" on Android (needs `BLUETOOTH_SCAN` with `neverForLocation`, `BLUETOOTH_CONNECT`, `createBond`). On Windows the candidate is the Win32 Bluetooth API through JNA (already shipped); unverified until spike `BT-R11`.
+4. **Item 5 stays: encryption is required** (owner, military use). Profile M remains the default. Because the same radio can sit on an amateur band, where encrypted traffic is usually forbidden, the first enable asks the user once to confirm they are authorised to use encrypted traffic on the frequency; without it only Profile A is selectable. Local law was not researched.
+
 ## ADR-174 - A colleague chat becomes a pairing once both sides have written (ACCEPTED by the owner, 2026-10-16)
 
 ### Decision

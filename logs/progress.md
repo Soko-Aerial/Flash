@@ -1,5 +1,33 @@
 # Progress Log
 
+## 2026-10-16 - Radio gateway plan revised: move existing code into :core:radio, voice notes removed (Claude Code)
+
+### Worked on
+Review and rewrite of `docs/plans/RADIO-GATEWAY-PLAN.md` (revision 2) at the owner's request. Design only; no code, no build.
+
+### Changed
+- The plan found that the KISS/AX.25 codecs, driver, pacing, radio frame, serial/Bluetooth catalogues and BT-00 tools already exist in `:core:network` (built 2026-10-09). Phase R0 is now a behaviour-free MOVE into `:core:radio` (package rename, tests move, jSerialComm leaves `:core:network`), with a baseline-then-parity acceptance.
+- Voice notes removed everywhere (no Codec2/Opus, no `BT-R06`). Walkie-talkie audio bridge kept but behind spike `BT-R10`.
+- New section "Find, pair and connect" (Windows port-to-radio mapping, Android paired list and permissions, wizard, failure sentences, no transmitting probes, Flash pairing needed for encrypted radio chat).
+- Section on how messages choose the radio and what cannot go over it; security profile default reopened as owner decision O-1 (amateur band: encryption/no callsign may be illegal; local rules not researched).
+- ADR-173 amended in `docs/decisions.md`.
+
+### Verification
+Documents only. Plan claims about existing files were checked against the repo listing; `ReconnectPolicy` and `RADIO-WIRE-FORMAT.md` were NOT read and the plan says so (decisions O-3, R0 step).
+
+### Revision 3 (same day, owner)
+- Encryption is required (military use): Profile M stays the default, O-1 answered; a one-time "I am authorised for encrypted traffic on this frequency" confirmation stays because the test radio is on an amateur band.
+- Automatic detection of the paired radio and a live nearby-devices list with in-app pairing (no trip to Bluetooth settings): new spike `BT-R11` (phase R1a) comes first. Android: scan + `createBond` (reverses the "paired only" choice of 2026-10-09); Windows: Win32 Bluetooth API via JNA, unverified. Tests `RADCON-07`..`11`, `BT-R11`. New open decisions O-6, O-7. Docs checked: developer.android.com Bluetooth permissions; learn.microsoft.com Win32 Bluetooth functions (search results only, the Windows inquiry/pairing behaviour with this radio is unproven).
+
+### Prompts written (not started)
+`docs/plans/RADIO-PROMPTS.md`: prompt for stream R-move (R0 move into `:core:radio`, then pure connect logic), prompt for stream R-spike (BT-R11 read-only Windows tool, Android debug-only spike, owner runbook), and a verifier prompt. Reserved numbers ADR 177-186, ERROR 600-639, EXP 040-049. Nothing started; the plan files need a checkpoint commit before worktrees can see them.
+
+### Remaining
+Owner answers O-2..O-7. Test IDs `RADMOVE-*`, `RADCON-*`, `BT-R*` go into `docs/testing/TEST-BACKLOG.md` when their phase is built.
+
+### Next AI
+Do not write radio code until the owner authorises it. Start with R0 (baseline test counts first). These edits sit uncommitted in the working tree together with the other radio session's files.
+
 ## 2026-10-16 - Verifier report-5 (Hub tab H6-H10) applied: DEFECT-018 and DEFECT-019 fixed (Claude Code)
 
 ### Worked on
@@ -56,7 +84,32 @@ Owner: "after connecting the phone I had to refresh the hub page, shouldn't it h
 ### Next AI
 Owner must rebuild and reinstall the app (`adb install -r`); the hub needs no change.
 
+## 2026-10-16 — VR-N76 physical hardware verification (BT-00 spike PASSED)
+
+### Worked on
+Operator paired physical Vero Telecom VGC VR-N76 radio to verify the unverified claims in `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md` (test `BT-00` / Phase `BT-H`).
+
+### Changed
+- Created `tools/vr_n76_kiss_test.py` Python test utility using `pyserial` to communicate with the radio's virtual serial port (`COM16`) over Bluetooth Classic SPP.
+- PnP discovery identified:
+  - Bluetooth Classic SPP UUID `00001101-0000-1000-8000-00805F9B34FB` bound to `COM16` at 115200 baud, 8-N-1.
+  - Bluetooth Hands-Free Profile (`VR-N76 Hands-Free HF`, UUID `0000111F-...`) which caused Windows to categorize the radio as an Audio Device upon initial pairing.
+  - BLE GATT services (`00001100-...`, `00000001-...`) and vendor Benshi protocol (`39144315-32FA-...`).
+- Transmitted KISS frames (`FEND 0x00 ... FEND`) over `COM16`.
+- Verified physical hardware transmitter activation: red TX LED illuminates immediately, VFO highlights 144.625 MHz, and 1200-baud Bell 202 AFSK audio modulates over RF.
+- Transmitted 220-byte payload (241 KISS bytes) and timed red TX LED at 1.5 to 2.0 seconds, exactly matching the theoretical 1.887 seconds (1,904 bits @ 1200 bps + 300 ms `TXDELAY`).
+- Operator verified all radio menus: no baud rate setting exists. The VR-N76 internal modem is hardcoded to 1200-baud Bell 202 AFSK. 9600 baud G3RUH FSK claim is refuted/struck.
+- Tested Digital Mode ON and OFF: outbound KISS frames transmit identically while the LCD screen retains the normal VFO display (does not echo outbound frames). Validates Option A of the plan.
+- Updated `logs/experiments.md` (`EXP-023`), `docs/testing/TEST-BACKLOG.md` (`BT-00` marked PASSED), and `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md` §0.2.
+
+### Verification
+Physical hardware test on real VGC VR-N76 (Bluetooth MAC `38:D2:00:01:35:B5`) connected to Windows 11 via Bluetooth SPP `COM16`.
+
+### Next AI
+Keep the radio plan design-only until the owner authorizes production code. When ready, follow Phase BT-0 (sans-IO KISS/AX.25 codecs in `:core:network`).
+
 ## 2026-10-16 - Announcements never reached the phone (ERROR-410, Claude Code)
+
 
 ### Worked on
 Owner: announcements created on the PC do not show on the phone.
