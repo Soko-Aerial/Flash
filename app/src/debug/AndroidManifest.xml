@@ -17,5 +17,11 @@
             android:process=":lan_daemon"
             android:exported="true"
             android:foregroundServiceType="connectedDevice|mediaPlayback" />
+
+        <activity
+            android:name="com.transfer.flash.debug.radiospike.RadioSpikeActivity"
+            android:exported="true"
+            android:label="Radio Spike"
+            android:theme="@android:style/Theme.DeviceDefault" />
     </application>
 </manifest>
