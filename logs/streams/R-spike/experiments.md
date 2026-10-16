@@ -32,3 +32,59 @@ Output of `:desktop:radioSpike` on this PC:
 1. **Deterministic Mapping Validated:** On Windows 11, virtual COM ports created for Bluetooth SPP store their assigned COM port name under `HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM\{00001101-0000-1000-8000-00805f9b34fb}*\[instance]\Device Parameters\PortName`.
 2. **Direction Discrimination:** Incoming ports (server listeners created by Windows Bluetooth Settings) have a MAC of `000000000000`; outgoing ports bound to paired remote devices carry the 12-hex MAC address in `Bluetooth_UniqueID` and the device instance key name.
 3. **Question 5 Answered:** Flash can reliably identify which virtual COM port belongs to the radio by querying this registry key via JNA `Advapi32Util`, completely decoupling port selection from fragile hardcoded COM numbers (such as `COM16`).
+
+---
+
+## EXP-046 — Live Physical Radio Discovery, In-App Pairing, and SPP COM Port Binding (BT-R11 Q1–Q5)
+
+### Date
+2026-10-16
+
+### Hardware & Environment
+- **Radio 1:** Vero Telecom VR-N76 / BTECH UV-Pro (`**:**:**:01:35:B5`), KISS TNC enabled.
+- **Radio 2:** Vero Telecom VR-N76 (`**:**:**:01:34:FD`).
+- **PC:** Windows 11 Pro 64-bit (Build 26100), Intel(R) Wireless Bluetooth.
+- **Android Phone:** Physical Android test phone running `RadioSpikeActivity` (`com.transfer.flash.debug.radiospike`).
+
+### Windows Active Mode Execution
+Executed: `tools\flash-gradle.cmd :desktop:radioSpike -PradioArgs="--active --i-am-the-owner-and-the-radio-is-on"`
+1. **Inquiry Discovery (Q1):**
+   - Timeout multiplier: 4 (~5.12s duration).
+   - Devices discovered: 3.
+     - `[0] [RADIO] VR-N76 (**:**:**:01:35:B5)`
+     - `[1] [SERIAL_SPP] TQ-EJ12 (**:**:**:DE:49:1F)`
+     - `[2] [OTHER] AA-ER3 (**:**:**:00:06:D3)`
+   - Classified as `RADIO` and ranked at index 0.
+2. **In-App Authentication / Pairing (Q2):**
+   - Method: Win32 `BluetoothAuthenticateDevice` with Wizard mode (null passkey).
+   - Result: `Success`.
+   - PIN observation: No PIN entry prompt was required on radio or PC; negotiated via Bluetooth 2.1+ Secure Simple Pairing (Just Works).
+3. **SPP Service Enablement (Q3):**
+   - Method: Win32 `BluetoothSetServiceState` for GUID `{00001101-0000-1000-8000-00805F9B34FB}`.
+   - Result: `AlreadyInDesiredState`.
+4. **Assigned COM Ports:**
+   - Enumerated ports: `COM6`, `COM7`, `COM15`, `COM16`. Outgoing radio link bound to `COM16`.
+
+### Android In-App Execution
+Executed: `RadioSpikeActivity` launched on phone; permissions requested at point of use.
+1. **Permissions & Location Filter (Q4):**
+   - Prompted for "Nearby devices" group only (`BLUETOOTH_CONNECT`, `BLUETOOTH_SCAN` with `neverForLocation`).
+   - No location permission requested.
+2. **Discovery & Classification:**
+   - Total devices discovered: 9.
+   - Both physical VR-N76 radios detected:
+     - `VR-N76 [**:**:**:01:35:B5]` | `Rank 1 (RADIO)` | RSSI: `-47 dBm` (Ranked #1)
+     - `VR-N76 [**:**:**:01:34:FD]` | `Rank 1 (RADIO)` | RSSI: `-78 dBm` (Ranked #2)
+3. **In-App Pairing via `createBond()`:**
+   - Tapped "Pair" next to VR-N76.
+   - Transitioned to `BOND_BONDING` then `BOND_BONDED`.
+   - UI status: `"Pairing: Successfully paired with VR-N76 [**:**:**:01:35:B5]."`.
+   - Card button updated to `"Paired"` (`Screenshot_20261016-134640.jpg`).
+4. **Lifecycle Cancellation:**
+   - Verified via `adb logcat -s RadioSpikeActivity`:
+     `10-16 13:43:10.057 D RadioSpikeActivity: Bluetooth discovery started`
+     `10-16 13:43:12.101 D RadioSpikeActivity: Stopped: scan aborted and receivers unregistered on leaving screen`
+
+### Conclusion
+Hardware Radio BT-R11 spike is 100% complete and empirically validated across all 5 questions on both target operating systems. Flash can discover, classify, rank, pair, and bind virtual COM ports to physical radios without requiring users to navigate external operating system settings.
+

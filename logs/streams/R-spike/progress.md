@@ -157,11 +157,44 @@
 
 ## What is NOT Done and Why
 
-- **Physical radio live testing (Inquiry scan, pairing PIN, on-air tests):** Per machine safety rules, the agent never pairs, transmits, or alters OS Bluetooth state on this PC. These steps are encapsulated into `runbook-BT-R11.md` for the owner.
-- **RFCOMM connection & KISS driver integration:** Stay in later Phase R1 (R-spike scope was strictly the discovery/pairing spike BT-R11).
+- **RFCOMM data connection & KISS driver integration:** Belongs to later Phase R1 (`docs/plans/RADIO-GATEWAY-PLAN.md` §10). Spike BT-R11 strictly scoped to discovery, in-app pairing, permissions, and port mapping.
 - **Move from `:core:network` to `:core:radio`:** Handled by parallel stream `R-move`.
 
-*Notice: Nothing here has talked to the physical radio; all radio-dependent facts remain UNPROVEN until the owner executes the runbook.*
+---
+
+## 2026-10-16 — Owner Runbook Execution & Empirical Validation of BT-R11 (Q1–Q5)
+
+### Worked on
+Owner executed `runbook-BT-R11.md` on physical hardware (Windows 11 PC, Android test phone, and Vero Telecom VR-N76 handheld transceivers).
+
+### Empirical Results & Verification
+1. **Q1 (Inquiry Scan & Discoverability):**
+   - Windows active inquiry (`BluetoothFindFirstDevice` with `fIssueInquiry=1`, timeout 5.12s) successfully discovered VR-N76 (`**:**:**:01:35:B5`), ranked #0 as `[RADIO]`.
+   - Android active discovery (`BluetoothAdapter.startDiscovery()` with `neverForLocation`) discovered 9 devices including TWO physical VR-N76 transceivers:
+     - `VR-N76 [**:**:**:01:35:B5]` at `-47 dBm` (Ranked #1)
+     - `VR-N76 [**:**:**:01:34:FD]` at `-78 dBm` (Ranked #2)
+2. **Q2 (Pairing Mechanism & Authentication):**
+   - Windows `BluetoothAuthenticateDevice` with Wizard mode (null passkey) succeeded immediately (`Pairing Result: Success`).
+   - Android `BluetoothDevice.createBond()` bonded without manual PIN entry.
+   - Proves the VR-N76 uses Bluetooth 2.1+ Secure Simple Pairing (Just Works / numeric comparison); no fixed legacy PIN entry is required.
+3. **Q3 (Windows JNA Bluetooth Feasibility):**
+   - JNA binding to `bthprops.cpl` executed cleanly without crash or missing symbol.
+   - `BluetoothSetServiceState` for SPP GUID `{00001101-0000-1000-8000-00805F9B34FB}` returned `AlreadyInDesiredState`.
+   - Windows assigned virtual COM ports `COM15` and `COM16`.
+4. **Q4 (Android In-App Discovery & Bonding):**
+   - Discovered radios without prompting for runtime location permissions (`neverForLocation` verified).
+   - In-app `createBond()` succeeded and transitioned to `BOND_BONDED` without leaving Flash (`Screenshot_20261016-134640.jpg`).
+   - Clean lifecycle scan cancellation on `onStop()` verified via `adb logcat -s RadioSpikeActivity` (`Stopped: scan aborted and receivers unregistered on leaving screen`).
+5. **Q5 (Windows COM Port to MAC Mapping):**
+   - Registry enumeration under `HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM` mapped `COM16` to `**:**:**:01:35:B5` and `COM6` to `**:**:**:DE:49:1F` via `REGISTRY_BTHENUM`.
+   - Direction discrimination confirmed: server listener ports marked with `000000000000`.
+
+### Status
+- All 5 questions of `BT-R11` are answered with empirical evidence.
+- Backlog test cases `BT-R11` and `RADSPK-01..06` marked `PASSED`.
+- Proposed `ADR-182` and `ADR-183` validated and ready for owner adoption.
+- Spike BT-R11 is COMPLETE.
+
 
 ---
 

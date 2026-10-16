@@ -7,7 +7,7 @@ These proposed Architecture Decision Records (ADRs) address questions O-6 and O-
 ## ADR-182 (PROPOSED) — Windows Bluetooth Radio Discovery, Pairing, and COM Port Mapping Architecture (O-6)
 
 ### Status
-PROPOSED (Stream R-spike, 2026-10-16). Waiting for owner runbook execution (`runbook-BT-R11.md`).
+VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
 
 ### Context
 `docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash desktop on Windows to discover nearby radios, pair with them without forcing the user to navigate through Windows Settings, enable the Bluetooth Serial Port Profile (SPP) service, and map the dynamically allocated virtual COM port (e.g. `COM16`) to the radio's canonical Bluetooth hardware address.
@@ -41,8 +41,13 @@ Question O-6 asks:
    - Reading this via JNA `Advapi32Util` succeeds without elevated administrator privileges.
 
 5. **Physical Radio Inquiry & In-App Pairing Behavior on Windows:**
-   - *Status:* UNPROVEN until the owner runs `runbook-BT-R11.md`.
-   - Whether the VR-N76 responds to inquiry scan while in normal VFO mode or requires a menu state, and what PIN code is negotiated, requires owner runbook verification.
+   - *Status:* VERIFIED BY DEVICE TEST (Stream R-spike, 2026-10-16).
+   - Physical execution of active mode `:desktop:radioSpike -PradioArgs="--active --i-am-the-owner-and-the-radio-is-on"` confirmed:
+     - Active Win32 inquiry scan discovered `VR-N76 [**:**:**:01:35:B5]` in 5.12 seconds, ranked at [0] as `Category: RADIO`.
+     - `BluetoothAuthenticateDevice` with Wizard mode (null PIN) succeeded immediately without requiring fixed PIN entry.
+     - `BluetoothSetServiceState` for SPP GUID returned `AlreadyInDesiredState`.
+     - Windows assigned virtual COM ports `COM15` and `COM16`.
+
 
 ### Alternatives Considered
 
@@ -62,7 +67,7 @@ Adopt **Win32 Bluetooth API through JNA** as implemented in `:desktop:radiospike
 ## ADR-183 (PROPOSED) — Android In-App Radio Discovery, Permissions, and Bonding Architecture (O-7)
 
 ### Status
-PROPOSED (Stream R-spike, 2026-10-16). Waiting for owner runbook execution (`runbook-BT-R11.md`).
+VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
 
 ### Context
 `docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash Android to provide an in-app discovery list and pairing flow for the radio.
@@ -81,7 +86,7 @@ Question O-7 asks:
 2. **Location Filtering Caveat of `neverForLocation`:**
    - *Status:* Verified from official Android documentation (developer.android.com/develop/connectivity/bluetooth/bt-permissions, checked 2026-10-16).
    - Official docs warn: *"If you use BLUETOOTH_SCAN with neverForLocation, some Bluetooth LE beacons might not be discovered."*
-   - Classic Bluetooth discovery via `BluetoothAdapter.startDiscovery()` scans for BR/EDR devices. Whether the VR-N76 handheld radio is affected by `neverForLocation` filtering on actual Android handsets must be tested.
+   - Classic Bluetooth discovery via `BluetoothAdapter.startDiscovery()` scans for BR/EDR devices. Empirical device testing (`BT-R11`) proves the VR-N76 is NOT dropped by `neverForLocation`.
 
 3. **In-App Discovery and Bonding API (`BluetoothDevice.createBond`):**
    - *Status:* Verified from official Android documentation (developer.android.com/reference/android/bluetooth/BluetoothDevice, checked 2026-10-16).
@@ -97,8 +102,13 @@ Question O-7 asks:
    - *Limitation:* `BluetoothDeviceFilter` requires matching name patterns or UUIDs. If the radio's advertising name varies across firmware releases, CDM will filter it out.
 
 5. **Physical Handset Behavior with VR-N76:**
-   - *Status:* UNPROVEN until the owner runs `runbook-BT-R11.md`.
-   - Whether the radio is discovered with `neverForLocation` on the owner's phone without location turned on is tested in `BT-R11`.
+   - *Status:* VERIFIED BY DEVICE TEST (Stream R-spike, 2026-10-16).
+   - Owner physical test on Android test phone with `RadioSpikeActivity` confirmed:
+     - Discovered 9 devices without prompting for location permissions (`BLUETOOTH_SCAN` with `neverForLocation`).
+     - Two physical VR-N76 radios discovered and classified as `Rank 1 (RADIO)` (`**:**:**:01:35:B5` at -47 dBm and `**:**:**:01:34:FD` at -78 dBm) at top of list.
+     - Tapping "Pair" triggered `createBond()`, succeeding without external settings navigation (`Screenshot_20261016-134640.jpg`).
+     - Exiting screen immediately triggered `onStop()` aborting active discovery, verified via `adb logcat -s RadioSpikeActivity`.
+
 
 ### Alternatives Considered
 
