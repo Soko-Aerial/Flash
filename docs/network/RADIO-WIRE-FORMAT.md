@@ -1,7 +1,7 @@
 # Radio wire format (Profile M) - exact byte layout
 
-Status: IMPLEMENTED and unit-tested on the JVM and Android host 2026-10-09 (`core/network`, package `...network.kiss` and
-`...network.radio`). **Never transmitted by a real radio.** A second implementation (Linux client, Rust) should be able to
+Status: IMPLEMENTED and unit-tested on the JVM and Android host 2026-10-09 (originally in `core/network`, package `...network.kiss` and
+`...network.radio`; moved to `:core:radio` package `com.transfer.flash.core.radio.*` in R0, plan rev 3 §4). **Never transmitted by a real radio.** A second implementation (Linux client, Rust) should be able to
 reproduce section 11 byte for byte. Part of the plan `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`; that plan's known errors
 are corrected here (section 12). Architecture decision: ADR-101 (see the report for the paste-ready text).
 

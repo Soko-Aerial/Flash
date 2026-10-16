@@ -1,6 +1,7 @@
 package com.transfer.flash.core.network.resilience
 
 import com.transfer.flash.core.common.model.FlashDevice
+import com.transfer.flash.core.common.resilience.ReconnectPolicy
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.model.FlashTransportType

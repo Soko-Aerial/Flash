@@ -26,7 +26,7 @@ import com.transfer.flash.core.network.FlashSession
 import com.transfer.flash.core.network.bridge.EndpointMemory
 import com.transfer.flash.core.network.remembered.RouteObserver
 import com.transfer.flash.core.network.resilience.ConnectionHealthAggregator
-import com.transfer.flash.core.network.resilience.ReconnectPolicy
+import com.transfer.flash.core.common.resilience.ReconnectPolicy
 import com.transfer.flash.core.network.resilience.ReconnectStagger
 import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import com.transfer.flash.core.network.tls.TlsOptions

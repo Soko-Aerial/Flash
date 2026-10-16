@@ -58,6 +58,7 @@ dependencies {
     implementation(project(":core:engine"))
     implementation(project(":core:calling"))
     implementation(project(":core:ptt"))
+    implementation(project(":core:radio"))
     implementation(project(":ui:theme"))
     implementation(project(":ui:chat"))
     implementation(project(":ui:callui"))
