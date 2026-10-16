@@ -143,6 +143,38 @@ class RealFlashChatRepositoryAnnouncementsTest {
     }
 
     @Test
+    fun `ANN-U29 a relay reconnect fetches what was posted while the device was away`(): Unit = runBlocking {
+        val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
+        val api = FakeHubAnnouncementsApi()
+        val relay = com.transfer.flash.core.messaging.hub.FakeHubRelay()
+        api.items["ann-1"] = sampleItem("ann-1", seq = 1L, title = "Posted while away")
+        val repo = RealFlashChatRepository(
+            localDeviceId = "dev-self",
+            localDisplayName = "Self",
+            messageDao = db.messageDao(),
+            conversationDao = db.conversationDao(),
+            outboxDao = db.outboxDao(),
+            receiptDao = db.receiptDao(),
+            draftDao = db.draftDao(),
+            recentSearchDao = db.recentSearchDao(),
+            reactionDao = db.reactionDao(),
+            runInTransaction = { block -> db.runInWriteTransaction(block) },
+            enterpriseTrustStore = MemoryEnterpriseTrustStore(sampleCredentials()),
+            hubAnnouncementDao = db.hubAnnouncementDao(),
+            hubAnnouncementsApi = api,
+            hubRelay = relay,
+        )
+        assertEquals(0, repo.hubAnnouncements.first().size, "nothing before the session is up")
+        relay.connectedState.value = true
+        var shown = 0
+        repeat(100) {
+            shown = repo.hubAnnouncements.first().size
+            if (shown == 0) kotlinx.coroutines.delay(50)
+        }
+        assertEquals(1, shown, "the reconnect must pull the announcement without any hint or tap")
+    }
+
+    @Test
     fun `ANN-U22 markHubAnnouncementRead decrements unread count and marks item read`(): Unit = runBlocking {
         val db = openEncryptedFlashDatabase(dbFile, encryptionKey)
         val api = FakeHubAnnouncementsApi()

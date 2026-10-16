@@ -1239,6 +1239,15 @@ public class RealFlashChatRepository(
             }
         }
 
+        // ERROR-411: a hint reaches only a live session, so every (re)connect fetches what was posted meanwhile.
+        hubRelay?.connected?.let { connected ->
+            scope.launch(ioDispatcher) {
+                connected.distinctUntilChanged().collect { up ->
+                    if (up) runCatching { refreshHubAnnouncements() }
+                }
+            }
+        }
+
         // Plan A3 §6.11: Unenrol or credentials wiped clears stored announcements
         enterpriseTrustStore?.let { trust ->
             scope.launch(ioDispatcher) {
