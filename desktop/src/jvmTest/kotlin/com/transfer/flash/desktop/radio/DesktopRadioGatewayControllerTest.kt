@@ -447,4 +447,33 @@ class DesktopRadioGatewayControllerTest {
         assertTrue(scanned.any { it.name == "Generic SPP" && it.category == RadioDeviceCategory.SERIAL_SPP })
         assertTrue(scanned.any { it.name == "Headphones" && it.category == RadioDeviceCategory.OTHER })
     }
+
+    @Test
+    fun radwireU18_switchLivesInItsOwnFile_andSurvivesStoreWrites() = runBlocking {
+        val dir = tempFolder.newFolder("radwire-own-file")
+        val controller = DesktopRadioGatewayController(
+            scope = testScope,
+            stateDir = dir,
+            discoveryFactory = { FakeRadioDeviceDiscovery() },
+        )
+        controller.setEnabled(true)
+        delay(100)
+
+        // The remembered-radio store rewrites radio.properties as a whole; the switch must not be in it.
+        com.transfer.flash.core.radio.connect.DesktopPropertiesRadioStore(dir).rememberedStore
+            .save(RememberedRadio("38:D2:00:01:35:B5", "VR-N76"))
+        val storeFile = java.io.File(dir, "radio.properties")
+        assertTrue(storeFile.isFile)
+        assertFalse(storeFile.readText().contains("gateway.enabled"), "the switch must not live in the store's file")
+        assertTrue(java.io.File(dir, "radio-gateway.properties").readText().contains("gateway.enabled=true"))
+
+        // A fresh controller (next app start) reads the switch back.
+        val second = DesktopRadioGatewayController(
+            scope = testScope,
+            stateDir = dir,
+            discoveryFactory = { FakeRadioDeviceDiscovery() },
+        )
+        delay(100)
+        assertTrue(second.state.value.enabled, "stored ON must be read back after a store write")
+    }
 }

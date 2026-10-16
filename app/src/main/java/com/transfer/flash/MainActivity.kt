@@ -813,28 +813,28 @@ fun FlashApp(
     }
 
     val radioHostContext = LocalContext.current
-    var radioControllerRef by remember { mutableStateOf<com.transfer.flash.radio.AndroidRadioGatewayController?>(null) }
+    // The controller is process-wide (RadioGatewayHolder): it must outlive this Activity and its composition.
+    val radioGatewayController = remember(radioHostContext) {
+        com.transfer.flash.radio.RadioGatewayHolder.get(radioHostContext)
+    }
     val nearbyPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) { results ->
-        val granted = results.values.all { it }
-        radioControllerRef?.onNearbyDevicesPermissionResult(granted)
+        radioGatewayController.onNearbyDevicesPermissionResult(results.values.all { it })
     }
-    val radioGatewayController = remember(radioHostContext) {
-        com.transfer.flash.radio.AndroidRadioGatewayController(
-            context = radioHostContext.applicationContext,
-            scope = persistScope,
-            permissionRequester = {
-                if (Build.VERSION.SDK_INT >= 31) {
-                    nearbyPermissionLauncher.launch(
-                        arrayOf(
-                            Manifest.permission.BLUETOOTH_CONNECT,
-                            Manifest.permission.BLUETOOTH_SCAN,
-                        )
+    // This Activity owns the launcher, so it (re)installs the requester and removes it when it leaves.
+    DisposableEffect(radioGatewayController, nearbyPermissionLauncher) {
+        radioGatewayController.permissionRequester = {
+            if (Build.VERSION.SDK_INT >= 31) {
+                nearbyPermissionLauncher.launch(
+                    arrayOf(
+                        Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.BLUETOOTH_SCAN,
                     )
-                }
-            },
-        ).also { radioControllerRef = it }
+                )
+            }
+        }
+        onDispose { radioGatewayController.permissionRequester = null }
     }
     val radioUiState by radioGatewayController.state.collectAsState()
 

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
@@ -26,7 +27,8 @@ import com.transfer.flash.core.radio.link.ByteLink
 import com.transfer.flash.core.radio.link.DiscoveredDevice
 import com.transfer.flash.core.radio.link.RadioDeviceDiscovery
 import com.transfer.flash.core.radio.link.android.AndroidRadioDiscovery
-import com.transfer.flash.core.radio.service.RadioServicePolicy
+import com.transfer.flash.core.radio.service.RadioServiceAction
+import com.transfer.flash.core.radio.service.RadioServiceTracker
 import com.transfer.flash.service.RadioLinkService
 import com.transfer.flash.ui.radio.DiscoveredRadioDevice
 import com.transfer.flash.ui.radio.FlashRadioMath
@@ -62,7 +64,7 @@ public class AndroidRadioGatewayController(
     private val context: Context,
     private val scope: CoroutineScope,
     private val clock: FlashTimeSource = SystemTimeSource,
-    private val permissionRequester: (() -> Unit)? = null,
+    permissionRequester: (() -> Unit)? = null,
     private val discoveryFactory: () -> RadioDeviceDiscovery = { AndroidRadioDiscovery(context) },
     private val rememberedStoreFactory: () -> RememberedRadioStore = {
         AndroidSharedPreferencesRadioStore(context).rememberedStore
@@ -96,6 +98,12 @@ public class AndroidRadioGatewayController(
         )
     )
     override val state: StateFlow<RadioGatewayUiState> = _uiState.asStateFlow()
+
+    /** Set by the foreground Activity (it owns the permission launcher); the controller outlives Activities. */
+    @Volatile
+    public var permissionRequester: (() -> Unit)? = permissionRequester
+
+    private val serviceTracker = RadioServiceTracker()
 
     private var activeManager: RadioGatewayManager? = null
     private var managerStateJob: Job? = null
@@ -168,18 +176,8 @@ public class AndroidRadioGatewayController(
     }
 
     private fun handleManagerStateChange(managerState: RadioGatewayState) {
-        // Service lifecycle per RadioServicePolicy
-        val shouldRun = RadioServicePolicy.shouldServiceRun(managerState)
-        if (onServiceStateChanged != null) {
-            onServiceStateChanged.invoke(shouldRun, managerState)
-        } else {
-            if (shouldRun) {
-                val notification = RadioServicePolicy.notificationContent(managerState)
-                RadioLinkService.start(context, notification)
-            } else {
-                RadioLinkService.stop(context)
-            }
-        }
+        // Service lifecycle per RadioServicePolicy; the tracker turns the flood of states into the few real calls.
+        applyServiceAction(serviceTracker.next(managerState), managerState)
 
         // If scan stopped in manager, cancel countdown timer
         if (managerState.connectState !is RadioConnectState.Scanning && scanCountdownJob != null) {
@@ -187,6 +185,29 @@ public class AndroidRadioGatewayController(
         }
 
         updateUi(managerState)
+    }
+
+    /**
+     * Starting a foreground service from the background throws on Android 12+ (and the OS may refuse for other
+     * reasons). The gateway keeps working without the service, so a refusal is logged and must never escape: an
+     * exception here would end the state collector.
+     */
+    private fun applyServiceAction(action: RadioServiceAction?, managerState: RadioGatewayState) {
+        if (action == null) return
+        val hook = onServiceStateChanged
+        if (hook != null) {
+            hook.invoke(action is RadioServiceAction.Start, managerState)
+            return
+        }
+        try {
+            when (action) {
+                is RadioServiceAction.Start -> RadioLinkService.start(context, action.notification)
+                RadioServiceAction.Stop -> RadioLinkService.stop(context)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Radio foreground service ${action::class.simpleName} refused: ${e.javaClass.simpleName}")
+            serviceTracker.reset()
+        }
     }
 
     private fun updateUi(managerState: RadioGatewayState) {
@@ -299,11 +320,7 @@ public class AndroidRadioGatewayController(
             val mgr = activeManager
             scope.launch {
                 mgr?.disable()
-                if (onServiceStateChanged != null) {
-                    onServiceStateChanged.invoke(false, mgr?.state?.value ?: RadioGatewayState())
-                } else {
-                    RadioLinkService.stop(context)
-                }
+                applyServiceAction(serviceTracker.next(RadioGatewayState()), mgr?.state?.value ?: RadioGatewayState())
             }
             stopScanCountdown()
             managerStateJob?.cancel()
@@ -548,6 +565,7 @@ public class AndroidRadioGatewayController(
     }
 
     public companion object {
+        private const val TAG = "RadioGateway"
         public const val PREFS_NAME: String = "flash_radio_settings"
         public const val KEY_GATEWAY_ENABLED: String = "gateway_enabled"
     }

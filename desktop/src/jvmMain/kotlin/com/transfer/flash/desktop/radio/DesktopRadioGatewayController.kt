@@ -50,7 +50,7 @@ import kotlinx.coroutines.launch
  * - If the gateway switch is stored OFF at startup, [RadioGatewayManager] is NOT instantiated.
  * - When the switch is toggled OFF, [RadioGatewayManager.disable] is called and the manager is released.
  * - Uses Windows Win32 JNA and BTHENUM dynamic port resolution via [WindowsRadioDiscovery].
- * - Persists remembered radios and authorization in `~/.flash/radio.properties` via [DesktopPropertiesRadioStore].
+ * - Persists remembered radios and authorization in `~/.flash/radio.properties` via [DesktopPropertiesRadioStore]; the on/off switch lives in its own `~/.flash/radio-gateway.properties`.
  * - On desktop, nearby devices runtime permissions are always granted.
  * - Provides redirect to Windows Bluetooth Settings (`ms-settings:bluetooth`).
  */
@@ -478,10 +478,14 @@ public class DesktopRadioGatewayController(
     }
 
     public companion object {
+        /**
+         * Own file on purpose: `radio.properties` belongs to DesktopPropertiesRadioStore, which rewrites the whole
+         * file under its own lock and uses the same temp name; two writers in one file lose updates.
+         */
         public const val KEY_GATEWAY_ENABLED: String = "gateway.enabled"
 
         private fun readGatewayEnabled(stateDir: File): Boolean {
-            val file = File(stateDir, "radio.properties")
+            val file = File(stateDir, "radio-gateway.properties")
             if (!file.isFile) return false
             return runCatching {
                 val props = Properties()
@@ -493,13 +497,13 @@ public class DesktopRadioGatewayController(
         private fun writeGatewayEnabled(stateDir: File, enabled: Boolean) {
             runCatching {
                 stateDir.mkdirs()
-                val file = File(stateDir, "radio.properties")
+                val file = File(stateDir, "radio-gateway.properties")
                 val props = Properties()
                 if (file.isFile) {
                     file.inputStream().use { props.load(it) }
                 }
                 props.setProperty(KEY_GATEWAY_ENABLED, enabled.toString())
-                val tmpFile = File(stateDir, "radio.properties.tmp")
+                val tmpFile = File(stateDir, "radio-gateway.properties.tmp")
                 tmpFile.outputStream().use { out ->
                     props.store(out, "Flash Radio Gateway configuration")
                 }
