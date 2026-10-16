@@ -18,6 +18,13 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.lifecycleScope
+import com.transfer.flash.core.radio.link.BluetoothPermissions
+import com.transfer.flash.core.radio.link.DiscoveredDevice
+import com.transfer.flash.core.radio.link.PairResult
+import com.transfer.flash.core.radio.link.android.AndroidRadioDiscovery
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -67,9 +74,9 @@ public class RadioSpikeActivity : ComponentActivity() {
 
     private val TAG = "RadioSpikeActivity"
 
-    private var bluetoothAdapter: BluetoothAdapter? = null
-    private var isReceiverRegistered = false
     private var scanTimer: CountDownTimer? = null
+    private val radioDiscovery by lazy { AndroidRadioDiscovery(this) }
+    private var scanJob: Job? = null
 
     // Compose observable state
     private var permissionStatusLine by mutableStateOf("Permissions: Not requested yet")
@@ -93,99 +100,8 @@ public class RadioSpikeActivity : ComponentActivity() {
         }
     }
 
-    private val bluetoothReceiver = object : BroadcastReceiver() {
-        @SuppressLint("MissingPermission")
-        override fun onReceive(context: Context?, intent: Intent?) {
-            when (intent?.action) {
-                BluetoothDevice.ACTION_FOUND -> {
-                    val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    }
-                    val rssi = intent.getShortExtra(BluetoothDevice.EXTRA_RSSI, Short.MIN_VALUE)
-                    val devClass: BluetoothClass? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_CLASS, BluetoothClass::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_CLASS)
-                    }
-
-                    if (device != null) {
-                        val name = try {
-                            device.name ?: "Unknown Device"
-                        } catch (_: SecurityException) {
-                            "Unknown Device"
-                        }
-                        val addr = device.address ?: "00:00:00:00:00:00"
-                        val candidate = DiscoveredRadioCandidate(
-                            name = name,
-                            address = addr,
-                            bondState = device.bondState,
-                            rssi = if (rssi != Short.MIN_VALUE) rssi else null,
-                            deviceClass = devClass?.deviceClass
-                        )
-
-                        // Avoid duplicates; update existing if new RSSI observed
-                        val existingIdx = discoveredDevices.indexOfFirst { it.address == addr }
-                        if (existingIdx >= 0) {
-                            discoveredDevices[existingIdx] = candidate
-                        } else {
-                            discoveredDevices.add(candidate)
-                        }
-                    }
-                }
-
-                BluetoothAdapter.ACTION_DISCOVERY_STARTED -> {
-                    isScanning = true
-                    scanStatusLine = "Scan: Running active discovery..."
-                    Log.d(TAG, "Bluetooth discovery started")
-                }
-
-                BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> {
-                    isScanning = false
-                    scanTimer?.cancel()
-                    scanSecondsRemaining = 0
-                    scanStatusLine = "Scan: Completed. Discovered ${discoveredDevices.size} devices."
-                    Log.d(TAG, "Bluetooth discovery finished")
-                }
-
-                BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
-                    val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
-                    }
-                    val bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
-                    val name = device?.name ?: "Device"
-                    val masked = device?.address?.let { DiscoveredRadioCandidate.maskAddress(it) } ?: "N/A"
-
-                    when (bondState) {
-                        BluetoothDevice.BOND_BONDING -> {
-                            pairStatusLine = "Pairing: In progress with $name [$masked]..."
-                        }
-                        BluetoothDevice.BOND_BONDED -> {
-                            pairStatusLine = "Pairing: Successfully paired with $name [$masked]."
-                            refreshBondedDevices()
-                        }
-                        BluetoothDevice.BOND_NONE -> {
-                            pairStatusLine = "Pairing: Cancelled or failed for $name [$masked]."
-                            refreshBondedDevices()
-                        }
-                    }
-                    Log.d(TAG, "Bond state changed: $name state=$bondState")
-                }
-            }
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val manager = getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
-        bluetoothAdapter = manager?.adapter
-
         setContent {
             MaterialTheme {
                 Surface(
@@ -212,15 +128,6 @@ public class RadioSpikeActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        val filter = IntentFilter().apply {
-            addAction(BluetoothDevice.ACTION_FOUND)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_STARTED)
-            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
-            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-        }
-        registerReceiver(bluetoothReceiver, filter)
-        isReceiverRegistered = true
-
         if (hasRequiredPermissions()) {
             permissionStatusLine = "Permissions: Granted"
             refreshBondedDevices()
@@ -231,62 +138,40 @@ public class RadioSpikeActivity : ComponentActivity() {
         super.onStop()
         // Stop scan immediately on leaving screen
         stopDiscoveryScan()
-
-        if (isReceiverRegistered) {
-            unregisterReceiver(bluetoothReceiver)
-            isReceiverRegistered = false
-        }
-        Log.d(TAG, "Stopped: scan aborted and receivers unregistered on leaving screen")
+        Log.d(TAG, "Stopped: scan aborted on leaving screen")
     }
 
     private fun hasRequiredPermissions(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                    checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-        } else {
-            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return BluetoothPermissions.mandatory(Build.VERSION.SDK_INT).all {
+            checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
     private fun requestPermissionsAtPointOfUse() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
-            )
+        val permissions = BluetoothPermissions.runtimePermissions(Build.VERSION.SDK_INT).toTypedArray()
+        if (permissions.isNotEmpty()) {
+            permissionLauncher.launch(permissions)
         } else {
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN
-            )
+            refreshBondedDevices()
         }
-        permissionLauncher.launch(permissions)
     }
 
     @SuppressLint("MissingPermission")
     private fun refreshBondedDevices() {
-        val adapter = bluetoothAdapter ?: return
         if (!hasRequiredPermissions()) return
-
-        bondedDevices.clear()
-        try {
-            val bonded = adapter.bondedDevices
-            for (dev in bonded) {
-                val name = dev.name ?: "Unknown Device"
-                val addr = dev.address ?: "00:00:00:00:00:00"
-                val uuids = dev.uuids?.map { it.uuid.toString() } ?: emptyList()
+        lifecycleScope.launch {
+            val paired = radioDiscovery.pairedDevices()
+            bondedDevices.clear()
+            for (dev in paired) {
                 bondedDevices.add(
                     DiscoveredRadioCandidate(
-                        name = name,
-                        address = addr,
+                        name = dev.name,
+                        address = dev.bluetoothAddress,
                         bondState = BluetoothDevice.BOND_BONDED,
-                        serviceUuids = uuids
+                        serviceUuids = emptyList()
                     )
                 )
             }
-        } catch (e: SecurityException) {
-            permissionStatusLine = "Permissions: Missing BLUETOOTH_CONNECT for bonded device listing"
         }
     }
 
@@ -297,32 +182,13 @@ public class RadioSpikeActivity : ComponentActivity() {
             return
         }
 
-        val adapter = bluetoothAdapter
-        if (adapter == null) {
-            scanStatusLine = "Scan: No Bluetooth adapter available on this device"
-            return
-        }
-        if (!adapter.isEnabled) {
-            scanStatusLine = "Scan: Bluetooth is turned off. Please turn Bluetooth on."
-            return
-        }
-
         discoveredDevices.clear()
-
-        // Cancel existing scan if running
-        if (adapter.isDiscovering) {
-            adapter.cancelDiscovery()
-        }
-
-        val started = adapter.startDiscovery()
-        if (!started) {
-            scanStatusLine = "Scan: Failed to start discovery scan."
-            return
-        }
-
-        // Automatic 12-second timeout
+        scanJob?.cancel()
         scanTimer?.cancel()
+        isScanning = true
         scanSecondsRemaining = 12
+        scanStatusLine = "Scan: Discovering radios (${scanSecondsRemaining}s remaining)..."
+
         scanTimer = object : CountDownTimer(12_000, 1_000) {
             override fun onTick(millisUntilFinished: Long) {
                 scanSecondsRemaining = (millisUntilFinished / 1000).toInt()
@@ -333,16 +199,34 @@ public class RadioSpikeActivity : ComponentActivity() {
                 stopDiscoveryScan()
             }
         }.start()
+
+        scanJob = lifecycleScope.launch {
+            radioDiscovery.scan(12_000L).collect { dev ->
+                val candidate = DiscoveredRadioCandidate(
+                    name = dev.name,
+                    address = dev.bluetoothAddress,
+                    bondState = if (dev.isPaired) BluetoothDevice.BOND_BONDED else BluetoothDevice.BOND_NONE,
+                    rssi = dev.rssi?.toShort(),
+                    deviceClass = null
+                )
+                val existingIdx = discoveredDevices.indexOfFirst { it.address.equals(dev.bluetoothAddress, ignoreCase = true) }
+                if (existingIdx >= 0) {
+                    discoveredDevices[existingIdx] = candidate
+                } else {
+                    discoveredDevices.add(candidate)
+                }
+            }
+            isScanning = false
+            scanStatusLine = "Scan: Completed. Discovered ${discoveredDevices.size} devices."
+        }
     }
 
     @SuppressLint("MissingPermission")
     private fun stopDiscoveryScan() {
         scanTimer?.cancel()
         scanTimer = null
-        val adapter = bluetoothAdapter
-        if (adapter != null && adapter.isDiscovering) {
-            adapter.cancelDiscovery()
-        }
+        scanJob?.cancel()
+        scanJob = null
         isScanning = false
         scanSecondsRemaining = 0
     }
@@ -353,22 +237,29 @@ public class RadioSpikeActivity : ComponentActivity() {
             requestPermissionsAtPointOfUse()
             return
         }
-        val adapter = bluetoothAdapter ?: return
-        val device = try {
-            adapter.getRemoteDevice(candidate.address)
-        } catch (t: Throwable) {
-            pairStatusLine = "Pairing: Invalid Bluetooth hardware address."
-            return
-        }
 
         pairStatusLine = "Pairing: Initiating bonding with ${candidate.name}..."
-        try {
-            val result = device.createBond()
-            if (!result) {
-                pairStatusLine = "Pairing: createBond() returned false (immediate failure)."
+        lifecycleScope.launch {
+            val device = DiscoveredDevice(
+                name = candidate.name,
+                bluetoothAddress = candidate.address,
+                isPaired = candidate.bondState == BluetoothDevice.BOND_BONDED,
+                rssi = candidate.rssi?.toInt()
+            )
+            when (val result = radioDiscovery.pair(device)) {
+                is PairResult.Success -> {
+                    pairStatusLine = "Pairing: Successfully paired with ${candidate.name}."
+                    refreshBondedDevices()
+                }
+                is PairResult.AlreadyPaired -> {
+                    pairStatusLine = "Pairing: Already paired with ${candidate.name}."
+                    refreshBondedDevices()
+                }
+                is PairResult.Failed -> {
+                    pairStatusLine = "Pairing: Failed (${result.reason.sentence})"
+                    refreshBondedDevices()
+                }
             }
-        } catch (e: SecurityException) {
-            pairStatusLine = "Pairing: SecurityException (missing BLUETOOTH_CONNECT)."
         }
     }
 }

@@ -1,4 +1,4 @@
-package com.transfer.flash.desktop.radiospike
+package com.transfer.flash.core.radio.link.windows
 
 /**
  * Pure-Kotlin classifier for Bluetooth devices.
