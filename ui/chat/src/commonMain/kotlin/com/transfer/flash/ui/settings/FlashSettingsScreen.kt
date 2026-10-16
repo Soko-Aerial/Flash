@@ -169,6 +169,8 @@ data class FlashSettingsModel(
     val hubRelinkableGroups: Int = 0,
     /** Plan B Phase B3: The evaluated organisation colleague trust state (null if not enrolled or unsupported). */
     val orgTrustState: FlashHubStatusMath.OrgTrustState? = null,
+    /** Radio gateway enabled status (Plan R §1, §6). */
+    val radioGatewayEnabled: Boolean = false,
 )
 
 /** Pure helpers backing the settings page (JVM-testable). */
@@ -296,7 +298,7 @@ object FlashSettingsMath {
             "Network & Discovery", "Presence mode, background transfers, and battery settings",
             listOf(
                 "Discovery mode", "Standard", "Ghost", "Eco", "Boost", "Background transfers",
-                "File Explorer context menu", "Unrestricted battery",
+                "File Explorer context menu", "Unrestricted battery", "Radio gateway (beta)",
             ),
         ),
         CALLING(
@@ -455,8 +457,18 @@ fun FlashSettingsScreen(
     isEnrollingDevice: Boolean = false,
     /** Error message to display in the enrollment dialog. */
     enrollDeviceError: String? = null,
+    onOpenRadioGateway: (() -> Unit)? = null,
+    radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
 ) {
     var query by remember { mutableStateOf("") }
+    var showRadioGateway by remember { mutableStateOf(false) }
+    if (showRadioGateway) {
+        com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
+            controller = radioGatewayController ?: remember { com.transfer.flash.ui.radio.FakeRadioGatewayController() },
+            onBack = { showRadioGateway = false },
+        )
+        return
+    }
     var showResetConfirmation by remember { mutableStateOf(false) }
     val searching = query.isNotBlank()
     var showClearStorageConfirmation by remember { mutableStateOf(false) }
@@ -746,6 +758,15 @@ fun FlashSettingsScreen(
                         subtitle = FlashSettingsMath.batteryExemptionSubtitle(model.ignoringBatteryOptimizations),
                         value = FlashSettingsMath.batteryExemptionValue(model.ignoringBatteryOptimizations),
                         onClick = onOpenBatterySettings,
+                    )
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Radio gateway (beta)")) ValueRow(
+                        iconSpec = FlashIcons.Bluetooth,
+                        title = com.transfer.flash.ui.radio.FlashRadioCopy.SETTINGS_ROW_TITLE,
+                        subtitle = com.transfer.flash.ui.radio.FlashRadioCopy.SETTINGS_ROW_SUBTITLE,
+                        value = if (model.radioGatewayEnabled) com.transfer.flash.ui.radio.FlashRadioCopy.VALUE_ON else com.transfer.flash.ui.radio.FlashRadioCopy.VALUE_OFF,
+                        onClick = {
+                            if (onOpenRadioGateway != null) onOpenRadioGateway() else showRadioGateway = true
+                        },
                     )
                 }
             }
