@@ -812,6 +812,32 @@ fun FlashApp(
         }
     }
 
+    val radioHostContext = LocalContext.current
+    var radioControllerRef by remember { mutableStateOf<com.transfer.flash.radio.AndroidRadioGatewayController?>(null) }
+    val nearbyPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        val granted = results.values.all { it }
+        radioControllerRef?.onNearbyDevicesPermissionResult(granted)
+    }
+    val radioGatewayController = remember(radioHostContext) {
+        com.transfer.flash.radio.AndroidRadioGatewayController(
+            context = radioHostContext.applicationContext,
+            scope = persistScope,
+            permissionRequester = {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    nearbyPermissionLauncher.launch(
+                        arrayOf(
+                            Manifest.permission.BLUETOOTH_CONNECT,
+                            Manifest.permission.BLUETOOTH_SCAN,
+                        )
+                    )
+                }
+            },
+        ).also { radioControllerRef = it }
+    }
+    val radioUiState by radioGatewayController.state.collectAsState()
+
     val settings = FlashSettingsModel(
         // ERROR-034: no `if (ready)` gate. Identity comes from a self-healing prefs store that
         // mints and persists an id and a "Flash <MODEL>" name on its first read, so it is real and
@@ -860,6 +886,7 @@ fun FlashApp(
         ),
         hubRelinkableGroups = hubRelinkable,
         orgTrustState = orgTrustState,
+        radioGatewayEnabled = radioUiState.enabled,
     )
     // Captured here (composable scope) so the non-composable lambda below can construct an
     // AndroidPreferencesIdentityStore when the display name changes.
@@ -955,6 +982,7 @@ fun FlashApp(
                     onClearReceivedFiles = onClearReceivedFiles,
                     onRestartApp = onRestartApp,
                     onExportLogs = onExportLogs,
+                    radioGatewayController = radioGatewayController,
                 )
                 // Phase 3: PTT session overlay above every tab (below the boot splash).
                 // State-driven, not nav-driven: back-navigation underneath never kills a
@@ -999,6 +1027,7 @@ private fun FlashShell(
     onClearReceivedFiles: () -> Unit,
     onRestartApp: (() -> Unit)?,
     onExportLogs: (() -> Unit)?,
+    radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
 ) {
     val nav = rememberFlashNavigationState()
     // Phase 3.1: Chats bind to the real Room-backed repository once the engine has booted.
@@ -2761,6 +2790,7 @@ private fun FlashShell(
             onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
             isEnrollingDevice = isEnrollingDevice,
             enrollDeviceError = enrollDeviceError,
+            radioGatewayController = radioGatewayController,
             modifier = Modifier.fillMaxSize(),
             listState = settingsScroll,
             bottomInset = tabBottomInset,
