@@ -3,6 +3,9 @@
 ## Current branch
 `agent/R-spike` (worktree `E:\FlashWork\R-spike`)
 
+## Last verified build
+`3f181fd1`
+
 ## Current phase
 Phase R1a — Hardware Radio Spike BT-R11 (Plan R, `docs/plans/RADIO-GATEWAY-PLAN.md`)
 
