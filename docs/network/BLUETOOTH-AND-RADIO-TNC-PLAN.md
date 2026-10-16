@@ -16,7 +16,7 @@ The BT-0 / BT-1 groundwork was built and unit-tested on 2026-10-09 (one session,
 above ("DESIGN ONLY") is superseded for the pieces listed here; nothing below has touched a real radio or phone.** Details,
 decisions and the hardware checklist: `docs/reports/2026-10-09-bluetooth-radio.md`. Exact byte layout: `docs/network/RADIO-WIRE-FORMAT.md`.
 
-Built (package `com.transfer.flash.core.network.kiss` / `.radio` / `.radio.diag`, module `:core:network`):
+Built (originally package `com.transfer.flash.core.network.kiss` / `.radio` / `.radio.diag`, module `:core:network`; moved to `:core:radio` package `com.transfer.flash.core.radio.*` in R0, plan rev 3 §4):
 
 - KISS streaming codec, AX.25 v2.2 UI codec (PID `F0`; `CC`/`CD` refused), Flash radio frame Profile M (AES-256-GCM, counter nonce,
   64-wide replay window, rotating tag and station label, segmentation to 16 segments, signed clear-text mode for Profile A).

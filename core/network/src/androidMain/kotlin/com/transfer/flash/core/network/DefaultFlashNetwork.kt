@@ -8,7 +8,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.network.resilience.AndroidNetworkWatcher
 import com.transfer.flash.core.network.resilience.ConnectionHealthAggregator
 import com.transfer.flash.core.network.resilience.DuplicateSessionDecision
-import com.transfer.flash.core.network.resilience.ReconnectPolicy
+import com.transfer.flash.core.common.resilience.ReconnectPolicy
 import com.transfer.flash.core.network.resilience.SessionHardeningPolicy
 import com.transfer.flash.core.network.tcp.LanConnectionProbe
 import com.transfer.flash.core.network.tcp.LanProbeHello
