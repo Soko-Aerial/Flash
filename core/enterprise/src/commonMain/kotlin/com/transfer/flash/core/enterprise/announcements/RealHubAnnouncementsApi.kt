@@ -114,7 +114,9 @@ public class RealHubAnnouncementsApi(
             val reply = when (
                 val r = execute(hubUrl) { base, bearer ->
                     httpClient.get("$base${HubContract.PATH_ANNOUNCEMENTS}") {
-                        if (since > 0L) parameter("since", since.toString())
+                        // Always sent, also for 0: the hub answers a request WITHOUT `since` with the search shape, not the feed
+                        // (ERROR-410: the phone never decoded it, so no announcement ever reached it).
+                        parameter("since", since.coerceAtLeast(0L).toString())
                         parameter("limit", limit.coerceIn(1, 500).toString())
                         authorize(bearer)
                     }

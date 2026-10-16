@@ -10739,3 +10739,26 @@ New `FlashNavigationMath.showsBottomBar(destination, hubEnrolled, railMode)` use
 
 ### Status
 RESOLVED in code; confirm on the device.
+
+## ERROR-410 - Announcements posted on the console never reached the phone
+
+### Date
+2026-10-16
+
+### Area
+Hub announcements: phone client (`RealHubAnnouncementsApi.fetchFeed`) against the hub route `GET /api/v1/announcements`
+
+### Symptoms
+Owner posted 3-4 announcements from the console; the phone's News segment stayed empty, also after joining and refreshing.
+
+### Root cause
+The client sent `since` only when it was greater than 0. The first fetch of a phone has `since = 0`, so the request had no `since`, and the hub then answers with the SEARCH shape (`items`, `total`, `nextBefore`), not the feed shape (`epoch`, `seq`, `fullResync`, `items`). The client decoded it as a feed, failed ("Malformed feed response from hub") and the failure was swallowed by the Hub refresh (only the `UNSUPPORTED` answer was handled). No state was ever stored, so every later fetch was a first fetch again. Nothing could ever arrive, whatever was posted, and the relay hint events only re-triggered the same failing fetch.
+
+### Working fix
+`fetchFeed` always sends `since` (0 asks for the initial full sync, which the hub already supports). The Hub refresh now logs an announcements failure with its error code (`HUB_UI`). New `AnnouncementClientContractTest` runs the real client against the real routes with a member in the `software` department: first fetch returns the org and own-department announcements only, a later delta returns the new one.
+
+### Verification
+`:server:test` (new test + `AnnouncementRoutesTest`), `:core:enterprise:jvmTest` (`RealHubAnnouncementsApiTest`), `:core:messaging:jvmTest` (`HubFacadeTest`) green. Mutation: restoring the old `if (since > 0L)` made the new test fail; restored. Earlier tests missed it because the fake hub in `RealHubAnnouncementsApiTest` answers the feed shape for any query. NOT device-verified (ANN-12).
+
+### Status
+RESOLVED in code; confirm on the device.

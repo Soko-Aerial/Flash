@@ -1,5 +1,19 @@
 # Progress Log
 
+## 2026-10-16 - Announcements never reached the phone (ERROR-410, Claude Code)
+
+### Worked on
+Owner: announcements created on the PC do not show on the phone.
+
+### Changed
+`RealHubAnnouncementsApi.fetchFeed` always sends `since` (the hub answered a request without it in the search shape, which the client could not decode); the Hub refresh logs announcement failures; new end-to-end contract test `AnnouncementClientContractTest` (real client, real routes).
+
+### Verification
+Server, enterprise and messaging announcement tests green; mutation proved the new test catches the old behaviour. Not device-verified (ANN-12): the phone needs an app build with this fix; the hub does not need to change.
+
+### Next AI
+Look for other client/server query-shape mismatches by testing each client call against the real route (the fakes hid this one).
+
 ## 2026-10-15 - Hub tab visual refresh and bottom-bar fix (Claude Code)
 
 ### Worked on
