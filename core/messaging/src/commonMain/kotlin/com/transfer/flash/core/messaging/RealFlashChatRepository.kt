@@ -490,6 +490,45 @@ public class RealFlashChatRepository(
         FlashResult.Success(Unit)
     }
 
+    private val autoPairLock = kotlinx.coroutines.sync.Mutex()
+    private val autoPairLastAttemptMs = HashMap<String, Long>()
+
+    /**
+     * ADR-174 (owner, 2026-10-16): a colleague you chat with becomes a paired contact without a code. Nobody has to press Pair:
+     * once a 1:1 conversation with a verified organisation colleague has messages BOTH ways (you started it, they answered, or the
+     * other way round) both devices pair, so the chat keeps working with the hub off. Only a colleague whose live key matches the
+     * hub-signed statement qualifies ([pairColleagueFromDirectory] re-checks that), groups never do, and a failed attempt (the
+     * colleague is only reachable through the hub right now) is retried after [AUTO_PAIR_RETRY_MS], never in a loop.
+     */
+    private fun maybeAutoPairColleague(peerId: String) {
+        if (pairVerifiedColleague == null || peerId.isBlank() || peerId == localDeviceId) return
+        scope.launch(ioDispatcher) {
+            runCatching {
+                if (isTrustedPeer(peerId) || !effectiveIsOrgPeer(peerId)) return@runCatching
+                if (conversationDao.get(peerId)?.isGroup == true) return@runCatching
+                val page = messageDao.historyBefore(peerId, Long.MAX_VALUE, "\uFFFF", AUTO_PAIR_SCAN)
+                val sentByMe = page.any { it.senderId == localDeviceId }
+                val sentByThem = page.any { it.senderId == peerId }
+                if (!sentByMe || !sentByThem) return@runCatching
+                val now = timeSource.nowMs()
+                val mayTry = autoPairLock.withLock {
+                    val last = autoPairLastAttemptMs[peerId]
+                    if (last != null && now - last in 0 until AUTO_PAIR_RETRY_MS) {
+                        false
+                    } else {
+                        autoPairLastAttemptMs[peerId] = now
+                        true
+                    }
+                }
+                if (!mayTry) return@runCatching
+                when (pairColleagueFromDirectory(peerId)) {
+                    is FlashResult.Success -> FlashProbe.emit("org.pair.auto", "peer" to FlashProbe.short(peerId))
+                    is FlashResult.Failure -> FlashProbe.emit("org.pair.auto.skipped", "peer" to FlashProbe.short(peerId), "reason" to "not_possible_now")
+                }
+            }
+        }
+    }
+
     /** The raw LAN sinks. The outbox uses these directly; everything else goes through the hub-aware wrappers below. */
     private val lanTransportSink: MessageTransportSink? = transportSink
     private val lanGroupTransportSink: GroupTransportSink? = groupTransportSink
@@ -2799,6 +2838,7 @@ public class RealFlashChatRepository(
             enqueueDirectText(conversationId, capped, now, localId, replyToId = null, replyToPreview = null)
             notifyOutboxDrain()
             drainOutboxOnce()
+            maybeAutoPairColleague(conversationId)
         }
     }
 
@@ -2824,6 +2864,7 @@ public class RealFlashChatRepository(
             enqueueDirectText(conversationId, capped, now, localId, replyToId, replyToPreview)
             notifyOutboxDrain()
             drainOutboxOnce()
+            maybeAutoPairColleague(conversationId)
         }
     }
 
@@ -5769,6 +5810,7 @@ public class RealFlashChatRepository(
                     runCatching {
                         onInboundTextMessageWithGroupTitle(threadId, frame.senderName, frame.text, null)
                     }
+                    maybeAutoPairColleague(threadId)
                 }
 
                 // Reply with a delivery receipt routed back to the message's AUTHOR. The sink's
@@ -6912,6 +6954,12 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** ADR-174: a failed automatic pairing with a colleague is not tried again for this long. */
+        const val AUTO_PAIR_RETRY_MS: Long = 60_000L
+
+        /** ADR-174: how many of the newest messages of a 1:1 chat are read to see whether both sides have written. */
+        const val AUTO_PAIR_SCAN: Int = 200
+
         /** B2.4: Default concurrent dial cap for active organisation colleagues. */
         const val DEFAULT_ORG_DIAL_CAP: Int = 8
 

@@ -105,7 +105,15 @@ object FlashNavigationMath {
      * reach this decision: without it the bar vanished the moment the Hub opened (ERROR-409).
      */
     fun showsBottomBar(destination: FlashDestination, hubEnrolled: Boolean, railMode: Boolean): Boolean =
-        !railMode && isTabRoot(destination, hubEnrolled)
+        !railMode && (isTabRoot(destination, hubEnrolled) || keepsBarWhenPushed(destination, hubEnrolled))
+
+    /**
+     * Transfers is pushed (not a tab) for an enrolled device, but it is still a place the person navigates from, so the bar stays:
+     * opening it from the top-bar indicator must not take the navigation away (owner report 2026-10-16). The bar then highlights
+     * the tab underneath ([shellTab]) and tapping a tab leaves Transfers.
+     */
+    fun keepsBarWhenPushed(destination: FlashDestination, hubEnrolled: Boolean): Boolean =
+        hubEnrolled && destination == FlashDestination.Transfers
 
     /**
      * Stack size after an operation: pushing adds one entry capped at [MAX_STACK_DEPTH],

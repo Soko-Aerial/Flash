@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-10-16 - Owner decisions applied: Paused counts, Transfers keeps the bar, draggable desktop divider, auto-pair on reply (Claude Code)
+
+### Worked on
+Owner answers after the "what is left" review: accept ADR-170 and ADR-172, keep the A1 self-disable guard, count Paused (ADR-160), leave `Flash.kt` wiring, A3 minors 7 and 10, push the second-handset check; explain ADR-171 and A3 minor 11; bug "Transfers: the bottom nav vanishes"; a draggable chat list / conversation divider on the PC; and the colleague flow "click a person, chat, the reply pairs them".
+
+### Changed
+- ADR-160 count Paused: `FlashChatListTopBarMath.countsAsActive`, both hosts use it (ERROR: none). ADR-170/172 marked ACCEPTED, ADR-171 clarified (still PROPOSED), ADR-175 (guard kept).
+- ERROR-412: a pushed Transfers keeps the bottom bar (`keepsBarWhenPushed`); tapping the highlighted tab there leaves Transfers.
+- ADR-176: draggable divider on the PC (`DesktopTwoPane`, `FlashAdaptiveMath.clampListPaneWidthDp` and friends, `DesktopPaneLayoutPrefs`).
+- ADR-174: `maybeAutoPairColleague` pairs a verified colleague once a 1:1 chat has messages both ways (hooks on inbound text, `sendTextTo`, `sendReply`). Tests ORGPAIR-U05..U10, mutation-checked (dropping the "we wrote too" condition failed U06 and U07).
+- New verifier prompt for H6..H10: `docs/plans/HUB-H6-H10-VERIFIER-PROMPT.md`.
+
+### Verification
+`:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` green; `:desktop:jvmTest` for `DesktopPaneLayoutPrefsTest` (4) and `DesktopHubUiPrefsTest` (6, first time it ran) green; `:core:messaging:jvmTest` 312 tests and `:core:messaging:testAndroidHostTest` 613 tests, 0 failures (colleague tests 42/42 on the JVM target). Nothing device-verified: HUBT-36, HUBT-37, ORGPAIR-04, PANE-01.
+
+### Not done
+ADR-171 owner decision, second handset for ORGT-B01 (later), `Flash.kt` hub wiring, A3 minors 7 and 10 (left on purpose), settings switch for auto-pair.
+
+### Next AI
+Hand the verifier prompt to a second session; device checks above.
+
 ## 2026-10-16 - Announcements need no manual refresh after connecting (ERROR-411, Claude Code)
 
 ### Worked on

@@ -1501,6 +1501,102 @@ class RealFlashChatRepositoryColleagueTest {
         assertTrue(pairRepo(paired, saveOk = false).pairColleagueFromDirectory(colleagueAlice) is FlashResult.Failure)
     }
 
+    // ---- ADR-174: a colleague chat becomes a pairing once both sides have written ----
+
+    private class AutoPairRig(
+        val repo: RealFlashChatRepository,
+        val paired: MutableList<Pair<String, String>>,
+        val time: MutableTimeSource,
+    )
+
+    private fun autoPairRig(orgLive: Boolean = true, alreadyTrusted: Boolean = false, saveOk: Boolean = true): AutoPairRig {
+        val paired = mutableListOf<Pair<String, String>>()
+        val time = MutableTimeSource()
+        val repo = createRepository(
+            time,
+            FakeMessageDao(),
+            FakeConversationDao(),
+            FakeOutboxDao(),
+            FakeReactionDao(),
+            isTrustedPeer = { alreadyTrusted },
+            isOrgPeer = { orgLive },
+            pairVerifiedColleague = { id, name -> paired.add(id to name); saveOk },
+        )
+        return AutoPairRig(repo, paired, time)
+    }
+
+    private suspend fun AutoPairRig.aliceWrites(localId: String = "alice-1") = repo.onInboundWireFrame(
+        MessageWireFrame.TextMessage(
+            localId = localId,
+            conversationId = localDeviceId,
+            senderId = colleagueAlice,
+            senderName = "Alice",
+            text = "hello",
+            sentAt = time.timeMs,
+        ),
+        transportPeerId = colleagueAlice,
+    )
+
+    @Test
+    fun ORGPAIR_U05_weStartTheyReplyAndBothSidesPair() = runTest {
+        val rig = autoPairRig()
+        rig.repo.sendTextTo(colleagueAlice, "hi Alice")
+        assertTrue(rig.paired.isEmpty(), "our own message alone pairs nobody")
+        rig.aliceWrites()
+        assertEquals(listOf(colleagueAlice), rig.paired.map { it.first }, "the reply completes the exchange: pair once")
+    }
+
+    @Test
+    fun ORGPAIR_U06_theyStartWeReplyAndPairWhenWeSend() = runTest {
+        val rig = autoPairRig()
+        rig.aliceWrites()
+        assertTrue(rig.paired.isEmpty(), "a message from them alone pairs nobody")
+        rig.repo.sendTextTo(colleagueAlice, "hello back")
+        assertEquals(listOf(colleagueAlice), rig.paired.map { it.first })
+    }
+
+    @Test
+    fun ORGPAIR_U07_oneWayTrafficNeverPairs() = runTest {
+        val outOnly = autoPairRig()
+        repeat(3) { outOnly.repo.sendTextTo(colleagueAlice, "message $it") }
+        assertTrue(outOnly.paired.isEmpty())
+        val inOnly = autoPairRig()
+        inOnly.aliceWrites("a1")
+        inOnly.aliceWrites("a2")
+        assertTrue(inOnly.paired.isEmpty())
+    }
+
+    @Test
+    fun ORGPAIR_U08_aColleagueWhoseKeyIsNotVerifiedNowIsNeverPaired() = runTest {
+        val rig = autoPairRig(orgLive = false)
+        rig.repo.sendTextTo(colleagueAlice, "hi")
+        rig.aliceWrites()
+        rig.repo.sendTextTo(colleagueAlice, "again")
+        assertTrue(rig.paired.isEmpty(), "no live key binding, no trust")
+    }
+
+    @Test
+    fun ORGPAIR_U09_anAlreadyPairedContactIsLeftAlone() = runTest {
+        val rig = autoPairRig(alreadyTrusted = true)
+        rig.repo.sendTextTo(colleagueAlice, "hi")
+        rig.aliceWrites()
+        assertTrue(rig.paired.isEmpty())
+    }
+
+    @Test
+    fun ORGPAIR_U10_aFailedAttemptIsRetriedOnlyAfterTheWaitingTime() = runTest {
+        val rig = autoPairRig(saveOk = false)
+        rig.repo.sendTextTo(colleagueAlice, "hi")
+        rig.aliceWrites("a1")
+        assertEquals(1, rig.paired.size, "one attempt")
+        rig.aliceWrites("a2")
+        rig.repo.sendTextTo(colleagueAlice, "still there?")
+        assertEquals(1, rig.paired.size, "no second attempt inside the waiting time")
+        rig.time.timeMs += 61_000L
+        rig.aliceWrites("a3")
+        assertEquals(2, rig.paired.size, "after the waiting time it tries again")
+    }
+
     @Test
     fun ORGT_B4_aHubGroupTheAdminAddedUsToGetsAChatAndALinkOnTheNextRosterRefresh() = runTest {
         val rig = b4Rig(linked = false, withConversation = false)

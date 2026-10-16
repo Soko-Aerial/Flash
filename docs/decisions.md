@@ -5471,8 +5471,8 @@ switch if asked.
 **Why.** Enrolment is unknown until the engine boots; restoring a Hub position on process death must not be lost or crash. Alternatives: host-held flag passed into every call (rejected: nine call sites, easy to forget); persisting in settings (rejected: a second source of truth).
 **Revisit when** a cold start of an enrolled device must show Hub on the first frame (limitation: it shows the old tab set until ready).
 
-## ADR-160 — PROPOSED: what counts as an "active" transfer in the top-bar indicator
-Offered, Queued, Transferring, Verifying count; Paused, Completed, Failed, Cancelled do not. **Owner to confirm** (a paused transfer currently shows no indicator).
+## ADR-160 — ACCEPTED (owner, 2026-10-16, changed): what counts as an "active" transfer in the top-bar indicator
+Offered, Queued, Transferring, Verifying **and Paused** count; Completed, Failed, Cancelled do not. The owner chose to count Paused (a paused big file is unfinished work). The original proposal excluded Paused; superseded. One shared rule, `FlashChatListTopBarMath.countsAsActive`, used by both hosts (test `FlashChatListTopBarMathTest`). Device check HUBT-37.
 
 ## ADR-161 — Transfers entry points go through `openTransfers()`
 Every host path that opens Transfers (notification, shortcut, tray, Ctrl+2, top-bar icon) calls `FlashNavigationState.openTransfers()`: selects the tab when unenrolled, pushes when enrolled. No host calls `selectTab(Transfers)` any more.
@@ -5548,7 +5548,7 @@ FO-27, or when a QR/in-person verification step is added for unpaired colleagues
 ### Not done on purpose
 Library engine `Flash.kt` (no hub sync there); the `org_group_unsealed` header (chat UI, after the Hub tab branch lands); A3 minors 7 and 10.
 
-## ADR-170 - Hub tab memory lives in the hosts, not in Room (PROPOSED)
+## ADR-170 - Hub tab memory lives in the hosts, not in Room (ACCEPTED by the owner, 2026-10-16)
 
 ### Decision
 The last Hub segment, the one-time "Transfers moved" tip and unsent announcement drafts are stored by each host behind two small interfaces in
@@ -5584,7 +5584,16 @@ notification and cold-start routes. The notification side (Plan A3 push) will se
 ### Revisit when
 Announcement notifications ship (the sender of the PendingIntent must use the same extra), or links to people/announcements must be shareable.
 
-## ADR-172 - The Hub tab owns its two-pane layout (PROPOSED)
+### Clarification (2026-10-16, asked by the owner)
+The intent extra is not a closed channel: `MainActivity` is the launcher activity and therefore exported, so any app on the phone can start it with
+that extra. What keeps this safe is not the channel but the validation: `FlashHubMath.parseRoute` accepts only the two known shapes with bounded
+ids, the screen opens only if the device is enrolled and shows only data already on the phone, and an unknown or hostile value is forgotten.
+The difference from a `flash://` link is exposure from outside the phone: a link on a web page, in a chat or in an e-mail can be tapped by a
+person who does not know what it does. If shareable links are wanted later, add them the way `flash://g/` group invites work: parse, show a
+confirmation naming what will open, require enrolment in the same organisation, and never act on the tap alone. Status stays PROPOSED until the
+owner answers.
+
+## ADR-172 - The Hub tab owns its two-pane layout (ACCEPTED by the owner, 2026-10-16)
 
 ### Decision
 At 840 dp and above the Hub shows list and detail side by side with its own splitter-less layout (`FlashHubBody`); below that the detail is a
@@ -5596,3 +5605,48 @@ selection (person, department, announcement) is local to the Hub and is saved wi
 
 ### Revisit when
 The integrator wants one detail-pane abstraction for the whole shell (ADAPTIVE-UI-PLAN AD-7).
+
+## ADR-174 - A colleague chat becomes a pairing once both sides have written (ACCEPTED by the owner, 2026-10-16)
+
+### Decision
+Tapping a person in the Hub opens a chat without pairing (the ORG tier, ADR-134). When a 1:1 conversation with a verified organisation colleague
+has messages in BOTH directions (you started and they answered, or the reverse), both devices pair automatically, with no code and no button, so
+the conversation keeps working with the hub off. `RealFlashChatRepository.maybeAutoPairColleague` runs after a stored inbound text and after an
+outbound text, and calls `pairColleagueFromDirectory`, which still requires the live TLS key to match the hub-signed statement and a valid lease.
+A failed attempt (the colleague is reachable only through the hub right now) is retried after 60 s at most, never in a loop. Groups never trigger it.
+The **Pair** button of ADR-164 stays for people who want to pair before writing.
+
+### Context
+Owner: "a user just clicks a person, it opens a chat, he sends a message, and when the receiver replies they pair and can communicate offline".
+Replying is the receiver's consent; starting the chat is the sender's. Both are inside the organisation, identity verified by the hub.
+
+### Consequence the owner should know
+PAIRED is more than chatting: push-to-talk, creating groups with you, vouching and swarm serving are paired-only (PeerTrustPolicy). After one exchange a
+colleague gets those too. This was accepted; a Settings switch "Pair with colleagues after a conversation" is NOT built and would be the answer if
+it turns out to be too eager. Pair state is local to each device; a user can still revoke a pairing from the contact.
+
+### Alternatives considered
+- Pair on the first message from either side: rejected, one unsolicited message would pair a stranger-in-the-org.
+- Keep the manual Pair button only: rejected by the owner, it adds a step to the simplest flow.
+
+### Revisit when
+A device test shows pairing fails when the first reply arrives over the hub (the pairing needs a live LAN key), or colleagues report unexpected contacts.
+
+## ADR-175 - Keep the A1 self-disable guard (ACCEPTED by the owner, 2026-10-16)
+
+### Decision
+`POST /admins/{u}/disable` answers 403 when an administrator disables their own account. Plan A1 did not ask for it; the implementing stream added it and
+the last-administrator rule is asserted at the service. The owner decided to keep it. `AdminApiTest` already reflects it.
+
+## ADR-176 - The desktop chat list / conversation divider is draggable (ACCEPTED by the owner, 2026-10-16; answers AD-D3 for the splitter)
+
+### Decision
+On the PC at Expanded width the divider between the chat list and the conversation can be dragged (12 dp strip, 1 dp visible line, east-resize cursor),
+reset to the automatic width by a double click, and moved with Left / Right arrows when focused or with the screen-reader actions "Wider chat list" /
+"Narrower chat list" (24 dp steps). Limits (pure math in `FlashAdaptiveMath`, tested): list 280 to 720 dp, and the conversation keeps at least 360 dp when the
+window allows it. The chosen width is remembered in `layout.properties` in the desktop state directory (`DesktopPaneLayoutPrefs`); an unreadable value means
+the automatic width. Android gets no splitter (touch panes do not have one).
+
+### Not done
+The 24 dp hit area of the plan is 12 dp here (a wider strip would need a layout overlay); the side rail does not collapse below 1100 dp (AD-D3 rest);
+the Hub tab's own two-pane layout does not use this divider yet.

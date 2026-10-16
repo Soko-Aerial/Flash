@@ -132,6 +132,38 @@ class FlashAdaptiveLogicTest {
         assertEquals(480f, FlashAdaptiveMath.listPaneWidthDp(2560f))
     }
 
+    // --- AD-2: the draggable splitter (owner request 2026-10-16) ---
+
+    @Test
+    fun `a dragged list width stays inside the user limits and leaves the conversation room`() {
+        val available = 1400f - 68f
+        assertEquals(280f, FlashAdaptiveMath.clampListPaneWidthDp(100f, available), "never narrower than the minimum")
+        assertEquals(500f, FlashAdaptiveMath.clampListPaneWidthDp(500f, available))
+        assertEquals(720f, FlashAdaptiveMath.clampListPaneWidthDp(5000f, available), "never wider than the maximum")
+        listOf(840f, 1000f, 1100f, 1440f, 1920f, 2560f).forEach { total ->
+            val avail = total - 68f
+            listOf(0f, 280f, 400f, 720f, 10_000f).forEach { requested ->
+                val list = FlashAdaptiveMath.clampListPaneWidthDp(requested, avail)
+                assertTrue(list >= 280f && list <= 720f, "list $list out of limits at $total")
+                assertTrue(avail - list >= FlashAdaptiveMath.DetailPaneUserMinWidthDp || list == 280f, "conversation starved at $total with list $list")
+            }
+        }
+    }
+
+    @Test
+    fun `a corrupt saved width cannot break the layout`() {
+        assertEquals(280f, FlashAdaptiveMath.clampListPaneWidthDp(Float.NaN, 1200f))
+        assertEquals(280f, FlashAdaptiveMath.clampListPaneWidthDp(Float.NEGATIVE_INFINITY, 1200f))
+        assertEquals(280f, FlashAdaptiveMath.clampListPaneWidthDp(-50f, 1200f))
+    }
+
+    @Test
+    fun `no saved width keeps the automatic width, a saved one wins in two pane mode only`() {
+        assertEquals(FlashAdaptiveMath.listPaneWidthDp(1440f), FlashAdaptiveMath.effectiveListPaneWidthDp(1440f, 1372f, null))
+        assertEquals(560f, FlashAdaptiveMath.effectiveListPaneWidthDp(1440f, 1372f, 560f))
+        assertEquals(500f, FlashAdaptiveMath.effectiveListPaneWidthDp(500f, 432f, 560f), "below expanded the list takes the whole width")
+    }
+
     @Test
     fun `detail pane always has at least its minimum width when two pane is allowed`() {
         listOf(840f, 1000f, 1100f, 1440f, 1920f, 2560f).forEach { totalWidth ->

@@ -14,6 +14,15 @@ class FlashChatListTopBarMathTest {
     }
 
     @Test
+    fun `a paused transfer counts as active, finished ones do not (ADR-160)`() {
+        val active = com.transfer.flash.core.transfer.model.FlashTransferState.entries.filter { FlashChatListTopBarMath.countsAsActive(it) }.toSet()
+        assertEquals(
+            setOf("Offered", "Queued", "Transferring", "Verifying", "Paused"),
+            active.map { it.name }.toSet(),
+        )
+    }
+
+    @Test
     fun `negative counts behave like zero`() {
         assertNull(FlashChatListTopBarMath.badgeText(-5))
         assertEquals("Transfers", FlashChatListTopBarMath.contentDescription(-5))

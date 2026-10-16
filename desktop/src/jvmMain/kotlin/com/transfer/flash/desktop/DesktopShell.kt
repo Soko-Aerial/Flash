@@ -1223,12 +1223,7 @@ public fun DesktopShell(
             onBrowseOrgGroupsClick = null,
             onTransfersClick = if (nav.hubEnrolled) { { nav.openTransfers() } } else null,
             transfersActiveCount = if (nav.hubEnrolled) {
-                domainTransfers.count {
-                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Queued ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
-                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
-                }
+                domainTransfers.count { com.transfer.flash.ui.chat.FlashChatListTopBarMath.countsAsActive(it.state) }
             } else 0,
             pendingApprovalGroupNames = hubPendingJoins.values.toList(),
             modifier = Modifier.fillMaxSize(),
@@ -2501,12 +2496,14 @@ public fun DesktopShell(
                     },
                     footer = { DesktopPttButton(active = pttActive, onClick = onPttToggle) },
                 )
+                val paneLayoutPrefs = remember { DesktopPaneLayoutPrefs() }
                 DesktopTwoPane(
                     listPane = listPaneContent,
                     detailPane = detailPaneContent,
                     modifier = Modifier.weight(1f).fillMaxHeight(),
-                    sizeClass = sizeClass,
                     window = window,
+                    sizeClass = sizeClass,
+                    prefs = paneLayoutPrefs,
                 )
             }
         } else {
