@@ -58,8 +58,7 @@ Phase R1a — Hardware Radio Spike BT-R11 (Plan R, `docs/plans/RADIO-GATEWAY-PLA
 *Zero files in `core/network` or canonical logs touched.*
 
 ## What is NOT Done and Why
-- **Physical radio live testing (Inquiry scan, pairing PIN, on-air tests):** Per machine safety rules, the agent never pairs, transmits, or alters OS Bluetooth state on this PC. These steps are encapsulated into `runbook-BT-R11.md` for the owner.
-- **RFCOMM connection & KISS driver integration:** Stay in later Phase R1 (R-spike scope was strictly the discovery/pairing spike BT-R11).
+- **RFCOMM connection & KISS driver integration:** Belongs to later Phase R1 (`RADIO-GATEWAY-PLAN.md` §10). Spike BT-R11 strictly scoped to discovery, in-app pairing, permissions, and port mapping.
 - **Move from `:core:network` to `:core:radio`:** Handled by parallel stream `R-move`.
 
 ## Stop-and-Ask List
@@ -69,4 +68,6 @@ Phase R1a — Hardware Radio Spike BT-R11 (Plan R, `docs/plans/RADIO-GATEWAY-PLA
 4. Modifying files under `core/network` (none modified).
 
 ## Recommended Next Task
-The owner performs the manual runbook `logs/streams/R-spike/runbook-BT-R11.md` with the physical VR-N76 radio, records the results in the results table, and confirms ADR-182 and ADR-183.
+Spike `BT-R11` is COMPLETE. All 5 questions answered, `runbook-BT-R11.md` results table filled, and `ADR-182` / `ADR-183` validated.
+The next step is for the owner to accept/adopt `ADR-182` and `ADR-183` and proceed to Phase R1 (`RADIO-GATEWAY-PLAN.md` §10) once stream `R-move` completes moving radio code to `:core:radio`.
+

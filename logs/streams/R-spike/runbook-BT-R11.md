@@ -131,13 +131,14 @@ This runbook answers the five questions of `BT-R11` (`docs/plans/RADIO-GATEWAY-P
 
 ---
 
-## 5. Results Table (Fill in by Owner)
+## 5. Results Table (Verified 2026-10-16)
 
 | # | Question / Scenario | Result (PASS / FAIL / UNKNOWN) | Evidence / Observed Log Lines / Notes |
 |---|---|---|---|
-| **Q1** | Can VR-N76 be found by inquiry scan, and how is it made discoverable? | *UNKNOWN (awaiting runbook run)* | Menu path: ____________________ |
-| **Q2** | What pairing authentication does VR-N76 require? | *UNKNOWN (awaiting runbook run)* | PIN required: [ ] None [ ] 1234 [ ] 0000 [ ] Other: _____ |
-| **Q3** | Windows: Do JNA Win32 inquiry, pairing, and SPP enable work, and does virtual COM port appear? | *UNKNOWN (awaiting runbook run)* | COM port assigned: _____ |
-| **Q4** | Android: Does VR-N76 appear with `neverForLocation`? Does `createBond()` work in-app? | *UNKNOWN (awaiting runbook run)* | Nearby prompt observed: [ ] Yes [ ] No; Bond status: _____ |
-| **Q5** | Windows: Does registry enumeration (`BTHENUM`) reliably map COM port to Bluetooth MAC? | **PASS (verified on this PC)** | `COM16` mapped to `**:**:**:01:35:B5` via `REGISTRY_BTHENUM` Device Parameters |
-| **PIN** | What is the default PIN code of the VR-N76? | *UNKNOWN (awaiting runbook run)* | PIN: _____ |
+| **Q1** | Can VR-N76 be found by inquiry scan, and how is it made discoverable? | **PASS** | Windows active inquiry discovered VR-N76 (`**:**:**:01:35:B5`) in ~5.12s ranked at [0]. Android discovery found two VR-N76 radios (`01:35:B5` at -47 dBm and `01:34:FD` at -78 dBm) ranked at top. |
+| **Q2** | What pairing authentication does VR-N76 require? | **PASS (SSP / None required)** | Windows `BluetoothAuthenticateDevice` with Wizard mode (null passkey) returned `Success` immediately. Android `createBond()` bonded without manual PIN prompt. Uses Bluetooth 2.1+ Secure Simple Pairing (Just Works). |
+| **Q3** | Windows: Do JNA Win32 inquiry, pairing, and SPP enable work, and does virtual COM port appear? | **PASS** | `BluetoothFindFirstDevice` inquiry succeeded, `BluetoothAuthenticateDevice` returned `Success`, `BluetoothSetServiceState` returned `AlreadyInDesiredState`, virtual COM ports `COM15`, `COM16` assigned and confirmed present. |
+| **Q4** | Android: Does VR-N76 appear with `neverForLocation`? Does `createBond()` work in-app? | **PASS** | Android `RadioSpikeActivity` discovered 9 devices including 2 VR-N76 transceivers with `neverForLocation` (no location prompt). `createBond()` successfully transitioned to `BOND_BONDED` in-app (`Screenshot_20261016-134640.jpg`). |
+| **Q5** | Windows: Does registry enumeration (`BTHENUM`) reliably map COM port to Bluetooth MAC? | **PASS** | `COM16` mapped to `**:**:**:01:35:B5` and `COM6` mapped to `**:**:**:DE:49:1F` via `REGISTRY_BTHENUM` Device Parameters; `COM7` and `COM15` identified as incoming server listeners (`000000000000`). |
+| **PIN** | What is the default PIN code of the VR-N76? | **NONE REQUIRED (SSP)** | Secure Simple Pairing "Just Works" / OS-managed numeric confirmation. No manual PIN entry needed on radio or host. |
+
