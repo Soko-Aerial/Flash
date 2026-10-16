@@ -132,11 +132,13 @@ public class RadioLinkService : Service() {
             }
         }
 
+        /**
+         * stopService, not a start with a stop action: starting a service only to stop it throws from the
+         * background on Android 8+ and creates the service when it is not running. Stopping a service that is
+         * not running does nothing, and destroying a foreground service removes its notification.
+         */
         public fun stop(context: Context) {
-            val intent = Intent(context, RadioLinkService::class.java).apply {
-                action = ACTION_STOP
-            }
-            context.startService(intent)
+            context.stopService(Intent(context, RadioLinkService::class.java))
         }
     }
 }
