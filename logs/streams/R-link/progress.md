@@ -71,3 +71,98 @@ The mission of Stream R-link is to promote the isolated spike prototypes into th
 - Evidence tests executed with `--rerun-tasks` when necessary to guarantee EXECUTED status.
 - Strict isolation of physical RF: every test operates over `InMemoryByteLink`, `FakeRadioDeviceDiscovery`, and mock TNCs.
 - Reserved numbers respected: ADR 187-191, ERROR 640-659, EXP 050-054, test prefix `RADLNK-`.
+
+---
+
+## 2026-10-16 — Phase R1 Completion & Verification Report
+
+### Worked On
+Executed Phase R1 ("Find, pair and connect") and R2 gateway logic of the Hardware Radio KISS TNC Gateway (`:core:radio`) adhering strictly to `docs/plans/RADIO-GATEWAY-PLAN.md` (Rev 3), ADR-173 (amended), ADR-177/178, ADR-182/183, and `docs/plans/HUB-QUALITY-CONTRACT.md`.
+
+### Implementation Summary
+1. **Task 2: Promoted Spike Implementations into `:core:radio`**:
+   - Promoted Windows Bluetooth Win32 JNA API, models, error mapper, registry COM port mapper, and device classifier to `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/windows/`.
+   - Updated `:desktop`'s `RadioSpikeCli.kt` as a thin runner delegating to `:core:radio`.
+   - Extracted Android discovery scan, bonding, and bonded listing to `core/radio/src/androidMain/.../AndroidRadioDiscovery.kt`. Updated debug `RadioSpikeActivity.kt` as a thin UI harness.
+   - Created common port `RadioDeviceDiscovery` in `core/radio/src/commonMain/.../link/RadioDeviceDiscovery.kt` implemented by `WindowsRadioDiscovery` and `AndroidRadioDiscovery`.
+   - Implemented dynamic registry BTHENUM resolution in `WindowsRadioDiscovery.openLink` to resolve renumbered COM ports dynamically on every connection, and rejected all incoming listener ports (`000000000000`).
+2. **Task 3: `RadioGatewayManager` Facade & Atomic Persistence**:
+   - Built `RadioGatewayManager` in `core/radio/src/commonMain/.../gateway/` owning state machine, discovery, stores, authorization gate, and `KissTncDriver`.
+   - Exposes reactive `StateFlow<RadioGatewayState>` with coherent plain-language status sentences and next actionable steps across every state.
+   - Enforced core rules mechanically: Rule 3 (nothing opened before user confirms candidate once); auto-reconnect to remembered radio when switch is turned on; scans run only on demand; switch off stops all scans, driver loops, and links; single candidate preselected for confirmation; multiple candidates displayed as a list.
+   - Implemented real atomic persistence: `DesktopPropertiesRadioStore` on Desktop (`radio.properties.tmp` -> `Files.move(ATOMIC_MOVE)`) and `AndroidSharedPreferencesRadioStore` on Android (`flash_radio_settings` with `commit()`). Stores MAC and display name; zero keys or frames. Unreadable or corrupt files yield null without crashing.
+   - Reconnection: Reconnects automatically using driver backoff; halts retries after `maxRetryAttempts` and prompts "Reconnect"; power-cycled radio recovers automatically on fake link.
+   - Rule 4 Transmission Safety: `requestTestMessage()` strictly verifies whether the active link is an in-memory simulated link (`InMemoryLink`). On any real RF or serial port link, it suppresses transmission, emits `FlashProbe.emit("radio.tx.suppressed_on_real_rf", ...)`, and returns false without transmitting bytes.
+3. **Task 4: Android Background Service Policy & Platform Research**:
+   - Documented official Android 14/15 FGS rules for `connectedDevice` in `logs/streams/R-link/platform-notes-additions.md`.
+   - Implemented pure policy `RadioServicePolicy` in `commonMain` with 100% test coverage.
+   - Created thin `RadioLinkService` in `app/src/main/java/com/transfer/flash/service/RadioLinkService.kt` declaring `foregroundServiceType="connectedDevice"` and passing `ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` on API 34+.
+4. **Task 5: Test Suite (`RADLNK-U01..U17`)**:
+   - Unit tests covering confirmation gate, auto-detect preselection, switch-off inactivity, scan cancellation/timeout, retry limits, power-cycle recovery, link flapping, Profile M authorization gating, test message suppression on real RF, properties atomic persistence, corruption recovery, COM renumbering, listener port rejection, and service policy.
+5. **Task 6: Owner Hardware Runbook**:
+   - Created `logs/streams/R-link/runbook-R1-R2.md` with numbered manual tests for the owner on physical hardware (W1-W6, M1-M4) and a results table.
+   - Created backlog additions in `logs/streams/R-link/backlog-additions.md` (`RADLNK-D01..D10`).
+
+### Verification & Gate Evidence
+1. **Core Radio Test Suite:**
+   ```
+   tools\flash-gradle.cmd :core:radio:jvmTest --rerun-tasks
+   ```
+   - Exit code: `0`
+   - Outcome: `BUILD SUCCESSFUL` (157 tests completed, 0 failed, 0 skipped).
+   - Evidence includes PROBE lines:
+     `I/PROBE: radio.tx.suppressed_on_real_rf reason=Rule_4:_no_live_probe_frames_on_real_RF textLength=11`
+     `I/PROBE: radio.link.down reason=open_failed:Serial_port_inaccessible`
+     `I/PROBE: radio.link.up link=recovered-radio/host attempt=2`
+2. **Desktop & Android Compilations:**
+   ```
+   tools\flash-gradle.cmd :desktop:compileKotlinJvm :app:compileDebugKotlin
+   ```
+   - Exit code: `0`
+   - Outcome: `BUILD SUCCESSFUL` (126 actionable tasks: 5 executed, 121 up-to-date).
+
+### Shared Files Touched & Hunk Sizes
+- `core/radio/build.gradle.kts`: +3 lines (added `libs.jna`, `libs.jna.platform` to `jvmMain.dependencies`).
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radiospike/RadioSpikeCli.kt`: +2 lines, -1 line (delegates to promoted `:core:radio` classes).
+- `app/src/debug/java/com/transfer/flash/debug/radiospike/RadioSpikeActivity.kt`: +18 lines, -36 lines (delegates discovery/bonding to `AndroidRadioDiscovery`).
+- `app/src/main/AndroidManifest.xml`: +6 lines (registered `RadioLinkService` with `foregroundServiceType="connectedDevice"`).
+
+### Adversarial Self-Review (10 Findings + 5 Extra Situations)
+1. `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/gateway/RadioGatewayManager.kt:338`
+   - *Failure Scenario:* User or automated test calls `requestTestMessage()` while connected to a real physical transceiver.
+   - *Fix:* Inspect `currentByteLink`. If not an in-memory test link, strictly abort transmission, emit `FlashProbe.emit("radio.tx.suppressed_on_real_rf", ...)`, and return false without sending any bytes.
+2. `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/windows/WindowsRadioDiscovery.kt:137`
+   - *Failure Scenario:* Remembered radio maps to an incoming listener port in Windows registry (`000000000000`).
+   - *Fix:* Registry mapper checks `entry.rawAddressHex.uppercase() == "000000000000"` and `entry.isIncomingPort`. These entries are strictly filtered out and never opened.
+3. `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/windows/WindowsRadioDiscovery.kt:143`
+   - *Failure Scenario:* Windows COM ports are renumbered upon reboot or re-pairing (e.g. was COM16, now COM23).
+   - *Fix:* `openLink()` dynamically queries `HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM` for the remembered MAC address on every connect attempt.
+4. `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/gateway/RadioGatewayManager.kt:105`
+   - *Failure Scenario:* User toggles gateway switch OFF while a 12s scan or driver connection is in flight.
+   - *Fix:* `disable()` immediately cancels `scanJob`, stops the TNC driver, closes the link, and resets reconnect state.
+5. `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/gateway/RadioGatewayManager.kt:146`
+   - *Failure Scenario:* UI requests discovery scan while gateway switch is OFF.
+   - *Fix:* `startScan()` immediately returns if `!_state.value.isEnabled`. No scanning or polling while disabled.
+6. `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/connect/RadioAuthorisationGate.kt:57`
+   - *Failure Scenario:* User attempts to select Profile M (military / encrypted) without confirmed authorization or with zero epoch date.
+   - *Fix:* `RadioAuthorisationGate.requireProfileAllowed` verifies `confirmation != null && confirmation.confirmedAtEpochMs > 0`. Throws `IllegalStateException` on unauthorized selection.
+7. `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/connect/DesktopPropertiesRadioStore.kt:37`
+   - *Failure Scenario:* Desktop `radio.properties` file is corrupted or contains non-numeric epoch strings.
+   - *Fix:* All loading wrapped in `runCatching`. Corrupted files yield null ("nothing remembered") without crashing.
+8. `core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/connect/DesktopPropertiesRadioStore.kt:47`
+   - *Failure Scenario:* Power failure or process kill during store save truncates properties file.
+   - *Fix:* Writes to `radio.properties.tmp` first, flushes, closes stream, then performs atomic move (`Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)`).
+9. `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/gateway/RadioGatewayManager.kt:450`
+   - *Failure Scenario:* Sustained radio disconnect retries in an infinite background loop, draining battery.
+   - *Fix:* `consecutiveReconnectAttempts` tracks failures. When `>= maxRetryAttempts`, driver is stopped and UI prompts user with a "Reconnect" button.
+10. `core/radio/src/androidMain/kotlin/com/transfer/flash/core/radio/service/RadioLinkService.kt:50`
+    - *Failure Scenario:* On Android 14+ (API 34/35), calling `startForeground` without `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` throws `MissingForegroundServiceTypeException`.
+    - *Fix:* Checks `Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE` and explicitly passes `ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE`.
+11. *Extra 1:* Single candidate vs multiple candidates auto-selection: if paired devices contain exactly one known radio, it is auto-selected for confirmation (Plan R §6 Rule 3); if multiple exist, `ChooseFromList` is presented.
+12. *Extra 2:* Address masking in all logs and dumps: `maskBluetoothAddress` masks MAC addresses to preserve only the last 3 octets (e.g. `**:**:**:01:35:B5`) in all logs, UI state, and evidence records.
+13. *Extra 3:* Zero cryptographic keys stored in radio settings: `DesktopPropertiesRadioStore` and `AndroidSharedPreferencesRadioStore` persist only MAC, display name, port, epoch timestamp, and callsign.
+14. *Extra 4:* Scan cancellation propagates to OS discovery: in `AndroidRadioDiscovery.scan` and `WindowsRadioDiscovery.scan`, cancelling the flow invokes `awaitClose`, aborting active OS discovery immediately.
+15. *Extra 5:* Honest FGS notifications: notification text truthfully distinguishes between `Connected`, `Reconnecting (attempt n)`, and `Connecting`, preventing misleading system state.
+
+### Owed Device Tests (Owner Execution Required)
+- `RADLNK-D01` through `RADLNK-D10` recorded in `logs/streams/R-link/backlog-additions.md` and detailed in `logs/streams/R-link/runbook-R1-R2.md`.
