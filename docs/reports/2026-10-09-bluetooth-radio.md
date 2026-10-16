@@ -8,9 +8,12 @@ and recorded by the agent). Nothing was committed or pushed. The shared logs (`l
 radio, no phone and no Bluetooth link was used. Nothing here is hardware-verified.** The only thing the machine did
 reveal is that this Windows laptop currently reports four serial ports (see 8, step 1); they were listed, never opened.
 
+> Note (2026-10-16, Plan R rev 3 §4 R0): All radio and KISS sources documented in this report originally under `core/network`
+> have been moved to the standalone `:core:radio` module (`com.transfer.flash.core.radio.*`).
+
 ## 1. What was built
 
-| Layer | What | Where (under `core/network/src/`) |
+| Layer | What | Where (originally under `core/network/src/`, moved to `core/radio/src/` in R0) |
 |---|---|---|
 | KISS | Streaming encoder/decoder, parameter commands, stats; tolerant of any fragmentation, garbage, bad escapes, oversize | `commonMain/.../kiss/KissFrameCodec.kt` |
 | AX.25 | v2.2 UI frame encode/decode, address shifting, SSID byte, digipeaters, H bit; **PID `F0` only (`CC`/`CD` refused)** | `commonMain/.../kiss/Ax25FrameCodec.kt` |

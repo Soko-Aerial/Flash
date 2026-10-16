@@ -92,6 +92,10 @@ kotlin {
         // The 9 test files use JUnit 4 (org.junit.Assert.*) and one of them uses
         // java.util.concurrent, so tests stay on the Android host-test tier for the
         // pilot. Moving them to `commonTest` on kotlin.test is Phase 07+ work.
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+
         getByName("androidHostTest").dependencies {
             implementation(libs.junit)
         }

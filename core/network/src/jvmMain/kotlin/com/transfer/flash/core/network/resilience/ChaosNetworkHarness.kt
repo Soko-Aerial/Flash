@@ -1,5 +1,6 @@
 package com.transfer.flash.core.network.resilience
 
+import com.transfer.flash.core.common.resilience.ReconnectPolicy
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.network.FlashSession
 import java.util.concurrent.CopyOnWriteArrayList

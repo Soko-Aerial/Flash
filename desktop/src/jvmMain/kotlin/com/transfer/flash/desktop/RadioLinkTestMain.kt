@@ -30,11 +30,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
-import com.transfer.flash.core.network.radio.PortInfo
-import com.transfer.flash.core.network.radio.diag.HarnessState
-import com.transfer.flash.core.network.radio.diag.PacingPreset
-import com.transfer.flash.core.network.radio.diag.RadioLinkTestHarness
-import com.transfer.flash.core.network.radio.diag.TestRole
+import com.transfer.flash.core.radio.link.PortInfo
+import com.transfer.flash.core.radio.diag.HarnessState
+import com.transfer.flash.core.radio.diag.PacingPreset
+import com.transfer.flash.core.radio.diag.RadioLinkTestHarness
+import com.transfer.flash.core.radio.diag.TestRole
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
