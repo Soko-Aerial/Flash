@@ -1,5 +1,25 @@
 # Progress Log
 
+## 2026-10-16 - Radio streams R-move and R-spike integrated into dev (Claude Code, integrator)
+
+### Worked on
+Merged `agent/R-move` (`f96127f8`) and `agent/R-spike` (`222586bf`) into `dev`, as asked by the owner, WITHOUT the separate verifier pass of `docs/plans/RADIO-PROMPTS.md` section 3 (the owner skipped it).
+
+### Changed
+- R-move: the radio code moved from `:core:network` to the new `:core:radio` (package `com.transfer.flash.core.radio`), `ReconnectPolicy` moved to `:core:common`, jSerialComm now only in `:core:radio` jvmMain, a dependency-direction contract test, and the platform-independent connect logic (candidate ranker, remembered radio by Bluetooth address, connect state machine, authorisation gate). ADR-177/178, ERROR-600, EXP-040.
+- R-spike: Windows `radioSpike` tool (read-only by default; active mode needs an owner flag), Android debug-only `RadioSpikeActivity`, runbook, ADR-182/183, ERROR-620s, EXP-045/046. The owner ran the runbook on the PC, the phone and two VR-N76 radios: BT-R11 and RADSPK-01..06 are recorded PASS in the stream's backlog fragment (Windows scan, pairing and COM mapping work; Android scan with `neverForLocation` and in-app `createBond` work; the radio pairs without a PIN).
+- Merge conflict: only `desktop/build.gradle.kts` (both streams edited the radio task block); resolved by keeping the `core.radio.diag` main class and the `radioSpike` task. (An unresolved-marker commit was made by mistake and amended before anything was pushed.)
+- The stream fragments were folded into `docs/decisions.md`, `logs/errors.md`, `logs/experiments.md`, `docs/testing/TEST-BACKLOG.md` and `docs/android-platform-notes.md`; the fragments stay in `logs/streams/R-move` and `R-spike` as the full record.
+
+### Verification (executed, `tools\flash-gradle.cmd`)
+Gate on the merged result: `:core:common:jvmTest`, `:core:radio:jvmTest`, `:core:radio:testAndroidHostTest`, `:core:network:jvmTest`, `:core:network:testAndroidHostTest`, `:app:compileDebugKotlin`, `:app:testDebugUnitTest --tests *AndroidRadioDeviceRankerTest*`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm` all BUILD SUCCESSFUL; `:desktop:jvmTest --tests *RadioSpikeTest* *RadioLinkTest*` green (RadioSpikeTest 8 tests, 0 failures). The streams report `:core:radio` 134 JVM and 88 Android-host tests. Not re-run by the integrator: the whole `:desktop:jvmTest` (ERROR-106), the jitpack.yml publish line, the `radioLinkTestCli --list` run.
+
+### Remaining
+No verifier report exists for either stream. The device tests in the R-move fragment (RADMOVE-01..03, RADCONL-*) are still TODO. Next code phases of `docs/plans/RADIO-GATEWAY-PLAN.md`: R1 (real catalogues and screens in the app; the spike code in `desktop/.../radiospike` and `app/src/debug` is to be moved into `:core:radio` when R1 starts), R2 (driver on hardware), R3 (needs owner decision O-4). Plan status is still PROPOSED until the owner approves ADR-173 (O-5).
+
+### Next AI
+Do not start R1 without the owner. Keep the spike tools out of release builds (jar exclude and `app/src/debug`).
+
 ## 2026-10-16 - Radio gateway plan revised: move existing code into :core:radio, voice notes removed (Claude Code)
 
 ### Worked on

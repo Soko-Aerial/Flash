@@ -5682,3 +5682,173 @@ the automatic width. Android gets no splitter (touch panes do not have one).
 ### Not done
 The 24 dp hit area of the plan is 12 dp here (a wider strip would need a layout overlay); the side rail does not collapse below 1100 dp (AD-D3 rest);
 the Hub tab's own two-pane layout does not use this divider yet.
+
+<!-- folded 2026-10-16 from logs/streams/R-move/decisions-additions.md (integration of agent/R-move); the fragment stays as the full record -->
+
+# Architectural Decision Additions — Stream R-move
+
+Reserved ADR range: ADR-177 through ADR-181.
+
+---
+
+## ADR-177 — Separation of Hardware Radio Codecs and Transports into `:core:radio`
+
+### Context
+Plan R (Revision 3, `docs/plans/RADIO-GATEWAY-PLAN.md`) and ADR-173 mandate decoupling amateur / hardware radio framing, drivers, and platform serial/Bluetooth implementations from `:core:network`. Previously, AX.25 and KISS codecs, RFCOMM socket handlers, jSerialComm, and TNC drivers resided inside `com.transfer.flash.core.network`. This caused unnecessary coupling where `:core:network` pulled in desktop serial libraries and hardware-specific framing, violating the principle of distinct network versus peripheral radio boundaries.
+
+Furthermore, `ReconnectPolicy.kt` was co-located in `core/network/src/commonMain/kotlin/com/transfer/flash/core/network/resilience/`. Examination revealed `ReconnectPolicy` contains zero network-specific types; it is a general floored exponential backoff with full jitter.
+
+### Decision
+1. Create a dedicated Kotlin Multiplatform module `:core:radio` targeting JVM and Android host (`androidLibrary`), with Kotlin `explicitApi()` enabled and `-Xexpect-actual-classes` compiler argument.
+2. Relocate all AX.25, KISS, TNC driver, pacing, link abstractions, and test harnesses from `:core:network` to `com.transfer.flash.core.radio` and subpackages (`kiss`, `link`, `driver`, `wire`, `sim`, `diag`, `connect`).
+3. Move `jSerialComm` 2.11.4 dependency exclusively into `:core:radio` `jvmMain`.
+4. Relocate `ReconnectPolicy` to `:core:common` under `com.transfer.flash.core.common.resilience`, enabling both `:core:network` and `:core:radio` to use resilient backoff without cross-module dependency.
+5. Enforce strict unidirectional dependency: `:core:radio` depends only on `:core:common` and `:core:security`. `:core:network` does not depend on `:core:radio`, and `:core:radio` does not depend on `:core:network`. Verified by `RadioDependencyDirectionContractTest`.
+6. Host apps (`:app` and `:desktop`) depend on `:core:radio`. `:core:engine` remains completely isolated from `:core:radio`.
+
+### Status
+ACCEPTED (2026-10-16)
+
+---
+
+## ADR-178 — Identity and State Model for Radio Connection and Rule 4 Prohibition
+
+### Context
+Plan R §6 and §8 define user experience, state flow, and security constraints for radio gateway connectivity. Unlike LAN or Wi-Fi Direct transports which authenticate ephemeral dynamic IP addresses, hardware radios are peripherals identified either via volatile OS port names (e.g. `COM16`, `/dev/rfcomm0`) or stable Bluetooth hardware addresses (MAC addresses). In addition, physical radios emit RF over amateur or commercial frequencies; sending arbitrary packets or ping frames causes physical transmission.
+
+### Decision
+1. **Radio Identity is Bluetooth Hardware Address**: Port names are volatile OS artifacts on Windows/Linux. The primary identifier of a remembered radio is strictly its hardware MAC address (`RememberedRadio.bluetoothAddress`). `lastKnownPortName` is preserved strictly as a Windows fallback hint.
+2. **Rule 4 Liveness Transmit Prohibition**: The radio connection state machine (`RadioConnectStateMachine`) shall NEVER emit data frames as liveness probes. Transmit commands are strictly confined to user-initiated traffic or explicit diagnostic test frames (`UserRequestedTestMessage`), which requires explicit authorization at instantiation.
+3. **Rule 3 Confirmation Gate**: When auto-detect finds an eligible radio candidate, the state machine enters `ConfirmCandidate` and NEVER opens serial/RFCOMM sockets or emits `OpenLink` before explicit user confirmation (`UserConfirmedCandidate`).
+4. **Security Profile M Confirmation Gate**: Encrypted transmission (Profile M) requires explicit user confirmation with a strictly positive epoch timestamp (`confirmedAtEpochMs > 0`). In the absence of recorded confirmation, only Profile A (plaintext signed) is selectable.
+
+### Status
+ACCEPTED (2026-10-16)
+
+<!-- folded 2026-10-16 from logs/streams/R-spike/decisions-additions.md (integration of agent/R-spike); the fragment stays as the full record -->
+
+# Stream R-spike Decision Additions
+
+These proposed Architecture Decision Records (ADRs) address questions O-6 and O-7 from `docs/plans/RADIO-GATEWAY-PLAN.md` §12. In compliance with stream rules, these are PROPOSED drafts for owner approval, using reserved numbers 182–186.
+
+---
+
+## ADR-182 (PROPOSED) — Windows Bluetooth Radio Discovery, Pairing, and COM Port Mapping Architecture (O-6)
+
+### Status
+VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
+
+### Context
+`docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash desktop on Windows to discover nearby radios, pair with them without forcing the user to navigate through Windows Settings, enable the Bluetooth Serial Port Profile (SPP) service, and map the dynamically allocated virtual COM port (e.g. `COM16`) to the radio's canonical Bluetooth hardware address.
+
+Question O-6 asks:
+*How does the PC scan and pair in-app: Win32 Bluetooth API through JNA (already shipped), or a Windows Runtime (WinRT) helper?*
+
+### Facts & Evidence Levels
+
+1. **JNA 5.17.0 is already shipped in Flash desktop:**
+   - *Status:* Verified from repo `gradle/libs.versions.toml:152` and `desktop/build.gradle.kts`.
+   - Used for Windows DPAPI access (ADR-035). Requires zero new external dependencies.
+
+2. **Win32 Bluetooth APIs exist in `bthprops.cpl`:**
+   - *Status:* Verified from official Microsoft documentation (learn.microsoft.com/en-us/windows/win32/api/bluetoothapis/, checked 2026-10-16).
+   - Functions:
+     - `BluetoothFindFirstDevice` / `BluetoothFindNextDevice` / `BluetoothFindDeviceClose`: device enumeration and inquiry scan.
+     - `BluetoothEnumerateInstalledServices`: enumerates enabled service GUIDs.
+     - `BluetoothAuthenticateDevice` / `BluetoothAuthenticateDeviceEx`: performs authentication (Transparent mode with PIN, or Wizard mode).
+     - `BluetoothSetServiceState`: installs/removes virtual COM port driver for SPP GUID `{00001101-0000-1000-8000-00805F9B34FB}`.
+
+3. **Win32 API JNA Binding Verified on Windows 11:**
+   - *Status:* Verified from physical execution on this machine (`:desktop:radioSpike`, 2026-10-16).
+   - The native library `bthprops.cpl` loads cleanly via JNA; `BluetoothFindFirstDevice` runs without throwing errors or crashes.
+
+4. **Deterministic COM Port to Bluetooth Address Mapping via Registry:**
+   - *Status:* Verified from physical execution and inspection of Windows Registry on this PC (`HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM`, 2026-10-16).
+   - Windows creates subkeys under `HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM\{00001101-0000-1000-8000-00805f9b34fb}*`.
+   - Under `...\Device Parameters`, Windows stores `PortName` (`COM16`) and `Bluetooth_UniqueID` which directly contains the remote MAC address (`38D2000135B5`).
+   - Incoming server listener ports are distinctly marked with `000000000000` (e.g. `COM7`, `COM15`), whereas outgoing device ports map to the physical radio MAC.
+   - Reading this via JNA `Advapi32Util` succeeds without elevated administrator privileges.
+
+5. **Physical Radio Inquiry & In-App Pairing Behavior on Windows:**
+   - *Status:* VERIFIED BY DEVICE TEST (Stream R-spike, 2026-10-16).
+   - Physical execution of active mode `:desktop:radioSpike -PradioArgs="--active --i-am-the-owner-and-the-radio-is-on"` confirmed:
+     - Active Win32 inquiry scan discovered `VR-N76 [**:**:**:01:35:B5]` in 5.12 seconds, ranked at [0] as `Category: RADIO`.
+     - `BluetoothAuthenticateDevice` with Wizard mode (null PIN) succeeded immediately without requiring fixed PIN entry.
+     - `BluetoothSetServiceState` for SPP GUID returned `AlreadyInDesiredState`.
+     - Windows assigned virtual COM ports `COM15` and `COM16`.
+
+
+### Alternatives Considered
+
+1. **Win32 Bluetooth API via JNA (Recommended):**
+   - *Pros:* Zero new dependencies; uses existing JNA already licensed and packaged; provides direct access to `BluetoothSetServiceState` to explicitly install the SPP virtual COM port; registry mapping via `Advapi32Util` is verified 100% reliable on Windows 11.
+   - *Cons:* Win32 Bluetooth APIs are C-based structs requiring strict memory alignment (solved in `WindowsBluetoothApi.kt`).
+
+2. **Windows Runtime (WinRT / UWP) Device Information APIs (`Windows.Devices.Bluetooth`):**
+   - *Pros:* Modern async API surface.
+   - *Cons:* Requires adding a heavy Windows Runtime projection library (e.g. `windows-primitives` or C++/WinRT wrapper DLL); WinRT Bluetooth RFCOMM APIs do not automatically spawn standard virtual COM ports (`COMn`) needed by `jSerialComm` / `ByteLink`, but rather WinRT streams; violates AGENTS §3 and parallel stream rules forbidding new dependencies without approval.
+
+### Recommendation
+Adopt **Win32 Bluetooth API through JNA** as implemented in `:desktop:radiospike`. Use registry enumeration under `HKLM\SYSTEM\CurrentControlSet\Enum\BTHENUM` as the primary method to map virtual COM ports to remote Bluetooth addresses.
+
+---
+
+## ADR-183 (PROPOSED) — Android In-App Radio Discovery, Permissions, and Bonding Architecture (O-7)
+
+### Status
+VALIDATED BY DEVICE EVIDENCE (Stream R-spike, 2026-10-16). Owner runbook executed and passed. Ready for owner adoption.
+
+### Context
+`docs/plans/RADIO-GATEWAY-PLAN.md` §6 requires Flash Android to provide an in-app discovery list and pairing flow for the radio.
+
+Question O-7 asks:
+*Android scan/pair UI: Flash's own list (`BLUETOOTH_SCAN`, `createBond`) or the system Companion Device Manager chooser?*
+
+### Facts & Evidence Levels
+
+1. **Android Bluetooth Permissions on Android 12+ (API 31+):**
+   - *Status:* Verified from official Android documentation (developer.android.com/develop/connectivity/bluetooth/bt-permissions, checked 2026-10-16).
+   - `BLUETOOTH_SCAN` with `android:usesPermissionFlags="neverForLocation"` allows discovering Bluetooth devices without requesting runtime location permission (`ACCESS_FINE_LOCATION`).
+   - `BLUETOOTH_CONNECT` is required to initiate `createBond()` and query `bondedDevices`.
+   - Both permissions belong to the user-friendly "Nearby devices" permission group.
+
+2. **Location Filtering Caveat of `neverForLocation`:**
+   - *Status:* Verified from official Android documentation (developer.android.com/develop/connectivity/bluetooth/bt-permissions, checked 2026-10-16).
+   - Official docs warn: *"If you use BLUETOOTH_SCAN with neverForLocation, some Bluetooth LE beacons might not be discovered."*
+   - Classic Bluetooth discovery via `BluetoothAdapter.startDiscovery()` scans for BR/EDR devices. Empirical device testing (`BT-R11`) proves the VR-N76 is NOT dropped by `neverForLocation`.
+
+3. **In-App Discovery and Bonding API (`BluetoothDevice.createBond`):**
+   - *Status:* Verified from official Android documentation (developer.android.com/reference/android/bluetooth/BluetoothDevice, checked 2026-10-16).
+   - `BluetoothAdapter.startDiscovery()` finds devices via `ACTION_FOUND` broadcast.
+   - `BluetoothDevice.createBond()` initiates pairing asynchronously, notifying via `ACTION_BOND_STATE_CHANGED`.
+   - The OS renders a standard PIN dialog overlay if required by the device, but the user never leaves the Flash app.
+
+4. **Companion Device Manager (CDM) Capabilities and Constraints:**
+   - *Status:* Verified from official Android documentation (developer.android.com/develop/connectivity/bluetooth/companion-device-pairing, checked 2026-10-16).
+   - Introduced in Android 8.0 (API 26); requires `<uses-feature android:name="android.software.companion_device_setup" />`.
+   - Dispatches a system-modal chooser dialog managed by Android; does not require runtime location permissions or `BLUETOOTH_SCAN`.
+   - *Limitation:* The chooser is an uncustomizable system dialog that cannot use FlashTheme tokens, dark mode palette, pill buttons, or Flash radio ranking badges.
+   - *Limitation:* `BluetoothDeviceFilter` requires matching name patterns or UUIDs. If the radio's advertising name varies across firmware releases, CDM will filter it out.
+
+5. **Physical Handset Behavior with VR-N76:**
+   - *Status:* VERIFIED BY DEVICE TEST (Stream R-spike, 2026-10-16).
+   - Owner physical test on Android test phone with `RadioSpikeActivity` confirmed:
+     - Discovered 9 devices without prompting for location permissions (`BLUETOOTH_SCAN` with `neverForLocation`).
+     - Two physical VR-N76 radios discovered and classified as `Rank 1 (RADIO)` (`**:**:**:01:35:B5` at -47 dBm and `**:**:**:01:34:FD` at -78 dBm) at top of list.
+     - Tapping "Pair" triggered `createBond()`, succeeding without external settings navigation (`Screenshot_20261016-134640.jpg`).
+     - Exiting screen immediately triggered `onStop()` aborting active discovery, verified via `adb logcat -s RadioSpikeActivity`.
+
+
+### Alternatives Considered
+
+1. **Flash In-App Screen with `BLUETOOTH_SCAN` + `neverForLocation` (Recommended):**
+   - *Pros:* Fully styled in Jetpack Compose using Flash theme tokens; renders custom radio classification badges (Rank 1 Radio, Rank 2 SPP); sorts bonded devices and high RSSI to top; automatically stops discovery when exiting the screen or on a 12s timer; non-disruptive UX.
+   - *Cons:* Requires requesting the "Nearby devices" permission group on Android 12+.
+
+2. **Companion Device Manager (`CompanionDeviceManager`):**
+   - *Pros:* No `BLUETOOTH_SCAN` or location permission needed.
+   - *Cons:* System-dialog UI breaks Flash visual consistency; device filtering is brittle for third-party radio brands; `BLUETOOTH_CONNECT` is still required afterwards to open RFCOMM.
+
+### Recommendation
+Adopt **Flash's own in-app discovery list** using `BLUETOOTH_SCAN` (with `neverForLocation`) and `BluetoothDevice.createBond()`, as implemented in `RadioSpikeActivity.kt`.
+Keep Companion Device Manager as a documented fallback only if physical device testing reveals that specific OEM handsets suppress the radio under `neverForLocation`.

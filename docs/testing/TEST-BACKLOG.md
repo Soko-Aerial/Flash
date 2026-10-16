@@ -4384,3 +4384,310 @@ New rows. Every Pass condition is something the owner can see on the screen or i
 - **HUBT-37** A paused transfer shows in the indicator (ADR-160, owner 2026-10-16). Setup: an enrolled phone or PC with a running transfer. Steps: pause it; look at the Transfers icon in the chat-list top bar; resume; finish or cancel it. Pass: the badge keeps counting the paused transfer (1), and disappears only after it completes, fails or is cancelled. Status: TODO
 - **ORGPAIR-04** A colleague chat pairs after both sides wrote (ADR-174). Setup: two enrolled phones, same organisation, same Wi-Fi, NOT paired. Steps: on A open Hub > People > B > Message and send "hi"; look at B's Contacts (A must NOT be paired yet); on B reply; then turn the hub off (or the router's internet) and keep chatting. Pass: after B's reply both phones list the other as paired (probe `org.pair.auto` in the log of both, no pairing dialog); chat continues without the hub; before the reply nothing was paired; an unpaired colleague who only sent you a message stays unpaired. Also try replying while only the hub path is up: expected "no pairing yet", and pairing on the next message once on the same LAN. Status: TODO
 - **PANE-01** Desktop divider between the chat list and the conversation is draggable (ADR-176). Setup: the PC app at 1400 dp width or wider, a conversation open. Steps: hover the divider (resize cursor); drag it left and right; try to drag past both ends; double click it; drag again, close and reopen the app; Tab to the divider and press Left / Right; resize the window to about 900 dp. Pass: the list width follows the mouse within 280..720 dp, the conversation never gets squeezed below roughly 360 dp, double click returns to the automatic width, the width is restored after a restart, the arrow keys move it in 24 dp steps, nothing clips at 900 dp. Status: TODO
+
+<!-- folded 2026-10-16 from logs/streams/R-move/backlog-additions.md (integration of agent/R-move); the fragment stays as the full record -->
+
+# Test Backlog Additions — Stream R-move
+
+The following tests require physical hardware (Android phones, Bluetooth/USB KISS TNCs, transceivers) or real serial hardware and cannot be verified in an automated CI/mock environment. Per stream guidelines, these are recorded with `Status: TODO`. No code in this stream has been marked "device-verified".
+
+---
+
+## RADMOVE-01 — Desktop Serial Port Enumeration with Real Hardware
+
+### Area
+Hardware Radio / Desktop Serial Catalog (`:core:radio` / `:desktop`)
+
+### Setup
+- Windows 10/11 desktop machine.
+- Physical USB-to-UART / serial adapter (e.g. CP2102, FTDI, or CH340) or paired Bluetooth SPP TNC (e.g. VR-N76 / Mobilinkd TNC3/4).
+- Device connected to USB or paired in Windows Bluetooth settings, assigned a COM port (e.g. `COM16`).
+
+### Steps
+1. Execute `tools\flash-gradle.cmd :desktop:radioLinkTestCli -PradioArgs="--list"`.
+2. Inspect stdout output table for detected serial and Bluetooth ports.
+
+### Pass
+- The CLI lists the physical COM port with its port description (e.g. `COM16\tOTHER\tSPP Dev` or `USB-to-UART Bridge`).
+- Exit code is 0.
+- No serial port is opened or held in an exclusive lock during enumeration.
+
+### Source
+Plan R §4.4, prompt Task 2.g.
+
+### Status
+TODO
+
+---
+
+## RADMOVE-02 — Android RFCOMM Socket Connection to Physical Radio
+
+### Area
+Hardware Radio / Android Bluetooth Catalog (`:core:radio` / `:app`)
+
+### Setup
+- Android device running Android 12+ (API 31+) with Bluetooth enabled and `BLUETOOTH_CONNECT` permission granted.
+- Physical handheld radio with built-in Bluetooth KISS TNC (e.g. VERO VR-N76, BTECH UV-Pro).
+- Radio paired in Android OS Settings.
+
+### Steps
+1. Open Flash app on Android device.
+2. Navigate to Radio settings / gateway.
+3. Initiate connection to the paired radio.
+4. Verify logcat for `BluetoothSocket.connect()` completion.
+
+### Pass
+- Logcat shows RFCOMM connection established over SPP UUID `00001101-0000-1000-8000-00805F9B34FB`.
+- State transitions to `Connected`.
+- Zero unhandled `SecurityException` or socket timeout exceptions.
+
+### Source
+Plan R §3, §4.1 (`AndroidBluetoothCatalog.kt`).
+
+### Status
+TODO
+
+---
+
+## RADMOVE-03 — Over-the-Air / Loopback KISS Frame Exchange with Physical TNC
+
+### Area
+Hardware Radio / Framing & TNC Driver (`:core:radio`)
+
+### Setup
+- Two physical KISS TNCs (or one TNC connected to a dummy load or attenuated RF channel).
+- Radio link configured on authorized amateur frequency with legal power and callsign.
+
+### Steps
+1. Establish link between Flash and physical TNC.
+2. Send a single diagnostic test frame with explicit user authorization.
+3. Observe raw bytes exchanged on the serial/Bluetooth stream.
+
+### Pass
+- TNC responds with KISS data frame or acknowledgment.
+- Received frames are framed by `0xC0` (FEND), escape characters `0xDB 0xDC`/`0xDD` are decoded transparently by `KissFrameCodec`.
+- CRC-16 (or frame checksum) validates 100%.
+
+### Source
+Plan R §3, `KissTncDriver.kt`, `KissFrameCodec.kt`.
+
+### Status
+TODO
+
+---
+
+## RADCONL-01 — End-to-End Auto-Detect Flow with Single Paired Radio
+
+### Area
+Hardware Radio / Connect State Machine (`:core:radio.connect`)
+
+### Setup
+- Android phone or Windows desktop with exactly ONE paired radio (e.g. "VR-N76").
+- Gateway switch initially in `Off` state.
+
+### Steps
+1. Toggle Radio Gateway switch ON.
+2. Complete first-run checklist (e.g. amateur license acknowledgment, battery check).
+3. Observe candidate detection.
+
+### Pass
+- Because exactly one known radio matches, state machine transitions to `ConfirmCandidate` displaying "VR-N76".
+- State machine does NOT open the link or transmit any data prior to user confirmation (Rule 3 & Rule 4).
+- Upon user tapping "Connect", link opens and transitions to `Connected`.
+- Radio identity (Bluetooth hardware address) is persisted to `RememberedRadioStore`.
+
+### Source
+Plan R §6, `RadioConnectStateMachine.kt`, `RadioCandidateRanker.kt`.
+
+### Status
+TODO
+
+---
+
+## RADCONL-02 — Ambiguous Candidate Resolution (Multiple Radios Paired)
+
+### Area
+Hardware Radio / Candidate Ranker (`:core:radio.connect`)
+
+### Setup
+- Physical device with two or more paired radio candidates (e.g. "VR-N76" and "UV-Pro", or multiple Bluetooth serial devices).
+
+### Steps
+1. Toggle Radio Gateway switch ON.
+2. Complete checklist.
+3. Trigger paired device detection.
+
+### Pass
+- Auto-detect returns `null` (ambiguous).
+- State machine transitions to `ChooseFromList` displaying ranked candidates (known radios at top, serial-capable second, other last).
+- User explicitly selects desired radio from list.
+- Only the selected radio is connected.
+
+### Source
+Plan R §6, `RadioCandidateRanker.kt`.
+
+### Status
+TODO
+
+---
+
+## RADCONL-03 — Remembered Radio Reconnect on App Startup
+
+### Area
+Hardware Radio / Persistence & Reconnect (`:core:radio.connect`)
+
+### Setup
+- Previously paired and connected radio saved in `RememberedRadioStore`.
+- Radio powered on and within Bluetooth range.
+
+### Steps
+1. Restart Flash app with Radio Gateway switch ON.
+
+### Pass
+- State machine bypasses the discovery checklist and immediately initiates `Connecting` to the remembered Bluetooth hardware address (never COM port name).
+- On link established, transitions to `Connected`.
+- Zero scanning or device picker prompts shown.
+
+### Source
+Plan R §6 (Reconnecting flow).
+
+### Status
+TODO
+
+---
+
+## RADCONL-04 — Security Profile M Authorization Modal Enforcement
+
+### Area
+Hardware Radio / Security Authorisation Gate (`:core:radio.connect`, Plan R §8)
+
+### Setup
+- Device connected to radio gateway.
+- Security settings in UI.
+
+### Steps
+1. View available radio transmission security profiles.
+2. Attempt to select Profile M (Encrypted, AES-256-GCM).
+3. Observe authorization gate modal prompting for operator callsign/authorization date.
+4. Reject or dismiss modal without confirmation; attempt to send message.
+5. Re-open modal, enter valid operator confirmation with current timestamp; confirm.
+
+### Pass
+- In step 2 & 4: Profile M is disallowed; radio strictly transmits in Profile A (Plaintext signed).
+- In step 5: Authorization confirmation is recorded with positive epoch timestamp (`confirmedAtEpochMs > 0`). Profile M is unlocked and selectable.
+
+### Source
+Plan R §8, `RadioAuthorisationGate.kt`.
+
+### Status
+TODO
+
+---
+
+## RADCONL-05 — Radio Link Lost & Recovery Flow
+
+### Area
+Hardware Radio / Connection State Machine (`:core:radio.connect`)
+
+### Setup
+- Active link connected to physical radio.
+
+### Steps
+1. Power off radio or walk out of Bluetooth range.
+2. Observe state machine transition.
+3. Inspect displayed error message and next step.
+4. Power radio back on and tap Retry.
+
+### Pass
+- State transitions to `Failed(LINK_LOST)`.
+- UI displays: "Bluetooth connection to radio was lost." with next step: "Ensure the radio is powered on, in range, and tap Retry."
+- Tapping Retry transitions to `Connecting` and re-establishes link without requiring re-pairing.
+
+### Source
+Plan R §6 (Failure reasons and next steps), `RadioConnectStateMachine.kt`.
+
+### Status
+TODO
+
+<!-- folded 2026-10-16 from logs/streams/R-spike/backlog-additions.md (integration of agent/R-spike); the fragment stays as the full record -->
+
+# Stream R-spike Test Backlog Additions
+
+Test cases owed for hardware verification on devices (per AGENTS.md §35 and `docs/plans/RADIO-GATEWAY-PLAN.md` §11).
+
+---
+
+### BT-R11 — Bluetooth Hardware Discovery, Pairing, and COM Port Mapping Spike (Plan R1a)
+- **Setup:** VR-N76 radio powered on, KISS TNC enabled in General Settings, tuned to legal frequency or dummy load. Windows 11 PC with Bluetooth enabled; Android test phone with Bluetooth enabled.
+- **Steps:** Follow `logs/streams/R-spike/runbook-BT-R11.md`:
+  1. Run `:desktop:radioSpike` in read-only mode; verify port-to-MAC mapping in JSON.
+  2. Run `:desktop:radioSpike --active --i-am-the-owner-and-the-radio-is-on`; perform active inquiry scan, in-app pairing, and SPP service enablement.
+  3. Launch `RadioSpikeActivity` on Android; grant Nearby devices permissions at point of use.
+  4. Perform 12s active discovery scan with `neverForLocation`; verify VR-N76 appears with Rank 1 badge.
+  5. Tap "Pair" in `RadioSpikeActivity`; observe OS pairing dialog, verify transition to `BOND_BONDED` and SPP service UUID listing.
+- **Pass:** The five questions in `runbook-BT-R11.md` results table are answered with empirical evidence; default PIN recorded.
+- **Source:** `docs/plans/RADIO-GATEWAY-PLAN.md` §10 (Phase R1a), §11 table row `BT-R11`.
+- **Status:** PASSED (2026-10-16 by owner runbook execution on PC and Android test phone)
+
+### RADSPK-01 — Windows Virtual COM Port Mapping via BTHENUM Registry
+- **Setup:** Windows 11 PC with at least one Bluetooth serial device paired (e.g. VR-N76).
+- **Steps:** Run `tools\flash-gradle.cmd :desktop:radioSpike -PradioArgs="--json"`.
+- **Pass:**
+  - Standard Serial over Bluetooth ports (e.g. `COM16`) map to remote Bluetooth address via `REGISTRY_BTHENUM`.
+  - Incoming listener ports (e.g. `COM7`, `COM15`) are identified as incoming listeners (`000000000000`).
+  - Output report masks all MAC addresses to preserve only the last 3 bytes (`**:**:**:XX:XX:XX`).
+- **Source:** Task 2, ADR-182, BT-R11 Q5.
+- **Status:** PASSED (2026-10-16 on Windows 11 host)
+
+### RADSPK-02 — Windows Active Inquiry Discovery via Win32 JNA API
+- **Setup:** Windows 11 PC, VR-N76 powered on in discoverable state.
+- **Steps:** Run `tools\flash-gradle.cmd :desktop:radioSpike -PradioArgs="--active --i-am-the-owner-and-the-radio-is-on"`. Press ENTER at Step 1 prompt.
+- **Pass:**
+  - Win32 `BluetoothFindFirstDevice` with `fIssueInquiry=1` discovers VR-N76 within 5.12 seconds.
+  - The radio is classified as Category `RADIO` and ranked at index 0.
+- **Source:** Task 2, ADR-182, BT-R11 Q1.
+- **Status:** PASSED (2026-10-16 on Windows 11 host with physical VR-N76)
+
+### RADSPK-03 — Windows In-App Pairing & Virtual COM Port Creation via JNA
+- **Setup:** Windows 11 PC, VR-N76 unpaired from Windows.
+- **Steps:** Run active `:desktop:radioSpike`, select discovered radio index, confirm authentication prompt, confirm SPP service enablement prompt.
+- **Pass:**
+  - `BluetoothAuthenticateDevice` returns `Success`.
+  - `BluetoothSetServiceState` with SPP GUID `{00001101-0000-1000-8000-00805F9B34FB}` returns `Success`.
+  - Windows assigns a new virtual COM port (e.g. `COM16`) visible in the final port list.
+- **Source:** Task 2, ADR-182, BT-R11 Q2 & Q3.
+- **Status:** PASSED (2026-10-16 on Windows 11 host with physical VR-N76)
+
+### RADSPK-04 — Android Discovery Scan with `neverForLocation`
+- **Setup:** Physical Android test phone (Android 12+), VR-N76 powered on in discoverable mode.
+- **Steps:**
+  1. Open `RadioSpikeActivity`.
+  2. Tap "Permissions"; confirm only "Nearby devices" permission is requested (no location dialog).
+  3. Tap "Scan Radios".
+- **Pass:**
+  - VR-N76 appears in discovered devices list with Rank 1 `[RADIO]` badge and masked address.
+  - Signal RSSI is displayed.
+  - Radio is not dropped/filtered by OS location filter.
+- **Source:** Task 3, ADR-183, BT-R11 Q4.
+- **Status:** PASSED (2026-10-16 on Android phone, Screenshot_20261016-134640.jpg)
+
+### RADSPK-05 — Android In-App Pairing via `BluetoothDevice.createBond()`
+- **Setup:** Android test phone, VR-N76 discovered in `RadioSpikeActivity` but unbonded.
+- **Steps:** Tap "Pair" button next to VR-N76 in discovered list. Follow system PIN prompt if requested.
+- **Pass:**
+  - Status card displays `"Pairing: In progress with VR-N76..."` followed by `"Pairing: Successfully paired with VR-N76."`.
+  - The radio moves to Bonded Devices section and displays SPP UUID `00001101-0000-1000-8000-00805F9B34FB [SPP]`.
+- **Source:** Task 3, ADR-183, BT-R11 Q4.
+- **Status:** PASSED (2026-10-16 on Android phone, Screenshot_20261016-134640.jpg)
+
+### RADSPK-06 — Android Discovery Lifecycle Cancellation
+- **Setup:** Android test phone running `RadioSpikeActivity`.
+- **Steps:**
+  1. Tap "Scan Radios" and verify 12-second countdown timer decrements. Allow to reach 0; verify scan completes and status shows "Completed".
+  2. Tap "Scan Radios" again and immediately press Home/Back button to exit screen.
+- **Pass:**
+  - `BluetoothAdapter.isDiscovering` becomes false immediately.
+  - Logcat shows `"Stopped: scan aborted and receivers unregistered on leaving screen"`.
+  - No background scan leakage.
+- **Source:** Task 3, AGENTS.md §21.
+- **Status:** PASSED (2026-10-16 on Android phone, adb logcat verified)
