@@ -157,7 +157,15 @@ internal object Win32BluetoothNative {
     }
 
     val INSTANCE: BthpropsLibrary by lazy {
-        Native.load("bthprops.cpl", BthpropsLibrary::class.java)
+        val systemRoot = System.getenv("SystemRoot") ?: "C:\\Windows"
+        val bthpropsFile = java.io.File(systemRoot, "System32\\bthprops.cpl")
+        val sysNativeFile = java.io.File(systemRoot, "Sysnative\\bthprops.cpl")
+        val libraryPath = when {
+            bthpropsFile.exists() -> bthpropsFile.absolutePath
+            sysNativeFile.exists() -> sysNativeFile.absolutePath
+            else -> "bthprops.cpl"
+        }
+        Native.load(libraryPath, BthpropsLibrary::class.java)
     }
 }
 

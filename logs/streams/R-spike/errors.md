@@ -57,3 +57,49 @@ Updated `RealWindowsRegistryPortReader` to specifically isolate the substring af
 
 ### Status
 RESOLVED
+
+---
+
+## ERROR-622 — JNA appends .dll to non-path library names causing bthprops.cpl to fail with ERROR_MOD_NOT_FOUND
+
+### Date
+2026-10-16
+
+### Area
+Desktop module / Windows Win32 Bluetooth JNA Loading (`WindowsBluetoothApi`)
+
+### Symptoms
+When running `:desktop:radioSpike`, section [2/3] failed with:
+`[RealWindowsBluetoothApi] Unable to load bthprops.cpl: Unable to load library 'bthprops.cpl': The specified module could not be found. Native library (win32-x86-64/bthprops.cpl.dll) not found in resource path`
+Remembered Bluetooth devices and installed services were not enumerated.
+
+### Root cause
+JNA's `Native.load(String name, Class interfaceClass)` invokes Java's `System.mapLibraryName(name)` when the provided library name is not an absolute path. On Windows, `System.mapLibraryName("bthprops.cpl")` appends `.dll`, resulting in `"bthprops.cpl.dll"`. Since Windows Control Panel DLLs in `System32` do not carry a `.dll` suffix on disk (the file is literally `C:\Windows\System32\bthprops.cpl`), the Win32 `LoadLibraryEx` call failed with module not found (error code 126).
+
+### Working fix
+Updated `Win32BluetoothNative.INSTANCE` in `WindowsBluetoothApi.kt` to resolve the absolute system path dynamically:
+```kotlin
+val systemRoot = System.getenv("SystemRoot") ?: "C:\\Windows"
+val bthpropsFile = java.io.File(systemRoot, "System32\\bthprops.cpl")
+val sysNativeFile = java.io.File(systemRoot, "Sysnative\\bthprops.cpl")
+val libraryPath = when {
+    bthpropsFile.exists() -> bthpropsFile.absolutePath
+    sysNativeFile.exists() -> sysNativeFile.absolutePath
+    else -> "bthprops.cpl"
+}
+Native.load(libraryPath, BthpropsLibrary::class.java)
+```
+When given an absolute file path, JNA passes the path directly to `LoadLibraryExW` without appending `.dll`.
+
+### Verification
+- Unit test `testWin32BluetoothNativeInstanceLoads` in `RadioSpikeTest.kt` passed cleanly.
+- Executed `tools\flash-gradle.cmd :desktop:radioSpike -PradioArgs="--json --out report-readonly.json"`.
+- Successfully loaded `bthprops.cpl`, enumerated 2 remembered Bluetooth devices via `BluetoothFindFirstDevice`/`Next`, queried their SDP service GUIDs via `BluetoothEnumerateInstalledServices` (including SPP GUID `00001101-...`), classified `TQ-EJ12` as `SERIAL_SPP`, and matched `COM6` to `TQ-EJ12` (`**:**:**:DE:49:1F`).
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radiospike/WindowsBluetoothApi.kt`
+- `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/radiospike/RadioSpikeTest.kt`
+
+### Status
+RESOLVED
+

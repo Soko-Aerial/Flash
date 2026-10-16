@@ -60,7 +60,7 @@
 - Proposed draft `ADR-182` for O-6 (Win32 JNA + registry mapping) in `logs/streams/R-spike/decisions-additions.md`.
 - Proposed draft `ADR-183` for O-7 (In-app discovery vs CDM) in `logs/streams/R-spike/decisions-additions.md`.
 - Sourced Bluetooth platform facts in `logs/streams/R-spike/platform-notes-additions.md` (checked 2026-10-16 against official developer.android.com documentation, verified).
-- Recorded `ERROR-620` and `ERROR-621` in `logs/streams/R-spike/errors.md`.
+- Recorded `ERROR-620`, `ERROR-621`, and `ERROR-622` in `logs/streams/R-spike/errors.md`.
 - Recorded `EXP-045` in `logs/streams/R-spike/experiments.md`.
 
 ### Task 5: Owner Runbook & Test Backlog
@@ -126,14 +126,14 @@
 ## Gate Commands Run & Verification Evidence
 
 1. **`:desktop:jvmTest --tests com.transfer.flash.desktop.radiospike.RadioSpikeTest`**
-   - Output: `BUILD SUCCESSFUL in 1m 11s`, 6/6 tests passed.
-   - Last line: `[flash-gradle] finished with exit code 0 after 71s of running`
+   - Output: `BUILD SUCCESSFUL in 13s`, 7/7 tests passed (including `testWin32BluetoothNativeInstanceLoads`).
+   - Last line: `[flash-gradle] finished with exit code 0 after 14s of running`
 2. **`:desktop:radioSpike` (Read-only live run)**
    - Output: `BUILD SUCCESSFUL in 22s`. 4 COM ports enumerated, `COM16` and `COM6` mapped via `REGISTRY_BTHENUM`.
    - Last line: `[flash-gradle] finished with exit code 0 after 22s of running`
-3. **`:desktop:radioSpike -PradioArgs="--json"`**
-   - Output: `BUILD SUCCESSFUL in 18s`. Emitted valid JSON report with masked MAC addresses (`**:**:**:01:35:B5`).
-   - Last line: `[flash-gradle] finished with exit code 0 after 18s of running`
+3. **`:desktop:radioSpike -PradioArgs="--json --out report-readonly.json"`**
+   - Output: `BUILD SUCCESSFUL in 9s`. Loaded `bthprops.cpl` via resolved path, enumerated 2 Bluetooth devices (`TQ-EJ12`, `AA-ER3`), listed service GUIDs (including SPP), mapped `COM6` to `TQ-EJ12` (`**:**:**:DE:49:1F`) via `REGISTRY_BTHENUM`, identified `COM7` as incoming listener, wrote `report-readonly.json`.
+   - Last line: `[flash-gradle] finished with exit code 0 after 10s of running`
 4. **`:app:compileDebugKotlin`**
    - Output: `BUILD SUCCESSFUL in 5m 1s`.
    - Last line: `[flash-gradle] finished with exit code 0 after 301s of running`
