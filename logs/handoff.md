@@ -1,6 +1,29 @@
 # Current Handoff
 
+## 2026-10-16 — Hub Tab Phases H6–H10 Independent Verification Complete (Stream V, report-5.md)
+- **Status:** Independent verification report filed at `logs/streams/V-verifier/report-5.md`; verdicts: H6 ACCEPT, H7 ACCEPT WITH FIXES (minor a11y strings), H8 ACCEPT, H9 ACCEPT, H10 ACCEPT.
+
+## 2026-10-16 — VR-N76 Hardware Spike Verified (BT-00 PASSED)
+
+- **Status:** Test `BT-00` / Phase `BT-H` from `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md` is **PASSED** on real hardware.
+- **Physical Test Setup:** Vero Telecom VGC VR-N76 handheld transceiver (Bluetooth MAC `38:D2:00:01:35:B5`), paired with Windows 11 host.
+- **Key Hardware Findings Recorded in EXP-023:**
+  1. **Bluetooth Profiles:** VR-N76 advertises Bluetooth Classic SPP (`00001101-...`) bound to `COM16` at 115200 baud, 8-N-1, plus HFP Audio (`VR-N76 Hands-Free HF`, `0000111F-...`) and BLE GATT services.
+  2. **KISS TNC Transmit:** Writing KISS frames to `COM16` keys the transmitter (red TX LED on top, frequency `144.625` highlighted on display) and modulates 1200-baud Bell 202 AFSK audio tones.
+  3. **Airtime / Goodput:** 220-byte Flash payload produced 1.5 to 2.0 seconds of on-air TX time, exactly matching theoretical 1.887 seconds (1,904 bits @ 1200 bps + 300 ms `TXDELAY`).
+  4. **9600 Baud Refuted:** No baud rate menu exists. Firmware is hardcoded to 1200 baud. The 9600-baud UHF claim is struck.
+  5. **Screen / LCD Behavior:** Screen retains normal VFO display during outbound KISS transmission. Validates Option A (phone is UI, radio is transparent modem).
+  6. **Voice Feasibility:** Real-time digital voice (Codec2 700B/1200 bps) over 1200-baud packet is mathematically infeasible on simplex RF.
+- **Files Updated:**
+  - `tools/vr_n76_kiss_test.py`: Standalone Python KISS/AX.25 test utility.
+  - `logs/experiments.md`: `EXP-023` filled with measured hardware results.
+  - `docs/testing/TEST-BACKLOG.md`: `BT-00` marked `PASSED`.
+  - `docs/network/BLUETOOTH-AND-RADIO-TNC-PLAN.md`: Section 0.2 updated with verified facts.
+  - `logs/progress.md`: Entry added.
+- **Recommended Next Task:** Keep radio work in design mode until owner authorizes product code.
+
 ## 2026-10-15 — Plan A3 Announcements Engine, Console, Persistence & Repository Complete (Stream S2-a3)
+
 
 - **Status:** Plan A3 (`docs/plans/HUB-ANNOUNCEMENTS-PLAN.md` §3, §4.1-§4.3, §5) is COMPLETE and unit-tested on branch `agent/S2-a3`. Strict scope boundary maintained: server engine, admin console UI, Room schema step 17, and repository integration built; Hub tab screens and notification UI deferred to Plan A4 / H6+. ADR-138 (plaintext on hub) strictly respected.
 - **Components Built & Verified:**

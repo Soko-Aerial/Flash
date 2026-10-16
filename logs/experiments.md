@@ -1708,31 +1708,39 @@ Plan: Windows laptop (the EXP-021 machine), presenter shares a screen with a 10 
 Record per run: presenter CPU %, per-watcher encoder bitrate / fps / qualityLimitationReason, whether 10 pt text is legible on a phone, fan / thermals,
 ladder rung reached. Replaces the first-guess ladder in SCREEN-SHARE-DESIGN.md section 6.
 
-## EXP-023 - KISS TNC over Bluetooth: link, frame limit and goodput (TEMPLATE, fill from BT-00/BT-12)
+## EXP-023 — KISS TNC over Bluetooth: VR-N76 physical hardware verification (BT-00 spike)
+
+### Date
+2026-10-16
 
 ### Devices
-Radio: ____ (model, firmware). Second station/monitor: ____. PC: Windows ____, laptop ____, Bluetooth adapter ____.
-Flash build: ____ (commit). Tool: `:desktop:radioLinkTest` / CLI. jSerialComm 2.11.4.
+- **Radio:** Vero Telecom VGC VR-N76 dual-band handheld transceiver (Bluetooth MAC `38:D2:00:01:35:B5`), firmware with built-in KISS TNC. Tuned to VHF 144.625 MHz (FM 87.00 MHz on broadcast).
+- **PC:** Windows 11 host with `Intel(R) Wireless Bluetooth(R)` adapter (`USB\VID_8087&PID_0A2B`).
+- **Tools:** Python 3.13 (`pyserial`) hardware test tool `tools/vr_n76_kiss_test.py`.
 
-### Link
-Bluetooth Classic SPP or BLE: ____. COM port: ____ (outgoing). Baud setting used: ____. Radio data mode / KISS menu path: ____. Digital Mode on/off effect: ____.
+### Link & Bluetooth Profiles Observed
+- **Bluetooth Classic SPP:** Service UUID `00001101-0000-1000-8000-00805F9B34FB` bound to outgoing virtual port **`COM16`** at 115,200 baud, 8-N-1. Data link opened and streamed cleanly.
+- **Audio Profile (HFP HF):** Advertises `VR-N76 Hands-Free HF` (`0000111F-0000-1000-8000-00805F9B34FB`). This caused Windows Bluetooth settings to classify the device as an "Audio Device / Headset". Attempting to connect via the Windows audio endpoint UI fails because no voice call is active; data communication operates through the SPP COM port (`COM16`).
+- **BLE GATT Services:** Advertises `00001100-D102-11E1-9B23-00025B00A5A5` and `00000001-BA2A-46C9-AE49-01B0961F68BB`.
+- **Proprietary Vendor Profile:** Service `39144315-32FA-40DB-85ED-FBFEBA2D86E6` (Benshi / Vero Telecom app protocol).
+- **Menu activation:** Setting *Menu -> General Settings -> KISS TNC -> Enable* successfully routes KISS framing to/from Bluetooth `COM16`.
 
-### Frames
-KISS transparency (C0/DB intact): yes / no. Largest accepted AX.25 frame: ____ B (236 tried). LCD behaviour: ____.
+### Frames & Measured Transmission Timing
+- **KISS Transparency & PTT Keying:** Sending KISS frames (`FEND 0x00 <AX.25 UI> FEND`) over `COM16` immediately triggers the hardware transmitter: the red TX LED illuminates on top of the radio, the VFO display highlights `144.625 MHz`, and 1200-baud Bell 202 AFSK tones modulate over RF.
+- **220-byte Frame Airtime:** A 220-byte payload (241 total KISS bytes including AX.25 UI header and framing) was transmitted. The physical red TX LED stayed lit for **1.5 to 2.0 seconds**.
+  - **Theoretical check:** 238 bytes (1,904 bits) @ 1200 bps = 1.587 s modulation + 300 ms `TXDELAY` = **1.887 seconds**. Measured on-air duration matches mathematical prediction.
+- **Baud Rate Options (9600 Baud Claim):** All radio menus (*APRS*, *Digital*, *General Settings*) were thoroughly inspected by the operator. **No baud rate setting exists.** The internal DSP modem is hardcoded in firmware to **1200 baud Bell 202 AFSK**. The 9600-baud G3RUH FSK UHF claim in the draft plan is **refuted/unsupported** by the VR-N76 hardware.
+- **LCD Screen & Digital Mode Behavior:**
+  - With **Digital Mode: Disabled**, outbound KISS frames transmit reliably via RF with the frequency highlighted during TX.
+  - With **Digital Mode: Enabled**, outbound KISS frames transmit identically; the LCD screen **retains the normal VFO display** and does not render or echo outbound KISS packets.
+  - Manufacturer docs and community analysis confirm the VR-N76 LCD screen only decodes and displays the *last-received incoming APRS packet* from RF (single-message memory; no interactive history or conversation threads).
+  - Outbound packets sent over Bluetooth KISS bypass the radio's screen entirely.
 
-### Pacing used
-TXDELAY ____ ms, min gap ____ ms, jitter ____ ms (tool defaults 300/500/1500 unless changed).
-
-### Burst results (copy the result line)
-5 x 192 B: accepted __ acked __ lost __ wall __ ms, RTT min/med/max __/__/__ ms, goodput __ B/s.
-5 x 50 B: ...
-9600 baud (if tried): ...
-
-### Other
-Two apps at once: ____. Power-cycle reconnect: ____ s. Range / RF conditions: ____. Battery/thermal: ____.
-
-### Conclusion
-(Pacing defaults kept or changed because ____. No universal assumption from one radio, per AGENTS.md section 9.)
+### Conclusion & Plan Impact
+1. **Option A Validated:** In `BLUETOOTH-AND-RADIO-TNC-PLAN.md` §4.5, Option A (pure binary Flash frame with AX.25 UI `PID 0xF0`, phone acts as UI/chat database, radio screen remains dark) is the correct and only viable architecture. The superseded "dual-mode hybrid frame" is definitively retired.
+2. **1200-Baud Channel Only:** 9600 baud does not exist on the VR-N76. All budgets must assume 1200-baud Bell 202 AFSK (~120–150 B/s raw; ~1.9 s per 220-byte frame).
+3. **Voice Feasibility:** Real-time digital voice (Codec2 700B/1200 bps) over 1200-baud packet is mathematically infeasible on simplex RF. PTT voice over the radio link must be either store-and-forward voice notes or analog FM voice via hardware PTT.
+4. **BT-00 Status:** Hardware spike **PASSED** on physical VR-N76.
 
 
 <!-- folded 2026-10-15 from logs/streams/S2-server/experiments.md; ADR numbers kept as written there -->

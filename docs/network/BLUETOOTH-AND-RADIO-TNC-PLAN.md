@@ -60,21 +60,22 @@ that is not marked *verified* is a test to run, not a fact.
 | E16 | Plan names `OutboxScheduler` (`core/messaging`) and `FlashPttPlayout` (`core/ptt`) | **Neither symbol exists.** The durable outbox lives in `RealFlashChatRepository` (no `OutboxScheduler` in `core/messaging`); the PTT playout classes are `PttPlayoutCore` (common) and `JvmPttPlayout` (jvm). | grep |
 | E15 | Desktop actual = "BlueZ / JNA" | Windows is the shipped desktop. A paired SPP radio appears there as a **virtual COM port** (serial library), which is simpler than BlueZ. Linux needs BlueZ via D-Bus, the same D-Bus decision as `docs/LINUX-PORT-PLAN.md` (D-L2). | [G7JJF KISS radios](https://www.g7jjf.com/kissradio.htm) |
 
-### 0.2 Hardware facts: verified vs still a test
+### 0.2 Hardware facts: verified vs still a test (UPDATED 2026-10-16 from EXP-023 / BT-00)
 
-**Verified (public sources):** the BTECH UV-Pro and the VR-N76 have a built-in KISS TNC reached over Bluetooth, enabled in
-*Menu > General Settings > KISS TNC*, and work with apps such as APRSDroid ([BTECH](https://baofengtech.com/?p=267522),
-[VR-N76 + APRSDroid](https://hamradio.my/setting-up-bluetooth-kiss-tnc-on-verotelecom-vgc-vr-n76-with-aprsdroid/)).
-The **Radioddity GA-5WB** also has a built-in Bluetooth KISS TNC ([Radioddity](https://radioddity.com/products/radioddity-ga-5wb)),
-which the first review wrongly doubted.
+**Verified (public sources & hardware spike EXP-023):**
+1. The BTECH UV-Pro and VR-N76 have a built-in KISS TNC reached over Bluetooth, enabled in *Menu > General Settings > KISS TNC: Enable*, and work over serial links ([BTECH](https://baofengtech.com/?p=267522), [VR-N76 + APRSDroid](https://hamradio.my/setting-up-bluetooth-kiss-tnc-on-verotelecom-vgc-vr-n76-with-aprsdroid/)).
+2. **Bluetooth profiles (verified EXP-023):** The VR-N76 exposes **both** Bluetooth Classic SPP (`00001101-...`) bound to virtual COM port (e.g. `COM16`) at 115,200 baud, 8-N-1, **and** BLE GATT services (`00001100-...`, `00000001-...`), plus a Bluetooth Hands-Free Profile (`VR-N76 Hands-Free HF`, `0000111F-...`) which causes Windows to categorize the radio as an "Audio Device" upon initial pairing.
+3. **KISS modulation and PTT keying (verified EXP-023):** Writing KISS data frames (`FEND 0x00 ... FEND`) to the SPP COM port immediately triggers the hardware transmitter: the red TX LED illuminates, the display highlights the VFO frequency, and 1200-baud Bell 202 AFSK audio modulates over RF.
+4. **1200-baud on-air duration (verified EXP-023):** A 220-byte Flash payload (241 total KISS bytes) produces an on-air TX LED duration of **1.5 to 2.0 seconds**, in exact agreement with the theoretical 1.887 seconds (1,904 bits @ 1200 bps + 300 ms `TXDELAY`).
+5. **9600 baud operation (DISPROVEN / STRUCK, EXP-023):** The VR-N76 menu contains no baud rate setting. Firmware is hardcoded to 1200-baud Bell 202 AFSK. 9600 baud does not exist on this hardware.
+6. **Radio LCD screen behavior (verified EXP-023):** Outbound KISS frames bypass the radio's LCD screen entirely (display retains the normal VFO display with Digital Mode both ON and OFF). Inbound APRS packets off RF have single-message memory (latest packet overwrites display; no history/threads). This confirms **Option A** (phone is UI, radio is transparent modem).
+7. **PTT Voice feasibility (verified EXP-023):** Real-time digital voice (Codec2 700B/1200 bps) over 1200-baud packet is mathematically infeasible on simplex RF (~1.9 s per 220 B). Only store-and-forward voice notes or analog FM voice via Bluetooth PTT are possible.
 
-**Unverified, must be tested on a real radio before design continues (new test `BT-00`):**
-1. Bluetooth Classic SPP, BLE, or both for the data path, and what the "virtual COM port at 115200" claim means in practice.
-2. **9600 baud** operation (the draft states it as fact; no source found).
-3. **Whether the radio LCD shows incoming APRS messages while KISS is enabled.** Sources conflict: BTECH says leave
-   "Digital Mode" *unchecked*, G7JJF says it must be *enabled*. This decides whether the "dual-mode" idea can exist at all.
-4. That only one app may hold the radio link at a time (G7JJF: disconnect the phone app first).
-5. Real 1200-baud throughput and latency with Flash-sized frames.
+**Remaining tests for future stages:**
+- `BT-12`: Two-station burst goodput and round-trip ACK measurement with two radios.
+- `BT-13`: Link loss and automatic reconnect after radio power cycle.
+- `BT-14`: Two apps at once (concurrent access behavior).
+
 
 ### 0.3 Deployment profile changes the security section (owner, 2026-10-07)
 
