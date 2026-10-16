@@ -269,6 +269,7 @@ run {
     registerRadioTool("radioLinkTest", "com.transfer.flash.desktop.RadioLinkTestApp", "Opens the experimental radio link test window (BT-00).")
     registerRadioTool("radioLinkTestCli", "com.transfer.flash.core.radio.diag.RadioLinkTestCliKt", "Headless radio link test; pass options with -PradioArgs=\"--list\" (BT-00).")
     registerRadioTool("radioSpike", "com.transfer.flash.desktop.radiospike.RadioSpikeCliKt", "Runs the BT-R11 Windows Bluetooth radio spike tool (read-only by default; active mode needs owner flag).")
+    registerRadioTool("radioGatewayDemo", "com.transfer.flash.desktop.DesktopRadioGatewayDemoAppKt", "Runs the standalone Radio Gateway UI demo window.")
 }
 
 // The BT-00 window and BT-R11 spike tools are hardware-spike tools (ADR-101), not features: keep their classes out of the desktop jar, and so out of the
@@ -277,5 +278,5 @@ run {
 // file class RadioLinkTestMainKt (+ its lambdas); the Compose compiler also emits ComposableSingletons$RadioLinkTestMainKt.
 // The headless CLI lives in :core:radio (core/radio/.../diag), outside this module.
 tasks.named<Jar>("jvmJar") {
-    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*")
+    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*", "com/transfer/flash/desktop/DesktopRadioGatewayDemoApp*")
 }

@@ -345,22 +345,29 @@ public fun main(args: Array<String> = emptyArray()) {
                         val ready by engine.ready.collectAsState()
                         val startError by engine.startError.collectAsState()
                         Box(Modifier.fillMaxSize()) {
-                            DesktopShell(
-                                engine = engine,
-                                themeMode = desktopSettings.themeMode,
-                                onThemeModeSelected = { mode ->
-                                    engine.storeThemeMode(mode)
-                                },
-                                window = window,
-                                nav = nav,
-                                externalShareFiles = pendingFilesToShare,
-                                onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
-                                pendingHubRoute = pendingHubRoute,
-                            )
-                            FlashLaunchSplashOverlay(
-                                gate = launchSplash,
-                                engineSettled = ready || startError != null,
-                            )
+                            if (args.contains("--radio-demo")) {
+                                com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
+                                    controller = remember { com.transfer.flash.ui.radio.FakeRadioGatewayController().apply { setEnabled(true) } },
+                                    onBack = { exitApplication() },
+                                )
+                            } else {
+                                DesktopShell(
+                                    engine = engine,
+                                    themeMode = desktopSettings.themeMode,
+                                    onThemeModeSelected = { mode ->
+                                        engine.storeThemeMode(mode)
+                                    },
+                                    window = window,
+                                    nav = nav,
+                                    externalShareFiles = pendingFilesToShare,
+                                    onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
+                                    pendingHubRoute = pendingHubRoute,
+                                )
+                                FlashLaunchSplashOverlay(
+                                    gate = launchSplash,
+                                    engineSettled = ready || startError != null,
+                                )
+                            }
                         }
                     }
                 }
