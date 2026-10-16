@@ -1,5 +1,10 @@
 # Current Handoff
 
+## 2026-10-16 - Radio plan APPROVED, prompts for R1..R6 ready
+
+- **Status:** plan approved (ADR-173 amended, ADR-182/183 accepted, O-4 yes). Prompts: `docs/plans/RADIO-PROMPTS-2.md`. Nothing started. Radios are unavailable until the owner is back at the workplace, so no hardware test can run yet.
+- **Recommended next task:** start R-link and R-ui (and optionally R-audio) in Antigravity; run the verifier on R-chat before merging because it touches shared engine files.
+
 ## 2026-10-16 - Radio streams merged into dev (R-move + R-spike)
 
 - **Status:** `dev` contains `:core:radio` (the moved radio stack plus the pure connect logic) and the BT-R11 spike tools. Gate on the merged result is green (see `logs/progress.md` top entry). No verifier pass was run on either stream (owner's choice).
