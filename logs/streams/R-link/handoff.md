@@ -4,7 +4,7 @@
 `agent/R-link`
 
 ## Last verified build
-`d1a8b2d9` (plus uncommitted changes verified via `:core:radio:jvmTest --rerun-tasks` and `:desktop:compileKotlinJvm :app:compileDebugKotlin`)
+`22ef24d9`
 
 ## Current phase
 Phase R1 / R2 — Hardware Radio KISS TNC Gateway (Find, pair and connect)
