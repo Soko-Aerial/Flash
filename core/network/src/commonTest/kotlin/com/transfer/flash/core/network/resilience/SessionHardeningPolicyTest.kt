@@ -56,7 +56,7 @@ class SessionHardeningPolicyTest {
 
     @Test
     fun `tie keeps existing - documented behavior`() {
-        for (rank in listOf(0, 1, 2, 3, 99)) {
+        for (rank in listOf(0, 1, 2, 3, 4, 99)) {
             assertEquals(
                 DuplicateSessionDecision.KeepExisting,
                 policy.resolveDuplicate(rank, rank),
@@ -77,13 +77,15 @@ class SessionHardeningPolicyTest {
         val ws = rankOf(FlashTransportType.WEBSOCKET)
         val relayClass = rankOf(FlashTransportType.RELAY)
         val mesh = rankOf(FlashTransportType.MESH)
+        val bt = rankOf(FlashTransportType.BLUETOOTH)
         val unknown = rankOf(FlashTransportType.UNKNOWN)
 
         assertTrue(lan < direct)
         assertTrue(direct < ws)
         assertTrue(ws < relayClass)
         assertEquals(relayClass, mesh) // BLE-presence (post-v1) will share rank 3
-        assertTrue(relayClass < unknown)
+        assertTrue(relayClass < bt)
+        assertTrue(bt < unknown)
         assertEquals(SessionHardeningPolicy.TRANSPORT_RANK_UNKNOWN, unknown)
         assertEquals(SessionHardeningPolicy.TRANSPORT_RANK_LAN, 0)
     }

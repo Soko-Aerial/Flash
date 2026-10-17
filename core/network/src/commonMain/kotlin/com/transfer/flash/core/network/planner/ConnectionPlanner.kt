@@ -61,6 +61,7 @@ public class ConnectionPlanner(
         val host: String,
         val port: Int,
         val name: String,
+        val transport: com.transfer.flash.core.common.model.FlashTransportType = com.transfer.flash.core.common.model.FlashTransportType.LAN,
     )
 
     /** What the planner needs to know about the network's current sessions. */
@@ -73,6 +74,9 @@ public class ConnectionPlanner(
 
         /** Some registered session's remembered endpoint is [host]; for gateway probes only. */
         public fun hasSessionAtHost(host: String): Boolean = false
+
+        /** Planner hook (Plan R §7 / ADR-200): true when [deviceId] has an active Bluetooth/radio route. */
+        public fun hasBluetoothRoute(deviceId: String): Boolean = false
     }
 
     /**

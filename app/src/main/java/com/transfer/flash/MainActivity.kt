@@ -3547,7 +3547,7 @@ private fun DisplayNameDialog(
 private fun FlashTransportType.toUiTransport(): FlashNetworkTransport = when (this) {
     FlashTransportType.WIFI_DIRECT -> FlashNetworkTransport.WifiDirect
     FlashTransportType.RELAY, FlashTransportType.MESH -> FlashNetworkTransport.Relay
-    FlashTransportType.UNKNOWN -> FlashNetworkTransport.Unknown
+    FlashTransportType.UNKNOWN, FlashTransportType.BLUETOOTH -> FlashNetworkTransport.Unknown
     // NSD-discovered peers report LAN; the WS mesh path maps to the same LAN-class UI badge.
     FlashTransportType.LAN, FlashTransportType.WEBSOCKET -> FlashNetworkTransport.Lan
 }

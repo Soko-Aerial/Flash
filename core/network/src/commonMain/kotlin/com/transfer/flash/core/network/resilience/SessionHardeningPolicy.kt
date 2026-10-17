@@ -90,6 +90,7 @@ public class SessionHardeningPolicy(
         public const val TRANSPORT_RANK_WIFI_DIRECT: Int = 1
         public const val TRANSPORT_RANK_WEBSOCKET: Int = 2
         public const val TRANSPORT_RANK_RELAY_CLASS: Int = 3 // relay/mesh/BLE-presence (post-v1 paths)
+        public const val TRANSPORT_RANK_BLUETOOTH: Int = 4
         public const val TRANSPORT_RANK_UNKNOWN: Int = 99
 
         public fun transportRank(transport: FlashTransportType): Int = when (transport) {
@@ -97,6 +98,7 @@ public class SessionHardeningPolicy(
             FlashTransportType.WIFI_DIRECT -> TRANSPORT_RANK_WIFI_DIRECT
             FlashTransportType.WEBSOCKET -> TRANSPORT_RANK_WEBSOCKET
             FlashTransportType.RELAY, FlashTransportType.MESH -> TRANSPORT_RANK_RELAY_CLASS
+            FlashTransportType.BLUETOOTH -> TRANSPORT_RANK_BLUETOOTH
             FlashTransportType.UNKNOWN -> TRANSPORT_RANK_UNKNOWN
         }
     }
