@@ -24,7 +24,7 @@ public class RadioChatBridge(
     public val port: RadioOutboxPort,
     private val scope: CoroutineScope,
     private val onInboundMessage: suspend (senderId: String, callsign: String?, messageId: String, text: String, sentAtMs: Long) -> Unit,
-    private val onDeliveryReceipt: suspend (messageId: String, deliveredAtMs: Long) -> Unit,
+    private val onDeliveryReceipt: suspend (messageId: String, deliveredAtMs: Long, recipientDeviceId: String) -> Unit,
     private val onMessageFailed: suspend (messageId: String) -> Unit,
     private val maxAttempts: Int = MAX_ATTEMPTS,
 ) {
@@ -51,7 +51,7 @@ public class RadioChatBridge(
                         ))
                     }
                     attempts.remove(receipt.messageId)
-                    onDeliveryReceipt(receipt.messageId, receipt.deliveredAtMs)
+                    onDeliveryReceipt(receipt.messageId, receipt.deliveredAtMs, receipt.recipientDeviceId)
                 }
             }
             launch {

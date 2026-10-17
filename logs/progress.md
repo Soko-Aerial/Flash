@@ -1,5 +1,22 @@
 # Progress Log
 
+## 2026-10-17 - R-chat and R-audio merged into dev; shared radio UI mapper (Claude Code, integrator)
+
+### Worked on
+Merged `agent/R-audio` (clean, debug-only probes) and `agent/R-chat` (clean, O-4 shared-file hunks reviewed by reading the diff: transport enum value, ranking, planner hook, repository bridge path, two engine fields). Folded their logs (ADR-200..202, 210..212 PROPOSED, ERROR-700..702 and 730, EXP-065 and 070, RADCHAT/RADAUD tests, audio platform notes). Closed the two R-wire follow-ups. Not pushed.
+
+### Changed
+- New `RadioGatewayUiMapper` in `:ui:chat` (now depends on `:core:radio`): one shared mapping, used by both host controllers; tests RADWIRE-U19..U25 (7, pass). The Android controller logic is now covered by JVM tests.
+- ChooseFromList: when auto-detect finds several paired radios, they are listed on the screen and `pair`/`confirmCandidate` resolve them (`deviceForId`). Before, the screen showed no list and `pair` found nothing.
+- Radio delivery receipts record the recipient as the confirming member (was this device).
+- ERROR-703 (OPEN): `radioPort` is never assigned, so radio chat is dead code in real builds (safe, nothing transmits). BT-R05 cannot run until a follow-up wires `RadioChatEngine` to the gateway driver.
+
+### Verification
+`:ui:chat:jvmTest --tests *RadioGatewayUiMapperTest*` (7), `:desktop:jvmTest` controller + outbox adapter tests, `:core:messaging:jvmTest --tests *RadioChatBridgeTest*`, full `:core:radio:jvmTest`, `:app:compileDebugKotlin`: all green. Mutation checks were not re-run for the mapper; R-chat's five stream mutation checks are as reported by the stream, not re-run.
+
+### Next AI
+Wire the chat engine to the gateway (ERROR-703). The owner decides ADR-210 (drop radio walkie-talkie modes 3 and 5). No push without the owner.
+
 ## 2026-10-16 - Radio stream R-wire reviewed, corrected and merged into dev (Claude Code, integrator)
 
 ### Worked on

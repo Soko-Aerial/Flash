@@ -92,6 +92,8 @@ kotlin {
             // Hub status types for the Settings organisation card (HubStatus, EnrollFailureReason, EnterpriseDirectoryGroup).
             implementation(project(":core:network"))
             implementation(project(":core:enterprise"))
+            // Radio gateway state types, only for RadioGatewayUiMapper (the shared host mapping).
+            implementation(project(":core:radio"))
             implementation(project(":core:transfer"))
             implementation(project(":ui:theme"))
             implementation(project(":ui:platform-shims"))

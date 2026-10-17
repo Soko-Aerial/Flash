@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-17 - R-chat and R-audio merged into dev, not pushed
+
+- **Status:** `dev` has the radio chat engine and bridge (dormant: ERROR-703, nothing assigns `radioPort`), the pairing-key adapter and counter store, and the debug-only audio probes. Shared `RadioGatewayUiMapper` replaces the duplicated mapping; ChooseFromList is listed.
+- **Owner decisions pending:** ADR-210 (drop radio modes 3 and 5; recommended by the R-audio findings), ERROR-684 (callsign field before the first on-air test).
+- **Device checks owed (owner at the radios):** RADWIRE-D01..D06, RADCHAT-*, RADAUD-01..04, RADLNK-D*, RADUI-*. The owner is away from the devices now.
+- **Recommended next task:** wire the engine to the gateway (ERROR-703); then the last stream (R-relay / R-radar) can build on it.
+
 ## 2026-10-16 - R-wire merged into dev (reviewed and corrected), not pushed
 
 - **Status:** `dev` has the real radio gateway controllers for Android (`AndroidRadioGatewayController` owned by `RadioGatewayHolder`) and Windows (`DesktopRadioGatewayController`), wired into Settings. The "Radio gateway (beta)" row now appears in real builds. Foreground service driven by `RadioServiceTracker`. Details and fixes: `logs/progress.md` top entry, ERROR-681..684.

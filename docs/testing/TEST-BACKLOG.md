@@ -4971,3 +4971,170 @@ All TODO until the owner has the radios; D03 transmits (owner only). D04 contain
 - **Pass:** exactly one RadioLinkService notification while connecting or connected, none otherwise; no orphaned notification after the Activity is gone; no crash.
 - **Source:** ERROR-681, ERROR-682 (RadioGatewayHolder, RadioServiceTracker).
 - **Status:** TODO
+
+## Radio chat over KISS (stream R-chat, 2026-10-16)
+
+All TODO; needs the radios. BT-R05 cannot run until ERROR-703 is closed (the chat engine is not wired to the gateway yet).
+
+## RADCHAT-DEV01 — Companion Mode Text Chat & Cryptographic ACK Over Physical Radios (BT-R05)
+
+### Setup
+- Two physical Vero Telecom VR-N76 / BTECH UV-Pro handheld transceivers tuned to the same simplex UHF/VHF frequency with dummy loads or legal RF antennas.
+- Station 1: Windows 11 Desktop running Flash with VR-N76 connected via Bluetooth SPP (virtual COM port).
+- Station 2: Android phone running Flash with VR-N76 connected via Bluetooth SPP.
+- Both stations paired in Flash with existing pairing keys in `FlashTrustStore`. Wi-Fi disabled on both devices (no LAN path).
+
+### Steps
+1. On Station 1, open conversation with Station 2; verify transport pill indicates Radio link.
+2. Send message: `"Hello via hardware radio BT-R05"`.
+3. Verify Station 1 immediately shows status `'sent by radio, waiting'`.
+4. Verify Station 2 receives message and displays `"Hello via hardware radio BT-R05"`.
+5. Verify Station 2 transmits cryptographic ACK frame.
+6. Verify Station 1 receives ACK and transitions status to `'delivered'`.
+
+### Pass Line
+```text
+PASS BT-R05: Text message arrives on Station 2; Station 1 shows 'sent by radio, waiting' then transitions to 'delivered' upon cryptographic ACK.
+```
+
+### Source
+Plan R §7 / Phase R3 (`docs/plans/RADIO-GATEWAY-PLAN.md` §11).
+
+### Status
+TODO (Owner physical execution per `runbook-R3.md`)
+
+---
+
+## RADCHAT-DEV02 — Air Capture Confidentiality Under Profile M (BT-R08-M)
+
+### Setup
+- Station 1 and Station 2 operating under Profile M (Encrypted).
+- Monitoring receiver (RTL-SDR / Direwolf / audio demodulator) tuned to the RF frequency.
+
+### Steps
+1. On Station 1, transmit message containing distinct string: `"CONFIDENTIAL_COORDINATES_47N_122W"`.
+2. Inspect demodulated AX.25 frame in Direwolf / SDR packet log.
+3. Verify AX.25 Destination address is `FLASH-0` and Source address is a rotating 6-character tag.
+4. Verify hex and ASCII payload contains zero occurrences of `"CONFIDENTIAL"` or `"COORDINATES"`.
+
+### Pass Line
+```text
+PASS BT-R08-M: Air capture under Profile M contains zero plaintext substrings; all frame bodies are AEAD ciphertext with rotating tags.
+```
+
+### Source
+Plan R §8 (`docs/plans/RADIO-GATEWAY-PLAN.md` §8 and §11).
+
+### Status
+TODO (Owner physical execution per `runbook-R3.md`)
+
+---
+
+## RADCHAT-DEV03 — Air Capture Transparency Under Profile A (BT-R08-A)
+
+### Setup
+- Station 1 operating under Profile A (Plaintext Signed) with callsign set (e.g. `W1AW`).
+- Monitoring receiver (RTL-SDR / Direwolf) recording channel traffic.
+
+### Steps
+1. On Station 1, transmit: `"CQ CQ DE W1AW TEST"`.
+2. Capture frame on SDR.
+3. Verify AX.25 Source address is `W1AW`.
+4. Verify payload contains clear-text `"CQ CQ DE W1AW TEST"` followed by valid 64-byte ECDSA P-256 signature.
+
+### Pass Line
+```text
+PASS BT-R08-A: Air capture under Profile A displays operator callsign in AX.25 source and valid ECDSA signature.
+```
+
+### Source
+Plan R §8 (`docs/plans/RADIO-GATEWAY-PLAN.md` §8 and §11).
+
+### Status
+TODO (Owner physical execution per `runbook-R3.md`)
+
+---
+
+## RADCHAT-DEV04 — RF Loss Recovery & Backoff Retransmission (BT-R09)
+
+### Setup
+- Two stations running Flash over physical radios.
+- Station 2's antenna disconnected or RF path attenuated to induce packet loss.
+
+### Steps
+1. Station 1 transmits message: `"Recovery message BT-R09"`.
+2. Station 1 enters `'sent by radio, waiting'` and steps through backoff retry attempts (attempts 1 to 5).
+3. Reconnect Station 2 antenna during attempt 3.
+4. Station 2 receives retransmitted frame, displays message, and emits cryptographic ACK.
+5. Station 1 receives ACK and marks message `'delivered'`.
+
+### Pass Line
+```text
+PASS BT-R09: Radio message re-transmits through retry backoff upon temporary RF interruption, and completes with 'delivered' once RF path is restored.
+```
+
+### Source
+Plan R §7 (`docs/plans/RADIO-GATEWAY-PLAN.md` §7 and §11).
+
+### Status
+TODO (Owner physical execution per `runbook-R3.md`)
+
+## Radio audio bridge probes (stream R-audio, BT-R10, 2026-10-16)
+
+All TODO; probes are read-only; the keying step in the runbook needs a dummy load and is the owner only.
+
+### `BT-R10` — Hardware Radio Audio Bridge Spike on Physical VR-N76
+- **Setup:** Vero Telecom VR-N76 handheld transceiver (firmware with Bluetooth HFP and VOX), Windows 11 PC with Intel Bluetooth adapter, Android test phone (API 31+), optional secondary receiver / SDR on test frequency (e.g. 144.625 MHz into 50-ohm dummy load).
+- **Steps:**
+  1. Complete numbered execution steps in `logs/streams/R-audio/runbook-BT-R10.md` (Part A on Windows, Part B on Android, Part C for turn-taking).
+  2. Collect diagnostic outputs (`report-audio-probe.json`, Logcat, and monitor audio recording).
+  3. Fill the results table in runbook §5 and sign off the owner decision template (§6).
+- **Pass:** The four core questions of Plan R §9 are answered in writing with empirical device evidence; owner selects Option 1, 2, or 3.
+- **Source:** `docs/plans/RADIO-GATEWAY-PLAN.md` §9 & §11, ADR-210, `logs/streams/R-audio/runbook-BT-R10.md`.
+- **Status:** TODO
+
+---
+
+### `RADAUD-01` — Windows Audio Endpoint Enumeration of Radio Hands-Free Device
+- **Setup:** VR-N76 paired to Windows 11 PC via Bluetooth with Hands-Free Telephony enabled.
+- **Steps:**
+  1. Run `tools\flash-gradle.cmd :desktop:radioAudioProbe -PradioArgs="--json --out report.json"`.
+  2. Inspect generated report and console table.
+- **Pass:** `VR-N76 Hands-Free HF` is enumerated under `windowsEndpoints`, classified as `RADIO_HANDS_FREE`, and reported as `UNPLUGGED (0x8)` with the explanation that Windows opens SCO only on active communications streams.
+- **Source:** Phase R4 / BT-R10 Step A1, ADR-212.
+- **Status:** TODO
+
+---
+
+### `RADAUD-02` — Android In-App Bluetooth SCO Routing via `RadioAudioActivity`
+- **Setup:** VR-N76 paired to Android test phone; debug build of `:app` installed.
+- **Steps:**
+  1. Launch `adb shell am start -n com.transfer.flash/com.transfer.flash.debug.radioaudio.RadioAudioActivity`.
+  2. Tap "Grant Perms" and accept runtime permissions.
+  3. Tap "Route SCO".
+- **Pass:** Status card transitions to `"Active: Routed via setCommunicationDevice(VR-N76)"` on Android 12+ (or `"SCO Broadcast State: CONNECTED"` on legacy Android); `audioDeviceList` marks VR-N76 with green `[SCO READY]` badge. Tapping "Clear Route" cleanly returns to `"Idle"`.
+- **Source:** Phase R4 / BT-R10 Step B4, ADR-212.
+- **Status:** TODO
+
+---
+
+### `RADAUD-03` — VR-N76 Inbound Analog RF Discriminator Audio Routing
+- **Setup:** VR-N76 routed to Android phone via SCO (`RADAUD-02`); secondary transmitter tuned to test frequency.
+- **Steps:**
+  1. Transmit voice audio from secondary transmitter to VR-N76.
+  2. Open sound recorder app on phone while SCO route is held.
+- **Pass:** Incoming analog RF audio is successfully captured by the phone's audio input via Bluetooth SCO uplink without silence or distortion.
+- **Source:** Phase R4 / BT-R10 Step B5, ADR-210.
+- **Status:** TODO
+
+---
+
+### `RADAUD-04` — VR-N76 Bluetooth VOX Syllabic Attack and Unkey Latency
+- **Setup:** VR-N76 VOX enabled (*Menu -> Settings -> VOX -> ON*); secondary receiver/monitor on test frequency.
+- **Steps:**
+  1. Stream spoken test audio through the VR-N76 Hands-Free playback endpoint.
+  2. Record on secondary monitor receiver.
+  3. Measure time delta between first spoken syllable and RF carrier activation, and time between speech end and transmitter unkey.
+- **Pass:** Attack delay and unkey delay are measured and recorded in milliseconds; first syllable clipping is evaluated for speech intelligibility.
+- **Source:** Phase R4 / BT-R10 Step A4 & B6, ADR-210.
+- **Status:** TODO
