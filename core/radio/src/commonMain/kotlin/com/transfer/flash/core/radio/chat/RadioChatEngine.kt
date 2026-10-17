@@ -203,8 +203,8 @@ public class RadioChatEngine(
             when (profile) {
                 RadioSecurityProfile.PROFILE_M_ENCRYPTED -> {
                     encodeResult = session.encode(recipientId, RadioKind.TEXT, textBytes, nowMs)
-                    destAddr = session.stationLabel(recipientId, nowMs)
-                    srcAddr = session.stationLabel(localDeviceId, nowMs)
+                    destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
+                    srcAddr = session.stationLabel(recipientId, nowMs)
                 }
                 RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED -> {
                     encodeResult = session.encodeSigned(RadioKind.TEXT, textBytes, nowMs)
@@ -284,8 +284,8 @@ public class RadioChatEngine(
 
         sessionMutex.withLock {
             encodeResult = session.encode(recipientId, RadioKind.BEACON, payload, nowMs)
-            destAddr = session.stationLabel(recipientId, nowMs)
-            srcAddr = session.stationLabel(localDeviceId, nowMs)
+            destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
+            srcAddr = session.stationLabel(recipientId, nowMs)
         }
 
         when (encodeResult) {
@@ -427,8 +427,8 @@ public class RadioChatEngine(
             session.encodeAck(peerId, firstCounter, nowMs)
         }
         if (ackEncode is RadioEncode.Frames) {
-            val destAddr = sessionMutex.withLock { session.stationLabel(peerId, nowMs) }
-            val srcAddr = sessionMutex.withLock { session.stationLabel(localDeviceId, nowMs) }
+            val destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
+            val srcAddr = sessionMutex.withLock { session.stationLabel(peerId, nowMs) }
             val ax25Frames = ackEncode.frames.map { infoBytes ->
                 Ax25FrameCodec.encodeUi(
                     destination = destAddr,
