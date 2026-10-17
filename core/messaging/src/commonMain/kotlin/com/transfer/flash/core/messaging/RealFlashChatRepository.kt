@@ -397,6 +397,10 @@ public class RealFlashChatRepository(
     hubAnnouncementEvents: Flow<RelayFrame.AnnouncementEvent>? = null,
     /** Plan A4 H6: what the Hub tab read model needs from the host (directory DAO, sync request). Null = no Hub tab data. */
     hubTabSources: com.transfer.flash.core.messaging.hub.HubTabSources? = null,
+    /** Plan R §7 / Phase R3: Radio outbox port connecting chat to hardware radio transport. */
+    radioPort: com.transfer.flash.core.messaging.radio.RadioOutboxPort? = null,
+    /** Plan R §7 / Phase R3: Optional pre-configured radio bridge (tests/custom). */
+    radioBridge: com.transfer.flash.core.messaging.radio.RadioChatBridge? = null,
 ) : FlashChatRepository, AutoCloseable {
 
     private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
@@ -562,6 +566,44 @@ public class RealFlashChatRepository(
     /** What the hub said about each message this device sent through it (bubble notes). Empty without a hub. */
     override val hubDeliveryNotes: StateFlow<Map<String, HubDeliveryNote>> =
         hubBridge?.notes ?: MutableStateFlow(emptyMap())
+
+    private val radioBridge: com.transfer.flash.core.messaging.radio.RadioChatBridge? = radioBridge ?: radioPort?.let { port ->
+        com.transfer.flash.core.messaging.radio.RadioChatBridge(
+            port = port,
+            scope = scope,
+            onInboundMessage = { senderId, callsign, messageId, text, sentAtMs ->
+                onInboundWireFrame(
+                    MessageWireFrame.TextMessage(
+                        localId = messageId,
+                        conversationId = senderId,
+                        senderId = senderId,
+                        senderName = callsign ?: peerNameResolver(senderId) ?: senderId,
+                        text = text,
+                        sentAt = sentAtMs,
+                    ),
+                    senderId,
+                )
+            },
+            onDeliveryReceipt = { messageId, deliveredAtMs ->
+                receiptDao.insert(
+                    ReceiptEntity(
+                        messageId = messageId,
+                        memberId = localDeviceId,
+                        state = "DELIVERED",
+                    ),
+                )
+                messageDao.updateStatus(messageId, "DELIVERED")
+                outboxDao.delete(messageId)
+            },
+            onMessageFailed = { messageId ->
+                messageDao.updateStatusIfUnacknowledged(messageId, "FAILED")
+            },
+        )
+    }
+
+    /** What the radio gateway reported about messages sent over radio, by message id (bubble notes). */
+    override val radioDeliveryNotes: StateFlow<Map<String, com.transfer.flash.core.messaging.radio.RadioDeliveryNote>> =
+        radioBridge?.notes ?: MutableStateFlow(emptyMap())
 
     /** Hub messages dropped instead of stored, as counts for the connection details (ADR-126). */
     override val hubDropped: StateFlow<HubDropCounts> =
@@ -3004,6 +3046,15 @@ public class RealFlashChatRepository(
             if (conversationDao.get(conversationId)?.isGroup == true) {
                 FlashLog.w("CHAT", "Group attachment rejected as unsupported (F4 pending): $fileName")
                 return@launch
+            }
+            // Plan R §7 / Phase R3: Photos and files cannot be sent by radio
+            val radio = radioBridge
+            if (radio != null && radio.canCarry(conversationId) && !isPeerOnline(conversationId) && hubBridge?.canCarry(conversationId) != true) {
+                val refusal = radio.checkAttachmentRefusal(conversationId)
+                if (refusal != null) {
+                    FlashLog.w("CHAT", "Attachment rejected: $refusal")
+                    return@launch
+                }
             }
             // Local chat row referencing the live transfer. The bytes travel over the transfer
             // pipeline (not the message outbox), so this row is informational — status SENT keeps it
@@ -7094,19 +7145,29 @@ public class RealFlashChatRepository(
     private suspend fun sendDirectViaPaths(frame: MessageWireFrame.TextMessage): Boolean {
         val target = frame.conversationId
         val lanOk = lanTransportSink?.send(target, frame) == true
-        val bridge = hubBridge ?: return lanOk
-        if (!lanOk) {
-            return bridge.canCarry(target) && bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
-        }
-        scheduleHubFallback("${frame.localId}|$target", pending = {
-            val row = messageDao.getByLocalId(frame.localId)
-            row != null && row.deletedAt == null && row.status != "DELIVERED" && row.status != "READ" && row.status != "FAILED"
-        }) {
-            if (bridge.canCarry(target) && !bridge.isHubAccepted(frame.localId)) {
-                bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
+        val bridge = hubBridge
+        if (lanOk) {
+            bridge?.let { b ->
+                scheduleHubFallback("${frame.localId}|$target", pending = {
+                    val row = messageDao.getByLocalId(frame.localId)
+                    row != null && row.deletedAt == null && row.status != "DELIVERED" && row.status != "READ" && row.status != "FAILED"
+                }) {
+                    if (b.canCarry(target) && !b.isHubAccepted(frame.localId)) {
+                        b.sendDirect(target, frame.localId, frame.sentAt, frame)
+                    }
+                }
             }
+            return true
         }
-        return true
+        if (bridge != null && bridge.canCarry(target)) {
+            val hubOk = bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
+            if (hubOk) return true
+        }
+        val radio = radioBridge
+        if (radio != null && radio.canCarry(target)) {
+            return radio.sendDirect(target, frame)
+        }
+        return false
     }
 
     private suspend fun sendGroupViaPaths(

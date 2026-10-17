@@ -388,6 +388,7 @@ public class DesktopEngine(
 
     @Volatile
     private var chatImpl: RealFlashChatRepository? = null
+    public var radioPort: com.transfer.flash.core.messaging.radio.RadioOutboxPort? = null
 
     @Volatile
     private var chatDb: FlashDatabase? = null
@@ -1586,6 +1587,7 @@ public class DesktopEngine(
                     fetchGroups = { creds -> hub.directory.fetchVisibleGroups(creds.hubUrl, creds.deviceId, null) },
                 ),
                 hubSealing = hubSealingPort,
+                radioPort = radioPort,
             )
             hubRosterChat = chatImpl
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->

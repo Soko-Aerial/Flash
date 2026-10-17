@@ -205,6 +205,8 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var chatRepo: FlashChatRepository? = null
+    @Volatile
+    var radioPort: com.transfer.flash.core.messaging.radio.RadioOutboxPort? = null
 
     @Volatile
     private var dataServer: com.transfer.flash.core.network.datachannel.DataChannelServer? = null
@@ -1469,6 +1471,7 @@ object DiscoveryEngineHolder {
                 fetchGroups = { creds -> hub.directory.fetchVisibleGroups(creds.hubUrl, creds.deviceId, null) },
             ),
             hubSealing = hubSealingPort,
+            radioPort = radioPort,
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
