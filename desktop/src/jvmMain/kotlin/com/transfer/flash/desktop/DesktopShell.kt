@@ -2615,7 +2615,7 @@ public fun DesktopShell(
 private fun FlashTransportType.toDesktopTransport(): FlashNetworkTransport = when (this) {
     FlashTransportType.WIFI_DIRECT -> FlashNetworkTransport.WifiDirect
     FlashTransportType.RELAY, FlashTransportType.MESH -> FlashNetworkTransport.Relay
-    FlashTransportType.UNKNOWN -> FlashNetworkTransport.Unknown
+    FlashTransportType.UNKNOWN, FlashTransportType.BLUETOOTH -> FlashNetworkTransport.Unknown
     FlashTransportType.LAN, FlashTransportType.WEBSOCKET -> FlashNetworkTransport.Lan
 }
 

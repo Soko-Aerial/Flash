@@ -9,6 +9,7 @@ public enum class FlashTransportType {
     WEBSOCKET,
     RELAY,
     MESH,
+    BLUETOOTH,
     UNKNOWN;
 
     public companion object {
