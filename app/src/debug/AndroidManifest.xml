@@ -29,5 +29,11 @@
             android:exported="true"
             android:label="Radio Gateway Demo"
             android:theme="@android:style/Theme.DeviceDefault" />
+
+        <activity
+            android:name="com.transfer.flash.debug.radioaudio.RadioAudioActivity"
+            android:exported="true"
+            android:label="Radio Audio Probe"
+            android:theme="@android:style/Theme.DeviceDefault" />
     </application>
 </manifest>
