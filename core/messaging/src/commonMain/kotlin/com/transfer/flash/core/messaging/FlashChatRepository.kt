@@ -107,6 +107,10 @@ public interface FlashChatRepository {
     public val hubDeliveryNotes: StateFlow<Map<String, com.transfer.flash.core.messaging.hub.HubDeliveryNote>>
         get() = EMPTY_HUB_NOTES
 
+    /** What the radio gateway reported about messages sent over radio, by message id (bubble notes). */
+    public val radioDeliveryNotes: StateFlow<Map<String, com.transfer.flash.core.messaging.radio.RadioDeliveryNote>>
+        get() = EMPTY_RADIO_NOTES
+
     /** Hub messages dropped instead of stored (did not verify, or readable content switched off), for the connection details (ADR-126). */
     public val hubDropped: StateFlow<com.transfer.flash.core.messaging.hub.HubDropCounts>
         get() = EMPTY_HUB_DROPPED
@@ -640,3 +644,4 @@ private val EMPTY_PENDING_JOINS: StateFlow<Map<String, String>> = MutableStateFl
 private val EMPTY_HUB_DROPPED: StateFlow<com.transfer.flash.core.messaging.hub.HubDropCounts> =
     MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts())
 private val EMPTY_HUB_NOTES: StateFlow<Map<String, com.transfer.flash.core.messaging.hub.HubDeliveryNote>> = MutableStateFlow(emptyMap())
+private val EMPTY_RADIO_NOTES: StateFlow<Map<String, com.transfer.flash.core.messaging.radio.RadioDeliveryNote>> = MutableStateFlow(emptyMap())
