@@ -488,4 +488,103 @@ class RadioChatEngineTest {
 
         job.cancel()
     }
+
+    @Test
+    fun radchatU11_replayOfCapturedFrame_droppedSilentlyByReplayWindow() = runTest {
+        val airChannel = FakeAirChannel()
+        air = airChannel
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        val inboundList = mutableListOf<RadioChatInbound>()
+        val job = backgroundScope.launch {
+            b.engine.inboundMessages.collect { inboundList.add(it) }
+        }
+
+        // Send legitimate message
+        a.engine.sendText("station-b", "msg-original", "Original message", 11_000L)
+
+        withTimeout(3000) {
+            while (inboundList.isEmpty()) delay(20)
+        }
+        assertEquals(1, inboundList.size)
+
+        val bTxCountAfterLegit = b.fakeTnc.transmitted.size
+
+        // Capture transmitted frame from Station A
+        val capturedFrame = a.fakeTnc.transmitted.first()
+
+        // Replay the exact frame as a malicious adversary
+        b.fakeTnc.injectRaw(com.transfer.flash.core.radio.kiss.KissFrameCodec.encodeData(capturedFrame))
+
+        delay(200)
+
+        // Inbound message count remains 1 (silently dropped by replay window, not passed to chat)
+        assertEquals(1, inboundList.size)
+        // No additional air response or ACK transmitted
+        assertEquals(bTxCountAfterLegit, b.fakeTnc.transmitted.size)
+
+        job.cancel()
+    }
+
+    @Test
+    fun radchatU12_lossOfSegment_noDeliveryOrAckWithoutAllSegments() = runTest {
+        val airA = FakeAirChannel()
+        val airB = FakeAirChannel()
+
+        val a = buildStation("station-a", backgroundScope, airA)
+        val b = buildStation("station-b", backgroundScope, airB)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        val bInbound = mutableListOf<RadioChatInbound>()
+        val job = backgroundScope.launch {
+            b.engine.inboundMessages.collect { bInbound.add(it) }
+        }
+
+        // Send a 2-segment message (> 188 bytes)
+        val twoSegmentText = "A".repeat(300)
+
+        a.engine.sendText("station-b", "msg-seg-loss", twoSegmentText, 12_000L)
+
+        withTimeout(3000) {
+            while (a.fakeTnc.transmitted.size < 2) delay(20)
+        }
+
+        // Only inject segment 0 to B, drop segment 1 completely
+        val seg0 = a.fakeTnc.transmitted.first()
+        b.fakeTnc.injectRaw(com.transfer.flash.core.radio.kiss.KissFrameCodec.encodeData(seg0))
+
+        delay(300)
+
+        // B only received segment 0, so the message cannot be delivered to chat
+        assertTrue(bInbound.isEmpty(), "Message must NOT be delivered when a segment was lost")
+        // Station B transmitted 0 ACKs
+        assertTrue(b.fakeTnc.transmitted.isEmpty(), "No ACK should be sent when a segment is missing")
+
+        job.cancel()
+    }
 }
