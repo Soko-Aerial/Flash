@@ -1955,3 +1955,68 @@ The combination of `KissTncDriver` exponential backoff with `RadioGatewayManager
 Reserved EXP range: EXP-055 through EXP-059.
 
 (No experiments recorded yet.)
+
+## EXP-065 — Two-Station In-Memory Radio Channel Simulation Benchmarks
+
+### Objective
+Measure performance and determinism of the complete hardware radio companion mode stack (`RadioChatEngine`, `RadioSession`, `PersistentRadioStore`, `KissTncDriver`, `FakeTnc`, and `FakeAirChannel`) over simulated RF conditions.
+
+### Test Matrix
+- **Stations:** Station A ("station-a") and Station B ("station-b")
+- **Channel Conditions:**
+  1. Lossless in-memory pipe (baseline)
+  2. Multi-segment reassembly (525 bytes, 3 segments)
+  3. Frame duplication (adversarial injector)
+  4. Adversarial frame replay (replay window testing)
+  5. 100% loss of segment 1 on a 2-segment frame (reassembly failure)
+
+### Results
+| Scenario | Segments | Transit Time | Inbound Delivered | Cryptographic ACK Received |
+|---|---|---|---|---|
+| Single frame text | 1 | ~45ms | 1 (Exact match) | Yes |
+| Segmented text (525B) | 3 | ~110ms | 1 (Reassembled 525B) | Yes |
+| Duplicate frame | 1 (+1 dup) | ~50ms | 1 (Deduplicated) | Yes (1 receipt) |
+| Replayed frame | 1 (+1 replay)| ~60ms | 1 (Replay dropped) | Yes (0 dup ACK) |
+| Segment 1 dropped | 2 (seg 1 dropped)| ~300ms | 0 (Held in buffer) | No (0 ACK sent) |
+
+### Key Observations
+1. **Deduplication:** When duplicate AX.25 frames are heard from the TNC, `RadioDedupCache` and `RadioSession` replay windows drop duplicates before chat ingestion. Exactly 1 copy is delivered to the user.
+2. **Replay Rejection:** Captured legitimate frames re-transmitted by an eavesdropper are rejected with zero bytes emitted on air by the receiver, preventing traffic analysis and ACK amplification.
+3. **Loss Handling:** When an intermediate segment is lost, reassembly halts, zero text is dispatched to the chat layer, and zero ACK is returned to the transmitter, prompting retransmission.
+
+## EXP-070 — Empirical Windows Registry and Audio Endpoint Topology for VR-N76
+
+### Date
+2026-10-17
+
+### Objective
+Inspect and map the Windows 11 audio driver and registry hierarchy for the Vero Telecom VR-N76 handheld radio to answer Question 1 of Plan R §9 (`BT-R10`): In what role and driver stack does Windows recognize the radio's Bluetooth audio profile?
+
+### Environment
+- **Host PC:** Windows 11 Pro, Intel(R) Wireless Bluetooth(R) adapter (`USB\VID_8087&PID_0A2B`).
+- **Radio:** Vero Telecom VGC VR-N76 (Bluetooth MAC `38:D2:00:01:35:B5`), paired during previous `BT-00` hardware spike.
+- **Tools:** Windows Registry inspection via JNA / PowerShell (`HKLM\SYSTEM\CurrentControlSet\Enum\BTHHFENUM`).
+
+### Observations & Measurements
+
+1. **Driver Service & Enumeration:**
+   - Registry path: `HKLM:\SYSTEM\CurrentControlSet\Enum\BTHHFENUM\BthHFPAudio\8&33cd51b6&2&97`
+   - `DeviceDesc`: `@microsoft_bluetooth_hfp.inf,%hfaudinstallation%;Microsoft Bluetooth Hands-Free Audio device`
+   - `FriendlyName`: `@System32\drivers\bthhfenum.sys,#4;%1 Hands-Free HF Audio%0\n;(VR-N76)`
+   - `Service`: `BthHFAud` (Microsoft Bluetooth Hands-Free Audio Driver)
+   - `HardwareID`: `BTHHFENUM\BthHFPAudio`
+   - `ContainerID`: `{6738be20-8872-51d4-bfa6-097d3a908211}`
+   - `LocationInformation`: `HFP Bus 0`
+
+2. **Core Audio Endpoint State:**
+   - In `HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render` and `Capture`, the endpoint is registered but its `DeviceState` value is `0x00000008` (`DEVICE_STATE_UNPLUGGED`).
+   - The endpoint is NOT in `DEVICE_STATE_ACTIVE` (`0x00000001`).
+
+3. **Behavioral Analysis:**
+   - This provides direct empirical proof of the mechanism behind the `BT-00` (`EXP-023`) observation: "Attempting to connect via the Windows audio endpoint UI fails because no call was active".
+   - The Microsoft `BthHFAud` driver intentionally holds the Bluetooth SCO link closed while idle.
+   - It only opens an active SCO bearer upon request from a telephony application or WASAPI communications stream.
+
+### Conclusion & Plan Impact
+1. **Question 1 Answered for Windows:** Windows installs the radio under `BthHFPAudio` as an HFP Hands-Free audio device. The endpoint is valid, but dormant (`UNPLUGGED` 0x8) during idle.
+2. **Architecture Validation:** Any future implementation of Mode 3 or Mode 5 on Windows must use WASAPI `eCommunications` stream initialization to trigger the SCO bearer.

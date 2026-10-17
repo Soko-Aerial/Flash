@@ -11269,3 +11269,173 @@ Adding a callsign field is a UI and storage decision (where it is entered, wheth
 
 ### Status
 OPEN - owner decision: add a callsign field to the authorisation dialog before the first on-air test? (recommended: yes)
+
+## ERROR-700 — Coroutine Lifecycle Leaks in Simulation Tests Causing UncompletedCoroutinesError
+
+### Date
+2026-10-17
+
+### Area
+Radio Chat Engine / Test Coroutines
+
+### Symptoms
+`kotlinx.coroutines.test.UncompletedCoroutinesError` at `TestBuilders.kt:353` across all `RadioChatEngineTest` test cases.
+
+### Environment
+- OS: Windows 11
+- Gradle: 9.5.0
+- Kotlin: 2.x
+- Target: JVM Test (`:core:radio:jvmTest`)
+
+### Error
+```text
+RadioChatEngineTest[jvm] > radchatU01_textRoundTrip_deliveredAndCryptographicAckReceived[jvm] FAILED
+    kotlinx.coroutines.test.UncompletedCoroutinesError at TestBuilders.kt:353
+```
+
+### Root Cause
+`KissTncDriver`, `FakeTnc`, and `RadioChatEngine` launch continuous background pump/collector loops inside their passed `CoroutineScope`. In the unit tests, `this` (`TestScope`) was passed as the scope. `runTest` requires all coroutines launched in `TestScope` to complete before exiting, but background pump loops run indefinitely.
+
+### Working Fix
+Updated test station construction to pass `backgroundScope` (provided by `kotlinx-coroutines-test`) instead of `this`. Coroutines launched in `backgroundScope` run during the test and are automatically cancelled when the test body completes.
+
+### Verification
+All 12 tests in `RadioChatEngineTest` completed without `UncompletedCoroutinesError`.
+
+### Related files
+- `core/radio/src/commonTest/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngineTest.kt`
+
+### Status
+RESOLVED
+
+---
+
+## ERROR-701 — Profile A Plaintext Signed Encode Refusal Due to Unconfigured Signature Scheme
+
+### Date
+2026-10-17
+
+### Area
+Radio Chat Engine / Wire Protocol
+
+### Symptoms
+`radchatU08_profileATransparency_operatorCallsignAppearsOnAir` timed out waiting for AX.25 frame transmission on air.
+
+### Environment
+- OS: Windows 11
+- Gradle: 9.5.0
+- Target: JVM Test (`:core:radio:jvmTest`)
+
+### Error
+```text
+RadioChatEngineTest[jvm] > radchatU08_profileATransparency_operatorCallsignAppearsOnAir[jvm] FAILED
+    kotlinx.coroutines.TimeoutCancellationException at RadioChatEngineTest.kt:385
+```
+
+### Root Cause
+`RadioSession.encodeSigned` requires both `signer: RadioSignatureScheme?` and `localPublicKey: ByteArray?`. When unconfigured, it returns `RadioEncode.Refused("no_signer")`, which caused `RadioChatEngine.sendText` to return `RadioChatSendOutcome.EncodeFailed` without transmitting any frame to the TNC driver.
+
+### Working Fix
+Configured a test `RadioSignatureScheme` producing a 64-byte raw `r||s` ECDSA signature and 64-byte public key on `RadioSession` initialization in the test fixture.
+
+### Verification
+`radchatU08` executes in under 200ms and asserts the operator callsign in the transmitted AX.25 frame header.
+
+### Related files
+- `core/radio/src/commonTest/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngineTest.kt`
+
+### Status
+RESOLVED
+
+---
+
+## ERROR-702 — Dropped Delivery Receipts in Bridge Tests Due to Zero Replay SharedFlow
+
+### Date
+2026-10-17
+
+### Area
+Radio Messaging / SharedFlow Test Synchronization
+
+### Symptoms
+`RadioChatBridgeTest.testDeliveryReceipt_updatesNoteToDelivered` failed with `AssertionError: expected:<msg-ack> but was:<null>`.
+
+### Environment
+- OS: Windows 11
+- Target: JVM Test (`:core:messaging:jvmTest`)
+
+### Error
+```text
+RadioChatBridgeTest[jvm] > testDeliveryReceipt_updatesNoteToDelivered[jvm] FAILED
+    java.lang.AssertionError: expected:<msg-ack> but was:<null>
+```
+
+### Root Cause
+In `FakeRadioOutboxPort`, `receiptFlow` was created with `MutableSharedFlow(extraBufferCapacity = 16)` and default `replay = 0`. Because `RadioChatBridge` starts its collector inside a background coroutine launched in `scope`, the collector had not yet attached when `port.receiptFlow.emit(...)` was called. The emitted receipt was dropped by the bufferless flow.
+
+### Working Fix
+Configured `MutableSharedFlow(replay = 16)` in `FakeRadioOutboxPort` and added `testScheduler.runCurrent()` to advance virtual time and process pending collectors.
+
+### Verification
+All 7 tests in `RadioChatBridgeTest` passed cleanly.
+
+### Related files
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/radio/RadioChatBridgeTest.kt`
+
+### Status
+RESOLVED
+
+## ERROR-730 — Windows Core Audio Bluetooth Hands-Free Endpoint Idle State "Unplugged" (0x8)
+
+### Date
+2026-10-17
+
+### Area
+Desktop Audio / Windows Core Audio (WASAPI) / Bluetooth HFP
+
+### Symptoms
+During `BT-00` hardware spike (`EXP-023`) and initial Windows audio probe runs, the VR-N76 was recognized in Windows Bluetooth settings as an "Audio Device", but clicking "Connect" in the audio UI failed. In Windows Core Audio (`MMDevices`), the endpoint state is flagged as `DEVICE_STATE_UNPLUGGED` (`0x00000008`) rather than `DEVICE_STATE_ACTIVE` (`0x00000001`).
+
+### Environment
+- OS: Windows 11
+- Device: Host PC with Intel Wireless Bluetooth adapter
+- Radio: Vero Telecom VGC VR-N76 (Bluetooth HFP UUID `0000111F-0000-1000-8000-00805F9B34FB`)
+
+### Root Cause
+Unlike standard wired headphones or A2DP stereo Bluetooth devices that maintain continuous active audio endpoints once paired, Windows 10 and 11 treat Bluetooth Hands-Free Profile (HFP) devices through `BthHfenum.sys` as on-demand telephony bearers. The physical Bluetooth SCO (Synchronous Connection-Oriented) audio bearer is held in a disconnected/dormant state while idle to conserve battery and RF spectrum. Attempting to force connection through the standard Windows Settings sound panel fails with "failed because no call was active" because Windows expects an application to initiate an active communications audio client stream (`IAudioClient::Initialize`) targeting `eCommunications` before it commands the Bluetooth stack to establish the SCO bearer.
+
+### Failed Attempts
+1. Attempting to click "Connect" in Windows Settings / Devices -> Fails immediately because no telephony call is active.
+2. Treating the endpoint as `DEVICE_STATE_NOT_PRESENT` -> Incorrect, the endpoint driver is present in registry `BTHHFENUM` and `MMDevices`.
+
+### Working Fix
+1. In `AudioEndpointClassifier.kt`, state `0x8` (`UNPLUGGED`) for Bluetooth Hands-Free endpoints is recognized as normal on-demand behavior rather than a missing hardware error.
+2. In `RadioAudioProbeRunner`, the diagnosis report explains that establishing an audio link requires initializing a WASAPI communications stream.
+3. In ADR-212, the architecture documents that any future Windows audio bridging must use `AudioCategory_Communications` WASAPI stream initialization.
+
+### Verification
+- Tested via `RadioAudioProbeTest.testRADAUD_U07_generateReportWithRadioUnpluggedTelephonyRestriction`.
+- Validated against Windows Registry `HKLM\SYSTEM\CurrentControlSet\Enum\BTHHFENUM\BthHFPAudio` on this machine.
+
+### Related Files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radioaudio/AudioEndpointClassifier.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/radioaudio/RadioAudioProbe.kt`
+- `logs/streams/R-audio/decisions-additions.md` (ADR-210, ADR-212)
+
+### Status
+RESOLVED (Diagnostic classification verified; physical communications stream test owed under `RADAUD-01`).
+
+## ERROR-703 - Radio chat engine and adapters are not connected to the gateway (integrator audit, 2026-10-17)
+
+### Symptoms
+`radioPort` on `DiscoveryEngineHolder` and `DesktopEngine` is declared and passed to the repository, but nothing ever assigns it. `AndroidRadioOutboxAdapter` / `DesktopRadioOutboxAdapter` and `RadioChatEngine` exist and are tested in memory, but no host builds an engine over the R-wire gateway's driver. In a real build the radio path is therefore dead code: nothing is queued or transmitted. This is safe (no on-air traffic) but the stream report reads as if chat over radio works.
+
+### Not fixed
+Needs the gateway manager to expose its `KissTncDriver` frames to `RadioChatEngine`, per host. Next step for a follow-up stream (before BT-R05 can be run).
+
+### Also fixed in the merge
+Delivery receipts were stored with this device as the confirming member; they now use the recipient (same as the LAN path). `RadioChatBridge.onDeliveryReceipt` has a third parameter.
+
+### Status
+OPEN
+

@@ -584,11 +584,12 @@ public class RealFlashChatRepository(
                     senderId,
                 )
             },
-            onDeliveryReceipt = { messageId, deliveredAtMs ->
+            onDeliveryReceipt = { messageId, _, recipientDeviceId ->
                 receiptDao.insert(
                     ReceiptEntity(
                         messageId = messageId,
-                        memberId = localDeviceId,
+                        // The peer that confirmed, as on the LAN path (frame.memberId), not this device.
+                        memberId = recipientDeviceId,
                         state = "DELIVERED",
                     ),
                 )

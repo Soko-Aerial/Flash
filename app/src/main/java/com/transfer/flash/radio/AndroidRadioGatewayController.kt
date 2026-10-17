@@ -38,6 +38,7 @@ import com.transfer.flash.ui.radio.RadioFailureReason
 import com.transfer.flash.ui.radio.RadioGatewayController
 import com.transfer.flash.ui.radio.RadioGatewayMode
 import com.transfer.flash.ui.radio.RadioGatewayUiState
+import com.transfer.flash.ui.radio.RadioGatewayUiMapper
 import com.transfer.flash.ui.radio.RadioSecurityProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -211,96 +212,17 @@ public class AndroidRadioGatewayController(
     }
 
     private fun updateUi(managerState: RadioGatewayState) {
-        val permissionGranted = checkNearbyPermissions()
-        val connectionStatus = mapConnectionStatus(
-            isEnabled = managerState.isEnabled,
-            connectState = managerState.connectState,
-            linkState = managerState.linkState,
-            isRetryingStopped = managerState.isRetryingStopped,
-        )
-
-        val failureReason = mapFailureReason(
-            connectState = managerState.connectState,
-            isRetryingStopped = managerState.isRetryingStopped,
-            nearbyPermissionGranted = permissionGranted,
-        )
-
-        val radioName = managerState.rememberedRadio?.displayName
-            ?: (managerState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate?.name
-            ?: (managerState.connectState as? RadioConnectState.Connected)?.radio?.displayName
-
-        val sentence = when {
-            managerState.plainSentence.isNotBlank() -> managerState.plainSentence
-            else -> FlashRadioMath.statusSentence(connectionStatus, failureReason, radioName)
-        }
-
-        val nextStep = when {
-            managerState.nextStep.isNotBlank() -> managerState.nextStep
-            else -> FlashRadioMath.statusNextStep(connectionStatus, failureReason)
-        }
-
-        val candidateRadio = (managerState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate?.let { cand ->
-            DiscoveredRadioDevice(
-                id = cand.addressOrPort,
-                name = cand.name ?: cand.addressOrPort,
-                category = when (cand.kind) {
-                    CandidateKind.BLUETOOTH_SERIAL, CandidateKind.USB_SERIAL -> RadioDeviceCategory.KNOWN_RADIO
-                    else -> RadioDeviceCategory.OTHER
-                },
-                isPaired = cand.isPaired,
-                rssi = cand.rssi,
-            )
-        }
-
-        val discovered = managerState.scanResults.map { dev ->
-            val isPairingThis = managerState.connectState is RadioConnectState.Pairing &&
-                    (managerState.connectState as RadioConnectState.Pairing).candidate.addressOrPort == dev.bluetoothAddress
-            DiscoveredRadioDevice(
-                id = dev.bluetoothAddress,
-                name = dev.name,
-                category = when (dev.category) {
-                    CandidateCategory.KNOWN_RADIO -> RadioDeviceCategory.KNOWN_RADIO
-                    CandidateCategory.SERIAL_CAPABLE -> RadioDeviceCategory.SERIAL_SPP
-                    CandidateCategory.OTHER -> RadioDeviceCategory.OTHER
-                },
-                isPaired = dev.isPaired,
-                rssi = dev.rssi,
-                isPairing = isPairingThis,
-            )
-        }
-
-        val selectedProfile = when (managerState.currentProfile) {
-            com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED ->
-                RadioSecurityProfile.PROFILE_M
-            com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED ->
-                RadioSecurityProfile.PROFILE_A
-        }
-
-        val auth = managerState.authorisation
-        val isAuthorised = auth != null && auth.confirmedAtEpochMs > 0L
-        val authEpoch = auth?.confirmedAtEpochMs ?: 0L
-
         _uiState.update { current ->
-            current.copy(
-                enabled = managerState.isEnabled,
-                connectionStatus = connectionStatus,
-                failureReason = failureReason,
-                statusSentence = sentence,
-                statusNextStep = nextStep,
-                candidateRadio = candidateRadio,
-                rememberedRadioName = managerState.rememberedRadio?.displayName,
-                rememberedRadioAddress = managerState.rememberedRadio?.bluetoothAddress,
-                isScanning = managerState.connectState is RadioConnectState.Scanning || scanCountdownRemaining > 0,
+            RadioGatewayUiMapper.map(
+                current,
+                managerState,
+            RadioGatewayUiMapper.HostFacts(
                 scanCountdownSeconds = scanCountdownRemaining,
-                discoveredDevices = discovered,
-                selectedProfile = selectedProfile,
-                isAuthorisedForEncryption = isAuthorised,
-                authorisationConfirmedAtEpochMs = authEpoch,
                 selectedMode = selectedGatewayMode,
-                availableModes = setOf(RadioGatewayMode.FIELD_COMPANION),
                 isSendingTestMessage = isSendingTestMsg,
                 testMessageSentSuccess = testMsgSuccess,
-                nearbyDevicesPermissionGranted = permissionGranted,
+                nearbyPermissionGranted = checkNearbyPermissions(),
+            ),
             )
         }
     }
@@ -382,36 +304,14 @@ public class AndroidRadioGatewayController(
 
     override fun confirmCandidate(id: String) {
         val mgr = activeManager ?: return
-        val currentMgrState = mgr.state.value
-        val cand = (currentMgrState.connectState as? RadioConnectState.ConfirmCandidate)?.candidate
-        val device = currentMgrState.scanResults.firstOrNull { it.bluetoothAddress.equals(id, ignoreCase = true) }
-            ?: if (cand != null && cand.addressOrPort.equals(id, ignoreCase = true)) {
-                DiscoveredDevice(
-                    name = cand.name ?: cand.addressOrPort,
-                    bluetoothAddress = cand.addressOrPort,
-                    isPaired = cand.isPaired,
-                    rssi = cand.rssi,
-                    kind = cand.kind,
-                    category = CandidateCategory.KNOWN_RADIO,
-                    rawAddressHex = cand.addressOrPort.replace(":", "").replace("-", "").uppercase(),
-                )
-            } else null
-
-        if (device != null) {
-            scope.launch {
-                mgr.confirmCandidate(device)
-            }
-        }
+        val device = RadioGatewayUiMapper.deviceForId(mgr.state.value, id) ?: return
+        scope.launch { mgr.confirmCandidate(device) }
     }
 
     override fun pair(id: String) {
         val mgr = activeManager ?: return
-        val device = mgr.state.value.scanResults.firstOrNull { it.bluetoothAddress.equals(id, ignoreCase = true) }
-        if (device != null) {
-            scope.launch {
-                mgr.pair(device)
-            }
-        }
+        val device = RadioGatewayUiMapper.deviceForId(mgr.state.value, id) ?: return
+        scope.launch { mgr.pair(device) }
     }
 
     override fun reconnect() {
@@ -507,61 +407,6 @@ public class AndroidRadioGatewayController(
     public fun updateNearbyPermissionStatus() {
         val granted = checkNearbyPermissions()
         _uiState.update { it.copy(nearbyDevicesPermissionGranted = granted) }
-    }
-
-    private fun mapConnectionStatus(
-        isEnabled: Boolean,
-        connectState: RadioConnectState,
-        linkState: TncLinkState,
-        isRetryingStopped: Boolean,
-    ): RadioConnectionStatus {
-        if (!isEnabled) return RadioConnectionStatus.OFF
-        return when (connectState) {
-            is RadioConnectState.Off -> RadioConnectionStatus.OFF
-            is RadioConnectState.ChecklistShown -> RadioConnectionStatus.CHECKLIST_READY
-            is RadioConnectState.Detecting -> RadioConnectionStatus.DETECTING
-            is RadioConnectState.ConfirmCandidate -> RadioConnectionStatus.CONFIRMING_CANDIDATE
-            is RadioConnectState.ChooseFromList -> RadioConnectionStatus.CHECKLIST_READY
-            is RadioConnectState.Scanning -> RadioConnectionStatus.SCANNING
-            is RadioConnectState.Pairing -> RadioConnectionStatus.PAIRING
-            is RadioConnectState.Connecting -> RadioConnectionStatus.CONNECTING
-            is RadioConnectState.Connected -> {
-                when {
-                    isRetryingStopped -> RadioConnectionStatus.LINK_LOST
-                    linkState is TncLinkState.Connected -> RadioConnectionStatus.CONNECTED
-                    linkState is TncLinkState.Waiting -> RadioConnectionStatus.LINK_LOST
-                    else -> RadioConnectionStatus.CONNECTING
-                }
-            }
-            is RadioConnectState.Failed -> RadioConnectionStatus.FAILED
-        }
-    }
-
-    private fun mapFailureReason(
-        connectState: RadioConnectState,
-        isRetryingStopped: Boolean,
-        nearbyPermissionGranted: Boolean,
-    ): RadioFailureReason {
-        if (!nearbyPermissionGranted) {
-            return RadioFailureReason.PERMISSION_MISSING
-        }
-        if (isRetryingStopped) {
-            return RadioFailureReason.LINK_LOST
-        }
-        if (connectState is RadioConnectState.Failed) {
-            return when (connectState.reason) {
-                RadioConnectFailureReason.NO_ADAPTER -> RadioFailureReason.NO_ADAPTER
-                RadioConnectFailureReason.BLUETOOTH_OFF -> RadioFailureReason.BLUETOOTH_OFF
-                RadioConnectFailureReason.PERMISSION_MISSING -> RadioFailureReason.PERMISSION_MISSING
-                RadioConnectFailureReason.RADIO_NOT_FOUND -> RadioFailureReason.RADIO_NOT_FOUND
-                RadioConnectFailureReason.PAIRING_REFUSED -> RadioFailureReason.PAIRING_REFUSED
-                RadioConnectFailureReason.WRONG_PIN -> RadioFailureReason.WRONG_PIN
-                RadioConnectFailureReason.PORT_IN_USE -> RadioFailureReason.PORT_IN_USE
-                RadioConnectFailureReason.KISS_TNC_NOT_ENABLED -> RadioFailureReason.KISS_NOT_ENABLED
-                RadioConnectFailureReason.LINK_LOST -> RadioFailureReason.LINK_LOST
-            }
-        }
-        return RadioFailureReason.NONE
     }
 
     public companion object {

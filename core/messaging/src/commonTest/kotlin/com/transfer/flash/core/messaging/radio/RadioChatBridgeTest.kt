@@ -71,7 +71,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = {},
         )
 
@@ -88,7 +88,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = {},
         )
 
@@ -122,7 +122,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = { failedMessageId = it },
         )
 
@@ -158,7 +158,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = {},
         )
 
@@ -190,7 +190,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = {},
         )
 
@@ -213,7 +213,7 @@ class RadioChatBridgeTest {
             port = port,
             scope = backgroundScope,
             onInboundMessage = { _, _, _, _, _ -> },
-            onDeliveryReceipt = { id, _ -> ackDeliveredId = id },
+            onDeliveryReceipt = { id, _, _ -> ackDeliveredId = id },
             onMessageFailed = {},
         )
 
@@ -252,7 +252,7 @@ class RadioChatBridgeTest {
                 inboundSender = sender
                 inboundText = text
             },
-            onDeliveryReceipt = { _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
             onMessageFailed = {},
         )
 
