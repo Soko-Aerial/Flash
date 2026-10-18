@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.radio
 
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -191,10 +192,12 @@ public class FakeRadioGatewayController(
         }
     }
 
-    override fun confirmAuthorisation() {
+    override fun confirmAuthorisation(operatorCallsign: String) {
         actionsLog.add("confirmAuthorisation")
+        val callsign = RadioCallsign.normalise(operatorCallsign) ?: return
         _state.update { current ->
             current.copy(
+                operatorCallsign = callsign,
                 isAuthorisedForEncryption = true,
                 authorisationConfirmedAtEpochMs = 1729094400000L, // Fixed positive epoch for testing
                 selectedProfile = RadioSecurityProfile.PROFILE_M,

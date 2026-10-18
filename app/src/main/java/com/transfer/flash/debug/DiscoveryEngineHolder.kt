@@ -1263,6 +1263,22 @@ object DiscoveryEngineHolder {
         orgSnapshotCoordinatorRef = orgSnapshotCoordinator
         orgSnapshotCoordinator.start()
 
+        // ERROR-703: the radio chat engine follows the gateway the Radio screen controls. Built once per process.
+        if (radioPort == null) {
+            val radioHost = com.transfer.flash.core.messaging.radio.RadioChatWiring.createHost(
+                scope = appScope,
+                managers = com.transfer.flash.radio.RadioGatewayHolder.managers,
+                localDeviceId = identity.deviceId.value,
+                trustStore = trustStore,
+                identity = crypto,
+                radioCrypto = com.transfer.flash.core.radio.wire.JdkRadioCrypto(),
+                verifier = com.transfer.flash.core.radio.wire.JdkRadioSignatureScheme(),
+                persistence = com.transfer.flash.core.radio.driver.AndroidPrefsRadioStatePersistence(appContext),
+                authorisationStore = com.transfer.flash.core.radio.connect.AndroidSharedPreferencesRadioStore(appContext).authorisationStore,
+            )
+            radioPort = com.transfer.flash.core.messaging.radio.HostedRadioOutboxPort(radioHost, appScope)
+        }
+
         val chatImpl = RealFlashChatRepository(
             scope = appScope,
             localDeviceId = identity.deviceId.value,

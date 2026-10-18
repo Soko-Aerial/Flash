@@ -6,6 +6,9 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import com.transfer.flash.core.radio.gateway.RadioGatewayManager
 
 /**
  * Process-wide owner of the radio gateway controller.
@@ -27,9 +30,18 @@ object RadioGatewayHolder {
     @Volatile
     private var instance: AndroidRadioGatewayController? = null
 
+    private val _managers = MutableStateFlow<RadioGatewayManager?>(null)
+
+    /** The gateway manager the controller currently owns; the chat engine follows it (ERROR-703). */
+    val managers: StateFlow<RadioGatewayManager?> = _managers
+
     /** Main thread only (the first call constructs the controller and may start the stored-on gateway). */
     fun get(context: Context): AndroidRadioGatewayController =
         instance ?: synchronized(this) {
-            instance ?: AndroidRadioGatewayController(context.applicationContext, scope).also { instance = it }
+            instance ?: AndroidRadioGatewayController(
+                context.applicationContext,
+                scope,
+                onManagerChanged = { _managers.value = it },
+            ).also { instance = it }
         }
 }

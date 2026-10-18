@@ -124,7 +124,9 @@ class DesktopRadioGatewayControllerTest {
             rememberedStoreFactory = { rememberedStore },
             authorisationStoreFactory = { InMemoryRadioAuthorisationStore(null) },
         )
-        delay(100)
+        // Poll instead of a fixed 100 ms: the first test of a cold JVM can need longer than that to start the gateway.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!controller.state.value.enabled && System.currentTimeMillis() < deadline) delay(20)
 
         assertTrue(controller.state.value.enabled, "Gateway UI state must be enabled at startup when stored switch is ON")
         assertTrue(discoveryCreated, "Discovery must be initialized when stored switch is ON")
@@ -289,7 +291,7 @@ class DesktopRadioGatewayControllerTest {
         assertFalse(controller.state.value.isAuthorisedForEncryption)
 
         // Confirm regulatory authorisation
-        controller.confirmAuthorisation()
+        controller.confirmAuthorisation("W1AW")
         delay(150)
 
         assertTrue(controller.state.value.isAuthorisedForEncryption, "Authorisation must be marked confirmed in UI state")

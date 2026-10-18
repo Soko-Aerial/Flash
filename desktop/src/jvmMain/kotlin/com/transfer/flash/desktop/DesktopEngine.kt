@@ -1421,6 +1421,22 @@ public class DesktopEngine(
             orgSnapshotCoordinatorRef = orgSnapshotCoordinator
             orgSnapshotCoordinator.start()
 
+            // ERROR-703: the radio chat engine follows the gateway the Radio screen controls. Built once per engine.
+            if (radioPort == null) {
+                val radioHost = com.transfer.flash.core.messaging.radio.RadioChatWiring.createHost(
+                    scope = scope,
+                    managers = com.transfer.flash.desktop.radio.DesktopRadioManagers.current,
+                    localDeviceId = localId,
+                    trustStore = trustStore,
+                    identity = crypto,
+                    radioCrypto = com.transfer.flash.core.radio.wire.JdkRadioCrypto(),
+                    verifier = com.transfer.flash.core.radio.wire.JdkRadioSignatureScheme(),
+                    persistence = com.transfer.flash.core.radio.driver.DesktopFileRadioStatePersistence(),
+                    authorisationStore = com.transfer.flash.core.radio.connect.DesktopPropertiesRadioStore().authorisationStore,
+                )
+                radioPort = com.transfer.flash.core.messaging.radio.HostedRadioOutboxPort(radioHost, scope)
+            }
+
             chatImpl = RealFlashChatRepository(
                 localDeviceId = localId,
                 localDisplayName = friendlyName,

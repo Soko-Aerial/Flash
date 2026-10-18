@@ -17,6 +17,9 @@ public enum class TestMessageResult {
     /** No authorisation record with a positive date exists. Nothing written. */
     NOT_AUTHORISED,
 
+    /** The authorisation record has no valid operator callsign, so the frame would have no station ID. Nothing written. */
+    NO_CALLSIGN,
+
     /** Empty text or longer than [RadioGatewayManager.MAX_TEST_MESSAGE_BYTES] bytes. Nothing written. */
     INVALID_TEXT,
 

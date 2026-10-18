@@ -11,6 +11,7 @@ import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
 import com.transfer.flash.core.radio.connect.CandidateKind
 import com.transfer.flash.core.radio.connect.RadioAuthorisationGate
 import com.transfer.flash.core.radio.connect.RadioAuthorisationStore
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.core.radio.connect.RadioCandidateDevice
 import com.transfer.flash.core.radio.connect.RadioCandidateRanker
 import com.transfer.flash.core.radio.connect.RadioConnectCommand
@@ -70,6 +71,13 @@ public class RadioGatewayManager(
     public val state: StateFlow<RadioGatewayState> = _state.asStateFlow()
 
     private var activeDriver: KissTncDriver? = null
+    private val _driver = MutableStateFlow<KissTncDriver?>(null)
+
+    /**
+     * The driver of the radio link in use, null when none (a new one per connect). The chat engine binds to it
+     * ([com.transfer.flash.core.radio.chat.RadioChatHost]); it is not for sending raw frames.
+     */
+    public val driver: StateFlow<KissTncDriver?> = _driver.asStateFlow()
     private var currentByteLink: ByteLink? = null
     private var driverStateJob: Job? = null
     private var scanJob: Job? = null
@@ -336,8 +344,9 @@ public class RadioGatewayManager(
      * 1. the gateway is connected and ready ([TestMessageResult.NOT_CONNECTED]);
      * 2. the user confirmed the transmit warning in this very request ([TestMessageResult.NOT_CONFIRMED]);
      * 3. an authorisation record with a positive date exists ([TestMessageResult.NOT_AUTHORISED]);
-     * 4. the text is not empty and at most [MAX_TEST_MESSAGE_BYTES] UTF-8 bytes ([TestMessageResult.INVALID_TEXT]);
-     * 5. no other test message is in flight ([TestMessageResult.BUSY]).
+     * 4. the authorisation record carries a valid operator callsign ([TestMessageResult.NO_CALLSIGN]);
+     * 5. the text is not empty and at most [MAX_TEST_MESSAGE_BYTES] UTF-8 bytes ([TestMessageResult.INVALID_TEXT]);
+     * 6. no other test message is in flight ([TestMessageResult.BUSY]).
      *
      * The link type is deliberately NOT inspected: the permission comes from the user, never from guessing
      * what kind of link this is. Automated tests use in-memory or recording links. The text is never logged.
@@ -359,13 +368,14 @@ public class RadioGatewayManager(
         if (!userConfirmedTransmit) return TestMessageResult.NOT_CONFIRMED
         val auth = authorisationStore.load()
         if (auth == null || auth.confirmedAtEpochMs <= 0) return TestMessageResult.NOT_AUTHORISED
+        val callsign = RadioCallsign.normalise(auth.operatorCallsign)?.let { Ax25Address.parseOrNull(it) }
+            ?: return TestMessageResult.NO_CALLSIGN
         val bytes = text.encodeToByteArray()
         if (bytes.isEmpty() || bytes.size > MAX_TEST_MESSAGE_BYTES) return TestMessageResult.INVALID_TEXT
         if (!testMessageLock.tryLock()) return TestMessageResult.BUSY
         try {
             val dest = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
-            val src = auth.operatorCallsign?.let { Ax25Address.parseOrNull(it) } ?: Ax25Address("NOCALL", 0)
-            val ax25 = Ax25FrameCodec.encodeUi(destination = dest, source = src, info = bytes)
+            val ax25 = Ax25FrameCodec.encodeUi(destination = dest, source = callsign, info = bytes)
             val res = driver.sendAx25(ax25, label = "test-msg")
             return if (res is TxResult.Sent) TestMessageResult.SENT else TestMessageResult.FAILED
         } finally {
@@ -441,6 +451,7 @@ public class RadioGatewayManager(
             link
         }
         activeDriver = driver
+        _driver.value = driver
 
         driverStateJob = scope.launch {
             driver.state.collect { linkState ->
@@ -500,6 +511,7 @@ public class RadioGatewayManager(
         driverStateJob = null
         activeDriver?.stop()
         activeDriver = null
+        _driver.value = null
         currentByteLink?.close()
         currentByteLink = null
     }

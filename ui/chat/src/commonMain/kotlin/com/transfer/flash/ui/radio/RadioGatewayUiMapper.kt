@@ -2,6 +2,7 @@ package com.transfer.flash.ui.radio
 
 import com.transfer.flash.core.radio.connect.CandidateCategory
 import com.transfer.flash.core.radio.connect.CandidateKind
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.core.radio.connect.RadioConnectFailureReason
 import com.transfer.flash.core.radio.connect.RadioConnectState
 import com.transfer.flash.core.radio.connect.RadioSecurityProfile as CoreProfile
@@ -161,6 +162,7 @@ public object RadioGatewayUiMapper {
             },
             isAuthorisedForEncryption = auth != null && auth.confirmedAtEpochMs > 0L,
             authorisationConfirmedAtEpochMs = auth?.confirmedAtEpochMs ?: 0L,
+            operatorCallsign = RadioCallsign.normalise(auth?.operatorCallsign),
             selectedMode = host.selectedMode,
             availableModes = setOf(RadioGatewayMode.FIELD_COMPANION),
             isSendingTestMessage = host.isSendingTestMessage,

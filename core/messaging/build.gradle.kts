@@ -87,6 +87,8 @@ kotlin {
             implementation(project(":core:security"))
             implementation(project(":core:network"))
             implementation(project(":core:enterprise"))
+            // ERROR-703: HostedRadioOutboxPort / RadioChatWiring sit on the radio chat engine and host.
+            implementation(project(":core:radio"))
         }
         androidMain.dependencies {
             // The SQLCipher open path, the settings DataStore tier and room-ktx stay here: all
