@@ -1037,7 +1037,10 @@ public fun DesktopShell(
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
     }
     val radioGatewayController = remember {
-        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(scope = scope)
+        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
+            scope = scope,
+            onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
+        )
     }
     val radioUiState by radioGatewayController.state.collectAsState()
     val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped, orgTrustState, radioUiState.enabled) {

@@ -108,6 +108,9 @@ public class RadioPairingAdapter(
         return true
     }
 
+    /** The ids [RadioPeerTrustProvider] currently trusts. */
+    public fun trustedPeerIds(): Set<String> = trustProvider.getTrustedPeerIds()
+
     /**
      * Synchronizes all trusted peers from [trustProvider] into [session].
      * Also removes any peer previously registered in [session] that is no longer trusted.

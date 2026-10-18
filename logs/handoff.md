@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-18 - ERROR-684 and ERROR-703 fixed in code
+
+- **Status:** radio chat is now wired end to end in code on both hosts (gateway driver -> `RadioChatHost` -> `HostedRadioOutboxPort` -> `radioPort`), and no frame can leave as `NOCALL`. Unit-tested only; ERROR-684 and ERROR-703 stay OPEN until the owner runs RADWIRE-D03/D07 and RADCHAT-DEV01 (BT-R05) at the radios.
+- **What is left (code):** (1) a "Your callsign" row on the Radio screen so Profile A users can set it without the encryption dialog; (2) Profile A receive: peers' identity public keys for `addBroadcastSender` (Flash stores only fingerprints); (3) a chat UI affordance that shows the radio path and `'sent by radio, waiting'` is only exercised through the repository tests; (4) the last parallel streams R-relay and R-radar; (5) older items: `confirmAuthorisation`/`reconnect`/`selectProfile` create a manager while the switch is OFF, Settings search keyword "Radio gateway (beta)" is findable while the row is hidden, `:desktop:jvmTest` whole suite not re-run since ERROR-106.
+- **What is left (owner at the radios):** RADWIRE-D01..D07, RADCHAT-DEV01 (BT-R05) and the other RADCHAT-*, RADLNK-D*, RADUI-*; RADAUD-01..04 are optional (Modes 3 and 5 are dropped).
+- **Not pushed:** local commits are ahead of `origin/dev`.
+
 ## 2026-10-18 - Radio Modes 3 and 5 dropped (ADR-210 accepted)
 
 - **Status:** radio plan modes are 1 (chat), 2 (base relay), 4 (radar). The voice bridge is parked as FO-28. Owner decision still open: ERROR-684 (callsign field before the first on-air test). Still the next code task: ERROR-703 (wire the chat engine to the gateway).

@@ -42,7 +42,7 @@ class FlashRadioAuthorisationGateTest {
         )
 
         // Confirm authorization
-        controller.confirmAuthorisation()
+        controller.confirmAuthorisation("W1AW")
         assertTrue(controller.state.value.isAuthorisedForEncryption)
         assertTrue(controller.state.value.authorisationConfirmedAtEpochMs > 0L)
         assertEquals(RadioSecurityProfile.PROFILE_M, controller.state.value.selectedProfile)

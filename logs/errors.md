@@ -11256,7 +11256,7 @@ RESOLVED
 
 ---
 
-## ERROR-684 - Test message is sent with source callsign NOCALL (OPEN, owner decision)
+## ERROR-684 - Test message is sent with source callsign NOCALL (FIXED IN CODE 2026-10-18, device check RADWIRE-D03/D07 owed)
 
 ### Area
 Radio gateway / regulatory
@@ -11267,8 +11267,17 @@ Radio gateway / regulatory
 ### Not fixed on purpose
 Adding a callsign field is a UI and storage decision (where it is entered, whether Profile M needs it). Until then RADWIRE-D03 states the limit and only the owner runs it.
 
+### Fix (2026-10-18, integrator, owner asked "fix the errors")
+- `RadioCallsign` (`:core:radio`) validates and normalises the station ID: 3..6 letters or digits with at least one of each, optional `-0`..`-15`, placeholders (`NOCALL`, `N0CALL`, `MYCALL`...) refused. Tests `RADWIRE-U26a/b`.
+- The authorisation dialog now has a callsign field; Confirm stays disabled until the callsign is valid and the statement is acknowledged. `RadioGatewayController.confirmAuthorisation(operatorCallsign)` records it in `AuthorisationConfirmation.operatorCallsign` (both hosts); an invalid callsign records nothing. The UI state carries `operatorCallsign` so the dialog is prefilled.
+- `requestTestMessage` returns the new `TestMessageResult.NO_CALLSIGN` (nothing written) when the record has no valid callsign, and the frame's source is that callsign, never `NOCALL`. Test `RADWIRE-U27` (5 bad callsigns write 0 data frames; a valid one is decoded back from the written KISS frame as `W1AW-7`).
+- `RadioChatEngine` refuses a Profile A send with `RefusedAuthorization("Enter your callsign ...")` when there is no valid callsign (it used to send as `NOCALL`).
+
+### Still limited
+A user in Profile A who never opened the authorisation dialog has no way to enter a callsign: the field lives in that dialog, whose text is about encrypted RF. A separate "Your callsign" row in the Radio screen is a UI follow-up (listed in `logs/handoff.md`). Until then Profile A chat is refused with the sentence above and Profile M/test messages need the dialog.
+
 ### Status
-OPEN - owner decision: add a callsign field to the authorisation dialog before the first on-air test? (recommended: yes)
+FIXED IN CODE, unit-tested. Stays OPEN until the owner confirms RADWIRE-D03 (frame source is the callsign) and RADWIRE-D07 (dialog behaviour) on hardware.
 
 ## ERROR-700 — Coroutine Lifecycle Leaks in Simulation Tests Causing UncompletedCoroutinesError
 
@@ -11430,12 +11439,24 @@ RESOLVED (Diagnostic classification verified; physical communications stream tes
 ### Symptoms
 `radioPort` on `DiscoveryEngineHolder` and `DesktopEngine` is declared and passed to the repository, but nothing ever assigns it. `AndroidRadioOutboxAdapter` / `DesktopRadioOutboxAdapter` and `RadioChatEngine` exist and are tested in memory, but no host builds an engine over the R-wire gateway's driver. In a real build the radio path is therefore dead code: nothing is queued or transmitted. This is safe (no on-air traffic) but the stream report reads as if chat over radio works.
 
-### Not fixed
-Needs the gateway manager to expose its `KissTncDriver` frames to `RadioChatEngine`, per host. Next step for a follow-up stream (before BT-R05 can be run).
+### Root cause
+Three missing pieces: the manager kept its `KissTncDriver` private (a new one per connect), nothing built a `RadioChatEngine` over it, and nothing implemented `RadioOutboxPort` over a live engine for the repository.
+
+### Fix (2026-10-18, integrator, owner asked "fix the errors")
+- `RadioGatewayManager.driver: StateFlow<KissTncDriver?>` (set on connect, cleared on stop).
+- `RadioChatHost` (`:core:radio`): follows the driver and the gateway's switch and profile; builds a `RadioChatEngine` per driver, closes the old one (and its child scope) on every change, forwards inbound text and delivery receipts as one stable stream. `RadioChatHost.over(scope, managers, factory)` follows whichever manager the host controller currently owns (the controllers create theirs lazily).
+- `HostedRadioOutboxPort` and `RadioChatWiring` (`:core:messaging`, which now depends on `:core:radio`): the one shared `RadioOutboxPort` (no engine = "radio not connected"), Flash pairings as radio peers (`FlashTrustStore.isTrusted` + a 32-byte `getSessionKey`), the device identity key as the Profile A signer (DER to raw r||s), one `PersistentRadioStore` for counters and replay windows across engines.
+- Both controllers publish their manager (`onManagerChanged`): `RadioGatewayHolder.managers` on Android, `DesktopRadioManagers.current` on desktop. `DiscoveryEngineHolder` and `DesktopEngine` build the host and assign `radioPort` before the repository is constructed.
+- A second defect found while wiring: the engine only registered a peer in the radio session when it SENT to that peer, so a frame from a paired peer we had not sent to yet was dropped as `UNKNOWN_SENDER` (the receiver could never be first to hear). The engine now re-reads the trusted peers (at most every 10 s) before ingesting and drops peers whose pairing is gone; `isPeerRadioReachable` also drops a revoked peer. Test `RADWIRE-U29` (mutation-checked).
+- Tests `RADWIRE-U28` (engine follows driver and settings, new engine starts with the current settings, no driver = no engine), `RADWIRE-U29`.
+
+### Still not done
+- Profile A frames are signed, but a RECEIVER cannot verify them: it needs each peer's identity public key in `addBroadcastSender` and Flash stores only the key fingerprint (pin). Profile M (the encrypted profile, the one chat uses between paired peers) does not need this.
+- Not device-verified; BT-R05 (`RADCHAT-DEV01`) is the check.
 
 ### Also fixed in the merge
 Delivery receipts were stored with this device as the confirming member; they now use the recipient (same as the LAN path). `RadioChatBridge.onDeliveryReceipt` has a third parameter.
 
 ### Status
-OPEN
+FIXED IN CODE 2026-10-18, unit-tested. Stays OPEN until RADCHAT-DEV01 (BT-R05) passes on hardware.
 

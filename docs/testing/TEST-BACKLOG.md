@@ -4921,17 +4921,17 @@ All TODO until the owner has the radios; D03 transmits (owner only). D04 contain
 - **Status:** TODO
 
 ### RADWIRE-D03 - Send Test Message RF Transmission with Regulatory Warning
-- **Setup (THIS TRANSMITS; owner only, never an agent):** Phone or PC connected to VR-N76 on a frequency you are licensed for, ideally into a dummy load. An external HT or SDR monitor tuned to the frequency. KNOWN LIMIT (ERROR-684): the frame is sent with source callsign `NOCALL` because the app has no field for your callsign yet, so on an amateur band it does not identify the station. Decide yourself whether one short burst is acceptable; the callsign field is an open owner decision.
+- **Setup (THIS TRANSMITS; owner only, never an agent):** Phone or PC connected to VR-N76 on a frequency you are licensed for, ideally into a dummy load. An external HT or SDR monitor tuned to the frequency. ERROR-684 is fixed in code: the frame's source is the callsign you enter in the authorisation dialog (no more `NOCALL`).
 - **Steps:**
   1. Open Radio Gateway screen when connected to VR-N76.
-  2. Confirm the regulatory authorisation dialog (a single confirmation; there is no callsign field).
+  2. Confirm the regulatory authorisation dialog: enter your callsign, switch on the statement, tap Confirm.
   3. In Diagnostics card, tap "Send test message".
   4. Observe the transmit warning dialog (it says the test message will key the transmitter and to connect an antenna or 50-ohm dummy load).
   5. Tap its transmit button. Cancelling must send nothing.
   6. Observe radio PTT LED turns red (transmitting) for ~200ms.
   7. Verify the Diagnostics card reports the test message as sent (success state). No TX counter is promised.
   8. Verify receiving SDR / HT hears AX.25 UI frame packet burst.
-- **Pass:** Test message transmits RF only after explicit user confirmation, the UI shows success, and the monitor hears one short AX.25 UI frame (destination FLASH, source NOCALL, text `FLASH TEST DE RADIO`). Log shows `PROBE radio.tx.test_message result=SENT`.
+- **Pass:** Test message transmits RF only after explicit user confirmation, the UI shows success, and the monitor hears one short AX.25 UI frame (destination FLASH, source = the callsign you entered, text `FLASH TEST DE RADIO`). Log shows `PROBE radio.tx.test_message result=SENT`.
 - **Source:** Plan R §8 (Task 6, Rule 4).
 - **Status:** TODO
 
@@ -4972,9 +4972,22 @@ All TODO until the owner has the radios; D03 transmits (owner only). D04 contain
 - **Source:** ERROR-681, ERROR-682 (RadioGatewayHolder, RadioServiceTracker).
 - **Status:** TODO
 
+### RADWIRE-D07 - Callsign field in the authorisation dialog (ERROR-684)
+- **Setup:** Android phone or Windows PC, Radio Gateway screen. Does not transmit unless step 6 is done.
+- **Steps:**
+  1. Open the authorisation dialog (select Profile M).
+  2. With the callsign empty, switch on the statement: Confirm must stay disabled.
+  3. Type `nocall`, then `ab`, then `w1aw-99`: each shows the red hint and Confirm stays disabled.
+  4. Type `w1aw-7` (lowercase): it is shown upper-case; Confirm becomes enabled; tap it.
+  5. Reopen the dialog (or the screen): the callsign `W1AW-7` is prefilled, and it survives an app restart.
+  6. Optional, owner only, dummy load: run RADWIRE-D03; the monitor shows source `W1AW-7`.
+- **Pass:** Confirm is enabled only with a valid callsign and the statement; the stored callsign is the normalised form; the test frame carries it.
+- **Source:** ERROR-684, `RadioCallsign`, `RADWIRE-U26`/`U27`.
+- **Status:** TODO
+
 ## Radio chat over KISS (stream R-chat, 2026-10-16)
 
-All TODO; needs the radios. BT-R05 cannot run until ERROR-703 is closed (the chat engine is not wired to the gateway yet).
+All TODO; needs the radios. ERROR-703 is fixed in code (2026-10-18): the chat engine is wired to the gateway on both hosts, so BT-R05 can run. Profile M between two paired devices is the path to test; Profile A receive is not wired (see ERROR-703).
 
 ## RADCHAT-DEV01 — Companion Mode Text Chat & Cryptographic ACK Over Physical Radios (BT-R05)
 

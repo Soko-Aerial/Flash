@@ -10,6 +10,7 @@ import androidx.core.content.ContextCompat
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.core.radio.connect.CandidateCategory
 import com.transfer.flash.core.radio.connect.CandidateKind
 import com.transfer.flash.core.radio.connect.RadioAuthorisationStore
@@ -86,6 +87,8 @@ public class AndroidRadioGatewayController(
     private val driverFactory: ((suspend () -> ByteLink) -> KissTncDriver)? = null,
     private val onServiceStateChanged: ((shouldRun: Boolean, state: RadioGatewayState) -> Unit)? = null,
     private val openSettingsHandler: (() -> Unit)? = null,
+    /** Told whenever this controller creates or drops its gateway manager; the chat host follows it (ERROR-703). */
+    private val onManagerChanged: ((RadioGatewayManager?) -> Unit)? = null,
 ) : RadioGatewayController {
 
     private val _uiState = MutableStateFlow(
@@ -166,6 +169,7 @@ public class AndroidRadioGatewayController(
         }
 
         activeManager = mgr
+        onManagerChanged?.invoke(mgr)
         managerStateJob?.cancel()
         managerStateJob = scope.launch {
             mgr.state.collect { managerState ->
@@ -248,6 +252,7 @@ public class AndroidRadioGatewayController(
             managerStateJob?.cancel()
             managerStateJob = null
             activeManager = null
+            onManagerChanged?.invoke(null)
 
             _uiState.update {
                 it.copy(
@@ -343,12 +348,14 @@ public class AndroidRadioGatewayController(
         }
     }
 
-    override fun confirmAuthorisation() {
+    override fun confirmAuthorisation(operatorCallsign: String) {
+        // ERROR-684: no callsign, no authorisation record (the dialog also disables Confirm).
+        val callsign = RadioCallsign.normalise(operatorCallsign) ?: return
         val mgr = getOrCreateManager()
         val now = clock.nowMs()
         val confirmation = AuthorisationConfirmation(
             confirmedAtEpochMs = now,
-            operatorCallsign = null,
+            operatorCallsign = callsign,
         )
         scope.launch {
             mgr.recordAuthorisation(confirmation)

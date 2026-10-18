@@ -39,8 +39,11 @@ public interface RadioGatewayController {
     /** Changes the active security profile (Profile M encrypted vs Profile A cleartext). */
     public fun selectProfile(profile: RadioSecurityProfile)
 
-    /** Records user regulatory authorization to transmit encrypted RF on the frequency in use. */
-    public fun confirmAuthorisation()
+    /**
+     * Records user regulatory authorization to transmit encrypted RF on the frequency in use, together with the
+     * operator's [operatorCallsign] (station ID, ERROR-684). An invalid callsign is ignored: nothing is recorded.
+     */
+    public fun confirmAuthorisation(operatorCallsign: String)
 
     /** Selects the active operational mode (e.g. Field Companion). */
     public fun selectMode(mode: RadioGatewayMode)

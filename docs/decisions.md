@@ -6160,3 +6160,26 @@ During Phase R4 (`BT-R10`), diagnostic tools were implemented to detect and rout
    - On Android 11 and lower, legacy fallback `AudioManager.startBluetoothSco()` and `setBluetoothScoOn(true)` must be used.
    - Runtime permissions `BLUETOOTH_CONNECT`, `RECORD_AUDIO`, and `MODIFY_AUDIO_SETTINGS` are required.
    - The audio mode must be set to `AudioManager.MODE_IN_COMMUNICATION` during active routing and restored to `AudioManager.MODE_NORMAL` immediately upon release.
+
+## ADR-213 - Radio chat wiring: one host, one shared outbox port, `:core:messaging` depends on `:core:radio`
+
+### Status
+ACCEPTED (integrator, 2026-10-18, implements the owner's "fix the errors" for ERROR-703)
+
+### Decision
+`RadioChatHost` (`:core:radio`) owns the lifecycle "one `RadioChatEngine` per gateway driver". `HostedRadioOutboxPort` and `RadioChatWiring` (`:core:messaging`) are the single shared `RadioOutboxPort` and the single place that turns Flash pairings, the identity key and the persistent counter store into an engine. Android and Windows differ only in the platform pieces they pass (crypto, persistence, authorisation store) and in how they publish the controller's manager (`RadioGatewayHolder.managers`, `DesktopRadioManagers.current`).
+
+### Context
+The gateway creates a new `KissTncDriver` on every connect, the engine is bound to one driver, the controllers (UI side) own the manager, and the engine host (`DiscoveryEngineHolder`, `DesktopEngine`) owns identity and trust. Neither side can build the other.
+
+### Alternatives considered
+- Controllers build the engine: they do not own identity or the trust store (rejected).
+- Duplicate `AndroidRadioOutboxAdapter` / `DesktopRadioOutboxAdapter` bridges (rejected: they wrap a fixed engine and the mapping was already identical). They stay for the engine-level tests and are no longer used by the hosts.
+- A global singleton registry in `:core:radio` (rejected: shared state between tests); a published `StateFlow` per host is used instead.
+- Move the host into `:core:engine` (rejected: it does not depend on `:core:radio` and should not).
+
+### Consequences
+`:core:messaging` gains `implementation(project(":core:radio"))` (no cycle: `:core:radio` depends only on `:core:common`). The engine now registers every paired peer before ingesting, so a peer we never sent to is heard.
+
+### Revisit when
+Profile A receive is wired (needs peer identity public keys), or a second transport needs the same "engine per link" lifecycle.

@@ -417,6 +417,29 @@ class RadioGatewayManagerTest {
     }
 
     @Test
+    fun radwireU27_testMessageNeedsAValidCallsign_neverGoesOutAsNocall() = runTest {
+        for (callsign in listOf(null, "NOCALL", "N0CALL", "W1", "W1AW-99")) {
+            val link = RecordingComLink()
+            val m = connectedManager(link, AuthorisationConfirmation(1729000000000L, callsign))
+            assertEquals(
+                TestMessageResult.NO_CALLSIGN,
+                m.requestTestMessage("Hello", userConfirmedTransmit = true),
+                "callsign <$callsign>",
+            )
+            assertEquals(0, link.dataFrames(), "no data frame for callsign <$callsign>")
+        }
+        // A valid one still sends, and the frame carries it as the AX.25 source (not NOCALL).
+        val link = RecordingComLink()
+        val m = connectedManager(link, AuthorisationConfirmation(1729000000000L, "w1aw-7"))
+        assertEquals(TestMessageResult.SENT, m.requestTestMessage("Hello", userConfirmedTransmit = true))
+        assertEquals(1, link.dataFrames())
+        val frame = link.writes.last { (it.getOrNull(1)?.toInt() ?: -1) and 0x0F == 0 }
+        val ax25 = com.transfer.flash.core.radio.kiss.KissStreamDecoder().feed(frame).first().data
+        val decoded = com.transfer.flash.core.radio.kiss.Ax25FrameCodec.decode(ax25)
+        assertEquals("W1AW-7", (decoded as com.transfer.flash.core.radio.kiss.Ax25DecodeResult.Ok).frame.source.toString())
+    }
+
+    @Test
     fun radlnkU09b_confirmedAuthorisedMessageIsWrittenOnAnyLinkType() = runTest {
         // The decision is the user's: a real-looking COM link must NOT be refused by guessing the link type.
         val link = RecordingComLink()

@@ -18,8 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.TextButton
@@ -33,6 +36,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -692,11 +697,14 @@ private fun FlashProfileRow(
 
 @Composable
 public fun FlashRadioAuthorisationDialog(
-    onConfirm: () -> Unit,
+    onConfirm: (callsign: String) -> Unit,
     onDismiss: () -> Unit,
+    initialCallsign: String = "",
 ) {
     val colors = FlashTheme.colors
     var acknowledged by remember { mutableStateOf(false) }
+    var callsignText by remember { mutableStateOf(initialCallsign) }
+    val normalisedCallsign = RadioCallsign.normalise(callsignText)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -715,6 +723,27 @@ public fun FlashRadioAuthorisationDialog(
                     color = colors.textSecondary,
                 )
                 Spacer(modifier = Modifier.height(FlashSpacing.space16))
+                OutlinedTextField(
+                    value = callsignText,
+                    onValueChange = { raw ->
+                        callsignText = raw.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' || it == '-' }.take(9)
+                    },
+                    label = { Text(FlashRadioCopy.CALLSIGN_LABEL) },
+                    supportingText = {
+                        Text(
+                            if (callsignText.isNotEmpty() && normalisedCallsign == null) {
+                                FlashRadioCopy.CALLSIGN_INVALID
+                            } else {
+                                FlashRadioCopy.CALLSIGN_SUPPORTING
+                            },
+                        )
+                    },
+                    isError = callsignText.isNotEmpty() && normalisedCallsign == null,
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(FlashSpacing.space12))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -744,8 +773,8 @@ public fun FlashRadioAuthorisationDialog(
         confirmButton = {
             FlashRadioPrimaryButton(
                 text = FlashRadioCopy.ACTION_CONFIRM_AUTHORISATION,
-                onClick = onConfirm,
-                enabled = acknowledged,
+                onClick = { normalisedCallsign?.let(onConfirm) },
+                enabled = acknowledged && normalisedCallsign != null,
             )
         },
         dismissButton = {

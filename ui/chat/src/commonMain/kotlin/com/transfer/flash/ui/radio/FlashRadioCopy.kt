@@ -134,6 +134,10 @@ public object FlashRadioCopy {
         "Transmitting encrypted messages on radio frequencies is strictly regulated by law. In many civilian amateur bands, encrypted transmissions are prohibited and require cleartext callsigns.\n\nOnly confirm if you are operating under military, government, or other licensed authority permitted to use encryption on this frequency."
     public const val AUTHORISATION_STATEMENT: String =
         "I confirm that I am authorised to transmit encrypted traffic on the frequency in use."
+    public const val CALLSIGN_LABEL: String = "Your callsign (station ID)"
+    public const val CALLSIGN_SUPPORTING: String =
+        "Sent with every transmission so other stations know who is on the air. Example: W1AW or W1AW-7."
+    public const val CALLSIGN_INVALID: String = "Enter 3 to 6 letters and digits, with at least one of each."
     public const val ACTION_CONFIRM_AUTHORISATION: String = "Confirm authorisation"
     public const val ACTION_CANCEL_AUTHORISATION: String = "Cancel"
     public const val BADGE_AUTHORISED: String = "Authorised"

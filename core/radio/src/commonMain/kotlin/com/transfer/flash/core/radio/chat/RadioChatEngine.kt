@@ -9,6 +9,7 @@ import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
 import com.transfer.flash.core.radio.connect.RadioAuthorisationGate
 import com.transfer.flash.core.radio.connect.RadioAuthorisationStore
+import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.core.radio.connect.RadioSecurityProfile
 import com.transfer.flash.core.radio.driver.KissTncDriver
 import com.transfer.flash.core.radio.driver.TncLinkState
@@ -153,11 +154,32 @@ public class RadioChatEngine(
      * Checks if [peerId] is known and radio-reachable (trusted with a 32-byte session key).
      */
     public fun isPeerRadioReachable(peerId: String): Boolean {
-        if (session.hasPeer(peerId)) return true
-        if (pairingAdapter != null && pairingAdapter.isPairedForRadio(peerId)) {
-            return pairingAdapter.registerPeer(session, peerId)
+        if (pairingAdapter == null) return session.hasPeer(peerId)
+        // A peer whose pairing was revoked is dropped from the session, not kept for the rest of the connection.
+        if (!pairingAdapter.isPairedForRadio(peerId)) {
+            session.removePeer(peerId)
+            return false
         }
-        return false
+        return session.hasPeer(peerId) || pairingAdapter.registerPeer(session, peerId)
+    }
+
+    private var lastPeerSyncMs: Long = Long.MIN_VALUE
+    private val syncedPeers = HashSet<String>()
+
+    /**
+     * Registers every paired peer in the session so frames from a peer we have not sent to yet are accepted
+     * (ERROR-703), and drops peers whose pairing is gone. At most once per [PEER_SYNC_INTERVAL_MS]; call under
+     * [sessionMutex].
+     */
+    private fun syncPeersIfDue(nowMs: Long) {
+        val adapter = pairingAdapter ?: return
+        if (lastPeerSyncMs != Long.MIN_VALUE && nowMs - lastPeerSyncMs < PEER_SYNC_INTERVAL_MS) return
+        lastPeerSyncMs = nowMs
+        val current = HashSet<String>()
+        for (id in adapter.trustedPeerIds()) if (adapter.registerPeer(session, id)) current += id
+        for (gone in syncedPeers - current) session.removePeer(gone)
+        syncedPeers.clear()
+        syncedPeers.addAll(current)
     }
 
     /**
@@ -188,6 +210,12 @@ public class RadioChatEngine(
             return RadioChatSendOutcome.RefusedAuthorization("Profile M unconfirmed: ${e.message}")
         }
 
+        // ERROR-684: Profile A puts the operator callsign on the air; never send as NOCALL.
+        val callsign = RadioCallsign.normalise(auth?.operatorCallsign)?.let { Ax25Address.parseOrNull(it) }
+        if (profile == RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED && callsign == null) {
+            return RadioChatSendOutcome.RefusedAuthorization("Enter your callsign in the radio gateway settings first")
+        }
+
         val textBytes = text.encodeToByteArray()
         val maxSegmentBytes = RadioWire.maxBodyPerSegment(infoBudget) * 16
         if (textBytes.size > maxSegmentBytes) {
@@ -209,7 +237,7 @@ public class RadioChatEngine(
                 RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED -> {
                     encodeResult = session.encodeSigned(RadioKind.TEXT, textBytes, nowMs)
                     destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
-                    srcAddr = auth?.operatorCallsign?.let { Ax25Address.parseOrNull(it) } ?: Ax25Address("NOCALL", 0)
+                    srcAddr = checkNotNull(callsign)
                 }
             }
         }
@@ -347,6 +375,7 @@ public class RadioChatEngine(
         val nowMs = timeSource.nowMs()
 
         val ingestResult: RadioIngest = sessionMutex.withLock {
+            syncPeersIfDue(nowMs)
             session.ingest(ax25.info, nowMs)
         }
 
@@ -456,5 +485,10 @@ public class RadioChatEngine(
         laneText.close()
         laneAck.close()
         laneLocation.close()
+    }
+
+    private companion object {
+        /** How often the paired-peer set is re-read from the trust store while frames arrive. */
+        const val PEER_SYNC_INTERVAL_MS: Long = 10_000L
     }
 }

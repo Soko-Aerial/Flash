@@ -116,6 +116,8 @@ public data class RadioGatewayUiState(
     public val selectedProfile: RadioSecurityProfile = RadioSecurityProfile.PROFILE_M,
     public val isAuthorisedForEncryption: Boolean = false,
     public val authorisationConfirmedAtEpochMs: Long = 0L,
+    /** The station ID recorded with the authorisation; null until one is entered (ERROR-684). */
+    public val operatorCallsign: String? = null,
     public val selectedMode: RadioGatewayMode = RadioGatewayMode.FIELD_COMPANION,
     public val availableModes: Set<RadioGatewayMode> = setOf(RadioGatewayMode.FIELD_COMPANION),
     public val isSendingTestMessage: Boolean = false,

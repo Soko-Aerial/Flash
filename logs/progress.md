@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-10-18 - ERROR-684 (callsign) and ERROR-703 (chat engine wired to the gateway) fixed in code (Claude Code, integrator)
+
+### Worked on
+Owner: "fix the errors and what would be left". The two open radio errors.
+
+### Changed
+- ERROR-684: `RadioCallsign` validator; callsign field in the authorisation dialog; `confirmAuthorisation(operatorCallsign)` on the controller port, Fake and both hosts; `TestMessageResult.NO_CALLSIGN`; engine refuses Profile A without a callsign. No transmission can go out as `NOCALL` any more.
+- ERROR-703: `RadioGatewayManager.driver`, `RadioChatHost`, `HostedRadioOutboxPort`, `RadioChatWiring`, `RadioGatewayHolder.managers` / `DesktopRadioManagers`, `radioPort` assigned in `DiscoveryEngineHolder` and `DesktopEngine` (ADR-213). Found and fixed on the way: the engine only knew a peer after sending to it, so inbound frames from a paired peer we had not sent to were dropped.
+
+### Verification
+Gate via tools/flash-gradle.cmd: :core:radio:jvmTest (RadioCallsignTest 2, RadioGatewayManagerTest 14 incl. RADWIRE-U27, RadioChatEngineTest 12, RadioChatHostTest 2 = U28/U29), :ui:chat:jvmTest *Radio* (mapper 7, authorisation gate, no-dead-actions), :desktop:jvmTest *Radio* (controller 13, outbox adapter 1), :core:messaging:compileKotlinJvm, :desktop:compileKotlinJvm, :app:compileDebugKotlin: all green. Mutation check: removing the pre-ingest peer sync in RadioChatEngine made RADWIRE-U29 fail (restored). RADWIRE-U02 (desktop controller) now polls instead of a fixed 100 ms wait: it failed twice on a cold JVM, passes with polling. Not run: whole :desktop:jvmTest and :core:messaging:jvmTest (messaging only gained a dependency and two new classes), mutation checks for the callsign refusal and the host lifecycle.
+
+### Remaining
+Device checks RADWIRE-D03, D07, RADCHAT-DEV01 (BT-R05). Profile A receive (peer public keys), a callsign row outside the dialog, see `logs/handoff.md`. Not pushed.
+
 ## 2026-10-18 - Radio Modes 3 and 5 dropped, parked as FO-28 (Claude Code)
 
 Owner decision: "drop mode 3 and 5" and "put that in future optimization just in case". ADR-210 set to ACCEPTED, ADR-211 to NOT USED (kept as the starting point), ADR-212 stays PROPOSED as a routing pattern. New FO-28 in `docs/FUTURE-OPTIMIZATION.md` (idea, why dropped, revisit conditions, where to start). `docs/plans/RADIO-GATEWAY-PLAN.md` records the decision; remaining modes are 1, 2 and 4. Docs only, no code or tests changed. The optional read-only RADAUD-01..04 probes stay in the backlog.

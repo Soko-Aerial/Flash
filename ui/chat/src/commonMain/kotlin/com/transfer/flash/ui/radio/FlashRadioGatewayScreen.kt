@@ -67,9 +67,10 @@ public fun FlashRadioGatewayScreen(
 
     if (showAuthorisationDialog) {
         FlashRadioAuthorisationDialog(
-            onConfirm = {
+            initialCallsign = state.operatorCallsign.orEmpty(),
+            onConfirm = { callsign ->
                 showAuthorisationDialog = false
-                controller.confirmAuthorisation()
+                controller.confirmAuthorisation(callsign)
             },
             onDismiss = {
                 showAuthorisationDialog = false
