@@ -6061,7 +6061,7 @@ AES-256-GCM nonce reuse under the same key results in complete loss of confident
 ## ADR-210 — Recommendation to Drop Modes 3 and 5 (Walkie-Talkie Bridge) from Plan R
 
 ### Status
-PROPOSED (Stream R-audio recommendation following Phase R4 / BT-R10 spike)
+ACCEPTED by the owner 2026-10-18 ("drop mode 3 and 5"; recommendation of stream R-audio after the BT-R10 spike). Modes 3 and 5 are removed from Plan R. The idea is parked as FO-28 in `docs/FUTURE-OPTIMIZATION.md`.
 
 ### Context
 `docs/plans/RADIO-GATEWAY-PLAN.md` §5 and §9, parent plan ADR-173, and Phase R4 define **Mode 3 (Walkie-Talkie Voice Bridge)** and **Mode 5 (All-in-One Dual Mode)**. The intention was to cross-patch Flash Push-to-Talk (PTT) voice sessions (ADR-032) to the Vero Telecom VR-N76 / BTECH UV-Pro handheld radio via Bluetooth Hands-Free Profile (HFP), allowing Flash users to converse directly with conventional analog VHF/UHF FM walkie-talkies.
@@ -6120,7 +6120,7 @@ Revisit only if future commercial transceivers provide:
 ## ADR-211 — Minimal Architecture and Floor Arbitration Model if Modes 3 & 5 are Rescoped or Built
 
 ### Status
-PROPOSED (Contingency Architecture if the Owner Overrules ADR-210)
+NOT USED (2026-10-18): the owner accepted ADR-210, so this contingency design is not built. Kept as the starting point for FO-28.
 
 ### Context
 If the repository owner decides to retain and implement Mode 3 or Mode 5 despite the findings in ADR-210, a sound architectural boundary and floor arbitration model must be defined to prevent destabilizing `:core:ptt` or `:core:engine`.

@@ -419,3 +419,20 @@ Listed in the table above. None is scheduled. Notes for whoever picks one up:
 - **FO-24 sealed announcements:** needs group sealing (ADR-126 "not built"); loses server-side search and console preview for the sealed ones (owner D5 chose plaintext for that reason).
 - **FO-25:** remote wipe needs a command channel and a cooperating client; out of office needs presence privacy rules; file drop needs department-scoped inbox rules.
 - **FO-26:** audit view scoped to a department; revocation rights for heads need an ADR-136 amendment.
+
+## FO-28 - Radio walkie-talkie voice bridge (old radio Modes 3 and 5)
+
+**Status:** PARKED. Dropped from Plan R by the owner on 2026-10-18 (ADR-210 ACCEPTED). Do not start unasked.
+
+**The idea.** Cross-patch Flash push-to-talk voice to a conventional analog handheld (VR-N76 class) over Bluetooth Hands-Free audio, so Flash users could talk to ordinary walkie-talkies. Mode 5 combined it with chat and relay.
+
+**Why it was dropped (spike BT-R10, stream R-audio, evidence in ADR-210, EXP-070, ERROR-730):**
+- Bluetooth Hands-Free has no transmitter-key command; the only hands-free option is the radio's VOX (100-300 ms clipping, squelch tails, noise triggers).
+- Bluetooth voice is 8 kHz narrowband; whether received radio audio reaches the phone or PC is unproven (RADAUD-03).
+- Windows keeps the radio's hands-free endpoint "unplugged" (0x8) until an app opens a communications stream.
+- Analog simplex has no floor control: the bridge can talk over other stations ("doubling"), and Flash voice would go out as clear analog audio, which defeats the encrypted Profile M.
+
+**Revisit when:** a radio offers digital voice over Bluetooth SPP/BLE (DMR or P25 style packets), or exposes channel-busy / carrier-sense telemetry over its serial or Bluetooth API.
+
+**Where to start if revisited:** ADR-211 (module seam, floor arbitration, unencrypted-badge rule, status NOT USED), ADR-212 (Windows Core Audio and Android SCO routing), the debug-only probes from R-audio (`:desktop:radioAudioProbe`, `RadioAudioActivity`), `logs/streams/R-audio/runbook-BT-R10.md` and the owed RADAUD-01..04 tests.
+

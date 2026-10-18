@@ -1,5 +1,9 @@
 # Current Handoff
 
+## 2026-10-18 - Radio Modes 3 and 5 dropped (ADR-210 accepted)
+
+- **Status:** radio plan modes are 1 (chat), 2 (base relay), 4 (radar). The voice bridge is parked as FO-28. Owner decision still open: ERROR-684 (callsign field before the first on-air test). Still the next code task: ERROR-703 (wire the chat engine to the gateway).
+
 ## 2026-10-17 - R-chat and R-audio merged into dev, not pushed
 
 - **Status:** `dev` has the radio chat engine and bridge (dormant: ERROR-703, nothing assigns `radioPort`), the pairing-key adapter and counter store, and the debug-only audio probes. Shared `RadioGatewayUiMapper` replaces the duplicated mapping; ChooseFromList is listed.
