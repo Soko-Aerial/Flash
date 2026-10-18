@@ -15,7 +15,7 @@
 | **Voice notes are removed** (owner, 2026-10-16): no recorded clips, no Codec2/Opus, no audio-note codec, no `BT-R06`. | Owner decision. Also removes a new native dependency. |
 | **New section 6 "Find, pair and connect":** how the app finds the radio on the PC and on the phone, how the user pairs it, what the user sees when something is wrong. | Revision 1 only said "port picker (`COM16`)". |
 | Security profile: **encryption required** (revision 3). Profile M stays the default; the first enable asks the user to confirm they are authorised to use encrypted traffic on the frequency in use (section 8). | Owner: military use. The test radio sits on an amateur band, where encryption is usually not allowed, so the app records the user's confirmation instead of assuming. |
-| Walkie-talkie audio bridge (old Modes 3 and 5) is kept but **gated behind a spike** (R4). | Nothing in EXP-023 shows the audio path works; the Windows audio connection failed in the spike. |
+| Walkie-talkie audio bridge (old Modes 3 and 5) is kept but **gated behind a spike** (R4). **Superseded 2026-10-18: dropped after the spike (ADR-210), parked as FO-28.** | Nothing in EXP-023 shows the audio path works; the Windows audio connection failed in the spike. |
 | Section 7 says how a message chooses the radio and what cannot go over it. | Revision 1 left the outbox integration undefined. |
 
 **Revision 3 (owner, 2026-10-16), two changes:** (a) the radio may be used by military users, so **encryption is required**: Profile M (encrypted) stays the primary profile and O-1 is answered (section 8); (b) the app must **detect the already-paired radio by itself** and **show nearby devices so the user can pair inside Flash** without opening Bluetooth settings (section 6, spike `BT-R11`).
@@ -202,6 +202,8 @@ Unknowns to settle with a spike before any design (`BT-R10`):
 4. How analog radio traffic fits Flash's push-to-talk turn-taking, which it cannot follow.
 
 R4 ends with a short written result and an owner decision: build, rescope, or drop Modes 3 and 5. Nothing else in the plan depends on R4.
+
+**Owner decision (2026-10-18): DROP Modes 3 and 5** (ADR-210 ACCEPTED). The walkie-talkie voice bridge is removed from this plan and parked as FO-28 in `docs/FUTURE-OPTIMIZATION.md`. The plan's modes are now 1 (field companion chat), 2 (base station relay) and 4 (tactical position radar). The R4 spike result (stream R-audio) stays as evidence; the owed RADAUD-01..04 probes are optional and read-only.
 
 ## 10. Phases
 

@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2026-10-18 - Radio Modes 3 and 5 dropped, parked as FO-28 (Claude Code)
+
+Owner decision: "drop mode 3 and 5" and "put that in future optimization just in case". ADR-210 set to ACCEPTED, ADR-211 to NOT USED (kept as the starting point), ADR-212 stays PROPOSED as a routing pattern. New FO-28 in `docs/FUTURE-OPTIMIZATION.md` (idea, why dropped, revisit conditions, where to start). `docs/plans/RADIO-GATEWAY-PLAN.md` records the decision; remaining modes are 1, 2 and 4. Docs only, no code or tests changed. The optional read-only RADAUD-01..04 probes stay in the backlog.
+
 ## 2026-10-17 - R-chat and R-audio merged into dev; shared radio UI mapper (Claude Code, integrator)
 
 ### Worked on
