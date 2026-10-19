@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-10-19 — Group swarm turned ON BY DEFAULT (owner decision O-8)
+
+### Worked on
+The owner decided plan question **O-8** early: turn the group swarm on by default now, ahead of the SW-12 device gate
+(`SWM-09..15` PASS on three devices including Windows) that ADR-070 and the swarm plan had set. Flipping the master switch
+default on both hosts.
+
+### Changed
+- `:core:persistence` — `FlashSettingsDataStore.groupSwarmEnabled` default `false` → `true` (KDoc updated).
+- `:app` — `DiscoveryEngineHolder.groupSwarmEnabled` field default `false` → `true`; `AppEngine` reads the setting with a
+  `true` fallback; `MainActivity` collects it with `initial = true`.
+- `:desktop` — `DesktopSettings.groupSwarmEnabled` default `false` → `true`; `DesktopSettingsStore.loadSettings()` reads the
+  `group_swarm_enabled` property with a `"true"` default.
+- `:ui:chat` — `FlashSettingsModel.swarmEnabled` default `false` → `true` (drives the settings row and "Reset to defaults").
+- Tests: `FlashSettingsDataStoreTest` gains `groupSwarmEnabled defaults to TRUE and an explicit opt-out is stored`;
+  `DesktopSettingsStoreTest` gains `groupSwarmDefaultsOnAndPersists` (fresh profile on, an opt-out survives a restart);
+  `FlashSettingsLogicTest` now asserts the switch is on by default; `FlashSettingsSearchResetTest` flips its
+  `isAtDefaults` expectation to `swarmEnabled = false`.
+- Docs: `docs/decisions.md` ADR-070 Status + Decision 7 + Consequences amended (O-8 override, dated);
+  `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` §10.1 O-8 answer, the SW-12 row/section, and SW-8's "do not" line;
+  `AGENTS.md` §29 (`Current Phase` block + the swarm paragraph); `docs/testing/TEST-BACKLOG.md` §4w gains `SWM-46`/`SWM-47`.
+
+### Why
+Owner instruction 2026-10-19 ("i want to enable swarm by default now"). The toggle is the only thing gated "off": the
+signed group rule (`GroupSettings.swarmServing`) and the device-local `GroupLocalPreferences.serveToGroup` were already `true`,
+and `sw1` is advertised only while a swarm binding exists, so flipping the master default is the whole change.
+
+### Verification
+- `:app:compileDebugKotlin`, `:core:persistence:testAndroidHostTest`, `:ui:chat:jvmTest` green (see the entry's build log).
+- `:desktop:jvmTest --tests DesktopSettingsStoreTest` green.
+- **Mutation-shaped by design:** the new tests fail if the default is flipped back to `false` or if an explicit opt-out is
+  dropped in favour of the default.
+- **Not device-verified.** A swarm defect now reaches group file sharing on a fresh install.
+
+### Remaining / next AI
+- Run the owed device checks: `SWM-07`…`SWM-29` plus the new default-on checks `SWM-46`, `SWM-47`.
+- If any of `SWM-09..15` FAILS on device, the owner may turn the default back off (one-line change per host).
+- Consider whether the settings row should drop the word "experimental" (left as-is: still not device-verified).
+
 ## 2026-10-19 — Server hub end-to-end review: fixes in the announcements client and the announcements server
 
 ### Worked on

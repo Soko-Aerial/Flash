@@ -441,9 +441,12 @@ object DiscoveryEngineHolder {
             modeController?.refresh()
         }
 
-    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
+    /**
+     * Group file sharing via swarm transfer (SW-8). Default TRUE since 2026-10-19 (owner decision O-8). Read once from
+     * the settings store at start ([com.transfer.flash.di.AppEngine]) and mirrored here; a change needs a restart.
+     */
     @Volatile
-    var groupSwarmEnabled: Boolean = false
+    var groupSwarmEnabled: Boolean = true
 
     @Volatile
     private var swarmBinding: SwarmHostBinding? = null

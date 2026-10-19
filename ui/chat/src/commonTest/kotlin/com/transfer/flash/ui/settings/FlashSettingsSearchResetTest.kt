@@ -57,7 +57,7 @@ class FlashSettingsSearchResetTest {
         assertFalse(FlashSettingsMath.isAtDefaults(d.copy(themeMode = FlashThemeMode.Dark)))
         assertFalse(FlashSettingsMath.isAtDefaults(d.copy(autoDownloadVideo = true)))
         assertFalse(FlashSettingsMath.isAtDefaults(d.copy(discoveryMode = "ECO")))
-        assertFalse(FlashSettingsMath.isAtDefaults(d.copy(swarmEnabled = true)))
+        assertFalse(FlashSettingsMath.isAtDefaults(d.copy(swarmEnabled = false)))
         assertFalse(FlashSettingsMath.isAtDefaults(d.copy(performanceMode = FlashPerformanceMode.LOW)))
     }
 

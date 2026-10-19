@@ -91,13 +91,13 @@ class FlashSettingsLogicTest {
         assertNotEquals(on, off)
     }
 
-    /** SW-11 / UI-055: swarm defaults. */
+    /** SW-11 / UI-055: swarm defaults. The master switch is on since 2026-10-19 (owner decision O-8). */
     @Test
-    fun `group swarm defaults match privacy and experimental expectations`() {
+    fun `group swarm defaults to sharing, keeping files and the master switch on`() {
         val model = FlashSettingsModel()
         assertTrue(model.swarmHelpShare)
         assertTrue(model.swarmKeepFinishedFiles)
-        assertFalse(model.swarmEnabled)
+        assertTrue(model.swarmEnabled)
     }
 
     /** UI-056 / ADR-080: on by default, and the copy says it does not replay on a switch back. */

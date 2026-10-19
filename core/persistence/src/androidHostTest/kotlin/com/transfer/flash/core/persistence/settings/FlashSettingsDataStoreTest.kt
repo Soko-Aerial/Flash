@@ -152,6 +152,22 @@ class FlashSettingsDataStoreTest {
         assertFalse(settings.backgroundTransfers.first())
     }
 
+    /**
+     * O-8 (owner decision 2026-10-19): group file sharing via the swarm is on for a fresh install, so the default
+     * must be TRUE, and an explicit opt-out must be stored rather than falling back to the default.
+     */
+    @Test
+    fun `groupSwarmEnabled defaults to TRUE and an explicit opt-out is stored`() = runTest {
+        val settings = newSettings()
+        assertTrue(settings.groupSwarmEnabled.first())
+
+        settings.setGroupSwarmEnabled(false)
+        assertFalse(settings.groupSwarmEnabled.first())
+
+        settings.setGroupSwarmEnabled(true)
+        assertTrue(settings.groupSwarmEnabled.first())
+    }
+
     @Test
     fun `corrupted preferences file falls back to emptyPreferences`() = runTest {
         val file = File(tmp.root, "corrupt-${Random.nextLong()}.preferences_pb")

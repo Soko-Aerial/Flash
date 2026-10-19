@@ -766,7 +766,7 @@ fun FlashApp(
     val receivedStorage by receivedStorageState.collectAsState()
     val swarmHelpShare by store.swarmHelpShare.collectAsState(initial = true)
     val swarmKeepFinishedFiles by store.swarmKeepFinishedFiles.collectAsState(initial = true)
-    val swarmEnabled by store.groupSwarmEnabled.collectAsState(initial = false)
+    val swarmEnabled by store.groupSwarmEnabled.collectAsState(initial = true)
     val launchAnimation by store.launchAnimation.collectAsState(initial = true)
 
     val ready by engine.ready.collectAsState()

@@ -202,9 +202,12 @@ public class FlashSettingsDataStore(
     public val displayName: Flow<String> =
         preferences.map { it[Keys.displayName].orEmpty() }
 
-    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. Takes effect after app restart. */
+    /**
+     * Group file sharing via swarm transfer (SW-8). Default TRUE since 2026-10-19 (owner decision O-8: turn the
+     * swarm on by default). An explicit opt-out is stored and wins over the default. Takes effect after app restart.
+     */
     public val groupSwarmEnabled: Flow<Boolean> =
-        preferences.map { it[Keys.groupSwarmEnabled] ?: false }
+        preferences.map { it[Keys.groupSwarmEnabled] ?: true }
 
     /** Help share group files: share received file pieces with other group members. Default TRUE. */
     public val swarmHelpShare: Flow<Boolean> =
