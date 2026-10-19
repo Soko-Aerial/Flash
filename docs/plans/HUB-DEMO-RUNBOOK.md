@@ -96,8 +96,12 @@ The address devices enrol against is a **Cloudflare quick tunnel**
 The host runs whatever distribution was last copied up, so:
 
 - **Server/console changes** (anything under `server/src/main/resources`, e.g. the console):
-  rebuild `:server:installDist` on this PC, copy `server/build/install/server` up, and re-run
-  `./up.sh` (the distribution is mounted read-only, so restarting alone is not enough).
+  rebuild `:server:installDist` on this PC, replace `~/flash-hub/app` with
+  `server/build/install/server`, and **recreate the hub container**:
+  `cd ~/flash-hub && docker compose up -d --force-recreate hub`. `./up.sh` alone is not enough —
+  the distribution is a bind mount, but the running JVM has already loaded the old jar and
+  resources, and `docker compose up -d hub` does nothing when only mounted files changed. (The
+  mount is read-only, so changes must be made here and copied up; `.env` and `./data` are kept.)
 - **App changes** (e.g. the hub presence fix, ERROR-741): nothing on the hub changes; build and
   install the app on the devices.
 

@@ -80,10 +80,21 @@ department.
 ### Remaining / next AI
 - Run the owed device checks against the live hub (see `docs/testing/TEST-BACKLOG.md` §4zw and the
   `myserver` section of `docs/plans/HUB-DEMO-RUNBOOK.md`); the hub does **not** need redeploying for
-  the presence fix — it needs a new **app** build on the devices. The console change does need a hub
-  image refresh (`./up.sh`) to appear on the deployed console.
+  the presence fix — it needs a new **app** build on the devices. The console change is already
+  deployed (see the redeploy note below).
 - Decide on F-2/F-4 wire shapes and on the `HubPeerDirectory` blank-department fix.
 - Consider extending hub presence to group chats and call screens.
+
+### Redeployed the console change to the `myserver` test hub (same session)
+`:server:installDist` rebuilt here (49,522,104 bytes, SHA-256 `d988b118702acd1ba98bead6050a25fb723ee7fc12ce764d1dd5e30fad97ba42`,
+matched after transfer), installed to `~/flash-hub/app`, and the hub container recreated
+(`docker compose up -d --force-recreate hub`; `./data` and `.env` untouched). Verified: `/health` 200 on
+loopback and through the tunnel, `/admin/` 200, `/api/v1/directory/people` without a bearer 401, and the
+new console code is served (`/admin/ui/js/views/organization.js` contains `canMoveMembers`, `isOrgAdmin`,
+`org.dept.members`; `strings/en.js` contains `org.dept.addMember`). The **public URL is unchanged**
+(`https://stolen-tribunal-herein-describing.trycloudflare.com`), so existing invite links and QR codes
+still work. Corrected the runbook: a server/console change needs the distribution replaced **and** the
+container recreated — `./up.sh` alone is a no-op when only mounted files changed.
 
 ## 2026-10-19 — Flash Hub TEST deployment on `myserver`, reachable through a temporary public URL
 
