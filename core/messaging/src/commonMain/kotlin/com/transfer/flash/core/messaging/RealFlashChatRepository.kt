@@ -249,6 +249,14 @@ public class RealFlashChatRepository(
      */
     private val reachablePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
     /**
+     * Peer ids the organisation hub reports as online (hosts pass `EnterpriseHub.hubOnlinePeerIds`).
+     * A colleague reached only over the hub has no LAN session and is not necessarily seen by
+     * discovery, so without this the header said Offline while the hub was relaying its messages.
+     * Presentation only, exactly like [onlinePeerIds] and [reachablePeerIds]; delivery still goes
+     * through [hubBridge] only when the hub really carries it.
+     */
+    private val hubOnlinePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
+    /**
      * Resolves a peer device id to its friendly name (prod: the trust store). A conversationId is a
      * peer device id, so this turns the raw UUID we key threads by into the human name to display.
      * Returns null when unknown; callers fall back to any stored title, then the id itself.
@@ -1007,7 +1015,9 @@ public class RealFlashChatRepository(
      * into a socket that no longer exists: the send simply fails and the message waits in the outbox.
      */
     private val displayedPresence: Flow<PresenceSnapshot> =
-        onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS).withReachable(reachablePeerIds)
+        onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS)
+            .withReachable(reachablePeerIds)
+            .withHubOnline(hubOnlinePeerIds)
 
     /**
      * [attachmentProgress] at a cadence a screen can use. MUST be declared above the init block
@@ -1127,12 +1137,15 @@ public class RealFlashChatRepository(
                         groupOnlineCount = 0
                         presence = when {
                             entity.id in peers.online -> FlashPeerPresence.Online
+                            // Hub presence: no LAN session and no transport otherwise, but the hub is holding
+                            // the peer's socket, so it is genuinely reachable and we know how.
+                            entity.id in peers.hubOnline -> FlashPeerPresence.Online
                             entity.id in peers.connecting -> FlashPeerPresence.Connecting
                             entity.id in peers.reachable -> FlashPeerPresence.Reachable
                             else -> FlashPeerPresence.Offline
                         }
                     }
-                    val isDirectOnline = entity.id in peers.online
+                    val isDirectOnline = entity.id in peers.online || entity.id in peers.hubOnline
                     val isTyping = if (entity.isGroup) {
                         groupOnlineCount > 0 && typingByConversation[entity.id].orEmpty().isNotEmpty()
                     } else {
@@ -1731,29 +1744,7 @@ public class RealFlashChatRepository(
         conversationId: String,
     ): FlashConversationUiState {
         val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
-        val isOnline = conversationId in peers.online
-        val isConnecting = !isOnline && conversationId in peers.connecting
-        // Only reachable peers can be typing; if offline, typing indicator is strictly empty.
-        val typingNames = if (isOnline || isConnecting) {
-            typingByConversation[conversationId].orEmpty()
-        } else {
-            emptyList()
-        }
-        val presence = when {
-            // A typing indicator sticks until the peer clears it, so a session that died
-            // mid-compose would otherwise leave "typing…" on screen forever. It may only
-            // outrank a peer we still believe is reachable.
-            typingNames.isNotEmpty() && (isOnline || isConnecting) -> FlashPeerPresence.Typing
-            isOnline -> FlashPeerPresence.Online
-            // ERROR-031: the reconnect window is its own state. The header renders it as
-            // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
-            // ahead of the (necessarily) Unknown transport below.
-            isConnecting -> FlashPeerPresence.Connecting
-            // PC3: seen by discovery, no session. The header says "Online" with a ring and
-            // claims no transport, so the banner explains that a send will connect.
-            conversationId in peers.reachable -> FlashPeerPresence.Reachable
-            else -> FlashPeerPresence.Offline
-        }
+        val link = directLinkUi(conversationId, peers, typingByConversation[conversationId].orEmpty())
         val isColleaguePeer = !isTrustedPeer(conversationId) &&
             (orgPeerResolver?.isKnownColleague(conversationId) == true || effectiveIsOrgPeer(conversationId))
         val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
@@ -1761,17 +1752,9 @@ public class RealFlashChatRepository(
             header = FlashChatHeaderUiState(
                 title = title,
                 avatarInitials = computeInitials(title),
-                presence = presence,
-                // Without a transport the header's resolveHealth() short-circuits Unknown ->
-                // Offline and shows "Searching for devices…" even when the peer has a live
-                // session. An active session is our LAN/WS mesh link, so stamp Lan when
-                // online — and only when online: a peer mid-reconnect has no link to name.
-                transport = if (isOnline) {
-                    FlashNetworkTransport.Lan
-                } else {
-                    FlashNetworkTransport.Unknown
-                },
-                typingMemberNames = typingNames,
+                presence = link.presence,
+                transport = link.transport,
+                typingMemberNames = link.typingNames,
                 isEncrypted = isChannelEncrypted(conversationId),
                 isColleague = isColleaguePeer,
                 orgName = orgName,

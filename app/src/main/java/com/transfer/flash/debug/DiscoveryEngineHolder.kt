@@ -1327,6 +1327,10 @@ object DiscoveryEngineHolder {
             reachablePeerIds = combine(engine.discoveredEndpoints, presence.reachablePeerIds) { endpoints, reported ->
                 endpoints.mapTo(HashSet()) { it.deviceId.value } + reported
             },
+            // Hub presence: a colleague with a live session on the organisation hub. It is the only
+            // presence source when the two devices are on different networks, so a hub-only chat used
+            // to show Offline even while its messages were relaying normally.
+            hubOnlinePeerIds = hub.hubOnlinePeerIds,
             // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
             // the chat list / header show the real name instead of the raw id. Falls back to org snapshot display name.
             peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
@@ -1488,6 +1492,8 @@ object DiscoveryEngineHolder {
                 requestSync = { force -> orgSnapshotCoordinator.requestSync("hub_refresh", force); orgDirectorySync.lastOutcome.value },
                 clockWrong = orgDirectorySync.clockSkewDetected,
                 fetchGroups = { creds -> hub.directory.fetchVisibleGroups(creds.hubUrl, creds.deviceId, null) },
+                // The hub tab's reachability may claim HUB only from presence the hub really reported.
+                hubPresence = hub.hubOnlinePeerIds,
             ),
             hubSealing = hubSealingPort,
             radioPort = radioPort,

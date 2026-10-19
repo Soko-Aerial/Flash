@@ -1,5 +1,99 @@
 # Error Log
 
+## ERROR-741 — Hub-routed 1:1 chat showed the colleague Offline and dropped the typing indicator
+
+### Date
+2026-10-19
+
+### Area
+Hub relay / chat presence and typing (`:core:enterprise`, `:core:messaging`, both hosts)
+
+### Symptoms
+The owner enrolled two devices in the test hub (an invite with **no department**) and chatted 1:1 with a colleague
+**over the organisation hub** (the two devices were not on one LAN):
+
+- Messages arrived normally, so the hub relay path itself worked.
+- The chat header showed the colleague **Offline**, and the chat list said Offline too.
+- The colleague's **typing indicator never appeared**.
+- On the same LAN, the same two devices show Online and typing immediately.
+
+### Environment
+- Android app + Windows desktop app against the test hub on `myserver`
+  (`tools/hub-test-server/`, `docs/deploy/HUB-SERVER-DEPLOYMENT.md` §14), `FLASH_TLS_MODE=proxy` behind a
+  Cloudflare tunnel.
+- Exact Android versions/phones: not recorded by the owner (this is the deployment's first report).
+
+### Root cause
+Presence had exactly one source: live LAN sessions. Every host wired `onlinePeerIds` as
+`network.activeSessions.map { sessions -> sessions.keys.mapTo(HashSet()) { it.value } }` — only a LAN/WebSocket
+session to the peer itself. A colleague reached **through the hub** holds a session with the hub, not with us, so:
+
+1. The header/list presence fell through to `Offline` (`RealFlashChatRepository.directHeaderState`).
+2. The typing gate then hid the indicator: `val typingNames = if (isOnline || isConnecting) … else emptyList()`,
+   so typing frames the peer **did** send were collected and then dropped before the header. (Typing was already
+   being sent: `HubChatBridge.canSignal` = `port.usable && standing == MEMBER`, and inbound typing metas are
+   collected into `typingStates`.)
+
+The hub already knows the answer: its relay-connection pool answers `isOnline` (`RelayConnectionPool`), and the
+directory serves it as `PersonDto.online` on the org-wide people listing (`GET /api/v1/directory/people`). No
+client ever asked for it. `FlashRelayClient.sendPresence` existed but had **no caller** (one match: its own
+definition), and the server never originates ONLINE/OFFLINE (it only forwards client-sent metas,
+`RelayFrameRouter.handleInboundMeta`), so a client-announced presence would not have worked either.
+`logs/handoff.md` already carried this as the dormant item "hub presence not surfaced".
+
+### Failed attempts
+None. The cause was established by reading the wiring, and the presence source was confirmed to exist
+server-side before any code changed (the owner asked for certainty before a fix).
+
+### Working fix
+The hub's own presence is now read and used. **No wire change and no server change.**
+
+- `:core:enterprise` — new `hubOnlineDeviceIds(api, hubUrl)` (the read side of the people listing: one call per
+  poll, at most 4 × 500 people, the ids with `online == true`; a failed round returns `null` = "we learned
+  nothing" rather than an empty set = "nobody is online"). `EnterpriseHub` polls it every 15 s into
+  `hubOnlinePeerIds: StateFlow<Set<String>>` (empty while unenrolled or when the stored address is refused;
+  cancelled by `shutdown()`). 15 s is well inside the listing's budget (`HubRateLimits.directoryPeople`: burst 30,
+  then 1 per 2 s).
+- `:core:messaging` — `PresenceSnapshot` gained `hubOnline`, joined by the new `withHubOnline` (a hub-online peer
+  leaves `reachable`, because the hub *is* a named transport). The header's verdict moved into a pure
+  `directLinkUi(conversationId, peers, typingNames)`: typing (only while reachable) > LAN session > hub session >
+  reconnect grace > discovery sighting > offline; transport `Lan` for a session, `Relay` for hub presence.
+  `RealFlashChatRepository` takes a new `hubOnlinePeerIds` input (default empty, so tests and a host without a hub
+  behave exactly as before); the chat list counts a hub-online peer as Online too.
+- Hosts: `DiscoveryEngineHolder` (Android) and `DesktopEngine` (desktop) pass `hub.hubOnlinePeerIds` into
+  `RealFlashChatRepository(hubOnlinePeerIds = …)` **and** into the previously unwired
+  `HubTabSources(hubPresence = …)` seam, so the Hub tab's reachability can now claim HUB
+  (`HubFacade.toUi`: `hubOnline == true -> HUB`, `false -> OFFLINE`, absent -> UNKNOWN).
+
+Answer to "does our server cover this": yes — the server needed no change; the client simply never consumed the
+presence it already served.
+
+### Verification
+- `:core:enterprise` `HubPresenceTest` (7 tests): collection, paging by `nextCursor`, failure → null, a hub too
+  old → null, a blank address never dialled, the page cap, cancellation propagation.
+- `:core:messaging` `DirectLinkUiTest` (6 tests) and `PresenceHoldTest` (new hub-presence case): a hub-only peer
+  is Online/Relay, hub-only typing is Typing/Relay, LAN outranks hub, the sets stay disjoint.
+- Full `:core:enterprise:jvmTest`, `:core:enterprise:testAndroidHostTest`, `:core:messaging:jvmTest`,
+  `:core:messaging:testAndroidHostTest` on the changed modules: only the pre-existing flaky
+  `OrgDirectorySyncTest.ORGT-U16` (5,000-member time/memory budget, see `logs/handoff.md`) failed.
+- Compiles: `:core:enterprise`, `:core:messaging`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`.
+- **NOT device-verified.** Device checks `HUB-13` and `HUB-14` in `docs/testing/TEST-BACKLOG.md` §4zw.
+
+### Related files
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/HubPresence.kt`
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/EnterpriseHub.kt`
+- `core/enterprise/src/sharedTest/kotlin/com/transfer/flash/core/enterprise/HubPresenceTest.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/PresenceHold.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/DirectLinkUiTest.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/PresenceHoldTest.kt`
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt`
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt`
+- `docs/decisions.md` ADR-139
+
+### Status
+OPEN (fixed in code; device checks owed)
+
 ## ERROR-126 — Rapid Reconnect/Disconnect Loop, Port Hopping via ServerSocket TIME_WAIT, and SQLite PRAGMA Failure
 
 ### Date

@@ -11,8 +11,19 @@ import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
+import { session } from '../state.js';
 import { icon } from '../icons.js';
 import { iconButton } from '../ui/widgets.js';
+
+/**
+ * Only an organisation administrator may move a device between departments (`PUT /devices/{id}` refuses a
+ * department head with "Only an organisation administrator can move a device."), so the Members section is
+ * shown to them alone. Same test as `announcements.js`.
+ */
+function isOrgAdmin() {
+  const role = (session.role || '').toLowerCase();
+  return (role === 'admin' || role === 'org_admin') && (!session.departments || session.departments.length === 0);
+}
 
 function joinModeBadge(mode) {
   return badge(t('org.join.' + mode), mode === 'OPEN_IN_SCOPE' ? 'ok' : mode === 'ADMIN_ONLY' ? 'neutral' : 'accent');
@@ -114,11 +125,85 @@ export function mountOrganization(container, ctx) {
     draw();
     const picker = devicePicker({ label: t('org.dept.addAdmin'), exclude: () => new Set(admins), onPick: (d) => { names.set(d.deviceId, { name: d.name }); admins.push(d.deviceId); draw(); } });
     const message = h('div', { 'aria-live': 'polite' });
+    // Members: an organisation administrator moves devices in and out of the department here as well as on
+    // Devices. A colleague an invite left without a department is added exactly this way, so the control also
+    // lives where an administrator looks for it. A department head does not get it — moving a device is
+    // organisation-administrator work and the API refuses it.
+    const canMoveMembers = !isNew && isOrgAdmin();
+    let memberRows = [];
+    const memberHost = h('div');
+    const memberMessage = h('div', { 'aria-live': 'polite' });
+    const memberName = (d) => d.name || shortId(d.deviceId);
+    const drawMembers = () =>
+      mount(
+        memberHost,
+        memberRows.length
+          ? h(
+              'ul',
+              { class: 'chip-list', 'aria-label': t('org.dept.members') },
+              memberRows.map((d) =>
+                h(
+                  'li',
+                  { class: 'chip' },
+                  h('span', { text: memberName(d) }),
+                  iconButton({ icon: 'close', label: t('org.dept.removeMember', { name: memberName(d) }), on: { click: () => removeMember(d) } }),
+                ),
+              ),
+            )
+          : h('p', { class: 'muted small', text: t('org.dept.members.none') }),
+      );
+    const bumpMemberCount = (delta) => {
+      const row = departments.find((x) => x.id === dept.id);
+      if (row) row.memberCount = Math.max(0, (row.memberCount || 0) + delta);
+      if (!stopped && current === 'departments') renderDepartments();
+    };
+    async function removeMember(d) {
+      try {
+        await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: null, moveToDepartment: true });
+        memberRows = memberRows.filter((x) => x.deviceId !== d.deviceId);
+        drawMembers();
+        bumpMemberCount(-1);
+        toast(t('org.dept.memberRemoved', { name: memberName(d) }), { kind: 'success' });
+      } catch (e) {
+        mount(memberMessage, banner({ tone: 'bad', text: e.message || t('error.generic') }));
+      }
+    }
+    const memberPicker = canMoveMembers
+      ? devicePicker({
+          label: t('org.dept.addMember'),
+          exclude: () => new Set(memberRows.map((d) => d.deviceId)),
+          onPick: async (d) => {
+            try {
+              await api.put('/devices/' + encodeURIComponent(d.deviceId), { department: dept.id, moveToDepartment: true });
+              memberRows = [...memberRows, d].sort((a, b) => memberName(a).localeCompare(memberName(b)));
+              drawMembers();
+              bumpMemberCount(1);
+              toast(t('org.dept.memberAdded', { name: memberName(d) }), { kind: 'success' });
+            } catch (e) {
+              mount(memberMessage, banner({ tone: 'bad', text: e.message || t('error.generic') }));
+            }
+          },
+        })
+      : null;
+    const memberSection = canMoveMembers
+      ? [h('h3', { class: 'subhead', text: t('org.dept.members') }), h('p', { class: 'muted small', text: t('org.dept.members.hint') }), memberHost, memberPicker.el, memberMessage]
+      : [];
+    if (canMoveMembers) {
+      drawMembers();
+      api
+        .get('/devices', { query: { department: dept.id, limit: 500 } })
+        .then((rows) => {
+          if (stopped) return;
+          memberRows = rows;
+          drawMembers();
+        })
+        .catch((e) => mount(memberMessage, banner({ tone: 'bad', text: e.message || t('error.generic') })));
+    }
     const save = button({ label: isNew ? t('org.dept.create.submit') : t('common.save'), variant: 'primary' });
     const del = !isNew ? button({ label: t('org.dept.delete'), icon: 'trash', variant: 'danger', on: { click: () => deleteDepartment(dept, dlg) } }) : null;
     const dlg = openDialog({
       title: isNew ? t('org.dept.create') : t('org.dept.edit', { name: dept.name }),
-      body: [nf.el, hiddenField.el, h('h3', { class: 'subhead', text: t('org.dept.admins') }), h('p', { class: 'muted small', text: t('org.dept.admins.hint') }), adminHost, picker.el, message],
+      body: [nf.el, hiddenField.el, h('h3', { class: 'subhead', text: t('org.dept.admins') }), h('p', { class: 'muted small', text: t('org.dept.admins.hint') }), adminHost, picker.el, ...memberSection, message],
       actions: [del, button({ label: t('common.cancel'), variant: 'ghost', on: { click: () => dlg.close() } }), save],
     });
     save.addEventListener('click', () =>
