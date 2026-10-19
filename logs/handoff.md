@@ -2,8 +2,8 @@
 
 ## 2026-10-19 - Group swarm turned ON BY DEFAULT (owner decision O-8)
 
-- **Current branch:** `dev`. The previous commit is `887a9d89` (the hub review + accumulated multi-session work); this
-  default-on change is a separate change on top of it.
+- **Current branch:** `dev`, in sync with `origin/dev`. This default-on change is commit **`1f317e70`** (16 files,
+  +164/−31), on top of `887a9d89` (the hub review + accumulated multi-session work). Pushed 2026-10-19.
 - **Status:** implemented, unit-tested, **not device-verified**. The owner decided plan question **O-8** early and turned the
   group swarm on by default, overriding the SW-12 gate (`SWM-09..15` PASS on three devices including Windows) that ADR-070 and
   the swarm plan had recorded.
