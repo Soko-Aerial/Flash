@@ -1,0 +1,79 @@
+# Flash Enterprise Hub - TEST deployment, self-contained.
+#
+# This project is deliberately separate from every other stack on this host
+# (cinepro, litellm-advanced, movieaura): its own compose project name, its own
+# network, its own data directory, and its own loopback-only host ports.
+# It publishes NOTHING on 80/443 and touches no other container or unit.
+#
+#   ./up.sh      bring it up and print the temporary public URL
+#   ./status.sh  show state, URL and health
+#   ./down.sh    stop it (data is kept)
+name: flash-hub
+
+services:
+  hub:
+    # Same runtime the repo's own server/Dockerfile uses, minus the in-image Gradle
+    # build stage: this box is aarch64 with a nearly full disk, so the distribution
+    # is built on the developer PC and mounted read-only.
+    image: eclipse-temurin:21.0.5_11-jre-alpine
+    restart: unless-stopped
+    working_dir: /app
+    entrypoint:
+      - java
+      - -Xmx384m
+      - -XX:MaxMetaspaceSize=192m
+      - -cp
+      - /app/lib/*
+      - com.transfer.flash.server.MainKt
+    command: ["serve"]
+    environment:
+      FLASH_HUB_NAME: "${FLASH_HUB_NAME:-Flash Hub (test)}"
+      FLASH_HOST: "0.0.0.0"
+      FLASH_PORT: "8443"
+      FLASH_ADMIN_HOST: "0.0.0.0"
+      FLASH_ADMIN_PORT: "8444"
+      FLASH_ADMIN_ON_PUBLIC_PORT: "false"
+      FLASH_DATA_DIR: "/data"
+      # TLS ends at the tunnel (REV-12 security.md): the hub speaks plain http inside
+      # the compose network and believes forwarded headers only from that network.
+      FLASH_TLS_MODE: "proxy"
+      FLASH_TRUSTED_PROXIES: "${HUB_NETWORK_CIDR:-172.31.250.0/24}"
+      # Placeholder on purpose: compose interpolates the WHOLE file, so the tunnel has to be
+      # able to start before the public URL exists. ./up.sh writes the real address into .env;
+      # ./status.sh shouts if this placeholder is still in use.
+      FLASH_EXTERNAL_URL: "${FLASH_EXTERNAL_URL:-https://not-configured-yet.invalid}"
+      # TEST ONLY: an insecure hub that keeps the organisation root key on the
+      # server and mints its own delegation (--dev-embedded-root). Never production.
+      FLASH_ALLOW_INSECURE: "true"
+      FLASH_DEV_EMBEDDED_ROOT: "true"
+      FLASH_SETUP_TOKEN: "${FLASH_SETUP_TOKEN:?set FLASH_SETUP_TOKEN in .env}"
+    volumes:
+      - ./app:/app:ro
+      - ./data:/data
+    ports:
+      # Loopback only. The tunnel reaches the hub over the compose network, so
+      # nothing of ours is exposed to the internet directly, and 80/443 stay with
+      # the other stack that owns them.
+      - "127.0.0.1:18443:8443"   # relay + REST + enrolment
+      - "127.0.0.1:18444:8444"   # admin console: reach it over an SSH tunnel
+    healthcheck:
+      test: ["CMD", "java", "-cp", "/app/lib/*", "com.transfer.flash.server.MainKt", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 25s
+      retries: 3
+    networks: [hubnet]
+
+  tunnel:
+    # Cloudflare quick tunnel: a temporary public https URL, no account needed.
+    # It terminates TLS and forwards to the hub; the URL is printed in its log.
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: ["tunnel", "--no-autoupdate", "--url", "http://hub:8443"]
+    networks: [hubnet]
+
+networks:
+  hubnet:
+    ipam:
+      config:
+        - subnet: ${HUB_NETWORK_CIDR:-172.31.250.0/24}

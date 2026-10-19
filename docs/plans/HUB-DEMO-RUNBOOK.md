@@ -24,3 +24,73 @@ It builds through the Gradle lock (`:server:installDist`), prints the LAN addres
 - The relay storm test `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` is flaky (fails ~1 in 2 runs: after 20 stop/start the device ends SUSPENDED/KICKED). A real client reconnect race is possible; avoid toggling the hub connection quickly during the demo. Logged in `logs/streams/` handoff as OPEN.
 - `:desktop:jvmTest` has a hanging TLS binding test (ERROR-106).
 - Nothing in the Hub work is device-verified except what `ORGT-B01` covered.
+
+---
+
+# Remote test hub on `myserver` (deployed 2026-10-19)
+
+A second hub so phones and the desktop can enrol against a **real remote host** with the
+developer PC switched off. Same insecure profile as the local demo above
+(`FLASH_TLS_MODE=proxy`, `FLASH_ALLOW_INSECURE=true`, `FLASH_DEV_EMBEDDED_ROOT=true`): the
+organisation **root key lives on that server**. Test only — never production, never real data,
+and never a real organisation's delegation.
+
+Everything lives in `~/flash-hub/` on `myserver`; its own `README.md` there is the operator
+sheet. The same files are kept in the repo at `tools/hub-test-server/` (that directory's README
+says how to refresh the host copy) — they are deployment state, not product code.
+
+```text
+ssh myserver
+cd ~/flash-hub
+./up.sh            start / refresh, then print the temporary public URL and the checks
+./status.sh        state, live URL, health, console instructions, setup token
+./down.sh          stop (the data directory is kept)
+./up.sh --fresh    wipe the data directory and start a fresh organisation
+```
+
+Host facts worth remembering (checked 2026-10-19): Ubuntu 22.04 **aarch64**, no JVM installed,
+Docker present (the `ubuntu` user is in the `docker` group), **80/443 belong to another app**,
+and the root filesystem has well under 2 GB free. Therefore:
+
+- **Never build on that host.** Build the distribution on the developer PC
+  (`tools\flash-gradle.cmd :server:installDist`) and copy `server/build/install/server` up.
+  The container is `eclipse-temurin:21.0.5_11-jre-alpine` — the same runtime as
+  `server/Dockerfile`'s final stage — with the distribution mounted read-only at `/app`.
+- The host runs **other applications** (cinepro, litellm-advanced, movieaura). This deployment
+  uses its own compose project (`flash-hub`), its own network (`172.31.250.0/24`), its own data
+  directory, and publishes only two **loopback** ports: `18443` (hub) and `18444` (admin
+  console). Nothing on 80/443, no other container or unit touched. Keep it that way.
+
+## The public URL is temporary
+
+The address devices enrol against is a **Cloudflare quick tunnel**
+(`https://<random>.trycloudflare.com`). The tunnel terminates TLS, so the hub itself runs in
+`tlsMode=proxy` and trusts forwarded headers only from its own compose network
+(`FLASH_TRUSTED_PROXIES`). Consequences:
+
+- The URL **changes whenever the tunnel container is recreated**. The hub puts it in every
+  invite link and QR code (`FLASH_EXTERNAL_URL`), so after a tunnel change run `./up.sh` again:
+  it reads the live URL and recreates the hub with it. `./status.sh` warns when the two disagree.
+- It is public to anyone who has the hostname. The setup token and the admin console are the
+  only gate; the console is **not** published through the tunnel.
+
+## Enrolling a device against any hub
+
+1. **First administrator.** Reach the console over SSH —
+   `ssh -N -L 8444:127.0.0.1:18444 myserver`, then `http://127.0.0.1:8444/admin/`. On a fresh
+   hub use `http://127.0.0.1:8444/admin/setup` with the setup token
+   (`<data dir>/setup-token.txt`, also printed by `./status.sh`) and save the authenticator
+   secret it shows once. Setup closes after the first admin.
+2. **Create the invite.** Console → **Invites** → **Create invite** (role, department, expiry).
+   Copy the resulting link: `flash://enroll?server=<url>&token=<token>&root=<fingerprint>`.
+   The link carries the hub URL, so it is only correct while `FLASH_EXTERNAL_URL` is current.
+3. **Enrol the device.** In the app: **Settings → Enterprise & Organization** → enrol, paste the
+   link in "Enrol in Organization", **Confirm & Enrol**. The device then appears in the console
+   under **Devices**; move it to a department if the invite did not set one.
+
+## What the test hub is for
+
+It is the vehicle for the hub device checks that are still owed in
+`docs/testing/TEST-BACKLOG.md` — the `HUB-*`, `HUBR-*`, `ANN-*`, `ORGT-*`, `DEPH-*`, `PRIV-*`
+and `HUBT-*` series — because those need a reachable hub from a phone that is not on the
+developer's LAN. Record results in the backlog as usual (§35), not here.

@@ -1,5 +1,70 @@
 # Progress Log
 
+## 2026-10-19 — Flash Hub TEST deployment on `myserver`, reachable through a temporary public URL
+
+### Worked on
+The owner asked for the hub server deployed on the `myserver` SSH host with a temporary public URL so
+app/hub testing can start from real devices, with the explicit constraint to leave the other
+applications on that host alone.
+
+### What is running
+- Compose project `flash-hub` on `myserver` (`~/flash-hub/`), two containers:
+  `flash-hub-hub-1` (the hub, healthy) and `flash-hub-tunnel-1` (a Cloudflare quick tunnel).
+- The hub runs from the `:server:installDist` distribution built on this PC
+  (`server/build/install/server`, 57 jars, ~51 MB, SHA-256 verified after transfer) on
+  `eclipse-temurin:21.0.5_11-jre-alpine` — the same runtime as the final stage of
+  `server/Dockerfile`, minus the in-image Gradle build.
+- Profile: `FLASH_TLS_MODE=proxy`, `FLASH_ALLOW_INSECURE=true`, `FLASH_DEV_EMBEDDED_ROOT=true`,
+  `FLASH_TRUSTED_PROXIES=172.31.250.0/24`, `FLASH_EXTERNAL_URL=<live tunnel URL>`.
+- Host ports: `127.0.0.1:18443` (hub) and `127.0.0.1:18444` (admin console) only.
+
+### Why this shape
+- The host is Ubuntu 22.04 **aarch64** with no JVM and **under 2 GB free disk** (`/` is 97 % full),
+  so building in place (as `server/Dockerfile` does) was not an option: build here, ship the
+  distribution. Same reasoning for `eclipse-temurin` over an apt JDK.
+- **Isolation from the other apps** was a hard requirement: own compose project, own network
+  (`172.31.250.0/24`, checked against the existing bridge/172.17, core_omss/172.19,
+  litellm-advanced/172.18), own data directory, and only loopback host ports, because 80/443
+  belong to another stack's caddy. No other container, unit or file was touched.
+- **A temporary URL** was asked for, and that host's ingress rules are not ours to change, so the
+  hub is fronted by a Cloudflare quick tunnel (no account needed) in `tlsMode=proxy`, which is the
+  mode `docs/security.md` REV-12 documents for "TLS ends at a reverse proxy". The tunnel is also
+  why `FLASH_TRUSTED_PROXIES` is set: without it every device shares one rate-limit bucket.
+
+### Changed (repo)
+- `docs/plans/HUB-DEMO-RUNBOOK.md` gains a "Remote test hub on `myserver`" section: how to
+  start/stop it, the host facts that constrain it, the tunnel/URL caveat, and the
+  admin → invite → enrol procedure for any hub.
+- `logs/progress.md`, `logs/handoff.md` (this entry).
+- No product code changed; `server/` is untouched.
+
+### Verification
+- `:server:installDist` green locally; the tarball's SHA-256 matched after transfer.
+- Hub `GET /health` → 200 (loopback) and → 200 through the tunnel, **also from a machine outside
+  that host** (this PC), which is the check that matters for devices.
+- Console `GET /admin/` → 200; `GET /admin/api/v1/setup/status` → `{"setupOpen":true,"hasAdmins":false}`.
+- `GET /api/v1/directory/sync` without a bearer → 401.
+- Hub container health `healthy`, failing streak 0; the pre-existing containers were still `Up`.
+- Server-side `curl` to the tunnel URL needs `-4` (that host's IPv6 route to Cloudflare blackholes:
+  the first probe returned `000`, forcing IPv4 returned `200`). `status.sh` does that.
+
+### Problems found and fixed while deploying
+- `docker compose up -d tunnel` failed because a `${FLASH_EXTERNAL_URL:?...}` guard is evaluated
+  for the whole file, so the tunnel could not start before the URL existed. Fixed with a
+  documented placeholder default plus a loud warning in `status.sh`.
+- `.env` held `FLASH_HUB_NAME=Flash Hub (test)` unquoted, which breaks `source` in `status.sh`
+  (parentheses). Fixed by quoting it in `up.sh` and re-applying it on the host.
+
+### Remaining / next AI
+- **Test only.** The organisation root key is on that server (`--dev-embedded-root`) and the URL
+  is public to anyone who knows it. Before anything real: `keytool init-root` offline,
+  `issue-delegation`, `FLASH_REQUIRE_ROOT_PIN=true`, a proper TLS proxy.
+- The tunnel URL changes if its container is recreated — re-run `./up.sh`, then `./status.sh`.
+- Data (`~/flash-hub/data`, root-owned `0600`) holds `data.key`, the delegate key and the
+  database: back it up, and keep `data.key` apart from database copies.
+- The `HUB-*`, `HUBR-*`, `ANN-*`, `ORGT-*`, `DEPH-*`, `PRIV-*` and `HUBT-*` device checks in
+  `docs/testing/TEST-BACKLOG.md` can now be run against this hub; log results there.
+
 ## 2026-10-19 — Group swarm turned ON BY DEFAULT (owner decision O-8)
 
 ### Worked on

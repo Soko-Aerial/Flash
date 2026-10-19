@@ -1,5 +1,33 @@
 # Current Handoff
 
+## 2026-10-19 - Flash Hub TEST deployment on `myserver` (temporary public URL)
+
+- **Where:** `ssh myserver`, everything under `~/flash-hub/`. Compose project `flash-hub`:
+  `flash-hub-hub-1` (hub, healthy) + `flash-hub-tunnel-1` (Cloudflare quick tunnel).
+- **How to drive it:** `cd ~/flash-hub && ./up.sh` (start/refresh, then prints the URL and the
+  checks), `./status.sh` (state, live URL, health, console instructions, setup token),
+  `./down.sh` (stop, keeps data), `./up.sh --fresh` (wipe data, fresh organisation).
+- **The URL is temporary.** A Cloudflare quick tunnel gives `https://<random>.trycloudflare.com`
+  and it **changes whenever the tunnel container is recreated**; the hub puts it in every invite
+  link and QR code, so re-run `./up.sh` after such a change. Read the live one from `./status.sh`
+  (it is deliberately not written down in the repo).
+- **Admin console** is not public: `ssh -N -L 8444:127.0.0.1:18444 myserver`, then
+  `http://127.0.0.1:8444/admin/` (first run: `/admin/setup` with the token from `./status.sh`).
+- **This is an insecure TEST hub**: `FLASH_TLS_MODE=proxy`, `FLASH_ALLOW_INSECURE=true`,
+  `FLASH_DEV_EMBEDDED_ROOT=true` — the organisation **root key is on that server**. Never
+  production, never real data. `docs/plans/HUB-DEMO-RUNBOOK.md` has the full record, including
+  the admin → invite → enrol procedure.
+- **Isolation:** own compose project, own network, own data dir, loopback-only ports
+  (`18443`/`18444`). It intentionally touches none of the other apps on that host (cinepro,
+  litellm-advanced, movieaura), which own 80/443. Do not build on that host (aarch64, ~1.8 GB
+  free): build `:server:installDist` here and copy the distribution up.
+- **Last test:** hub `/health` 200 on loopback **and** through the tunnel from this PC; console
+  `/admin/` 200 and `setup/status` `setupOpen:true,hasAdmins:false`; directory sync without a
+  bearer 401; container healthy. No product code changed.
+- **Owed next:** create the first admin and enrol a device, then work through the `HUB-*`,
+  `HUBR-*`, `ANN-*`, `ORGT-*`, `DEPH-*`, `PRIV-*`, `HUBT-*` device checks in
+  `docs/testing/TEST-BACKLOG.md` against this hub.
+
 ## 2026-10-19 - Group swarm turned ON BY DEFAULT (owner decision O-8)
 
 - **Current branch:** `dev`, in sync with `origin/dev`. This default-on change is commit **`1f317e70`** (16 files,
