@@ -1,5 +1,12 @@
 # Presence & Connections Plan (phases PC0–PC7)
 
+**Update 2026-10-19 (ADR-139):** this plan is about **LAN** presence sharing and stays as written. A second
+source now exists for devices enrolled in an organisation hub: the hub's own relay pool answers
+`PersonDto.online` on `GET /api/v1/directory/people`, the client polls it (`EnterpriseHub.hubOnlinePeerIds`),
+and `PresenceSnapshot.hubOnline` feeds the same chat header/list through the pure `directLinkUi(...)`. A
+hub-only colleague is therefore `Online` with the **relay** as its named transport. Group headers and the call
+screens still count LAN sessions only.
+
 **Status (2026-09-29): PC1–PC5 code done (unit-tested, not device-tested). PC7's platform note written. PC6 is
 POSTPONED to `docs/FUTURE-OPTIMIZATION.md` FO-05 (owner decision P9), so **PC7 no longer waits for it** and no phase of this
 plan is blocked. PC0 stays a measure-last task (P8).**

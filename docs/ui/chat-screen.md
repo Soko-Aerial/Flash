@@ -398,6 +398,12 @@ collector per row.
 ### Implementation notes
 - `RealFlashChatRepository` takes `reachablePeerIds: Flow<Set<String>>` (hosts pass discovery's current device ids).
   `PresenceSnapshot.reachable` = discovered − live − connecting.
+- `RealFlashChatRepository` also takes `hubOnlinePeerIds: Flow<Set<String>>` (hosts pass
+  `EnterpriseHub.hubOnlinePeerIds`, ERROR-741/ADR-139): colleagues the organisation hub reports online. A
+  hub-online peer is `Online` with `FlashNetworkTransport.Relay`, leaves `reachable`, and its typing is admitted,
+  so a chat that only relays through the hub is not shown Offline. The header verdict is the pure
+  `directLinkUi(...)` in `PresenceHold.kt` (typing while reachable > LAN session > hub session > Connecting >
+  Reachable > Offline).
 - `FlashNetworkStatusMath.resolveHealth`: `Reachable` → new `FlashConnectionHealth.Reachable`, labelled
   "Online · connects when you send". Calm and non-blocking.
 - The desktop shell's own resolver (`DesktopShell` `directChatHeader…`) maps a discovered peer without a session to

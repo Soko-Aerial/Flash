@@ -1393,7 +1393,7 @@ Audit rows CLI-01, CLI-04..CLI-09, CLI-12..CLI-17 of `docs/audit/2026-10-12-serv
 Pin mutation first did not fail the old test (see above). Test counts and flaky tests recorded in ERROR-269..271.
 
 ### Remaining
-CLI-05 dormant until the hub serves sealing keys (`PUT /api/v1/device/sealing-key`, `sealingPublicKey`/`sealingSignature` on `MemberDto`); CLI-16 needs an owner decision (ADR-123 PROPOSED); `hubAccepted` is in memory only; presence is not surfaced via the hub.
+CLI-05 dormant until the hub serves sealing keys (`PUT /api/v1/device/sealing-key`, `sealingPublicKey`/`sealingSignature` on `MemberDto`); CLI-16 needs an owner decision (ADR-123 PROPOSED); `hubAccepted` is in memory only; presence is not surfaced via the hub. ***SUPERSEDED 2026-10-19: presence **is** now surfaced via the hub (ADR-139, ERROR-741) — the client polls the people listing's `PersonDto.online`.***
 
 ### Next AI
 Wire the server's sealing keys and turn CLI-05 from PARTIAL to FIXED; run `HUBC-*` against a real hub with SERVER-A/B's build; decide CLI-16. Do not create `:core:enterprise` before reading the extraction notes in `logs/handoff.md`.
