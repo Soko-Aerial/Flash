@@ -2,8 +2,10 @@
 
 ## 2026-10-19 - Hub presence for hub-routed chat (ERROR-741), deployment guide, console department members
 
-- **Current branch:** `dev`. Committed in this session's commit (hash below) on top of `fdc58ac1`.
-  All changes are in the tree as listed; nothing half-applied.
+- **Current branch:** `dev`. The feature commit is **`f32f5e16`** on top of `fdc58ac1`
+  (`feat(hub): hub presence for hub-routed chat; console department members`); the doc/runbook
+  follow-up to it is the commit that carries this handoff edit. Everything is in the tree as
+  listed; nothing half-applied.
 - **Status:** implemented and unit-tested; **NOT device-verified**. The owner's third follow-up
   (a hub-routed 1:1 chat showing the colleague Offline with no typing indicator) is fixed.
 - **The one thing to know:** presence came only from live LAN sessions. A colleague reached through
@@ -29,7 +31,9 @@
     this to appear.
   - **Docs:** new `docs/deploy/HUB-SERVER-DEPLOYMENT.md` (deploy the hub to any server, any provider);
     ADR-139; ERROR-741; `docs/protocol.md` client-presence note; `DEPH-07`, `HUB-13`, `HUB-14` added
-    to `docs/testing/TEST-BACKLOG.md`; `logs/progress.md`.
+    to `docs/testing/TEST-BACKLOG.md`; `logs/progress.md`;
+    `docs/plans/HUB-DEMO-RUNBOOK.md` now points at the deploy guide and says what a server vs app
+    change needs to reach the test hub.
 - **Last test:** `HubPresenceTest` (7, both targets), `DirectLinkUiTest` (6, both targets), and the new
   `PresenceHoldTest` hub case all green; the full test run of the changed modules shows only the
   pre-existing flaky `OrgDirectorySyncTest.ORGT-U16` (5,000-member budget) failing;
