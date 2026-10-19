@@ -37,8 +37,11 @@ public data class DesktopSettings(
      * row: it is a workaround, not a preference.
      */
     val includeVirtualAdapters: Boolean = false,
-    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
-    val groupSwarmEnabled: Boolean = false,
+    /**
+     * Group file sharing via swarm transfer (SW-8). Default TRUE since 2026-10-19 (owner decision O-8: turn the
+     * swarm on by default). An explicit opt-out is stored and wins over the default.
+     */
+    val groupSwarmEnabled: Boolean = true,
     /** Help share group files: share received file pieces with other group members. Default TRUE. */
     val swarmHelpShare: Boolean = true,
     /** Keep finished files available for others in the swarm. Default TRUE. */
@@ -102,7 +105,7 @@ internal class DesktopSettingsStore(private val stateDir: File) {
             windowsContextMenu = props.getProperty(KEY_WINDOWS_CONTEXT_MENU, "true").toBoolean(),
             uiScale = props.getProperty(KEY_UI_SCALE)?.toFloatOrNull()?.coerceIn(0.75f, 1.5f) ?: 1.0f,
             includeVirtualAdapters = props.getProperty(KEY_INCLUDE_VIRTUAL_ADAPTERS, "false").toBoolean(),
-            groupSwarmEnabled = props.getProperty(KEY_GROUP_SWARM_ENABLED, "false").toBoolean(),
+            groupSwarmEnabled = props.getProperty(KEY_GROUP_SWARM_ENABLED, "true").toBoolean(),
             swarmHelpShare = props.getProperty(KEY_SWARM_HELP_SHARE, "true").toBoolean(),
             swarmKeepFinishedFiles = props.getProperty(KEY_SWARM_KEEP_FINISHED_FILES, "true").toBoolean(),
             launchAnimation = props.getProperty(KEY_LAUNCH_ANIMATION, "true").toBoolean(),

@@ -1,5 +1,33 @@
 # Current Handoff
 
+## 2026-10-19 - Group swarm turned ON BY DEFAULT (owner decision O-8)
+
+- **Current branch:** `dev`. The previous commit is `887a9d89` (the hub review + accumulated multi-session work); this
+  default-on change is a separate change on top of it.
+- **Status:** implemented, unit-tested, **not device-verified**. The owner decided plan question **O-8** early and turned the
+  group swarm on by default, overriding the SW-12 gate (`SWM-09..15` PASS on three devices including Windows) that ADR-070 and
+  the swarm plan had recorded.
+- **What changed (the master switch default only):**
+  - `:core:persistence` `FlashSettingsDataStore.groupSwarmEnabled` `false` -> `true`;
+  - `:app` `DiscoveryEngineHolder.groupSwarmEnabled = true`, `AppEngine` fallback `true`, `MainActivity` initial `true`;
+  - `:desktop` `DesktopSettings.groupSwarmEnabled = true` and the `group_swarm_enabled` read default `"true"`;
+  - `:ui:chat` `FlashSettingsModel.swarmEnabled = true` (also drives "Reset to defaults").
+  An explicit opt-out is stored and **wins** over the default, so a device that turns it off stays off.
+- **Everything else was already on:** the signed group rule (`GroupSettings.swarmServing`) and the device-local
+  `GroupLocalPreferences.serveToGroup` were already `true`, and `sw1` is advertised only while a swarm binding exists
+  (`localFeatures`), so nothing else needed changing.
+- **Last test:** `:app:compileDebugKotlin`, `:core:persistence:testAndroidHostTest` and `:ui:chat:jvmTest` green;
+  `:desktop:jvmTest --tests DesktopSettingsStoreTest` green. New tests fail if the default is reverted to `false` or if an
+  opt-out is dropped.
+- **Owed device checks:** `SWM-07`...`SWM-29` (unchanged) plus the new default-on checks **`SWM-46`** (fresh install on /
+  opt-out sticks) and **`SWM-47`** (a group file goes through the swarm on a fresh install) in `docs/testing/TEST-BACKLOG.md`
+  section 4w.
+- **Risk to watch:** a swarm defect now reaches group file sharing on a fresh install. The switch is the escape hatch; if any
+  of `SWM-09..15` FAILS on device, the owner may turn the default back off (one line per host).
+- **Docs touched:** `docs/decisions.md` ADR-070 (Status, Decision 7, Consequences), `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`
+  (O-8 answer, SW-12 row/section, SW-8 "do not" line), `AGENTS.md` section 29, `docs/testing/TEST-BACKLOG.md`, `logs/progress.md`.
+- **Open (not done, left deliberately):** the settings row still reads "Group file sharing (swarm, experimental)".
+
 ## 2026-10-19 - Server hub end-to-end review: announcements client + server fixes
 
 - **Current branch:** `dev` (HEAD `0b4a4d5c`). **Not committed** — the tree already holds unrelated in-progress

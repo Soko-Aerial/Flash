@@ -150,8 +150,8 @@ data class FlashSettingsModel(
     val swarmHelpShare: Boolean = true,
     /** Keep finished files available for others in the swarm. Default TRUE. */
     val swarmKeepFinishedFiles: Boolean = true,
-    /** Experimental: group file sharing via swarm transfer (SW-8). Default FALSE. */
-    val swarmEnabled: Boolean = false,
+    /** Group file sharing via swarm transfer (SW-8). Default TRUE since 2026-10-19 (owner decision O-8). */
+    val swarmEnabled: Boolean = true,
     /** UI-056 / ADR-080: the handwritten launch animation on a cold start. Default TRUE. */
     val launchAnimation: Boolean = true,
     val isEnterpriseEnrolled: Boolean = false,

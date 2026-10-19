@@ -858,7 +858,7 @@ already serves members that are not paired with anyone.
 | SW-9 | Cancel everywhere and lifecycle | M | SW-8 | SW-11 | **DONE (2026-10-05)** (Origin cancel confirmation, tombstone verify/propagate, delete-for-everyone, TimeoutStopPlan suspend/resume, retention cleanup) |
 | SW-10 | Errors and recovery (the catalogue) | M | SW-9 | SW-11 | **DONE (2026-10-05)** (Wake-up wiring across hosts, TransferFailureText friendly sentences, SwarmWaitReasonRecoveryTest for all 7 wait reasons, catalogue verified) |
 | SW-11 | UI | M | SW-8; its UI doc must be DESIGNED | SW-9, SW-10 | **DONE (2026-10-05)** (UI-055 research doc IMPLEMENTED, FlashSwarmUiMath receiver/sender formatters, FlashFileMessageCard bubble detail lines & safe-to-leave styling, FlashTransfersScreen swarm status lines, notification origin cancel & detail lines, settings toggles, all unit tests green) |
-| SW-12 | Device checks, tuning, default-on decision | M (owner's device time) | SW-10, SW-11 | — | TODO |
+| SW-12 | Device checks, tuning, default-on decision | M (owner's device time) | SW-10, SW-11 | — | **IN PROGRESS (2026-10-19):** the owner decided O-8 early and the swarm is **on by default** (master switch default `true`, an explicit opt-out stored); device checks `SWM-07`..`SWM-29` and the new `SWM-46`/`SWM-47` are still owed |
 
 ---
 
@@ -1400,14 +1400,14 @@ SW-0 is shared: it writes the ADRs and protocol sections of both tracks.
 - **Docs:**
   - `docs/protocol.md` (the `GroupMedia` fields);
   - `docs/architecture.md`;
-  - `AGENTS.md` section 29 (one line: built, switch off by default, not device-verified);
+  - `AGENTS.md` section 29 (one line: built, on by default since 2026-10-19, not device-verified);
   - progress and handoff.
 - **Do not:**
   - send FSW1 to a peer without `sw1`;
   - let the swarm dial directly;
   - cancel instead of pause on a system stop;
   - make a legacy `g-` group use the swarm;
-  - turn the switch on by default.
+  - ~~turn the switch on by default~~ (SW-8's own rule; **superseded 2026-10-19 by the owner's O-8 decision** — the switch is on by default now).
 - **Rollback:** switch it off (it takes effect after restart). Every peer then sees no `sw1`, and the legacy path takes over.
 
 ---
@@ -1502,20 +1502,28 @@ SW-0 is shared: it writes the ADRs and protocol sections of both tracks.
 
 ---
 
-### SW-12: Device checks, tuning, default-on decision (PENDING OWNER DEVICE TESTING)
+### SW-12: Device checks, tuning, default-on decision (OWNER DECIDED DEFAULT-ON 2026-10-19; DEVICE CHECKS STILL OWED)
 - **Goal:** evidence from real phones and Windows, then the owner's decision to turn it on by default (O-8).
+- **Owner decision (2026-10-19):** O-8 was answered **yes, now** — the swarm is **on by default** in the Flash app, before the
+  `SWM-09..15` gate below was met. The master switch default was flipped on Android (`FlashSettingsDataStore.groupSwarmEnabled`
+  -> `true`, `DiscoveryEngineHolder.groupSwarmEnabled = true`, `AppEngine` fallback `true`, `MainActivity` initial `true`) and on
+  desktop (`DesktopSettings.groupSwarmEnabled = true` and the `group_swarm_enabled` read default). An explicit opt-out is stored
+  and wins over the default. Unit-tested (`FlashSettingsDataStoreTest`, `DesktopSettingsStoreTest`, `FlashSettingsLogicTest`,
+  `FlashSettingsSearchResetTest`); **not device-verified**. Default-on device checks: `SWM-46`, `SWM-47`.
 - **Tasks:**
   1. **Run section 4w of the backlog in this order:**
-     1. `SWM-23`, `SWM-28`, `SWM-29` (nothing broke);
-     2. `SWM-09`, `SWM-10` (the owner's scenario);
-     3. `SWM-11`, `SWM-12` (cancel);
-     4. `SWM-13`, `SWM-14` (restarts);
-     5. the rest.
+     1. `SWM-46`, `SWM-47` (the new default-on checks);
+     2. `SWM-23`, `SWM-28`, `SWM-29` (nothing broke);
+     3. `SWM-09`, `SWM-10` (the owner's scenario);
+     4. `SWM-11`, `SWM-12` (cancel);
+     5. `SWM-13`, `SWM-14` (restarts);
+     6. the rest.
   2. **Record each result** as AGENTS 35 says: the status line, the results log, and the source documents updated. A FAIL gets a
      new ERROR.
   3. **Tune** the piece size, slots, windows and budgets from the `MEAS-*` and `SWM-01..05` runs. Record each change with its
      measurement in `logs/experiments.md`.
-  4. **The owner decides O-8.** If yes, flip the default and update `AGENTS.md` section 29.
+  4. **The owner decided O-8 on 2026-10-19** (done: the default is flipped and `AGENTS.md` section 29 is updated). If any of
+     `SWM-09..15` FAILS on device, the owner may turn the default back off.
 
 ---
 
@@ -2166,7 +2174,7 @@ Same columns, except that **State** is the invite or membership state. Sentences
 | **O-5** | ~~Vouched members (paired with the owner only) get files through the swarm?~~ | ~~Yes. Group chat already trusts them (ADR-044 V2), and it closes the FO-04 gap.~~ **REPLACED by the owner (2026-10-04):** every active member of a group receives, sends and serves group files **whether or not it is paired with anyone**, through the swarm and through today's push. Delivered by GM-5 (the gate) and GM-4 (joining without pairing). |
 | **O-6** | `:core:engine` depends on `:core:swarm` with `api` + attach (PTT style) or `compileOnly` (calling style)? | `api` + attach (2.4). |
 | **O-7** | On Android's six-hour service limit, should 1:1 transfers also pause instead of cancel? | Yes, but as a separate small change after SW-2; record it as its own ADR line. |
-| **O-8** | Turn the swarm on by default in the Flash app, and when? | Only after SW-12 shows `SWM-09..15` PASS on at least 3 devices including Windows. |
+| **O-8** | Turn the swarm on by default in the Flash app, and when? | Recommended: only after SW-12 shows `SWM-09..15` PASS on at least 3 devices including Windows. **ANSWERED by the owner 2026-10-19: turn it on by default NOW**, before that gate was met. Implemented (master switch default `true`, an explicit opt-out kept) and unit-tested, not device-verified; `SWM-46`/`SWM-47` check the default. |
 | **O-9** | An origin that left or was removed from the group: may it still serve its own file? | No. It follows the removal rules; its cancel still counts. |
 | **O-10** | Group files with auto-accept off: does each member tap Accept? | Same rule as today's group files (no new policy). |
 | **O-11** | Do groups created before GM get a secret automatically? | **Yes.** The first admin device on the new build upgrades the group (GM-7). Members on old builds are unaffected. |

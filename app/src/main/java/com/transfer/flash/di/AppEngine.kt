@@ -230,7 +230,7 @@ class AppEngine @Inject constructor(
                 // This is also what pays for the codec-list walk on a background thread rather
                 // than on the first composition.
                 DiscoveryEngineHolder.performanceMode = performanceMode.value
-                val isSwarmEnabled = runCatching { settingsStore.groupSwarmEnabled.first() }.getOrDefault(false)
+                val isSwarmEnabled = runCatching { settingsStore.groupSwarmEnabled.first() }.getOrDefault(true)
                 DiscoveryEngineHolder.groupSwarmEnabled = isSwarmEnabled
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result

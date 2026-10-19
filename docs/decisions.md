@@ -3418,8 +3418,12 @@ processing.
 
 ### Status
 **PROPOSED 2026-10-04 (SW-0), awaiting the owner's acceptance of this text.** The owner chose a separate module on 2026-10-04 (plan O-6,
-"it should be a different module"). Nothing is built. Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (section 2, phases SW-1 to SW-3
+"it should be a different module"). Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` (section 2, phases SW-1 to SW-3
 and SW-8).
+
+**Implementation note (2026-10-19):** SW-0 to SW-11 are **built** and unit-tested (adopted in code despite this ADR's text still reading
+PROPOSED), and the owner answered **O-8 on 2026-10-19: the swarm is on by default** (see Decision 7, below) — overriding this ADR's
+"switched off until SW-12" gate. Not device-verified.
 
 ### Decision (2026-10-04, plan sections 2 and 5.1)
 1. **A new Kotlin Multiplatform module `:core:swarm`** (Android + JVM, `explicitApi()`, package `com.transfer.flash.core.swarm`), published as
@@ -3441,8 +3445,13 @@ and SW-8).
    `sw1`.
 6. **Fallback.** The shared group sender (`GroupFileSender`, SW-1) uses today's per-member push for every member without `sw1`, for everyone
    when the swarm is not attached, for legacy `g-` groups (O-4), for empty files (FA-6) and for files above the piece limit (ADR-071).
-7. **Default.** The Flash app keeps the swarm switched off until SW-12 shows `SWM-09`..`SWM-15` PASS on at least three devices, one of them
-   Windows (O-8).
+7. **Default.** ~~The Flash app keeps the swarm switched off until SW-12 shows `SWM-09`..`SWM-15` PASS on at least three devices,
+   one of them Windows (O-8).~~ **CHANGED by the owner (2026-10-19):** the swarm is **on by default** in the Flash app now, before
+   the O-8 device gate was met. The master switch — Android `FlashSettingsDataStore.groupSwarmEnabled`, desktop
+   `~/.flash/settings.properties` `group_swarm_enabled`, the settings row "Group file sharing (swarm, experimental)", and the
+   `FlashSettingsModel.swarmEnabled` UI default — is **true**. An explicit opt-out is stored and wins over the default, so a user
+   who turns it off keeps it off; turning it off restores today's per-member push (plan R9). The device checks the gate asked for
+   are still owed, and `SWM-46`/`SWM-47` now cover the default itself.
 
 ### Alternatives considered
 - **Inside the transport (`:core:network`):** rejected. Membership lives in `:core:messaging`, which depends on the network, so this creates
@@ -3461,6 +3470,8 @@ and SW-8).
 - 15 published modules instead of 14. `jitpack.yml` and the README change in SW-8, and the release dry-run is repeated.
 - The HELLO gains one optional field, once. Later optional modules add tokens, not fields.
 - A swarm bug can break only group files. Switching the swarm off restores today's behaviour (plan R9).
+- **Since 2026-10-19 the swarm is on by default (owner decision O-8), so a swarm defect now reaches group file sharing on a fresh
+  install.** The master switch remains the escape hatch; the default-on device checks are `SWM-46`/`SWM-47`.
 - Not device-verified: nothing exists yet.
 
 ### Revisit when

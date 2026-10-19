@@ -2576,6 +2576,18 @@ UIP-02 says a caption is sent together with the files: **obsolete in part**, cap
 - **Pass:** the admin shows `SWARM announce ... origin=false` (a swarm offer), not only `Data channel joined`. If the admin still gets a whole-file push, capture which `sw1` feature set the sender had for it (the cause is unproven).
 - **Source:** ERROR-117 "Bug 3". **Status:** TODO
 
+### SWM-46 - A fresh install has the swarm on, and an opt-out sticks
+- **Setup:** install the current build on a phone that has never run it (or clear app data); touch no settings.
+- **Steps:** open Settings, Swarm section and read the "Group file sharing" row. Then turn it off, force-stop, reopen, and read it again. Reproduce on Windows with a fresh `~/.flash/settings.properties`.
+- **Pass:** on the fresh install the row is **ON** (owner decision O-8, 2026-10-19); the log header probe shows `swarm=true`. After turning it off and reopening it is still **OFF** and the probe shows `swarm=false` (the stored opt-out wins over the default; the default must not resurrect an opt-out).
+- **Source:** owner decision O-8 (2026-10-19), ADR-070 Decision 7, SW-12. **Status:** TODO
+
+### SWM-47 - A group file goes through the swarm on a fresh install without touching settings
+- **Setup:** two phones and the Windows desktop, all fresh installs, one v2 group with all of them; nobody opens Settings.
+- **Steps:** A sends a 20 MB file; keep C offline until A finishes, then bring C back.
+- **Pass:** B and the desktop show a swarm offer (the availability/piece-map UI, `swarm.offer.in` in the log), not only a whole-file push, and C completes after catch-up (`SWM-37`-style). No `sw1`/FSW1 errors on any device. This is the default-on path of `SWM-36`..`SWM-39` (`SWM-45` explains a whole-file push). If it FAILS, the owner may turn the default back off.
+- **Source:** owner decision O-8 (2026-10-19), SW-12. **Status:** TODO
+
 ### 4zzzzzzzz. Hub hardening round: hashed revocations, sealed mailbox, approver phone, DPAPI chat key (ADR-129..132, 2026-10-14)
 
 All of this is unit-tested only. Nothing here has been run on a phone, a real hub for days, or a Windows profile with history.
