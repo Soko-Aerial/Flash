@@ -27,8 +27,8 @@
     from the department editor itself (`Organization → Departments → edit → Members`), using only the
     existing `PUT /admin/api/v1/devices/{id}` + `moveToDepartment`. This is the answer to "I can't
     find a way to add them": the capability always existed (Devices → device → Department), but the
-    department screen had no member control. The hub console needs an image refresh (`./up.sh`) for
-    this to appear.
+    department screen had no member control. **Already redeployed to the `myserver` console** (new
+    `:server:installDist`, hub container recreated, public URL unchanged) — see `logs/progress.md`.
   - **Docs:** new `docs/deploy/HUB-SERVER-DEPLOYMENT.md` (deploy the hub to any server, any provider);
     ADR-139; ERROR-741; `docs/protocol.md` client-presence note; `DEPH-07`, `HUB-13`, `HUB-14` added
     to `docs/testing/TEST-BACKLOG.md`; `logs/progress.md`;
@@ -39,6 +39,13 @@
   pre-existing flaky `OrgDirectorySyncTest.ORGT-U16` (5,000-member budget) failing;
   `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` clean; `node --test` in
   `server/admin-ui-tests` all green (incl. the strings-exist check).
+- **Live hub after the redeploy (this session):** `:server:installDist` rebuilt (SHA-256
+  `d988b118702acd1ba98bead6050a25fb723ee7fc12ce764d1dd5e30fad97ba42`), copied up and installed to
+  `~/flash-hub/app`, hub container recreated (`docker compose up -d --force-recreate hub`; `./data`
+  and `.env` kept). Verified: loopback + tunnel `/health` 200, `/admin/` 200, `/api/v1/directory/people`
+  without a bearer 401, and the new console code is served at `/admin/ui/js/views/organization.js`.
+  **Public URL unchanged** (`https://stolen-tribunal-herein-describing.trycloudflare.com`), so existing
+  invite links still work.
 - **Owed next:** on the live `myserver` hub — `HUB-13`/`HUB-14` (presence + typing over the hub, two
   devices, different networks or no LAN path) and `DEPH-07` (console members). Enrol with an invite
   that leaves the colleague **without a department** to reproduce the owner's exact case.
