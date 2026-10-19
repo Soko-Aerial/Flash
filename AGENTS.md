@@ -112,6 +112,8 @@ docs/
 ├── testing/
 │   ├── TEST-BACKLOG.md          # Every device test still owed (see §35)
 │   └── PROBES.md                # Evidence probe vocabulary + log export header (ADR-087)
+├── deploy/
+│   └── HUB-SERVER-DEPLOYMENT.md # Deploy the hub to any server (test and production profiles)
 └── ui/                          # Premium chat UI — research-first (see §34)
     ├── flash-premium-chat-ui-implementation.md
     ├── ui-research-index.md

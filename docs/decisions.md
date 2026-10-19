@@ -5433,6 +5433,37 @@ The hub operator and administrators can read all announcements; the UI says so. 
 ### Revisit when
 Sealed announcements, acknowledgements or attachments are wanted (FO-19..FO-26).
 
+## ADR-139 — Hub presence is read from the hub's own people listing, and the relay is a named transport
+
+### Status
+BUILT 2026-10-19 (unit-tested, NOT device-verified). Closes the dormant "hub presence not surfaced" item in `logs/handoff.md`.
+
+### Decision
+1. **Presence source.** A client enrolled in a hub learns which colleagues the hub currently has a live relay session for by polling the existing org-wide people listing (`GET /api/v1/directory/people`) and reading `PersonDto.online`. No new route, no server change, no wire change. The poll runs every 15 s (`HubPresenceDefaults.POLL_MS`) and is bounded to 4 pages × 500 people. The listing's limiter (`HubRateLimits.directoryPeople`: burst 30 then 1 per 2 s per device) leaves a 15 s poll ample headroom.
+2. **"Learned nothing" is not "nobody is online".** A round that fails, or a hub too old to serve the listing, yields `null` and the previous set is kept, so a transient hub error never flips the whole organisation to Offline. An enhanced privacy response with no visible presence also yields nothing rather than a false offline.
+3. **The relay is a transport, not a fallback.** A peer whose only live path is the hub is `Online` with `FlashNetworkTransport.Relay` (the banner reads "Relayed"), and its typing indicator is admitted. Precedence in the header is: typing (only while reachable) > live LAN session > hub session > reconnect grace > discovery sighting > offline. The hub-online peer is removed from the "seen by discovery, no link" set, because we do hold a link to it.
+4. **The Hub tab uses the same set.** `HubTabSources.hubPresence` (already designed for this, previously unwired in both hosts) is fed the same flow, so a person is `HubReachability.HUB` when the hub reports them online, `OFFLINE` when the listing names them and the hub does not (or when presence is hidden), and `UNKNOWN` when the hub could not be read.
+5. **Client-announced presence is rejected.** `FlashRelayClient.sendPresence` stays uncalled: the server never originates ONLINE/OFFLINE, it only forwards client-sent metas, and the directory's own privacy model says the hub reports presence. Adding a client announcement would have been a new wire surface with no reader.
+
+### Context
+The owner deployed a test hub, enrolled two devices (invites with **no department**) and chatted 1:1 over the hub from different networks (ERROR-741). The messages arrived, but the colleague read Offline and their typing indicator never showed. Presence in every host came only from live LAN sessions (`network.activeSessions`), and the hub's own presence — already served as `PersonDto.online` from the live relay pool — was never read. The typing gate then discarded the (already-collected) typing indicator because the peer was not "online".
+
+### Alternatives considered
+- **Client-announced presence over the relay** (`FlashRelayClient.sendPresence`, a `Presence` meta): rejected — the server never originates presence and the documented privacy model has the hub reporting it; it is also a new wire surface.
+- **Reusing `HubPeerDirectory`'s cached member rows** (they carry `online`): rejected — a 10-minute TTL with a 30 s minimum refresh is far too stale for presence (and its bulk listing has a separate defect, recorded below).
+- **A dedicated presence push frame**: rejected — a wire-shape change needing an ADR of its own and a server change, for information the REST listing already carries.
+- **Presence from the relay connection pool on each device**: not possible — a device holds a session with the hub, not with its colleagues.
+
+### Consequences
+- The chat header, the chat list and the Hub tab agree on a hub-only colleague: Online, relayed, typing shown.
+- A colleague the hub reports offline is Offline, not "seen by discovery" — the honest answer while the hub is the only path.
+- Group-chat member presence and the call screens remain LAN-only; the hub set is not yet applied there (recorded as a follow-up, not a defect).
+- A 15 s poll is one extra HTTP request per enrolled device every 15 s; negligible against the hub's limiter and the existing directory sync.
+- **Recorded, not fixed (needs an owner decision):** `HubPeerDirectory.refreshLocked()` calls `fetchDepartmentMembers(url, "")`, and the server treats a blank `departmentId` as missing scope (`400 MESSAGE_NEEDS_SCOPE`), so the bulk member listing always fails and standing falls back to per-id lookups. Fixing it is a small change (skip the blank fetch, or list by the device's own department) but it touches Plan B Layer 2, so it is left for the owner.
+
+### Revisit when
+Group-chat and call presence want the hub set too, or the hub offers presence in the relay handshake (which would remove the poll).
+
 
 <!-- folded 2026-10-15 from logs/streams/S2-server/decisions-additions.md; ADR numbers kept as written there -->
 ## Folded from stream S2-server (decisions-additions)

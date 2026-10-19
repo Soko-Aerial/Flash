@@ -1,5 +1,90 @@
 # Progress Log
 
+## 2026-10-19 — Hub-routed chat presence (ERROR-741), the server deployment guide, and the console department-members control
+
+### Worked on
+Four follow-ups the owner raised from the live `myserver` test hub, taken one at a time, "be sure before fixing":
+
+1. a written guide for deploying the hub to any server;
+2. "what if I create and invite someone with no department — can admins add them? I can't find a way";
+3. a 1:1 chat with a colleague reached **through the hub** showed the colleague **Offline** and dropped the
+   typing indicator, while the same two devices on one LAN worked immediately;
+4. "does our server cover this" (the presence question).
+
+Investigation was read-only until each cause was established (no guessing at a fix).
+
+### Changed
+**Item 1 — deployment guide (new doc).** `docs/deploy/HUB-SERVER-DEPLOYMENT.md`: an operator guide for
+any host, with the two profiles (test vs production), requirements, how to build and ship
+`:server:installDist`, the root key and `keytool init-root|issue-delegation`, the full `FLASH_*`
+configuration table, both TLS modes (`self` and `proxy` behind nginx/Caddy), a systemd unit, first
+admin + invites, backups (`data.key` apart from database copies), operations notes (including that
+`PUT /admin/api/v1/devices/{id}` is registry-only), a security checklist, troubleshooting, the
+`myserver` worked example, and the device checks it owes. Filenames were corrected against the code
+(`server-identity.pk8` / `server-identity.pub`, `data.key`). `docs/plans/HUB-DEMO-RUNBOOK.md` and
+`AGENTS.md` §5 now point at it.
+
+**Item 3 — hub presence (the real defect).** ERROR-741 / ADR-139. Presence had exactly one source in
+every host: live LAN sessions. A colleague reached through the hub holds a session with the hub, not
+with us, so the header read Offline and the typing gate (`if (isOnline || isConnecting)`) then threw
+away typing frames the peer really had sent. The hub already knows: its relay pool answers `isOnline`
+and the directory serves it as `PersonDto.online`. **No wire change and no server change** — the
+client now consumes it:
+
+- `:core:enterprise` — new `HubPresence.kt`: `hubOnlineDeviceIds(api, hubUrl)` walks the people
+  listing (≤ 4 pages × 500) and returns the online ids, `null` when it learned nothing (a failed round
+  or an older hub) so a transient error never means "everybody offline". `EnterpriseHub` polls it
+  every 15 s into `hubOnlinePeerIds: StateFlow<Set<String>>`, cleared while unenrolled, cancelled by
+  `shutdown()`. 15 s is well inside the listing's limiter (burst 30, then 1 per 2 s).
+- `:core:messaging` — `PresenceSnapshot` gained `hubOnline` + `withHubOnline`; the header verdict moved
+  into a pure `directLinkUi(conversationId, peers, typingNames)` with precedence *typing (while
+  reachable) > LAN session > hub session > reconnect grace > discovery sighting > offline* and
+  transport `Lan` or `Relay`. `RealFlashChatRepository` takes `hubOnlinePeerIds` (default empty);
+  the chat list counts a hub-online peer as Online.
+- Hosts: `DiscoveryEngineHolder` and `DesktopEngine` pass `hub.hubOnlinePeerIds` to the repository
+  **and** to the previously unwired `HubTabSources(hubPresence = …)`, so the Hub tab's reachability
+  can finally claim `HUB` (`HubFacade.toUi`).
+
+**Item 2 — department members in the console.** The capability already existed (org admin:
+**Devices** → device → **Department** → Save, or tick rows → **Move to department**; the `__none` /
+"No department" filter finds them). What did not exist was any way to manage members **from the
+department**, which is where an administrator looks. `organization.js`'s department editor now has a
+**Members** section (org admins only — a department head's device move is refused by the API): it lists
+the department's devices with ✕ to move one out and a picker to move one in, using only the existing
+`PUT /admin/api/v1/devices/{id}` with `moveToDepartment: true`. Seven strings added to
+`strings/en.js`. This is exactly the path that adds an invited colleague who arrived with no
+department.
+
+### Verification
+- `:core:enterprise` `HubPresenceTest` (7) and `:core:messaging` `DirectLinkUiTest` (6) + the new
+  `PresenceHoldTest` hub case: all green on `jvmTest` and `testAndroidHostTest`.
+- Full test runs of the changed modules: only the **pre-existing flaky**
+  `OrgDirectorySyncTest.ORGT-U16` (5,000-member time/memory budget, see `logs/handoff.md`) failed.
+- Compiles green: `:core:enterprise`, `:core:messaging`, `:app:compileDebugKotlin`,
+  `:desktop:compileKotlinJvm` (one pre-existing warning at `RealFlashChatRepository.kt:3741`, and the
+  pre-existing `DesktopShell.kt` warnings).
+- Console: `node --test` in `server/admin-ui-tests` — all pass, including "every string the views ask
+  for exists in `en.js`".
+- **NOT device-verified**: `HUB-13`, `HUB-14` (presence) and `DEPH-07` (console members) are in
+  `docs/testing/TEST-BACKLOG.md`.
+
+### Problems found while investigating (recorded, not fixed)
+- `HubPeerDirectory.refreshLocked()` calls `fetchDepartmentMembers(url, "")`, and the server treats a
+  blank `departmentId` as missing scope (`400 MESSAGE_NEEDS_SCOPE`), so that bulk listing always
+  fails; `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md` §3.3.2 said to remove that read. Layered into the
+  Plan B review rather than changed here — it is not related to the reported symptom.
+- Group-chat member presence and the call screens still use the LAN set only; the hub set is not yet
+  applied there (a deliberate scope limit, recorded in ADR-139).
+- `F-1`…`F-4` from the 2026-10-19 hub review remain as recorded; F-2/F-4 need an owner decision.
+
+### Remaining / next AI
+- Run the owed device checks against the live hub (see `docs/testing/TEST-BACKLOG.md` §4zw and the
+  `myserver` section of `docs/plans/HUB-DEMO-RUNBOOK.md`); the hub does **not** need redeploying for
+  the presence fix — it needs a new **app** build on the devices. The console change does need a hub
+  image refresh (`./up.sh`) to appear on the deployed console.
+- Decide on F-2/F-4 wire shapes and on the `HubPeerDirectory` blank-department fix.
+- Consider extending hub presence to group chats and call screens.
+
 ## 2026-10-19 — Flash Hub TEST deployment on `myserver`, reachable through a temporary public URL
 
 ### Worked on

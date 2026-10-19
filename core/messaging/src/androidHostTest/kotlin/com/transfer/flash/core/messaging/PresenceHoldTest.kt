@@ -129,6 +129,44 @@ class PresenceHoldTest {
         collector.cancel()
     }
 
+    @Test
+    fun `hub presence is a real link, outranks discovery, and yields to a live LAN session`() = runBlocking {
+        // A colleague on another network: no LAN session, not necessarily seen by discovery, but the
+        // organisation hub holds its socket. The header must say Online with the relay as transport
+        // (before this input existed it said Offline while the hub relayed the messages).
+        val sessions = MutableStateFlow(emptySet<String>())
+        val discovered = MutableStateFlow(setOf("peer"))
+        val reported = MutableStateFlow(setOf("peer", "remote"))
+        val seen = Collections.synchronizedList(mutableListOf<PresenceSnapshot>())
+        val collector = launch {
+            sessions.withReconnectGrace(HOLD_MS)
+                .withReachable(discovered)
+                .withHubOnline(reported)
+                .collect { seen.add(it) }
+        }
+
+        awaitUntil(seen) { it.hubOnline == setOf("peer", "remote") }
+        // "Seen by discovery, no link" would understate what we know: the hub named a transport.
+        assertTrue("a hub-online peer must leave reachable: ${seen.last()}", seen.last().reachable.isEmpty())
+
+        // The same peer with a live LAN session is Online on the LAN path, not on the hub path.
+        sessions.value = setOf("peer")
+        awaitUntil(seen) { it.online == setOf("peer") && it.hubOnline == setOf("remote") }
+
+        // The hub goes quiet: the peer that was only hub-online is no longer claimed.
+        reported.value = emptySet()
+        awaitUntil(seen) { it.hubOnline.isEmpty() && it.online == setOf("peer") }
+
+        // No snapshot ever claims the same peer on two paths at once.
+        synchronized(seen) {
+            seen.forEach {
+                assertTrue("paths must be disjoint: $it", (it.online intersect it.hubOnline).isEmpty())
+                assertTrue("paths must be disjoint: $it", (it.reachable intersect it.hubOnline).isEmpty())
+            }
+        }
+        collector.cancel()
+    }
+
     /** Polls the collected snapshots until the newest one satisfies [condition]. */
     private suspend fun awaitUntil(
         seen: List<PresenceSnapshot>,

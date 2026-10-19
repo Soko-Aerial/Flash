@@ -93,6 +93,11 @@ public class EnterpriseHub(
     sealingKeyStore: HubSealingKeyStore? = null,
     /** Builds the relay client; tests pass one with a fake transport. */
     relayFactory: ((identityProvider: () -> RelayIdentity?) -> FlashRelayClient)? = null,
+    /**
+     * How often the hub is asked which colleagues are online (see [hubOnlineDeviceIds]). Presence is a poll because the
+     * hub serves it over REST and has no presence push. `0` disables the poll (nothing subscribes anyway in a test).
+     */
+    private val hubPresencePollMs: Long = HubPresenceDefaults.POLL_MS,
     /** How often the status clock ticks and maintenance (renewal, pending unenrol) is considered. */
     private val tickMs: Long = 60_000L,
     /** Minimum time between two maintenance rounds. */
@@ -152,6 +157,17 @@ public class EnterpriseHub(
     private var lastMaintenanceMs: Long = Long.MIN_VALUE
     private var jobs: List<Job> = emptyList()
 
+    private val hubOnline = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Device ids the hub reports as **online** for the listing this device may see — i.e. colleagues that currently hold
+     * a live relay session on the organisation hub, so a chat with them works even when no LAN path exists. Empty while
+     * unenrolled, while the hub cannot be read, or before the first poll. Refreshed every [hubPresencePollMs].
+     *
+     * A failed round keeps the previous answer (it means "we learned nothing", not "nobody is online").
+     */
+    public val hubOnlinePeerIds: StateFlow<Set<String>> = hubOnline.asStateFlow()
+
     private val _status = MutableStateFlow(computeStatus())
 
     /** Live link state for Settings, banners and the connection detail sheet. */
@@ -183,7 +199,25 @@ public class EnterpriseHub(
             }
         }
         val sealingJob = sealingKeys?.let { keys -> scope.launch { keepSealingKeyPublished(keys) } }
-        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob)
+        val presenceJob = if (hubPresencePollMs > 0) scope.launch { pollHubPresence() } else null
+        jobs = listOfNotNull(credentialJob, statusJob, revokeJob, tickJob, sealingJob, presenceJob)
+    }
+
+    /**
+     * Keeps [hubOnlinePeerIds] fresh: ask the hub, keep the previous answer when the round fails, sleep, repeat. Stops
+     * while unenrolled (and clears, so a signed-out device claims nobody is online through an organisation it left).
+     */
+    private suspend fun pollHubPresence() {
+        while (currentCoroutineContext().isActive) {
+            val credentials = trustStore.credentials.value
+            if (credentials == null) {
+                if (hubOnline.value.isNotEmpty()) hubOnline.value = emptySet()
+            } else {
+                val ids = hubOnlineDeviceIds(directory, credentials.hubUrl)
+                if (ids != null && ids != hubOnline.value) hubOnline.value = ids
+            }
+            delay(hubPresencePollMs)
+        }
     }
 
     /**
@@ -223,12 +257,14 @@ public class EnterpriseHub(
     private fun applyCredentials(creds: EnrollmentCredentials?) {
         if (creds == null) {
             addressRefused.value = false
+            hubOnline.value = emptySet()
             relay.stop()
             return
         }
         if (HubUrlPolicy.check(creds.hubUrl, allowCleartext()) != HubUrlPolicy.Verdict.OK) {
             // A stored address that is not acceptable (an old plaintext enrolment): never dial it.
             addressRefused.value = true
+            hubOnline.value = emptySet()
             relay.stop()
             return
         }

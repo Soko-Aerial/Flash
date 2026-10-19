@@ -3312,6 +3312,18 @@ a phone and/or the desktop app of the same build. Older builds cannot connect to
 - **Pass:** the session stays up (or reconnects within backoff and re-handshakes cleanly); no `ERR_AUTH`/`ERR_EXPIRED` appears in either log. Record the device (Transsion handsets freeze, HIB-10).
 - **Source:** ADR-109. **Status:** TODO
 
+### HUB-13 - A hub-routed 1:1 chat shows the colleague Online (relayed), and its typing indicator
+- **Setup:** two devices enrolled in the same hub with invites that leave them **without a department** (the owner's case, ERROR-741), on **different networks** (or with the LAN path impossible for them: different Wi-Fi, one on mobile data).
+- **Steps:** open the 1:1 chat from the Hub tab (or People), watch the header and the list, then type in the other device's composer. Optionally also open the Hub tab and check the people list.
+- **Pass:** the header reads **Online** and the link banner reads **Relayed** (`FlashNetworkTransport.Relay`), not "Offline"/"Searching for devices…"; the list row is Online; the typing indicator appears within a second or two; the Hub tab shows the colleague as **HUB**, not OFFLINE. Logs: one `/api/v1/directory/people` request about every 15 s per device (no `429`). Closing the other app turns it Offline within about one poll interval (≤ ~20 s); an offline hub does **not** flip everybody to Offline (the last answer is kept).
+- **Source:** ERROR-741, ADR-139. **Status:** TODO
+
+### HUB-14 - A presence-hidden colleague claims nothing, and an old hub degrades safely
+- **Setup:** a hub with directory privacy on (`presenceVisible` false for the colleague's department, or hidden department), plus a hub build without `/directory/people` (or its 404 forced).
+- **Steps:** open the chat with that colleague, and open the Hub tab, on a build with the fix.
+- **Pass:** the client never invents Online for the hidden colleague (no flashing between Online and Offline every poll), and with a hub that answers `404` on `/directory/people` the chat simply keeps its previous state with no crash and no repeated error toast; the Hub tab does not mass-flip everyone to OFFLINE.
+- **Source:** ERROR-741, ADR-139. **Status:** TODO
+
 
 ## 4zx. Enterprise hub relay: delivery, mailbox, limits, operations (ADR-112, ERROR-230..237, 2026-10-12)
 
@@ -3845,6 +3857,12 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 - **Steps:** Create a department and choose Invite its first head.
 - **Pass:** The invite form opens with role Head and the department preselected.
 - **Source:** ADR-136, `docs/plans/HUB-DEPARTMENT-HEADS-AND-INVITES-PLAN.md`. **Status:** TODO (PLANNED, not built)
+
+#### DEPH-07 — Org admin moves a department-less device into a department from the console
+- **Setup:** Hub console, org admin logged in; one device enrolled with an invite that left it with **no department** (the owner's case), plus another department already in use.
+- **Steps:** Open **Organization → Departments → edit the target department**; use the new **Members** section: **Move a device into this department** and pick the device. Then remove it again with the chip's ✕. Also confirm the same move from **Devices** (row select → **Move to department**, or the device drawer's Department field) still works.
+- **Pass:** the department's **Members** list shows the device immediately, the table's member count increments/decrements, `GET /api/v1/directory/people` on that device now returns it under the department (and the device's own bearer/certificate keep the old, blank department until renewal — the hub's `setDepartment` is registry-only; re-enrol or wait for renewal for the certificate to change); a **department head** does **not** see the Members controls on their own department (the API refuses the move with "Only an organisation administrator can move a device.").
+- **Source:** owner report 2026-10-19 ("I can't find a way to add them"), `server/.../admin-ui/js/views/organization.js`, `AdminApi.kt` `PUT /admin/api/v1/devices/{id}`. **Status:** TODO (console change is Node-tested only, `server/admin-ui-tests`)
 
 ### PRIV — Directory privacy, option C (Plan A2)
 

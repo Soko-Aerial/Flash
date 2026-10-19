@@ -1381,6 +1381,22 @@ discovery. The hub operator and org admins see everything.
 | `GET /api/v1/directory/groups` (changed) | bearer | none | `listVisibleGroups` AND the hidden-department filter (`canSeeGroup`) | served (A2 changed) |
 | Plan B sync `/directory/sync` (changed) | bearer | unchanged | member rows use `canListMember` (hidden never delivered to outsiders); `DepartmentSyncDto.hidden` now carries the flag; every `hidden` change bumps `directoryEpoch` (full resync) | served (A2 changed) |
 
+**Client presence (ADR-139).** An enrolled client polls the people listing
+(`GET /api/v1/directory/people`, every 15 s, at most 4 pages of 500) and reads
+`PersonDto.online` to learn which colleagues the hub currently holds a live
+relay session for. This is the **only** presence source when two devices are not
+on one LAN, so a colleague with a live relay session is shown as Online **with
+the relay named as its transport** (`FlashNetworkTransport.Relay`; the Hub tab
+shows `HUB`). A round that fails, or a hub too old for `/directory/people`
+(`404`), means "learned nothing" — never "nobody is online" — and the client
+keeps its previous answer. `online` is omitted or `false` for a
+presence-hidden member, and the client then claims nothing for that person. The
+server originates no presence meta, so nothing is announced by clients.
+
+**Note.** `/api/v1/directory/members` requires a non-blank scope: a blank
+`departmentId` with no `groupId` is `400 ERR_BAD_REQUEST`
+(`MESSAGE_NEEDS_SCOPE`), so it can never stand in for the org-wide listing.
+
 ### Announcements API (Plan A3, ADR-138)
 
 **Honesty Notice (ADR-138):**

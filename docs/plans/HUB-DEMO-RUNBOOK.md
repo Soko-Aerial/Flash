@@ -2,6 +2,8 @@
 
 **Insecure development hub, for a demo only.** It runs plain http and keeps the organisation root key on the server (`--dev-embedded-root`). Never point real devices at it.
 
+**Deploying to a real server instead?** See `docs/deploy/HUB-SERVER-DEPLOYMENT.md` — profiles (test vs production), building and shipping `:server:installDist`, the root key and delegation, TLS modes, systemd, backups and the security checklist. This file is the local demo and the `myserver` record.
+
 ## Start
 ```text
 powershell -File tools\demo-server.ps1 -Fresh      (first time, or to wipe the demo data)
@@ -86,7 +88,18 @@ The address devices enrol against is a **Cloudflare quick tunnel**
    The link carries the hub URL, so it is only correct while `FLASH_EXTERNAL_URL` is current.
 3. **Enrol the device.** In the app: **Settings → Enterprise & Organization** → enrol, paste the
    link in "Enrol in Organization", **Confirm & Enrol**. The device then appears in the console
-   under **Devices**; move it to a department if the invite did not set one.
+   under **Devices**; move it to a department if the invite did not set one. An org admin can also
+   move devices from **Organization → Departments → edit → Members** (added 2026-10-19).
+
+## Picking up new code
+
+The host runs whatever distribution was last copied up, so:
+
+- **Server/console changes** (anything under `server/src/main/resources`, e.g. the console):
+  rebuild `:server:installDist` on this PC, copy `server/build/install/server` up, and re-run
+  `./up.sh` (the distribution is mounted read-only, so restarting alone is not enough).
+- **App changes** (e.g. the hub presence fix, ERROR-741): nothing on the hub changes; build and
+  install the app on the devices.
 
 ## What the test hub is for
 

@@ -1,5 +1,51 @@
 # Current Handoff
 
+## 2026-10-19 - Hub presence for hub-routed chat (ERROR-741), deployment guide, console department members
+
+- **Current branch:** `dev`. Committed in this session's commit (hash below) on top of `fdc58ac1`.
+  All changes are in the tree as listed; nothing half-applied.
+- **Status:** implemented and unit-tested; **NOT device-verified**. The owner's third follow-up
+  (a hub-routed 1:1 chat showing the colleague Offline with no typing indicator) is fixed.
+- **The one thing to know:** presence came only from live LAN sessions. A colleague reached through
+  the hub holds a session with the *hub*, so the header read Offline and the typing gate then
+  discarded typing frames the peer really sent. The hub already served the answer
+  (`PersonDto.online` from the live relay pool); the client now reads it (ADR-139). **No server and
+  no wire change** — the hub does **not** need a new image for this, the **app** does.
+- **What changed:**
+  - **Presence (client):** `:core:enterprise` new `HubPresence.kt` (`hubOnlineDeviceIds`;
+    `null` = "learned nothing", never "nobody online"); `EnterpriseHub` polls the people listing every
+    15 s into `hubOnlinePeerIds` (cancelled on `shutdown`, cleared while unenrolled).
+    `:core:messaging` `PresenceSnapshot.hubOnline` + `withHubOnline`; the header verdict is now the
+    pure `directLinkUi(...)` (typing while reachable > LAN session > hub session > reconnect grace >
+    discovery sighting > offline; transport `Lan`/`Relay`); `RealFlashChatRepository` takes
+    `hubOnlinePeerIds` (default empty). Both hosts pass `hub.hubOnlinePeerIds` to the repository
+    **and** to the previously unwired `HubTabSources(hubPresence = …)` seam, so the Hub tab can
+    finally claim `HUB`.
+  - **Console (department members):** an org admin can now move a device into/out of a department
+    from the department editor itself (`Organization → Departments → edit → Members`), using only the
+    existing `PUT /admin/api/v1/devices/{id}` + `moveToDepartment`. This is the answer to "I can't
+    find a way to add them": the capability always existed (Devices → device → Department), but the
+    department screen had no member control. The hub console needs an image refresh (`./up.sh`) for
+    this to appear.
+  - **Docs:** new `docs/deploy/HUB-SERVER-DEPLOYMENT.md` (deploy the hub to any server, any provider);
+    ADR-139; ERROR-741; `docs/protocol.md` client-presence note; `DEPH-07`, `HUB-13`, `HUB-14` added
+    to `docs/testing/TEST-BACKLOG.md`; `logs/progress.md`.
+- **Last test:** `HubPresenceTest` (7, both targets), `DirectLinkUiTest` (6, both targets), and the new
+  `PresenceHoldTest` hub case all green; the full test run of the changed modules shows only the
+  pre-existing flaky `OrgDirectorySyncTest.ORGT-U16` (5,000-member budget) failing;
+  `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` clean; `node --test` in
+  `server/admin-ui-tests` all green (incl. the strings-exist check).
+- **Owed next:** on the live `myserver` hub — `HUB-13`/`HUB-14` (presence + typing over the hub, two
+  devices, different networks or no LAN path) and `DEPH-07` (console members). Enrol with an invite
+  that leaves the colleague **without a department** to reproduce the owner's exact case.
+- **Open (deliberately not fixed):**
+  - `HubPeerDirectory.refreshLocked()` still calls `fetchDepartmentMembers(url, "")`, which the server
+    answers `400 MESSAGE_NEEDS_SCOPE`; `docs/plans/HUB-DIRECTORY-PRIVACY-PLAN.md` §3.3.2 said to remove
+    that read. Small fix, Plan B scope, unrelated to the reported symptom — owner decision.
+  - Group-chat member presence and the call screens still use the LAN set only.
+  - `F-2`/`F-4` wire-shape items from the hub review still need an owner decision.
+  - Pre-existing warnings: `RealFlashChatRepository.kt:3741` ("Condition is always 'true'").
+
 ## 2026-10-19 - Flash Hub TEST deployment on `myserver` (temporary public URL)
 
 - **Where:** `ssh myserver`, everything under `~/flash-hub/`. Compose project `flash-hub`:

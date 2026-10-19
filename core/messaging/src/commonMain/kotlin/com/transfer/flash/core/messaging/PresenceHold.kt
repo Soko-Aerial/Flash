@@ -1,6 +1,8 @@
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.time.SystemTimeSource
+import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -26,6 +28,13 @@ internal data class PresenceSnapshot(
      * dials on demand. Disjoint from [online] and [connecting].
      */
     val reachable: Set<String> = emptySet(),
+    /**
+     * Peer ids the organisation hub reports as online (a live relay session there), in neither set
+     * above. The peer is reachable — the hub is holding its socket — so the header may say "Online"
+     * and name the relay as the transport; it is disjoint from [reachable] (which claims no
+     * transport at all).
+     */
+    val hubOnline: Set<String> = emptySet(),
 )
 
 /** PC3: joins the discovery sightings onto the session snapshot as [PresenceSnapshot.reachable]. */
@@ -33,6 +42,80 @@ internal fun Flow<PresenceSnapshot>.withReachable(reachablePeerIds: Flow<Set<Str
     combine(this, reachablePeerIds.distinctUntilChanged()) { snapshot, seen ->
         snapshot.copy(reachable = seen - snapshot.online - snapshot.connecting)
     }.distinctUntilChanged()
+
+/**
+ * Joins the hub's reported presence onto the snapshot as [PresenceSnapshot.hubOnline].
+ *
+ * Presentation only, like the grace and the discovery set: a send still goes through the hub only
+ * when the hub actually carries it (`HubChatBridge`), so a stale "Online" here can never invent a
+ * delivery. A hub-online peer leaves [PresenceSnapshot.reachable], because the hub *is* a named
+ * transport for it and "seen by discovery, no link" would understate what we know.
+ */
+internal fun Flow<PresenceSnapshot>.withHubOnline(hubOnlinePeerIds: Flow<Set<String>>): Flow<PresenceSnapshot> =
+    combine(this, hubOnlinePeerIds.distinctUntilChanged()) { snapshot, reported ->
+        val online = reported - snapshot.online - snapshot.connecting
+        snapshot.copy(reachable = snapshot.reachable - reported, hubOnline = online)
+    }.distinctUntilChanged()
+
+/** A direct chat's verdict: what the header may claim and which transport it can name. */
+internal data class DirectLinkUi(
+    val presence: FlashPeerPresence,
+    val transport: FlashNetworkTransport,
+    /**
+     * The peer's typing member names, empty unless we still believe we can reach it: a typing
+     * indicator sticks until the peer clears it, so a session that died mid-compose would otherwise
+     * leave "typing…" on screen forever.
+     */
+    val typingNames: List<String>,
+)
+
+/**
+ * The direct chat header's presence and transport, from the three presence sets and the peer's
+ * reported typing names. Pure, so the precedence below is testable and identical for a LAN peer and
+ * a hub-only colleague.
+ *
+ * Precedence: typing (only while reachable) > live LAN session > hub session > reconnect grace >
+ * discovery sighting (no transport claimed) > offline.
+ */
+internal fun directLinkUi(
+    conversationId: String,
+    peers: PresenceSnapshot,
+    typingNames: List<String>,
+): DirectLinkUi {
+    val isOnline = conversationId in peers.online
+    // Hub presence (colleague with a live session on the organisation hub): a real link to the
+    // peer, with the relay as its named transport, even though there is no LAN session.
+    val isHubOnline = !isOnline && conversationId in peers.hubOnline
+    val isConnecting = !isOnline && !isHubOnline && conversationId in peers.connecting
+    val reachable = isOnline || isConnecting || isHubOnline
+    val presence = when {
+        typingNames.isNotEmpty() && reachable -> FlashPeerPresence.Typing
+        isOnline -> FlashPeerPresence.Online
+        isHubOnline -> FlashPeerPresence.Online
+        // ERROR-031: the reconnect window is its own state. The header renders it as
+        // "Connecting…" and the banner agrees, because resolveHealth tests Connecting
+        // ahead of the (necessarily) Unknown transport below.
+        isConnecting -> FlashPeerPresence.Connecting
+        // PC3: seen by discovery, no session. The header says "Online" with a ring and
+        // claims no transport, so the banner explains that a send will connect.
+        conversationId in peers.reachable -> FlashPeerPresence.Reachable
+        else -> FlashPeerPresence.Offline
+    }
+    // Without a transport the header's resolveHealth() short-circuits Unknown -> Offline and shows
+    // "Searching for devices…" even when the peer has a live session. An active session is our
+    // LAN/WS mesh link, so stamp Lan when online — and only when online: a peer mid-reconnect has no
+    // link to name. A hub-online colleague has no LAN session but a known transport: the relay.
+    val transport = when {
+        isOnline -> FlashNetworkTransport.Lan
+        isHubOnline -> FlashNetworkTransport.Relay
+        else -> FlashNetworkTransport.Unknown
+    }
+    return DirectLinkUi(
+        presence = presence,
+        transport = transport,
+        typingNames = if (reachable) typingNames else emptyList(),
+    )
+}
 
 /**
  * Splits a live-session set into [PresenceSnapshot.online] / [PresenceSnapshot.connecting] with a
