@@ -106,6 +106,12 @@ fun Route.announcementRoutes(
             // GET /api/v1/announcements/{id}
             get("/{id}") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@get
+                if (!limits.announcementRead.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.announcementRead.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many announcement read requests")
+                    return@get
+                }
                 val id = call.parameters["id"]
                 if (id.isNullOrBlank()) {
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Missing announcement id")
@@ -390,6 +396,12 @@ fun Route.announcementRoutes(
             // POST /api/v1/announcements/{id}/pin
             post("/{id}/pin") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@post
+                if (!limits.announcementPost.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.announcementPost.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many announcement post requests")
+                    return@post
+                }
                 val id = call.parameters["id"]
                 if (id.isNullOrBlank()) {
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Missing announcement id")
@@ -449,6 +461,12 @@ fun Route.announcementRoutes(
             // POST /api/v1/announcements/{id}/unpin
             post("/{id}/unpin") {
                 val principal = call.requirePrincipal(principalResolver) ?: return@post
+                if (!limits.announcementPost.tryAcquire(principal.deviceId)) {
+                    val retryAfter = limits.announcementPost.retryAfterSeconds(principal.deviceId)
+                    call.response.header(HttpHeaders.RetryAfter, retryAfter.toString())
+                    call.respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, "Too many announcement post requests")
+                    return@post
+                }
                 val id = call.parameters["id"]
                 if (id.isNullOrBlank()) {
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "Missing announcement id")

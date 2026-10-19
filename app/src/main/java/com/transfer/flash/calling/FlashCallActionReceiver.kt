@@ -33,8 +33,26 @@ class FlashCallActionReceiver : BroadcastReceiver() {
             // ERROR-105: never accept from here. Answering needs the RECORD_AUDIO / CAMERA checks and the audio
             // router, which live in MainActivity; the activity's own answer path (EXTRA_ANSWER_CALL) runs them.
             ACTION_ANSWER -> bringAppToFront(context, answer = true)
-            ACTION_DECLINE -> scope.launch { calling.decline() }
-            ACTION_HANGUP -> scope.launch { calling.hangUp() }
+            ACTION_DECLINE -> {
+                val pending = goAsync()
+                scope.launch {
+                    try {
+                        calling.decline()
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
+            ACTION_HANGUP -> {
+                val pending = goAsync()
+                scope.launch {
+                    try {
+                        calling.hangUp()
+                    } finally {
+                        pending.finish()
+                    }
+                }
+            }
             else -> Log.w(TAG, "Unknown call action ${intent.action}")
         }
     }

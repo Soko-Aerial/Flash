@@ -1501,6 +1501,9 @@ object DiscoveryEngineHolder {
             FlashNotificationManager.showGroupOfferRefused(appContext, groupId, groupName, message)
         }
         hubRosterChat = chatImpl
+        // The coordinator above may have finished its first sync while hubRosterChat was still null: project the stored
+        // rosters now so a group an administrator put this device in appears without waiting for the next sync.
+        appScope.launch { runCatching { chatImpl.refreshHubGroupRosters() } }
         presenceChat = chatImpl
 
         // Sync peer friendly name across paired devices when peer connects with an updated name
@@ -3014,11 +3017,13 @@ object DiscoveryEngineHolder {
         val currentEngine: CompositeDiscovery?
         val currentNetwork: WsFlashNetwork?
         val currentChat: FlashChatRepository?
+        val currentTransfer: FlashTransferRepository?
         synchronized(this) {
             currentEngine = composite
             currentNetwork = network
             composite = null
             network = null
+            currentTransfer = transferRepo
             transferRepo = null
             _transfersFlow.value = null
             currentChat = chatRepo
@@ -3028,6 +3033,7 @@ object DiscoveryEngineHolder {
             calling = null
         }
         runCatching { (currentChat as? AutoCloseable)?.close() }
+        runCatching { (currentTransfer as? AutoCloseable)?.close() }
         binderJob?.cancel()
         binderJob = null
         autoConnectJob?.cancel()
@@ -3066,6 +3072,8 @@ object DiscoveryEngineHolder {
         enterpriseHubRef = null
         enterpriseTrustStoreRef = null
         orgPeerResolverRef = null
+        orgSnapshotCoordinatorRef?.stop()
+        orgSnapshotCoordinatorRef = null
         currentEngine?.stopAll()
         currentNetwork?.stop()
         // #16: cancel every collector/session job launched on appScope (incoming/outgoing control,

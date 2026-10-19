@@ -7470,7 +7470,7 @@ public class RealFlashChatRepository(
 
             var state = dao.getState()
             var currentSince = state?.seq ?: 0L
-            val initialEpoch = state?.epoch
+            var knownEpoch = state?.epoch
             var loopCount = 0
             val maxLoops = 20
 
@@ -7482,10 +7482,19 @@ public class RealFlashChatRepository(
                     is FlashResult.Success -> result.value
                 }
 
-                if (feed.fullResync || (initialEpoch != null && feed.epoch != initialEpoch && currentSince > 0L)) {
+                if (knownEpoch != null && feed.epoch != knownEpoch && currentSince > 0L) {
+                    // The hub restarted with a new history: this page is a delta of the new epoch, so it cannot be applied on top
+                    // of an empty table (items 1..since would be skipped for good). Drop everything and ask again from zero.
+                    dao.clearAnnouncements()
+                    currentSince = 0L
+                    knownEpoch = feed.epoch
+                    continue
+                }
+                if (feed.fullResync) {
                     dao.clearAnnouncements()
                     currentSince = 0L
                 }
+                knownEpoch = feed.epoch
 
                 for (item in feed.items) {
                     if (item.deleted) {

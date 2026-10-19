@@ -1090,12 +1090,13 @@ class OrganizationDirectory(
         group.memberDeviceIds.contains(deviceId) || group.adminDeviceIds.contains(deviceId)
 
     /**
-     * Scope rule for a non-member: same department, or an organisation-wide group (blank department) that anyone may
-     * join openly. `*` is the legacy auditor wildcard.
+     * Scope rule for a non-member: same department, or an organisation-wide group (blank department), which every
+     * enrolled device may see and ask to join whatever its join mode (the mode then decides join / request / refusal;
+     * a hidden group is filtered before this). `*` is the legacy auditor wildcard.
      */
     private fun inScope(group: GroupCharter, userDepartment: String?): Boolean {
         if (userDepartment == "*") return true
-        if (group.departmentId.isBlank()) return group.joinMode == JoinMode.OPEN_IN_SCOPE
+        if (group.departmentId.isBlank()) return true
         return !userDepartment.isNullOrBlank() && userDepartment == group.departmentId
     }
 

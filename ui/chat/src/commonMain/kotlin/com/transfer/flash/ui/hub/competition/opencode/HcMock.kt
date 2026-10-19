@@ -587,7 +587,11 @@ internal fun hcDeckFor(scenario: HcScenario): HcDeck {
     )
 
     return when (scenario) {
-        HcScenario.ACTIVE_SEALED -> base
+        HcScenario.ACTIVE_SEALED -> base.copy(
+            myRole = HubPersonRole.HEAD,
+            myRoleLabel = "Head of Engineering",
+            posting = HubPostingRights.Department(listOf("dept-eng")),
+        )
 
         HcScenario.UNENROLLED -> base.copy(
             orgName = "No organisation",
@@ -673,6 +677,7 @@ internal fun hcDeckFor(scenario: HcScenario): HcDeck {
         HcScenario.RELAY_DEGRADED -> base.copy(
             link = HcLink.OFFLINE,
             phase = HcPhase.SUSPENDED,
+            posting = HubPostingRights.OrgWide(listOf("dept-eng", "dept-ops", "dept-fin", "dept-hr")),
             syncStatus = HubSyncStatus.FAILED_OFFLINE,
             lastSyncedAtMs = now - 47L * 60_000L,
             telemetry = base.telemetry.copy(

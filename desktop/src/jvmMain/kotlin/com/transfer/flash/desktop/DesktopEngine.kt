@@ -1109,6 +1109,8 @@ public class DesktopEngine(
             enterpriseHubRef?.shutdown()
             enterpriseHubRef = null
             orgPeerResolverRef = null
+            orgSnapshotCoordinatorRef?.stop()
+            orgSnapshotCoordinatorRef = null
             // A live PTT session holds the microphone; shutdown() releases it (and resets the flows).
             detachPtt()
             detachSwarm()
@@ -1132,14 +1134,16 @@ public class DesktopEngine(
             // The database closes after the scope is cancelled, so no coroutine of this engine writes to it any more.
             val db = chatDb
             val currentChat = chatImpl
+            val currentTransfer = transferImpl
             chatImpl = null
+            transferImpl = null
             chatDb = null
             runCatching { (currentChat as? AutoCloseable)?.close() }
+            runCatching { (currentTransfer as? AutoCloseable)?.close() }
             runCatching { db?.close() }
                 .onFailure { FlashLog.w(TAG_WS, "Closing the chat database failed: ${it.message}") }
             discoveryImpl = null
             networkImpl = null
-            transferImpl = null
             receivePipeline = null
             autoConnector = null
             presenceExchange = null
@@ -1606,6 +1610,9 @@ public class DesktopEngine(
                 radioPort = radioPort,
             )
             hubRosterChat = chatImpl
+            // The coordinator above may have finished its first sync while hubRosterChat was still null: project the
+            // stored rosters now so a group an administrator put this device in appears without waiting for the next sync.
+            chatImpl?.let { c -> scope.launch { runCatching { c.refreshHubGroupRosters() } } }
             chatImpl?.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
                 FlashLog.i(TAG_WS, "Inbound join request in $groupId ($groupTitle) from $requesterName")
                 onJoinRequestNotification?.invoke(groupId, groupTitle, requesterName)

@@ -10,6 +10,7 @@ import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.hubprotocol.rest.PostAnnouncementRequestDto
 import com.transfer.flash.core.hubprotocol.rest.UpdateAnnouncementRequestDto
 import com.transfer.flash.server.announcements.AnnouncementConflictException
+import com.transfer.flash.server.announcements.AnnouncementForbiddenException
 import com.transfer.flash.server.announcements.AnnouncementPinLimitException
 import com.transfer.flash.server.announcements.AnnouncementStore
 import com.transfer.flash.server.announcements.AnnouncementText
@@ -319,6 +320,9 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                     actorRef = session.username,
                     clientRequestId = null,
                 )
+            } catch (_: AnnouncementForbiddenException) {
+                call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to edit this announcement")
+                return@put
             } catch (e: AnnouncementPinLimitException) {
                 call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
                 return@put
@@ -369,7 +373,17 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 }
             }
 
-            val deleted = store.deleteAnnouncement(id, actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD")
+            val deleted = try {
+                store.deleteAnnouncement(
+                    id,
+                    actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
+                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorRef = session.username,
+                )
+            } catch (_: AnnouncementForbiddenException) {
+                call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to delete this announcement")
+                return@delete
+            }
             d.router?.broadcastAnnouncement(
                 RelayFrame.AnnouncementEvent(
                     id = deleted.id,
@@ -405,7 +419,15 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
             }
 
             val pinned = try {
-                store.pinAnnouncement(id, actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD")
+                store.pinAnnouncement(
+                    id,
+                    actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
+                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorRef = session.username,
+                )
+            } catch (_: AnnouncementForbiddenException) {
+                call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to pin this announcement")
+                return@post
             } catch (e: AnnouncementPinLimitException) {
                 call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_PIN_LIMIT, e.message ?: "Pin limit reached (max 3)")
                 return@post
@@ -449,7 +471,17 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 }
             }
 
-            val unpinned = store.unpinAnnouncement(id, actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD")
+            val unpinned = try {
+                store.unpinAnnouncement(
+                    id,
+                    actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
+                    actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
+                    actorRef = session.username,
+                )
+            } catch (_: AnnouncementForbiddenException) {
+                call.respondError(HttpStatusCode.Forbidden, HubErrorCodes.ERR_FORBIDDEN, "You do not have permission to unpin this announcement")
+                return@post
+            }
             d.router?.broadcastAnnouncement(
                 RelayFrame.AnnouncementEvent(
                     id = unpinned.id,

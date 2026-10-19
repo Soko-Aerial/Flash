@@ -915,6 +915,21 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Server hub end-to-end review (2026-10-19, `docs/audit/2026-10-19-server-hub-end-to-end-review.md`):**
+An owner-requested end-to-end review of the hub stack found and fixed three confirmed defects, unit-tested and
+mutation-checked, **not device-verified**. FIX-1 (client, security): `RealHubAnnouncementsApi` now enforces
+`HubUrlPolicy` like its sibling `EnterpriseDirectoryClient` — it refuses a hub that is not the pinned hub and
+refuses cleartext outside the debug opt-in, before attaching the device bearer (`EnterpriseHub` wires
+`pinnedHubUrl`/`allowCleartext`). FIX-2 (server, correctness): `AnnouncementStore.purgeExpiredAndOldTombstones`
+retires retained announcements as soft-delete tombstones with a fresh `seq` (so clients learn through the delta
+feed) instead of hard-deleting them silently; expired rows are still purged for real. FIX-3 (server, hardening):
+`GET /announcements/{id}` and `POST /{id}/pin`/`/unpin` now take the per-device announcement limiters. DOC-1:
+`docs/protocol.md` pin-limit status corrected to `409 ERR_PIN_LIMIT`. Recorded but deliberately **not** changed
+(wire-shape changes needing an owner decision): F-1 search `total` is the page size (no consumer); F-2 the `409`
+on `PUT` carries no current item so `Conflict.current` is always null; F-3 `RelaySession.dispose()` is dead code;
+F-4 an authoritative full resync with an empty roster offer wipes stored hub group rosters. Device checks
+`HUBR-11`, `ANN-14`, `ANN-15` owed.
+
 **Plan A3: Organization Announcements Engine, Console UI, Persistence & Repository (COMPLETE 2026-10-15, `docs/plans/HUB-ANNOUNCEMENTS-PLAN.md`):**
 Executed Plan A3 sections 3 (server), 4.1-4.3 (wire library, Room persistence, repository API) and 5 (console UI) adhering strictly to `docs/plans/HUB-QUALITY-CONTRACT.md`:
 - Text sanitization (`:server`): `AnnouncementText.clean` with Unicode NFC normalization, bidi override stripping (`\u202A-\u202E`, `\u2066-\u2069`), zero-width stripping, control character removal, and code-point length checks.

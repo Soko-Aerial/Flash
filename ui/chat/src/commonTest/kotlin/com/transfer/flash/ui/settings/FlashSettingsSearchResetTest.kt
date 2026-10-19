@@ -73,4 +73,18 @@ class FlashSettingsSearchResetTest {
         assertTrue(FlashSettingsMath.isAtDefaults(d.copy(windowsContextMenu = false, showWindowsContextMenu = false)))
         assertFalse(FlashSettingsMath.isAtDefaults(d.copy(windowsContextMenu = false, showWindowsContextMenu = true)))
     }
+
+    @Test
+    fun `conditional rows do not match when hidden by the host`() {
+        val s = FlashSettingsMath.Section.NETWORK
+        // Radio gateway hidden
+        assertFalse(FlashSettingsMath.sectionVisible("radio", s, showRadioGateway = false, showWindowsContextMenu = true))
+        assertFalse(FlashSettingsMath.sectionVisible("gateway", s, showRadioGateway = false, showWindowsContextMenu = true))
+        assertTrue(FlashSettingsMath.sectionVisible("radio", s, showRadioGateway = true, showWindowsContextMenu = true))
+
+        // File Explorer context menu hidden
+        assertFalse(FlashSettingsMath.sectionVisible("context menu", s, showRadioGateway = true, showWindowsContextMenu = false))
+        assertTrue(FlashSettingsMath.sectionVisible("context menu", s, showRadioGateway = true, showWindowsContextMenu = true))
+    }
 }
+

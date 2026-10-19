@@ -25,6 +25,7 @@ import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.ApplicationTestBuilder
@@ -55,6 +56,18 @@ class AnnouncementRoutesTest {
                 router = null,
                 audit = AuditSink { actor, action, details -> w.audit += "$actor|$action|$details" },
                 limits = HubRateLimits.unlimited(),
+            )
+        }
+    }
+
+    /** Mounts the routes with real (tight) announcement limits and a frozen clock, so the burst is the whole budget. */
+    private fun ApplicationTestBuilder.mountWithLimits(w: World, limits: HubRateLimits) {
+        routing {
+            announcementRoutes(
+                store = w.store,
+                principalResolver = BearerPrincipalResolver(w.tokens),
+                router = null,
+                limits = limits,
             )
         }
     }
@@ -373,5 +386,60 @@ class AnnouncementRoutesTest {
         mount(w)
         val token = w.token("emp", "member", "dept-eng' OR '1'='1")
         assertEquals(HttpStatusCode.OK, client.getAs("/api/v1/announcements?q=anything", token).status)
+    }
+
+    @Test
+    fun singleItemReadsAndPinActionsAreRateLimitedPerDevice() = testApplication {
+        val w = World()
+        // A frozen clock means no bucket ever refills, so the burst is the whole budget.
+        mountWithLimits(w, HubRateLimits(clock = { 1_000L }))
+
+        val readerToken = w.token("reader-01", "member", "dept-eng")
+        val adminToken = w.token("admin-01", "ORG_ADMIN", null)
+
+        // Seed through the store directly so seeding consumes neither device's post budget.
+        val deptAnn = w.store.createAnnouncement(
+            scope = "department",
+            departmentId = "dept-eng",
+            title = "Standup",
+            body = "Body",
+            authorKind = "device",
+            authorRef = "admin-01",
+            authorName = "admin-01",
+            authorRole = "ORG_ADMIN",
+        )
+        val orgAnn = w.store.createAnnouncement(
+            scope = "org",
+            departmentId = null,
+            title = "All hands",
+            body = "Body",
+            authorKind = "device",
+            authorRef = "admin-01",
+            authorName = "admin-01",
+            authorRole = "ORG_ADMIN",
+        )
+
+        // GET /{id} shares the read budget with the feed and search: 60 reads, then 429.
+        repeat(60) { i ->
+            val r = client.getAs("/api/v1/announcements/${deptAnn.id}", readerToken)
+            assertEquals(HttpStatusCode.OK, r.status, "read #${i + 1} should be allowed")
+        }
+        val rReadBlocked = client.getAs("/api/v1/announcements/${deptAnn.id}", readerToken)
+        assertEquals(HttpStatusCode.TooManyRequests, rReadBlocked.status)
+        assertEquals(HubErrorCodes.ERR_RATE_LIMIT, HubRestCodec.decode<ErrorBody>(rReadBlocked.bodyAsText()).code)
+        assertNotNull(rReadBlocked.headers[HttpHeaders.RetryAfter])
+
+        // The read budget is per device: the admin's own read is unaffected by the reader's burst.
+        assertEquals(HttpStatusCode.OK, client.getAs("/api/v1/announcements/${orgAnn.id}", adminToken).status)
+
+        // Pin shares the post budget: 5 pins, then the 6th is 429.
+        repeat(5) { i ->
+            val r = client.postAs("/api/v1/announcements/${orgAnn.id}/pin", adminToken, "")
+            assertEquals(HttpStatusCode.OK, r.status, "pin #${i + 1} should be allowed")
+        }
+        val rPinBlocked = client.postAs("/api/v1/announcements/${orgAnn.id}/pin", adminToken, "")
+        assertEquals(HttpStatusCode.TooManyRequests, rPinBlocked.status)
+        assertEquals(HubErrorCodes.ERR_RATE_LIMIT, HubRestCodec.decode<ErrorBody>(rPinBlocked.bodyAsText()).code)
+        assertNotNull(rPinBlocked.headers[HttpHeaders.RetryAfter])
     }
 }

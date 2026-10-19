@@ -665,12 +665,47 @@ public class AnnouncementStore(
             purgedCount += stmt.executeUpdate()
         }
 
-        // 2. If retentionDays > 0, purge announcements older than retentionDays
+        // 2. An announcement past its own `expires_at` is already invisible to every read (feed, search and get all
+        //    filter it out), so no client can be holding it as visible: drop the row for real.
+        conn.prepareStatement(
+            "DELETE FROM announcement WHERE deleted_at IS NULL AND expires_at IS NOT NULL AND expires_at <= ?",
+        ).use { stmt ->
+            stmt.setLong(1, nowMs)
+            purgedCount += stmt.executeUpdate()
+        }
+
+        // 3. If retentionDays > 0, announcements older than that are RETIRED like a manual delete: a tombstone with a
+        //    new seq, so every client learns they are gone through the delta feed. A silent row delete would leave the
+        //    item visible for good on each device that had already synced it. Step 1 reclaims the row 90 days later.
         if (retentionDays > 0) {
             val retentionCutoff = nowMs - (retentionDays.toLong() * 24 * 60 * 60 * 1000)
-            conn.prepareStatement("DELETE FROM announcement WHERE created_at < ?").use { stmt ->
+            val ids = ArrayList<String>()
+            conn.prepareStatement("SELECT id FROM announcement WHERE deleted_at IS NULL AND created_at < ?").use { stmt ->
                 stmt.setLong(1, retentionCutoff)
-                purgedCount += stmt.executeUpdate()
+                stmt.executeQuery().use { rs -> while (rs.next()) ids.add(rs.getString(1)) }
+            }
+            for (id in ids) {
+                val seq = nextSeq(conn)
+                conn.prepareStatement(
+                    """
+                    UPDATE announcement SET
+                        title = '',
+                        body = '',
+                        deleted_at = ?,
+                        pinned = 0,
+                        pinned_at = NULL,
+                        updated_at = ?,
+                        seq = ?
+                    WHERE id = ?
+                    """.trimIndent(),
+                ).use { stmt ->
+                    stmt.setLong(1, nowMs)
+                    stmt.setLong(2, nowMs)
+                    stmt.setLong(3, seq)
+                    stmt.setString(4, id)
+                    stmt.executeUpdate()
+                }
+                purgedCount++
             }
         }
 

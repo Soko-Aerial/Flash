@@ -33,6 +33,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -85,7 +86,11 @@ public class RealFlashTransferRepository(
      * Null never blocks a transfer: an unknown amount is not a reason to refuse.
      */
     private val freeSpaceBytes: () -> Long? = { null },
-) : FlashTransferRepository {
+) : FlashTransferRepository, AutoCloseable {
+
+    override fun close() {
+        repositoryScope.cancel()
+    }
 
     private val _internalTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
     private val _externalRows = MutableStateFlow<List<FlashTransfer>>(emptyList())

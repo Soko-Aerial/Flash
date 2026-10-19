@@ -296,4 +296,77 @@ class AnnouncementStoreTest {
         assertEquals(42, preview.estimatedRecipients)
         assertTrue(preview.honestyNotice.contains("plain text"))
     }
+
+    // --- Housekeeping (retention / expiry / old tombstones) ---
+
+    private fun orgItem(title: String, expiresAtMs: Long? = null) = store.createAnnouncement(
+        clientRequestId = "req-$title",
+        scope = "org",
+        departmentId = null,
+        title = title,
+        body = "Body of $title",
+        authorKind = "device",
+        authorRef = "dev-admin",
+        authorName = "Alice Admin",
+        authorRole = "admin",
+        expiresAtMs = expiresAtMs,
+    )
+
+    @Test
+    fun retentionRetiresOldAnnouncementsWithATombstoneSoClientsLearn() {
+        val old = orgItem("Old News")
+        val seqAtCreate = old.seq
+
+        // 31 days later, with a 30-day retention.
+        testClockMs += 31L * 24 * 60 * 60 * 1000
+        val purged = store.purgeExpiredAndOldTombstones(retentionDays = 30)
+        assertTrue(purged >= 1)
+
+        // Retired, not silently dropped: hidden from reads, and the delta feed carries a tombstone with a new seq.
+        assertNull(store.getAnnouncement(old.id, callerDeptId = null, isOrgAdmin = true))
+        val delta = store.getChangesFeed(sinceSeq = seqAtCreate, limit = 10, callerDeptId = null, isOrgAdmin = true)
+        val tombstone = delta.items.single { it.id == old.id }
+        assertTrue(tombstone.deleted)
+        assertEquals("", tombstone.title)
+        assertTrue(tombstone.seq > seqAtCreate)
+    }
+
+    @Test
+    fun retentionLeavesAnnouncementsInsideTheWindowAlone() {
+        val recent = orgItem("Recent News")
+
+        // "Now" is 31 days after creation; a 40-day retention keeps it.
+        testClockMs += 31L * 24 * 60 * 60 * 1000
+        store.purgeExpiredAndOldTombstones(retentionDays = 40)
+
+        assertNotNull(store.getAnnouncement(recent.id, callerDeptId = null, isOrgAdmin = true))
+    }
+
+    @Test
+    fun expiredAnnouncementsArePurgedForReal() {
+        val item = orgItem("Flash Sale", expiresAtMs = testClockMs + 1_000L)
+
+        testClockMs += 5_000L
+        val purged = store.purgeExpiredAndOldTombstones()
+        assertTrue(purged >= 1)
+
+        assertNull(store.getAnnouncement(item.id, callerDeptId = null, isOrgAdmin = true))
+        // Gone for real: no tombstone with a later seq is left behind for an item no client can be showing.
+        // A delta sync from the item's own seq would carry a tombstone if the purge had only soft-deleted it.
+        val delta = store.getChangesFeed(sinceSeq = item.seq, limit = 10, callerDeptId = null, isOrgAdmin = true)
+        assertEquals(0, delta.items.size)
+    }
+
+    @Test
+    fun oldTombstonesAreReclaimedAfterNinetyDays() {
+        val item = orgItem("To Delete")
+        store.deleteAnnouncement(item.id, actorRole = "admin")
+
+        testClockMs += 91L * 24 * 60 * 60 * 1000
+        val purged = store.purgeExpiredAndOldTombstones()
+        assertTrue(purged >= 1)
+
+        val delta = store.getChangesFeed(sinceSeq = 0L, limit = 10, callerDeptId = null, isOrgAdmin = true)
+        assertEquals(0, delta.items.size)
+    }
 }

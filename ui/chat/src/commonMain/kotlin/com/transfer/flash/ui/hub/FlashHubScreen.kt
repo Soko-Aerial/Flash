@@ -653,7 +653,10 @@ private fun HubDepartmentPane(
     message: (HubPersonUi) -> Unit,
 ) {
     val groups = remember(data.groups, department) {
-        data.groups.filter { it.departmentName.equals(department.name, ignoreCase = true) }
+        // The hub names a group's department by id; older previews and fakes carry the display name. HubFacade.departments accepts both.
+        data.groups.filter {
+            it.departmentName.equals(department.id, ignoreCase = true) || it.departmentName.equals(department.name, ignoreCase = true)
+        }
     }
     val deptNews = remember(news, department) { news.filter { it.departmentId == department.id } }
     val sc = rememberScrollState()

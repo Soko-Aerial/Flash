@@ -334,8 +334,22 @@ object FlashSettingsMath {
     }
 
     /** Whether the section card shows at all for [query]: its own words or any of its rows match. */
-    fun sectionVisible(query: String, section: Section): Boolean =
-        matches(query, section.title, section.subtitle) || section.rows.any { matches(query, it) }
+    fun sectionVisible(
+        query: String,
+        section: Section,
+        showRadioGateway: Boolean = true,
+        showWindowsContextMenu: Boolean = true,
+    ): Boolean {
+        if (matches(query, section.title, section.subtitle)) return true
+        val rows = when (section) {
+            Section.NETWORK -> section.rows.filter { row ->
+                (showRadioGateway || row != "Radio gateway (beta)") &&
+                (showWindowsContextMenu || row != "File Explorer context menu")
+            }
+            else -> section.rows
+        }
+        return rows.any { matches(query, it) }
+    }
 
     /** Whether one row shows: everything in a section whose own title matches, else just the matching rows. */
     fun rowVisible(query: String, section: Section, vararg rowTexts: String): Boolean =
@@ -729,7 +743,7 @@ fun FlashSettingsScreen(
         }
 
         // 3. Network & Discovery
-        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.NETWORK)) item(key = "section-network", contentType = "section_network") {
+        if (FlashSettingsMath.sectionVisible(query, FlashSettingsMath.Section.NETWORK, showRadioGateway = radioGatewayAvailable, showWindowsContextMenu = model.showWindowsContextMenu)) item(key = "section-network", contentType = "section_network") {
             StaggerIn(4) {
                 ExpandableSettingsSection(
                     title = "Network & Discovery",
@@ -996,7 +1010,14 @@ fun FlashSettingsScreen(
             }
         }
 
-        val anySection = FlashSettingsMath.Section.entries.any { FlashSettingsMath.sectionVisible(query, it) }
+        val anySection = FlashSettingsMath.Section.entries.any {
+            FlashSettingsMath.sectionVisible(
+                query,
+                it,
+                showRadioGateway = radioGatewayAvailable,
+                showWindowsContextMenu = model.showWindowsContextMenu,
+            )
+        }
         val showAbout = FlashSettingsMath.matches(query, "About", "Version", "Protocol", "Device id")
         if (searching && !anySection && !showAbout &&
             !FlashSettingsMath.matches(query, "Display name", model.displayName, "Name")

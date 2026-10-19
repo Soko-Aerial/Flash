@@ -37,12 +37,16 @@ import kotlinx.coroutines.withContext
 /**
  * Concrete HTTP implementation of [HubAnnouncementsApi] (Plan A3 §4.1).
  * Plaintext on the hub (ADR-138): hub administrators can read all announcements; encryption is NEVER claimed.
+ *
+ * Calls are refused (before any bearer is attached) when [hubUrl] is not the pinned hub ([pinnedHubUrl]) or is
+ * cleartext outside the development opt-in ([HubUrlPolicy]) — the same rule [EnterpriseDirectoryClient] applies.
  */
 @FlashInternalApi
 public class RealHubAnnouncementsApi(
     private val httpClient: HttpClient,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val bearerSource: HubBearerSource? = null,
+    /** The hub address stored in the credentials, or null when not enrolled. When non-null, every call must match its host. */
     private val pinnedHubUrl: () -> String? = { null },
     private val allowCleartext: () -> Boolean = { false },
 ) : HubAnnouncementsApi {
@@ -50,7 +54,21 @@ public class RealHubAnnouncementsApi(
     private data class Reply(val response: HttpResponse, val body: String)
 
     private suspend fun execute(hubUrl: String, send: suspend (baseUrl: String, bearer: String?) -> HttpResponse): FlashResult<Reply> {
-        val base = hubUrl.trimEnd('/')
+        // The credentials pin the hub's host (CLI-01): never send the device bearer to a different host, and never over
+        // cleartext unless the (debug-only) opt-in allows it. The announcements API gets the same treatment as
+        // [EnterpriseDirectoryClient]; both are refused the same way.
+        val pinned = pinnedHubUrl()
+        if (pinned != null && !HubUrlPolicy.sameHub(hubUrl, pinned)) {
+            return FlashResult.Failure(
+                HubAnnouncementError.Server("This is not the hub this device is enrolled with.").toFlashError(),
+            )
+        }
+        if (HubUrlPolicy.check(hubUrl, allowCleartext()) != HubUrlPolicy.Verdict.OK) {
+            return FlashResult.Failure(
+                HubAnnouncementError.Server("The hub address is not a secure address.").toFlashError(),
+            )
+        }
+        val base = HubUrlPolicy.baseUrl(hubUrl)
         var forceRefresh = false
         for (attempt in 0..1) {
             val bearer = bearerSource?.bearer(forceRefresh)
@@ -154,7 +172,11 @@ public class RealHubAnnouncementsApi(
             val r = execute(hubUrl) { base, bearer ->
                 httpClient.get("$base${HubContract.PATH_ANNOUNCEMENTS}") {
                     parameter("q", query.take(64))
-                    if (!departmentId.isNullOrBlank()) parameter("departmentId", departmentId)
+                    // The hub applies departmentId only together with scope=department.
+                    if (!departmentId.isNullOrBlank()) {
+                        parameter("scope", "department")
+                        parameter("departmentId", departmentId)
+                    }
                     parameter("limit", limit.coerceIn(1, 100).toString())
                     if (before != null && before > 0L) parameter("before", before.toString())
                     authorize(bearer)
