@@ -187,4 +187,68 @@ class RealHubAnnouncementsApiTest {
         assertIs<FlashResult.Success<AnnouncementItemDto?>>(notFoundRes)
         assertEquals(null, notFoundRes.value)
     }
+
+    // --- Hub URL policy (CLI-01): the device bearer never leaves for another host, and never over cleartext ---
+
+    private fun feed(seq: Long = 1L) = HubRestCodec.encode(AnnouncementFeedDto(epoch = "ep-1", seq = seq))
+
+    @Test
+    fun refusesAHubUrlThatIsNotThePinnedHub() = runTest {
+        fake.respond("GET", HubContract.PATH_ANNOUNCEMENTS, HttpStatusCode.OK, feed())
+        val pinnedApi = RealHubAnnouncementsApi(
+            httpClient = fake.client(),
+            ioDispatcher = Dispatchers.Unconfined,
+            pinnedHubUrl = { "https://hub.example" },
+        )
+
+        val refused = pinnedApi.fetchFeed("https://evil.example", since = 0L)
+        assertIs<FlashResult.Failure>(refused)
+        assertTrue(fake.requests.none(), "no request may leave for a host that is not the pinned hub")
+
+        val accepted = pinnedApi.fetchFeed("https://hub.example", since = 0L)
+        assertIs<FlashResult.Success<AnnouncementFeedDto>>(accepted)
+    }
+
+    @Test
+    fun theSameHubIsAcceptedAcrossSchemeSpellings() = runTest {
+        fake.respond("GET", HubContract.PATH_ANNOUNCEMENTS, HttpStatusCode.OK, feed())
+        val pinnedApi = RealHubAnnouncementsApi(
+            httpClient = fake.client(),
+            ioDispatcher = Dispatchers.Unconfined,
+            pinnedHubUrl = { "wss://hub.example" },
+        )
+
+        // WSS pins port 443, HTTPS uses 443: the same hub.
+        assertIs<FlashResult.Success<AnnouncementFeedDto>>(pinnedApi.fetchFeed("https://hub.example", since = 0L))
+    }
+
+    @Test
+    fun cleartextHubIsRefusedUntilTheDebugOptInAllowsIt() = runTest {
+        fake.respond("GET", HubContract.PATH_ANNOUNCEMENTS, HttpStatusCode.OK, feed())
+        val lan = "http://192.168.1.9:9443"
+
+        val strict = RealHubAnnouncementsApi(
+            httpClient = fake.client(),
+            ioDispatcher = Dispatchers.Unconfined,
+            pinnedHubUrl = { lan },
+        )
+        assertIs<FlashResult.Failure>(strict.fetchFeed(lan, since = 0L))
+        assertTrue(fake.requests.none(), "no request may leave over cleartext without the debug opt-in")
+
+        val optedIn = RealHubAnnouncementsApi(
+            httpClient = fake.client(),
+            ioDispatcher = Dispatchers.Unconfined,
+            pinnedHubUrl = { lan },
+            allowCleartext = { true },
+        )
+        assertIs<FlashResult.Success<AnnouncementFeedDto>>(optedIn.fetchFeed(lan, since = 0L))
+
+        // Loopback cleartext is always accepted (development and tests).
+        val loopback = RealHubAnnouncementsApi(
+            httpClient = fake.client(),
+            ioDispatcher = Dispatchers.Unconfined,
+            pinnedHubUrl = { "http://127.0.0.1:9443" },
+        )
+        assertIs<FlashResult.Success<AnnouncementFeedDto>>(loopback.fetchFeed("http://127.0.0.1:9443", since = 0L))
+    }
 }

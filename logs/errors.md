@@ -11460,3 +11460,57 @@ Delivery receipts were stored with this device as the confirming member; they no
 ### Status
 FIXED IN CODE 2026-10-18, unit-tested. Stays OPEN until RADCHAT-DEV01 (BT-R05) passes on hardware.
 
+---
+
+## ERROR-740 — Server-hub end-to-end review: the announcements client ignored the hub-URL policy, the retention purge deleted without a tombstone, and the single-item/pin routes had no per-route limit
+
+### Date
+2026-10-19
+
+### Area
+Organisation hub — `:core:enterprise` (announcements REST client) and `:server` (announcements store/routes). Found during the owner-requested end-to-end hub review; see [`docs/audit/2026-10-19-server-hub-end-to-end-review.md`](../docs/audit/2026-10-19-server-hub-end-to-end-review.md).
+
+### Symptoms
+Three distinct defects:
+1. **Security.** `RealHubAnnouncementsApi` sent every announcement request to the caller-supplied `hubUrl` *with the enrolled device's bearer attached*, with no check that the URL is the hub this device enrolled with and no cleartext check. `EnterpriseDirectoryClient`, its sibling in the same hub client, already applied that policy; the announcements client did not.
+2. **Correctness.** With `announcementRetentionDays > 0`, `AnnouncementStore.purgeExpiredAndOldTombstones` hard-deleted old announcements with no tombstone. The delta feed only reports rows *changed* since the client's last `seq`, so a device that had already synced an announcement kept showing it for ever — it was neither expired nor reported as deleted.
+3. **Hardening.** Plan A3 §3.3 wants per-device limits on the announcement routes. `GET /announcements/{id}`, `POST /{id}/pin` and `POST /{id}/unpin` had none; only the coarse global `principal` bucket (burst 120, 10/s) covered them.
+
+A documentation defect was found alongside: `docs/protocol.md` documented the pin-limit status as `400 ERR_PIN_LIMIT` while the plan, code and tests all use `409 ERR_PIN_LIMIT` (corrected).
+
+### Root cause
+1. The announcements client was written without the `HubUrlPolicy`/pinned-hub wiring its sibling had.
+2. The retention path reused a plain `DELETE` instead of the soft-delete-tombstone write a manual delete uses.
+3. The limiter calls were simply omitted on those three routes.
+
+### Failed attempts
+None relevant — the defects were found by reading the code, not by a failing run, so no earlier approach was retried.
+
+### Working fix
+1. `RealHubAnnouncementsApi.execute` now applies `HubUrlPolicy.sameHub(hubUrl, pinnedHubUrl())` and `HubUrlPolicy.check(hubUrl, allowCleartext())` *before* attaching any bearer, and uses `HubUrlPolicy.baseUrl(hubUrl)`. New constructor params `pinnedHubUrl`/`allowCleartext` are wired by `EnterpriseHub` from the trust store.
+2. `purgeExpiredAndOldTombstones` now (a) still hard-deletes tombstones older than 90 days, (b) hard-deletes rows past their own `expires_at` for real (already invisible to every read), and (c) with `retentionDays > 0` retires old live rows as a soft-delete tombstone with a fresh `seq` (empty title/body, unpinned) so clients learn via the delta feed.
+3. `GET /{id}` acquires `announcementRead`; pin/unpin acquire `announcementPost`, with the same `429 ERR_RATE_LIMIT` + `Retry-After` shape as the other routes.
+
+### Verification
+- `:server:test` (AnnouncementStoreTest 14/0, AnnouncementRoutesTest 12/0, RouteTableContractTest 2/0) — BUILD SUCCESSFUL.
+- `:core:enterprise:jvmTest` (RealHubAnnouncementsApiTest 13/0) — BUILD SUCCESSFUL.
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` — clean.
+- Mutation checks (each test proven to discriminate): forcing the `sameHub` guard off failed `refusesAHubUrlThatIsNotThePinnedHub`; replacing the retention `UPDATE` with a `DELETE` failed `retentionRetiresOldAnnouncementsWithATombstoneSoClientsLearn`; forcing the new limiter guards off failed `singleItemReadsAndPinActionsAreRateLimitedPerDevice`.
+- New tests: client `refusesAHubUrlThatIsNotThePinnedHub`, `theSameHubIsAcceptedAcrossSchemeSpellings`, `cleartextHubIsRefusedUntilTheDebugOptInAllowsIt`; store `retentionRetiresOldAnnouncementsWithATombstoneSoClientsLearn`, `retentionLeavesAnnouncementsInsideTheWindowAlone`, `expiredAnnouncementsArePurgedForReal`, `oldTombstonesAreReclaimedAfterNinetyDays`; routes `singleItemReadsAndPinActionsAreRateLimitedPerDevice`.
+
+### Related files
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/announcements/RealHubAnnouncementsApi.kt`
+- `core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/EnterpriseHub.kt`
+- `core/enterprise/src/jvmTest/kotlin/com/transfer/flash/core/enterprise/RealHubAnnouncementsApiTest.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementStore.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementRoutes.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/auth/RateLimiter.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/announcements/AnnouncementStoreTest.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/announcements/AnnouncementRoutesTest.kt`
+- `docs/protocol.md`
+- `docs/audit/2026-10-19-server-hub-end-to-end-review.md`
+
+### Status
+FIXED IN CODE 2026-10-19, unit-tested and mutation-checked. Device checks HUBR-11, ANN-14, ANN-15 owed.
+
+

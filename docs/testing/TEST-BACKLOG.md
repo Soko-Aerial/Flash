@@ -3670,6 +3670,7 @@ Built and unit-tested (plus three tests against the real hub in `E2eHostSealingL
 | HUBR-06 | First-run setup with the token typed at the beginning of setup (no token in the URL). | Setup opens only with the token; a second visitor cannot evict the first; `setup/status` reveals nothing else. | REV-07, ERROR-386 | TODO |
 | HUBR-07 | `docker compose -f server/docker-compose.example.yml up` with a local `keystore.properties` and a `data.key` in the build context. | Neither file appears in the image (`docker run --rm image ls -R /app`); the hub listens on 127.0.0.1 only. | REV-12, ERROR-391 | TODO |
 | HUBR-08 | Delegation hygiene: delete `delegation-serial.txt` and issue again; restart the hub with an older `delegation.cert` in place; start with `FLASH_REQUIRE_ROOT_PIN=true` and no fingerprint. | New serial is higher than any seen; the older file is refused with a log line; the pinless start is refused with a log line naming `FLASH_ROOT_FINGERPRINT`. | REV-16, ERROR-395 | TODO |
+| HUBR-11 | Announcements client refuses a foreign/cleartext hub. Enrol a phone with hub A; make the app ask hub B for announcements (edit the stored hub URL to B, or a test build pointed at B) and open Hub > News; then try a plain `http://` hub address with the debug cleartext opt-in off. | The app shows the friendly sentence ("This is not the hub this device is enrolled with." / "The hub address is not a secure address.") and no request (and no bearer) reaches hub B; the same hub with an `https`/host spelling variation still works; with the debug cleartext opt-in on, an `http` hub is accepted. | FIX-1 (2026-10-19 hub review), ERROR-740 | TODO |
 
 
 ### 4zzzzzzz. Owner decisions of 2026-10-13 (ADR-127 addendum, ADR-128)
@@ -4379,6 +4380,10 @@ New rows. Every Pass condition is something the owner can see on the screen or i
 - **ANN-12** Console post reaches the phone (ERROR-410). Setup: demo hub rebuilt and restarted, phone enrolled, app updated. Steps: post one company announcement and one for the phone's department on the console, open Hub > News, pull to refresh. Pass: both appear (and the unread badge on the tab counts them); posting another on the console shows up within seconds while the app is open (relay hint) or after a pull to refresh. Status: TODO
 
 - **ANN-13** Announcements arrive without a manual refresh (ERROR-411). Setup: phone enrolled, app updated, demo hub running. Steps: (a) close the app (or switch the phone off Wi-Fi), post a company announcement on the console, reopen the app and open Hub > News without pulling to refresh; (b) with the app open on Hub > News and connected, post another on the console; (c) leave Hub, post a third, return to the Hub tab. Pass: (a) the announcement is there within a few seconds of the connection coming up or the tab opening; (b) it appears within seconds with no gesture; (c) it is there on return and the unread badge counted it. Log line to look for: `HUB_UI` refresh on connect; no `Malformed feed` failure. Source: ERROR-411. Status: TODO
+
+- **ANN-14** Retention retirement reaches a phone (FIX-2, ERROR-740). Setup: a hub with `announcementRetentionDays` set small (e.g. 1) in the console Settings view; a phone that has already synced an announcement older than that window. Steps: let the daily purge run (or trigger it), then bring the phone online / pull to refresh on Hub > News. Pass: the old announcement disappears from News after the delta sync (its retirement carries a fresh `seq` tombstone) instead of lingering for ever; an announcement past its own expiry also disappears; an announcement inside the window stays. Source: FIX-2, ERROR-740, `docs/audit/2026-10-19-server-hub-end-to-end-review.md`. Status: TODO
+
+- **ANN-15** Announcement read/pin routes are rate-limited per device (FIX-3, ERROR-740). Setup: enrolled phone, hub. Steps: in a burst, issue 61 `GET /api/v1/announcements/{id}` and 6 `POST /api/v1/announcements/{id}/pin` (script, or rapid taps). Pass: single-item reads answer `429 ERR_RATE_LIMIT` with a `Retry-After` header after the burst of 60; pin actions after 5; the budget is per device (a second enrolled device is unaffected); the app surfaces the friendly "too many requests" sentence rather than a generic failure. Source: FIX-3, ERROR-740. Status: TODO
 
 - **HUBT-36** Bottom bar stays on Transfers (ERROR-412). Setup: an enrolled phone (Hub tab visible). Steps: Chats > the Transfers icon in the top bar; look at the bottom; tap the highlighted Chats tab; open Transfers again and tap Hub. Pass: the bottom bar is visible on Transfers with Chats highlighted; tapping Chats returns to the chat list (not a scroll); tapping Hub opens the Hub; scrolling the Transfers list fast hides the bar and a fast upward flick brings it back. Status: TODO
 - **HUBT-37** A paused transfer shows in the indicator (ADR-160, owner 2026-10-16). Setup: an enrolled phone or PC with a running transfer. Steps: pause it; look at the Transfers icon in the chat-list top bar; resume; finish or cancel it. Pass: the badge keeps counting the paused transfer (1), and disappears only after it completes, fails or is cancelled. Status: TODO
@@ -5150,4 +5155,84 @@ All TODO; probes are read-only; the keying step in the runbook needs a dummy loa
   3. Measure time delta between first spoken syllable and RF carrier activation, and time between speech end and transmitter unkey.
 - **Pass:** Attack delay and unkey delay are measured and recorded in milliseconds; first syllable clipping is evaluated for speech intelligibility.
 - **Source:** Phase R4 / BT-R10 Step A4 & B6, ADR-210.
+- **Status:** TODO
+
+---
+
+## Flash Hub competition entry — "Command Deck" (package `opencode`, 2026-10-18)
+
+A standalone design entry (see `docs/ui/hub-competition-command-deck.md`). It modifies no production file and has no entry in
+the app, so these checks are run from the **preview window** — `.\tools\flash-gradle.cmd :desktop:opencodeHubShowcase`
+(a `flash tools` task; the desktop must not already be running, and the Gradle lock means one build at a time) — or from
+**Android Studio previews** (`HcPreviews.kt`, 42 previews under the group "Command Deck"). No device is needed and no
+emulator is involved. All TODO.
+
+### `HCDECK-01` — The five pages in all six hub states (preview matrix)
+- **Setup:** `.\tools\flash-gradle.cmd :desktop:opencodeHubShowcase` (or the preview group "Command Deck"); no device needed.
+- **Steps:**
+  1. Open every preview named `Command Center · …`, `Directory · …`, `Announcements · …`, `Trust Vault · …`, `Rosters · …` (6 states each).
+  2. For each, check the page fills the frame with no clipped card, no letterbox, no blank region and no text overflowing its container.
+  3. Check the phone frame (412dp) shows one column and the pushed detail; the desktop frame (1180dp) shows list + detail.
+- **Pass:** All 30 page × state combinations render; `empty & offline` shows the empty state (not a blank page or a crash) on every page; long names/ids ellipsise rather than overflow; no page needs horizontal scrolling except the deliberate chip/filter rows.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §3, §8.
+- **Status:** TODO
+
+### `HCDECK-02` — Directory: search, filters, and colleague card honesty
+- **Setup:** Preview `Directory · active & sealed` (mobile and desktop).
+- **Steps:**
+  1. Type a name and a device id into the search field; check the filter chip counts change with the query.
+  2. Open a department card and a colleague card.
+  3. Compare the colleague card against `Directory · empty & offline`.
+- **Pass:** Counts match what the list shows; a colleague with an unproved statement shows "does not match a live key" with Message/Call disabled and the reason in words; reachability reads differently for on-LAN / through-hub / unreachable; the seal sentence names the actual path (direct when nearby, published key otherwise); empty state appears when the directory has never synced.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §3 (page 2).
+- **Status:** TODO
+
+### `HCDECK-03` — Announcements: posting rights, composer validation, plaintext notice
+- **Setup:** Previews `Announcements · active & sealed (department head)` and `Announcements · organisation-wide poster`.
+- **Steps:**
+  1. Compare the audience selector in both previews.
+  2. Tap Post with an empty title, then with an empty body, then with a long body.
+  3. Check the notice about who can read an announcement.
+- **Pass:** Department-head grants exactly that department as the audience; organisation-wide grants every department; validation appears inline (not as a silently disabled button); the composer and the reader both say the announcement is readable on the hub (ADR-138); unread count and pinned posts appear first.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §3 (page 3), ADR-138.
+- **Status:** TODO
+
+### `HCDECK-04` — Trust vault: certificate, delegation, key rotation, leave
+- **Setup:** Previews `Trust Vault · active & sealed`, `Trust Vault · enrolling`, `Trust Vault · cert revoked / expired`.
+- **Steps:**
+  1. In `enrolling`, read the step rail: one step current, earlier done, later pending, with a detail line each.
+  2. In `active & sealed`, start the sealing-key rotation and confirm it is a two-step action.
+  3. In `cert revoked / expired`, check which actions are still offered and the wording about the LAN path.
+  4. Open the leave-organisation confirm.
+- **Pass:** Certificate serial/fingerprint/validity and the delegation chain are visible with a verdict for each link; the revocation list shows its revision; the offline lease says how many days are left and what still works without the hub; rotation and leave each need an explicit second step and explain the consequence; the revoked state does not pretend anything still works on the hub path.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §3 (page 4).
+- **Status:** TODO
+
+### `HCDECK-05` — Rosters and relay bridge: verified state, join requests, kept content
+- **Setup:** Previews `Rosters · active & sealed`, `Rosters · relay degraded`.
+- **Steps:**
+  1. Open a roster row, then a member row.
+  2. Approve one pending join request and decline another.
+  3. Read the bridge row and the note about removed members.
+- **Pass:** Roster validity days, member count and pending count agree between row and detail; each member shows key and pairing state; Approve/Decline resolve visibly (handled state, no dead rows); the bridge adoption/latency/signal read consistently; the removed-member note says the member keeps what it already received.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §3 (page 5).
+- **Status:** TODO
+
+### `HCDECK-06` — Judge's control bar switches everything live
+- **Setup:** `.\tools\flash-gradle.cmd :desktop:opencodeHubShowcase` (this is what the bar is for), or the preview `Showcase · Judge's control bar`.
+- **Steps:**
+  1. Cycle all six hub states and confirm every page updates at once (no page keeps the previous state's data).
+  2. Switch form factor between Mobile (412dp) and Desktop split-pane (1180dp) on each page: the two-pane layout must appear/disappear at the real breakpoint.
+  3. Switch Dark/Light, High/Reduced motion, and page; then hide the bar with its close button and bring it back with the "Judge" button.
+- **Pass:** Six states × five pages × two form factors all render; the two-pane layout appears only at the desktop width; light theme keeps every tone readable (no invisible text, no wrong contrast); hiding/restoring the bar does not disturb the page; the bar never covers the page's own primary action.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §4.
+- **Status:** TODO
+
+### `HCDECK-07` — Reduced motion and the device performance flags
+- **Setup:** `.\tools\flash-gradle.cmd :desktop:opencodeHubShowcase` (switch the bar to Reduced motion), or the previews `Motion reduced · command center` and `Motion reduced · relay degraded`.
+- **Steps:**
+  1. In reduced motion, check every pulse dot, ring gauge and crossfade is static (no looping animation).
+  2. If hosted on a device with `ultraLowUi` and/or `minimalChrome` active, check the gradient washes and shadows are gone.
+- **Pass:** No looping animation under reduced motion; the design still reads correctly without the washes/shadows (state is not carried by the wash); no frame drops or jank on the low-end device.
+- **Source:** `docs/ui/hub-competition-command-deck.md` §5; `ui/theme/.../FlashMotion.kt`.
 - **Status:** TODO

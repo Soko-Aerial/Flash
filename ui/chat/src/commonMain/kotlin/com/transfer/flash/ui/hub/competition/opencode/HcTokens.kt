@@ -125,8 +125,14 @@ internal fun hcElapsed(ms: Long): String {
     }
 }
 
-internal fun hcBytes(bytes: Long): String {
-    val kb = 1024.0
+/** "1,284" — grouped thousands, so a telemetry figure reads at a glance without a locale formatter. */
+internal fun hcCount(n: Int): String {
+    val digits = abs(n).toString()
+    val grouped = digits.reversed().chunked(3).joinToString(",").reversed()
+    return if (n < 0) "-$grouped" else grouped
+}
+
+internal fun hcBytes(bytes: Long): String {    val kb = 1024.0
     return when {
         bytes < 1024L -> "$bytes B"
         bytes < (kb * kb).toLong() -> "${(bytes / kb).roundToInt()} KB"

@@ -16,7 +16,6 @@ import com.transfer.flash.core.network.FrameAckStage
 import java.util.UUID
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -118,9 +117,18 @@ public class WsSession(
     }
 
     public fun onTextReceived(text: String) {
-        val result = textChannel.trySendBlocking(text)
-        if (result.isFailure && !result.isClosed) {
-            FlashLog.w(logTag, "WS text frame dropped (buffer full) peer=${peer.friendlyName}")
+        while (_connectionState.value != FlashConnectionState.Disconnected) {
+            val result = textChannel.trySend(text)
+            if (result.isSuccess || result.isClosed) {
+                return
+            }
+            connection.touchLiveness()
+            try {
+                Thread.sleep(25)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
         }
     }
 

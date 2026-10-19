@@ -73,6 +73,10 @@ include(":ui:theme")
 include(":ui:platform-shims")
 include(":ui:chat")
 include(":ui:callui")
+// Dev-only desktop launcher for the Hub UI/UX competition entries (packages `competition/novahub`,
+// `competition/apex`, `competition/opencode` in `:ui:chat`). A pure-JVM window host like
+// `:desktop` — never a dependency of anything, not published, not part of the shipped app.
+include(":ui:hub-competition-claude")
 // Phase 21: the Compose Desktop application shell. A pure-JVM consumer of the KMP library
 // modules — never a dependency of anything. `:app` stays the Android application.
 include(":desktop")

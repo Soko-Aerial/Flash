@@ -271,6 +271,8 @@ run {
     registerRadioTool("radioSpike", "com.transfer.flash.desktop.radiospike.RadioSpikeCliKt", "Runs the BT-R11 Windows Bluetooth radio spike tool (read-only by default; active mode needs owner flag).")
     registerRadioTool("radioGatewayDemo", "com.transfer.flash.desktop.DesktopRadioGatewayDemoAppKt", "Runs the standalone Radio Gateway UI demo window.")
     registerRadioTool("radioAudioProbe", "com.transfer.flash.desktop.radioaudio.RadioAudioProbeKt", "Runs the BT-R10 Windows radio audio endpoint probe (read-only enumeration of audio endpoints and Hands-Free Bluetooth association).")
+    registerRadioTool("apexHubShowcase", "com.transfer.flash.desktop.ApexHubShowcaseAppKt", "Runs the standalone Apex Zenith Flash Hub Competition showcase window.")
+    registerRadioTool("runShowcase", "com.transfer.flash.desktop.ApexHubShowcaseAppKt", "Runs the standalone Apex Zenith Flash Hub Competition showcase window.")
 }
 
 // The BT-00 window and BT-R11 spike tools are hardware-spike tools (ADR-101), not features: keep their classes out of the desktop jar, and so out of the
@@ -279,5 +281,25 @@ run {
 // file class RadioLinkTestMainKt (+ its lambdas); the Compose compiler also emits ComposableSingletons$RadioLinkTestMainKt.
 // The headless CLI lives in :core:radio (core/radio/.../diag), outside this module.
 tasks.named<Jar>("jvmJar") {
-    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*", "com/transfer/flash/desktop/DesktopRadioGatewayDemoApp*", "com/transfer/flash/desktop/radioaudio/*")
+    exclude("com/transfer/flash/desktop/RadioLinkTest*", "com/transfer/flash/desktop/ComposableSingletons\$RadioLinkTest*", "com/transfer/flash/desktop/radiospike/*", "com/transfer/flash/desktop/DesktopRadioGatewayDemoApp*", "com/transfer/flash/desktop/radioaudio/*", "com/transfer/flash/desktop/ApexHubShowcaseApp*")
+}
+
+// Flash Hub UI/UX competition entry "Command Deck" (docs/ui/hub-competition-command-deck.md, an isolated design package
+// that no production screen references). A preview window, not a feature: the task runs from the compiled classes
+// directory and the class is excluded from the jar below, so the product artifact is unchanged.
+//   ./gradlew :desktop:opencodeHubShowcase
+// Every entry registers its own task this way (see `apexHubShowcase` above). Keep to per-entry names: the generic
+// `runShowcase` already belongs to one entry, and two agents cannot share one task name.
+run {
+    val opencodeHubShowcaseMain = kotlin.targets.getByName("jvm").compilations.getByName("main")
+    tasks.register<JavaExec>("opencodeHubShowcase") {
+        group = "flash tools"
+        description = "Opens the standalone Flash Hub competition showcase for the \"Command Deck\" entry (package opencode)."
+        dependsOn("jvmMainClasses")
+        classpath = files(opencodeHubShowcaseMain.output.allOutputs, opencodeHubShowcaseMain.runtimeDependencyFiles)
+        mainClass.set("com.transfer.flash.desktop.OpencodeHubShowcaseAppKt")
+    }
+    tasks.named<Jar>("jvmJar") {
+        exclude("com/transfer/flash/desktop/OpencodeHubShowcaseApp*", "com/transfer/flash/desktop/ComposableSingletons\$OpencodeHubShowcaseApp*")
+    }
 }

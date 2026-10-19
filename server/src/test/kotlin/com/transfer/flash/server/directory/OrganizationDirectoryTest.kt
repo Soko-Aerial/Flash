@@ -246,6 +246,23 @@ class OrganizationDirectoryTest {
     }
 
     @Test
+    fun anOrganisationWideGroupIsListedAndJoinableInEveryJoinModeButNeverWhenHidden() {
+        val dir = OrganizationDirectory()
+        dir.createDepartment("dept-air", "Air", listOf("air-admin"), isOrgAdmin = true)
+        // The console form defaults to "Organisation-wide" + "Needs approval": that default must not produce an invisible group.
+        dir.createGroup("grp-all-approval", "All hands", "", GroupVisibility.LISTED, JoinMode.REQUEST_APPROVAL, callerDeviceId = "root", isOrgAdmin = true)
+        dir.createGroup("grp-all-admin", "Notices", "", GroupVisibility.LISTED, JoinMode.ADMIN_ONLY, callerDeviceId = "root", isOrgAdmin = true)
+        dir.createGroup("grp-all-hidden", "Board", "", GroupVisibility.HIDDEN, JoinMode.REQUEST_APPROVAL, callerDeviceId = "root", isOrgAdmin = true)
+
+        val visible = dir.listVisibleGroups(userDepartment = "dept-air", userDeviceId = "pilot-1").map { it.id }.toSet()
+        assertEquals(setOf("grp-all-approval", "grp-all-admin"), visible)
+
+        assertIs<JoinRequestResult.Pending>(dir.requestJoinGroup("grp-all-approval", "pilot-1", "dept-air"))
+        assertIs<JoinRequestResult.Rejected>(dir.requestJoinGroup("grp-all-admin", "pilot-1", "dept-air"))
+        assertIs<JoinRequestResult.Rejected>(dir.requestJoinGroup("grp-all-hidden", "pilot-1", "dept-air"))
+    }
+
+    @Test
     fun aJoinRequestForAGroupOutsideTheCallersScopeAnswersExactlyLikeAMissingOne() {
         val dir = OrganizationDirectory()
         dir.createDepartment("dept-air", "Air", listOf("air-admin"), isOrgAdmin = true)

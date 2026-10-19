@@ -1395,7 +1395,7 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 **Limits & Optimistic Concurrency:**
 - Title: max 120 Unicode code points (sanitised via `AnnouncementText`).
 - Body: max 4000 Unicode code points (sanitised via `AnnouncementText`).
-- Pins: max 3 pinned announcements per scope. Exceeding 3 returns `400 ERR_PIN_LIMIT`.
+- Pins: max 3 pinned announcements per scope. Exceeding 3 returns `409 ERR_PIN_LIMIT`.
 - Concurrency: Updates specify `expectedSeq`. A mismatch returns `409 ERR_CONFLICT`.
 - WebSocket push: When an announcement is created, updated, deleted, or pinned, the hub broadcasts an `AnnouncementEvent` frame to active relay sessions advertising the `ann1` feature (filtered by department scoping).
 
@@ -1406,7 +1406,7 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 | `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
 | `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` | `AnnouncementItemDto` (409 if `expectedSeq` mismatch) | served (A3) |
 | `DELETE /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` tombstone (soft deleted, seq incremented) | served (A3) |
-| `POST /api/v1/announcements/{id}/pin` | bearer | announcement ID | `AnnouncementItemDto` (400 `ERR_PIN_LIMIT` if already 3 pinned) | served (A3) |
+| `POST /api/v1/announcements/{id}/pin` | bearer | announcement ID | `AnnouncementItemDto` (409 `ERR_PIN_LIMIT` if already 3 pinned) | served (A3) |
 | `POST /api/v1/announcements/{id}/unpin` | bearer | announcement ID | `AnnouncementItemDto` | served (A3) |
 
 Keys (D9, `DIRECTORY_KEYS_ORG_WIDE=true`): identity + sealing keys are org-visible

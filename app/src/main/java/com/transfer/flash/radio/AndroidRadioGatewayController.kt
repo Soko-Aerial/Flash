@@ -320,7 +320,7 @@ public class AndroidRadioGatewayController(
     }
 
     override fun reconnect() {
-        val mgr = getOrCreateManager()
+        val mgr = activeManager ?: return
         scope.launch {
             mgr.connectRemembered()
         }
@@ -334,7 +334,7 @@ public class AndroidRadioGatewayController(
     }
 
     override fun selectProfile(profile: RadioSecurityProfile) {
-        val mgr = getOrCreateManager()
+        val mgr = activeManager ?: return
         val coreProfile = when (profile) {
             RadioSecurityProfile.PROFILE_M ->
                 com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED
@@ -351,15 +351,21 @@ public class AndroidRadioGatewayController(
     override fun confirmAuthorisation(operatorCallsign: String) {
         // ERROR-684: no callsign, no authorisation record (the dialog also disables Confirm).
         val callsign = RadioCallsign.normalise(operatorCallsign) ?: return
-        val mgr = getOrCreateManager()
         val now = clock.nowMs()
         val confirmation = AuthorisationConfirmation(
             confirmedAtEpochMs = now,
             operatorCallsign = callsign,
         )
-        scope.launch {
-            mgr.recordAuthorisation(confirmation)
-            mgr.setProfile(com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED)
+        val mgr = activeManager
+        if (mgr != null) {
+            scope.launch {
+                mgr.recordAuthorisation(confirmation)
+                mgr.setProfile(com.transfer.flash.core.radio.connect.RadioSecurityProfile.PROFILE_M_ENCRYPTED)
+            }
+        } else {
+            scope.launch {
+                authorisationStoreFactory().save(confirmation)
+            }
         }
     }
 

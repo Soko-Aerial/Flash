@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -300,7 +302,7 @@ internal fun FlashAnnouncementReader(
     val a = announcement
     val roleChip = FlashHubMath.authorRoleChip(a.authorRole)
     Column(
-        modifier = modifier.fillMaxWidth().padding(FlashSpacing.space16),
+        modifier = modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(FlashSpacing.space16),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {

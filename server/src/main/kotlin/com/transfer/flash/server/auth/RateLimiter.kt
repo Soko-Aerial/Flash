@@ -105,9 +105,9 @@ class HubRateLimits(
     val directorySync: TokenBucketLimiter = TokenBucketLimiter(60, 1.0, clock = clock),
     /** Per authenticated device on `GET /api/v1/directory/people*`: burst 30, then 1 per 2 s (30/min, A2 §3.3). */
     val directoryPeople: TokenBucketLimiter = TokenBucketLimiter(30, 0.5, clock = clock),
-    /** Per poster on POST/PUT /api/v1/announcements: burst 5, then 5 per minute (Plan A3 §3.3). */
+    /** Per poster on POST/PUT /api/v1/announcements and on pin/unpin: burst 5, then 5 per minute (Plan A3 §3.3). */
     val announcementPost: TokenBucketLimiter = TokenBucketLimiter(5, 5.0 / 60.0, clock = clock),
-    /** Per authenticated device on `GET /api/v1/announcements` (feed/search): burst 60, then 1 per second. */
+    /** Per authenticated device on `GET /api/v1/announcements` (feed/search/single item): burst 60, then 1 per second. */
     val announcementRead: TokenBucketLimiter = TokenBucketLimiter(60, 1.0, clock = clock),
 ) {
     fun sweepAll() {
