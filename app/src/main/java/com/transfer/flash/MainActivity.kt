@@ -49,6 +49,7 @@ import com.transfer.flash.ui.chat.FlashShareRecipientUi
 import com.transfer.flash.ui.chat.FlashShareTargetSheet
 import com.transfer.flash.ui.chat.FlashShareTargetMath
 import com.transfer.flash.ui.chat.FlashPairingDialog
+import com.transfer.flash.ui.chat.FlashSearchScope
 import com.transfer.flash.ui.nearby.FlashManualConnectDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -135,6 +136,7 @@ import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.notifications.FlashNotificationManager
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
+import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.ui.theme.FlashLaunchSplashGate
 import com.transfer.flash.ui.theme.FlashLaunchSplashOverlay
 import com.transfer.flash.ui.theme.FlashMaterialTheme
@@ -1260,20 +1262,33 @@ private fun FlashShell(
     var searchQuery by remember { mutableStateOf("") }
 
     // UI-024 / #12: full-history search. Client-side title/preview filtering only matches the row's
-    // visible text; to also surface a thread whose match is buried deep in its history we ask the
-    // repository (Room LIKE over all message bodies) for the matching conversation ids. Debounced so
-    // a fast typer issues one query per pause, cleared when search closes or the box empties.
+    // visible text; a buried match needs Room. The repository now returns STRUCTURED hits (message
+    // snippets + attachment file names) instead of a bare set of conversation ids, so the list can
+    // say what matched and deep-link to it. Debounced so a fast typer issues one query per pause,
+    // cleared when search closes or the box empties.
     var messageBodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
     var colleagueMatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // UI-024 upgrade: structured hits + the active scope chip (All / Chats / Messages / Files /
+    // Media / Links). Scoped host-side so it survives the tab's AnimatedContent disposal.
+    var searchResults by remember { mutableStateOf(FlashChatSearchResultsUi.Empty) }
+    var searchScope by remember { mutableStateOf(FlashSearchScope.All) }
+    // UI-024 upgrade: persisted recent searches (the Room table existed but was never read). The
+    // flow is remembered: `collectAsState` keys its effect on the flow instance, and a fresh flow on
+    // every recomposition would restart the collection endlessly.
+    val recentSearchesFlow = remember(chatRepository) { chatRepository.observeRecentSearches(8) }
+    val recentSearches by recentSearchesFlow.collectAsState(initial = emptyList())
     LaunchedEffect(searchQuery, isSearching) {
         val q = searchQuery.trim()
         if (!isSearching || q.isEmpty()) {
             messageBodyMatches = emptySet()
+            searchResults = FlashChatSearchResultsUi.Empty
             colleagueMatchIds = emptySet()
             return@LaunchedEffect
         }
         kotlinx.coroutines.delay(200)
-        messageBodyMatches = chatRepository.searchMessageBodies(q)
+        val structured = chatRepository.searchChats(q)
+        searchResults = structured
+        messageBodyMatches = structured.conversationIds
         colleagueMatchIds = chatRepository.searchColleagues(q)
     }
 
@@ -2262,6 +2277,8 @@ private fun FlashShell(
             onForwardToRecipients = { targets, payload -> forwardPayloadToChats(targets, payload) },
             // Group Phase D: conversationId + menu actions.
             conversationId = conversationId,
+            // UI-024 upgrade: open at the message a global search result pointed to.
+            targetMessageId = nav.current.targetMessageId,
             addablePeers = trustedPeerRoster.filter { candidate ->
                 conversationState.members.none { it.id == candidate.id }
             },
@@ -2873,6 +2890,22 @@ private fun FlashShell(
             modifier = Modifier.padding(bottom = tabBottomInset),
         )
     }
+    // UI-024 upgrade: a structured hit opens the conversation AT that message. Search is closed
+    // first so the back gesture from the chat returns to the chat list, not to a stale overlay.
+    val openSearchHit: (String, String) -> Unit = { conversationId, messageId ->
+        val q = searchQuery.trim()
+        if (q.isNotEmpty()) scope.launch { chatRepository.recordRecentSearch(q) }
+        selectedChatConversationId = conversationId
+        chatRepository.openConversation(conversationId)
+        chatRepository.clearListSelection()
+        isSearching = false
+        searchQuery = ""
+        nav.navigate(
+            FlashDestination.Conversation,
+            conversationId = conversationId,
+            targetMessageId = messageId,
+        )
+    }
     val chatListScreenContent: @Composable () -> Unit = {
         FlashChatListScreen(
             state = chatListState,
@@ -2897,6 +2930,22 @@ private fun FlashShell(
             },
             messageBodyMatches = messageBodyMatches,
             colleagueMatchIds = colleagueMatchIds,
+            searchResults = searchResults,
+            searchScope = searchScope,
+            onSearchScopeChanged = { searchScope = it },
+            onSearchMessageClick = openSearchHit,
+            onSearchFileClick = openSearchHit,
+            onSearchSubmit = {
+                val q = searchQuery.trim()
+                if (q.isNotEmpty()) scope.launch { chatRepository.recordRecentSearch(q) }
+            },
+            recentSearches = recentSearches,
+            onRecentSearchClick = { recent ->
+                isSearching = true
+                searchQuery = recent
+                scope.launch { chatRepository.recordRecentSearch(recent) }
+            },
+            onClearRecentSearches = { scope.launch { chatRepository.clearRecentSearches() } },
             onConversationLongClick = chatRepository::enterListSelectionMode,
             onToggleSelection = chatRepository::toggleListSelection,
             onArchiveConversation = chatRepository::archiveConversation,

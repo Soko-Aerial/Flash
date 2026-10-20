@@ -39,10 +39,16 @@ enum class FlashDestination(val title: String) {
 data class FlashBackStackState(
     val destination: FlashDestination = FlashDestination.ChatList,
     val conversationId: String? = null,
+    /**
+     * UI-024 upgrade: the message to open the conversation at, set when a global search result is
+     * tapped. Only meaningful on [FlashDestination.Conversation]; it is part of the state (rather
+     * than a one-shot event) so it survives the rotation that can happen while the thread loads.
+     */
+    val targetMessageId: String? = null,
 ) {
     fun isValid(): Boolean = when (destination) {
         FlashDestination.Conversation -> !conversationId.isNullOrBlank()
-        else -> conversationId == null
+        else -> conversationId == null && targetMessageId == null
     }
 }
 
@@ -124,14 +130,20 @@ object FlashNavigationMath {
 
     /**
      * True when a push must be ignored because it repeats the current entry,
-     * including re-pushing the exact same conversation.
+     * including re-pushing the exact same conversation. A different [newTargetMessageId] is a
+     * *different* entry on purpose: tapping a search result for a message in the chat that is
+     * already open must still jump to that message instead of being swallowed as a duplicate.
      */
     fun shouldIgnorePush(
         currentDestination: FlashDestination,
         currentConversationId: String?,
         newDestination: FlashDestination,
         newConversationId: String?,
-    ): Boolean = currentDestination == newDestination && currentConversationId == newConversationId
+        currentTargetMessageId: String? = null,
+        newTargetMessageId: String? = null,
+    ): Boolean = currentDestination == newDestination &&
+        currentConversationId == newConversationId &&
+        currentTargetMessageId == newTargetMessageId
 
     /** Title shown for a destination; a loaded conversation name wins over the enum title. */
     fun resolveConversationTitle(
@@ -154,9 +166,19 @@ object FlashNavigationMath {
         val current = entries.lastOrNull() ?: return listOf(next)
         if (shouldIgnorePush(
                 current.destination, current.conversationId, next.destination, next.conversationId,
+                current.targetMessageId, next.targetMessageId,
             )
         ) {
             return entries
+        }
+        // Same conversation, new target (a second search hit inside the chat already open):
+        // REPLACE the top entry instead of stacking a second copy of the same screen, so back
+        // does not walk through every message that was searched.
+        if (current.destination == FlashDestination.Conversation &&
+            next.destination == FlashDestination.Conversation &&
+            current.conversationId == next.conversationId
+        ) {
+            return entries.dropLast(1) + next
         }
         val grown = entries + next
         if (grown.size <= MAX_STACK_DEPTH || grown.size <= 1) return grown
@@ -182,6 +204,11 @@ object FlashNavigationMath {
         hubEnrolled: Boolean = false,
     ): FlashScreenTransition = when {
         from == to -> FlashScreenTransition.None
+        // Re-targeting the SAME conversation (a search hit inside the chat already open) is not a
+        // push: the screen stays put and only scrolls. Replaying the push animation would look like
+        // a navigation that did not happen.
+        from.destination == to.destination && from.conversationId == to.conversationId ->
+            FlashScreenTransition.None
         !isTabRoot(to.destination, hubEnrolled) -> FlashScreenTransition.Push
         !isTabRoot(from.destination, hubEnrolled) -> FlashScreenTransition.Pop
         tabIndex(to.destination, hubEnrolled) > tabIndex(from.destination, hubEnrolled) ->
@@ -300,9 +327,19 @@ class FlashNavigationState internal constructor(
         get() = entries.size > 1 || current.destination != FlashNavigationMath.HOME_TAB
 
     /** Pushes [destination]; see [FlashNavigationMath.pushed] for the guards. Hub is ignored when not enrolled. */
-    fun navigate(destination: FlashDestination, conversationId: String? = null) {
+    fun navigate(
+        destination: FlashDestination,
+        conversationId: String? = null,
+        targetMessageId: String? = null,
+    ) {
         if (destination == FlashDestination.Hub && !hubEnrolled) return
-        entries = FlashNavigationMath.pushed(entries, FlashBackStackState(destination, conversationId))
+        val target = targetMessageId?.takeIf {
+            destination == FlashDestination.Conversation && it.isNotBlank()
+        }
+        entries = FlashNavigationMath.pushed(
+            entries,
+            FlashBackStackState(destination, conversationId, target),
+        )
     }
 
     /**
@@ -359,14 +396,18 @@ private const val ENTRY_SEPARATOR = '|'
 internal const val HUB_MARKER_PREFIX = "@hubEnrolled|"
 
 /**
- * Survives rotation and process death by encoding each entry as `DestinationName|conversationId`.
- * Unknown or invalid entries are dropped on restore rather than crashing the shell.
+ * Survives rotation and process death by encoding each entry as
+ * `DestinationName|conversationId|targetMessageId` (the target is empty for ordinary entries).
+ * Unknown or invalid entries are dropped on restore rather than crashing the shell, and a
+ * two-field entry saved by an older build still restores (empty target).
  */
 val FlashNavigationStateSaver: Saver<FlashNavigationState, Any> =
     listSaver<FlashNavigationState, String>(
         save = { state ->
             listOf("$HUB_MARKER_PREFIX${if (state.hubEnrolled) "1" else "0"}") +
-                state.entries.map { "${it.destination.name}$ENTRY_SEPARATOR${it.conversationId ?: ""}" }
+                state.entries.map {
+                    "${it.destination.name}$ENTRY_SEPARATOR${it.conversationId ?: ""}$ENTRY_SEPARATOR${it.targetMessageId ?: ""}"
+                }
         },
         restore = { encoded ->
             val enrolled = encoded.firstOrNull { it.startsWith(HUB_MARKER_PREFIX) }
@@ -384,8 +425,10 @@ internal fun decodeNavigationEntry(raw: String): FlashBackStackState? {
     val destination = FlashDestination.entries
         .firstOrNull { it.name == raw.substring(0, separator) }
         ?: return null
-    val conversationId = raw.substring(separator + 1).takeIf { it.isNotBlank() }
-    return FlashBackStackState(destination, conversationId).takeIf { it.isValid() }
+    val rest = raw.substring(separator + 1).split(ENTRY_SEPARATOR, limit = 2)
+    val conversationId = rest.getOrNull(0)?.takeIf { it.isNotBlank() }
+    val targetMessageId = rest.getOrNull(1)?.takeIf { it.isNotBlank() }
+    return FlashBackStackState(destination, conversationId, targetMessageId).takeIf { it.isValid() }
 }
 
 /** Remembers a [FlashNavigationState] across recomposition, rotation and process death. */

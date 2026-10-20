@@ -317,6 +317,12 @@ fun FlashConversationScreen(
     isEnterpriseEnrolled: Boolean = false,
     isLinkedToHub: Boolean = false,
     onToggleLinkToHub: ((Boolean) -> Unit)? = null,
+    /**
+     * UI-024 upgrade: a message to open at, set when a global search result (or a file hit) is
+     * tapped. The screen scrolls to it and pulses its bubble once; null renders the thread at the
+     * newest position as before.
+     */
+    targetMessageId: String? = null,
 ) {
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
@@ -499,14 +505,20 @@ fun FlashConversationScreen(
     var isSearchActive by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var activeResultIndex by remember { mutableIntStateOf(-1) }
-    val searchMatches = remember(searchQuery, localMessages) {
-        FlashChatSearchMath.findMatches(localMessages, searchQuery)
+    // UI-023 upgrade: scope filter + the results drawer (list every match, not only a stepper).
+    var searchScope by remember { mutableStateOf(FlashSearchScope.All) }
+    var searchResultsExpanded by remember { mutableStateOf(false) }
+    val searchHits = remember(searchQuery, localMessages, searchScope) {
+        FlashChatSearchHits.hits(localMessages, searchQuery, searchScope)
     }
+    val searchMatches = remember(searchHits) { searchHits.map { it.messageId } }
 
     fun closeSearch() {
         isSearchActive = false
         searchQuery = ""
         activeResultIndex = -1
+        searchScope = FlashSearchScope.All
+        searchResultsExpanded = false
     }
 
     val inSelectionMode = selectedMessageIds.isNotEmpty()
@@ -564,6 +576,17 @@ fun FlashConversationScreen(
         searchMatches.getOrNull(activeResultIndex)?.let { jumpToMessage(it) }
     }
 
+    // UI-024 upgrade: deep link from a global search result. The target may arrive before the
+    // thread's first Room emission, so the effect waits until the message is actually present and
+    // then jumps exactly once per target (new messages must not re-scroll the thread).
+    var targetJumpDone by remember(targetMessageId) { mutableStateOf(false) }
+    LaunchedEffect(targetMessageId, localMessages.size) {
+        val target = targetMessageId ?: return@LaunchedEffect
+        if (targetJumpDone || localMessages.none { it.id == target }) return@LaunchedEffect
+        targetJumpDone = true
+        jumpToMessage(target)
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
@@ -619,21 +642,44 @@ fun FlashConversationScreen(
                     }
 
                     isSearching -> {
-                        // UI-023: in-chat search replaces the header while active.
-                        FlashChatSearchBar(
-                            query = searchQuery,
-                            onQueryChanged = { newQuery ->
-                                searchQuery = newQuery
-                                activeResultIndex = FlashChatSearchMath.initialResultIndex(
-                                    FlashChatSearchMath.findMatches(localMessages, newQuery).size,
+                        // UI-023: in-chat search replaces the header while active. The upgraded
+                        // version adds scope chips and an expandable results drawer under the bar,
+                        // so a long thread can be searched without stepping 1/18 results.
+                        Column {
+                            FlashChatSearchBar(
+                                query = searchQuery,
+                                onQueryChanged = { newQuery ->
+                                    searchQuery = newQuery
+                                    activeResultIndex = FlashChatSearchMath.initialResultIndex(
+                                        FlashChatSearchHits.hits(localMessages, newQuery, searchScope).size,
+                                    )
+                                },
+                                activeResultIndex = activeResultIndex,
+                                resultCount = searchMatches.size,
+                                onClose = { closeSearch() },
+                                onPrevious = { stepSearchResult(forward = false) },
+                                onNext = { stepSearchResult(forward = true) },
+                                resultsExpanded = searchResultsExpanded,
+                                onToggleResults = { searchResultsExpanded = !searchResultsExpanded },
+                            )
+                            if (searchResultsExpanded) {
+                                FlashChatSearchResultsPanel(
+                                    query = searchQuery,
+                                    hits = searchHits,
+                                    scope = searchScope,
+                                    onScopeChanged = { scope ->
+                                        searchScope = scope
+                                        activeResultIndex = FlashChatSearchMath.initialResultIndex(
+                                            FlashChatSearchHits.hits(localMessages, searchQuery, scope).size,
+                                        )
+                                    },
+                                    onHitClick = { hit ->
+                                        jumpToMessage(hit.messageId)
+                                        searchResultsExpanded = false
+                                    },
                                 )
-                            },
-                            activeResultIndex = activeResultIndex,
-                            resultCount = searchMatches.size,
-                            onClose = { closeSearch() },
-                            onPrevious = { stepSearchResult(forward = false) },
-                            onNext = { stepSearchResult(forward = true) },
-                        )
+                            }
+                        }
                     }
 
                     else -> {

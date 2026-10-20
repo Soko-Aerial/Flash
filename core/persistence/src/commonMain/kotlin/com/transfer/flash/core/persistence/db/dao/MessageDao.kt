@@ -221,24 +221,33 @@ public interface MessageDao {
 
     /**
      * Full-history content search (UI-search): case-insensitive substring match over message
-     * `text` across ALL conversations, newest first. Tombstoned rows are excluded. Voice-meta
-     * marker rows (`vmsg:` blobs) never match real queries, so no extra filter is needed.
-     * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14).
+     * `text` **or the attachment file name** across ALL conversations, newest first. Attachment
+     * names are part of the searchable content (SEARCH-01): a file is often the only thing a
+     * person remembers, and a query such as "Budget" must find `Budget_Q4.pdf` even when the
+     * message body says nothing about it. Tombstoned rows are excluded. Voice-meta marker rows
+     * (`vmsg:` blobs) never match real queries, so no extra filter is needed.
+     * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14). A NULL attachmentName is
+     * simply not a match (SQL three-valued logic), so plain text-only rows behave as before.
      */
     @Query(
-        "SELECT * FROM messages WHERE deletedAt IS NULL AND text LIKE '%' || :query || '%' ESCAPE '\\' " +
-            "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
+        "SELECT * FROM messages WHERE deletedAt IS NULL AND (" +
+            "text LIKE '%' || :query || '%' ESCAPE '\\' OR " +
+            "attachmentName LIKE '%' || :query || '%' ESCAPE '\\'" +
+            ") ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
     public suspend fun searchMessages(query: String, limit: Int): List<MessageEntity>
 
     /**
      * In-conversation content search: case-insensitive substring match over message
-     * `text` within a specific conversation, newest first. Tombstoned rows are excluded.
-     * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14).
+     * `text` or the attachment file name within a specific conversation, newest first.
+     * Tombstoned rows are excluded. Uses ESCAPE '\' so % and _ can be searched literally
+     * (EDGE-14).
      */
     @Query(
         "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
-            "AND text LIKE '%' || :query || '%' ESCAPE '\\' ORDER BY sentAt DESC, localId DESC LIMIT :limit",
+            "AND (text LIKE '%' || :query || '%' ESCAPE '\\' OR " +
+            "attachmentName LIKE '%' || :query || '%' ESCAPE '\\') " +
+            "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
     public suspend fun searchConversationMessages(
         conversationId: String,

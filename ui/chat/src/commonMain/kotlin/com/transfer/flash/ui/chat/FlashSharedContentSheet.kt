@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -42,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -97,6 +99,23 @@ public fun FlashSharedContentSheet(
     val linkItems = remember(messages) { FlashSharedContentMath.extractLinks(messages) }
 
     var selectedTab by remember { mutableStateOf(FlashSharedContentTab.Media) }
+
+    // UI-023/UI-024 upgrade: the sheet used to be a read-only gallery — finding one file among
+    // hundreds meant scrolling. One query now filters whichever tab is open (file names, media
+    // captions, link URLs/domains/snippets, and the sender for voice notes).
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredMedia = remember(mediaItems, searchQuery) {
+        FlashSharedContentMath.filterMedia(mediaItems, searchQuery)
+    }
+    val filteredFiles = remember(fileItems, searchQuery) {
+        FlashSharedContentMath.filterFiles(fileItems, searchQuery)
+    }
+    val filteredAudio = remember(audioItems, searchQuery) {
+        FlashSharedContentMath.filterAudio(audioItems, searchQuery)
+    }
+    val filteredLinks = remember(linkItems, searchQuery) {
+        FlashSharedContentMath.filterLinks(linkItems, searchQuery)
+    }
 
     FlashSheetHost(
         onDismiss = onDismiss,
@@ -163,10 +182,10 @@ public fun FlashSharedContentSheet(
             ) {
                 FlashSharedContentTab.entries.forEach { tab ->
                     val count = when (tab) {
-                        FlashSharedContentTab.Media -> mediaItems.size
-                        FlashSharedContentTab.Files -> fileItems.size
-                        FlashSharedContentTab.Audio -> audioItems.size
-                        FlashSharedContentTab.Links -> linkItems.size
+                        FlashSharedContentTab.Media -> filteredMedia.size
+                        FlashSharedContentTab.Files -> filteredFiles.size
+                        FlashSharedContentTab.Audio -> filteredAudio.size
+                        FlashSharedContentTab.Links -> filteredLinks.size
                     }
                     val isSelected = tab == selectedTab
 
@@ -200,6 +219,66 @@ public fun FlashSharedContentSheet(
                 }
             }
 
+            // Search within this conversation's shared content. Filters whichever tab is open.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
+                    .clip(FlashShapes.chip)
+                    .background(colors.backgroundSurfaceStrong)
+                    .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.chip)
+                    .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+            ) {
+                FlashIcon(
+                    icon = FlashIcons.Search,
+                    contentDescription = null,
+                    tint = colors.textTertiary,
+                    size = FlashDimensions.iconSm,
+                )
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    textStyle = FlashTheme.typography.bodyDefault.copy(color = colors.textPrimary),
+                    cursorBrush = SolidColor(colors.accentPrimary),
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            FlashText(
+                                text = "Search shared content",
+                                style = FlashTheme.typography.bodyDefault,
+                                color = colors.textTertiary,
+                            )
+                        }
+                        innerTextField()
+                    },
+                )
+                if (searchQuery.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .size(FlashDimensions.iconLg)
+                            .clickable {
+                                haptics(FlashHaptic.Tick)
+                                searchQuery = ""
+                            }
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "Clear shared-content search"
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Close,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
+                            size = FlashDimensions.iconSm,
+                        )
+                    }
+                }
+            }
+
             // Tab Content
             Box(
                 modifier = Modifier
@@ -221,6 +300,12 @@ public fun FlashSharedContentSheet(
                                     title = "No media shared yet",
                                     subtitle = "Photos and videos sent in this chat will appear here.",
                                 )
+                            } else if (filteredMedia.isEmpty()) {
+                                EmptySharedState(
+                                    icon = FlashIcons.Search,
+                                    title = "No media matches",
+                                    subtitle = "Nothing in Media matches \"$searchQuery\".",
+                                )
                             } else {
                                 LazyVerticalGrid(
                                     columns = GridCells.Fixed(3),
@@ -229,7 +314,7 @@ public fun FlashSharedContentSheet(
                                     horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
                                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4),
                                 ) {
-                                    itemsIndexed(mediaItems, key = { _, item -> item.image.id }) { index, item ->
+                                    itemsIndexed(filteredMedia, key = { _, item -> item.image.id }) { index, item ->
                                         Box(
                                             modifier = Modifier
                                                 .fillMaxWidth()
@@ -239,7 +324,7 @@ public fun FlashSharedContentSheet(
                                                 image = item.image,
                                                 shape = RoundedCornerShape(4.dp),
                                                 onClick = {
-                                                    val viewerList = mediaItems.map {
+                                                    val viewerList = filteredMedia.map {
                                                         FlashMediaViewerItem(
                                                             image = it.image,
                                                             senderName = it.senderName,
@@ -263,13 +348,19 @@ public fun FlashSharedContentSheet(
                                     title = "No files shared yet",
                                     subtitle = "Documents, archives, and files will appear here.",
                                 )
+                            } else if (filteredFiles.isEmpty()) {
+                                EmptySharedState(
+                                    icon = FlashIcons.Search,
+                                    title = "No files match",
+                                    subtitle = "Nothing in Files matches \"$searchQuery\".",
+                                )
                             } else {
                                 LazyColumn(
                                     modifier = Modifier.fillMaxSize(),
                                     contentPadding = PaddingValues(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                                 ) {
-                                    items(fileItems, key = { it.file.id }) { item ->
+                                    items(filteredFiles, key = { it.file.id }) { item ->
                                         SharedFileRow(
                                             item = item,
                                             onOpenFile = { onOpenFile(item.file.localUri, item.file.mimeType, item.file.name) },
@@ -288,13 +379,19 @@ public fun FlashSharedContentSheet(
                                     title = "No voice messages yet",
                                     subtitle = "Voice notes and audio clips will appear here.",
                                 )
+                            } else if (filteredAudio.isEmpty()) {
+                                EmptySharedState(
+                                    icon = FlashIcons.Search,
+                                    title = "No voice messages match",
+                                    subtitle = "Nothing in Audio matches \"$searchQuery\".",
+                                )
                             } else {
                                 LazyColumn(
                                     modifier = Modifier.fillMaxSize(),
                                     contentPadding = PaddingValues(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                                 ) {
-                                    items(audioItems, key = { it.voice.id }) { item ->
+                                    items(filteredAudio, key = { it.voice.id }) { item ->
                                         SharedAudioRow(
                                             item = item,
                                             onJumpToMessage = { onJumpToMessage(item.messageId) },
@@ -311,13 +408,19 @@ public fun FlashSharedContentSheet(
                                     title = "No links shared yet",
                                     subtitle = "Web addresses and group invite links will appear here.",
                                 )
+                            } else if (filteredLinks.isEmpty()) {
+                                EmptySharedState(
+                                    icon = FlashIcons.Search,
+                                    title = "No links match",
+                                    subtitle = "Nothing in Links matches \"$searchQuery\".",
+                                )
                             } else {
                                 LazyColumn(
                                     modifier = Modifier.fillMaxSize(),
                                     contentPadding = PaddingValues(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
                                     verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
                                 ) {
-                                    items(linkItems, key = { "${it.messageId}_${it.url}" }) { item ->
+                                    items(filteredLinks, key = { "${it.messageId}_${it.url}" }) { item ->
                                         SharedLinkRow(
                                             item = item,
                                             onOpenUrl = {

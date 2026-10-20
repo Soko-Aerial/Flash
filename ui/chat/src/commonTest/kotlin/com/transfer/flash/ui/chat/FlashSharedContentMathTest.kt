@@ -130,4 +130,98 @@ class FlashSharedContentMathTest {
         assertEquals("Media", FlashSharedContentMath.tabLabelWithCount(FlashSharedContentTab.Media, 0))
         assertEquals("Media (5)", FlashSharedContentMath.tabLabelWithCount(FlashSharedContentTab.Media, 5))
     }
+
+    // ── Sheet search (ADR-218): a blank query is the identity, everything else is case-insensitive ──
+
+    @Test
+    fun testFilterMediaByCaptionAndBlankQuery() {
+        val media = listOf(
+            FlashSharedMediaItem(
+                image = FlashImageAttachmentUi(id = "img1", caption = "Sunset over the bay"),
+                messageId = "m1",
+                senderName = "Alice",
+                timeLabel = "10:00",
+            ),
+            FlashSharedMediaItem(
+                image = FlashImageAttachmentUi(id = "img2", caption = "Office whiteboard"),
+                messageId = "m2",
+                senderName = "Bob",
+                timeLabel = "10:05",
+            ),
+        )
+
+        assertEquals(media, FlashSharedContentMath.filterMedia(media, "   "))
+        assertEquals(listOf("img1"), FlashSharedContentMath.filterMedia(media, "SUNSET").map { it.image.id })
+        // The sender is searchable too, because a captionless photo has no other text.
+        assertEquals(listOf("img2"), FlashSharedContentMath.filterMedia(media, "bob").map { it.image.id })
+        assertTrue(FlashSharedContentMath.filterMedia(media, "nothing").isEmpty())
+    }
+
+    @Test
+    fun testFilterFilesByName() {
+        val files = listOf(
+            FlashSharedFileItem(
+                file = FlashFileAttachmentUi(id = "f1", name = "Budget_Q4.pdf", sizeBytes = 1L),
+                messageId = "m1",
+                senderName = "Alice",
+                timeLabel = "10:00",
+            ),
+            FlashSharedFileItem(
+                file = FlashFileAttachmentUi(id = "f2", name = "photo.jpg", sizeBytes = 1L),
+                messageId = "m2",
+                senderName = "Bob",
+                timeLabel = "10:05",
+            ),
+        )
+
+        assertEquals(listOf("f1"), FlashSharedContentMath.filterFiles(files, "budget").map { it.file.id })
+        assertEquals(listOf("f1"), FlashSharedContentMath.filterFiles(files, ".PDF").map { it.file.id })
+        assertEquals(files, FlashSharedContentMath.filterFiles(files, ""))
+    }
+
+    @Test
+    fun testFilterAudioBySenderAndFilterLinksByUrlDomainOrSnippet() {
+        val audio = listOf(
+            FlashSharedAudioItem(
+                voice = FlashVoiceAttachmentUi(id = "v1", durationMs = 1000L),
+                messageId = "m1",
+                senderName = "Alice",
+                timeLabel = "10:00",
+            ),
+            FlashSharedAudioItem(
+                voice = FlashVoiceAttachmentUi(id = "v2", durationMs = 2000L),
+                messageId = "m2",
+                senderName = "Bob",
+                timeLabel = "10:05",
+            ),
+        )
+        assertEquals(listOf("v2"), FlashSharedContentMath.filterAudio(audio, "bob").map { it.voice.id })
+        assertEquals(audio, FlashSharedContentMath.filterAudio(audio, " "))
+
+        val links = listOf(
+            FlashSharedLinkItem(
+                url = "https://github.com/flash/app",
+                domain = "github.com",
+                snippet = "the repository",
+                messageId = "m1",
+                senderName = "Alice",
+                timeLabel = "10:00",
+                isInvite = false,
+            ),
+            FlashSharedLinkItem(
+                url = "flash://g/1/abcdef",
+                domain = "Flash Invite",
+                snippet = "join us",
+                messageId = "m2",
+                senderName = "Bob",
+                timeLabel = "10:05",
+                isInvite = true,
+            ),
+        )
+        assertEquals(listOf("m1"), FlashSharedContentMath.filterLinks(links, "github").map { it.messageId })
+        assertEquals(listOf("m2"), FlashSharedContentMath.filterLinks(links, "INVITE").map { it.messageId })
+        assertEquals(listOf("m2"), FlashSharedContentMath.filterLinks(links, "join us").map { it.messageId })
+        assertEquals(listOf("m2"), FlashSharedContentMath.filterLinks(links, "abcdef").map { it.messageId })
+        assertTrue(FlashSharedContentMath.filterLinks(links, "yellow").isEmpty())
+    }
 }

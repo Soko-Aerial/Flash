@@ -55,6 +55,7 @@ import java.io.File
 import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
+import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.security.pairing.FlashTrustedPeer
@@ -71,6 +72,7 @@ import com.transfer.flash.ui.calling.PttSessionOverlayContent
 import com.transfer.flash.ui.calling.pttPressOutcomeMessage
 import com.transfer.flash.ui.chat.FlashChatListScreen
 import com.transfer.flash.ui.chat.FlashConversationScreen
+import com.transfer.flash.ui.chat.FlashSearchScope
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.ui.chat.FlashBrowseOrgGroupsSheet
 import com.transfer.flash.ui.chat.FlashCreateGroupSheet
@@ -203,15 +205,24 @@ public fun DesktopShell(
     var searchQuery by remember { mutableStateOf("") }
     var messageBodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
     var colleagueMatchIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    // UI-024 upgrade: structured hits + active scope, plus the persisted recent-search chips. The
+    // flow is remembered so the collection is not restarted on every recomposition.
+    var searchResults by remember { mutableStateOf(FlashChatSearchResultsUi.Empty) }
+    var searchScope by remember { mutableStateOf(FlashSearchScope.All) }
+    val recentSearchesFlow = remember(chatRepository) { chatRepository.observeRecentSearches(8) }
+    val recentSearches by recentSearchesFlow.collectAsState(initial = emptyList())
     LaunchedEffect(searchQuery, isSearching) {
         val q = searchQuery.trim()
         if (!isSearching || q.isEmpty()) {
             messageBodyMatches = emptySet()
+            searchResults = FlashChatSearchResultsUi.Empty
             colleagueMatchIds = emptySet()
             return@LaunchedEffect
         }
         delay(200)
-        messageBodyMatches = chatRepository.searchMessageBodies(q)
+        val structured = chatRepository.searchChats(q)
+        searchResults = structured
+        messageBodyMatches = structured.conversationIds
         colleagueMatchIds = chatRepository.searchColleagues(q)
     }
 
@@ -1171,6 +1182,22 @@ public fun DesktopShell(
     }
 
     val hubPendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
+    // UI-024 upgrade: a structured hit opens the conversation AT that message. Search closes first
+    // so Escape/back from the chat returns to the list rather than a stale overlay.
+    val openSearchHit: (String, String) -> Unit = { conversationId, messageId ->
+        val q = searchQuery.trim()
+        if (q.isNotEmpty()) scope.launch { chatRepository.recordRecentSearch(q) }
+        selectedChatConversationId = conversationId
+        chatRepository.openConversation(conversationId)
+        chatRepository.clearListSelection()
+        isSearching = false
+        searchQuery = ""
+        nav.navigate(
+            FlashDestination.Conversation,
+            conversationId = conversationId,
+            targetMessageId = messageId,
+        )
+    }
     // Chat list content shared by listPaneContent in both single-pane and two-pane modes.
     val chatListPaneContent: @Composable () -> Unit = {
         FlashChatListScreen(
@@ -1194,6 +1221,22 @@ public fun DesktopShell(
             },
             messageBodyMatches = messageBodyMatches,
             colleagueMatchIds = colleagueMatchIds,
+            searchResults = searchResults,
+            searchScope = searchScope,
+            onSearchScopeChanged = { searchScope = it },
+            onSearchMessageClick = openSearchHit,
+            onSearchFileClick = openSearchHit,
+            onSearchSubmit = {
+                val q = searchQuery.trim()
+                if (q.isNotEmpty()) scope.launch { chatRepository.recordRecentSearch(q) }
+            },
+            recentSearches = recentSearches,
+            onRecentSearchClick = { recent ->
+                isSearching = true
+                searchQuery = recent
+                scope.launch { chatRepository.recordRecentSearch(recent) }
+            },
+            onClearRecentSearches = { scope.launch { chatRepository.clearRecentSearches() } },
             onConversationLongClick = chatRepository::enterListSelectionMode,
             onToggleSelection = chatRepository::toggleListSelection,
             onArchiveConversation = chatRepository::archiveConversation,
@@ -1445,6 +1488,8 @@ public fun DesktopShell(
                 }
             },
             conversationId = nav.current.conversationId,
+            // UI-024 upgrade: open at the message a global search result pointed to.
+            targetMessageId = nav.current.targetMessageId,
             addablePeers = trustedPeerRoster.filter { candidate ->
                 conversationState.members.none { it.id == candidate.id }
             },

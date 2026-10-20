@@ -1,5 +1,26 @@
 # Progress Log
 
+## 2026-10-20 - Search upgrade (branch `agent/search-upgrades`) merged into `dev`
+
+### Worked on
+Reviewed the search branch (`34a4dbfa`, `b82ecf75`) and merged it with `--no-ff`. Code merged without conflicts; only the
+four log/doc files conflicted (both sides added entries at the same place) and were kept side by side.
+
+### Changed (integration only)
+- **ADR renumbered:** both the hub-files P4 work and the search branch had taken **ADR-217**. Hub-files group files keep
+  ADR-217; the search decision is now **ADR-218** everywhere (decisions.md, AGENTS.md, handoff, progress, `docs/ui/search-ui.md`,
+  the TEST-BACKLOG search section, one test comment). Read "ADR-217" in the search branch's own commit messages as ADR-218.
+- The search backlog section is `4zzzzzzzzzzzz Search` (no trailing dot); the hub-files P2 section is `4zzzzzzzzzzzz.`.
+  They are different sections.
+
+### Verification
+On the merged tree, through the build lock: `:core:persistence:jvmTest` 80, `:core:messaging:jvmTest` 362,
+`:core:messaging:testAndroidHostTest` 650, `:ui:chat:jvmTest` 672, `:ui:chat:testAndroidHostTest` 647 (no failures);
+`:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` clean. Review notes: the structured search is read-only against
+`messages` (no schema change, so no clash with Room step 19); hub-file messages are searchable by file name like any
+attachment; the hit rows use the literal sender fallbacks "You" / "Peer" (not localised; the app is English only today).
+Not device-verified: `SEARCH-01..12`.
+
 ## 2026-10-20 - Hub files P4: group files, cancel on delete, pruning, console Files card
 
 ### Worked on
@@ -95,6 +116,75 @@ itself has no defect: protocol, codec and both drivers agree, and the JVM coordi
 ### Next AI
 If the owner wants pairing reachable from `Flash.create`, start with G-1/G-2 (expose the identity, add an inbound
 pairing seam) and then G-3 (hoist the coordinator into `commonMain`). Until then, the new page is the entry point.
+
+## 2026-10-20 — Search upgrade: files are searchable, results are structured, hits deep-link (UI-023 / UI-024, ADR-218)
+
+### Worked on
+The owner's "search upgrades" request, done in verifiable phases after re-checking every claim against the
+code first (`docs/ui/search-ui.md`, "Upgrade 2026-10-20"). Verified defects: filenames were not in any
+search query, the global result was a `Set<String>` of conversation ids, `RecentSearchDao` was never read
+or written, in-chat search had no result list or filters, and the shared-content sheet had no search field.
+
+### Changed
+- **`:core:persistence`** — `MessageDao.searchMessages` and `searchConversationMessages` now match
+  `text OR attachmentName` (ESCAPE and the tombstone guard unchanged).
+- **`:core:messaging`**
+  - `FlashSearchText` (new): `contains`, `snippet` (whitespace-collapsed, centred, ellipsised),
+    `firstUrl`, `matchesLink`, `isMediaMime`.
+  - `FlashMessageSearchHitUi`, `FlashFileSearchHitUi`, `FlashChatSearchResultsUi` (derived
+    `conversationIds`, so the old conversation-id contract is preserved).
+  - `FlashChatRepository.searchChats` / `observeRecentSearches` / `recordRecentSearch` /
+    `clearRecentSearches`; `searchMessageBodies` now delegates to `searchChats`.
+  - `RealFlashChatRepository.searchChats` splits rows into message and file hits with chat title, sender,
+    snippet and time label; recents are wired to `RecentSearchDao` (table already existed, no migration).
+- **`:ui:chat`**
+  - `FlashSearchScope.kt` (new): the shared scope vocabulary (global All/Chats/Messages/Files/Media/Links,
+    in-chat All/Messages/Files/Links), `FlashSearchListEntry`, pure `FlashSearchResultMath`
+    (`entries`, `scopeCount`, `filesForScope`, `messagesForScope`, `key`, `countLabel`) and the chip row.
+  - `FlashGlobalSearchResults.kt` (new): section header with "See all", message row, file row, empty state.
+  - `FlashChatSearchResults.kt` (new): in-chat hits model/math plus the results drawer (panel under the
+    bar, scope chips, capped 320 dp list).
+  - `FlashChatListScreen`: search renders scoped, sectioned rows in the same `LazyColumn`; the normal list
+    moved to an `else` branch unchanged.
+  - `FlashChatSearchBar`: IME Search submits/advances, drawer toggle, counter uses the scoped count.
+  - `FlashConversationScreen`: `targetMessageId` deep link (waits for the first Room emission, jumps once),
+    scope/expanded state, drawer in the header column.
+  - `FlashSharedContentMath` + `FlashSharedContentSheet`: per-tab filters with a search field, filtered
+    counts and per-tab empty states.
+  - `navigation/FlashNavigation`: `targetMessageId` in `FlashBackStackState`, saved as a third field
+    (legacy two-field entries still restore), replace-not-stack when re-targeting the open chat, and
+    `transitionFor` ignores a target-only change.
+- **Hosts** — `MainActivity` and `DesktopShell` call `searchChats`, collect the recents flow, hold the scope,
+  record the query on submit/hit and navigate with the target message; both pass `targetMessageId` into the
+  conversation screen.
+- **Docs** — `docs/ui/search-ui.md` (upgrade section, decisions, limitations), ADR-218 in
+  `docs/decisions.md`, `SEARCH-01`…`SEARCH-12` in `docs/testing/TEST-BACKLOG.md`.
+
+### Verification
+- `:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest` (91 tests in `RealFlashChatRepositoryTest`,
+  including the two new cases), `:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest` — green. The single earlier
+  failure was a wrong expectation in `FlashSearchTextTest`, not the code: `snippet` collapses whitespace on purpose.
+- `:core:persistence:compileKotlinJvm`, `:core:messaging:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`,
+  `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` — clean.
+- New tests: `FlashSearchTextTest`, `FlashChatSearchHitsTest`, `FlashSearchResultMathTest`,
+  `FlashSharedContentMathTest` (filters), navigation target/deep-link tests, and two
+  `RealFlashChatRepositoryTest` cases (`searchChats` split + recents).
+- **Not device-verified.** `SEARCH-01`…`SEARCH-12` are TODO.
+
+### Problems found while verifying (fixed before finishing)
+- In the All view a link-carrying message would have appeared under both Messages and Links, giving two
+  `LazyColumn` rows the same key (a crash). It now appears under Links in All; the Messages chip still
+  lists every body hit. Regression test added.
+- The shared-content filters had orphaned the `extractDomain` KDoc; restored.
+
+### Remaining
+- FTS5 ranking/stemming is deliberately deferred (ADR-218) until a measurement asks for it.
+- Ctrl+F is not bound on desktop.
+- Delete-the-message does not cancel anything here (nothing to cancel); unchanged.
+
+### Next AI
+Run `SEARCH-01`…`SEARCH-12` on two phones and the desktop. If the section preview (3 rows) or the 300-row
+LIKE cap feels wrong on a big history, that is the input for the FTS5 decision in ADR-218.
 ## 2026-10-20 — Hub files P3: 1:1 files go through the hub from chat, on Android and desktop
 
 ### Worked on

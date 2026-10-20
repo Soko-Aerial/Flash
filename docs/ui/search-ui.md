@@ -1,6 +1,6 @@
 ﻿# Component Research & Design Document — Search UI
 
-**Status:** DESIGNED → **IMPLEMENTED** (UI-023 in-chat search, 2026-08-21; UI-024 chat-list search, 2026-08-22)
+**Status:** DESIGNED → **IMPLEMENTED** (UI-023 in-chat search, 2026-08-21; UI-024 chat-list search, 2026-08-22; **upgraded 2026-10-20** — scopes, structured results, deep links, attachment/caption/link matching, persisted recents; see "Upgrade 2026-10-20" at the end)
 **Component ID:** UI-023 (in-chat search) / UI-024 (global & chat-list search — IMPLEMENTED)
 **Master plan:** [flash-premium-chat-ui-implementation.md](flash-premium-chat-ui-implementation.md)
 **Template:** [component-doc-template.md](component-doc-template.md)
@@ -211,3 +211,99 @@ Dependencies: **none added**.
 
 - [x] Unit tests green: match ranges (case-insensitive, non-overlapping), result cycling wrap-around, counter label, empty-query behavior
 - [ ] Physical device: enter/exit search, type query, step results, highlight visibility both directions + dark mode
+
+---
+
+# Upgrade 2026-10-20 — scopes, structured results, deep links, richer matching
+
+**Status:** IMPLEMENTED and unit-tested; **device checks owed** (`SEARCH-01`…`SEARCH-12` in
+`docs/testing/TEST-BACKLOG.md`). Decision record: `docs/decisions.md` ADR-218.
+
+The sections above are kept as written (they are the history of the first implementation). This
+section records what changed and why.
+
+## What was wrong with the first implementation
+
+Verified against the code before changing anything:
+
+1. **Filenames were invisible to search.** `MessageDao.searchMessages` / `searchConversationMessages`
+   matched `text` only, and in-chat `FlashChatSearchMath` matched `message.text` only. A file whose
+   name the person actually remembers could not be found — the most common real-world search.
+2. **Global results were collapsed to conversation ids.** `searchMessageBodies` returned
+   `Set<String>`, so the UI could only say "this chat matched somewhere". No snippet, no sender, no
+   timestamp, no jump, and no way to tell a message match from an attachment match.
+3. **`RecentSearchDao` was dormant.** The table, entity and DAO existed; nothing ever read or wrote
+   them, so the recents row was caller-owned and empty in both hosts.
+4. **In-chat search had no result list**, only `n / m` stepping, and no filters.
+5. **The shared-content sheet was a read-only gallery** (Media/Files/Audio/Links) with no way to find
+   one item among hundreds.
+
+## What changed
+
+| Area | Change |
+|---|---|
+| Persistence | `MessageDao.searchMessages` and `searchConversationMessages` match `text OR attachmentName` (still `ESCAPE '\'`, still NULL-safe, still `deletedAt IS NULL`). |
+| Model | New `FlashMessageSearchHitUi`, `FlashFileSearchHitUi`, `FlashChatSearchResultsUi` (derived `conversationIds`, `isEmpty`, `Empty`), plus pure `FlashSearchText` (`contains`, `snippet`, `firstUrl`, `matchesLink`, `isMediaMime`). |
+| Repository | `FlashChatRepository.searchChats(query, limit = 300)` builds both hit kinds with conversation title, sender, snippet and time label; `searchMessageBodies` is kept and delegates to it. `observeRecentSearches`, `recordRecentSearch`, `clearRecentSearches` are wired to `RecentSearchDao`. |
+| Global UI | One heterogeneous `LazyColumn` driven by pure `FlashSearchResultMath.entries(...)`: scope chip row, then sections **Chats / Messages / Files / Media / Links**, each capped at 3 rows with a "See all" that switches the scope. |
+| Scopes | Global: All, Chats, Messages, Files, Media, Links. In-chat: All, Messages, Files, Links. `Files` excludes images/videos (they are `Media`); `Links` only shows hits whose text carries a URL. |
+| Deep links | `FlashBackStackState.targetMessageId` (saved as a third field, legacy two-field entries still restore). A result tap records the query as a recent search, closes search, opens the chat and scrolls to the message with the existing pulse highlight. |
+| In-chat | Results drawer under the search bar (expand/collapse chevron, chips, `n results`, tap-to-jump) beside the existing `n / m` stepper; matches now include file names, captions and link text. |
+| Shared content | A pill search field filters whichever tab is open (file names, captions, links, voice-note sender), with a "Nothing in <tab> matches" state and per-tab counts following the filter. |
+
+## Behavior decisions worth knowing
+
+- **A chat row means the chat itself matched** (title, preview text or a colleague name). A message
+  that merely contains the query appears as a message/file row instead, so the same match is never
+  listed twice in two shapes.
+- **In the All view a link-carrying message is listed under Links**, not under Messages as well; the
+  Messages chip still lists every body hit. This keeps each row (and each `LazyColumn` key) unique.
+- **Re-targeting the conversation already open replaces the back-stack entry** instead of stacking
+  one entry per message, and plays no push animation — otherwise Back would walk through every
+  search hit.
+- **The results drawer is an expandable panel, not a modal sheet.** Documented deviation: the bar
+  stays interactive (you keep typing) and the thread stays visible behind it; a sheet would hide both.
+- **Ctrl/IME behaviour:** IME Search submits (records the recent search) and advances to the next
+  result.
+
+## Implementation notes
+
+Files added:
+- `core/messaging/.../model/FlashSearchText.kt` — pure text/match helpers.
+- `ui/chat/.../FlashSearchScope.kt` — scope vocabulary, `FlashSearchListEntry`, `FlashSearchResultMath`, `FlashSearchScopeRow`.
+- `ui/chat/.../FlashGlobalSearchResults.kt` — section header, message row, file row, empty state.
+- `ui/chat/.../FlashChatSearchResults.kt` — `FlashChatSearchKind`, `FlashChatSearchHit`, `FlashChatSearchHits`, results panel.
+
+Files changed: `MessageDao.kt`, `FlashMessagingModels.kt`, `FlashChatRepository.kt`,
+`RealFlashChatRepository.kt`, `FlashChatListScreen.kt`, `FlashChatListSearch.kt`,
+`FlashChatSearchBar.kt`, `FlashConversationScreen.kt`, `FlashSharedContentMath.kt`,
+`FlashSharedContentSheet.kt`, `navigation/FlashNavigation.kt`, plus host wiring in
+`app/.../MainActivity.kt` and `desktop/.../DesktopShell.kt`.
+
+Dependencies: **none added**. No Room schema change (the `recent_search` table already existed at
+version 18). FTS5 was considered and deliberately deferred (ADR-218): the current LIKE scan is
+bounded by a result limit, and FTS would need a schema migration plus a tokenizer choice before it
+can be measured.
+
+## Testing checklist
+
+- [x] `FlashSearchTextTest` — contains/snippet/URL/link/mime helpers.
+- [x] `FlashChatSearchHitsTest` — file-name, caption, link matches; Files/Links scopes; blank query.
+- [x] `FlashSearchResultMathTest` — section order, 3-row cap, "See all", scope partitions and counts, empty state, stable keys.
+- [x] `FlashNavigationLogicTest` — target round-trip through the saver, legacy two-field entry, replace-not-stack, no push animation.
+- [x] `RealFlashChatRepositoryTest` — `searchChats` splits message vs file hits with chat context, ignores tombstones; recents trimmed/deduplicated/cleared.
+- [x] `:ui:chat:jvmTest`, `:core:messaging:jvmTest`, `:core:messaging:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`.
+- [ ] Device: `SEARCH-01`…`SEARCH-12`.
+
+## Known limitations (current)
+
+- Matching is substring LIKE, not tokenised: "budget" does not match "budgets" beyond the substring,
+  and there is no stemming, ranking or typo tolerance.
+- `searchChats` returns at most 300 rows (newest first), so a very common word in a huge history is
+  truncated in the *file/message* sections; the chat rows are not affected.
+- Snippet context is character-based, not word-based.
+- Search does not cover group names of chats you have never opened, nor announcements/hub content.
+- In-chat search still scans the in-memory thread (`observeConversation` has no LIMIT, so the whole
+  thread is already loaded); a future paged message list must move this to the DAO.
+- Ctrl+F / Cmd+F is not bound on desktop; the header search icon is the only entry point today.
+
