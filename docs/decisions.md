@@ -6305,3 +6305,29 @@ A file to a colleague on another network now works without a choice, and a peer 
 
 ### Revisit when
 P4 builds group hub files (D7 still binds them); the owner asks for a LAN ↔ hub hand-over of one transfer; or device tests (`HUBFILE-M01..M10`) show the reachability rule picking the hub while a LAN path was about to come up.
+
+## ADR-217 - A group file goes through the hub once, by a sealed ticket per member the direct pipeline could not reach
+
+### Decision
+- **One upload per group file** (`POST /api/v1/files` with `groupId`). The hub checks the group's own roster on every read, so only a **hub-linked group** can use it (D21).
+- **Tickets only for members the direct pipeline missed** (D23). The swarm offer and the whole-file push run first; `GroupFileSender` collects the members they did not reach and hands them to `HubFileBinding.claimGroup`. `hub_file.recipients` records who.
+- **The ticket reuses `FLASH_HUBFILE v=1`** with optional `groupId` and `groupSig` (D22). It is sealed to each member separately through `HubChatBridge.sendHubFile`. The key never rides in a group frame. A P3 build rejects the frame by field name.
+- **Receipts are group receipts** (`GroupWireFrame.Receipt`). A one-to-one `DeliveryReceipt` would delete the whole outbox row on the first acknowledgement; the sender's outbox row is retired only when no member is pending.
+- **A ticket may fill in a bare group message** of the same author and group that is not deleted and carries no attachment (`attachHubFileToBare`), in either arrival order; anything else using the id is refused.
+- **Pruning.** At start, `hub_file` rows that are terminal for 30 days or expired for 1 day are deleted, unless a visible message still shows the row. Room schema 19 adds `groupId` and `recipients`.
+
+### Context
+P3 left group files on the swarm path because choosing per member between the LAN swarm and a hub ticket was a fan-out question. Members outside the LAN of the sender got nothing. The owner's request was that a file reach a colleague on another network.
+
+### Alternatives considered
+- **One upload per member** (rejected: n times the hub storage and upload time for the same bytes, and the quotas would be hit n times).
+- **The key in a group frame** (rejected: every recipient of the frame and the relay would hold it; per-member sealed tickets cost nothing extra).
+- **Tickets to every member, direct or not** (rejected: a member on the LAN would download twice, and the hub path is the slower one).
+- **A group signature that binds the file** (not done: a group attachment's signature does not bind its file today; the sealed envelope names the author. Recorded as a known limit).
+- **Unlinked groups through the hub** (rejected: the hub has no roster for them, so it could not check a read).
+
+### Consequences
+A group file reaches a member on another network without a choice. A hub-linked group member removed before fetching cannot fetch; one who already fetched keeps the bytes (no per-sender keys, FO-27). A group file that fails for every recipient fails the message; if another member already has it, the message is not failed. Deleting a file's message **for everyone** (or for oneself while it still uploads) now cancels the upload and deletes the file on the hub (`RealFlashChatRepository.onHubFileMessageDeleted` -> `HubFileBinding.cancelOutgoing`); "delete for me" after the upload finished leaves the file for recipients who hold tickets. A received file is never cancelled by deleting its message. Not built: LAN to hub hand-over of one transfer; the group's title on the sender's Transfers row (it shows the first 8 characters of the group id).
+
+### Revisit when
+Device tests `HUBFILE-G01..G08` show the unreached-member rule choosing the hub for a member the LAN reaches a moment later; the owner asks for unlinked groups; or FO-27 (group message encryption) lands.

@@ -77,6 +77,8 @@ Rules (AGENTS.md section 24 applies in full):
 | `hubfile.ticket.queued` | `HubFileMessages` (`:core:messaging`) | the upload finished and the message exists: the sealed ticket goes into the outbox (exactly once per file) | `id` |
 | `hubfile.ticket.in` | same | a sealed ticket from its author is stored as a received file | `id`, `from` (8), `fresh` (false for a duplicate), `expired` (true when the file had already left the hub) |
 | `hubfile.ticket.dropped` | same | an outgoing file's ticket is given up: the upload failed or was cancelled, the ticket cannot be built, the file expired on the hub, or the 8-day hub outbox budget ran out | `id`, `reason` (the row state in lower case: `failed`, `cancelled`, `queued`, …) |
+| `hubfile.group.drop` | `RealFlashChatRepository` (`:core:messaging`, hub files P4) | a group file ticket is refused before it is stored | `group` (8), `from` (8), `reason` (`not_linked`, `sender_not_allowed`, `bad_signature`), `skewMs` |
+| `hubfile.rows.pruned` | `HubFileBinding` | at start, finished rows nothing shows any more (and tickets whose file left the hub) were removed | `count` |
 | `hubfile.receive.done` | `HubFileBinding` | a received file is verified and moved to the received folder | `id`, `bytes` |
 | `hubfile.cancel` | same | the person cancelled a hub file (either direction) | `id`, `direction` (`out`, `in`) |
 | `radio.link.up` | `KissTncDriver` (`:core:network`, radio spike, BT-00) | the byte link to the TNC opened | `link` (port or RFCOMM description, no key material), `attempt` |

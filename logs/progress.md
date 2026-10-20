@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-10-20 - Hub files P4: group files, cancel on delete, pruning, console Files card
+
+### Worked on
+`docs/plans/HUB-FILES-PLAN.md` P4 (HF-G1..HF-G4) and what P3 deferred. Built under `docs/plans/HUB-QUALITY-CONTRACT.md`;
+the P4 explain-back is in the plan section 9 and the full report is "P4 result" there.
+
+### Changed
+- **Console (commit `07c5136f`):** Files card for the four limits and usage (`filelimits.js`, `views/settings.js`, `strings/en.js`), 78 Node tests.
+- **Group files (ADR-217):** one upload per group (`groupId` on the create request); a sealed `FLASH_HUBFILE v=1` ticket
+  (optional `groupId`, `groupSig`) per member the direct pipeline could not reach (`hub_file.recipients`); the receiver
+  accepts only for a hub-linked group, from an active member, with the v2 signature; it acknowledges with a group `Receipt`
+  (never the 1:1 receipt); the sender's drain sends tickets and retires the outbox row when no member is pending.
+  `HubFileBinding.claimGroup`, `GroupFileSender` hook, both hosts wired.
+- **Cancel on delete:** `RealFlashChatRepository.onHubFileMessageDeleted` -> `HubFileBinding.cancelOutgoing`. Delete for
+  everyone always cancels; delete for me only while the upload runs; a received file is never cancelled.
+- **Pruning:** `hub_file` rows past 30 days (finished) or 1 day past expiry are removed at start unless a visible message
+  still shows them. Room schema 19 (`groupId`, `recipients`).
+- Docs: protocol.md (group ticket), security.md (four rows), PROBES.md (`hubfile.group.drop`, `hubfile.rows.pruned`),
+  plan section 6 (console strings) and 9, ADR-217, TEST-BACKLOG `HUBFILE-G01..G08`, deployment troubleshooting rows.
+
+### Verification
+All through `toolslash-gradle.cmd`: persistence jvm 80 / android host 53, messaging jvm 355 / host 641, engine jvm 168 /
+host 123, desktop jvm 220, transfer 135, enterprise 256, Node 78: no failure. `:desktop:compileKotlinJvm` and
+`:app:compileDebugKotlin` clean. 13 mutations: all caught; M6 survived once (the DAO guard hid a Kotlin gap), test `U55`
+added. **Not deployed, not device-verified.**
+
+### Problems
+- Surprise: a 1:1 receipt would retire a group's whole outbox row (fixed by the group receipt). Smart-cast on a public
+  property from another module (copy to a local). No error entry: nothing failed in a way a future AI would repeat.
+
+### Remaining
+- Device checks `HUBFILE-G01..G08` (and the owed `C01..C06`, `M01..M10`), after the hub is redeployed with P1 and P2's server change.
+- Not built: LAN <-> hub hand-over of one transfer; the group's title on the sender's Transfers row (shows 8 characters);
+  groups the hub does not know (D21); a per-member cancel.
+
+### Next AI
+Do not call hub files working before a phone sends a real file through a deployed hub. Owner decisions pending: D18
+(paired-only auto-download), the group scope (D21), LAN <-> hub hand-over.
+
 ## 2026-10-20 - Developer guide: how to do pairing, and a docs sufficiency audit
 
 ### Worked on

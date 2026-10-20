@@ -1735,8 +1735,31 @@ applies to it. Body: `FLASH_HUBFILE` text frame (`FlashTextFraming`), version `v
 `senderName`, `sentAt`, `fileId` (32 hex), `key` (`hfk1.<Base64>`), `sha256` (ciphertext, 64 hex), `size` (plaintext,
 > 0), `chunkBytes` (≥ 64 KiB), `chunks` (must equal the layout of `size`/`chunkBytes`), `expiresAt` (ms, 0 = unknown),
 `name` (no `/`, `\`, control characters, `.` or `..`; ≤ 255), `mime` (≤ 127), `meta` (voice-note metadata, ≤ 4096).
-A `groupId` field makes the frame invalid. Unknown extra keys are ignored. Receiver rules: author must equal the relay
+Two optional fields carry a group ticket (P4, below): `groupId` and `groupSig`. Unknown extra keys are ignored. Receiver rules: author must equal the relay
 sender; a known `fileId` with another sender or key, or a reused message id, is refused (rejected and acknowledged);
 a replay is stored once and receipted every time; the recipient fetches from its own enrolled hub. The sender sends the
 ticket only after the upload is complete (hub only, never over the LAN, deviation D17) and retires it on the recipient's
-`DeliveryReceipt`. Groups are not carried in P3 (deviation D14).
+`DeliveryReceipt`.
+
+### Hub file ticket for a group (P4, ADR-217, 2026-10-20; built and unit-tested, NOT deployed, NOT device-verified)
+
+A file for a group is uploaded **once**, with `groupId` on `POST /api/v1/files` (the hub checks the group's roster on every
+read, so only a group linked to the hub works), and each member the direct pipeline could not reach is sent the same
+`FLASH_HUBFILE v=1` ticket in a message of their own, sealed to that member exactly like a 1:1 ticket. The key never rides in
+a group frame. The frame adds two fields, written only when present:
+
+- `groupId`: the group the file belongs to; non-blank, ≤ 128 characters, no control characters, else `Invalid("groupId")`.
+- `groupSig`: the author's group-message signature over `(groupId, author, messageId, sentAt, no reply, no reaction,
+  empty text)`, the same signature the group's bare message carries; requires `groupId`, ≤ 1024 characters, no control
+  characters, else `Invalid("groupSig")`. It does not bind the file (the sealed envelope does, by its author), the same
+  as a group attachment's signature today.
+
+A build that predates P4 rejects such a frame by field name (`groupId`) and the ticket stays unacknowledged, which is the
+safe direction. Receiver rules, in addition to the 1:1 rules: the group must be linked to the hub, the author an active
+member of it (`isActiveGroupMember`), this device not removed; in a signed (v2) group the signature must verify as a group
+attachment's does, and the verified label replaces the sender name. The ticket is stored as an attachment message in the
+**group** conversation. If the author's bare group message reached this device first, the ticket fills in that row only when
+it has the same author and group, is not deleted and carries no attachment; a message id in use by anything else is
+refused. The receiver answers with a `GroupWireFrame.Receipt`, never a one-to-one `DeliveryReceipt`. The sender keeps one
+outbox row for the group message; each receipt records one member's delivery, and the row is retired when none is pending.
+

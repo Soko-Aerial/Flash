@@ -484,6 +484,9 @@ do not roll back a binary onto a database a newer binary has already migrated.
 | A file says "Files can only go through the hub when content sealing is on for <name>" | the recipient has not published a sealing key | the recipient opens the app once while signed in to the hub; sealing publishes itself |
 | A file waits with "The hub cannot be reached…" for a long time | the device cannot reach the hub address | check the device's network and the hub's TLS/proxy; the transfer continues by itself when it is back |
 | A recipient sees "This file is no longer on the hub" | it came online after `fileRetentionDays`, or the sender cancelled | ask the sender to send it again; raise retention if this is common |
+| A group file reaches the members on the sender's network but not the others | the group is not linked to the hub (a group file uses the hub only for a hub-linked group), or the sender's device has no hub | only a group that came from the hub's roster (hub-linked) uses the hub; a group made only on phones keeps the direct path, so link it through the hub's group roster; check the sender is signed in to the hub |
+| A group member sees "This file is no longer on the hub" at once | the sender deleted the message for everyone (that also deletes the file), or the member was removed from the group | ask the sender to send it again; a removed member cannot fetch |
+| The Files card in Console → Settings refuses a number | it is outside the bound the message names | enter a whole number inside the shown range; the per-file limit cannot exceed the whole-hub amount |
 
 ---
 
