@@ -17665,3 +17665,17 @@ Could not run: `:desktop:jvmTest` (hang above), any device or emulator check, `:
 
 ### Shared files touched (hunks)
 `FlashNavigation.kt` (ui/chat, owned), `FlashChatListTopBar.kt` (+2 params, 1 block), `FlashChatListScreen.kt` (+2 params, 2 pass-through lines), `FlashIcons.kt` (+4 lines), `MainActivity.kt` (about 44 insertions / 46 deletions: tab lists, enrolment effect, `openTransfers`, Hub branches, top-bar args), `DesktopShell.kt` (about 40 lines: effect, tabs, Esc, tray/shortcut, top-bar args, Hub branch), `DesktopSideBar.kt` (tab function), `DesktopMain.kt` (1 line).
+
+## 2026-10-20 — Library 2.1.0-beta.2 dry run, push and tags
+
+### Worked on
+Publishing the library as a new JitPack tag. `v2.1.0-beta.1` is already built on JitPack (2026-10-09) and predates the hub, swarm and search work, and a tag name is never reused, so the library moved to `2.1.0-beta.2`.
+
+### Changed
+`flashLibraryVersion` and every install snippet, the desktop sample, the aboutlibraries fork entry, `docs/release-build.md`, `CHANGELOG.md` and `AGENTS.md` now say `2.1.0-beta.2`.
+
+### Verification
+`jitpack.yml`'s exact install line (all 19 publish tasks, `-x test -x lint`) into a scratch Maven repo on Temurin 17 with `gradle/gradle-daemon-jvm.properties` moved aside (as JitPack does): BUILD SUCCESSFUL in 10m25s; every published POM is `2.1.0-beta.2`; `ui-callui` depends on `core-calling` at runtime scope in the POM. The daemon pin file was restored afterwards.
+
+### Remaining
+The APK/MSI/EXE in `dist\2.1.0` were built before this bump, so their bundled licence list names the webrtc-kmp fork as `2.1.0-beta.1`; nothing else differs. Check the JitPack build of `v2.1.0-beta.2` (`https://jitpack.io/api/builds/com.github.Kali452345/Flash`) and a consumer once it is green.

@@ -13,7 +13,7 @@ install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 First official release since `v2.0.0-beta`. Android `versionName 2.1.0` / `versionCode 4`, Windows installers `Flash-2.1.0.msi` and
 `Flash-2.1.0.exe`. Source: 337 commits on `dev` since `v2.0.0-beta`.
 
-**This release covers the apps only.** The library (`core-*`, `ui-*`, JitPack, still `2.1.0-beta.1`), the Flash Hub server and the
+**This release covers the apps.** The library (`core-*`, `ui-*`) is published separately to JitPack as the beta tag `v2.1.0-beta.2`; the Flash Hub server and the
 radio gateway are **not** part of this release and stay experimental; see "Experimental" below.
 
 ### Upgrading from v2.0.0-beta
@@ -111,7 +111,7 @@ These are in the apps but unfinished and not device-verified. Do not rely on the
   section; leave it alone unless you run a hub.
 - **Radio gateway (beta)** (Settings, Network): Bluetooth/serial link to a packet radio. Radios have not been tested end to end;
   radio audio is not built.
-- **Library publishing** (JitPack `core-*` / `ui-*` modules, tag `v2.1.0-beta.1`): unchanged by this release.
+- **Library publishing** (JitPack `core-*` / `ui-*` modules): published as the beta tag `v2.1.0-beta.2` (`v2.1.0-beta.1` predates the hub, swarm and search work).
 
 ### Known issues and not verified
 
