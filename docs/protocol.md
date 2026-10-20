@@ -1613,3 +1613,48 @@ and passes it on to at most 24 `hrs1` members. Offers are also sent when a peer 
 **Gate.** `isGroupPeerTrusted(groupId, peer)` additionally accepts a peer of a hub-linked group when the roster is current, both local device
 and peer are members, and the peer is ORG. Legacy and `g2-` groups use their own gates, unchanged. ORG-only members never get PTT, group
 creation or administration. "Add member" is disabled for hub groups. Roster rows are written with `operationId = "hub-roster-v<version>"`.
+
+## Hub files API (ADR-215, 2026-10-20; DESIGNED, P1 server in progress)
+
+**What it is.** A file crosses the hub as a **client-sealed blob** in numbered chunks. The hub stores opaque bytes and never
+receives a key. Capability token `fil1` (also in the relay `HELLO` capability list). Contract constants and DTOs live in
+`:core:hub-protocol` (`HubContract.PATH_FILES*`, `rest/HubFileDtos.kt`); the design is `docs/plans/HUB-FILES-PLAN.md`.
+
+**Identifiers.** `fileId` is minted by the client: exactly 32 lowercase hex characters, and it is the idempotency key of the
+whole upload. It is also the only value used to build a storage path, so anything that is not 32 hex characters is
+`ERR_BAD_REQUEST` before any filesystem call.
+
+**Endpoints** (bearer, same gate and rate limits as the rest of `/api/v1`):
+
+| Method | Path | Body | Answers |
+|---|---|---|---|
+| `POST` | `/api/v1/files` | `CreateFileRequestDto` | `201 FileTicketDto`; `409 ERR_CONFLICT` if the id exists with different metadata; `413 ERR_TOO_LARGE` over `maxFileBytes`; `429 ERR_QUOTA_EXCEEDED` or `ERR_RATE_LIMIT` |
+| `PUT` | `/api/v1/files/{fileId}/chunks/{index}` | raw bytes, `content-type: application/octet-stream` | `204`; `404` unknown file; `403` not the sender; `409` wrong state or different bytes for an index already stored; `413` a chunk larger than the declared `chunkSize` |
+| `POST` | `/api/v1/files/{fileId}/complete` | empty | `200 FileStatusDto`; `409` a chunk is missing |
+| `GET` | `/api/v1/files/{fileId}` | — | `200 FileStatusDto`; `403` not the sender and not a recipient; `404` unknown or expired |
+| `GET` | `/api/v1/files/{fileId}/chunks/{index}` | — | `200 application/octet-stream`; `404` index not uploaded yet; `409` the file is not `READY`; `503` the chunk row exists but its file is gone (a restore without `data/files`) |
+| `DELETE` | `/api/v1/files/{fileId}` | — | `204`; `403` not the sender |
+
+**Rules.** `chunkSize` is 1..`MAX_CHUNK_BYTES` (1 MiB) and identical for every `PUT` of one file; `chunkCount` must equal
+`ceil(totalBytes / chunkSize)`; the last chunk may be shorter. `PUT` is idempotent per index: the same bytes answer `204`
+and do not change any counter, different bytes answer `409` and never overwrite. Chunks may arrive in any order. A file
+becomes `READY` only when every index 0..chunkCount-1 is present and the stored byte sum equals `totalBytes`; before that,
+a recipient's `GET` answers `404` (the file is not listed to them yet). `sha256` in the request is the hash of the whole
+**ciphertext** and is what the recipient checks before it decrypts; the hub only stores the value and returns it.
+
+**Recipients.** Exactly one of `toDeviceId` (a 1:1 send) or `groupId` is present. For a group the hub resolves the roster
+**at create time** and stores the device ids; `GET`/`readChunk` re-check every caller against the live roster, so a member
+removed after the send can no longer download, while a member added after it never could. `FileStatusDto.recipients` lists
+the stored ids.
+
+**Retention and limits.** `expiresAtMs` is `now + fileRetentionDays` at completion; an upload that is never completed is
+swept after `maxUploadHours`. The hub enforces `maxFileBytes` (default 50 MB, admin setting), `deviceStoredBytes`
+(default 500 MB), `globalStoredBytes` (default 5 GB) and `maxFilesPerDevice` (default 50), all inside the write transaction.
+A sender cancels with `DELETE`.
+
+**What the hub can see.** Size, chunk timing, sender, recipients, and the ciphertext hash. Not the content, not the name
+(only an operator log hint), not the key. Group keys travel in sealed direct messages, never in a group frame (ADR-215 D7).
+
+**Compatibility.** A hub without `fil1` has no `/api/v1/files` and answers `404`; a client must show the existing
+"not available over the hub" path rather than a new failure. The feature is additive: no relay frame changed, no existing
+endpoint changed, and nothing here is needed by a client that does not send files.

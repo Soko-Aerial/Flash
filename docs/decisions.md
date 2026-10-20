@@ -6251,3 +6251,27 @@ The reference implementation (HTCommander, Apache-2.0, `BluetoothClassicPlugin`)
 ### Revisit when
 The audio channel (the vendor UUID's second socket, F4 in the audit) is built: it will need the same channel cache, and ADR-210 / FO-28 currently forbid radio voice. Also revisit if a radio refuses the insecure socket (then the order becomes model-specific).
 
+
+## ADR-215 - Files through the hub are sealed blobs on storage, moved by chunked REST, limited by an admin setting
+
+### Status
+ACCEPTED (owner decisions D1 sealed, D2 1:1 and group, 2026-10-20; plan `docs/plans/HUB-FILES-PLAN.md`). P1 (server) in progress; nothing device-verified.
+
+### Decision
+A file crosses the hub as a **client-sealed blob**: the sender encrypts it with a per-file AES-256-GCM key before any byte reaches the hub, uploads it in numbered chunks over REST (`POST /api/v1/files`, `PUT .../chunks/{i}`, `POST .../complete`, `GET`, `DELETE`), and the recipient downloads the same chunks, resuming from what it already has and verifying both the whole-blob SHA-256 and its own decryption. The hub stores `<dataDir>/files/<fileId>/<i>.chunk` with a metadata index in SQLite and enforces `maxFileBytes` (default 50 MB, admin-adjustable in the console), a per-device and a global byte quota, a file-count cap and a retention period. Keys never reach the hub: for a 1:1 send the key rides inside the already-sealed hub chat payload, and for a group send it is delivered to each member in a sealed **direct** message rather than in the group frame.
+
+### Context
+The owner asked why audio and files do not work through the hub and asked for 50 MB files with an admin-adjustable limit. The investigation (`docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md` F2) found there is no hub file path at all: the relay carries chat frames with a 64 KiB payload cap, the mailbox's 50 MB figure is an aggregate per-recipient storage cap, `SMALL_FILE` is a dead envelope constant, and the console settings only accept an invite TTL and a use count. Hub-routed chat already seals content end to end (ADR-121), so the hub is already trusted with routing metadata but not with content; a file path that stored plaintext would make the hub a second, weaker system.
+
+### Alternatives considered
+- **Relay-chunked 50 MB over the existing frames** (rejected: ~800 mailbox rows for one file, no resume, and the payload cap exists for a reason).
+- **Plaintext blobs on the hub disk, like the mailbox** (rejected by the owner: it would make an admin able to read every file, and it contradicts the sealing posture of chat).
+- **One SQLite BLOB per file** (rejected: a 50 MB BLOB rewrites and bloats the database on every chunk and in every backup).
+- **Group key inside the group frame** (rejected: group frames are relayed in clear today, FO-27, so that would hand the hub the plaintext key).
+- **Client-side chunk list in the status DTO** (deferred: a 4,096-entry bitset is possible, but a receiver that tracks its own bitmap and probes missing indexes is simpler and needs no new field).
+
+### Consequences
+The hub learns file size, timing, sender and recipients, and cannot read content: the security table in `docs/plans/HUB-FILES-PLAN.md` §5 records that as the accepted residual risk. Backups must now include `data/files` together with `flash-hub.db`; a restore without it leaves rows whose downloads answer 503 until the sweeper removes them. The console gains settings (`maxFileBytes`, `fileRetentionDays`, `deviceStoredBytes`, `globalStoredBytes`) that take a step-up approval like the existing ones. A group file has one blob and N key messages, so group fan-out cost is N small sealed messages, not N copies of the file.
+
+### Revisit when
+FO-27 (group message encryption) lands, at which point the group key can ride the group frame and the per-member messages disappear; or when an attachment path for announcements (FO-21) or a department file drop (FO-25) is built, both of which should reuse this store rather than invent another.
