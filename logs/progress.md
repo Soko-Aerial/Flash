@@ -12,8 +12,7 @@ Two reports: a group image stuck at "accepted" on the desktop, and phone and des
 
 ### Verification
 `SwarmDriverPeerFeatureTest`, `WsFlashNetworkTest.testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale`, both mutation-checked;
-`:core:swarm:jvmTest`, `:core:network:jvmTest`, desktop and app compile green. NOT device-verified; NOT committed; the dist 2.1.0
-artifacts predate these fixes and need a rebuild. ERROR-744 (duplicate launch truncates `desktop.log`) is open.
+`:core:swarm:jvmTest`, `:core:network:jvmTest`, desktop and app compile green. NOT device-verified. Committed `620fc919` (not pushed). `dist.1.0` rebuilt after the fixes (APK sha256 0bff84b9..., EXE 8573bdd4..., MSI 025a212b...; APK versionCode 4 / 2.1.0, release cert b695f4d6...e89af). ERROR-744 (duplicate launch truncates `desktop.log`) is open.
 
 ### Next AI
 Owner to ask for commit and rebuild; then NETMOVE-01 and SWM-48 in `docs/testing/TEST-BACKLOG.md`.
