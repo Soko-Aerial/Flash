@@ -9,6 +9,7 @@ import { pageHeader, card, badge, banner, button, field, textInput, withBusy, dl
 import { loadInto } from '../ui/boundary.js';
 import { toast } from '../ui/toast.js';
 import { openHelp } from '../shortcuts.js';
+import { FILE_LIMITS, toDisplay, parseForm, combinationWarnings, changedKeys, topUsage } from '../filelimits.js';
 
 const TABS = ['config', 'health', 'about'];
 export const CONSOLE_VERSION = '1.0.0';
@@ -52,6 +53,11 @@ export function mountSettings(container, ctx) {
         card(
           { title: t('settings.invite.title'), subtitle: t('settings.invite.sub'), id: 'set-invite' },
           inviteDefaults(s),
+        ),
+        card(
+          { title: t('settings.files.title'), subtitle: t('settings.files.sub'), id: 'set-files' },
+          fileLimitsForm(s),
+          fileUsage(),
         ),
         card(
           { title: t('settings.hub.title'), id: 'set-hub' },
@@ -111,6 +117,87 @@ export function mountSettings(container, ctx) {
       });
     });
     return form;
+  }
+
+  // The four file limits (ADR-215). The hub validates every value again and clamps the combinations; this form explains a
+  // mistake before the round trip and warns about a combination the hub will narrow. Each changed key is its own step-up.
+  function fileLimitsForm(s) {
+    const inputs = {};
+    const fields = {};
+    for (const l of FILE_LIMITS) {
+      const input = textInput({ type: 'text', value: toDisplay(l.key, s[l.field]), className: 'input-num' });
+      input.setAttribute('inputmode', 'numeric');
+      inputs[l.key] = input;
+      fields[l.key] = field({
+        label: t('settings.files.' + l.key),
+        control: input,
+        hint: t('settings.files.' + l.key + '.hint', { min: formatNumber(l.min), max: formatNumber(l.max) }),
+      });
+    }
+    const warnings = h('div', { class: 'stack' });
+    const save = button({ label: t('settings.files.save'), variant: 'primary', type: 'submit' });
+    const form = h('form', { class: 'stack', novalidate: true },
+      h('div', { class: 'inline-fields' }, FILE_LIMITS.map((l) => fields[l.key].el)),
+      warnings,
+      h('div', { class: 'form-actions start' }, save));
+
+    const read = () => parseForm(Object.fromEntries(FILE_LIMITS.map((l) => [l.key, inputs[l.key].value])));
+    const showWarnings = () => {
+      const { stored } = read();
+      mount(warnings, ...combinationWarnings(stored).map((id) => banner({ tone: 'warn', text: t('settings.files.warn.' + id) })));
+    };
+    for (const l of FILE_LIMITS) inputs[l.key].addEventListener('input', showWarnings);
+    showWarnings();
+
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const { errors, stored } = read();
+      let anyBad = false;
+      for (const l of FILE_LIMITS) {
+        fields[l.key].clearError();
+        if (errors[l.key]) {
+          fields[l.key].setError(t('settings.files.error.' + errors[l.key], { min: formatNumber(l.min), max: formatNumber(l.max) }));
+          anyBad = true;
+        }
+      }
+      if (anyBad) return undefined;
+      return withBusy(save, async () => {
+        const changes = changedKeys(stored, s);
+        if (!changes.length) return toast(t('settings.files.unchanged'), { kind: 'info' });
+        for (const key of changes) {
+          const value = String(stored[key]);
+          const res = await guarded('settings.change', key + '=' + value, (id) => api.put('/settings', { key, value }, { stepUp: id }));
+          if (!res) return undefined;
+        }
+        toast(t('settings.files.saved'), { kind: 'success' });
+        return renderConfig();
+      });
+    });
+    return form;
+  }
+
+  // What the hub holds right now: counts and bytes only, never a name or a recipient (ADR-215). It loads on its own so a
+  // failure here cannot hide the limits above it.
+  function fileUsage() {
+    const host = h('div', { class: 'stack' });
+    api.get('/files/stats').then(
+      (st) => {
+        const rows = topUsage(st.devices, 5);
+        mount(host,
+          h('h4', { text: t('settings.files.usage.title') }),
+          dl([
+            [t('settings.files.usage.ready'), t('settings.files.usage.line', { n: formatNumber(st.ready), size: formatBytes(st.readyBytes) })],
+            [t('settings.files.usage.uploading'), t('settings.files.usage.line', { n: formatNumber(st.uploading), size: formatBytes(st.uploadingBytes) })],
+          ]),
+          rows.length
+            ? h('div', { class: 'stack' },
+              h('p', { class: 'muted small', text: t('settings.files.usage.top') }),
+              dl(rows.map((r) => [r.deviceId.slice(0, 8), t('settings.files.usage.line', { n: formatNumber(r.files), size: formatBytes(r.bytes) })])))
+            : h('p', { class: 'muted small', text: t('settings.files.usage.none') }));
+      },
+      () => mount(host, h('p', { class: 'muted small', text: t('settings.files.usage.unavailable') })),
+    );
+    return host;
   }
 
   // ------------------------------------------------------------------ health
