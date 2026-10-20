@@ -142,4 +142,14 @@ class TransfersUiMapperTest {
         assertEquals(1, populated.active.size)
         assertTrue(populated.isLoading)
     }
+
+    @Test
+    fun aHubRowSaysSoAndOffersNoRetry() {
+        val failed = domain(state = FlashTransferState.Failed, errorMessage = "too large").copy(viaHub = true).toUiItem()
+        assertEquals("Through the hub", failed.transportLabel)
+        assertFalse("a hub failure is final; a dropped network keeps the row queued", failed.retryable)
+        val direct = domain(state = FlashTransferState.Failed).toUiItem()
+        assertNull(direct.transportLabel)
+        assertTrue(direct.retryable)
+    }
 }

@@ -93,11 +93,31 @@ public class RealFlashTransferRepository(
     }
 
     private val _internalTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
-    private val _externalRows = MutableStateFlow<List<FlashTransfer>>(emptyList())
+
+    /** The rows each external owner publishes, by source (ADR-216): the swarm and the hub file binding both attach. */
+    private val _externalRows = MutableStateFlow<Map<String, List<FlashTransfer>>>(emptyMap())
     private val _activeTransfers = MutableStateFlow<List<FlashTransfer>>(emptyList())
     override val activeTransfers: StateFlow<List<FlashTransfer>> = _activeTransfers.asStateFlow()
 
-    private var externalControl: ExternalTransferControl? = null
+    private class ExternalSource(val control: ExternalTransferControl, val collector: Job)
+
+    private val externalLock = PlatformLock()
+
+    /** Replaced whole under [externalLock], read without it. */
+    @Volatile
+    private var externalSources: Map<String, ExternalSource> = emptyMap()
+
+    /** The external owner of [transferId], or null when the 1:1 pipeline owns it. */
+    private fun externalControlFor(transferId: String): ExternalTransferControl? =
+        externalSources.values.firstOrNull { it.control.owns(transferId) }?.control
+
+    /**
+     * Asked first by [sendFile] without identities, the overload every host's 1:1 attachment send uses (ADR-216). The hub
+     * file binding takes a send there when no direct path exists; null, or an interceptor answering null, leaves the send
+     * to the pipeline below exactly as before.
+     */
+    @Volatile
+    public var sendInterceptor: TransferSendInterceptor? = null
 
     /**
      * Ids of completed rows the user cleared. External (swarm) rows are re-published whole on every emission, so
@@ -107,7 +127,7 @@ public class RealFlashTransferRepository(
 
     private fun updateMergedTransfers() {
         val internal = _internalTransfers.value
-        val external = _externalRows.value
+        val external = _externalRows.value.values.flatten()
         val merged = if (external.isEmpty()) {
             internal
         } else {
@@ -136,26 +156,42 @@ public class RealFlashTransferRepository(
     }
 
     /**
-     * Attaches external transfer rows (e.g. managed by FlashSwarm) into [activeTransfers] (SW-8).
+     * Attaches external transfer rows (managed by FlashSwarm, SW-8, or the hub file binding, ADR-216) into
+     * [activeTransfers]. Each [source] keeps its own rows and control: attaching one never hides another's rows, and
+     * attaching the same source again replaces only that source (its old collector is cancelled).
      */
     public fun attachExternalRows(
         rows: StateFlow<List<FlashTransfer>>,
         control: ExternalTransferControl,
+        source: String = DEFAULT_EXTERNAL_SOURCE,
     ) {
-        this.externalControl = control
-        repositoryScope.launch {
+        val collector = repositoryScope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val self = coroutineContext[Job]
             rows.collect { extList ->
-                _externalRows.value = extList
-                updateMergedTransfers()
+                // A replaced collector that was mid-emission when it was cancelled must not overwrite its successor;
+                // the check and the write share the lock that replaces the source.
+                val current = externalLock.withLock {
+                    val mine = externalSources[source]?.collector === self
+                    if (mine) _externalRows.update { it + (source to extList) }
+                    mine
+                }
+                if (current) updateMergedTransfers()
             }
         }
+        val previous = externalLock.withLock {
+            val old = externalSources[source]
+            externalSources = externalSources + (source to ExternalSource(control, collector))
+            old
+        }
+        previous?.collector?.cancel()
+        collector.start()
     }
 
     /**
-     * True if [transferId] is an external (e.g. swarm) transfer row.
+     * True if [transferId] is an external (swarm or hub) transfer row.
      */
     override fun isExternalRow(transferId: String): Boolean =
-        externalControl?.owns(transferId) == true
+        externalControlFor(transferId) != null
 
     /**
      * Receive-side intake control. Emitted when an INBOUND transfer is paused/resumed/cancelled.
@@ -197,6 +233,9 @@ public class RealFlashTransferRepository(
          */
         public const val ACTION_ACCEPT: String = "accept"
         public const val ACTION_DECLINE: String = "decline"
+
+        /** The source [attachExternalRows] uses when the caller names none (the swarm binding before ADR-216). */
+        public const val DEFAULT_EXTERNAL_SOURCE: String = "external"
     }
 
     /**
@@ -274,8 +313,21 @@ public class RealFlashTransferRepository(
         fileUri: String,
         displayName: String,
         fileSize: Long,
-    ): FlashResult<FlashTransferId> =
-        sendFile(targetDevice, fileUri, displayName, fileSize, wireFileId = null)
+    ): FlashResult<FlashTransferId> {
+        val claimed = sendInterceptor?.let { interceptor ->
+            try {
+                interceptor.intercept(targetDevice, fileUri, displayName, fileSize)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // A broken interceptor must not cost the user the send: the direct pipeline still gets it.
+                FlashLog.w("TRANSFER", "send interceptor failed, using the direct path: ${t::class.simpleName}")
+                null
+            }
+        }
+        if (claimed != null) return FlashResult.Success(claimed)
+        return sendFile(targetDevice, fileUri, displayName, fileSize, wireFileId = null)
+    }
 
     override suspend fun sendFile(
         targetDevice: FlashDevice,
@@ -629,8 +681,8 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.pause(transferId.value)
+        externalControlFor(transferId.value)?.let { external ->
+            external.pause(transferId.value)
             return FlashResult.Success(Unit)
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
@@ -681,16 +733,16 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.pauseForSystem(transferId.value, reason)
+        externalControlFor(transferId.value)?.let { external ->
+            external.pauseForSystem(transferId.value, reason)
             return FlashResult.Success(Unit)
         }
         return pauseTransfer(transferId)
     }
 
     override suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.resume(transferId.value)
+        externalControlFor(transferId.value)?.let { external ->
+            external.resume(transferId.value)
             return FlashResult.Success(Unit)
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
@@ -819,8 +871,8 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.cancel(transferId.value)
+        externalControlFor(transferId.value)?.let { external ->
+            external.cancel(transferId.value)
             return FlashResult.Success(Unit)
         }
         val transfer = _activeTransfers.value.find { it.id == transferId }
@@ -1111,8 +1163,8 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun acceptIncoming(transferId: FlashTransferId): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.accept(transferId.value)
+        externalControlFor(transferId.value)?.let { external ->
+            external.accept(transferId.value)
             return FlashResult.Success(Unit)
         }
         val id = transferId.value
@@ -1167,8 +1219,8 @@ public class RealFlashTransferRepository(
     }
 
     override suspend fun declineIncoming(transferId: FlashTransferId): FlashResult<Unit> {
-        if (externalControl?.owns(transferId.value) == true) {
-            externalControl?.decline(transferId.value)
+        externalControlFor(transferId.value)?.let { external ->
+            external.decline(transferId.value)
             return FlashResult.Success(Unit)
         }
         val id = transferId.value

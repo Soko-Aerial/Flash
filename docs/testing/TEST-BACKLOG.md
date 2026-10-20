@@ -5330,6 +5330,9 @@ Built and unit-tested (`HubFileSealingTest`, `HubFileDtosTest`, `RealHubFilesApi
 device-verified**. Nothing in the app calls the engine yet: these checks need P3 (the chat message and the UI) or a
 debug entry point that P3 adds. They are listed now so they are not forgotten (AGENTS.md section 35).
 
+*Update 2026-10-20:* P3 now drives the engine from chat for 1:1 files (section 4zzzzzzzzzzzzz below), so C01..C06 can be
+run by sending a file in a 1:1 chat to a colleague who is not on the same network. "needs P3" below is met.
+
 ### HUBFILE-C01 — A sealed file crosses a deployed hub between two real devices
 
 - **Setup:** test hub deployed with P1 + P2 (`docs/deploy/HUB-SERVER-DEPLOYMENT.md`), two enrolled devices (one Android, one desktop), not on the same LAN.
@@ -5385,3 +5388,85 @@ debug entry point that P3 adds. They are listed now so they are not forgotten (A
 - **Pass:** record average MB/s, the sealing/verification share of CPU (Android Studio profiler) and battery drain in `logs/experiments.md`. The only number known so far is synthetic: the JVM test host moved and verified 50 MB in about 10 s (`E2eHubFileTransferContractTest`, laptop, no network). *(measure)*
 - **Source:** AGENTS.md section 23.
 - **Status:** TODO (needs P3)
+
+## 4zzzzzzzzzzzzz. Hub files P3 — the file message, both hosts (HUBFILE-M, 2026-10-20; see `docs/plans/HUB-FILES-PLAN.md` section 9 and ADR-216)
+
+Built and unit-tested (`HubFileBindingTest`, `HubFileRowsFuzzTest`, `RealFlashChatRepositoryHubFileTest`,
+`HubFileBridgeTest`, `HubFileFrameCodecTest`, `HubFileDaoTest`, `ExternalSourcesAndInterceptorTest`,
+`TransfersUiMapperTest`, `RealFlashChatRepositoryTest` U45, migrations 17 → 18 on both hosts), **not deployed, not
+device-verified**. 1:1 only; a group file keeps the swarm path (D14). Setup for all: a test hub with P1–P3, two enrolled
+devices with content sealing published, paired with each other unless the step says otherwise, **not** on the same LAN
+(phone on mobile data, or two networks).
+
+### HUBFILE-M01 — A file to a colleague with no direct path goes through the hub by itself
+
+- **Steps:** in the 1:1 chat, attach a 10 MB PDF and send. Watch the bubble on both sides and the Transfers screen.
+- **Pass:** sender logs `hubfile.send.claimed outcome=upload`, then `hubfile.upload step=done`, then `hubfile.ticket.queued`; the sender's bubble reads "Sending through the hub… · N%" while it uploads and the Transfers row shows "· Through the hub" with no Retry button; the recipient logs `hubfile.ticket.in fresh=true`, and its bubble reads "Receiving through the hub… · N%"; the received file opens and its SHA-256 equals the source's; the sender's message ends Delivered.
+- **Source:** HF-M2, HF-M3, ADR-216.
+- **Status:** TODO
+
+### HUBFILE-M02 — With a direct path, nothing changes
+
+- **Setup:** the same two devices on the same Wi-Fi with a live session.
+- **Steps:** send the same file.
+- **Pass:** no `hubfile.send.claimed` line; the transfer is the ordinary LAN transfer (no "Through the hub" label).
+- **Source:** HF-M2 claim rule (`isDirectlyReachable`).
+- **Status:** TODO
+
+### HUBFILE-M03 — An app killed mid-upload and mid-download continues after reopening
+
+- **Steps:** send a 50 MB file; at about 30 % force-stop the sender (Settings → Force stop, never clear data); reopen. Repeat on the recipient during the download.
+- **Pass:** after reopening, the same Transfers row continues from about where it stopped (`hubfile.upload step=resume` / `hubfile.download step=resume`); one message, one received file, hash equal.
+- **Source:** HubFileBinding `start()`, HubFileBindingTest U32/U44.
+- **Status:** TODO
+
+### HUBFILE-M04 — Wi-Fi to mobile data in the middle, both directions
+
+- **Steps:** as HUBFILE-C02, but started from the chat; switch the network on the sender during the upload, then on the recipient during the download.
+- **Pass:** the bubble shows "The hub cannot be reached. It will continue when the connection is back." at most briefly (never "Waiting for Wi-Fi."), then continues; no chunk below the cut is sent again.
+- **Source:** ADR-216, HUBFILE-U45, plan D16.
+- **Status:** TODO
+
+### HUBFILE-M05 — Pause, resume and cancel from the bubble and the Transfers screen
+
+- **Steps:** pause an upload from the Transfers screen, wait 1 minute, resume; then cancel a second upload; then on the recipient, cancel a download half-way.
+- **Pass:** pause stops traffic (no `file.chunk` audit lines while paused) and resume continues from the same chunk; the cancelled send's message turns Failed, `hubfile.ticket.dropped reason=cancelled` (or no ticket at all if it was not queued yet), and the hub no longer lists the file; the cancelled download leaves no partial file in the received folder.
+- **Source:** HF-M5, HubFileBindingTest U30/U31, HUBFILE-U41.
+- **Status:** TODO
+
+### HUBFILE-M06 — A file from an unpaired colleague waits for a tap
+
+- **Setup:** two colleagues in the same organisation who never paired; auto-download for documents switched on at the recipient.
+- **Steps:** send a PDF.
+- **Pass:** the recipient's bubble offers Accept/Decline and nothing downloads until Accept; with a paired sender and the same setting the file downloads by itself.
+- **Source:** D18 refined, AGENTS.md section 19.
+- **Status:** TODO
+
+### HUBFILE-M07 — Too large, no sealing key, an old hub
+
+- **Steps:** (a) set the hub's per-file limit to 5 MB in the console and send a 6 MB file; (b) send to a colleague whose sealing key is not published; (c) against a hub without file support (limit 0 / P0 hub), send a file.
+- **Pass:** (a) the row starts Failed with "This file is 6 MB, and the hub accepts up to 5 MB per file. An administrator can raise the limit in the hub console." (sizes as the app prints them) and nothing is uploaded; (b) "Files can only go through the hub when content sealing is on for <name>."; (c) "This hub cannot carry files yet. Ask an administrator to update it."; each message is Failed, no Retry button.
+- **Source:** HubFileBindingTest U28, HUBFILE-U42, plan section 6.
+- **Status:** TODO
+
+### HUBFILE-M08 — Android background limits
+
+- **Setup:** Android 15 or later phone.
+- **Steps:** start a 50 MB send, switch off the screen and leave the phone for 7 hours (or until the foreground-service timeout); then open the app.
+- **Pass:** the timeout pauses the hub row (`pauseForSystem`), it is not cancelled or failed; on opening the app it continues by itself. On a Transsion handset record the Hiber freezer lines too (see the Transsion memory notes).
+- **Source:** HF-M5, `TimeoutStopPlan`, HubFileBindingTest U44.
+- **Status:** TODO
+
+### HUBFILE-M09 — Desktop parity
+
+- **Steps:** M01, M03 and M05 with the desktop as sender, then as recipient.
+- **Pass:** the same results; received files land in `<received folder>/<transferId>/<name>`; the engine state is under `<stateDir>/hub-files`.
+- **Source:** HF-M5 desktop wiring.
+- **Status:** TODO
+
+### HUBFILE-M10 — A file that expired on the hub before the recipient came online
+
+- **Steps:** set retention to 1 day, send a file to a recipient that stays offline for more than a day, then bring it online.
+- **Pass:** the recipient's bubble says "This file is no longer on the hub. Ask <name> to send it again." and offers no download; `hubfile.ticket.in expired=true`.
+- **Source:** HUBFILE-U24.
+- **Status:** TODO

@@ -479,6 +479,11 @@ do not roll back a binary onto a database a newer binary has already migrated.
 | Everything is `429` after a burst | shared per-address bucket (see above) | fix `FLASH_TRUSTED_PROXIES` |
 | Console unreachable | it is on the management port, loopback | SSH tunnel `-L 8444:127.0.0.1:8444`, then `http://127.0.0.1:8444/admin/` |
 | Devices show "hub out of date" | hub build predates a client route | update the hub; the client degrades gracefully |
+| A file says "This hub cannot carry files yet" | the hub predates sealed files (no `maxFileBytes`, or it is 0) | update the hub to a build with hub files (ADR-215) |
+| A file says "This file is X, and the hub accepts up to Y per file" | larger than `maxFileBytes` | raise it in Console → Settings, or send it on the same network (a direct transfer has no limit) |
+| A file says "Files can only go through the hub when content sealing is on for <name>" | the recipient has not published a sealing key | the recipient opens the app once while signed in to the hub; sealing publishes itself |
+| A file waits with "The hub cannot be reached…" for a long time | the device cannot reach the hub address | check the device's network and the hub's TLS/proxy; the transfer continues by itself when it is back |
+| A recipient sees "This file is no longer on the hub" | it came online after `fileRetentionDays`, or the sender cancelled | ask the sender to send it again; raise retention if this is common |
 
 ---
 

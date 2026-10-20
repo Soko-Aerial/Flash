@@ -12,6 +12,7 @@ import com.transfer.flash.core.hubprotocol.rest.ErrorBody
 import com.transfer.flash.core.hubprotocol.rest.FileStatusDto
 import com.transfer.flash.core.hubprotocol.rest.FileTicketDto
 import com.transfer.flash.core.hubprotocol.rest.HubFileIds
+import com.transfer.flash.core.hubprotocol.rest.HubInfo
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
@@ -137,7 +138,16 @@ public class RealHubFilesApi(
 
     // ----- plumbing ---------------------------------------------------------------------------------------------
 
-    private enum class Op { CREATE, PUT, COMPLETE, STATUS, READ, CANCEL }
+    override suspend fun hubInfo(hubUrl: String): HubFileResult<HubInfo> =
+        // Public route: the pinned-hub and cleartext rules still apply, but no bearer is attached.
+        exchange(hubUrl, Op.INFO, HubContract.MAX_REST_BODY_BYTES, { base, _ ->
+            httpClient.get("$base${HubContract.PATH_HUB_INFO}")
+        }) { status, body ->
+            if (status != HttpStatusCode.OK) return@exchange null
+            HubRestCodec.decodeOrNull<HubInfo>(body.text())?.takeIf { it.maxFileBytes >= 0L }
+        }
+
+    private enum class Op { CREATE, PUT, COMPLETE, STATUS, READ, CANCEL, INFO }
 
     private fun statusBody(status: HttpStatusCode, body: Body, fileId: String): FileStatusDto? {
         if (status != HttpStatusCode.OK) return null

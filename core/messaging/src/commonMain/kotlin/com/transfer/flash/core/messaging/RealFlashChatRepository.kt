@@ -3,6 +3,7 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.id.UuidIdGenerator
+import com.transfer.flash.core.enterprise.files.HubFileText
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashPeerPresence
@@ -18,7 +19,10 @@ import com.transfer.flash.core.messaging.hub.HubDeliveryNote
 import com.transfer.flash.core.messaging.hub.HubDropCounts
 import com.transfer.flash.core.messaging.hub.HubNoticeMath
 import com.transfer.flash.core.messaging.hub.HubWaitReason
+import com.transfer.flash.core.messaging.hub.HubFileMessages
+import com.transfer.flash.core.messaging.hub.HubFileRoute
 import com.transfer.flash.core.messaging.hub.HubInboundSink
+import com.transfer.flash.core.messaging.protocol.HubFileFrame
 import com.transfer.flash.core.messaging.hub.HubRelayPort
 import com.transfer.flash.core.messaging.hub.HubSealingPort
 import com.transfer.flash.core.enterprise.EnterpriseJoinResult
@@ -111,6 +115,8 @@ import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.MessagePinDao
 import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
+import com.transfer.flash.core.persistence.db.dao.HubFileDao
+import com.transfer.flash.core.persistence.db.entity.HubFileEntity
 import com.transfer.flash.core.persistence.db.entity.HubAnnouncementStateEntity
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementError
@@ -409,6 +415,8 @@ public class RealFlashChatRepository(
     radioPort: com.transfer.flash.core.messaging.radio.RadioOutboxPort? = null,
     /** Plan R §7 / Phase R3: Optional pre-configured radio bridge (tests/custom). */
     radioBridge: com.transfer.flash.core.messaging.radio.RadioChatBridge? = null,
+    /** ADR-216: files sent and received through the hub. Null (or no [hubRelay]) means this device takes no hub files. */
+    hubFileDao: HubFileDao? = null,
 ) : FlashChatRepository, AutoCloseable {
 
     private val hubAnnouncementDao: HubAnnouncementDao? = hubAnnouncementDao
@@ -569,6 +577,34 @@ public class RealFlashChatRepository(
             },
             groupLinked = { enterpriseTrustStore?.isGroupLinkedToHub(it) == true },
         )
+    }
+
+    /** ADR-216: the ticket messages of files sent through the hub (null without a hub or without the table). */
+    private val hubFiles: HubFileMessages? = if (hubBridge == null || hubFileDao == null) null else HubFileMessages(
+        dao = hubFileDao,
+        messageDao = messageDao,
+        outboxDao = outboxDao,
+        runInTransaction = runInTransaction,
+        timeSource = timeSource,
+        hubUrl = { enterpriseTrustStore?.credentials?.value?.hubUrl },
+        upsertConversation = ::upsertDirectConversation,
+        peerName = peerNameResolver,
+        wakeOutbox = ::notifyOutboxDrain,
+    )
+
+    /** Whether a file may go to [peerId] through the hub now (ADR-216). [HubFileRoute.UNAVAILABLE] without a hub. */
+    public suspend fun hubFileRoute(peerId: String): HubFileRoute =
+        if (hubFiles == null) HubFileRoute.UNAVAILABLE else hubBridge?.fileRoute(peerId) ?: HubFileRoute.UNAVAILABLE
+
+    /**
+     * The hub-file engine finished uploading [transferId]: queue its ticket message if the chat message already exists
+     * (otherwise [sendAttachment] queues it once it does). True when this call queued it.
+     */
+    public suspend fun queueHubFile(transferId: String): Boolean = hubFiles?.queue(transferId) ?: false
+
+    /** The hub-file engine cancelled or failed outgoing [transferId] for good: its message is Failed unless already received. */
+    public suspend fun hubFileEnded(transferId: String) {
+        hubFiles?.ended(transferId)
     }
 
     /** What the hub said about each message this device sent through it (bubble notes). Empty without a hub. */
@@ -1254,6 +1290,7 @@ public class RealFlashChatRepository(
             val hubSink = object : HubInboundSink {
                 override suspend fun direct(frame: MessageWireFrame, from: String) = onInboundWireFrame(frame, from)
                 override suspend fun group(frame: GroupWireFrame, from: String) = onInboundGroupWireFrame(from, frame)
+                override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean = onInboundHubFile(frame, from)
             }
             scope.launch(ioDispatcher) {
                 hubRelay.deliveries.collect { delivery -> hubBridge.handleInbound(delivery, hubSink) }
@@ -3043,6 +3080,9 @@ public class RealFlashChatRepository(
             // Local chat row referencing the live transfer. The bytes travel over the transfer
             // pipeline (not the message outbox), so this row is informational — status SENT keeps it
             // out of the Pending spinner; live progress is joined in via [attachmentProgress].
+            // A file going through the hub (ADR-216) is different: the recipient learns of it only from the ticket
+            // message this row will carry, so it stays Pending until their receipt arrives.
+            val hubStatus = hubFiles?.initialStatus(transferId)
             messageDao.insert(
                 MessageEntity(
                     localId = localId,
@@ -3051,7 +3091,7 @@ public class RealFlashChatRepository(
                     senderName = localDisplayName,
                     text = rowText,
                     sentAt = now,
-                    status = "SENT",
+                    status = hubStatus ?: "SENT",
                     attachmentTransferId = transferId,
                     attachmentName = fileName,
                     attachmentMime = mimeType,
@@ -3060,6 +3100,7 @@ public class RealFlashChatRepository(
                 ),
             )
             touchConversation(conversationId, now)
+            if (hubStatus != null) hubFiles?.attachMessage(transferId, localId)
         }
     }
 
@@ -5796,6 +5837,30 @@ public class RealFlashChatRepository(
      * hosts when the authenticated session identity is available so group typing cannot impersonate
      * another member. It remains optional for source compatibility with non-transport callers.
      */
+    /**
+     * A file ticket from [from] through the hub (ADR-216): stored as a message plus a `hub_file` row, then acknowledged to
+     * the author with a delivery receipt, exactly like a text. A replay is acknowledged again but notifies nothing.
+     * False refuses it (the bridge then tells the hub not to redeliver).
+     */
+    private suspend fun onInboundHubFile(frame: HubFileFrame, from: String): Boolean {
+        val files = hubFiles ?: return false
+        val stored = files.accept(frame, from) as? HubFileMessages.Accepted.Stored ?: return false
+        if (stored.fresh) {
+            runCatching { onInboundAttachmentWithGroupTitle(from, frame.senderName.ifBlank { null }, stored.fileName, stored.mime, null) }
+            maybeAutoPairColleague(from)
+        }
+        transportSink?.send(
+            from,
+            MessageWireFrame.DeliveryReceipt(
+                messageId = frame.localId,
+                conversationId = from,
+                memberId = localDeviceId,
+                deliveredAt = timeSource.nowMs(),
+            ),
+        )
+        return true
+    }
+
     public suspend fun onInboundWireFrame(frame: MessageWireFrame, transportPeerId: String? = null) {
         when (frame) {
             is MessageWireFrame.TextMessage -> {
@@ -6063,6 +6128,11 @@ public class RealFlashChatRepository(
                 }
                 continue
             }
+            val hubFile = hubFiles?.outgoingFor(message)
+            if (hubFile != null) {
+                drainHubFileTicket(item, message, hubFile, now, queuedForMs)?.let { nextAttemptAt -> scheduled += nextAttemptAt }
+                continue
+            }
             val wireFrame = MessageWireFrame.TextMessage(
                 localId = item.localId,
                 conversationId = message.conversationId,
@@ -6128,6 +6198,31 @@ public class RealFlashChatRepository(
         outboxDeadlines.addAll(scheduled)
         outboxNextDueAt = outboxDeadlines.minOrNull()
         items.size >= OUTBOX_BATCH_LIMIT
+    }
+
+    /**
+     * The ticket of a file sent through the hub (ADR-216). It goes through the hub only and sealed only (deviation D17): the
+     * recipient fetches the file from the hub whatever network it is on, and a LAN copy of the key would add nothing. It
+     * waits as long as the file stays on the hub, not the short LAN budget, and gives up when the upload was cancelled or
+     * failed or the file expired.
+     *
+     * @return when this row is next due, or null when the pass ended it.
+     */
+    private suspend fun drainHubFileTicket(item: OutboxEntity, message: MessageEntity, row: HubFileEntity, now: Long, queuedForMs: Long): Long? {
+        val files = hubFiles ?: return null
+        val bridge = hubBridge ?: return null
+        val frame = files.frameFor(row, message, localDeviceId, localDisplayName)
+        if (frame == null || files.isDead(row, now) || queuedForMs >= HUB_GIVE_UP_AFTER_MS) {
+            files.giveUp(item.localId, row, row.state.lowercase())
+            return null
+        }
+        val success = sendWithTimeout(item.localId, message.conversationId) {
+            bridge.sendHubFile(message.conversationId, item.localId, message.sentAt, frame)
+        }
+        if (success) messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
+        val nextAttemptAt = now + if (success && bridge.isHubAccepted(item.localId)) HUB_RESEND_MS else backoffDelayMs(item.attempts + 1)
+        outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
+        return nextAttemptAt
     }
 
     /** @return when this row is next due, or null when the pass ended it (given up, delivered, or unsendable). */
@@ -6812,7 +6907,9 @@ public class RealFlashChatRepository(
                         nameOf = { id -> openGroupMemberNames[id] ?: peerNameResolver(id) },
                     )
                 } else null
-                val detailLine = if (recipientView != null) {
+                val detailLine = if (live?.viaHub == true) {
+                    hubFileDetailLine(base.isMine, status, live)
+                } else if (recipientView != null) {
                     recipientView.summaryLine(live?.canGoOffline == true)
                 } else if (base.isMine) {
                     if (live?.canGoOffline == true && status != FlashFileTransferStatus.Downloaded) {
@@ -6881,6 +6978,18 @@ public class RealFlashChatRepository(
             }
         }
     }
+
+    /**
+     * A hub file's bubble line (ADR-216): the hub's own reason while it waits or after it failed (never "Waiting for
+     * Wi-Fi", which is false on mobile data), otherwise which way it is going. The card appends the percentage.
+     */
+    private fun hubFileDetailLine(isMine: Boolean, status: FlashFileTransferStatus, live: FlashAttachmentProgress): String? =
+        when {
+            status == FlashFileTransferStatus.Downloaded || status == FlashFileTransferStatus.Paused -> null
+            !live.errorMessage.isNullOrBlank() -> live.errorMessage
+            status == FlashFileTransferStatus.Transferring -> if (isMine) HubFileText.SENDING else HubFileText.DOWNLOADING
+            else -> null
+        }
 
     /**
      * Turns a `cmsg:`-marked row into a call bubble; every other row passes through untouched.

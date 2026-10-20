@@ -58,6 +58,9 @@ import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
 import com.transfer.flash.core.engine.swarm.SwarmHostBinding
+import com.transfer.flash.core.engine.hubfiles.HubFileBinding
+import com.transfer.flash.core.enterprise.files.DiskHubFileStorage
+import com.transfer.flash.core.enterprise.files.HubFileTransfers
 import com.transfer.flash.core.engine.swarm.MessagingSwarmGroupContext
 import com.transfer.flash.core.engine.swarm.AndroidPieceStorage
 import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore
@@ -325,6 +328,8 @@ object DiscoveryEngineHolder {
     fun setUiStarted(started: Boolean) {
         uiStarted.value = started
         _nearbyVisible.value = nearbyComposed.value && started
+        // Hub files stopped by the Android 15 service timeout continue once the person is back (ADR-216).
+        if (started) hubFileBindingRef?.start()
     }
 
     /** The connection policy for the current mode and tier; read per use. */
@@ -450,6 +455,10 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var swarmBinding: SwarmHostBinding? = null
+
+    /** Files through the organisation hub (ADR-216): claims sends to peers out of reach and downloads received tickets. */
+    @Volatile
+    private var hubFileBindingRef: HubFileBinding? = null
 
     @Volatile
     private var dbRef: com.transfer.flash.core.persistence.db.FlashDatabase? = null
@@ -1367,6 +1376,7 @@ object DiscoveryEngineHolder {
                         canGoOffline = t.canGoOffline,
                         holdersOnline = t.holdersOnline,
                         errorMessage = t.errorMessage,
+                        viaHub = t.viaHub,
                         bytesDone = t.bytesDone,
                         bytesTotal = t.bytesTotal,
                         pieceBlocks = t.pieceBlocks,
@@ -1497,6 +1507,7 @@ object DiscoveryEngineHolder {
             ),
             hubSealing = hubSealingPort,
             radioPort = radioPort,
+            hubFileDao = db.hubFileDao(),
         )
         chatImpl.onJoinRequestNotification = { groupId, groupTitle, requesterName ->
             FlashNotificationManager.showJoinRequest(
@@ -1951,6 +1962,34 @@ object DiscoveryEngineHolder {
         if (groupSwarmEnabled) {
             attachSwarm()
         }
+        // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub. The engine's state lives in
+        // no-backup app storage (excluded from Auto Backup); finished files land beside every other received file.
+        hubFileBindingRef = HubFileBinding(
+            scope = appScope,
+            dao = db.hubFileDao(),
+            transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(appContext.noBackupFilesDir, "hub-files").path)),
+            api = hub.files,
+            transferRepository = transferImpl,
+            hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
+            fileRoute = chatImpl::hubFileRoute,
+            queueTicket = chatImpl::queueHubFile,
+            outgoingEnded = chatImpl::hubFileEnded,
+            openSource = { uriString -> openSource(uriString, appContext).source() },
+            receivedDirectory = { receivedDir.path },
+            isDirectlyReachable = { peerId ->
+                networkImpl.activeSessions.value.containsKey(FlashDeviceId(peerId)) ||
+                    engine.discoveredEndpoints.value.any { it.deviceId.value == peerId }
+            },
+            peerName = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
+            autoDownload = { peerId, mime ->
+                trustStore.isTrusted(peerId) && when {
+                    mime.startsWith("audio/") -> autoDownloadVoice
+                    mime.startsWith("image/") -> autoDownloadImage
+                    mime.startsWith("video/") -> autoDownloadVideo
+                    else -> autoDownloadFile
+                }
+            },
+        ).also { it.start() }
         pairing = pairingCoordinator
         appScope.launch {
             pairingCoordinator.pairing.collect { model ->
@@ -3076,6 +3115,8 @@ object DiscoveryEngineHolder {
         onIncomingOffer = null
         dataServer?.stop()
         dataServer = null
+        hubFileBindingRef?.detach()
+        hubFileBindingRef = null
         // Closes the shared HTTP client and stops the relay (CLI-12).
         enterpriseHubRef?.shutdown()
         enterpriseHubRef = null

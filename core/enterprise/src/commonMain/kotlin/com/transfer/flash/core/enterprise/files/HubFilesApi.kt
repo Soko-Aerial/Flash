@@ -4,6 +4,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.rest.CreateFileRequestDto
 import com.transfer.flash.core.hubprotocol.rest.FileStatusDto
 import com.transfer.flash.core.hubprotocol.rest.FileTicketDto
+import com.transfer.flash.core.hubprotocol.rest.HubInfo
 
 /**
  * The six sealed-file routes of `docs/protocol.md` "Hub files API", one call each, with the device bearer attached.
@@ -34,4 +35,10 @@ public interface HubFilesApi {
 
     /** `DELETE /api/v1/files/{fileId}`. A file the hub no longer has counts as cancelled. */
     public suspend fun cancel(hubUrl: String, fileId: String): HubFileResult<Unit>
+
+    /**
+     * `GET /api/v1/hub`, for [HubInfo.maxFileBytes] (P3). The route is public and rate limited per address, so callers
+     * cache the answer and never ask once per send.
+     */
+    public suspend fun hubInfo(hubUrl: String): HubFileResult<HubInfo>
 }

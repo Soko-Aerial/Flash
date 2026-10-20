@@ -1,5 +1,8 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash
 
+import com.transfer.flash.core.enterprise.files.HubFileText
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
@@ -45,7 +48,10 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     // A cancelled/declined transfer shares the Failed section but cannot be resumed: both sides
     // tore the session down, and resumeTransfer returns without doing anything. Flagging it here
     // keeps the screen from rendering a Retry button that could only ever look broken.
-    retryable = state != DomainState.Cancelled,
+    // A hub file fails only for a reason a retry cannot change (too large, no sealing key); a dropped network keeps it
+    // queued and it continues by itself (ADR-216).
+    retryable = state != DomainState.Cancelled && !viaHub,
+    transportLabel = if (viaHub) HubFileText.VIA_HUB else null,
     waitReason = waitReason,
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,

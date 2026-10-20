@@ -2,6 +2,8 @@
 
 package com.transfer.flash.core.enterprise
 
+import com.transfer.flash.core.enterprise.files.HubFilesApi
+import com.transfer.flash.core.enterprise.files.RealHubFilesApi
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
@@ -114,6 +116,15 @@ public class EnterpriseHub(
     )
 
     public val announcements: HubAnnouncementsApi = RealHubAnnouncementsApi(
+        httpClient = httpClient,
+        ioDispatcher = ioDispatcher,
+        bearerSource = session,
+        pinnedHubUrl = { trustStore.credentials.value?.hubUrl },
+        allowCleartext = allowCleartext,
+    )
+
+    /** The sealed-file routes (ADR-215); the engine `HubFileTransfers` runs on top of it. */
+    public val files: HubFilesApi = RealHubFilesApi(
         httpClient = httpClient,
         ioDispatcher = ioDispatcher,
         bearerSource = session,

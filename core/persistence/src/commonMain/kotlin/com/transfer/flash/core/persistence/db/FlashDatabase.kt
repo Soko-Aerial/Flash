@@ -53,6 +53,8 @@ import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
 import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import com.transfer.flash.core.persistence.db.entity.TrustedPeerEntity
 import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
+import com.transfer.flash.core.persistence.db.dao.HubFileDao
+import com.transfer.flash.core.persistence.db.entity.HubFileEntity
 import com.transfer.flash.core.persistence.db.entity.HubAnnouncementEntity
 import com.transfer.flash.core.persistence.db.entity.HubAnnouncementStateEntity
 import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
@@ -109,6 +111,7 @@ import com.transfer.flash.core.persistence.db.entity.OrgSyncStateEntity
         HubGroupRosterEntity::class,
         HubAnnouncementEntity::class,
         HubAnnouncementStateEntity::class,
+        HubFileEntity::class,
     ],
     version = FlashDatabase.DATABASE_VERSION,
     exportSchema = true,
@@ -175,6 +178,8 @@ public abstract class FlashDatabase : RoomDatabase() {
 
     public abstract fun hubAnnouncementDao(): HubAnnouncementDao
 
+    public abstract fun hubFileDao(): HubFileDao
+
     public companion object {
         public const val DATABASE_NAME: String = "flash.db"
         // v2: MessageEntity gained attachment columns (attachmentTransferId/Name/Mime/Size/Path).
@@ -193,6 +198,7 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v15: org_sync_state.orgRootFingerprint and org_sync_state.lastErrorKind (Plan B §B1.3/B1.4).
         // v16: hub_group_roster for hub-signed group roster statements (Plan B §10, Phase B4).
         // v17: hub_announcement and hub_announcement_state for organization announcements (Plan A3, ADR-138).
-        public const val DATABASE_VERSION: Int = 17
+        // v18: hub_file for files sent and received through the organisation hub (ADR-215, ADR-216).
+        public const val DATABASE_VERSION: Int = 18
     }
 }

@@ -129,6 +129,8 @@ public data class FlashAttachmentProgress(
     val pieceBlocks: List<Int> = emptyList(),
     /** Sender of a group swarm file: each member's progress, by device id; empty for everything else. */
     val recipients: List<FlashRecipientProgress> = emptyList(),
+    /** The file goes through the organisation hub (ADR-216): the bubble words its line for the hub, not for Wi-Fi. */
+    val viaHub: Boolean = false,
 )
 
 /** One member's progress on a file this device is sending to a group (by device id; the repository adds the name). */

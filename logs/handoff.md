@@ -7357,3 +7357,54 @@ then `./gradlew.bat testDebugUnitTest assembleDebug --console=plain`.
 ## 2026-10-16: ERROR-411 fixed in code (announcements fetched on relay reconnect and when the Hub tab opens). ANN-13 owed; app rebuild only.
 
 ## 2026-10-16 (later): owner decisions applied (ADR-160 count Paused, ADR-170/172 accepted, ADR-174 auto-pair on reply, ADR-175 guard kept, ADR-176 draggable PC divider), ERROR-412 fixed in code. Verifier prompt for H6..H10: `docs/plans/HUB-H6-H10-VERIFIER-PROMPT.md`. Device checks HUBT-36/37, ORGPAIR-04, PANE-01 owed.
+
+## 2026-10-20 — HUB-FILES P3 in progress (UNCOMMITTED, stopped at a usage limit) — SUPERSEDED by the next entry
+
+Built in the working tree, not committed: `hub_file` Room step 18, `HubFileFrameCodec`, `HUB_FILE` in `HubChatBridge`,
+`HubFileMessages` + repository wiring (`hubFileRoute`, `queueHubFile`, `hubFileEnded`), multi-source external rows and
+`TransferSendInterceptor` in `:core:transfer`, `:core:engine/hubfiles` (`HubFileBinding`, `HubFileRows`,
+`StreamingHubFileSource`), Android and desktop host wiring (engine state in `noBackupFilesDir/hub-files` on Android,
+`<stateDir>/hub-files` on desktop; resume on `setUiStarted(true)`), "Through the hub" label and no Retry for hub rows in
+both mappers, protocol.md "Hub file message".
+Auto-download through the hub needs a PAIRED sender plus the per-type setting (D18 refined).
+Green when last run: HubFileBindingTest 13, HubFileRowsFuzzTest 2, RealFlashChatRepositoryHubFileTest 10,
+HubFileFrameCodecTest 6, HubFileBridgeTest 4, HubChatBridgeTest 21, TransfersUiMapperTest 10;
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` clean. NOT yet run: U44 (new, system pause), the wide suite
+(engine/messaging/transfer/persistence incl. Android host chain test/enterprise/server/desktop) was started but its
+result was not read.
+Next: run the wide suite; mutation checks (sealed-only gate in bridge, READY guard in `queue`, author check in
+`accept`); adversarial review; security.md rows, PROBES.md (`hubfile.ticket.queued|in|dropped`,
+`hubfile.send.claimed`, `hubfile.receive.done`, `hubfile.cancel`), plan §6 (D15 text, VIA_HUB) and §9 P3 report
+(deviation D20: noBackupFilesDir instead of backup-rule edits), TEST-BACKLOG `HUBFILE-M*`, ADR-216, progress.md,
+AGENTS §29; then commit (do not push without the owner). Known limit: deleting the message does not cancel the transfer.
+
+## 2026-10-20 — HUB-FILES P3 done: 1:1 files through the hub from chat, both hosts (ADR-216); built and unit-tested, NOT deployed, NOT device-verified
+
+- **What works in code:** a 1:1 file to a peer with no live session that discovery does not see goes through the hub.
+  - It is uploaded sealed. The key travels only in a sealed `HUB_FILE` ticket, once the upload and the message both
+    exist.
+  - The recipient gets a normal attachment plus a `hub_file` row, and downloads on Accept. It downloads by itself only
+    from a paired sender with the per-type setting.
+  - Pause, resume and cancel work. The Android FGS timeout only pauses, and everything resumes from disk on start.
+  - The Transfers screen shows "Through the hub" with no Retry. The bubble shows the hub's own reason, never "Waiting
+    for Wi-Fi".
+- **Unchanged:** a reachable peer gets the LAN path; groups get the swarm (D14).
+- **Fixed during the closing pass:**
+  - the ticket give-up is atomic (a U23 race seen under load);
+  - the bubble's hub line and wait text (U45);
+  - probes are keyed by the file id.
+- **Mutations:** M1, M3, M2b and M4 are caught. M2a survives by design: the SQL guard repeats the Kotlin check.
+- **Report:** `docs/plans/HUB-FILES-PLAN.md` section 9 "P3 result" has the evidence, 14 findings, the deviations D14–D20
+  and the self-score.
+- **Open for the owner:**
+  - D18: auto-download only from a paired sender. Confirm or reverse.
+  - A LAN ↔ hub hand-over of one transfer (not designed).
+  - Delete does not cancel the hub transfer, and local `hub_file` rows are not pruned (P4).
+- **Next:**
+  - Deploy P1–P3 to the test hub and run `HUBFILE-M01`, then M03/M04/M05 and C01..C06 (TEST-BACKLOG section
+    4zzzzzzzzzzzzz).
+  - Or start P4 (groups, console Files card).
+- **Commits:** see the commit made at the end of this session (`git log --oneline -3`). Not pushed. Push only when the
+  owner says so.
+- **Known load flakes**, to rerun alone: ORGT-U16, `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`,
+  `GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect`.

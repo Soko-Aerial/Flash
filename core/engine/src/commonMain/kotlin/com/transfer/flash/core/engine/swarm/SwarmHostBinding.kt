@@ -179,7 +179,7 @@ public class SwarmHostBinding(
             }
         }
 
-        transferRepository.attachExternalRows(driver.rows, externalControl)
+        transferRepository.attachExternalRows(driver.rows, externalControl, source = EXTERNAL_SOURCE)
 
         // 4b. The host hands over plain lambdas (call state, discovery mode); nothing pushes their changes,
         // so they are sampled. Without this the call throttle and the ECO "do not serve" rule never took effect.
@@ -422,6 +422,9 @@ public class SwarmHostBinding(
 
     internal companion object {
         const val ENVIRONMENT_POLL_MS: Long = 2_000L
+
+        /** This binding's key in [RealFlashTransferRepository.attachExternalRows]; the hub file binding has its own. */
+        const val EXTERNAL_SOURCE: String = "swarm"
 
         /**
          * Null when a wire announcement is acceptable, else the reason it is not. Mirrors the ContentRoot and PieceMath

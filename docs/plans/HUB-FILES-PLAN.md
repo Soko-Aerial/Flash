@@ -221,7 +221,7 @@ administrator to raise it (the limit comes from `GET /api/v1/hub`).
 | `HUB_FILE_SENDING` | "Sending through the hub…" |
 | `HUB_FILE_WAITING` | "Waiting for the hub to accept the file." |
 | `HUB_FILE_HUB_FULL` | "The hub is full. Try again later, or ask an administrator to raise the storage limit." |
-| `HUB_FILE_DOWNLOADING` | "Receiving through the hub… {percent}%" |
+| `HUB_FILE_DOWNLOADING` | "Receiving through the hub…" (P3, D15: the bubble appends " · N%" itself) |
 | `HUB_FILE_EXPIRED` | "This file is no longer on the hub. Ask {name} to send it again." |
 | `HUB_FILE_FAILED` | "The hub could not take this file. {reason}" |
 | `HUB_FILE_NEEDS_SEALING` | "Files can only go through the hub when content sealing is on for {name}." |
@@ -244,8 +244,11 @@ administrator to raise it (the limit comes from `GET /api/v1/hub`).
 | `HUB_FILE_REASON_INTEGRITY` | "The file that arrived is not the file that was sent, so it was discarded." |
 | `HUB_FILE_REASON_SOURCE_CHANGED` | "The file changed while it was being sent. Send it again." |
 | `HUB_FILE_REASON_LOCAL_STORAGE` | "The file could not be read or saved on this device." |
+| `HUB_FILE_VIA_HUB` | "Through the hub" (P3: the Transfers screen's connection label for a hub row) |
 
 The `HUB_FILE_REASON_*` rows were added in P2 (`HubFileText.reason`); they fill the `{reason}` of `HUB_FILE_FAILED`.
+P3 shows a transient reason on its own, never after "The hub could not take this file." (D16), and `HUB_FILE_SENDING` /
+`HUB_FILE_DOWNLOADING` are the bubble's line while a hub file moves.
 
 ---
 
@@ -553,3 +556,300 @@ mapped to ciphertext chunk *i*, so such a hand-over could be designed later; it 
 - Auto Backup / desktop backup exclusion of `<root>/up` (which holds file keys) is P3 work.
 - Hub-to-LAN or LAN-to-hub hand-over of one transfer is not designed (see the answer above).
 - The Python vector generator (`hubfile_vectors.py`, Python 3 + `cryptography`) was run once in a scratch folder and is not in the repository; the vectors in `HubFileSealingTest` are the record, and any independent AES-GCM reproduces them from the inputs printed in the test.
+
+### P3 explain-back — 2026-10-20
+
+**What P3 must achieve.** A person picks a file for a colleague who is not on the same network. If no direct (LAN) path
+is up and the hub can carry a sealed message to that colleague, the file goes through the hub without the person
+choosing anything. The bytes go through the P2 engine. The ticket (file id, key, hashes, sizes) travels inside the
+**sealed** 1:1 hub message, and only once the upload has finished. The recipient's bubble offers the file, downloads it
+chunk by chunk, resumes after any interruption, and ends up with the same preview and the same "open/share" path as a
+LAN attachment. The Transfers screen on both hosts shows the row with "Through the hub", progress, pause, resume and
+cancel. A file bigger than the hub's limit is refused before any byte leaves, with the sentence naming both sizes.
+Nothing here changes what happens when a direct path exists.
+
+**Files.**
+- `:core:transfer`
+  - `RealFlashTransferRepository`: external rows from **several** sources (`attachExternalRows(rows, control, source)`,
+    keyed; re-attaching one source replaces only that source), and a `HubSendInterceptor` asked first by the plain
+    `sendFile(device, uri, name, size)` that every host's 1:1 attachment send uses.
+  - `FlashTransfer.viaHub`.
+- `:core:persistence`
+  - Room step 17 → 18: table `hub_file` (`HubFileEntity`, `HubFileDao`), `FlashSchemaSteps.STEP_17_18`,
+    `MIGRATION_17_18` (Android), `FlashJvmMigrations` (desktop), exported schema `18.json`, and migration tests on both
+    hosts.
+- `:core:enterprise`
+  - `HubFilesApi.hubInfo` (the public `GET /api/v1/hub`, cached by the caller, never per send).
+  - `EnterpriseHub.files`.
+  - `HubFileText` wording changes listed under D15/D16.
+- `:core:messaging`
+  - `protocol/HubFileFrameCodec.kt` (`HubFileFrame`, `FLASH_HUBFILE` text frame).
+  - `HubChatBridge`: inner type `HUB_FILE`, sealed only, `fileRoute`, `sendHubFile`, and `HubInboundSink.hubFile`.
+  - `RealFlashChatRepository`: the inbound handler (message + `hub_file` row + conversation in one transaction, then a
+    receipt), `queueHubFile` (links an uploaded ticket to its message under a mutex and enqueues the outbox once), and
+    an outbox branch that sends a `HubFileFrame` through the hub only.
+- `:core:engine`
+  - New package `hubfiles/`: `HubFileBinding` (claims sends, runs uploads and downloads, publishes rows, implements
+    `ExternalTransferControl`), `HubFileRows` (pure entity → row and sentence mapping), and `StreamingHubFileSource`
+    (the P2 `HubFileSource` over the host's existing `FileSourceOpener`, so no new platform code).
+- Hosts
+  - `DiscoveryEngineHolder` and `DesktopEngine`: build the binding next to the swarm binding.
+  - Both Transfers mappers: `viaHub` → `transportLabel`.
+  - Android `backup_rules.xml` and `data_extraction_rules.xml` exclude `hubfiles/`.
+
+**Three nearest existing classes read first, per new class.**
+- `HubFileFrameCodec`: `ChatTextFrameCodec` (the `FlashTextFraming` field codec and the `DecodeResult` shape),
+  `GroupFrameCodec` (non-throwing bounds checks), and `HubSealing` (what the sealed envelope already authenticates).
+- `HubFileEntity` / `HubFileDao`: `HubAnnouncementStateEntity` / `HubAnnouncementDao` (the last Room step, 16 → 17),
+  `OutboxEntity` / `OutboxDao` (IGNORE inserts and state updates by key), and `SwarmContentEntity` / `SwarmDao` (a
+  transfer record that outlives the process).
+- `HubFileBinding`: `SwarmHostBinding` (supervisor child job, exception handler, external rows plus control, the
+  once-guarded detach), `SwarmDriver` (pause, resume, cancel and pause-for-system semantics), and `HubFileTransfers`
+  (the run outcomes it maps).
+- `HubSendInterceptor`: `ExternalTransferControl` (the same "an outside owner takes this id" seam), `FileSourceOpener`
+  (a host-supplied `fun interface`), and the FA-6 empty-file path in `sendFileWithIdentity` (a refusal is a visible
+  Failed row, not a `Failure` the callers ignore).
+- `StreamingHubFileSource`: `DiskHubFileSource` (the contract), `AndroidPieceStorage` (how a `content://` source is read
+  on Android), and `WholeFileVerifier` (streams a source through okio in common code).
+- `HubFileRows`: `FlashSwarmUiMath` (the detail line, with the percent appended by the card), `TransferFailureText` (the
+  sentence for a failure), and the hosts' `activeTransfers` → `FlashAttachmentProgress` mapping.
+
+**Five ways it is most likely to go wrong.**
+1. **The ticket and the message race.** The upload can finish before `sendAttachment` has inserted its row, or the other
+   way round. The outbox is then never filled, or filled twice. So both sides call one `queueHubFile(transferId)` under a
+   mutex. It enqueues only when the ticket is stored **and** the message exists, and it records `QUEUED` in the same
+   transaction as the outbox row.
+2. **The key leaks.** It could go out in a readable hub frame (the `contentViaHub` opt-in), in a group frame, in a log,
+   in Auto Backup, or stay in the engine's plain upload record. So `sendHubFile` is sealed-only with no readable
+   fallback, and inbound `HUB_FILE` is accepted only from a sealed envelope. Logs carry 8-character ids. The upload
+   record is released as soon as the ticket is in the encrypted database, and `hubfiles/` is excluded from backup.
+3. **A hostile frame.** It could name a different author than its sender, reuse a known file id with another key or
+   another sender, carry a path in the name, or give sizes that do not match the layout. So the codec checks every field
+   and the repository checks author = sender. A known file id from someone else is dropped. The name is sanitised before
+   it touches a path. P2 already checks the hub's `senderDeviceId` against the sender.
+4. **Lifecycle.** A pause or cancel can race a running job. The process can die mid-upload. The Android 15 service
+   timeout can fire. A database can still be at version 17. So each transfer has one job, cancelled and joined before a
+   state change. Start-up resumes from `hub_file` rows rather than from memory. Hub rows are external, so the timeout
+   pauses them instead of cancelling them. The migration is tested on both hosts.
+5. **A wrong claim, or rows overwritten.** The hub could be chosen while a LAN session is about to come up, or the swarm
+   binding's rows could replace the hub rows (today one external source overwrites the other). So the claim requires "no
+   session and not discovered" from the host. Anything uncertain falls through to today's LAN path. External rows become
+   keyed by source.
+
+**Tests written first.**
+- `HubFileFrameCodecTest`: golden, every field rule, and 1,000 fuzzed inputs that never throw.
+- `HubChatBridgeTest` additions: sealed-only send, unsealed inbound refused, author mismatch refused.
+- `RealFlashTransferRepositoryExternalSourcesTest`: two sources, re-attach, and the interceptor's claim and fall-through.
+- `HubFileDao` migration tests: `FlashJvmMigrationsTest` 17 → 18 and `FlashMigrationsChainTest`.
+- `RealFlashChatRepositoryHubFileTest`, on a real encrypted database: queue race both orders, duplicate frame,
+  collision, receipt, outbox branch.
+- `HubFileBindingTest`, on `FakeHubFilesApi` and virtual time: claim rules, too large, upload → ticket → queue,
+  pause/resume/cancel, start-up resume, download → move → Completed with a local path, decline, and the
+  service-timeout pause.
+
+**Deviations decided before code (each repeated in the result).**
+- **D14 — group hub files move to P4.** HF-M4 is the per-member sealed key for a group file. A group attachment today is
+  the swarm path (`sendGroupAttachment`, signed group rows, catch-up, `GroupGate`). Deciding per member between "LAN
+  swarm" and "hub key message" is exactly P4's "group fan-out", and doing half of it here would ship a group file that
+  some members silently never get. P3 is 1:1 only. A group send keeps today's behaviour. D7 (a group key only ever in a
+  per-member sealed message) still binds P4.
+- **D15 — `HUB_FILE_DOWNLOADING` drops its `{percent}`.** The bubble already appends " · N%" to every detail line
+  (`FlashSwarmUiMath.formatSubtitle`), so the sentence with its own percent would print it twice. The text becomes
+  "Receiving through the hub…". `HubFileText.downloading()` takes no argument, and the string table changes in the same
+  commit.
+- **D16 — a transient reason is shown on its own.** "The hub cannot be reached. It will continue when the connection is
+  back." is shown without the `HUB_FILE_FAILED` prefix "The hub could not take this file.", which would be false for a
+  pause. `HUB_FILE_FAILED` is used only for a terminal failure.
+- **D17 — the ticket message goes through the hub only, never over the LAN.** If a LAN session to that peer comes up
+  after the upload, the key still goes through the hub, so one file has one path. The hub message is sealed, so this
+  costs nothing in confidentiality.
+- **D18 — auto-download follows the host's existing LAN setting.** Android uses the per-kind toggles and desktop
+  `shouldAutoAcceptOffer`. There is no new hub-specific switch. Otherwise the file waits with Accept/Decline as a LAN
+  offer does.
+- **D19 — no new message kind column.** The plan's "local kind `HUB_FILE`" is a normal attachment message row (name,
+  type, size, transfer id). Its hub nature lives in the `hub_file` row with the same transfer id, so the `messages`
+  table and every reader of it stay unchanged.
+
+### P3 result — built, unit-tested, NOT deployed, NOT device-verified (2026-10-20)
+
+**Status.** HF-M1, HF-M2, HF-M3 and HF-M5 exist on both hosts. HF-M4 (groups) is moved to P4 (D14). A person can now
+send a file in a 1:1 chat to a colleague with no direct path, and it goes through the hub sealed. This works on the fake
+hub, on a real encrypted database, and through the real P1 routes (P2's end-to-end test). No phone or desktop has done it
+against a deployed hub. Device checks: `HUBFILE-M01`..`M10` in `docs/testing/TEST-BACKLOG.md` section 4zzzzzzzzzzzzz.
+They make `HUBFILE-C01`..`C06` runnable.
+
+**Phase report (HUB-QUALITY-CONTRACT section 7).**
+
+Done (evidence table below):
+- HF-M1: Room step 17 → 18 `hub_file` (`HubFileEntity`, `HubFileStates`, `HubFileDao`, `STEP_17_18`, `MIGRATION_17_18`,
+  `18.json`).
+- HF-M2: `TransferSendInterceptor` + `HubFileBinding.intercept` (the hub branch of every host's 1:1 `sendFile`).
+- HF-M3: `HubFileFrameCodec`, the sealed-only `HUB_FILE` in `HubChatBridge`, `HubFileMessages` (ticket queue, inbound,
+  give-up) and the repository wiring.
+- HF-M5:
+  - multi-source external rows in `RealFlashTransferRepository`, `HubFileRows`, `StreamingHubFileSource`;
+  - control: pause, resume, cancel, accept, decline and the system pause;
+  - Android and desktop host wiring, both Transfers mappers, the bubble's hub line.
+
+Done but only unit-tested: all of it. The device checks are `HUBFILE-M01`..`M10`.
+
+Not done, and why:
+- HF-M4, groups (D14): a per-member choice between the LAN swarm and a key message is P4's fan-out.
+- A LAN ↔ hub hand-over of one transfer: not designed, an owner decision.
+- Deleting the chat message does not cancel its hub transfer: it needs a delete hook into the binding that the plan does
+  not describe. Recorded as an open risk.
+- Client pruning of `hub_file` rows: no retention rule exists for local rows yet. Proposed for P4 next to the console
+  Files card.
+- No troubleshooting doc exists at `docs/troubleshooting.md`, so the support rows went into
+  `docs/deploy/HUB-SERVER-DEPLOYMENT.md` section 13.
+
+Surprises:
+1. The swarm binding and any second external source overwrote each other's rows: `attachExternalRows` held one source.
+   It is now keyed by source (`ExternalSourcesAndInterceptorTest`).
+2. The chat bubble hard-wired a network wait to "Waiting for Wi-Fi.", and `FlashAttachmentProgress` had no notion of
+   transport. The Transfers screen preferred the failure text, the bubble the wait reason: the two disagreed. Hub rows
+   now carry `viaHub` (U45).
+3. U23 failed once, only under the wide parallel run: the ticket give-up wrote FAILED and deleted the outbox row in two
+   statements. A reader between them saw a Failed message that still had a queued ticket. Now one transaction
+   (`HubFileMessages.giveUp`).
+4. `PlatformLock.withLock` is not inline, so a non-local `return` inside it does not compile. `launchRun` returns a
+   nullable job instead.
+5. The plan's `HUB_FILE_DOWNLOADING` carried `{percent}`, but the card appends the percentage itself (D15).
+
+Decisions taken that the plan did not make (recorded in the deviations table below and ADR-216): D15–D20 and the
+paired-only auto-download (D18 refined).
+
+**Where the build deviates from this plan, and why.**
+
+| # | The plan said | Built | Why |
+|---|---|---|---|
+| D14 | HF-M4: per-member sealed key for a group file in P3 | 1:1 only; a group send keeps the swarm path | half a group fan-out ships a group file some members never get; P4 owns it, D7 still binds it |
+| D15 | `HUB_FILE_DOWNLOADING` = "Receiving through the hub… {percent}%" | "Receiving through the hub…" | the file card appends " · N%" to every detail line |
+| D16 | transient reasons fill `HUB_FILE_FAILED`'s `{reason}` | a transient reason is shown alone | "The hub could not take this file." is false for a file that will continue by itself |
+| D17 | (silent on the path of the ticket) | the ticket goes through the hub only, sealed, never over the LAN | one file, one path; the sealed hub message costs nothing in confidentiality |
+| D18 | auto-download follows the host's LAN setting | the host's per-type setting **and** a paired sender | AGENTS.md section 19 (user approval before accepting from a new peer): an organisation colleague who never paired is asked. Owner to confirm |
+| D19 | a local message kind `HUB_FILE` | a normal attachment row; the hub nature lives in `hub_file` | no reader of `messages` changes |
+| D20 | backup rules exclude `hubfiles/` | the engine state lives under `noBackupFilesDir/hub-files` (Android) and `<stateDir>/hub-files` (desktop) | the platform never backs up `noBackupFilesDir`, so no rule can be forgotten; the desktop runs no backup |
+
+Plan explain-back names that changed in the build: `HubSendInterceptor` → `TransferSendInterceptor`;
+`RealFlashTransferRepositoryExternalSourcesTest` → `ExternalSourcesAndInterceptorTest` (Android host, where the
+repository's other tests live).
+
+**Evidence.**
+
+| Step | Files | Tests | Result |
+|---|---|---|---|
+| HF-M1 | `core/persistence/.../entity/HubFileEntity.kt`, `dao/HubFileDao.kt`, `FlashSchemaSteps.kt` (`STEP_17_18`), `FlashMigrations.kt`, `FlashDatabase.kt`, `schemas/.../18.json` | `HubFileDaoTest` (5), `FlashJvmMigrationsTest` HUBFILE-U01, `FlashMigrationsChainTest` | pass |
+| HF-M2 | `core/transfer/.../TransferSendInterceptor.kt`, `RealFlashTransferRepository.kt`, `model/FlashTransfer.kt`, `core/engine/.../hubfiles/HubFileBinding.kt` | `ExternalSourcesAndInterceptorTest` (6), `HubFileBindingTest` U26–U28, U33 | pass |
+| HF-M3 | `core/messaging/.../protocol/HubFileFrameCodec.kt`, `hub/HubChatBridge.kt`, `hub/HubFileMessages.kt`, `RealFlashChatRepository.kt` | `HubFileFrameCodecTest` U10–U14 (1,000 fuzzed inputs), `HubFileBridgeTest` U15–U18, `RealFlashChatRepositoryHubFileTest` U19–U25, U41–U43 (real encrypted DB) | pass; mutations M1, M2b, M3 caught |
+| HF-M5 | `HubFileBinding.kt`, `HubFileRows.kt`, `StreamingHubFileSource.kt`, `model/FlashMessagingModels.kt` (`viaHub`), `app/.../DiscoveryEngineHolder.kt`, `app/.../TransfersUiMapper.kt`, `desktop/.../DesktopEngine.kt`, `DesktopShell.kt` | `HubFileBindingTest` U29–U38, U44; `HubFileRowsFuzzTest` U39 (2,000 reads), U40 (5,000 rows); `RealFlashChatRepositoryTest` HUBFILE-U45; `TransfersUiMapperTest.aHubRowSaysSoAndOffersNoRetry` | pass; mutation M4 caught |
+
+Final run, through the build lock, after every fix:
+
+```
+tools\flash-gradle.cmd --offline :core:engine:jvmTest :core:messaging:jvmTest :core:messaging:testAndroidHostTest
+  :core:transfer:jvmTest :core:transfer:testAndroidHostTest :core:persistence:jvmTest :core:persistence:testAndroidHostTest
+  :core:enterprise:jvmTest :server:test :desktop:jvmTest :app:testDebugUnitTest --tests *TransfersUiMapperTest*
+  :app:compileDebugKotlin :desktop:compileKotlinJvm --continue -q
+[flash-gradle] finished with exit code 0 after 486s of running
+
+:core:engine:jvmTest                  tests=164 failures=0
+:core:messaging:jvmTest               tests=345 failures=0
+:core:messaging:testAndroidHostTest   tests=638 failures=0
+:core:transfer:jvmTest                tests=135 failures=0
+:core:transfer:testAndroidHostTest    tests=211 failures=0
+:core:persistence:jvmTest             tests=75  failures=0
+:core:persistence:testAndroidHostTest tests=53  failures=0
+:core:enterprise:jvmTest              tests=256 failures=0
+:server:test                          tests=572 failures=0
+:desktop:jvmTest                      tests=220 failures=0
+:app:testDebugUnitTest (mapper)       tests=10  failures=0
+```
+
+(The counts are summed from the JUnit XML of each task.) 51 tests were added in P3. The earlier wide run, before the
+closing fixes, had 3 failures:
+- U23, the give-up race, now fixed;
+- ORGT-U16, its wall-clock budget exceeded at 45.4 s under load, green alone;
+- `GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect`, green alone (10/10). It is a load flake in code
+  P3 did not touch.
+
+**Mutation checks (each run with `tools\flash-gradle.cmd`, each restored, suites green afterwards).**
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | `HubChatBridge` accepts an unsealed `HUB_FILE` (`if (!sealed)` → `if (false)`) | caught: `HUBFILE-U18 a readable, forged, malformed or unwanted ticket is rejected and acknowledged` — `expected:<REJECTED> but was:<STORED>` (20 run, 1 failed) |
+| M2a | `HubFileMessages.queue` drops its Kotlin READY check | **survived** (20 run, 0 failed): `HubFileDao.markQueued` repeats it in SQL (`AND state = 'READY'`), and the outbox row is written only when that update matched. Kept as defence in depth; the SQL is the guard |
+| M2b | `markQueued` drops `AND state = 'READY'` | caught: `HUBFILE-U19 a ticket goes once the upload and the message both exist, and the receipt delivers it` — `expected:<[PENDING]> but was:<[FAILED]>` |
+| M3 | `HubChatBridge` stops checking the ticket's author against the envelope's sender | caught: `HUBFILE-U18` — `expected:<REJECTED> but was:<STORED>` |
+| M4 | the bubble ignores `viaHub` (condition made unsatisfiable, keeping the type) | caught: `HUBFILE-U45` — `expected:<Receiving through the hub…> but was:<null>` |
+
+**Adversarial review findings, and what was done.**
+
+1. **Give-up race** (U23 under load): FAILED and the outbox delete were two statements. → One transaction, `giveUp`
+   (fixed).
+2. **False wait text**: a waiting hub file said "Waiting for Wi-Fi." in the bubble and in Transfers, which is wrong on
+   mobile data. The plan's sending/receiving lines were never shown. → `viaHub`, `hubFileDetailLine`, and `waitReason`
+   only when there is a reason (U45, M4; fixed).
+3. **Uncorrelatable probes**: `FlashProbe.short(transferId)` printed `hub-o-ab`, 2 hex characters of the id. → Every P3
+   probe now carries `id` = the first 8 characters of the file id, the same `id` as P2's `hubfile.upload` (fixed;
+   PROBES.md).
+4. **Redundant guard**: the READY check in `queue` duplicates the SQL guard, and M2a survives. Kept and documented;
+   M2b proves the SQL guard is tested.
+5. **Crash between placing a received file and marking it done.** The engine's record is already gone, so the row
+   stays DOWNLOADING and the next run fetches the whole file again: a cost, not corruption. If the hub swept the file
+   in between, the row ends "no longer on the hub" although the file is in the folder. Open; the window is
+   milliseconds.
+6. **Delete does not cancel**: deleting the chat message leaves its hub transfer running. Open (see "Not done").
+7. **Stale limit**: the hub limit cache (10 min) is per binding, not per hub address. After re-enrolling elsewhere, the
+   old limit can apply for up to 10 minutes. The hub still enforces its own limit, and the upload then ends
+   `TooLarge` with the sentence. Accepted.
+8. **Seen but unreachable**: a peer that discovery sees but whose dial fails stays on the LAN path (queued) and never
+   moves to the hub. Open: this is the hand-over question (ADR-216 "Revisit when").
+9. **Late pairing**: an offered file whose sender is paired later is re-checked for auto-download only at the next
+   `start()`; the watcher keys on row ids. Accepted: Accept still works.
+10. **Silent decline**: Decline does not tell the sender, and the hub keeps the file until retention, against the
+    sender's quota. Accepted for P3; P4's console card shows the usage.
+11. **Retrying bugs**: a deterministic bug inside a run is retried for ever with a delay capped at 10 minutes. It is
+    logged with the class name only, and the row shows the local-storage sentence. Accepted: better than a crash loop,
+    and visible.
+12. **Unbounded table**: `hub_file` rows are never pruned, and `observeRecent` sorts every row by `createdAtMs` without
+    an index, O(n log n) per change. Fine for thousands of files; open for P4 (pruning, or an index).
+13. **Name sanitising**: `../../evil/notes.txt` becomes the single component `.._.._evil_notes.txt`. It is safe, and
+    U34 asserts the safety property, not one spelling.
+14. **No Retry for hub rows**: the direct-path retry would have re-sent over the LAN or re-claimed a new hub file. A hub
+    failure is final, and transient trouble keeps the row waiting. → `retryable = !viaHub` in both mappers
+    (`aHubRowSaysSoAndOffersNoRetry`).
+
+**Extra situations handled beyond the plan (each tested).**
+- A person's pause survives a later `start()`, while a system pause (FGS timeout) is resumed by it (U44).
+- A send refused at claim time starts its message as Failed, never Pending (U42).
+- A file that ends for good fails its message and retires the ticket, but a message already Delivered stays Delivered
+  (U41).
+- The ticket carries the type the chat message knows, not the neutral type the claim stored (U43).
+- A ticket whose key no longer decodes fails instead of downloading (U37).
+- A replayed ticket is stored once and notifies once, but is acknowledged every time (U21). A ticket that contradicts a
+  stored one, or reuses a message id, is refused (U22).
+- A device with no `hub_file` table (no hub-files support wired) takes no ticket and sends no receipt (U25).
+- 2,000 random reads of a streamed source and 5,000 random row shapes keep every invariant (U39, U40).
+
+**Open risks the owner should know.**
+- Paired-only auto-download (D18) is stricter than "follow the LAN setting". Confirm or reverse it.
+- The reachability rule can choose the LAN while a LAN path never comes up; no hand-over exists.
+- Delete-without-cancel and unbounded local rows, as above.
+
+**Self-score against HUB-QUALITY-CONTRACT section 3.**
+
+| # | Category | Status |
+|---|---|---|
+| 1 | Failure paths | covered: offline/interrupted upload and download (U29, U38), gone/altered (U36), bad key (U37), refused at claim (U28, U42), give-up and cancel (U23, U30, U41), local storage errors map to the plan sentence |
+| 2 | Hostile input | covered: codec field rules, path names, 1,000 fuzzed inputs (U10–U14); unsealed, forged, malformed, unwanted (U18); replay and contradiction (U21, U22); file names (U34) |
+| 3 | Concurrency and ordering | covered: upload before or after the message (U19, U20); queue exactly once under a mutex plus SQL guard (M2b); one job per transfer with a stale-completion guard; cancel racing the last chunk (the move to DONE loses and the placed file is deleted; code path, not separately tested) |
+| 4 | Lifecycle | covered: new process resumes (U32), system pause then start (U44), migration 17 → 18 on both hosts (HUBFILE-U01), detach (U33) |
+| 5 | Scale | partly: 200-row list cap; 5,000 row shapes fuzzed; unbounded local table recorded as open (finding 12); no 20,000 case because the table holds one row per file this device sent or received |
+| 6 | Security | covered: sealed-only send and receive and the author check (U16, U18, mutations M1, M3), path safety (U34), the binding downloads by itself only when the host says so (U35); probes carry 8-character ids only. Partly: the paired-only rule itself is host code (Android `trustStore.isTrusted`, desktop `shouldAutoAcceptOffer`) with no hub-specific test; device check M06 |
+| 7 | Compatibility | covered: a hub without files (limit 0) gives `HUB_OLD` before upload (U28); a client without `hub_file` drops tickets (U25); a non-enrolled device has no interceptor result, so the LAN path is unchanged (U27) |
+| 8 | Both hosts | covered: Android `DiscoveryEngineHolder` and desktop `DesktopEngine` build the binding, both mappers, both compile; the shared logic is in `commonMain` |
+| 9 | UI honesty | covered for text: every refusal names why (plan section 6), no dead Retry, "Through the hub" label, no false Wi-Fi text (U45). Not covered: 200 % font and screen-reader order on the new label (reuses the existing row text; device check M01) |
+| 10 | Observability | covered: six new probes in PROBES.md, keyed by the file id |
+| 11 | Documentation | covered: protocol.md, security.md (five P3 rows), PROBES.md, plan sections 6 and 9, ADR-216, TEST-BACKLOG, deploy troubleshooting, progress, handoff, AGENTS section 29. `docs/protocol-routes.txt`: no new route. `docs/android-platform-notes.md`: `noBackupFilesDir` is long-standing platform behaviour; no new fact used |
+| 12 | Admin and support view | covered: five troubleshooting rows in `docs/deploy/HUB-SERVER-DEPLOYMENT.md` section 13, each naming the next step |

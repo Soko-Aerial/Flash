@@ -917,6 +917,18 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Hub files P3 (2026-10-20, ADR-216): 1:1 files go through the hub from chat, on both hosts; built and unit-tested, NOT deployed,
+NOT device-verified.** A 1:1 send to a peer with no live session that discovery does not see is taken by `HubFileBinding`
+(`:core:engine/hubfiles`, via `RealFlashTransferRepository.sendInterceptor`). It is uploaded sealed (P2), and its key travels only in a
+sealed `HUB_FILE` ticket (`FLASH_HUBFILE v=1`, `HubFileFrameCodec`) once the upload and the message both exist. The recipient gets a
+normal attachment message plus a `hub_file` row (Room step 18). Download starts on Accept, or by itself only for a **paired** sender with
+the per-type auto-download setting. Rows show "Through the hub" in Transfers, without Retry, and the bubble shows the hub's own reason,
+never "Waiting for Wi-Fi". Pause, resume and cancel work, the Android FGS timeout only pauses, and everything resumes from disk at start.
+A reachable peer keeps the LAN path unchanged; group files keep the swarm path (D14, P4). Not built: LAN ↔ hub hand-over of one
+transfer, cancel-on-delete of the message, client pruning of `hub_file` rows. Deviations D14–D20 and the P3 report:
+`docs/plans/HUB-FILES-PLAN.md` §9. Device checks `HUBFILE-M01..M10` (and `HUBFILE-C01..C06`, now runnable) in
+`docs/testing/TEST-BACKLOG.md`.
+
 **Hub files P2 (2026-10-20, ADR-215): client transport built and unit-tested, NOT deployed, NOT device-verified, not yet
 called by the app.** `:core:security` `HubFileSealing` (AES-256-GCM per chunk, index-derived nonce, AAD binds file id,
 index, chunk count and length; golden vectors), `:core:enterprise` `HubRestExecutor` (shared with announcements) and
