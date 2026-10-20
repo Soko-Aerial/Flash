@@ -1,5 +1,55 @@
 # Progress Log
 
+## 2026-10-20 - Cancel, error and resume audit: what each stop actually does to the peer, the row and the notification
+
+### Worked on
+Owner asked for a forensic trace of every cancel/exit/error/resume path correlated with notification behaviour ("find all
+cancel exit error and trace and find bugs and improvements etc and also features needed"). Work was done in a separate worktree
+(`E:/FlashWork/A-cancel`, branch `agent/A-cancel` from `dev` @ `51469a84`) so the other agent's tree was untouched.
+
+### Changed
+- New `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md`: trace tables for 1:1, swarm, hub, calls/PTT/pairing,
+  then 19 defects (B-01..B-19), 8 improvements (I-01..I-08), 8 features (F-01..F-08), deliberate behaviour, five owner
+  questions, and what the audit did not do. Every claim carries `file:line`.
+- `docs/testing/TEST-BACKLOG.md`: new section `4zzzzzzzzzzzzzzzzz` with `CNCL-01`..`CNCL-14`, one per actionable finding.
+
+**No product code was changed. Nothing was built, run or installed.** Every finding is static evidence; the doc says so twice.
+
+### Findings that matter most
+- **B-01 (S1) consent:** the chat bubble has no Cancelled state (`FlashFileTransferStatus` folds it into `Failed` on all three
+  hosts) and its tap calls `resumeTransfer`, which relaunches a **Cancelled send** (`RealFlashTransferRepository.kt:770`) — so
+  tapping a cancelled attachment re-sends the file. The mapper comment that assumed otherwise (`TransfersUiMapper.kt:48-50`) is
+  false.
+- **B-02 (S1) loss:** the Android dataSync timeout **cancels** 1:1 transfers and calls `forgetChunks`, while swarm and hub pause;
+  the app's own "Paused by Android; continues automatically." sentence can never describe a 1:1 transfer.
+- **B-03 (S2) state corruption:** `onRemoteTransferControl` has no terminal-state guard, so a late PAUSE turns a Completed row
+  into Paused and a RESUME resurrects a Cancelled or Completed send.
+- **B-04 (S1/S3):** group cancel is confirmed where it is harmless (every 1:1 send asks "Cancel for everyone?") and performed
+  without confirmation where it destroys the file for the whole group (the notification's "Cancel").
+- **B-06 (S2):** hub Failed rows are `retryable = false`, yet `showTransferFailed` always adds Retry, and `HubFileBinding.resume`
+  no-ops on FAILED — a dead button.
+- **B-07 (S2):** `handleTransfersChanged` has `else -> Unit`, so `Transferring → Queued` leaves an ongoing progress notification
+  with a Cancel button for a transfer that is only waiting.
+- **B-11 (S2):** transfer state is never restored: `TransferStore` has no list API, `TransferDao.observe` is unused, and nothing
+  prunes the rows — so no restart-resume (§18) and no history (§22).
+- Also: silent receiver refusals (B-15), raw internal reasons shown to users (B-12), undismissable call notification (B-09),
+  notification id collisions that could cancel the wrong file (B-16).
+
+### Verification
+Documentation only. Read the implementation end to end in the areas listed in the audit's §0 table. No Gradle command was run,
+no device was touched, so nothing here is device-verified and no build claim is made.
+
+### Remaining / next AI
+- Owner decisions in the audit's §7 (1:1 timeout pause vs cancel; recoverable send-cancel; confirmation for a notification
+  action; history retention; desktop action scope).
+- Fix order recommended: B-01 + B-03 (one small guard each, they are the same class), then B-02, then B-06 + B-07 (one predicate
+  on the model), then B-11/F-01 as a feature.
+- The `CNCL-*` device cases stay TODO until the fixes land; `CNCL-01/04/12` can be run now to confirm the audit's reading.
+
+### Next AI
+Read the audit doc's §3 and §7 before touching `RealFlashTransferRepository` or the notification manager. Do not "fix" B-02 by
+making 1:1 cancel faster; the owner's answer to §7 Q1 decides it.
+
 ## 2026-10-20 - Fixes from the owner's logs: swarm greeting after a session swap, redial loop stuck on the old network
 
 ### Worked on

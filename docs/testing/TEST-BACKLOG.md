@@ -5724,3 +5724,120 @@ scope for this release. Record results in the Results log; a FAIL blocks the upl
 - **Steps:** keep three or more Flash devices on one Wi-Fi, change the phone's network once, export the phone log after 10 minutes.
 - **Pass:** every `WS handshake rejected from=<address>` line names a dialer address; the address belongs to a device whose pin for the phone is wrong or to a stale route. No such line for the desktop once both are connected.
 - **Source:** ERROR-745. **Status:** TODO
+
+## 4zzzzzzzzzzzzzzzzz. Cancel, error, resume ↔ notifications (CNCL, 2026-10-20; see `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md`)
+
+Static audit only: **nothing here has been run**, and none of the B-* findings has been reproduced on a device. Run the cases
+that cover a defect *after* it is fixed, to prove the fix; `CNCL-01/04/12` are also worth running on the current build to
+confirm the audit's reading of the code.
+
+### CNCL-01 — A cancelled send is not re-sent by tapping the chat bubble
+- **Setup:** two paired phones, both in the chat. Attach a 20 MB file from A, and cancel it from the Transfers tab while it is
+  still transferring (or after it failed).
+- **Steps:** wait for B's row to settle, then tap the file bubble on **A**.
+- **Pass:** nothing goes on the wire (no `XFER`, no `FILE_START`, no new transfer row on B); the bubble's status reads
+  Cancelled/Stopped, not "Failed … tap to retry", and offers no Retry badge.
+- **Source:** B-01 (`resumeTransfer` relaunches a Cancelled send, `RealFlashTransferRepository.kt:770`; the bubble maps
+  Cancelled→Failed on every host). **Status:** TODO
+
+### CNCL-02 — Android's dataSync timeout pauses a 1:1 transfer instead of cancelling it
+- **Setup:** a long 1:1 transfer (a 5 GB+ file over a slow link, or throttle with `adb shell tc`), phone foreground service
+  running (transfers tab open, then backgrounded).
+- **Steps:** trigger `onTimeout`. If the device exposes it, `adb shell device_config put activity_manager
+  data_sync_fgs_timeout_duration 60000` (API 35; not on every release build) and wait; otherwise this needs a real 6-hour run.
+- **Pass:** the row becomes Paused/Queued with "Paused by Android; continues automatically." (not Cancelled), the done-set is
+  kept, and Resume continues from where it stopped. Today the code cancels it (`FlashBackgroundService.onTimeout` →
+  `TimeoutStopPlan.toCancel`).
+- **Source:** B-02. **Status:** TODO
+
+### CNCL-03 — A late PAUSE/CANCEL cannot rewrite a finished transfer
+- **Setup:** two phones, a 50 MB file.
+- **Steps:** on the receiver, tap Pause repeatedly in the last half second while the progress sits at 99–100 %; repeat 10×. Also
+  tap Cancel right as the completion notification appears.
+- **Pass:** once a row is Completed it stays Completed (History), the sender and receiver agree, and no notification says "paused"
+  for a finished file.
+- **Source:** B-03 (`onRemoteTransferControl` has no terminal-state guard). **Status:** TODO
+
+### CNCL-04 — Group cancel says and does the same thing on every surface
+- **Setup:** a 3-member v2 group, swarm on, a 50 MB file from A.
+- **Steps:** while A's file is still uploading (the notification's button reads "Cancel"), press it. Then repeat with a plain 1:1
+  send from the Transfers tab.
+- **Pass:** the group case either confirms or is labelled "Cancel for everyone" (today it destroys the file for all members with
+  no confirmation); the 1:1 case says plain "Cancel" (today it asks "Cancel for everyone?"). After a group cancel, B and C show a
+  row that says who cancelled (see CNCL-14), not a silent disappearance.
+- **Source:** B-04 (`FlashNotificationManager.kt:239-240` vs `SwarmHostBinding.kt:168-175`; `FlashTransfersScreen.kt:315`). **Status:** TODO
+
+### CNCL-05 — Cancelled and declined files do not read as failures
+- **Setup:** two phones. Send a file, cancel mid-flight (both directions); send another and decline it; take a call that fails.
+- **Steps:** open the Transfers tab and the chat bubbles for each.
+- **Pass:** all three surfaces use one vocabulary (Cancelled / Declined / Failed) and the cancelled bubble shows no Retry.
+- **Source:** B-05 (`FlashFileTransferStatus` has no Cancelled member; `TransfersUiMapper.kt:38-39`). **Status:** TODO
+
+### CNCL-06 — No dead Retry
+- **Setup:** a hub-linked 1:1 file that fails for a reason a retry cannot change (e.g. above the hub's `maxFileBytes`), and a 1:1
+  receive that fails on the receiver only (disk full).
+- **Steps:** press Retry on the failed-transfer notification for each; then press Retry on the 1:1 failed receive while the sender
+  is closed.
+- **Pass:** the hub row's notification has no Retry (or the Retry does something and says so); the 1:1 retry either restarts the
+  transfer or returns to Failed with a sentence within a bounded time — it must not sit at "Downloading" with no session.
+- **Source:** B-06 (`showTransferFailed` always adds Retry; `HubFileBinding.resume` no-ops on FAILED). **Status:** TODO
+
+### CNCL-07 — A waiting transfer does not leave a frozen progress notification
+- **Setup:** swarm on, a 200 MB group file from A; hub file for the second half.
+- **Steps:** while it transfers, take the only other holder offline (swarm case) / disable both Wi-Fi and data (hub case) and
+  watch the notification.
+- **Pass:** the ongoing progress notification is replaced or cleared when the row becomes Queued; no permanent progress bar at a
+  stale percentage with a Cancel button that no longer describes the state.
+- **Source:** B-07 (`handleTransfersChanged` has `else -> Unit` for Queued). **Status:** TODO
+
+### CNCL-08 — A hub transfer that never progresses eventually says so
+- **Setup:** hub file with a network that fails every attempt (e.g. block the hub host in the router, or point the pinned hub at an
+  unreachable address in a test profile).
+- **Steps:** start the transfer and leave it for 30+ minutes.
+- **Pass:** the row ends Failed with a reason and a Retry that works (today it retries for ever at a 10-minute cap and never
+  fails).
+- **Source:** B-08 (`HubFileBinding.runUntilSettled`). **Status:** TODO
+
+### CNCL-09 — A call notification can always be dismissed
+- **Setup:** phone receiving a call from the desktop.
+- **Steps:** while it rings, force-stop the app from Settings (`adb shell am force-stop com.transfer.flash`), then tap Decline and
+  Hang up on the notification.
+- **Pass:** the notification goes away (or its buttons end the call); nothing remains on screen that the user cannot dismiss.
+- **Source:** B-09 (`FlashCallActionReceiver` returns when the engine is gone; `FlashCallService` never cancels on that path). **Status:** TODO
+
+### CNCL-10 — Cancelling from the notification always ends in a visible result
+- **Setup:** a transfer in flight from the notification's Cancel button.
+- **Steps:** press Cancel from the notification; then repeat after removing the row first (Clear history with a live row).
+- **Pass:** the Transfers tab shows the row Cancelled in both cases; when the row is unknown the user gets a sentence/toast, not
+  silence while the sender keeps streaming.
+- **Source:** B-10, B-18 (notification cleared before the work; failures only logged; `cancelTransfer` skips the peer when the row
+  is missing). **Status:** TODO
+
+### CNCL-11 — A killed app comes back with its interrupted transfers
+- **Setup:** a 200 MB 1:1 send and a 200 MB swarm receive, each at ~50 %.
+- **Steps:** `adb shell am force-stop com.transfer.flash`, reopen the app, open Transfers.
+- **Pass:** the interrupted rows are present (Paused or Failed with "Interrupted — tap to resume"), Resume continues from the
+  persisted done-set, and completed transfers from the previous session are still in History. Today the list starts empty
+  (`_activeTransfers` is memory-only; `TransferDao` has no list query).
+- **Source:** B-11. **Status:** TODO
+
+### CNCL-12 — Every cancel/decline message is a sentence
+- **Setup:** cancel a send from A; cancel a receive on B; decline an offer; let the Android timeout fire.
+- **Steps:** read the Transfers row and the notification body on both devices.
+- **Pass:** no raw internal token appears (`cancelled by receiver`, `cancelled by sender`, `paused by receiver`, `declined`,
+  `waiting for receiver to accept`); each reads as a sentence naming the peer.
+- **Source:** B-12. **Status:** TODO
+
+### CNCL-13 — A receiver's refusal reaches the sender
+- **Setup:** B with less free space than the file needs (or a session ceiling already reached).
+- **Steps:** A sends a file larger than B's free space.
+- **Pass:** A's row fails with B's own sentence ("Not enough free space …") rather than a timeout/"not responding"; B records the
+  refusal. Today `ReceiveEvent.Rejected` is only logged.
+- **Source:** B-15. **Status:** TODO
+
+### CNCL-14 — A group file shows why it stopped
+- **Setup:** 3-member group, swarm on.
+- **Steps:** (a) A cancels the file from the bubble; (b) A deletes the message for everyone; (c) let a receiver's copy expire.
+- **Pass:** the three cases read differently ("Cancelled by A", "Deleted by A", an expiry line), not all as a bare "Cancelled".
+- **Source:** B-19 (`SwarmDriver` drops the tombstone reason; `TransferFailureText.cancelledBy/deletedBy` have no caller). **Status:** TODO
+
