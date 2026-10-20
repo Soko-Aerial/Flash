@@ -6305,3 +6305,37 @@ A file to a colleague on another network now works without a choice, and a peer 
 
 ### Revisit when
 P4 builds group hub files (D7 still binds them); the owner asks for a LAN ↔ hub hand-over of one transfer; or device tests (`HUBFILE-M01..M10`) show the reachability rule picking the hub while a LAN path was about to come up.
+
+## ADR-217 - Search finds files, not just message text: structured global hits, scopes, and a message deep link
+
+### Status
+ACCEPTED (owner asked for the search upgrade on 2026-10-20: "search upgardes ... reverify everything before implementing one by one"); built and unit-tested 2026-10-20, **not device-verified**. Design and the full change list: `docs/ui/search-ui.md` "Upgrade 2026-10-20".
+
+### Decision
+- **Matching covers attachments.** `MessageDao.searchMessages` and `searchConversationMessages` match `text OR attachmentName`; in-chat search matches the body, file names, image captions and link text through one pure helper (`FlashSearchText`). A file the person remembers by name is the most common search and must not be invisible.
+- **Results are structured, not conversation ids.** `searchChats` returns `FlashMessageSearchHitUi` rows (snippet, sender, time) and `FlashFileSearchHitUi` rows (name, size, MIME), each carrying its conversation. `searchMessageBodies` stays as a delegating view so no caller breaks.
+- **A chat row means the chat itself matched.** Title, preview text and colleague names produce chat rows; a row produced only by a message body appears as the message/file hit instead. The same match is never listed twice in two shapes.
+- **Scopes share one vocabulary.** Global: All / Chats / Messages / Files / Media / Links; in-chat: All / Messages / Files / Links. Files excludes images and videos (those are Media); Links only shows hits whose text carries an `http(s)://` or `flash://` URL.
+- **The result list is pure data.** `FlashSearchResultMath.entries(...)` turns (scope, chats, results) into one heterogeneous list — scope row, section headers with a 3-row preview and "See all", then rows — so the arrangement is unit-tested instead of being layout code.
+- **Deep link through navigation state.** `FlashBackStackState.targetMessageId` is saved as a third field (legacy two-field entries still restore). Tapping a result closes search, records the query as a recent search, opens the chat and scrolls to the message with the existing pulse highlight. Re-targeting the chat already open replaces the entry and plays no push animation, so Back does not walk through every hit.
+- **Recent searches are persisted.** `observeRecentSearches`, `recordRecentSearch` and `clearRecentSearches` are wired to the existing `RecentSearchDao`; the table was already in schema 18, so no migration was needed.
+- **In-chat search gains a results drawer** (an expandable panel under the bar, not a modal sheet) beside the `n / m` stepper, with the same scope chips.
+- **The shared-content sheet is searchable** per tab, with filtered counts and a per-tab empty state.
+- **FTS5 is deferred.** The current LIKE scan is bounded by the result limit; an FTS table needs a migration, a tokenizer decision and a measurement before it can be called better.
+
+### Context
+Every earlier section of `docs/ui/search-ui.md` described a search that matched chat titles, previews and message bodies only. Verification against the code confirmed: filenames were not in the SQL, the global result was a `Set<String>`, `RecentSearchDao` was dead, in-chat search had no list or filters, and the shared-content sheet could not be searched at all. `MessageDao.observeConversation` has no LIMIT, so the in-chat list already holds the whole thread — a DAO-backed in-chat search would add a query, not reach, which is why the in-chat half was upgraded in memory instead.
+
+### Alternatives considered
+- **FTS5 virtual table for messages** (deferred, not rejected: better ranking and prefix matching, but it needs migration 18→19, a tokenizer choice for the languages this app is used in, and a measurement against the current bounded LIKE; doing it blind would add a second source of truth for "what matches").
+- **Separate result screen** as the global search surface (rejected: the chat list is the place people search from, and a full-screen result list loses the recents chips and the list context).
+- **Bottom sheet for in-chat results** (rejected: it covers the thread and the search bar, so a person cannot refine the query while reading a hit; an expanding panel keeps both).
+- **Keeping `Set<String>` and filtering the chat list only** (rejected as the whole point of the upgrade: context-free "this chat matched" rows were the defect).
+- **Searching images by their media type rather than captions** (not possible today: media has no OCR or labels; captions are the only text attached to it).
+
+### Consequences
+Search now answers "where is Budget_Q4.pdf" as well as "where did we discuss the budget", from the chat list and inside a chat. The result rows carry enough context to choose without opening the chat first. The cost is a slightly wider DAO predicate (an extra LIKE on `attachmentName`, NULL-safe) and up to 300 rows per query on the IO dispatcher. A message that matches both its text and its own file name appears in **both** the Messages and Files sections (two different things to find, and the scopes filter them independently); in-chat search shows it once, as a file hit with the sentence as the snippet.
+
+### Revisit when
+Device tests (`SEARCH-01`…`SEARCH-12`) show the 3-row section preview to be the wrong size, the LIKE scan to be too slow on a large history, or people ask for word-stem matching — then evaluate FTS5 with a measured baseline; or when a paged message list lands, which must move in-chat search into the DAO.
+

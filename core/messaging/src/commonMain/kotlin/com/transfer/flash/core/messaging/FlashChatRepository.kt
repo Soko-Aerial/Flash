@@ -5,6 +5,7 @@ package com.transfer.flash.core.messaging
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.messaging.group.GroupLocalPreferences
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
+import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
@@ -388,6 +389,31 @@ public interface FlashChatRepository {
         query: String,
         limit: Int = 100,
     ): List<String> = emptyList()
+
+    /**
+     * Structured global search (UI-024 upgrade): message-body hits **and attachment-name hits**
+     * across every conversation, newest first, each carrying the chat title, sender, snippet and
+     * timestamp so the UI can render result rows and deep-link to the matched message.
+     *
+     * Lightweight/sample implementations return nothing; the Room-backed repository overrides it.
+     * [searchMessageBodies] remains as the conversation-id-only view of the same data.
+     */
+    public suspend fun searchChats(
+        query: String,
+        limit: Int = 300,
+    ): FlashChatSearchResultsUi = FlashChatSearchResultsUi.Empty
+
+    /**
+     * Persisted recent searches, newest first (Room `recent_searches`, which already existed but was
+     * never read). Chips shown while the global search box is empty.
+     */
+    public fun observeRecentSearches(limit: Int = 8): Flow<List<String>> = flowOf(emptyList())
+
+    /** Records a completed search. Blank queries are ignored; repeats move the entry to the top. */
+    public suspend fun recordRecentSearch(query: String) {}
+
+    /** Clears the whole recent-search history (the chips header's "Clear" action). */
+    public suspend fun clearRecentSearches() {}
 
     /**
      * Send a reply/quote (#8). [replyToId] is the quoted message's local id and [replyToPreview] a

@@ -1,5 +1,33 @@
 # Current Handoff
 
+## 2026-10-20 — Search upgrade (UI-023 / UI-024, ADR-217): files, structured results, scopes, deep links
+
+- **Current branch:** `agent/search-upgrades`, a worktree at `E:/FlashWork/S3-search` (the main checkout is used by
+  another agent; the phone belongs to that agent's session too). Based on `dev` @ `a2f37084`.
+- **Status:** implemented and unit-tested; **NOT device-verified**. Committed on this branch (see `git log`), not pushed.
+- **The one thing to know:** `FlashChatRepository.searchChats(query)` returns **structured** hits —
+  `FlashMessageSearchHitUi` (body match) and `FlashFileSearchHitUi` (attachment-name match), each with chat title, sender,
+  snippet and time. `searchMessageBodies` still exists and delegates to it, so nothing that only needs conversation ids
+  changed. The DAO now matches `text OR attachmentName`.
+- **Scopes:** global All / Chats / Messages / Files / Media / Links; in-chat All / Messages / Files / Links. Files excludes
+  images and videos (those are Media); Links only shows hits whose text carries an `http(s)://` or `flash://` URL. A
+  link-carrying message is listed under Links in the All view (not also under Messages) so `LazyColumn` keys stay unique.
+- **Deep link:** `FlashBackStackState.targetMessageId` (third field in the saved entry; legacy two-field entries still
+  restore). A result tap closes search, records the query as a recent search, opens the chat and jumps+pulses the message.
+  Re-targeting the open chat replaces the entry and plays no push animation.
+- **Recents:** `RecentSearchDao` is finally used (`observeRecentSearches` / `recordRecentSearch` / `clearRecentSearches`);
+  the table already existed in schema 18, so no migration.
+- **In-chat:** a results drawer under the search bar (expand/collapse chevron, scope chips, `n results`, tap-to-jump)
+  beside the existing `n / m` stepper; matching now includes file names, image captions and link text.
+- **Shared content sheet:** a search pill filters whichever tab is open (file names, captions, link URL/domain/snippet,
+  voice-note sender) with filtered counts and per-tab empty states.
+- **Host wiring:** `MainActivity` and `DesktopShell` both call `searchChats`, collect the recents flow, hold the scope and
+  navigate with the target message; both pass `targetMessageId` to `FlashConversationScreen`.
+- **Last test:** see `logs/progress.md` 2026-10-20 "Search upgrade". Unit suites green; compiles clean.
+- **Owed next:** `SEARCH-01`…`SEARCH-12` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzz (two phones + desktop).
+- **Read before touching:** `docs/ui/search-ui.md` "Upgrade 2026-10-20" (what changed and why), ADR-217 in
+  `docs/decisions.md` (the decisions and the deferred FTS5), `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzz.
+
 ## 2026-10-20 — Hub files P2 (client transport): sealing, typed client, resumable engine
 
 - **Current branch:** `dev`, on top of `de2aba4d` (P1). This work is commit `7bac665a` (not pushed).

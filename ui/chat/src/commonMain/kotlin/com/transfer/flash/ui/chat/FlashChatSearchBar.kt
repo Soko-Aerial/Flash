@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -40,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.ui.icons.FlashIcon
+import com.transfer.flash.ui.icons.FlashIconSpec
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
@@ -52,12 +56,13 @@ import com.transfer.flash.ui.theme.FlashTheme
  * Unit-testable without instrumentation (see [FlashChatSearchLogicTest]).
  */
 object FlashChatSearchMath {
-    /** Message ids containing [rawQuery] (case-insensitive), oldest-first. Blank query → empty. */
-    fun findMatches(messages: List<FlashMessageUi>, rawQuery: String): List<String> {
-        val query = normalizeQuery(rawQuery)
-        if (query.isEmpty()) return emptyList()
-        return messages.filter { it.text.contains(query, ignoreCase = true) }.map { it.id }
-    }
+    /**
+     * Message ids matching [rawQuery] (case-insensitive), oldest-first. Matches the body text, an
+     * attachment file name or an image caption (SEARCH-01) — a file used to be invisible to search.
+     * Blank query → empty.
+     */
+    fun findMatches(messages: List<FlashMessageUi>, rawQuery: String): List<String> =
+        FlashChatSearchHits.hits(messages, rawQuery).map { it.messageId }
 
     fun normalizeQuery(rawQuery: String): String = rawQuery.trim()
 
@@ -122,6 +127,10 @@ fun FlashChatSearchBar(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
+    /** UI-023 upgrade: whether the results drawer under the bar is open. */
+    resultsExpanded: Boolean = false,
+    /** Opens/closes the results drawer. Null hides the toggle (a host that cannot list results). */
+    onToggleResults: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -183,6 +192,8 @@ fun FlashChatSearchBar(
                 singleLine = true,
                 textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.accentPrimary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { if (resultCount > 0) onNext() }),
                 decorationBox = { innerTextField ->
                     if (query.isEmpty()) {
                         FlashText(
@@ -217,6 +228,17 @@ fun FlashChatSearchBar(
             )
         }
 
+        // UI-023 upgrade: list every match instead of stepping 1/18 times.
+        if (onToggleResults != null) {
+            SearchStepButton(
+                rotationZ = if (resultsExpanded) 180f else 0f,
+                description = if (resultsExpanded) "Hide all matches" else "Show all matches",
+                enabled = resultCount > 0,
+                onClick = onToggleResults,
+                icon = FlashIcons.ChevronDown,
+            )
+        }
+
         // Previous / next steppers (Flash back glyph rotated into chevrons)
         SearchStepButton(
             rotationZ = 90f,
@@ -240,6 +262,7 @@ private fun SearchStepButton(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    icon: FlashIconSpec = FlashIcons.Back,
 ) {
     val colors = FlashTheme.colors
     // UI-041: press-scale micro-interaction on search chrome, token-driven springSnappy.
@@ -272,7 +295,7 @@ private fun SearchStepButton(
         contentAlignment = Alignment.Center,
     ) {
         FlashIcon(
-            icon = FlashIcons.Back,
+            icon = icon,
             contentDescription = null,
             tint = if (enabled) colors.textSecondary else colors.textTertiary,
             size = FlashDimensions.iconMd,

@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -35,6 +36,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
+import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.core.messaging.util.sampleFlashChatListState
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
@@ -94,6 +96,21 @@ fun FlashChatListScreen(
     /** Plan B Phase B3: Colleague device IDs matching the search query against the organisation snapshot. */
     colleagueMatchIds: Set<String> = emptySet(),
     /**
+     * UI-024 upgrade: structured cross-conversation hits (message snippets + attachment names) from
+     * the repository. Replaces the old behaviour where search only filtered conversation rows with no
+     * indication of what matched. Empty for lightweight hosts.
+     */
+    searchResults: FlashChatSearchResultsUi = FlashChatSearchResultsUi(),
+    /** Active result scope chip (All / Chats / Messages / Files / Media / Links). */
+    searchScope: FlashSearchScope = FlashSearchScope.All,
+    onSearchScopeChanged: (FlashSearchScope) -> Unit = {},
+    /** Deep-link: opens [conversationId] scrolled to [messageId] with a pulse highlight. */
+    onSearchMessageClick: (conversationId: String, messageId: String) -> Unit = { _, _ -> },
+    /** Deep-link for a file hit (same destination, different glyph in the row). */
+    onSearchFileClick: (conversationId: String, messageId: String) -> Unit = { _, _ -> },
+    /** IME "Search": the host records the query in the recent-search history. */
+    onSearchSubmit: () -> Unit = {},
+    /**
      * Group Phase 1A: opens the create-group sheet; null HIDES the action.
      *
      * This was `() -> Unit = {}` — non-null, so it could never be null, and it was forwarded to
@@ -132,6 +149,17 @@ fun FlashChatListScreen(
         FlashChatListSearchMath.filterChats(activeItems, searchQuery, messageBodyMatches, colleagueMatchIds)
     }
     val searchActive = FlashChatListSearchMath.isSearchActive(searchQuery)
+    // Chats whose NAME or PREVIEW matched. Body-only matches are represented by their message/file
+    // hit rows instead, so a thread never appears twice with no explanation of why it is here.
+    val titleMatchedChats = remember(activeItems, searchQuery, colleagueMatchIds) {
+        FlashChatListSearchMath.filterChats(activeItems, searchQuery, colleagueMatchIds = colleagueMatchIds)
+    }
+    val searchEntries = remember(searchScope, titleMatchedChats, searchResults) {
+        FlashSearchResultMath.entries(searchScope, titleMatchedChats, searchResults)
+    }
+    val scopedResultCount = remember(searchScope, titleMatchedChats, searchResults) {
+        FlashSearchResultMath.scopeCount(searchScope, titleMatchedChats, searchResults)
+    }
     val showRecents = isSearching && !searchActive && recentSearches.isNotEmpty()
     val showPending = pendingApprovalGroupNames.isNotEmpty() && !viewingArchived && !isSearching
     val showEmptyState = !isLoading && errorMessage == null && activeItems.isEmpty() && !isSearching && !showPending
@@ -156,7 +184,8 @@ fun FlashChatListScreen(
                     query = searchQuery,
                     onQueryChanged = onSearchQueryChanged,
                     onClose = onCloseSearch,
-                    resultCount = if (searchActive) displayItems.size else null,
+                    resultCount = if (searchActive) scopedResultCount else null,
+                    onSearchSubmit = onSearchSubmit,
                 )
             } else if (viewingArchived) {
                 FlashArchivedChatsTopBar(
@@ -244,49 +273,111 @@ fun FlashChatListScreen(
                                 )
                             }
                         }
-                        if (!viewingArchived && state.archivedItems.isNotEmpty() && !isSearching) {
-                            item(key = "flash-archived-chats-row") {
-                                val unreadArchived = remember(state.archivedItems) {
-                                    state.archivedItems.sumOf { it.unreadCount }
-                                }
-                                FlashArchivedChatsRow(
-                                    archivedCount = state.archivedItems.size,
-                                    unreadCount = unreadArchived,
-                                    onClick = { viewingArchived = true },
+                        if (isSearching && searchActive) {
+                            // UI-024 upgrade: scoped, sectioned results (chats + message snippets +
+                            // files) in the SAME LazyColumn, so scrolling and recycling are unchanged.
+                            item(
+                                key = FlashSearchResultMath.key(FlashSearchListEntry.ScopeRow),
+                                contentType = "search_scope",
+                            ) {
+                                FlashSearchScopeRow(
+                                    scopes = GlobalSearchScopes,
+                                    selected = searchScope,
+                                    onSelect = onSearchScopeChanged,
                                 )
                             }
-                        }
-                        // BOLT: contentType differentiation for direct vs group rows to optimize LazyColumn composition slot recycling
-                        itemsIndexed(
-                            items = displayItems,
-                            key = { _, item -> item.id },
-                            contentType = { _, item -> if (item.isGroup) "group" else "direct" },
-                        ) { index, item ->
-                            val isLastRow =
-                                !showRecents && index == displayItems.lastIndex
-                            FlashChatListRow(
-                                item = item,
-                                onClick = {
-                                    if (state.selectionMode) {
-                                        onToggleSelection(item.id)
-                                    } else {
-                                        onConversationClick(item.id)
+                            items(
+                                count = searchEntries.size,
+                                key = { index -> FlashSearchResultMath.key(searchEntries[index]) },
+                                contentType = { index ->
+                                    when (searchEntries[index]) {
+                                        is FlashSearchListEntry.SectionHeader -> "search_header"
+                                        is FlashSearchListEntry.Chat -> "search_chat"
+                                        is FlashSearchListEntry.Message -> "search_message"
+                                        is FlashSearchListEntry.File -> "search_file"
+                                        else -> "search_empty"
                                     }
                                 },
-                                onLongClick = {
-                                    if (state.selectionMode) {
-                                        onToggleSelection(item.id)
-                                    } else {
-                                        onConversationLongClick(item.id)
+                            ) { index ->
+                                when (val entry = searchEntries[index]) {
+                                    is FlashSearchListEntry.SectionHeader -> FlashSearchSectionHeader(
+                                        title = entry.title,
+                                        count = entry.count,
+                                        showSeeAll = entry.showSeeAll,
+                                        onSeeAll = { onSearchScopeChanged(entry.scope) },
+                                    )
+                                    is FlashSearchListEntry.Chat -> FlashChatListRow(
+                                        item = entry.item,
+                                        onClick = { onConversationClick(entry.item.id) },
+                                        showDivider = true,
+                                        modifier = flashAnimateItem(motion),
+                                    )
+                                    is FlashSearchListEntry.Message -> FlashMessageSearchResultRow(
+                                        hit = entry.hit,
+                                        query = searchQuery,
+                                        onClick = {
+                                            onSearchMessageClick(entry.hit.conversationId, entry.hit.messageId)
+                                        },
+                                    )
+                                    is FlashSearchListEntry.File -> FlashFileSearchResultRow(
+                                        hit = entry.hit,
+                                        query = searchQuery,
+                                        onClick = {
+                                            onSearchFileClick(entry.hit.conversationId, entry.hit.messageId)
+                                        },
+                                    )
+                                    is FlashSearchListEntry.NoResults -> FlashSearchNoResults(
+                                        query = searchQuery,
+                                        scopeLabel = entry.scopeLabel,
+                                    )
+                                    FlashSearchListEntry.ScopeRow -> Unit
+                                }
+                            }
+                        } else {
+                            if (!viewingArchived && state.archivedItems.isNotEmpty() && !isSearching) {
+                                item(key = "flash-archived-chats-row") {
+                                    val unreadArchived = remember(state.archivedItems) {
+                                        state.archivedItems.sumOf { it.unreadCount }
                                     }
-                                },
-                                onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
-                                swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
-                                isSelected = item.id in state.selectedIds || (!state.selectionMode && activeConversationId != null && item.id == activeConversationId),
-                                selectionMode = state.selectionMode,
-                                showDivider = showRecents || !isLastRow,
-                                modifier = flashAnimateItem(motion),
-                            )
+                                    FlashArchivedChatsRow(
+                                        archivedCount = state.archivedItems.size,
+                                        unreadCount = unreadArchived,
+                                        onClick = { viewingArchived = true },
+                                    )
+                                }
+                            }
+                            // BOLT: contentType differentiation for direct vs group rows to optimize LazyColumn composition slot recycling
+                            itemsIndexed(
+                                items = displayItems,
+                                key = { _, item -> item.id },
+                                contentType = { _, item -> if (item.isGroup) "group" else "direct" },
+                            ) { index, item ->
+                                val isLastRow =
+                                    !showRecents && index == displayItems.lastIndex
+                                FlashChatListRow(
+                                    item = item,
+                                    onClick = {
+                                        if (state.selectionMode) {
+                                            onToggleSelection(item.id)
+                                        } else {
+                                            onConversationClick(item.id)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (state.selectionMode) {
+                                            onToggleSelection(item.id)
+                                        } else {
+                                            onConversationLongClick(item.id)
+                                        }
+                                    },
+                                    onArchive = if (viewingArchived) onUnarchiveConversation else onArchiveConversation,
+                                    swipeActionLabel = if (viewingArchived) "Unarchive" else "Archive",
+                                    isSelected = item.id in state.selectedIds || (!state.selectionMode && activeConversationId != null && item.id == activeConversationId),
+                                    selectionMode = state.selectionMode,
+                                    showDivider = showRecents || !isLastRow,
+                                    modifier = flashAnimateItem(motion),
+                                )
+                            }
                         }
                     }
                 }

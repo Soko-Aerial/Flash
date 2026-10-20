@@ -386,4 +386,67 @@ class FlashNavigationLogicTest {
         assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.NearbyDevices, isTwoPane = true))
         assertFalse(FlashNavigationMath.shouldClearSelectionOnBack(FlashDestination.Settings, isTwoPane = true))
     }
+
+    // ── UI-024 upgrade: deep link to a message from a global search result ──
+
+    @Test
+    fun `a search result carries the target message into the conversation entry`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-42")
+
+        assertEquals("conv-1", nav.current.conversationId)
+        assertEquals("msg-42", nav.current.targetMessageId)
+    }
+
+    @Test
+    fun `a target is only kept for a conversation entry`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Transfers, targetMessageId = "msg-42")
+        assertEquals(FlashDestination.Transfers, nav.current.destination)
+        assertNull(nav.current.targetMessageId)
+    }
+
+    @Test
+    fun `re-targeting the open conversation replaces the entry instead of stacking it`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-2")
+
+        // Two search hits in the SAME chat must not build a back stack of messages.
+        assertEquals(2, nav.stackSize)
+        assertEquals("msg-2", nav.current.targetMessageId)
+        assertTrue(nav.back())
+        assertEquals(FlashDestination.ChatList, nav.current.destination)
+    }
+
+    @Test
+    fun `the exact same hit twice is still ignored`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
+        assertEquals(2, nav.stackSize)
+    }
+
+    @Test
+    fun `re-targeting the same conversation plays no push animation`() {
+        val from = FlashBackStackState(FlashDestination.Conversation, "conv-1", "msg-1")
+        val to = FlashBackStackState(FlashDestination.Conversation, "conv-1", "msg-2")
+        assertEquals(FlashScreenTransition.None, FlashNavigationMath.transitionFor(from, to))
+    }
+
+    @Test
+    fun `the saver round-trips the target message and still reads legacy two-field entries`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-42")
+
+        val saved = with(FlashNavigationStateSaver) { SaverScope { true }.save(nav) }
+        val restored = FlashNavigationStateSaver.restore(requireNotNull(saved))
+
+        assertEquals("msg-42", restored?.current?.targetMessageId)
+        assertEquals("msg-1", decodeNavigationEntry("Conversation|conv-1|msg-1")?.targetMessageId)
+        // Saved by an older build: no third field.
+        val legacy = decodeNavigationEntry("Conversation|conv-1")
+        assertEquals("conv-1", legacy?.conversationId)
+        assertNull(legacy?.targetMessageId)
+    }
 }
