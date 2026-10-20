@@ -5321,3 +5321,67 @@ Written and unit-tested (RADFIX-U01 `RadioServiceIdentityTest`, RADFIX-U02 `Radi
 - **Pass:** While disconnected the card shows "Connect a radio first: the test message is sent over the radio link…" and the button is disabled; once CONNECTED the sentence disappears and the button enables. The transmission itself stays RADWIRE-D03 (owner, dummy load).
 - **Source:** `FlashRadioDiagnosticsCard`, `FlashRadioCopy.TEST_MESSAGE_NEEDS_LINK`.
 - **Status:** TODO
+
+
+## 4zzzzzzzzzzzz. Hub files P2 — client transport (HUBFILE-C, 2026-10-20; see `docs/plans/HUB-FILES-PLAN.md` section 9 and ADR-215)
+
+Built and unit-tested (`HubFileSealingTest`, `HubFileDtosTest`, `RealHubFilesApiTest`, `HubFileStateCodecTest`,
+`HubFileTransfersTest`, `DiskHubFileStorageTest`, `:server` `E2eHubFileTransferContractTest`), **not deployed, not
+device-verified**. Nothing in the app calls the engine yet: these checks need P3 (the chat message and the UI) or a
+debug entry point that P3 adds. They are listed now so they are not forgotten (AGENTS.md section 35).
+
+### HUBFILE-C01 — A sealed file crosses a deployed hub between two real devices
+
+- **Setup:** test hub deployed with P1 + P2 (`docs/deploy/HUB-SERVER-DEPLOYMENT.md`), two enrolled devices (one Android, one desktop), not on the same LAN.
+- **Steps:** send a 20 MB file from the phone to the desktop through the hub; then the reverse.
+- **Pass:** both ends log `hubfile.upload step=done chunks=20/20` / `hubfile.download step=done chunks=20/20`; the received file's SHA-256 equals the source's; on the hub, `data/files/<id>/0.chunk` contains no 32-byte run of the source (check with a script); the audit shows only 8-character ids.
+- **Source:** HF-C2..C4, ADR-215 D1.
+- **Status:** TODO (needs P3)
+
+### HUBFILE-C02 — An upload cut by a Wi-Fi to mobile-data switch continues where it stopped
+
+- **Setup:** as C01, phone on Wi-Fi, a 50 MB file.
+- **Steps:** start the send; at about 40 % turn Wi-Fi off so the phone falls back to mobile data (or walk out of range). Do not touch the app.
+- **Pass:** at most one request runs into the 60 s timeout (`hubfile.upload step=interrupted reason=Offline` or a retry line, then progress continues); the hub receives every chunk index exactly once more than it already had (no re-send of chunks below the cut: `file.chunk` audit lines for low indexes appear once); the recipient's file hash matches.
+- **Source:** HF-C4 `HubTransferPolicy.requestTimeoutMs`, situation 1.
+- **Status:** TODO (needs P3)
+
+### HUBFILE-C03 — An app killed mid-upload and mid-download resumes from its record
+
+- **Setup:** as C01, a 50 MB file.
+- **Steps:** (a) during the upload, force-stop the sending app at about 30 %, reopen it; (b) during the download, force-stop the receiving app at about 60 %, reopen it.
+- **Pass:** (a) the sender logs `hubfile.upload step=resume chunks=N/51` with N ≥ the chunks the hub had, and the hub's `file.create` audit line appears once; (b) the receiver logs `hubfile.download step=resume` and fetches only `51 − N` chunks (`file.read` audit lines); both files hash equal.
+- **Source:** HF-C4 situations 1 and 2.
+- **Status:** TODO (needs P3)
+
+### HUBFILE-C04 — A hub restart in the middle of a transfer costs one retry, not the transfer
+
+- **Setup:** as C01, a 50 MB file, shell access to the hub host.
+- **Steps:** during the download, restart the hub service (`systemctl restart flash-hub` or the deploy profile's equivalent).
+- **Pass:** the receiver logs retries or `interrupted reason=Offline`, then continues from the same chunk once the hub is back; no full re-download (`hubfile.download step=refetch` must NOT appear).
+- **Source:** HF-C4, `docs/protocol.md` "Client transfer behaviour".
+- **Status:** TODO (needs P3)
+
+### HUBFILE-C05 — A phone whose storage is nearly full pauses instead of failing
+
+- **Setup:** Android phone with less free space than the file plus 8 MB.
+- **Steps:** receive a 50 MB file through the hub; free space; retry.
+- **Pass:** first run ends `interrupted reason=NoSpace` with the sentence "There is not enough free space on this device. Free some space and it will continue."; after freeing space the download continues from its record.
+- **Source:** HF-C4 `NoSpace`, `HubFileText.reason`.
+- **Status:** TODO (needs P3)
+
+### HUBFILE-C06 — The exact limit and one byte over, against a deployed hub
+
+- **Setup:** deployed hub with `maxFileBytes` at its 50 MB default.
+- **Steps:** send a file of exactly 52 428 800 bytes, then one of 52 428 801 bytes.
+- **Pass:** the first arrives (51 chunks); the second is refused on the phone before any request, with the `HUB_FILE_TOO_LARGE` sentence naming 50 MB.
+- **Source:** P2 plan defect (sealing allowance), `FileStore.create`.
+- **Status:** TODO (needs P3)
+
+### MEAS-HUBFILE-01 — Hub file throughput and CPU on a phone (measurement, backlog section 5 rules)
+
+- **Setup:** as C01, phone and hub on a known network; note the phone model, network type, hub host.
+- **Steps:** send and receive a 50 MB file three times each.
+- **Pass:** record average MB/s, the sealing/verification share of CPU (Android Studio profiler) and battery drain in `logs/experiments.md`. The only number known so far is synthetic: the JVM test host moved and verified 50 MB in about 10 s (`E2eHubFileTransferContractTest`, laptop, no network). *(measure)*
+- **Source:** AGENTS.md section 23.
+- **Status:** TODO (needs P3)

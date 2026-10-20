@@ -36,6 +36,16 @@ private val secureRandom = SecureRandom()
 internal actual fun sha256(data: ByteArray): ByteArray =
     MessageDigest.getInstance("SHA-256").digest(data)
 
+internal actual class Sha256Stream actual constructor() {
+    private val digest: MessageDigest = MessageDigest.getInstance("SHA-256")
+
+    actual fun update(data: ByteArray, offset: Int, length: Int) {
+        digest.update(data, offset, length)
+    }
+
+    actual fun digest(): ByteArray = digest.digest()
+}
+
 internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray =
     Mac.getInstance(HMAC_SHA256).run {
         init(SecretKeySpec(key, HMAC_SHA256))

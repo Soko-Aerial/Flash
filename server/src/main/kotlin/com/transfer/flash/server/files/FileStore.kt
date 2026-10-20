@@ -8,6 +8,7 @@ import com.transfer.flash.core.hubprotocol.rest.FileStatsDto
 import com.transfer.flash.core.hubprotocol.rest.FileStatusDto
 import com.transfer.flash.core.hubprotocol.rest.FileTicketDto
 import com.transfer.flash.core.hubprotocol.rest.FileUsageRowDto
+import com.transfer.flash.core.hubprotocol.rest.HubFileIds
 import com.transfer.flash.server.storage.Migration
 import com.transfer.flash.server.storage.Migrator
 import com.transfer.flash.server.storage.ServerDatabase
@@ -48,10 +49,15 @@ class FileStore(
         if (!isFileId(request.fileId)) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.BAD_ID)
         if (!isSha256(request.sha256)) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.BAD_HASH)
         if (request.totalBytes <= 0L) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.EMPTY_FILE)
-        if (request.totalBytes > limits().maxFileBytes) {
+        val lim = limits()
+        // maxFileBytes is the PLAINTEXT limit: the ciphertext may be larger by one sealing tag per chunk, so "50 MB" in
+        // the console lets a 50 MB file through. chunkCount is validated below; a negative or absurd value cannot widen
+        // the allowance past MAX_FILE_CHUNKS tags because the arithmetic check rejects it before anything is stored.
+        val sealingAllowance = request.chunkCount.coerceIn(0, HubContract.MAX_FILE_CHUNKS).toLong() *
+            HubContract.SEALED_CHUNK_OVERHEAD_BYTES
+        if (request.totalBytes > lim.maxFileBytes + sealingAllowance) {
             return FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.TOO_LARGE)
         }
-        val lim = limits()
         if (request.chunkSize <= 0 || request.chunkSize > lim.chunkBytes) {
             return FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.CHUNK_SIZE_LIMIT)
         }
@@ -60,12 +66,13 @@ class FileStore(
         ) {
             return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.BAD_SIZES)
         }
-        if ((request.toDeviceId == null) == (request.groupId == null)) {
+        val target = request.toDeviceId
+        val groupId = request.groupId
+        if ((target == null) == (groupId == null)) {
             return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.BAD_RECIPIENT)
         }
         val recipients: List<String> = when {
-            request.toDeviceId != null -> {
-                val target = request.toDeviceId!!
+            target != null -> {
                 if (target == sender) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.BAD_RECIPIENT)
                 if (!knownDevice(target)) {
                     return FileOutcome.Refused(HubErrorCodes.ERR_UNKNOWN_RECIPIENT, FileMessages.UNKNOWN_RECIPIENT)
@@ -73,8 +80,7 @@ class FileStore(
                 listOf(target)
             }
             else -> {
-                val groupId = request.groupId!!
-                val members = groupMembers(groupId)
+                val members = groupId?.let(groupMembers)
                     ?: return FileOutcome.Refused(HubErrorCodes.ERR_UNKNOWN_RECIPIENT, FileMessages.UNKNOWN_RECIPIENT)
                 val rest = (members.toSet() - sender).toList().sorted()
                 if (rest.isEmpty()) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.UNKNOWN_RECIPIENT)
@@ -771,12 +777,10 @@ class FileStore(
             if (chunkSize <= 0) 0 else ((totalBytes + chunkSize - 1) / chunkSize).toInt()
 
         /** 32 lowercase hex characters, and nothing else. This is the only value that becomes a path component. */
-        fun isFileId(id: String): Boolean =
-            id.length == 32 && id.all { it in '0'..'9' || it in 'a'..'f' }
+        fun isFileId(id: String): Boolean = HubFileIds.isFileId(id)
 
         /** 64 lowercase hex characters. */
-        fun isSha256(value: String): Boolean =
-            value.length == 64 && value.all { it in '0'..'9' || it in 'a'..'f' }
+        fun isSha256(value: String): Boolean = HubFileIds.isSha256(value)
 
         fun sha256Hex(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }

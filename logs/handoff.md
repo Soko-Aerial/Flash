@@ -1,5 +1,27 @@
 # Current Handoff
 
+## 2026-10-20 — Hub files P2 (client transport): sealing, typed client, resumable engine
+
+- **Current branch:** `dev`, on top of `de2aba4d` (P1). This work is the commit after it.
+- **Status:** implemented and unit-tested on JVM and Android host; **NOT deployed, NOT device-verified**, and **nothing in
+  the app calls it yet** (P3 wires it into chat).
+- **The one thing to know:** `HubFileTransfers` (`:core:enterprise/files`) uploads and downloads a file sealed per chunk
+  (`HubFileSealing`, `:core:security`) and keeps its progress in `<root>/up|down/<fileId>.state` + `.part`. A run ends
+  `Done`, `Interrupted` (call again later, the record stays) or `Failed` (record removed). Upload returns a
+  `HubFileTicket` (file id, key, ciphertext hash, sizes) that P3 must put in the sealed chat message **only after the
+  upload completed**.
+- **Resume:** network-agnostic within the hub path (Wi-Fi ↔ mobile data, LAN ↔ internet to the same hub address, app kill,
+  hub restart). LAN-direct ↔ hub hand-over of one transfer is not designed (owner decision).
+- **Server change:** `FileStore.create` allows `maxFileBytes + chunkCount × 16` of ciphertext; the console number is the
+  plaintext limit. Redeploy the hub with P1 + this change before P4.
+- **Last test:** see `logs/progress.md` 2026-10-20 "Hub files P2". Known load flake this round:
+  `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` (green alone), and `OrgDirectorySyncTest` ORGT-U16
+  (5,000-member wall-clock budget 25 s: 20.8 s alone, 33.7 s when both enterprise hosts ran at once; untouched code, the
+  budget is thin for this shared PC).
+- **Owed next:** P3. Device checks `HUBFILE-C01..C06`, `MEAS-HUBFILE-01` (backlog §4zzzzzzzzzzzz).
+- **Read before touching:** `docs/plans/HUB-FILES-PLAN.md` §9 P2 result (deviations D8–D13), `docs/protocol.md` "Hub files
+  API" → "Sealing (client, P2)".
+
 ## 2026-10-20 — Hub files P1 (server): sealed 50 MB files, admin limit, quotas, sweeper
 
 - **Current branch:** `dev`. This entry covers the uncommitted `:core:hub-protocol` + `:server` + docs work of

@@ -30,6 +30,19 @@ package com.transfer.flash.core.security.crypto
 internal expect fun sha256(data: ByteArray): ByteArray
 
 /**
+ * Incremental SHA-256 for inputs too large to hold at once (a sealed hub file is up to 2 GiB). Backed by
+ * `MessageDigest.getInstance("SHA-256")` on JVM targets; the result equals [sha256] of the concatenated input, which
+ * `HubFileSealingTest` pins against the one-shot function and against a vector made outside Kotlin.
+ *
+ * Not thread-safe: one instance per stream, like the JCA object it wraps. [digest] ends the stream.
+ */
+internal expect class Sha256Stream() {
+    fun update(data: ByteArray, offset: Int, length: Int)
+
+    fun digest(): ByteArray
+}
+
+/**
  * HMAC-SHA256 of [data] under [key]. Backed by `Mac.getInstance("HmacSHA256")` on JVM targets.
  *
  * One-shot by design. [Hkdf] previously streamed `Mac.update()` calls; HMAC over the

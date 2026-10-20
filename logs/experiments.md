@@ -2020,3 +2020,18 @@ Inspect and map the Windows 11 audio driver and registry hierarchy for the Vero 
 ### Conclusion & Plan Impact
 1. **Question 1 Answered for Windows:** Windows installs the radio under `BthHFPAudio` as an HFP Hands-Free audio device. The endpoint is valid, but dormant (`UNPLUGGED` 0x8) during idle.
 2. **Architecture Validation:** Any future implementation of Mode 3 or Mode 5 on Windows must use WASAPI `eCommunications` stream initialization to trigger the SCO bearer.
+
+## EXP-075 — Hub files P2: a 50 MiB sealed file through the real routes on the test host (synthetic)
+
+### Setup
+`E2eHubFileTransferContractTest.aFileOfExactlyTheFiftyMegabyteLimitCrossesTheRealHubSealedAndIntact` on the owner's
+Windows PC (8 CPUs, shared with other agents), Ktor test host, in-memory transport, no network, no phone. Client engine
+`HubFileTransfers` with `RealHubFilesApi`, server `FileStore` on a temporary directory.
+
+### Result
+52 428 800 bytes of plaintext → 51 chunks, 52 429 616 bytes of ciphertext. Seal, upload, complete, download, open,
+verify and the whole-file check: 10.3 s and 12.3 s in two runs (about 4–5 MB/s end to end, both sides on one JVM).
+
+### Conclusion
+Only a sanity number: it shows nothing is quadratic and the 50 MiB limit is reachable. It says nothing about phone CPU,
+real disks or real networks; `MEAS-HUBFILE-01` is the real measurement.

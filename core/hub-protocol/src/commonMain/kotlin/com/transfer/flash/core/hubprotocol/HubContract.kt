@@ -143,6 +143,16 @@ public object HubContract {
     /** Smallest value an administrator may set for `maxFileBytes` (one chunk). */
     public const val MIN_FILE_BYTES_FLOOR: Long = MAX_CHUNK_BYTES.toLong()
 
+    /**
+     * Bytes the client's sealing adds to every chunk (the AES-GCM tag, `HubFileSealing`). The hub allows
+     * `maxFileBytes + chunkCount * SEALED_CHUNK_OVERHEAD_BYTES` of ciphertext, so `maxFileBytes` is the largest PLAINTEXT
+     * file a member may send: "50 MB" in the console means a 50 MB file goes through, not 800 bytes less.
+     */
+    public const val SEALED_CHUNK_OVERHEAD_BYTES: Int = 16
+
+    /** Optional `PUT .../chunks/{index}` header: 64 lowercase hex, the SHA-256 of the body, compared by the hub. */
+    public const val HEADER_CHUNK_SHA256: String = "X-Flash-Chunk-Sha256"
+
 
     // ---- headers --------------------------------------------------------------------------------------------
 

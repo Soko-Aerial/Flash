@@ -191,11 +191,27 @@ class FileStoreTest {
     @Test
     fun aFileAboveTheLimitIsRefused() {
         limits = limits.copy(maxFileBytes = 2048)
+        // 2048 plaintext bytes sealed in 3 chunks are 2048 + 3 * 16 = 2096 ciphertext bytes: one more is refused.
         val tooBig = store.create(
             sender,
-            createRequest(fileId = id(2), totalBytes = 2049, chunkSize = 1024, chunkCount = 3),
+            createRequest(fileId = id(2), totalBytes = 2097, chunkSize = 1024, chunkCount = 3),
         )
         assertEquals(HubErrorCodes.ERR_TOO_LARGE, refused(tooBig).code)
+    }
+
+    @Test
+    fun theLimitIsThePlaintextSizeSoTheSealingTagsDoNotCountAgainstIt() {
+        limits = limits.copy(maxFileBytes = 2048)
+        val exact = store.create(
+            sender,
+            createRequest(
+                fileId = id(3),
+                totalBytes = 2048L + 3 * HubContract.SEALED_CHUNK_OVERHEAD_BYTES,
+                chunkSize = 1024,
+                chunkCount = 3,
+            ),
+        )
+        assertTrue(exact is FileOutcome.Ok, "a file of exactly the limit, plus its tags, must be accepted: $exact")
     }
 
     @Test

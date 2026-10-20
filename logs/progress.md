@@ -1,5 +1,54 @@
 # Progress Log
 
+## 2026-10-20 — Hub files P2: sealed file client transport and a resumable upload/download engine
+
+### Worked on
+Phase P2 of `docs/plans/HUB-FILES-PLAN.md` (ADR-215): the client half of "send files through the hub", plus the owner's
+question "can the download resume on the local area network and also on the internet".
+
+### Changed
+- **`:core:hub-protocol`**: `SEALED_CHUNK_OVERHEAD_BYTES`, `HEADER_CHUNK_SHA256`, `HubFileIds`; `HubInfo.maxFileBytes`
+  is documented as the plaintext limit.
+- **`:core:security`**: `Sha256Stream` (expect/actual), `enterprise/HubFileSealing.kt` — AES-256-GCM per chunk, nonce =
+  8-byte prefix + index, AAD = domain tag + file id + index + chunk count + plaintext length; golden vectors from Python
+  `cryptography`.
+- **`:core:enterprise`**: `HubRestExecutor` (the pinned-hub / cleartext / bearer / 401-refresh loop, extracted from
+  `RealHubAnnouncementsApi`, which now uses it), and the new `files/` package: `HubFilesApi`, `RealHubFilesApi`,
+  `FakeHubFilesApi`, `HubFileError` + `HubFileText`, `HubFileStorage` (`DiskHubFileStorage` on JVM and Android),
+  `HubFileStateCodec` + `HubChunkBitmap`, and the engine `HubFileTransfers`.
+- **`:server`**: `FileStore.create` allows `maxFileBytes + chunkCount × 16` of ciphertext so a file of exactly the limit
+  fits (it was refused by 816 bytes); two `!!` on request fields removed. New `E2eHubFileTransferContractTest` drives the
+  real client engine against the real routes.
+- **Docs**: `docs/protocol.md`, `docs/security.md` (four client rows), `docs/testing/PROBES.md` (`hubfile.upload`,
+  `hubfile.download`), `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzz, the plan's string table and P2 result (deviations
+  D8–D13, mutations M1–M8, 13 adversarial findings), `logs/experiments.md` EXP-075.
+
+### Why
+The owner asked for ~50 MB files through the hub, sealed so the hub cannot read them, and for transfers that survive
+network changes. Resumability lives in the client: each chunk is one HTTPS request, progress is a chunk bitmap on disk.
+
+### Verification
+`:core:enterprise` jvmTest and Android host test, `:core:security` and `:core:hub-protocol` on both hosts, the `:server`
+file tests (`FileStoreTest` 24, `FileRoutesTest` 10, `E2eHubFileTransferContractTest` 5), `:app:compileDebugKotlin`,
+`:desktop:compileKotlinJvm` — counts in the plan's P2 result. Full `:server:test`: 572 tests, 1 failure
+(`E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`, relay code untouched, 8/8 green when rerun alone —
+load flake). Eight mutations caught; two first survived and got new tests.
+**Not deployed, not device-verified, and nothing in the app calls the engine yet.**
+
+### Answer to the owner's resume question
+Within the hub path the engine does not care how the device reaches the hub: Wi-Fi, mobile data, office LAN or home
+internet. A network switch, an app kill or a hub restart costs at most the chunk in flight (60 s timeout per request,
+bitmap on disk). Direct LAN transfers already resume on their own done-set. A transfer that starts on the LAN and finishes
+through the hub (or the reverse) is not designed — an owner decision for later.
+
+### Remaining
+P3 (file message, key delivery in the sealed message, `releaseUpload`, backup exclusion of the upload records, UI on both
+hosts), then P4 and the `HUBFILE-*` device checks.
+
+### Next AI
+Start P3 from `docs/plans/HUB-FILES-PLAN.md` §4.4 and the P2 result in §9. Do not change the sealing layout without new
+golden vectors.
+
 ## 2026-10-20 — Hub files P1: the server stores sealed 50 MB files, with an administrator's limit, quotas and a sweeper
 
 ### Worked on
