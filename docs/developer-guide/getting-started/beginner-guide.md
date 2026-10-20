@@ -136,6 +136,8 @@ engine.chats.sendTextTo(conversationId, "Hello again")
 ```
 
 Pairing must have happened first (a 1:1 chat only goes to a pinned, paired device); see [core-security](../modules/core/core-security.md).
+How a host actually drives the handshake (and why the facade cannot do it yet) is in
+[guides/pairing-and-trust.md](../guides/pairing-and-trust.md).
 
 ### Step 4: Send a File
 

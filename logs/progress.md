@@ -1,5 +1,61 @@
 # Progress Log
 
+## 2026-10-20 - Developer guide: how to do pairing, and a docs sufficiency audit
+
+### Worked on
+Owner: "write a doc in the developer guide on how to do the pairing and also check if the docs are sufficient."
+Read the pairing code end to end (protocol, codec, both drivers, the app/desktop wiring, the facade), then wrote the
+missing procedure page and linked it. **Documentation only: no product code changed.**
+
+### Changed
+- **New `docs/developer-guide/guides/pairing-and-trust.md`** (about 480 lines): the four things Flash records about a
+  peer (TLS pin / paired / verified / E2E session key, including the hub one-tap "trusted but not encrypted" warning);
+  what the library provides versus what a host must supply; the three integration shapes (host graph, `Flash.create`
+  facade, standalone modules with your own transport); the six wiring points with code (non-blocking reachability-aware
+  send, hello on every session-up, inbound routing, 1 s tick, the driver, the event loop); the three trust writes; the
+  UI-032 mapping; the v2 wire sequence, code formula and timeouts; the failure/refusal table; eleven traps; a
+  two-coordinator JVM test recipe; an 8-step two-device matrix; a Definition of Done; and gaps G-1..G-8.
+- `docs/developer-guide/README.md`: `guides/` added to the documentation map and to Quick Navigation.
+- `docs/developer-guide/modules/core/core-security.md`: new section 5, "Pairing: what the module gives you and what the
+  host supplies", linking the guide.
+- `docs/developer-guide/getting-started/beginner-guide.md` and `examples/full-stack-app.md`: pointers to the guide.
+- `docs/architecture/public-api.md`: additive "Stability caveat" under `FlashPairingProtocol`.
+
+### Why
+The guide documented the crypto (`core-security.md`), the frozen signatures (`public-api.md`) and a hardware runbook
+(`docs/migration/PAIRING-GATE-RUNBOOK.md`), but nothing anywhere showed a developer how to make pairing work. Every
+claim in the new page was read from source at `07c5136f` rather than from memory: `FlashPairingProtocol.kt`,
+`PairingSessionStateMachine.kt`, `FlashPairingFrames.kt`, `PairingWireCodec.kt`, `PairingV2.kt`,
+`FlashPairingCoordinator.kt`, `app/.../pairing/PairingCoordinator.kt` + `PairingUiMapper.kt`, `Flash.kt` (the graph),
+`FlashInboundRouter.kt`, `FlashTrustStore.kt`, `TofuPinVerifier.kt`, `FlashPairingDialog.kt`, and
+`FlashPairingCoordinatorTest.kt`.
+
+### Verified
+- Documentation only, so **no build and no test was run**. Link targets resolve; the new file and every edited file is
+  pure ASCII/LF, matching the surrounding guide files.
+- Claims spot-checked against source where they mattered: the trust-store interface defaults are silent no-ops; the
+  protocol does not send `PAIR_CONFIRM` (the coordinator does, on `PeerAccepted`); `respondDecline` sends nothing;
+  `PairingV2`/`NumericComparisonCode` are `internal`; `PairingWireCodec` is `@FlashInternalApi`;
+  `FlashPairingCoordinator` is `jvmMain` only; `TofuPinVerifier` fails closed on a pin change; `Flash.create` passes no
+  `pairingHandler` and exposes no identity; `PairingTimeouts` defaults to 30 s both ways.
+
+### Findings (are the docs sufficient?)
+Sufficient for the algorithm, the reference API and now the procedure; **not** sufficient to actually integrate pairing
+through the supported facade, because three seams are missing rather than undocumented. Recorded in the new page as
+G-1..G-8, the important ones being: no local identity on `FlashEngine` and no inbound `FLASH_PAIR` hook (G-1/G-2, so a
+`Flash.create` consumer cannot pair at all); no Android build of `FlashPairingCoordinator`, which is `jvmMain`-only
+(G-3, the twin is about 430 lines of `:app`); no published JVM trust store or `PairingUiMapper` (G-4/G-5); the codec is
+`@FlashInternalApi` while `FlashPairingProtocol` is documented Stable (G-6); and no sample pairs (G-7). The handshake
+itself has no defect: protocol, codec and both drivers agree, and the JVM coordinator has a two-sided test.
+
+### Not done
+- No code change toward G-1..G-6 -- each one changes the public surface and needs an owner decision.
+- No test-backlog entry: these are API/documentation gaps, not device tests.
+- The working tree also holds another session's uncommitted Hub-files P4 work; this commit stages only the pairing docs.
+
+### Next AI
+If the owner wants pairing reachable from `Flash.create`, start with G-1/G-2 (expose the identity, add an inbound
+pairing seam) and then G-3 (hoist the coordinator into `commonMain`). Until then, the new page is the entry point.
 ## 2026-10-20 — Hub files P3: 1:1 files go through the hub from chat, on Android and desktop
 
 ### Worked on

@@ -105,3 +105,17 @@ val wireFrame = E2eFrameCodec.encryptToWireFrame(
 )
 println("Encrypted wire output: $wireFrame") // "FLASH_SEC payload=..."
 ```
+
+---
+
+## 5. Pairing: What the Module Gives You and What the Host Supplies
+
+The primitives above are not a pairing feature by themselves. `:core:security` ships the handshake as a
+driver-plus-wire-codec (`DefaultFlashPairingProtocol`, `PairingWireCodec`, `FlashPairingFrames`,
+`PairingSessionStateMachine`), the full JVM driver (`FlashPairingCoordinator`, `jvmMain` only) and the consent UI
+(`FlashPairingDialog` in `:ui:chat`) -- but the identity material, the non-blocking transport send, the 1 s clock
+tick and the three trust writes (`trustPeer`, `markVerified`, `saveSessionKey`) are host decisions, and the
+`Flash.create` facade exposes none of them yet.
+
+The procedure, the six wiring points, the wire sequence, the failure semantics and the known gaps are in
+[guides/pairing-and-trust.md](../../guides/pairing-and-trust.md).

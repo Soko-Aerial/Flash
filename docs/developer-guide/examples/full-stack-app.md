@@ -102,7 +102,8 @@ class MainActivity : ComponentActivity() {
 Sending a file to a *discovered* device is a repository call, not a screen callback:
 `engine.transfers.sendFile(targetDevice = endpoint.device, fileUri, displayName, fileSize)` (see the [beginner guide](../getting-started/beginner-guide.md)).
 Pairing, notifications, the foreground service and call handling are host work that this sample leaves out; a shipping host also needs the
-manifest entries and runtime permissions in `docs/android-platform-notes.md`.
+manifest entries and runtime permissions in `docs/android-platform-notes.md`. Pairing in particular cannot be reached through
+`Flash.create` today -- see [guides/pairing-and-trust.md](../guides/pairing-and-trust.md) for the host recipe and the missing seams.
 
 **Desktop.** The JVM engine, `DesktopEngine`, and the window shell are the `:desktop` application module, not libraries, so a desktop host today
 is that module (or a project that puts its classes on the classpath and calls `FlashDesktop.create(FlashConfig(...))`, then `engine.awaitReady()`).
