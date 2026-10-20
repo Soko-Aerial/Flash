@@ -917,6 +917,18 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Radio link fixes (2026-10-20, ADR-214): built and unit-tested, NOT device-verified.** The owner's "the radio page pairs but does not
+stay connected" had three causes: Android opened the **secure** RFCOMM socket while these handhelds accept only null-auth (and can
+advertise a channel the firmware then refuses), the radio appears as **two** Bluetooth devices so pairing by name could bond the audio
+endpoint (no serial channel ever), and the driver reported `Connected` the moment the socket opened so a refused channel looked like a
+lost radio. Fixes: new `RadioServiceIdentity` (control device = Serial Port Profile or vendor service
+`39144315-32fa-40db-85ed-fbfeba2d86e6`; the audio endpoint is ranked last, not hidden), new `AndroidBluetoothCatalog.openRadioLink`
+(cached last-good channel, insecure SDP, secure SDP, insecure fixed channels 1..12, secure channel 1, 25 s budget, `radio.link.attempt`
+probes), `TncLinkState.Waiting.upMs`, and a new `RadioFailureReason.RADIO_CLOSED_LINK` with its own sentence and next step. The
+disabled test-message button now says why (`TEST_MESSAGE_NEEDS_LINK`). Investigation: `docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md`.
+Radio **audio** is still not built (needs an owner decision reversing ADR-210 / FO-28); hub file transfer and hub live calls are
+untouched. Device checks `RADFIX-D01`..`D05` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzz.
+
 **Group swarm ON BY DEFAULT (owner decision O-8, 2026-10-19):** the owner turned the group swarm on by default, ahead of the SW-12
 device gate (`SWM-09..15` on three devices including Windows) that the plan and `docs/decisions.md` ADR-070 had set. The master switch
 now defaults to **true** on both hosts — Android `FlashSettingsDataStore.groupSwarmEnabled` (and `DiscoveryEngineHolder.groupSwarmEnabled`,

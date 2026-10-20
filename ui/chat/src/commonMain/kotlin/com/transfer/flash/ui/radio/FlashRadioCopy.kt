@@ -117,6 +117,12 @@ public object FlashRadioCopy {
     public const val NEXT_STEP_KISS_NOT_ENABLED: String =
         "In the radio menu: Menu -> General Settings -> KISS TNC -> Enable."
 
+    public const val SENTENCE_RADIO_CLOSED_LINK: String =
+        "The radio accepted the Bluetooth link, then closed the data channel."
+    public const val NEXT_STEP_RADIO_CLOSED_LINK: String =
+        "Turn on KISS TNC in the radio menu (Menu -> General Settings -> KISS TNC). If Bluetooth lists the radio " +
+            "twice, check that Flash is using the control entry, not the audio one."
+
     // --- Security Profiles (Plan R §8) --------------------------------------------------------------------
     public const val SECURITY_SECTION_TITLE: String = "Security profile"
 
@@ -169,6 +175,9 @@ public object FlashRadioCopy {
     public const val TEST_MESSAGE_SENT_SUCCESS: String = "Test frame sent successfully."
     public const val TEST_MESSAGE_SENDING: String = "Transmitting…"
     public const val TEST_MESSAGE_SENT_FAILED: String = "Could not send test message."
+    /** Why the test button is disabled: the frame has to travel over the radio link, so there has to be one. */
+    public const val TEST_MESSAGE_NEEDS_LINK: String =
+        "Connect a radio first: the test message is sent over the radio link, so it needs a live connection."
 
     public const val TRANSMIT_WARNING_TITLE: String = "RF Transmission Warning"
     public const val TRANSMIT_WARNING_BODY: String =

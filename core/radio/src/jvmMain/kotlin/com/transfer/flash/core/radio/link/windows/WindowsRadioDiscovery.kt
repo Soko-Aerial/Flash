@@ -164,8 +164,13 @@ public class WindowsRadioDiscovery(
             return@withContext serialPortCatalog.open(fallbackPort, SerialSettings(baud = 115200))
         }
 
+        // A radio that is bonded but has no outgoing serial port is almost always the wrong one of its two entries:
+        // Windows pairs the audio endpoint first, and only the control device exposes Serial Port Profile.
         throw LinkException(
-            "${RadioConnectFailureReason.RADIO_NOT_FOUND.sentence} ${RadioConnectFailureReason.RADIO_NOT_FOUND.nextStep}"
+            "${RadioConnectFailureReason.RADIO_NOT_FOUND.sentence} " +
+                "${RadioConnectFailureReason.RADIO_NOT_FOUND.nextStep} " +
+                "If Windows lists the radio twice, this entry is its audio device: remove it and pair the control " +
+                "device with the same name.",
         )
     }
 }

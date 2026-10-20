@@ -1,5 +1,90 @@
 # Progress Log
 
+## 2026-10-20 — Radio link fixes (F3.1–F3.3): insecure-first RFCOMM with a channel probe, control-device detection, and an honest "the radio closed the link" state
+
+### Worked on
+The owner reported that the radio page pairs but the link does not stay connected, and that there is no way to test a transfer. The investigation entry below (F3.1–F3.3) named three causes; this entry implements the fixes for all three. No wire change, no protocol change, no radio-audio work (that needs the ADR-210 / FO-28 decision).
+
+### Changed
+- **New `core/radio/.../link/RadioServiceIdentity.kt`:** classifies a Bluetooth device from its advertised SDP services. Serial Port Profile (in 16-, 32- or 128-bit spelling) or the vendor service `39144315-32fa-40db-85ed-fbfeba2d86e6` means the radio's **control device**; services without either means an audio endpoint (`NOT_A_CONTROL_DEVICE`); an empty cache means `UNKNOWN` (an unpaired device must stay offerable).
+- **New `AndroidBluetoothCatalog.openRadioLink`** (F3.1): insecure SDP → secure SDP → insecure fixed channels 1..12 → secure fixed channel 1, with the channel that last worked cached per address (so a reconnect skips the probe), a 250 ms pause between attempts and a 25 s total budget. `openRfcomm` is untouched, so Flash-to-Flash RFCOMM stays secure. Each attempt emits the `radio.link.attempt` probe (strategy, result, error).
+- **`AndroidRadioDiscovery`** (F3.2): `pairedDevices()` now reads `BluetoothDevice.uuids` (via the new `BondedBluetoothDevice.serviceUuids`) and ranks the vendor-service entry `KNOWN_RADIO` and the audio endpoint `OTHER` — ordered last, not hidden, so the list still explains what is there. `openLink` uses `openRadioLink`.
+- **`KissTncDriver`** (F3.3): `TncLinkState.Waiting` gained `upMs` — how long the failed link had stayed open, or -1 when it never opened. The driver's "was this link stable" test was rewritten on top of it (same semantics, one clock read).
+- **`RadioGatewayUiMapper` + `RadioFailureReason.RADIO_CLOSED_LINK` + `FlashRadioCopy` + `FlashRadioMath`** (F3.3): a link the radio closed with EOF within 3 s of opening is reported as `RADIO_CLOSED_LINK` — "The radio accepted the Bluetooth link, then closed the data channel." with the next step naming KISS TNC and the audio/control trap — instead of a generic `LINK_LOST`. The short-EOF check runs before `isRetryingStopped`, because the specific advice is the useful one.
+- **`FlashRadioDiagnosticsCard`** (the "no way to test" complaint): when the test button is disabled the card now says why (`TEST_MESSAGE_NEEDS_LINK`). It still cannot transmit without a link, by design.
+- **`WindowsRadioDiscovery.openLink`**: the "no serial port" sentence now names the two-entry trap (if Windows lists the radio twice, the entry with no COM port is the audio device; pair the control device with the same name).
+
+### Verification
+- `:core:radio:jvmTest` and `:core:radio:testAndroidHostTest` green — new `RadioServiceIdentityTest` 6/6 on both targets.
+- `:ui:chat:jvmTest` and `:ui:chat:testAndroidHostTest` green, 142 suites, 0 failures (`RadioGatewayUiMapperTest` 8/8 including the new short-EOF case, `FlashRadioMathTest` 9/9 — its "every reason has a sentence" loop now covers `RADIO_CLOSED_LINK` automatically).
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` clean.
+- **NOT device-verified.** No radio was contacted, nothing was transmitted, no adb. The reflection-based channel probe and the insecure-first order can only be proven on hardware: RADFIX-D01…D05 in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzz.
+
+### Problems
+None found beyond the three diagnosed in the audit. One naming collision was caught before commit: the new identity test was first labelled `RADWIRE-U26`, which is `RadioCallsignTest`; it is now `RADFIX-U01`.
+
+### Remaining
+- Device checks RADFIX-D01…D05 (owner, hardware).
+- F4 (vendor audio channel) is untouched: it reverses ADR-210 / FO-28 and needs an explicit owner decision.
+- Hub file transfer (F2) and hub live calls (F1) are untouched, waiting on the owner's answers.
+
+### Next AI
+If the radio still drops on hardware, read `radio.link.attempt` lines first: they name the strategy that failed and the error. A radio that answers `insecure-chN` ok but closes within a second is the KISS-off case; a device that never reaches `result=ok` is the wrong (audio) entry or a refused channel.
+
+## 2026-10-20 — Investigation: hub audio, hub file size, radio link stability, HTCommander reference
+
+### Worked on
+Owner asked four things in one message: why audio through the hub does not work; the hub should allow at least 50 MB files adjustable by an admin on the dashboard; the radio page pairs but does not stay connected and offers no way to test a transfer; and to obtain the HTCommander repository to see how it keeps the radio connected and sends audio through the phone to the radio.
+
+### Changed
+- Added `docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md` (findings F1–F4 with file:line evidence, options, recommendation, open questions).
+- Cloned HTCommander read-only to `C:\Users\KaliOxygen\Downloads\HTCommander` (outside the repository; Apache-2.0, Dart/Flutter, upstream commit 2026-10-20).
+
+### Findings (no product code changed)
+- **Hub audio is not broken, it was never built.** The relay carries chat frames only (1:1 `CHAT_FRAME`, allow-listed `GROUP_FRAME`, typing), payload ≤ 64 KiB. No call or media frame kind exists, no calling code references the relay, and calls need a live direct session (`PRESENCE-CONNECTIONS-PLAN.md:45`). Files/voice notes have no hub path either (`sendAttachment` has no hub branch; `SMALL_FILE` in `SealedEnvelope.kt:14` is a dead constant).
+- **"50 MB adjustable by an admin" cannot be a constant change** because no file crosses the hub. Today: one payload 64 KiB; mailbox storage 50 MB per recipient / 100 MB per sender / 5 GB total, 7-day TTL (`MailboxModels.kt:19-27`); the console only accepts invite TTL and max uses (`AdminApi.kt:752-756`). Recommended: REST upload/download with a console `maxFileBytes` (default 50 MB) plus a per-device quota — a planned phase, not a toggle. Relay-chunked 50 MB would be ~800 mailbox rows and is rejected.
+- **Radio link: three defects.** (1) Android opens the *secure* RFCOMM socket by default (`AndroidBluetoothCatalog.kt:95,118` via `AndroidRadioDiscovery.kt:263`) while these radios accept only null-auth/insecure and their SDP channel can be refused — HTCommander tries insecure first, then probes channels 1..12 and caches the last good one (`BluetoothClassicPlugin.kt:287-375`). (2) The radio is two Bluetooth devices (audio + control); Flash classifies by name only (`RadioCandidateRanker`, `KnownRadioNames`), so pairing can bond the audio endpoint and no SPP/COM port ever exists; HTCommander identifies the control device by vendor UUID `39144315-32fa-40db-85ed-fbfeba2d86e6`. (3) `KissTncDriver` reports Connected the moment `openLink` returns (`KissTncDriver.kt:233-242`), so a channel the radio immediately closes (HTCommander's `read ret: -1`) looks like "connects then drops", retried 5× then stopped. Silence is not the cause (`readLoop` treats timeout as keep-waiting).
+- **"No way to test"** is a consequence: the UI-070 "Send a test message" card exists but is enabled only at CONNECTED (`FlashRadioMath.canSendTestMessage`), inside the collapsed diagnostics section, and needs an operator callsign.
+- **HTCommander audio** is not Hands-Free/SCO: it opens a separate RFCOMM channel on the vendor UUID and streams 32 kHz 16-bit mono SBC (`radio_audio.dart:36-42`), encodes/decodes in a background isolate, paces TX, keys/unkeys with `txHold`; keeps the link alive with a 200 ms init handshake retried every 2 s plus a 60 s battery poll (`radio.dart:1272-1426`); auto-reconnects remembered radios. It also has AllStar/EchoLink (IAX2) IP audio with PING/PONG keepalive.
+
+### Verification
+None. Read-only investigation: no build, no device test, no adb, no transmission.
+
+### Remaining
+Owner decisions: sealed vs server-stored hub files; which host the radio was paired on; whether the radio-audio goal is talking to ordinary walkie-talkies (vendor audio channel, needs an ADR reversing ADR-210/FO-28) or only using the handheld as a modem (F3 only).
+
+### Next AI
+If asked to fix the radio first, start with F3.1–F3.3 (insecure-first + channel fallback + control-device detection) — small, unit-testable, no wire change. Do not build hub file transfer or radio audio without the owner's answers to the open questions in the audit doc.
+
+## 2026-10-19 — Verification of an external hub/groups/announcements audit (HAUD-01..08): fixes written, NOT BUILT
+
+### Worked on
+An externally supplied read-only audit ("why groups created on the server do not reflect", 16 bugs) was checked claim by claim against the code. Eight claims were real and fixed; the rest are by design, derivative, or need an owner decision.
+
+### Changed
+- **HAUD-01 (server):** `OrganizationDirectory.inScope` returned false for an organisation-wide group (blank department) unless `joinMode == OPEN_IN_SCOPE`. The console form defaults to org-wide + "Needs approval", so the default group was invisible to `GET /directory/groups` and unjoinable. A blank department is now in scope for every join mode; `HIDDEN` groups are still filtered before it. Test: `OrganizationDirectoryTest.anOrganisationWideGroupIsListedAndJoinableInEveryJoinModeButNeverWhenHidden`.
+- **HAUD-02 (hosts):** `hubRosterChat` is null when the `OrgSnapshotCoordinator` runs its first sync, so verified rosters were not projected into conversations on boot. `DiscoveryEngineHolder` and `DesktopEngine` now launch `refreshHubGroupRosters()` right after the chat repository is assigned.
+- **HAUD-03 (UI):** `FlashHubScreen.HubDepartmentPane` filtered groups by department display name, but the hub sends the department id; it now matches id or name (as `HubFacade.departments` already does).
+- **HAUD-04 (server):** `AnnouncementAdminRoutes` delete / pin / unpin did not pass `actorDeptId` / `actorRef`, so a department head hit an uncaught `AnnouncementForbiddenException` (500). They now pass them, and all four mutating admin routes answer 403 on `AnnouncementForbiddenException`.
+- **HAUD-05 (client):** `refreshHubAnnouncements` cleared the table on an epoch change but still applied the delta page. It now clears, drops the page and refetches from 0 (tracks `knownEpoch`).
+- **HAUD-06 (client):** `RealHubAnnouncementsApi.search` sent `departmentId` without `scope=department`, which the hub ignores. It now sends both.
+- **HAUD-07 (UI):** `FlashAnnouncementReader` had no vertical scroll; added.
+- **HAUD-08 (hosts):** `orgSnapshotCoordinatorRef` is now stopped and cleared in `DiscoveryEngineHolder.stopAll` and `DesktopEngine.releaseSubsystems`.
+
+### Not changed (reasons)
+- Roster sync only for groups the device is already in (and 0 admins/members on console-created groups): by design; unjoined groups are discovered via `GET /directory/groups` (blocked only by HAUD-01).
+- HubFacade membership ignoring Room rosters: derivative of HAUD-02 (linking happens in `projectHubRosters`).
+- Presence `Meta` frame with no target dropped (no defined semantics), chat presence LAN-only, expiry notice lost for an offline sender, initial announcement feed capped at the newest items, tombstones carrying deleted department/member ids: recorded, need an owner/protocol decision. Retention purge without tombstone was fixed by another session (FIX-2 below).
+
+### Verification
+**Updated 2026-10-20:** the code is in this tree and now builds and tests: `tools\flash-gradle.cmd :server:test :core:messaging:jvmTest` — BUILD SUCCESSFUL in 3m 47s (89 result suites, no failures), and `:app:compileDebugKotlin` / `:desktop:compileKotlinJvm` / `:ui:chat:jvmTest` are green from the radio work the same day. The original attempt on 2026-10-19 was killed by the system for low memory before producing a result, which is why the entry above said "nothing compiled". Device checks remain owed.
+
+### Remaining
+Re-run the command above when memory allows; device checks `HAUD-01`..`HAUD-05` in `docs/testing/TEST-BACKLOG.md`.
+
+### Next AI
+Do not treat these eight fixes as built. Run the gate first; if `OrganizationDirectoryTest` or `DirectoryRoutesTest`/`E2eDirectoryContractTest` fail, check whether a test encoded "org-wide + REQUEST_APPROVAL is invisible".
+
 ## 2026-10-19 — Hub-routed chat presence (ERROR-741), the server deployment guide, and the console department-members control
 
 ### Worked on

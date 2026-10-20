@@ -6225,3 +6225,29 @@ The gateway creates a new `KissTncDriver` on every connect, the engine is bound 
 
 ### Revisit when
 Profile A receive is wired (needs peer identity public keys), or a second transport needs the same "engine per link" lifecycle.
+
+## ADR-214 - Radio serial link establishment: insecure-first with fixed-channel probing, and identifying a radio by its advertised services
+
+### Status
+ACCEPTED (integrator, 2026-10-20, implements F3.1-F3.3 of `docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md`; not device-verified)
+
+### Decision
+Establishing the Bluetooth serial link to a radio is its own operation, `AndroidBluetoothCatalog.openRadioLink`, and it is **not** what `openRfcomm` does for Flash-to-Flash links. It tries, in order: the RFCOMM channel that last worked for this address (in-memory cache), an insecure SDP connection, a secure SDP connection, insecure fixed channels 1..12, and finally secure fixed channel 1, all inside a 25 s budget. A radio is identified as the **control device** by the services it advertises (`RadioServiceIdentity`: Serial Port Profile or the vendor service `39144315-32fa-40db-85ed-fbfeba2d86e6`), never by its name; a bonded device that advertises services but neither of those is its audio endpoint and is ranked last in the candidate list instead of being hidden.
+
+### Context
+The owner reported that the radio page pairs but does not stay connected. The investigate-first pass (`docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md`, F3) found three separate causes: (1) `openRfcomm` defaults to `secure = true`, while these handhelds accept only a null-authentication RFCOMM connection, and their SDP record can advertise a channel the firmware then refuses (an RFCOMM DM answer reaches the app as an immediate EOF); (2) the radios appear as **two** Bluetooth devices with the same name, and Flash classified candidates by name, so pairing the audio endpoint produced a bond with no serial channel; (3) `KissTncDriver` reported `Connected` the moment the socket opened, so a channel closed immediately looked like "connects, then drops", retried five times and then stopped with a generic "link lost" sentence.
+
+The reference implementation (HTCommander, Apache-2.0, `BluetoothClassicPlugin`) does exactly the insecure-first + 1..12 channel probing with a cached last-good channel, and identifies the device by the vendor UUID.
+
+### Alternatives considered
+- Keep `secure = true` and rely on the user retrying (rejected: it is the one strategy known to fail on this hardware).
+- Probe only the vendor UUID's SDP channel (rejected: the firmware can withdraw the advertised channel; the reference is a probe because of it).
+- Hide the audio endpoint from the candidate list (rejected: a list that is empty with no explanation is worse than one that orders the right entry first).
+- Report a closed-immediately link as `KISS_NOT_ENABLED` (rejected after writing it: that reason's sentence says "Connected, but no KISS data received", which is wrong when the socket closed; the new `RADIO_CLOSED_LINK` says what happened and still names KISS TNC as the first thing to check).
+
+### Consequences
+`openRadioLink` blocks (Android's `connect()` blocks) for up to 25 s and sleeps 250 ms between attempts; it must only be called from `Dispatchers.IO` (the discovery class already does). It uses reflection for `createInsecureRfcommSocket(int)` / `createRfcommSocket(int)`, which are not public SDK API but are how the reference implementation reaches fixed channels; a build that hides them makes the probe a single failed attempt, not a crash. `BondedBluetoothDevice` gained `serviceUuids`, `TncLinkState.Waiting` gained `upMs` (defaulted, so existing constructions compile), and `RadioFailureReason` gained `RADIO_CLOSED_LINK`. Flash-to-Flash RFCOMM (`openRfcomm`, `FLASH_RFCOMM_UUID_TEXT`) is untouched and stays secure.
+
+### Revisit when
+The audio channel (the vendor UUID's second socket, F4 in the audit) is built: it will need the same channel cache, and ADR-210 / FO-28 currently forbid radio voice. Also revisit if a radio refuses the insecure socket (then the order becomes model-specific).
+

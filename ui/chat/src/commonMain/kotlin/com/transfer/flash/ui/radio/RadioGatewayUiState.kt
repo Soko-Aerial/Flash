@@ -94,6 +94,13 @@ public enum class RadioFailureReason {
     WRONG_PIN,
     PORT_IN_USE,
     KISS_NOT_ENABLED,
+
+    /**
+     * The radio accepted the Bluetooth link and then closed the serial channel straight away. Distinct from
+     * [LINK_LOST] (a link that carried traffic for a while) and from [KISS_NOT_ENABLED] (a link that stays up but
+     * never delivers KISS frames): the two different causes need different advice.
+     */
+    RADIO_CLOSED_LINK,
     LINK_LOST,
 }
 

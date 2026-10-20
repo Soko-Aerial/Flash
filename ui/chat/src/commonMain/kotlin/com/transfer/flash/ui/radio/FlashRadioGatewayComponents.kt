@@ -967,6 +967,14 @@ public fun FlashRadioDiagnosticsCard(
                     )
                 }
             }
+            if (!canSend && !isSending) {
+                Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                FlashText(
+                    text = FlashRadioCopy.TEST_MESSAGE_NEEDS_LINK,
+                    style = FlashTheme.typography.metadataDefault,
+                    color = colors.textSecondary,
+                )
+            }
         }
     }
 }

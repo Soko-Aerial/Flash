@@ -8,14 +8,26 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashProbe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
-/** A paired Bluetooth device offered for an RFCOMM link. */
-public class BondedBluetoothDevice(public val address: String, public val name: String)
+/**
+ * A paired Bluetooth device offered for an RFCOMM link.
+ *
+ * @property serviceUuids the service UUID strings from the device's SDP cache (`BluetoothDevice.uuids`), or null when
+ *   the cache cannot be read. [RadioServiceIdentity] uses them to tell a radio's control device from its audio endpoint.
+ */
+public class BondedBluetoothDevice(
+    public val address: String,
+    public val name: String,
+    public val serviceUuids: List<String>? = null,
+)
 
 /** Result of [AndroidBluetoothCatalog.listBonded]. */
 public sealed interface BondedListing {
@@ -69,7 +81,14 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
         return try {
             BondedListing.Devices(
                 a.bondedDevices.orEmpty()
-                    .map { BondedBluetoothDevice(it.address, it.name ?: "(unnamed)") }
+                    .map {
+                        BondedBluetoothDevice(
+                            address = it.address,
+                            name = it.name ?: "(unnamed)",
+                            // The pairing-time SDP cache; reading it does not trigger a query. Needs BLUETOOTH_CONNECT.
+                            serviceUuids = runCatching { it.uuids.orEmpty().map { p -> p.uuid.toString() } }.getOrNull(),
+                        )
+                    }
                     .sortedBy { it.name.lowercase() },
             )
         } catch (_: SecurityException) {
@@ -130,6 +149,150 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
                 e,
             )
         }
+    }
+
+    /**
+     * Opens the serial link to a **radio**, trying the strategies the hardware actually accepts.
+     *
+     * These handhelds accept only a null-authentication RFCOMM connection (the secure variants force an authentication
+     * the radio rejects), and their SDP record can advertise a server channel that the firmware then refuses — it answers
+     * with an RFCOMM DM frame, which reaches us as an immediate EOF. A single secure
+     * `createRfcommSocketToServiceRecord`, which is what [openRfcomm] does by default, is therefore the one strategy
+     * known to fail. The order below mirrors the reference implementation (HTCommander, Apache-2.0,
+     * `BluetoothClassicPlugin.connectSocket`):
+     *
+     * 1. the channel that last worked for this radio (fast reconnect),
+     * 2. insecure SDP, 3. secure SDP,
+     * 4. insecure fixed channels 1..12,
+     * 5. secure fixed channel 1.
+     *
+     * Each failed attempt closes its socket and pauses briefly so the radio can reset its RFCOMM state. Blocking (the
+     * Android docs say `connect()` blocks), so call it from `Dispatchers.IO`. Probing is capped at
+     * [RADIO_CONNECT_BUDGET_MS]: a radio that never answers would otherwise hold the driver's `Connecting` state for
+     * minutes, because the platform's own connect timeout is far longer than a radio needs.
+     *
+     * @throws LinkException with a plain-language reason when every strategy fails.
+     */
+    @OptIn(FlashInternalApi::class)
+    @SuppressLint("MissingPermission") // checked at the top through missingPermissions()
+    public fun openRadioLink(address: String, uuid: String = SPP_UUID_TEXT): ByteLink {
+        val a = adapter ?: throw LinkException("this device has no Bluetooth")
+        val missing = missingPermissions()
+        if (missing.isNotEmpty()) {
+            throw LinkException("Bluetooth permission needed: ${missing.joinToString { it.substringAfterLast('.') }}")
+        }
+        if (!a.isEnabled) throw LinkException("Bluetooth is off")
+        val device: BluetoothDevice = try {
+            a.getRemoteDevice(address)
+        } catch (e: IllegalArgumentException) {
+            throw LinkException("not a Bluetooth address: $address", e)
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT < BluetoothPermissions.API_SPLIT_PERMISSIONS ||
+                context.checkSelfPermission(BluetoothPermissions.SCAN) == PackageManager.PERMISSION_GRANTED
+            ) {
+                a.cancelDiscovery()
+            }
+        }
+
+        val id = UUID.fromString(uuid)
+        val key = address.uppercase()
+        val deadline = System.currentTimeMillis() + RADIO_CONNECT_BUDGET_MS
+        var lastError: Exception? = null
+        var ranOutOfTime = false
+
+        fun attempt(strategy: String, open: () -> BluetoothSocket): BluetoothSocket? {
+            if (System.currentTimeMillis() > deadline) {
+                ranOutOfTime = true
+                return null
+            }
+            var candidate: BluetoothSocket? = null
+            return try {
+                candidate = open()
+                candidate.connect()
+                FlashProbe.emit("radio.link.attempt", "strategy" to strategy, "result" to "ok")
+                candidate
+            } catch (e: SecurityException) {
+                runCatching { candidate?.close() }
+                throw e
+            } catch (e: Exception) {
+                runCatching { candidate?.close() }
+                lastError = e
+                FlashProbe.emit(
+                    "radio.link.attempt",
+                    "strategy" to strategy,
+                    "result" to "failed",
+                    "error" to (e.message ?: e.javaClass.simpleName),
+                )
+                // Let the radio reset its RFCOMM state before the next attempt (as the reference implementation does).
+                Thread.sleep(ATTEMPT_PAUSE_MS)
+                null
+            }
+        }
+
+        // createInsecureRfcommSocket(int) and createRfcommSocket(int) are not in the public SDK; the reference
+        // implementation reaches them the same way, and they are the only way to probe a fixed channel.
+        val insecureByChannel: java.lang.reflect.Method? = runCatching {
+            device.javaClass.getMethod("createInsecureRfcommSocket", Int::class.javaPrimitiveType)
+        }.getOrNull()
+
+        fun insecureChannel(channel: Int): BluetoothSocket {
+            val m = insecureByChannel
+                ?: throw IOException("this Android build does not expose createInsecureRfcommSocket(int)")
+            val made = m.invoke(device, channel)
+            return made as? BluetoothSocket ?: throw IOException("createInsecureRfcommSocket($channel) returned no socket")
+        }
+
+        try {
+            val cached = lastGoodChannel[key]
+            if (cached != null) {
+                attempt("insecure-ch$cached") { insecureChannel(cached) }?.let {
+                    return RfcommLink(it, "rfcomm $address ch$cached")
+                }
+            }
+
+            attempt("insecure-sdp") { device.createInsecureRfcommSocketToServiceRecord(id) }?.let {
+                return RfcommLink(it, "rfcomm $address insecure-sdp")
+            }
+            attempt("secure-sdp") { device.createRfcommSocketToServiceRecord(id) }?.let {
+                return RfcommLink(it, "rfcomm $address secure-sdp")
+            }
+
+            for (channel in 1..12) {
+                if (channel == cached) continue // already tried above
+                attempt("insecure-ch$channel") { insecureChannel(channel) }?.let {
+                    lastGoodChannel[key] = channel
+                    return RfcommLink(it, "rfcomm $address ch$channel")
+                }
+            }
+
+            attempt("secure-ch1") {
+                val m = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
+                m.invoke(device, 1) as BluetoothSocket
+            }?.let { return RfcommLink(it, "rfcomm $address secure-ch1") }
+        } catch (e: SecurityException) {
+            throw LinkException("Bluetooth permission denied by the system", e)
+        }
+
+        val why = lastError?.message ?: "no strategy was accepted"
+        val budgetNote = if (ranOutOfTime) " Probing stopped after ${RADIO_CONNECT_BUDGET_MS / 1000} s." else ""
+        throw LinkException(
+            "the radio refused every Bluetooth serial channel ($why). Check that KISS TNC is enabled on the radio, " +
+                "that it is switched on and in range, and that this is the radio's control device — if BT lists the " +
+                "radio twice, the other entry is its audio device.$budgetNote",
+            lastError,
+        )
+    }
+
+    private companion object {
+        /** The RFCOMM channel that last carried a link, per address, so a reconnect skips the 1..12 probe. */
+        val lastGoodChannel: ConcurrentHashMap<String, Int> = ConcurrentHashMap()
+
+        /** Pause between attempts, so the radio can reset its RFCOMM state. */
+        const val ATTEMPT_PAUSE_MS: Long = 250L
+
+        /** How long all the radio connect strategies together may take before the driver is told the link failed. */
+        const val RADIO_CONNECT_BUDGET_MS: Long = 25_000L
     }
 }
 
