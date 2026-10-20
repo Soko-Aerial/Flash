@@ -23,6 +23,7 @@ import com.transfer.flash.core.radio.link.DiscoveredDevice
 import com.transfer.flash.core.radio.link.LinkException
 import com.transfer.flash.core.radio.link.PairResult
 import com.transfer.flash.core.radio.link.RadioDeviceDiscovery
+import com.transfer.flash.core.radio.link.RadioServiceIdentity
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -39,7 +40,8 @@ import kotlinx.coroutines.withTimeoutOrNull
  * - Listing bonded Bluetooth devices using [AndroidBluetoothCatalog].
  * - Active discovery scanning with timeout and lifecycle cancellation (stops scan on leaving/cancelling).
  * - In-app pairing via [BluetoothDevice.createBond] and [BluetoothDevice.ACTION_BOND_STATE_CHANGED].
- * - RFCOMM connection opening via [AndroidBluetoothCatalog.openRfcomm].
+ * - RFCOMM connection opening via [AndroidBluetoothCatalog.openRadioLink] (insecure-first with a fixed-channel
+ *   fallback; the radios reject the secure socket and can advertise a channel they then refuse).
  */
 public class AndroidRadioDiscovery(
     private val context: Context,
@@ -63,7 +65,17 @@ public class AndroidRadioDiscovery(
                 isPaired = true,
                 rssi = null
             )
-            val category = RadioCandidateRanker.categorize(candidate)
+            // The radio shows up as two devices with the same name: the control device advertises the vendor service
+            // (and/or SPP), the audio endpoint advertises neither and can never carry KISS. Rank the audio endpoint last
+            // instead of hiding it, so the list still explains what is there. An empty SDP cache (UNKNOWN) keeps the
+            // name-based ranking.
+            val services = bonded.serviceUuids
+            val category = when {
+                RadioServiceIdentity.advertisesVendorService(services) -> CandidateCategory.KNOWN_RADIO
+                RadioServiceIdentity.classify(services) == RadioServiceIdentity.Kind.NOT_A_CONTROL_DEVICE ->
+                    CandidateCategory.OTHER
+                else -> RadioCandidateRanker.categorize(candidate)
+            }
 
             DiscoveredDevice(
                 name = bonded.name,
@@ -260,7 +272,7 @@ public class AndroidRadioDiscovery(
 
     override suspend fun openLink(remembered: RememberedRadio): ByteLink = withContext(Dispatchers.IO) {
         try {
-            bluetoothCatalog.openRfcomm(remembered.bluetoothAddress)
+            bluetoothCatalog.openRadioLink(remembered.bluetoothAddress)
         } catch (e: LinkException) {
             throw e
         } catch (t: Throwable) {

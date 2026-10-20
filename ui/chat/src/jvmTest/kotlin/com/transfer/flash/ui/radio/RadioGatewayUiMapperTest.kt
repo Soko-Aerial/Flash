@@ -43,6 +43,26 @@ class RadioGatewayUiMapperTest {
     }
 
     @Test
+    fun radfixU02_aLinkTheRadioClosedImmediatelyIsNotALostRadio() {
+        val connected = RadioGatewayState(isEnabled = true, connectState = RadioConnectState.Connected(radio),
+            linkState = TncLinkState.Connected("rfcomm 38:D2:00:01:35:B5", 0L), rememberedRadio = radio)
+        // The radio accepted the socket and closed it 300 ms later: the KISS TNC / wrong-entry case.
+        val refused = connected.copy(linkState = TncLinkState.Waiting(1, 1000L, "eof", upMs = 300L))
+        assertEquals(RadioFailureReason.RADIO_CLOSED_LINK, map(refused).failureReason)
+        assertEquals(RadioConnectionStatus.LINK_LOST, map(refused).connectionStatus)
+        assertTrue(map(refused).statusSentence.isNotBlank())
+        // A link that carried the session for a while and then closed is a lost radio, not a refused channel.
+        val lost = connected.copy(linkState = TncLinkState.Waiting(1, 1000L, "eof", upMs = 60_000L))
+        assertEquals(RadioFailureReason.NONE, map(lost).failureReason)
+        // No uptime information must never claim KISS is off.
+        val unknown = connected.copy(linkState = TncLinkState.Waiting(1, 1000L, "eof"))
+        assertEquals(RadioFailureReason.NONE, map(unknown).failureReason)
+        // A link that never opened is an open failure, not an EOF.
+        val openFailed = connected.copy(linkState = TncLinkState.Waiting(1, 1000L, "open_failed:no port", upMs = -1L))
+        assertEquals(RadioFailureReason.NONE, map(openFailed).failureReason)
+    }
+
+    @Test
     fun radwireU21_everyCoreFailureReasonMapsToItsOwnReason() {
         val expected = mapOf(
             RadioConnectFailureReason.NO_ADAPTER to RadioFailureReason.NO_ADAPTER,

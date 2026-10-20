@@ -90,8 +90,20 @@ public sealed interface TncLinkState {
     /** The link is open. */
     public data class Connected(val link: String, val sinceMs: Long) : TncLinkState
 
-    /** The link failed with [reason]; the next attempt is in [retryInMs]. */
-    public data class Waiting(val attempt: Int, val retryInMs: Long, val reason: String) : TncLinkState
+    /**
+     * The link failed with [reason]; the next attempt is in [retryInMs].
+     *
+     * @property upMs how long the link that just failed had stayed open, or -1 when it never opened. A link that closes
+     *   within a second or two of opening is the radio refusing the serial channel (KISS TNC not enabled, the wrong
+     *   Bluetooth entry, or a channel the firmware withdraws), not a radio that went out of range — the two need
+     *   different advice, so the distinction is carried here instead of being guessed from [reason] alone.
+     */
+    public data class Waiting(
+        val attempt: Int,
+        val retryInMs: Long,
+        val reason: String,
+        val upMs: Long = -1L,
+    ) : TncLinkState
 
     /** [KissTncDriver.stop] completed. */
     public data object Stopped : TncLinkState
@@ -258,14 +270,15 @@ public class KissTncDriver(
                 "oversize" to s.oversize,
             )
             withRadioLock(lock) { counts = counts.copy(reconnects = counts.reconnects + 1) }
+            val upMs = if (upAt >= 0) clock.nowMs() - upAt else -1L
             // R2: the backoff starts over only for a link that proved itself: it stayed up, or a frame came in.
-            val stable = upAt >= 0 && (clock.nowMs() - upAt >= config.stableAfterMs || counters.rxFrames > rxFramesAtUp)
+            val stable = upMs >= config.stableAfterMs || counters.rxFrames > rxFramesAtUp
             if (stable) {
                 backoff.reset()
                 attempt = 0
             }
             val wait = backoff.nextDelay()
-            stateFlow.value = TncLinkState.Waiting(attempt + 1, wait, reason)
+            stateFlow.value = TncLinkState.Waiting(attempt + 1, wait, reason, upMs = upMs)
             delay(wait)
         }
     }

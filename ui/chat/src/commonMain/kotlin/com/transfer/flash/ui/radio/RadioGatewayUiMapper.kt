@@ -17,6 +17,12 @@ import com.transfer.flash.core.radio.link.DiscoveredDevice
  */
 public object RadioGatewayUiMapper {
 
+    /** The driver's reason string for a link the other end closed (`KissTncDriver.readLoop`). */
+    private const val LINK_CLOSED_REASON: String = "eof"
+
+    /** A link that lasted no longer than this and then closed was refused, not lost. */
+    public const val SHORT_LIVED_LINK_MS: Long = 3_000L
+
     /** Facts only the host knows. */
     public data class HostFacts(
         val scanCountdownSeconds: Int = 0,
@@ -51,6 +57,13 @@ public object RadioGatewayUiMapper {
 
     public fun failureReason(m: RadioGatewayState, nearbyPermissionGranted: Boolean = true): RadioFailureReason {
         if (!nearbyPermissionGranted) return RadioFailureReason.PERMISSION_MISSING
+        // A link the radio closed within a couple of seconds of opening is not a radio that went out of range: it is the
+        // usual "KISS TNC is off", "this is the audio entry, not the control device" or "the firmware withdrew the
+        // channel" case. The advice differs from LINK_LOST's, so it gets its own reason.
+        val ls = m.linkState
+        if (ls is TncLinkState.Waiting && ls.reason == LINK_CLOSED_REASON && ls.upMs in 0..SHORT_LIVED_LINK_MS) {
+            return RadioFailureReason.RADIO_CLOSED_LINK
+        }
         if (m.isRetryingStopped) return RadioFailureReason.LINK_LOST
         val cs = m.connectState
         if (cs is RadioConnectState.Failed) {

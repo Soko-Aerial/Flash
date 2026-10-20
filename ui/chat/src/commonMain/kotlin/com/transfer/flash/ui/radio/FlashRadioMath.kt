@@ -51,6 +51,7 @@ public object FlashRadioMath {
                 RadioFailureReason.WRONG_PIN -> FlashRadioCopy.SENTENCE_WRONG_PIN
                 RadioFailureReason.PORT_IN_USE -> FlashRadioCopy.SENTENCE_PORT_IN_USE
                 RadioFailureReason.KISS_NOT_ENABLED -> FlashRadioCopy.SENTENCE_KISS_NOT_ENABLED
+                RadioFailureReason.RADIO_CLOSED_LINK -> FlashRadioCopy.SENTENCE_RADIO_CLOSED_LINK
                 RadioFailureReason.LINK_LOST -> FlashRadioCopy.SENTENCE_LINK_LOST
                 RadioFailureReason.NONE -> ""
             }
@@ -87,6 +88,7 @@ public object FlashRadioMath {
                 RadioFailureReason.WRONG_PIN -> FlashRadioCopy.NEXT_STEP_WRONG_PIN
                 RadioFailureReason.PORT_IN_USE -> FlashRadioCopy.NEXT_STEP_PORT_IN_USE
                 RadioFailureReason.KISS_NOT_ENABLED -> FlashRadioCopy.NEXT_STEP_KISS_NOT_ENABLED
+                RadioFailureReason.RADIO_CLOSED_LINK -> FlashRadioCopy.NEXT_STEP_RADIO_CLOSED_LINK
                 RadioFailureReason.LINK_LOST -> FlashRadioCopy.NEXT_STEP_LINK_LOST
                 RadioFailureReason.NONE -> ""
             }

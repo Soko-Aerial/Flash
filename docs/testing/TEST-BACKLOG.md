@@ -5266,3 +5266,58 @@ emulator is involved. All TODO.
 - **Pass:** No looping animation under reduced motion; the design still reads correctly without the washes/shadows (state is not carried by the wash); no frame drops or jank on the low-end device.
 - **Source:** `docs/ui/hub-competition-command-deck.md` §5; `ui/theme/.../FlashMotion.kt`.
 - **Status:** TODO
+
+## 4zzzzzzzzzz. External audit fixes (HAUD, 2026-10-19; see `logs/progress.md`)
+
+All fixes were written but not built when logged; `:server:test` and `:core:messaging:jvmTest` are green as of 2026-10-20 (see the entry in `logs/progress.md`). The device checks below are still owed. Source: external hub/groups audit verified in `logs/progress.md` "HAUD-01..08".
+
+- **HAUD-01 — org-wide group appears.** Setup: console creates a group, department "Organisation-wide", join mode "Needs approval". Steps: on an enrolled phone and the desktop (other department), open Hub, refresh. Pass: the group is listed; Join sends a request; the admin sees it. Status: TODO
+- **HAUD-02 — added-by-admin group appears after restart.** Setup: admin adds the device to a hub group while the app is closed. Steps: start the app. Pass: the group chat is in Chats without opening Hub or waiting for the periodic sync; log `org.roster.conversation`. Status: TODO
+- **HAUD-03 — department page lists its groups.** Steps: Hub, tap a department that has a group. Pass: the group shows under it. Status: TODO
+- **HAUD-04 — department head moderates.** Setup: console login as department head, announcement authored by a head in own department. Steps: delete, pin, unpin; repeat on an org-admin-authored department post. Pass: own-head posts work; the org-admin post answers 403 (no 500). Status: TODO
+- **HAUD-05 — hub restart (new epoch).** Steps: sync announcements, restart the hub with a fresh database, add 3 announcements, refresh. Pass: the app shows exactly the new set, none missing. Status: TODO
+- **HAUD-06 — reader scrolls / search scope.** Steps: open a long announcement on a phone; search from a department view. Pass: text scrolls and the action buttons are reachable; results are that department's only. Status: TODO
+
+## 4zzzzzzzzzzz. Radio link fixes (RADFIX, 2026-10-20; see `logs/progress.md` and ADR-214)
+
+Written and unit-tested (RADFIX-U01 `RadioServiceIdentityTest`, RADFIX-U02 `RadioGatewayUiMapperTest`), **not device-verified**. Source: `docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md` F3.1–F3.3.
+
+### RADFIX-D01 — Android: the radio link holds, and a reconnect skips the channel probe
+
+- **Setup:** Android phone with the radio bonded (the **control** entry, not the audio one), radio on, KISS TNC enabled, antenna or dummy load connected.
+- **Steps:** Radio tab → pick the radio → Connect. Leave it connected for 10 minutes. Then switch the radio off and on, and watch the reconnect.
+- **Pass:** Log shows `radio.link.attempt strategy=insecure-... result=ok` (or `insecure-chN`) then `radio.link.up`; no `radio.link.down reason=eof` within 3 s of `radio.link.up`; the status stays CONNECTED for the whole 10 minutes; after the power cycle it reconnects using the cached channel (`strategy=insecure-chN`, not from `insecure-sdp`).
+- **Source:** ADR-214, `AndroidBluetoothCatalog.openRadioLink`, `KissTncDriver`.
+- **Status:** TODO
+
+### RADFIX-D02 — The radio's audio entry is ordered last, not offered as the radio
+
+- **Setup:** Android phone where Bluetooth lists the radio twice with the same name (audio + control), both bonded if possible.
+- **Steps:** Radio tab → scan/refresh the candidate list. Then try connecting to the audio entry on purpose (a remembered radio, if the UI allows it).
+- **Pass:** The control entry appears first as a known radio; the audio entry is ranked last (Other), not hidden. Connecting to the audio entry fails with a sentence naming the audio device / KISS TNC and never reports CONNECTED.
+- **Source:** ADR-214, `RadioServiceIdentity`, `AndroidRadioDiscovery.pairedDevices`.
+- **Status:** TODO
+
+### RADFIX-D03 — KISS TNC off: the app says the radio closed the link (Android and Windows)
+
+- **Setup:** Radio on and bonded, **KISS TNC disabled** in the radio menu.
+- **Steps:** Connect from the Radio tab. Wait for the retries to stop (5 attempts). Then enable KISS TNC and tap Reconnect.
+- **Pass:** Within about 3 s of the attempt the status sentence reads "The radio accepted the Bluetooth link, then closed the data channel." with the next step naming Menu → General Settings → KISS TNC; the log shows `radio.link.up` followed by `radio.link.down reason=eof` in the same attempt. After enabling KISS TNC the link stays up.
+- **Source:** `RadioFailureReason.RADIO_CLOSED_LINK`, `TncLinkState.Waiting.upMs`.
+- **Status:** TODO
+
+### RADFIX-D04 — Windows: pairing the audio entry is explained, the control entry works
+
+- **Setup:** Windows desktop, the radio not paired. Pair only the entry that installs no COM port (the audio device).
+- **Steps:** Radio tab → Connect to that remembered radio. Then remove it, pair the other entry with the same name, and Connect.
+- **Pass:** The first attempt fails with the radio-not-found sentence **plus** "If Windows lists the radio twice, this entry is its audio device…"; the second attempt resolves a COM port and connects (RADLNK-D03 still covers the port mapping itself).
+- **Source:** `WindowsRadioDiscovery.openLink`, ADR-214.
+- **Status:** TODO
+
+### RADFIX-D05 — The disabled test button explains itself (no transmission)
+
+- **Setup:** Any host, radio not connected.
+- **Steps:** Radio tab → open the Radio diagnostics section. Then connect the radio (no transmit) and look again. **Do not press Transmit now.**
+- **Pass:** While disconnected the card shows "Connect a radio first: the test message is sent over the radio link…" and the button is disabled; once CONNECTED the sentence disappears and the button enables. The transmission itself stays RADWIRE-D03 (owner, dummy load).
+- **Source:** `FlashRadioDiagnosticsCard`, `FlashRadioCopy.TEST_MESSAGE_NEEDS_LINK`.
+- **Status:** TODO

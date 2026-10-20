@@ -1,5 +1,42 @@
 # Current Handoff
 
+## 2026-10-20 — Radio link fixes (insecure-first RFCOMM + channel probe, control-device detection, honest closed-link state)
+
+- **Current branch:** `dev`. Everything below is in the working tree together with the
+  `docs/audit/2026-10-20-hub-audio-files-and-radio-investigation.md` investigation, ADR-214,
+  the progress entry and the `RADFIX-D01..D05` backlog items.
+- **Status:** implemented and unit-tested; **NOT device-verified**. No radio was contacted, nothing
+  was transmitted, no adb.
+- **The one thing to know:** the radio page "pairs then drops" had three causes, all fixed in code:
+  Android opened the **secure** RFCOMM socket (these radios accept only null-auth and can advertise
+  a channel they then refuse), the radio is **two** Bluetooth devices and Flash picked by name (so the
+  audio endpoint could be bonded: no serial channel ever), and the driver reported `Connected` the
+  instant the socket opened (so a refused channel looked like a lost radio).
+- **What changed:**
+  - `core/radio/.../link/RadioServiceIdentity.kt` (new): Serial Port Profile or the vendor service
+    `39144315-32fa-40db-85ed-fbfeba2d86e6` = the control device; services without either = audio
+    endpoint; empty SDP cache = unknown (still offered).
+  - `AndroidBluetoothCatalog.openRadioLink` (new): cached last-good channel, then insecure SDP,
+    secure SDP, insecure fixed channels 1..12, secure fixed channel 1, 250 ms apart, 25 s budget,
+    `radio.link.attempt` probe per attempt. `openRfcomm` (Flash-to-Flash) untouched and still secure.
+  - `AndroidRadioDiscovery`: `pairedDevices()` reads `BluetoothDevice.uuids`, ranks the vendor entry
+    `KNOWN_RADIO` and the audio endpoint `OTHER` (last, not hidden); `openLink` uses `openRadioLink`.
+  - `KissTncDriver`: `TncLinkState.Waiting.upMs` (default -1) carries how long the failed link lived.
+  - `RadioGatewayUiMapper`: EOF within 3 s of opening now maps to the new
+    `RadioFailureReason.RADIO_CLOSED_LINK` ("The radio accepted the Bluetooth link, then closed the
+    data channel." + KISS TNC / control-entry advice) instead of a generic `LINK_LOST`.
+  - `FlashRadioDiagnosticsCard`: says why the test button is disabled (`TEST_MESSAGE_NEEDS_LINK`).
+  - `WindowsRadioDiscovery.openLink`: the no-COM-port sentence now names the audio/control trap.
+- **Last test:** `:core:radio:jvmTest` + `:core:radio:testAndroidHostTest` (new `RadioServiceIdentityTest`
+  6/6 both), `:ui:chat:jvmTest` + `:ui:chat:testAndroidHostTest` (142 suites, 0 failures),
+  `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` clean. Also, for the 2026-10-19 HAUD work that
+  was left unbuilt: `:server:test` + `:core:messaging:jvmTest` green (BUILD SUCCESSFUL, 3m 47s).
+- **Owed next:** `RADFIX-D01..D05` (radio on hardware; D03/D04 need KISS TNC off / the audio entry
+  paired). `RADWIRE-D03` still owns the actual transmission.
+- **Untouched by design:** radio audio (the vendor SBC channel) — it needs an owner decision
+  reversing ADR-210 / FO-28. Hub file transfer and hub live calls are also untouched (waiting on the
+  owner's answers recorded in the audit doc).
+
 ## 2026-10-19 - Hub presence for hub-routed chat (ERROR-741), deployment guide, console department members
 
 - **Current branch:** `dev`. The feature commit is **`f32f5e16`** on top of `fdc58ac1`
