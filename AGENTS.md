@@ -917,6 +917,16 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Cancel/error/resume audit (2026-10-20, docs only, branch `agent/A-cancel`): NO code changed, nothing built, nothing device-verified.**
+`docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` traces every cancel/decline/pause/resume/timeout path for 1:1, swarm,
+hub, calls, PTT and pairing, and records 19 defects (B-01..B-19) with `file:line`, 8 improvements and 8 needed features. The two to
+read first: **B-01** the chat bubble folds `Cancelled` into `Failed` on all three hosts and its tap calls `resumeTransfer`, which
+relaunches a cancelled send — so tapping a cancelled attachment re-sends the file; **B-02** the Android dataSync timeout **cancels**
+1:1 transfers and calls `forgetChunks`, while swarm and hub pause (the app's own "Paused by Android; continues automatically."
+sentence therefore can never describe a 1:1 transfer). Also: no terminal-state guard in `onRemoteTransferControl` (B-03), a dead Retry
+on hub failures (B-06), a stale ongoing notification when a row becomes Queued (B-07), and no transfer restore/history at all (B-11).
+Five owner questions are in the audit's section 7; device checks `CNCL-01..CNCL-14` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzzzzzzz.
+
 **Release 2.1.0 (2026-10-20): prepared for the apps only (Android `versionName 2.1.0` / `versionCode 4`, Windows `Flash-2.1.0.msi`/`.exe`);
 unit tests and `assembleRelease` green, NOT device-verified, NOT uploaded or tagged.** The hub, the server, the radio gateway and the
 JitPack library (`2.1.0-beta.2`, tag `v2.1.0-beta.2`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.

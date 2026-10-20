@@ -1,5 +1,23 @@
 # Current Handoff
 
+## 2026-10-20 (audit) - Cancel, error and resume: the notification correlation audit (docs only, 19 findings)
+
+- **Current branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel` (based on `dev` @ `51469a84`; the main checkout belongs to
+  another agent). **Status:** audit only — no product code, no build, no device.
+- **The one thing to know:** `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` traces every cancel/decline/pause/
+  resume/timeout path for 1:1, swarm, hub, calls, PTT and pairing, and records 19 defects with `file:line`. The two that would hurt
+  a user today: **B-01** tapping a cancelled attachment re-sends the file (the bubble folds Cancelled into Failed and
+  `resumeTransfer` relaunches a cancelled send), and **B-02** Android's dataSync timeout **cancels** a 1:1 transfer and forgets its
+  chunk state, while swarm and hub pause.
+- **Recommended next task:** take the owner's answers to the audit's §7 (five questions) and then fix B-01 + B-03 (the same missing
+  terminal-state guard, two small edits), B-02, and B-06/B-07 (one `retryable` predicate on `FlashTransfer`).
+- **Owed tests:** `CNCL-01`..`CNCL-14` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzzzzzzz. `CNCL-01/04/12` can confirm the audit
+  on the current build before any fix.
+- **Files most relevant:** `core/transfer/.../RealFlashTransferRepository.kt` (`resumeTransfer`, `cancelTransfer`,
+  `onRemoteTransferControl`), `app/.../notifications/FlashNotificationManager.kt`,
+  `app/.../debug/FlashBackgroundService.kt` (`handleTransfersChanged`, `onTimeout`), `app/.../TransfersUiMapper.kt`,
+  `core/engine/.../hubfiles/HubFileBinding.kt`.
+
 ## 2026-10-20 (later) - Log-driven fixes before release: ERROR-742 swarm greeting, ERROR-743 stale redial loop, ERROR-744 log truncation, ERROR-745 diagnostic
 
 - Fixed in code, unit-tested, mutation-checked where noted, NOT device-verified: see `logs/errors.md` ERROR-742..745 and the backlog items `NETMOVE-01`, `SWM-48`, `DLOG-01`, `TLS-ID-01`. The 2.1.0 artifacts were rebuilt after these fixes (see `logs/progress.md`).
