@@ -10,6 +10,8 @@ import com.transfer.flash.core.messaging.protocol.ChatTextFrameCodec
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
+import com.transfer.flash.core.messaging.protocol.HubFileFrame
+import com.transfer.flash.core.messaging.protocol.HubFileFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.enterprise.HubPeerStanding
 import com.transfer.flash.core.security.enterprise.HubSealing
@@ -29,6 +31,28 @@ public interface HubInboundSink {
 
     /** A group chat frame from [from] (message, receipt, read, delete). Throwing means "not stored". */
     public suspend fun group(frame: GroupWireFrame, from: String)
+
+    /**
+     * A file sealed on the hub, offered by [from] (ADR-216). The bridge has checked it arrived sealed and that its author
+     * is [from]. False means this device does not take hub files (rejected and acknowledged); throwing means "not stored".
+     */
+    public suspend fun hubFile(frame: HubFileFrame, from: String): Boolean = false
+}
+
+/** Whether a file may go to one colleague through the hub right now (ADR-216). */
+@FlashInternalApi
+public enum class HubFileRoute {
+    /** The relay is usable, the colleague is an organisation member and the ticket can be sealed for them. */
+    READY,
+
+    /** No hub path at all (not enrolled, the relay is down, or not an organisation member): the LAN path decides. */
+    UNAVAILABLE,
+
+    /**
+     * A hub path exists but the ticket cannot be sealed for this colleague (no published key, or a key change the user has
+     * not confirmed). A file key never travels readable, whatever the readable-content setting says.
+     */
+    NEEDS_SEALING,
 }
 
 /** Whether content for one colleague can be sealed right now (ADR-121, ADR-126). */
@@ -254,6 +278,16 @@ public class HubChatBridge(
         return _waiting.value[recipientDeviceId] == HubWaitReason.KEY_CHANGED
     }
 
+    /**
+     * Whether a file may go to [recipientDeviceId] through the hub. Unlike [canCarry], the readable-content opt-in does
+     * not count: the ticket holds the file's key, so it is sealed or it does not go.
+     */
+    public suspend fun fileRoute(recipientDeviceId: String): HubFileRoute {
+        if (!canSignal(recipientDeviceId)) return HubFileRoute.UNAVAILABLE
+        val status = sealing?.statusFor(recipientDeviceId) ?: HubSealingStatus.NOT_PUBLISHED
+        return if (status == HubSealingStatus.AVAILABLE) HubFileRoute.READY else HubFileRoute.NEEDS_SEALING
+    }
+
     /** Sender trust for ephemeral signals: paired, or an organisation member. */
     public suspend fun isSenderAllowed(deviceId: String): Boolean =
         isPaired(deviceId) || standing(deviceId) == HubPeerStanding.MEMBER
@@ -275,6 +309,20 @@ public class HubChatBridge(
      */
     public suspend fun sendGroup(to: String, id: String, sentAt: Long, frame: GroupWireFrame): Boolean =
         sendPayload(to, id, sentAt, GROUP_FRAME, GroupFrameCodec.encode(frame), seal = false)
+
+    /**
+     * Sends a hub file's ticket to [to], sealed (inner type [HUB_FILE]). Never readable: false when the ticket cannot be
+     * sealed for them right now, and the caller keeps it queued.
+     */
+    public suspend fun sendHubFile(to: String, id: String, sentAt: Long, frame: HubFileFrame): Boolean {
+        if (!port.usable || sealing == null) return false
+        if (sealing.statusFor(to) != HubSealingStatus.AVAILABLE) {
+            FlashLog.i("HUB", "file ticket not sealable now, kept id=${id.take(8)}")
+            return false
+        }
+        val sealed = sealing.seal(to, id, sentAt, HUB_FILE, HubFileFrameCodec.encode(frame)) ?: return false
+        return port.send(to, id, HubSealing.ENVELOPE_TYPE, sentAt, sealed)
+    }
 
     private suspend fun sendPayload(to: String, id: String, sentAt: Long, innerType: String, body: String, seal: Boolean): Boolean {
         if (!port.usable) return false
@@ -368,7 +416,8 @@ public class HubChatBridge(
         // 2. Content: sealed, or readable only when the user opted in.
         val innerType: String
         val body: String
-        if (d.type == HubSealing.ENVELOPE_TYPE) {
+        val sealed = d.type == HubSealing.ENVELOPE_TYPE
+        if (sealed) {
             val opened = sealing?.open(d.from, d.id, d.sentAt, d.payload)
             if (opened == null) {
                 // A sender the directory cannot be asked about right now is not a forgery: keep it for the next delivery.
@@ -388,14 +437,14 @@ public class HubChatBridge(
         }
 
         // 3. Decode and route. The author named inside the frame must be the authenticated sender.
-        return runCatching { route(d, innerType, body, sink) }.getOrElse { e ->
+        return runCatching { route(d, innerType, body, sealed, sink) }.getOrElse { e ->
             if (e is kotlinx.coroutines.CancellationException) throw e
             FlashLog.w("HUB", "inbound id=${d.id} not stored: ${e::class.simpleName}")
             HubInboundOutcome.RETRY_LATER
         }
     }
 
-    private suspend fun route(d: HubInbound, innerType: String, body: String, sink: HubInboundSink): HubInboundOutcome {
+    private suspend fun route(d: HubInbound, innerType: String, body: String, sealed: Boolean, sink: HubInboundSink): HubInboundOutcome {
         val now = timeSource.nowMs()
         when (innerType) {
             CHAT_FRAME -> {
@@ -431,6 +480,18 @@ public class HubChatBridge(
                 sink.group(frame, d.from)
                 return HubInboundOutcome.STORED
             }
+            HUB_FILE -> {
+                // The ticket holds the file's key: a readable one is refused even with readable content switched on.
+                if (!sealed) return reject(d, "a file ticket must arrive sealed")
+                val frame = when (val r = HubFileFrameCodec.decode(body)) {
+                    is HubFileFrameCodec.Result.Frame -> r.frame
+                    is HubFileFrameCodec.Result.Invalid -> return reject(d, "file ticket field ${r.reason} is invalid")
+                    null -> return reject(d, "unreadable file ticket")
+                }
+                if (frame.senderId != d.from) return reject(d, "frame author is not the sender")
+                if (!sink.hubFile(frame, d.from)) return reject(d, "hub files are not taken on this device")
+                return HubInboundOutcome.STORED
+            }
             else -> return reject(d, "unknown message type")
         }
     }
@@ -455,6 +516,9 @@ public class HubChatBridge(
 
         /** Relay envelope type for a group chat frame. */
         public const val GROUP_FRAME: String = "GROUP_FRAME"
+
+        /** Inner type of a sealed hub file ticket ([HubFileFrame]); never a relay envelope type of its own. */
+        public const val HUB_FILE: String = "HUB_FILE"
 
         /** Accepted inbound only: the pre-hub-v2 plain text type. */
         public const val LEGACY_TEXT: String = "MSG_TEXT"

@@ -64,6 +64,9 @@ public object FlashMigrations {
     /** v16 -> v17: organization announcements (Plan A3, ADR-138). */
     public val MIGRATION_16_17: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_16_17)
 
+    /** v17 -> v18: files sent and received through the organisation hub (ADR-215, ADR-216). */
+    public val MIGRATION_17_18: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_17_18)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

@@ -381,8 +381,45 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v17 → v18: files sent and received through the organisation hub (ADR-215, ADR-216, HUB-FILES P3).
+     * Adds `hub_file`.
+     */
+    val STEP_17_18: FlashSchemaStep = FlashSchemaStep(
+        from = 17,
+        to = 18,
+        statements = listOf(
+            "CREATE TABLE IF NOT EXISTS `hub_file` (" +
+                "`transferId` TEXT NOT NULL, " +
+                "`direction` TEXT NOT NULL, " +
+                "`fileId` TEXT NOT NULL, " +
+                "`peerId` TEXT NOT NULL, " +
+                "`hubUrl` TEXT NOT NULL, " +
+                "`fileName` TEXT NOT NULL, " +
+                "`mime` TEXT NOT NULL, " +
+                "`plainBytes` INTEGER NOT NULL, " +
+                "`sourceUri` TEXT, " +
+                "`fileKey` TEXT, " +
+                "`cipherSha256` TEXT, " +
+                "`cipherChunkBytes` INTEGER NOT NULL, " +
+                "`chunkCount` INTEGER NOT NULL, " +
+                "`expiresAtMs` INTEGER NOT NULL, " +
+                "`messageId` TEXT, " +
+                "`state` TEXT NOT NULL, " +
+                "`paused` INTEGER NOT NULL, " +
+                "`errorText` TEXT, " +
+                "`bytesDone` INTEGER NOT NULL, " +
+                "`localPath` TEXT, " +
+                "`createdAtMs` INTEGER NOT NULL, " +
+                "`updatedAtMs` INTEGER NOT NULL, " +
+                "PRIMARY KEY(`transferId`))",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `index_hub_file_direction_fileId` ON `hub_file` (`direction`, `fileId`)",
+            "CREATE INDEX IF NOT EXISTS `index_hub_file_messageId` ON `hub_file` (`messageId`)",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18
     )
 }

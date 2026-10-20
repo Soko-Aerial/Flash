@@ -889,6 +889,58 @@ class RealFlashChatRepositoryTest {
         }
 
     /**
+     * HUBFILE-U45 (ADR-216): a file through the hub says so in its bubble, and while it waits it shows the hub's own
+     * reason, never "Waiting for Wi-Fi." (false on mobile data). A LAN file keeps its old line.
+     */
+    @Test
+    fun `HUBFILE-U45 a hub file's bubble line names the hub and its reason, a LAN file keeps Wi-Fi`() =
+        runBlocking {
+            val progress = MutableStateFlow<Map<String, FlashAttachmentProgress>>(emptyMap())
+            val repository = RealFlashChatRepository(
+                localDeviceId = "my-device-id",
+                localDisplayName = "Kali",
+                messageDao = FakeMessageDao(),
+                conversationDao = FakeConversationDao(),
+                outboxDao = FakeOutboxDao(),
+                receiptDao = FakeReceiptDao(),
+                draftDao = FakeDraftDao(),
+                recentSearchDao = FakeRecentSearchDao(),
+                reactionDao = FakeReactionDao(),
+                transportSink = null,
+                ioDispatcher = testDispatcher,
+                attachmentProgress = progress,
+            )
+            repository.onInboundAttachment("peer-device-id", "hub-i-1", "report.pdf", "application/pdf", 3_000_000)
+            repository.onInboundAttachment("peer-device-id", "lan-1", "notes.pdf", "application/pdf", 3_000)
+            repository.openConversation("peer-device-id")
+            val offline = "The hub cannot be reached. It will continue when the connection is back."
+
+            suspend fun lines(hub: FlashAttachmentProgress, lan: FlashAttachmentProgress): Pair<String?, String?> {
+                progress.value = mapOf("hub-i-1" to hub, "lan-1" to lan)
+                kotlinx.coroutines.delay(200)
+                val cards = repository.conversationState.value.messages.flatMap { it.fileAttachments }
+                return cards.single { it.id == "hub-i-1" }.detailLine to cards.single { it.id == "lan-1" }.detailLine
+            }
+
+            val waitingLan = FlashAttachmentProgress(0.2f, FlashFileTransferStatus.Transferring, waitReason = "WaitingForNetwork")
+            val (running, _) = lines(FlashAttachmentProgress(0.4f, FlashFileTransferStatus.Transferring, viaHub = true), waitingLan)
+            assertEquals("Receiving through the hub…", running)
+
+            val (waiting, lan) = lines(
+                FlashAttachmentProgress(0.4f, FlashFileTransferStatus.Transferring, waitReason = "WaitingForNetwork", errorMessage = offline, viaHub = true),
+                waitingLan,
+            )
+            assertEquals(offline, waiting)
+            assertEquals("Waiting for Wi-Fi.", lan)
+
+            val (paused, _) = lines(
+                FlashAttachmentProgress(0.4f, FlashFileTransferStatus.Paused, errorMessage = offline, viaHub = true),
+                waitingLan,
+            )
+            assertEquals("a paused hub file shows Paused, not a stale network reason", null, paused)
+        }
+
+    /**
      * The transfer layer publishes progress on a 10 ms watcher tick for the whole duration of a
      * transfer, and progress is an input to the conversation `combine` — so each of those hundred
      * emissions a second used to re-derive every row in the open thread. `pacedAttachmentProgress`

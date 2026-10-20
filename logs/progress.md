@@ -1,5 +1,75 @@
 # Progress Log
 
+## 2026-10-20 — Hub files P3: 1:1 files go through the hub from chat, on Android and desktop
+
+### Worked on
+Phase P3 of `docs/plans/HUB-FILES-PLAN.md` (ADR-216, owner: "continue with p3"). The file message, the sealed key
+delivery, progress, pause and cancel in the bubble and the Transfers screen, and both hosts.
+
+### Changed
+- **`:core:persistence`**: Room step 17 → 18, table `hub_file`.
+  - `HubFileEntity` and `HubFileStates`.
+  - `HubFileDao`. The state moves are guarded in SQL.
+  - `STEP_17_18`, `MIGRATION_17_18` and `18.json`.
+- **`:core:transfer`**:
+  - `attachExternalRows(rows, control, source)` is keyed by source, so the swarm and hub rows coexist.
+  - `TransferSendInterceptor`, asked first by the plain `sendFile`.
+  - `FlashTransfer.viaHub`.
+- **`:core:enterprise`**:
+  - `HubFilesApi.hubInfo`.
+  - `EnterpriseHub.files`.
+  - `HubFileText.DOWNLOADING` (D15) and `VIA_HUB`.
+- **`:core:messaging`**:
+  - `HubFileFrameCodec` (`FLASH_HUBFILE v=1`).
+  - `HubChatBridge`: sealed-only `HUB_FILE` send and receive, plus `fileRoute`.
+  - `HubFileMessages`: the ticket queue (exactly once), the inbound path in one transaction, and the give-up in one
+    transaction.
+  - Repository wiring: `hubFileRoute`, `queueHubFile`, `hubFileEnded`, the outbox branch, and the bubble's hub line.
+  - `FlashAttachmentProgress.viaHub`.
+- **`:core:engine/hubfiles`** (new):
+  - `HubFileBinding`: claims the send, uploads, hands the ticket over, downloads, places the file, and implements
+    pause/resume/cancel/accept/decline and the system pause.
+  - `HubFileRows` and `StreamingHubFileSource`.
+- **Hosts**: `DiscoveryEngineHolder` (`noBackupFilesDir/hub-files`, resume on `setUiStarted`) and `DesktopEngine`
+  (`<stateDir>/hub-files`). Both Transfers mappers show "Through the hub" and no Retry for hub rows.
+- **Docs**:
+  - `docs/protocol.md` "Hub file message".
+  - `docs/security.md`: five P3 rows.
+  - `docs/testing/PROBES.md`: six probes.
+  - Plan sections 6 and 9 (the P3 report, D14–D20).
+  - ADR-216.
+  - TEST-BACKLOG `HUBFILE-M01..M10`.
+  - Deploy guide troubleshooting rows.
+  - AGENTS.md section 29.
+
+### Why
+P1 and P2 built a store and a transport that nothing called, so no one could send a file through the hub. Now a file to
+a colleague on another network goes through the hub without a choice, sealed so the hub cannot read it. A colleague on
+the same network still gets the direct path.
+
+### Verification
+Final run (all through the build lock, exit 0): :core:engine:jvmTest 164, :core:messaging:jvmTest 345, :core:messaging:testAndroidHostTest 638, :core:transfer:jvmTest 135, :core:transfer:testAndroidHostTest 211, :core:persistence:jvmTest 75, :core:persistence:testAndroidHostTest 53, :core:enterprise:jvmTest 256, :server:test 572, :desktop:jvmTest 220, app mapper 10 tests, 0 failures. `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` are clean. 51 tests were added.
+Mutations: M1, M2b, M3 and M4 are caught. M2a survives by design (the SQL guard). Nothing is deployed and nothing ran on a device.
+
+### Problems and fixes
+- U23 failed once, under the wide parallel run only. The give-up wrote FAILED and deleted the outbox row in two
+  statements. It is now one transaction (`HubFileMessages.giveUp`).
+- A waiting hub file said "Waiting for Wi-Fi." in the bubble. It now shows the hub's own reason, and "Sending/Receiving
+  through the hub…" while it moves (U45, mutation M4).
+- The P3 probes printed `hub-o-` plus 2 hex characters. They now carry the first 8 characters of the file id, the same
+  id as P2's `hubfile.upload` lines.
+
+### Remaining
+- P4: group hub files (D14), the console Files card, operations.
+- Not designed: a LAN ↔ hub hand-over of one transfer (owner decision).
+- Known limits: deleting the message does not cancel its hub transfer; local `hub_file` rows are never pruned.
+- Owner to confirm D18: auto-download through the hub only from a paired sender.
+- Device checks `HUBFILE-M01..M10` and `HUBFILE-C01..C06`.
+
+### Next AI
+Deploy P1–P3 to the test hub (`docs/deploy/HUB-SERVER-DEPLOYMENT.md`) and run `HUBFILE-M01` first. Otherwise start P4
+from `docs/plans/HUB-FILES-PLAN.md` section 8, after reading the P3 report in section 9.
+
 ## 2026-10-20 — Hub files P2: sealed file client transport and a resumable upload/download engine
 
 ### Worked on

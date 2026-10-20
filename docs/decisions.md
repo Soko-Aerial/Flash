@@ -6275,3 +6275,33 @@ The hub learns file size, timing, sender and recipients, and cannot read content
 
 ### Revisit when
 FO-27 (group message encryption) lands, at which point the group key can ride the group frame and the per-member messages disappear; or when an attachment path for announcements (FO-21) or a department file drop (FO-25) is built, both of which should reuse this store rather than invent another.
+
+## ADR-216 - A 1:1 file goes through the hub by itself when no direct path exists; its key rides a sealed ticket
+
+### Status
+ACCEPTED within ADR-215 (the owner asked for P3 on 2026-10-20: "continue with p3"); built and unit-tested 2026-10-20, **not deployed, not device-verified**. Plan `docs/plans/HUB-FILES-PLAN.md` section 9 (P3), deviations D14–D20.
+
+### Decision
+- **Routing.** When a person sends a file in a 1:1 chat, `HubFileBinding` (`:core:engine/hubfiles`) is asked first through `RealFlashTransferRepository.sendInterceptor`. It takes the send only when the peer has no live session and is not seen by discovery, this device is enrolled with a hub, and the hub can carry a sealed message to the peer (`HubChatBridge.fileRoute`). Otherwise the ordinary LAN transfer runs exactly as before. There is no "send through the hub" switch and no hand-over between the two paths for one file.
+- **Refusal.** A send the hub cannot carry (no sealing key on the peer, larger than the hub's limit, a hub without file support) becomes a Failed row with the plan's sentence before any byte leaves, never a silent fallback.
+- **Ticket.** When the upload is complete, the ticket (file id, key, hashes, sizes, expiry, the safe name and type) is one `FLASH_HUBFILE v=1` frame. It is sent as the sealed inner type `HUB_FILE` through the hub only: never readable, never over the LAN (D17), and only once both the upload and the chat message exist. The outbox row and the `QUEUED` state are written in one transaction.
+- **Inbound.** An inbound ticket is accepted only sealed and only from its author. It becomes a normal attachment message plus a `hub_file` row (Room step 18) in one transaction, then gets a receipt.
+- **Download.** It starts on Accept, or by itself only for a **paired** sender with the host's per-type auto-download setting (D18 refined). The file is verified (P2) and moved to `<received>/<transferId>/<name>`.
+- **Display and control.** Rows appear in the Transfers screen and the bubble as external rows of source `"hub"`: "Through the hub", no Retry, and the hub's own reason while waiting. Pause, resume and cancel work, and the Android service timeout only pauses.
+- **Persistence.** Everything that matters is on disk, so `start()` resumes after a process death.
+
+### Context
+P1 and P2 built the store and the resumable sealed transport. Nothing called them, so no person could send a file through the hub. The owner also asked whether a transfer resumes "on the local network and on the internet". Within the hub path it does on any network, because every chunk is one HTTPS request to the pinned hub.
+
+### Alternatives considered
+- **A "Send through the hub" choice in the attachment sheet** (rejected for P3: a person cannot know whether a LAN path is about to appear; the rule "direct when reachable, hub otherwise" needs no decision and keeps today's behaviour for every reachable peer).
+- **A new message kind column for hub files** (rejected, D19: a hub file is a normal attachment row; its hub nature lives in `hub_file`, so no reader of `messages` changes).
+- **Sending the ticket over the LAN when a session appears after the upload** (rejected, D17: one file, one path; the sealed hub message costs nothing in confidentiality).
+- **Group files in P3** (moved to P4, D14: deciding per member between the LAN swarm and a per-member key message is P4's group fan-out; doing half would ship a group file some members never get).
+- **Excluding the engine folder through `backup_rules.xml` / `data_extraction_rules.xml`** (replaced, D20: the engine's state lives under `noBackupFilesDir`, which the platform never backs up, so no backup rule can be forgotten).
+
+### Consequences
+A file to a colleague on another network now works without a choice, and a peer on the same network still gets the faster direct path. Deleting the chat message does not cancel its hub transfer (known limit). An unpaired organisation colleague's file always asks before downloading. A hub file that fails is not retryable from the Transfers screen: the reasons it fails for good (too large, no sealing key, expired, altered) do not change by retrying, and transient reasons keep the row waiting and continue by themselves.
+
+### Revisit when
+P4 builds group hub files (D7 still binds them); the owner asks for a LAN ↔ hub hand-over of one transfer; or device tests (`HUBFILE-M01..M10`) show the reachability rule picking the hub while a LAN path was about to come up.

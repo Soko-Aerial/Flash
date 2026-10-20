@@ -151,7 +151,11 @@ public object HubFileText {
     public fun tooLarge(sizeText: String, limitText: String): String =
         "This file is $sizeText, and the hub accepts up to $limitText per file. An administrator can raise the limit in the hub console."
 
-    public fun downloading(percent: Int): String = "Receiving through the hub… ${percent.coerceIn(0, 100)}%"
+    /** `HUB_FILE_DOWNLOADING`; the bubble appends the percentage itself (deviation D15). */
+    public const val DOWNLOADING: String = "Receiving through the hub…"
+
+    /** The Transfers screen's connection label for a hub row (`HUB_FILE_VIA_HUB`). */
+    public const val VIA_HUB: String = "Through the hub"
 
     public fun expired(senderName: String): String = "This file is no longer on the hub. Ask ${senderName.ifBlank { "the sender" }} to send it again."
 

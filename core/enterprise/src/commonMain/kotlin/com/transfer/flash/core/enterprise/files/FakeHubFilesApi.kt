@@ -10,6 +10,7 @@ import com.transfer.flash.core.hubprotocol.rest.FileStates
 import com.transfer.flash.core.hubprotocol.rest.FileStatusDto
 import com.transfer.flash.core.hubprotocol.rest.FileTicketDto
 import com.transfer.flash.core.hubprotocol.rest.HubFileIds
+import com.transfer.flash.core.hubprotocol.rest.HubInfo
 import com.transfer.flash.core.security.enterprise.HubFileHasher
 import kotlinx.coroutines.awaitCancellation
 
@@ -185,6 +186,10 @@ public class FakeHubFilesApi(
         HubFileResult.Ok(Unit)
     }
 
+    override suspend fun hubInfo(hubUrl: String): HubFileResult<HubInfo> = gate(ROUTE_INFO, hubUrl) {
+        HubFileResult.Ok(HubInfo(serverId = "fake-hub", maxFileBytes = server.maxFileBytes))
+    }
+
     private fun access(s: FakeHubFileServer.Stored): HubFileError? {
         if (s.sender == deviceId) return null
         if (deviceId !in server.recipientsOf(s)) return HubFileError.Forbidden
@@ -200,6 +205,7 @@ public class FakeHubFilesApi(
         public const val ROUTE_STATUS: String = "status"
         public const val ROUTE_READ: String = "read"
         public const val ROUTE_CANCEL: String = "cancel"
+        public const val ROUTE_INFO: String = "info"
 
         private const val UPLOAD_WINDOW_MS = 24L * 60 * 60 * 1000
         private const val RETENTION_MS = 7L * 24 * 60 * 60 * 1000

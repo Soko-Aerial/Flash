@@ -2,6 +2,9 @@
 
 package com.transfer.flash.desktop
 
+import com.transfer.flash.core.engine.hubfiles.HubFileBinding
+import com.transfer.flash.core.enterprise.files.DiskHubFileStorage
+import com.transfer.flash.core.enterprise.files.HubFileTransfers
 import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
 import com.transfer.flash.core.common.logging.FlashLog
@@ -250,6 +253,10 @@ public class DesktopEngine(
     /** The one object for everything about the organisation hub (ADR-120); null until the chat stack is up. */
     @Volatile
     private var enterpriseHubRef: EnterpriseHub? = null
+
+    /** Files through the organisation hub (ADR-216); built with the chat repository, released with the hub. */
+    @Volatile
+    private var hubFileBindingRef: HubFileBinding? = null
     public val enterpriseHub: EnterpriseHub?
         get() = enterpriseHubRef
 
@@ -1105,6 +1112,8 @@ public class DesktopEngine(
     private fun releaseSubsystems() {
         synchronized(teardownLock) {
             runCatching { networkWatcher.stop() }
+            hubFileBindingRef?.detach()
+            hubFileBindingRef = null
             // Stops the relay and closes the shared HTTP client (CLI-12).
             enterpriseHubRef?.shutdown()
             enterpriseHubRef = null
@@ -1233,20 +1242,22 @@ public class DesktopEngine(
         )
         discoveryImpl = discovery
 
-        val transfer = RealFlashTransferRepository(
-            streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
-            fileSourceOpener = FileSourceOpener { uriString ->
-                val file = runCatching {
-                    if (uriString.startsWith("file:", ignoreCase = true)) {
-                        java.io.File(java.net.URI(uriString))
-                    } else {
-                        java.io.File(uriString)
-                    }
-                }.getOrElse {
+        // One opener for the direct transfers and the hub file engine (ADR-216).
+        val fileOpener = FileSourceOpener { uriString ->
+            val file = runCatching {
+                if (uriString.startsWith("file:", ignoreCase = true)) {
+                    java.io.File(java.net.URI(uriString))
+                } else {
                     java.io.File(uriString)
                 }
-                FileSystem.SYSTEM.source(file.absolutePath.toPath())
-            },
+            }.getOrElse {
+                java.io.File(uriString)
+            }
+            FileSystem.SYSTEM.source(file.absolutePath.toPath())
+        }
+        val transfer = RealFlashTransferRepository(
+            streamChannelFactory = { channelId, peerDeviceId -> sessionChannel(channelId, peerDeviceId) },
+            fileSourceOpener = fileOpener,
             store = null, // D5 = C pending (09B-2) — matches the Phase 16 harness.
             repositoryScope = scope,
             requireReceiverAcceptance = true,
@@ -1520,6 +1531,7 @@ public class DesktopEngine(
                             canGoOffline = t.canGoOffline,
                             holdersOnline = t.holdersOnline,
                             errorMessage = t.errorMessage,
+                            viaHub = t.viaHub,
                             bytesDone = t.bytesDone,
                             bytesTotal = t.bytesTotal,
                             pieceBlocks = t.pieceBlocks,
@@ -1614,8 +1626,41 @@ public class DesktopEngine(
                 ),
                 hubSealing = hubSealingPort,
                 radioPort = radioPort,
+                hubFileDao = db.hubFileDao(),
             )
             hubRosterChat = chatImpl
+            // ADR-216: a 1:1 file for a peer with no direct path goes sealed through the hub; the engine keeps its
+            // state under the state directory, and finished files land in the receive folder like any other.
+            chatImpl?.let { c ->
+                hubFileBindingRef = HubFileBinding(
+                    scope = scope,
+                    dao = db.hubFileDao(),
+                    transfers = HubFileTransfers(hub.files, DiskHubFileStorage(File(stateDir, "hub-files").path)),
+                    api = hub.files,
+                    transferRepository = transfer,
+                    hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
+                    fileRoute = c::hubFileRoute,
+                    queueTicket = c::queueHubFile,
+                    outgoingEnded = c::hubFileEnded,
+                    openSource = fileOpener,
+                    receivedDirectory = { canonicalRoot.path },
+                    isDirectlyReachable = { peerId ->
+                        network.activeSessions.value.containsKey(FlashDeviceId(peerId)) ||
+                            discovery.discoveredEndpoints.value.any { it.deviceId.value == peerId }
+                    },
+                    peerName = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
+                    autoDownload = { peerId, mime ->
+                        val s = _settings.value
+                        val perKind = when {
+                            mime.startsWith("audio/") -> s.autoDownloadVoice
+                            mime.startsWith("image/") -> s.autoDownloadImage
+                            mime.startsWith("video/") -> s.autoDownloadVideo
+                            else -> s.autoDownloadFile
+                        }
+                        shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
+                    },
+                ).also { it.start() }
+            }
             // The coordinator above may have finished its first sync while hubRosterChat was still null: project the
             // stored rosters now so a group an administrator put this device in appears without waiting for the next sync.
             chatImpl?.let { c -> scope.launch { runCatching { c.refreshHubGroupRosters() } } }

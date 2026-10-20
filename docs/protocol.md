@@ -1726,3 +1726,17 @@ cut on Wi-Fi continues on mobile data, through another access point or after the
 **Compatibility.** The feature is additive: no relay frame changed, no existing endpoint changed, and a client that does not
 send files needs none of it. A hub with `maxFileBytes == 0`, or an older hub that does not answer the field at all, makes the
 client show its existing "not available over the hub" path rather than a new failure.
+
+### Hub file message (P3, ADR-216, 2026-10-20; built and unit-tested, NOT deployed, NOT device-verified)
+
+The ticket that hands a recipient a sealed hub file is a 1:1 hub chat message with inner type `HUB_FILE`. It is accepted
+**only inside a sealed envelope** (`HubSealing`): a readable `HUB_FILE` is rejected, and the readable-content opt-in never
+applies to it. Body: `FLASH_HUBFILE` text frame (`FlashTextFraming`), version `v=1`, fields `localId`, `senderId`,
+`senderName`, `sentAt`, `fileId` (32 hex), `key` (`hfk1.<Base64>`), `sha256` (ciphertext, 64 hex), `size` (plaintext,
+> 0), `chunkBytes` (≥ 64 KiB), `chunks` (must equal the layout of `size`/`chunkBytes`), `expiresAt` (ms, 0 = unknown),
+`name` (no `/`, `\`, control characters, `.` or `..`; ≤ 255), `mime` (≤ 127), `meta` (voice-note metadata, ≤ 4096).
+A `groupId` field makes the frame invalid. Unknown extra keys are ignored. Receiver rules: author must equal the relay
+sender; a known `fileId` with another sender or key, or a reused message id, is refused (rejected and acknowledged);
+a replay is stored once and receipted every time; the recipient fetches from its own enrolled hub. The sender sends the
+ticket only after the upload is complete (hub only, never over the LAN, deviation D17) and retires it on the recipient's
+`DeliveryReceipt`. Groups are not carried in P3 (deviation D14).

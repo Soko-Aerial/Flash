@@ -126,6 +126,8 @@ class E2eHubFileTransferContractTest {
 
         override suspend fun cancel(hubUrl: String, fileId: String): HubFileResult<Unit> =
             if (spend("cancel")) offline else inner.cancel(hubUrl, fileId)
+
+        override suspend fun hubInfo(hubUrl: String) = if (spend("info")) offline else inner.hubInfo(hubUrl)
     }
 
     private fun sha(bytes: ByteArray) = HubFileHasher().also { it.update(bytes) }.digestHex()

@@ -67,6 +67,8 @@ public data class FlashTransfer(
      * whole file and may leave. Empty for a receiver and for every 1:1 transfer.
      */
     val recipients: List<FlashTransferRecipient> = emptyList(),
+    /** The bytes travel sealed through the organisation hub instead of a direct connection (ADR-215, ADR-216). */
+    val viaHub: Boolean = false,
 )
 
 /** One member's copy of a file being sent to a group (see [FlashTransfer.recipients]). */

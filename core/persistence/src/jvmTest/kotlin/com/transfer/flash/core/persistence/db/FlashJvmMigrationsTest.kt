@@ -437,6 +437,39 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `HUBFILE-U01 migration from 17 to 18 creates the empty hub file table and keeps announcements`() {
+        helper.createDatabase(17).use { v17 ->
+            v17.execSQL("INSERT INTO hub_announcement_state (id, epoch, seq, lastSyncAtMs) VALUES (1, 'e1', 7, 100)")
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT seq FROM hub_announcement_state WHERE id = 1").use { row ->
+                assertTrue(row.step(), "hub_announcement_state must survive migration 17->18")
+                assertEquals(7L, row.getLong(0))
+            }
+            upgraded.prepare("SELECT COUNT(*) FROM hub_file").use { row ->
+                assertTrue(row.step())
+                assertEquals(0L, row.getLong(0), "the hub file table starts empty")
+            }
+            // The unique (direction, fileId) index is what makes a replayed ticket a no-op.
+            upgraded.execSQL(
+                "INSERT INTO hub_file (transferId, direction, fileId, peerId, hubUrl, fileName, mime, plainBytes, " +
+                    "cipherChunkBytes, chunkCount, expiresAtMs, state, paused, bytesDone, createdAtMs, updatedAtMs) " +
+                    "VALUES ('t1', 'IN', 'f1', 'p1', 'https://hub', 'a.pdf', 'application/pdf', 5, 1048576, 1, 0, 'OFFERED', 0, 0, 1, 1)",
+            )
+            upgraded.execSQL(
+                "INSERT OR IGNORE INTO hub_file (transferId, direction, fileId, peerId, hubUrl, fileName, mime, plainBytes, " +
+                    "cipherChunkBytes, chunkCount, expiresAtMs, state, paused, bytesDone, createdAtMs, updatedAtMs) " +
+                    "VALUES ('t2', 'IN', 'f1', 'p2', 'https://hub', 'b.pdf', 'application/pdf', 5, 1048576, 1, 0, 'OFFERED', 0, 0, 1, 1)",
+            )
+            upgraded.prepare("SELECT COUNT(*) FROM hub_file").use { row ->
+                assertTrue(row.step())
+                assertEquals(1L, row.getLong(0), "a second row for the same received file id must be refused")
+            }
+        }
+    }
+
+    @Test
     fun `the public desktop opener upgrades an older file instead of failing`() = runBlocking {
         helper.createDatabase(3).use { v3 -> insertMessage(v3, version = 3) }
 
