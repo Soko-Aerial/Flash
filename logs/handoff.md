@@ -2,7 +2,7 @@
 
 ## 2026-10-20 — Hub files P2 (client transport): sealing, typed client, resumable engine
 
-- **Current branch:** `dev`, on top of `de2aba4d` (P1). This work is the commit after it.
+- **Current branch:** `dev`, on top of `de2aba4d` (P1). This work is commit `7bac665a` (not pushed).
 - **Status:** implemented and unit-tested on JVM and Android host; **NOT deployed, NOT device-verified**, and **nothing in
   the app calls it yet** (P3 wires it into chat).
 - **The one thing to know:** `HubFileTransfers` (`:core:enterprise/files`) uploads and downloads a file sealed per chunk
