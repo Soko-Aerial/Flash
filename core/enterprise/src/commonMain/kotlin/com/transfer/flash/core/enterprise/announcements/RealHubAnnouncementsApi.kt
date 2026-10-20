@@ -4,8 +4,8 @@ package com.transfer.flash.core.enterprise.announcements
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.result.FlashResult
-import com.transfer.flash.core.common.result.runSuspendCatching
 import com.transfer.flash.core.enterprise.HubBearerSource
+import com.transfer.flash.core.enterprise.HubRestExecutor
 import com.transfer.flash.core.enterprise.HubUrlPolicy
 import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
@@ -53,42 +53,22 @@ public class RealHubAnnouncementsApi(
 
     private data class Reply(val response: HttpResponse, val body: String)
 
-    private suspend fun execute(hubUrl: String, send: suspend (baseUrl: String, bearer: String?) -> HttpResponse): FlashResult<Reply> {
+    private val executor = HubRestExecutor(bearerSource, pinnedHubUrl, allowCleartext)
+
+    private suspend fun execute(hubUrl: String, send: suspend (baseUrl: String, bearer: String?) -> HttpResponse): FlashResult<Reply> =
         // The credentials pin the hub's host (CLI-01): never send the device bearer to a different host, and never over
-        // cleartext unless the (debug-only) opt-in allows it. The announcements API gets the same treatment as
-        // [EnterpriseDirectoryClient]; both are refused the same way.
-        val pinned = pinnedHubUrl()
-        if (pinned != null && !HubUrlPolicy.sameHub(hubUrl, pinned)) {
-            return FlashResult.Failure(
+        // cleartext unless the (debug-only) opt-in allows it. [HubRestExecutor] holds that rule for every device API.
+        when (val outcome = executor.call(hubUrl, send) { response -> Reply(response, response.bodyAsText()) }) {
+            is HubRestExecutor.Outcome.Reply -> FlashResult.Success(outcome.value)
+            HubRestExecutor.Outcome.NotThisHub -> FlashResult.Failure(
                 HubAnnouncementError.Server("This is not the hub this device is enrolled with.").toFlashError(),
             )
-        }
-        if (HubUrlPolicy.check(hubUrl, allowCleartext()) != HubUrlPolicy.Verdict.OK) {
-            return FlashResult.Failure(
+            HubRestExecutor.Outcome.Insecure -> FlashResult.Failure(
                 HubAnnouncementError.Server("The hub address is not a secure address.").toFlashError(),
             )
+            HubRestExecutor.Outcome.NoBearer -> FlashResult.Failure(HubAnnouncementError.Revoked.toFlashError())
+            is HubRestExecutor.Outcome.Unreachable -> FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
         }
-        val base = HubUrlPolicy.baseUrl(hubUrl)
-        var forceRefresh = false
-        for (attempt in 0..1) {
-            val bearer = bearerSource?.bearer(forceRefresh)
-            if (bearerSource != null && bearer == null) {
-                return FlashResult.Failure(HubAnnouncementError.Revoked.toFlashError())
-            }
-            val reply = runSuspendCatching {
-                val response = send(base, bearer)
-                Reply(response, response.bodyAsText())
-            }.getOrElse {
-                return FlashResult.Failure(HubAnnouncementError.Offline.toFlashError())
-            }
-            if (reply.response.status == HttpStatusCode.Unauthorized && bearerSource != null && !forceRefresh) {
-                forceRefresh = true
-            } else {
-                return FlashResult.Success(reply)
-            }
-        }
-        return FlashResult.Failure(HubAnnouncementError.Revoked.toFlashError())
-    }
 
     private fun HttpRequestBuilder.authorize(bearer: String?) {
         if (bearer != null) header(HubContract.HEADER_AUTHORIZATION, HubContract.BEARER_PREFIX + bearer)

@@ -1614,14 +1614,16 @@ and passes it on to at most 24 `hrs1` members. Offers are also sent when a peer 
 and peer are members, and the peer is ORG. Legacy and `g2-` groups use their own gates, unchanged. ORG-only members never get PTT, group
 creation or administration. "Add member" is disabled for hub groups. Roster rows are written with `operationId = "hub-roster-v<version>"`.
 
-## Hub files API (ADR-215, 2026-10-20; P1 server built and unit-tested, client phases P2–P4 pending)
+## Hub files API (ADR-215, 2026-10-20; P1 server and P2 client transport built and unit-tested, P3–P4 pending, nothing deployed)
 
 **What it is.** A file crosses the hub as a **client-sealed blob** in numbered chunks. The hub stores opaque bytes and never
 receives a key. Contract constants and DTOs live in `:core:hub-protocol` (`HubContract.PATH_FILES`, `MAX_CHUNK_BYTES`,
 `DEFAULT_MAX_FILE_BYTES`, `rest/HubFileDtos.kt`); the design is `docs/plans/HUB-FILES-PLAN.md`.
 
-**How a client learns it is available.** `GET /api/v1/hub` returns `HubInfo.maxFileBytes`: the largest single sealed file
-this hub accepts. `0` (also what an older hub answers, since the field is absent) means "this hub carries no files" and the
+**How a client learns it is available.** `GET /api/v1/hub` returns `HubInfo.maxFileBytes`: the largest single file this hub
+accepts, counted in **plaintext** bytes (the number an administrator types and a user sees). The hub accepts a sealed upload
+up to `maxFileBytes + chunkCount × SEALED_CHUNK_OVERHEAD_BYTES` (16, the AES-GCM tag of each chunk), so a file of exactly
+the limit fits; before P2 the comparison was on ciphertext and an exact 50 MB file was refused by 816 bytes. `0` (also what an older hub answers, since the field is absent) means "this hub carries no files" and the
 client shows its existing not-available path. There is deliberately **no `fil1` relay capability token**: the REST field is
 the single advertisement, so no relay `HELLO` token has to be negotiated and no wire shape changed. This is a recorded
 deviation from the first draft of the plan (P1 explain-back, `docs/plans/HUB-FILES-PLAN.md` section 9).
@@ -1641,7 +1643,7 @@ whole upload. It is also the only value used to build a storage path, so anythin
 | `GET` | `/api/v1/files/{fileId}/chunks/{index}` | — | `200 application/octet-stream`; `403` not a recipient; `404` unknown index or expired; `409` the file is not `READY`; `503` the chunk row exists but its file is gone (a restore without `data/files`) |
 | `DELETE` | `/api/v1/files/{fileId}` | — | `204`; `403` not the sender |
 
-`PUT` also accepts an optional `X-Flash-Chunk-Sha256` header (64 lowercase hex): when present the hub compares it with the
+`PUT` also accepts an optional `X-Flash-Chunk-Sha256` header (`HubContract.HEADER_CHUNK_SHA256`; the P2 client always sends it) (64 lowercase hex): when present the hub compares it with the
 SHA-256 of the body it received and answers `400` on a mismatch. The hub stores that hash per chunk, so a byte-identical
 retry is recognised without the header too.
 
@@ -1690,6 +1692,36 @@ written with `PUT` `{"key","value"}`) are:
 
 A change applies to the next `POST /api/v1/files` without a restart. A value that is not a number, or is out of bounds, is
 refused with `400 ERR_BAD_REQUEST` and a sentence naming the bound.
+
+**Sealing (client, P2: `:core:security` `enterprise/HubFileSealing.kt`).** Each file has its own random 40-byte key
+material: a 32-byte AES-256 key and an 8-byte nonce prefix, carried as `hfk1.<Base64>` inside the sealed chat message (P3),
+never to the hub. Plaintext is cut into chunks of `cipherChunkBytes − 16` bytes (1 048 560 for the 1 MiB default); chunk
+`i` is `AES-256-GCM(key, nonce = prefix(8) ‖ i(4, big-endian), aad, plaintext_i)`, ciphertext plus 16-byte tag, with
+`aad = "flash-hub-file-v1" ‖ 0x00 ‖ fileId (32 ASCII) ‖ i(4) ‖ chunkCount(4) ‖ plainBytes(8)` (all big-endian). A chunk
+moved to another index, another file, or a file whose length was changed does not open. The nonce is derived from the
+index on purpose: a resumed upload re-seals a chunk to the same bytes, which the hub's idempotent `PUT` requires. The
+request's `sha256` is SHA-256 over the concatenated ciphertext chunks. Golden vectors from an independent implementation
+(Python `cryptography`) are pinned in `HubFileSealingTest`.
+
+**Client transfer behaviour (P2: `:core:enterprise` `files/HubFileTransfers.kt`).** One engine for upload and download,
+with a small record per file on disk (`<root>/up/<fileId>.state`, `<root>/down/<fileId>.state`, plaintext assembled in
+`<root>/down/<fileId>.part`). The record holds the chunk bitmap and, for an upload, the file key, written before the first
+byte leaves. Rules a server implementer can rely on:
+
+- every request has a timeout (60 s) that counts as offline; transient answers (no network, `429 ERR_RATE_LIMIT` with
+  `Retry-After` honoured up to 120 s, `503`, other `5xx`, `409` on a read) are retried with jittered exponential backoff
+  (1 s doubling to 30 s, six tries per request), then the run stops with the record kept; the next run continues it;
+- a resumed upload asks `GET /api/v1/files/{id}` first, sends only the chunks it has not recorded, re-sends everything
+  when the hub reports fewer chunks than recorded, and creates the file again under the same id when the hub answers `404`
+  (swept after the 24 h window); it re-hashes its source first and withdraws the upload (`DELETE`) when the bytes changed;
+- a download checks `GET` against the sender's ticket (id, ciphertext hash, sizes, chunk count, and the sender when the
+  message names it) before reading any chunk, writes and syncs each opened chunk before its bit is saved, and finally
+  re-seals the assembled file and compares the ciphertext hash (and the plaintext hash when the message carries one). A
+  chunk that does not open is fetched once more, then the download fails; a whole-file mismatch earns one full re-download;
+- `404` on a download is final ("no longer on the hub"), `403` is final ("not on the recipient list").
+
+Nothing in this behaviour depends on the network path: the record belongs to the file id and the hub address, so a run
+cut on Wi-Fi continues on mobile data, through another access point or after the hub restarted.
 
 **Compatibility.** The feature is additive: no relay frame changed, no existing endpoint changed, and a client that does not
 send files needs none of it. A hub with `maxFileBytes == 0`, or an older hub that does not answer the field at all, makes the

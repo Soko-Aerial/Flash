@@ -917,6 +917,15 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Hub files P2 (2026-10-20, ADR-215): client transport built and unit-tested, NOT deployed, NOT device-verified, not yet
+called by the app.** `:core:security` `HubFileSealing` (AES-256-GCM per chunk, index-derived nonce, AAD binds file id,
+index, chunk count and length; golden vectors), `:core:enterprise` `HubRestExecutor` (shared with announcements) and
+`files/` (`RealHubFilesApi` behind the pinned hub, `FakeHubFilesApi`, `DiskHubFileStorage`, `HubFileStateCodec`, the
+resumable engine `HubFileTransfers`). Resume is network-agnostic inside the hub path (Wi-Fi ↔ mobile data, LAN ↔ internet,
+app kill, hub restart cost one chunk); LAN-direct ↔ hub hand-over is not designed. The hub now counts the plaintext
+against `maxFileBytes` (+16 bytes per chunk). Deviations D8–D13, mutations and findings: `docs/plans/HUB-FILES-PLAN.md` §9.
+Next: P3 (file message, key delivery, UI). Device checks `HUBFILE-C01..C06` in `docs/testing/TEST-BACKLOG.md`.
+
 **Hub files P1 (2026-10-20, ADR-215): server built and unit-tested, NOT deployed, NOT device-verified, and no client exists yet.**
 The owner's "a ~50 MB file should go through the hub, with an administrator-adjustable limit, sealed so the hub cannot read it" now has
 its server half (`docs/plans/HUB-FILES-PLAN.md`, P1 report in §9): `HubContract.PATH_FILES` + `rest/HubFileDtos.kt`, `HubInfo.maxFileBytes`

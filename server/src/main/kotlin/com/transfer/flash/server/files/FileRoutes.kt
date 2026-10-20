@@ -190,7 +190,7 @@ private suspend fun ApplicationCall.refuse(outcome: FileOutcome<*>) {
 }
 
 /** Optional header carrying the SHA-256 of the chunk body, so a retry can be proven identical. */
-const val HEADER_CHUNK_SHA256: String = "X-Flash-Chunk-Sha256"
+const val HEADER_CHUNK_SHA256: String = HubContract.HEADER_CHUNK_SHA256
 
 private const val MESSAGE_BAD_JSON = "The request body is not a valid file request."
 

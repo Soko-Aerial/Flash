@@ -16,9 +16,15 @@ import kotlinx.serialization.Serializable
 public data class CreateFileRequestDto(
     /** 32 lowercase hex characters; the idempotency key of the whole upload and the only value used in a path. */
     public val fileId: String,
-    /** Size of the encrypted blob, 1..the hub's `maxFileBytes`. */
+    /**
+     * Size of the encrypted blob, 1..`maxFileBytes + chunkCount * HubContract.SEALED_CHUNK_OVERHEAD_BYTES` (the hub's
+     * `maxFileBytes` is the plaintext limit).
+     */
     public val totalBytes: Long,
-    /** Plaintext chunk size in bytes, 1..[HubContract.MAX_CHUNK_BYTES], identical for every PUT of this file. */
+    /**
+     * Size of every ENCRYPTED chunk but the last, 1..[HubContract.MAX_CHUNK_BYTES]; every PUT but the last carries exactly
+     * this many bytes. (The first draft said "plaintext"; the hub only ever sees and checks ciphertext.)
+     */
     public val chunkSize: Int,
     /** Must equal `ceil(totalBytes / chunkSize)`. */
     public val chunkCount: Int,
@@ -99,3 +105,17 @@ public data class FileStatsDto(
     public val readyBytes: Long = 0L,
     public val devices: List<FileUsageRowDto> = emptyList(),
 )
+
+/**
+ * Shape checks for the two identifiers of a sealed file, shared by the hub and the clients so both refuse the same values.
+ * A file id is also the only value either side builds a storage path from, so anything else never reaches a filesystem call.
+ */
+public object HubFileIds {
+    /** Exactly 32 lowercase hex characters. */
+    public fun isFileId(value: String): Boolean = value.length == 32 && value.all(::isLowerHex)
+
+    /** Exactly 64 lowercase hex characters (a SHA-256). */
+    public fun isSha256(value: String): Boolean = value.length == 64 && value.all(::isLowerHex)
+
+    private fun isLowerHex(c: Char): Boolean = c in '0'..'9' || c in 'a'..'f'
+}

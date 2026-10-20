@@ -71,6 +71,8 @@ Rules (AGENTS.md section 24 applies in full):
 | `swarm.recv.done` | same | a receiver finished and verified the file | `transfer`, `bytes`, `sinceAcceptMs`, `avgKBps` |
 | `swarm.member.first` | same | sender side: a member's holding first grew | `transfer`, `member`, `sinceSendMs` |
 | `swarm.member.done` | same | sender side: a member announced the whole file | `transfer`, `member`, `sinceSendMs`, `done` (members done so far), `seen` (members listed) |
+| `hubfile.upload` | `HubFileTransfers` (`:core:enterprise`, hub files P2) | an upload run starts, resumes, restarts after the hub lost it, is cancelled, and when it ends | `step` (`start`, `resume`, `restart`, `cancel`, `done`, `interrupted`, `failed`), `id` (first 8 characters of the file id), `chunks` (`done/total`), `reason` (the `HubFileError` name, never a sentence or a key) |
+| `hubfile.download` | same | a download run starts, resumes, re-fetches after a failed whole-file check, is discarded, and when it ends | `step` (`start`, `resume`, `refetch`, `discard`, `done`, `interrupted`, `failed`), `id`, `chunks`, `reason` |
 | `radio.link.up` | `KissTncDriver` (`:core:network`, radio spike, BT-00) | the byte link to the TNC opened | `link` (port or RFCOMM description, no key material), `attempt` |
 | `radio.link.down` | same | the link ended or failed | `reason`, `kissOk` (frames decoded so far), `garbage`, `badEscape`, `oversize` (KISS decoder counters) |
 | `radio.tnc.params` | same | KISS parameters were sent after connect (only when configured) | `txDelayMs`, `p`, `slotMs`, `tailMs`, `fullDuplex` |
