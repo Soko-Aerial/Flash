@@ -947,6 +947,11 @@ Identity, trust, pairing and the cryptographic primitives underneath them (C2, D
   `FlashSettingsDataStore` and `DefaultFlashEngine`. It takes local identity strings, the
   ephemeral-key provider, the frame sink, a `FlashTimeSource` and `PairingTimeouts`; there is
   nothing to hide behind a factory because every one of those is a host decision.
+- **Stability caveat:** the *protocol* is stable, the *integration* is host work. `PairingWireCodec` is
+  `@FlashInternalApi`, the complete driver (`FlashPairingCoordinator`) exists only in `jvmMain`, and the
+  `Flash.create` facade exposes neither the local identity nor an inbound `FLASH_PAIR` hook. The procedure,
+  the six wiring points and the missing seams are in
+  [developer-guide/guides/pairing-and-trust.md](../developer-guide/guides/pairing-and-trust.md).
 
 ### `FlashPairingEvent`
 - **Stability:** Stable

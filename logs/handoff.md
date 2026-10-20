@@ -1,5 +1,25 @@
 # Current Handoff
 
+## 2026-10-20 - Developer guide: the pairing procedure (docs only)
+
+- **Current branch:** `dev`. Docs-only commit on top of `07c5136f`; **no product code changed, nothing built, nothing
+  device-tested.**
+- **The one thing to know:** `docs/developer-guide/guides/pairing-and-trust.md` is now the place to learn how pairing is
+  driven. It also states, with code references, that **pairing is not reachable through `Flash.create`** -- the facade
+  exposes no local identity and no inbound `FLASH_PAIR` hook (gaps G-1/G-2 in its section 11).
+- **Why it mattered:** the guide explained the crypto and the frozen signatures and had a hardware runbook, but no page
+  showed a developer what to write. The new page covers the three integration shapes, the six wiring points, the three
+  trust writes, the wire sequence, the failure table, eleven traps, a JVM test recipe and an 8-step device matrix.
+- **Also changed:** guide README map + Quick Navigation, a section 5 in `modules/core/core-security.md`, pointers from
+  `beginner-guide.md` and `examples/full-stack-app.md`, and an additive "Stability caveat" under `FlashPairingProtocol`
+  in `docs/architecture/public-api.md`.
+- **Last test:** none -- documentation only. `logs/progress.md` 2026-10-20 "Developer guide: how to do pairing" lists
+  what was cross-checked against source.
+- **Owed next (owner decisions, not device tests):** G-1/G-2 (engine identity + an inbound pairing seam), G-3 (hoist
+  `FlashPairingCoordinator` out of `jvmMain`), G-4/G-5 (publish a JVM trust store and the UI mapper), G-6 (decide the
+  codec's stability), G-7 (a pairing sample).
+- **Working tree note:** another session's uncommitted Hub-files P4 work was left untouched; the pairing-docs commit
+  stages only its own files.
 ## 2026-10-20 — Hub files P2 (client transport): sealing, typed client, resumable engine
 
 - **Current branch:** `dev`, on top of `de2aba4d` (P1). This work is commit `7bac665a` (not pushed).

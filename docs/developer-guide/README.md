@@ -12,6 +12,8 @@ docs/developer-guide/
 ├── getting-started/
 │   ├── beginner-guide.md                      # Quickstart, setup, Maven/Gradle coordinates, Hello World
 │   └── architecture-overview.md               # Clean architecture layers, contracts, data flow, reactive state
+├── guides/
+│   └── pairing-and-trust.md                   # How to pair two devices: FLASH_PAIR v2 handshake, the host glue, the trust writes
 ├── modules/
 │   ├── core/
 │   │   ├── core-common.md                     # Domain models, FlashResult, FlashPerformanceMode, byte math
@@ -45,6 +47,7 @@ docs/developer-guide/
 ## 2. Quick Navigation by Use-Case
 
 * **New to the project?** Start with [getting-started/beginner-guide.md](getting-started/beginner-guide.md).
+* **Making pairing work in your own host?** Read [guides/pairing-and-trust.md](guides/pairing-and-trust.md) -- what the library provides, the six wiring points, the trust writes, and the gaps (the `Flash.create` facade cannot pair yet).
 * **Integrating a specific module?** Check the dedicated guides in [modules/core/](modules/core/) or [modules/ui/](modules/ui/).
 * **Building for low-RAM / embedded hardware (<512MB RAM)?** Read [scenarios/scenario-1-ultra-low-resource.md](scenarios/scenario-1-ultra-low-resource.md).
 * **Extending Flash with custom transports (e.g. BLE, LoRa) or custom storage?** Read [scenarios/scenario-2-custom-extensions.md](scenarios/scenario-2-custom-extensions.md).
