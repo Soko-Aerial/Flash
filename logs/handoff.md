@@ -1,5 +1,20 @@
 # Current Handoff
 
+## 2026-10-20 — Hub files P4: group files, cancel on delete, pruning, console Files card
+
+- **Current branch:** `dev`. P4 is committed in focused commits on top of `07c5136f` (hashes in `git log`); **not pushed**: the owner confirmed the push of P1-P3 only.
+- **Status:** implemented and unit-tested on JVM and Android host; **NOT deployed, NOT device-verified.**
+- **The one thing to know:** a file sent to a **hub-linked group** is uploaded once and every member the LAN could not reach
+  gets a sealed `FLASH_HUBFILE` ticket carrying `groupId` and `groupSig`; the receipt is a **group** `Receipt`. Reading order:
+  ADR-217, plan section 9 "P4 result", `docs/protocol.md` "Hub file ticket for a group".
+- **Also new:** deleting a hub file's message cancels its upload (`onHubFileMessageDeleted` -> `cancelOutgoing`); `hub_file` is
+  pruned at start; Room schema is **19**; the console has a Files card.
+- **Last test:** see `logs/progress.md` 2026-10-20 "Hub files P4" (all suites green, 13 mutations caught).
+- **Recommended next task:** redeploy the test hub with P1 + P2's server change, then run `HUBFILE-C01`, `M01`, `G01` with two
+  real devices on different networks. Then the owner decisions: D18, D21, LAN <-> hub hand-over.
+- **Files most relevant:** `core/engine/.../hubfiles/HubFileBinding.kt`, `core/messaging/.../hub/HubFileMessages.kt`,
+  `core/messaging/.../RealFlashChatRepository.kt` (`onInboundHubFile`, `drainGroupHubFile`), `core/engine/.../group/GroupFileSender.kt`.
+
 ## 2026-10-20 - Developer guide: the pairing procedure (docs only)
 
 - **Current branch:** `dev`. Docs-only commit on top of `07c5136f`; **no product code changed, nothing built, nothing

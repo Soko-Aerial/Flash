@@ -917,6 +917,16 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Hub files P4 (2026-10-20, ADR-217): group files through the hub, cancel on delete, pruning and the console Files card; built and
+unit-tested, NOT deployed, NOT device-verified.** A file to a **hub-linked group** is uploaded once; every member the direct pipeline
+(swarm / whole-file push) could not reach gets a sealed `FLASH_HUBFILE v=1` ticket with optional `groupId` and `groupSig`, and
+acknowledges it with a **group** `Receipt` (never the 1:1 receipt, which would retire the whole outbox row). The receiver accepts only
+for a hub-linked group, from an active member, with the v2 signature. Deleting the message for everyone (or for oneself while it still
+uploads) cancels the hub upload (`onHubFileMessageDeleted` -> `HubFileBinding.cancelOutgoing`). `hub_file` rows are pruned at start
+unless a visible message shows them (Room step 19). The admin console has a Files card for the four limits and usage. Not built: LAN
+<-> hub hand-over, groups the hub does not know (D21), the group title on the sender's Transfers row (D24). Deviations D21-D28 and the
+P4 report: `docs/plans/HUB-FILES-PLAN.md` section 9. Device checks `HUBFILE-G01..G08` in `docs/testing/TEST-BACKLOG.md`.
+
 **Hub files P3 (2026-10-20, ADR-216): 1:1 files go through the hub from chat, on both hosts; built and unit-tested, NOT deployed,
 NOT device-verified.** A 1:1 send to a peer with no live session that discovery does not see is taken by `HubFileBinding`
 (`:core:engine/hubfiles`, via `RealFlashTransferRepository.sendInterceptor`). It is uploaded sealed (P2), and its key travels only in a

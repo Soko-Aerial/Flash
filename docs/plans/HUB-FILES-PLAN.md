@@ -250,6 +250,39 @@ The `HUB_FILE_REASON_*` rows were added in P2 (`HubFileText.reason`); they fill 
 P3 shows a transient reason on its own, never after "The hub could not take this file." (D16), and `HUB_FILE_SENDING` /
 `HUB_FILE_DOWNLOADING` are the bubble's line while a hub file moves.
 
+### Console Files card strings (P4-A, admin console `strings/en.js`; the console is English only)
+
+| Id | Text |
+|---|---|
+| `settings.config.note` | "Most settings live in the hub\'s configuration file and are shown here read-only. Change them there and restart the hub. Only the invite defaults and the file limits can be changed here." |
+| `settings.files.title` | "Files through the hub" |
+| `settings.files.sub` | "How large a sealed file may be, and how much and how long the hub keeps. The hub cannot read these files; it only stores them until they are collected or expire." |
+| `settings.files.maxFileBytes` | "Largest file (MB)" |
+| `settings.files.maxFileBytes.hint` | "Between {min} and {max} MB. Clients are told this number." |
+| `settings.files.deviceStoredBytes` | "Per device (MB)" |
+| `settings.files.deviceStoredBytes.hint` | "What one device may keep on the hub at once, between {min} and {max} MB." |
+| `settings.files.globalStoredBytes` | "Whole hub (MB)" |
+| `settings.files.globalStoredBytes.hint` | "What all devices together may keep, between {min} and {max} MB." |
+| `settings.files.fileRetentionDays` | "Keep for (days)" |
+| `settings.files.fileRetentionDays.hint` | "A finished file is removed after this many days, between {min} and {max}." |
+| `settings.files.error.empty` | "Enter a number." |
+| `settings.files.error.notNumber` | "Enter a whole number, digits only." |
+| `settings.files.error.tooSmall` | "This must be at least {min}." |
+| `settings.files.error.tooLarge` | "This must be at most {max}." |
+| `settings.files.warn.maxAboveGlobal` | "The largest file is more than the whole hub may keep. The hub will lower it to the hub total." |
+| `settings.files.warn.deviceAboveGlobal` | "The per-device amount is more than the whole hub may keep. The hub will lower it to the hub total." |
+| `settings.files.warn.maxAboveDevice` | "The largest file is more than one device may keep, so a device could not send a file of that size." |
+| `settings.files.save` | "Save file limits" |
+| `settings.files.unchanged` | "Nothing was changed." |
+| `settings.files.saved` | "The file limits were saved." |
+| `settings.files.usage.title` | "In use now" |
+| `settings.files.usage.ready` | "Ready to collect" |
+| `settings.files.usage.uploading` | "Being uploaded" |
+| `settings.files.usage.line` | "{n} files, {size}" |
+| `settings.files.usage.top` | "Devices holding the most (first 8 characters of the device id):" |
+| `settings.files.usage.none` | "No file is on the hub." |
+| `settings.files.usage.unavailable` | "The current usage could not be loaded." |
+
 ---
 
 ## 7. Situations the plan must cover (each gets a test)
@@ -923,3 +956,184 @@ upgraded, ticket first then bare frame, not-a-member / removed-here / unlinked /
 member and keeps the outbox row). `HubFileBindingTest` (group claim uploads with the group id, tickets for exactly the
 unreachable members, group too large, a member without a sealing key). Migration 18 -> 19 on both hosts.
 
+### P4 result — built, unit-tested, NOT deployed, NOT device-verified (2026-10-20)
+
+**Status.** HF-G1..HF-G4 and what P3 deferred exist on both hosts: the console Files card (P4-A, commit `07c5136f`),
+group files through the hub (D21–D23), cancel on delete, and pruning of local rows. A group file is uploaded once and every
+member the LAN cannot reach is sent a sealed ticket in a message of their own; a member the LAN reaches is not touched. This
+works on the fake hub and on real encrypted databases, with the real P1 routes behind P2's end-to-end test. No phone or
+desktop has done it against a deployed hub. Device checks: `HUBFILE-G01`..`G08` in `docs/testing/TEST-BACKLOG.md` section
+4zzzzzzzzzzzzzz. Nothing here may be called working until `HUBFILE-C01..C06`, `M01..M10` and `G01..G08` pass on devices.
+
+**Phase report (HUB-QUALITY-CONTRACT section 7).**
+
+Done (evidence table below):
+- HF-G1: Room step 18 → 19 (`hub_file.groupId`, `hub_file.recipients`), `HubFileDao.byMessageId` and `prune`,
+  `MessageDao.attachHubFileToBare`.
+- HF-G2: `HubFileFrame.groupId` / `groupSig` and the codec rules; `HubFileMessages.accept` for a group ticket; the
+  repository's group gate (`onInboundHubFile`); `drainGroupHubFile` and the group branch of the drain; group receipt
+  accounting; `HubChatBridge.groupFileRoute`.
+- HF-G3: `HubFileBinding.claimGroup`, the `GroupFileSender` hook for the members the direct pipeline missed, the host wiring
+  on Android and desktop; prune at `start()`; `cancelOutgoing` and `RealFlashChatRepository.onHubFileMessageDeleted`.
+- HF-G4: operations. Console Files card (P4-A), `docs/protocol.md`, `docs/security.md` (four rows), `PROBES.md`
+  (`hubfile.group.drop`, `hubfile.rows.pruned`, new fields), backlog `HUBFILE-G01..G08`, ADR-217.
+
+Done but only unit-tested: all of it.
+
+Not done, and why:
+- LAN ↔ hub hand-over of one transfer: not designed; an owner decision (ADR-216 "Revisit when").
+- Group files for groups the hub does not know (D21): the hub has no roster to check a read against.
+- The group's title on the sender's Transfers row: the hosts do not pass `groupName`, so the row shows the first 8
+  characters of the group id (D24). The conversation title lookup is a suspend call and the row mapper is not.
+- Per-member decline or per-member cancel: one blob serves everyone, so one cancel removes it for all.
+- No browser check of the console Files card (only the pure helpers and the string table are tested in Node).
+  `HUBFILE-G07`.
+- `server:test` was not re-run in P4: no server Kotlin changed in P4 (P4-A changed console resources only). Last run: 566
+  tests, P1 report.
+
+Surprises:
+1. `FLASH_HUBFILE` receipts: a one-to-one `DeliveryReceipt` for a message id deletes that id's outbox row, so reusing it for
+   a group ticket would end delivery to every other member on the first acknowledgement, and any colleague who guessed a
+   group message id could do the same. The group ticket is acknowledged with `GroupWireFrame.Receipt` (M5).
+2. A group file some members get another way keeps that way's transfer id on its bubble, so the hub row cannot be found
+   through the message alone: `outgoingFor` also looks up by `messageId` (`HubFileDao.byMessageId`).
+3. Mutation M6 (a ticket may fill any existing message) survived the first round: the DAO's own guard
+   (`attachHubFileToBare` matches author, chat and `deletedAt`) caught every case but the one where the existing message
+   already carried an attachment, where the Kotlin layer answered "stored" and the author got a receipt for a file nobody
+   stored. Test U55 added; M6 now fails it.
+4. The Kotlin smart-cast limit on a public property of another module (`HubFileEntity.groupId` in `:core:engine`) stopped
+   a compile; copy to a local first.
+5. A give-up for a group file must not fail a message another member already has (U54, M7): one stuck member must not turn
+   a delivered file into a Failed bubble.
+
+**Where the build deviates from this plan, and why.**
+
+| # | The plan said | Built | Why |
+|---|---|---|---|
+| D21 | (HF-G: groups) | only a group linked to the hub uses the hub; otherwise the swarm / whole-file path as before | the hub re-checks the group's roster on every read; an unlinked group has no roster there |
+| D22 | a group ticket (shape not fixed) | the existing `FLASH_HUBFILE v=1` plus optional `groupId` and `groupSig` | no new version; a P3 build rejects the frame by field name, which is the safe direction |
+| D23 | (silent) | one upload per group; tickets go only to members the direct pipeline did not reach, recorded in `hub_file.recipients` | no double download for a member on the LAN, no n-fold hub storage |
+| D24 | the Transfers row names the group | the sender's row shows the group's 8-character id | the hosts' row mapper cannot suspend to read the title; recorded, not hidden |
+| D25 | pruning proposed for P4 | finished rows 30 days after they ended, tickets whose file left the hub 1 day after it expired, and never a row a visible message still shows | the bubble finds its file through the row; deleting it would turn a file into an empty card |
+| D26 | one new column (`groupId`) | two (`groupId`, `recipients`) | the drain must know whom the tickets are for after a restart |
+| D27 | cancel on delete | delete for everyone always cancels; delete for me cancels only while the upload runs | after the upload the recipients hold tickets; deleting one's own copy must not take the file from them |
+| D28 | (silent) | a group ticket is acknowledged with a group receipt | surprise 1 |
+
+**Evidence.**
+
+| Step | Files | Tests | Result |
+|---|---|---|---|
+| Console card | `admin-ui/js/filelimits.js`, `views/settings.js`, `strings/en.js` | `filelimits.test.mjs` (9), 78 Node tests in all | pass |
+| HF-G1 | `FlashDatabase.kt` (19), `FlashSchemaSteps.kt` (`STEP_18_19`), `FlashMigrations.kt`, `HubFileEntity.kt`, `HubFileDao.kt`, `MessageDao.kt`, `schemas/.../19.json` | `HubFileDaoTest` U01–U05, `FlashJvmMigrationsTest` HUBFILE-P4-U04, `FlashMigrationsChainTest` | pass |
+| HF-G2 | `HubFileFrameCodec.kt`, `HubFileMessages.kt`, `HubChatBridge.kt`, `RealFlashChatRepository.kt` | `HubFileFrameCodecTest` U20–U22 (1,000 fuzzed inputs), `RealFlashChatRepositoryHubFileTest` U50–U56 | pass |
+| HF-G3 | `HubFileBinding.kt`, `GroupFileSender.kt`, `DiscoveryEngineHolder.kt`, `AppEngine.kt`, `MainActivity.kt`, `DesktopEngine.kt`, `DesktopShell.kt` | `HubFileBindingTest` U60–U63 | pass |
+
+Final runs, through the build lock, after every fix:
+
+```
+tools\flash-gradle.cmd --offline --continue :core:persistence:jvmTest :core:persistence:testAndroidHostTest
+  :core:messaging:jvmTest :core:messaging:testAndroidHostTest :core:engine:jvmTest :core:engine:testAndroidHostTest
+  :desktop:compileKotlinJvm :app:compileDebugKotlin -q
+[flash-gradle] finished with exit code 0 after 467s of running
+
+tools\flash-gradle.cmd --offline --continue :desktop:jvmTest :core:transfer:jvmTest :core:enterprise:jvmTest -q
+[flash-gradle] finished with exit code 0 after 176s of running
+
+:core:persistence:jvmTest             tests=80  failures=0
+:core:persistence:testAndroidHostTest tests=53  failures=0
+:core:messaging:jvmTest               tests=355 failures=0
+:core:messaging:testAndroidHostTest   tests=641 failures=0
+:core:engine:jvmTest                  tests=168 failures=0
+:core:engine:testAndroidHostTest      tests=123 failures=0
+:desktop:jvmTest                      tests=220 failures=0
+:core:transfer:jvmTest                tests=135 failures=0
+:core:enterprise:jvmTest              tests=256 failures=0
+node --test admin-ui-tests/*.test.mjs  tests=78 pass=78 fail=0
+```
+
+(Counts are summed from the JUnit XML of each task.) P4 added about 30 tests. No load flake occurred in these runs.
+Banned-pattern scan of the diff (`!!`, TODO/FIXME/XXX/HACK, "for now", "temporary", stub, `@Ignore`, `@Disabled`, empty
+catch): clean in product code; the only `!!` are on test data in tests, as in P3.
+
+**Mutation checks (each run with `tools\flash-gradle.cmd` through a driver that restores the file; `git diff` clean of
+mutations afterwards).**
+
+| # | Mutation | Result |
+|---|---|---|
+| M1 | receiver skips the active-member check | caught: `HUBFILE-P4-U52` |
+| M2 | receiver skips the hub-linked check | caught: `HUBFILE-P4-U52` |
+| M3 | the drain falls through to the bare group message | caught: `U50`, `U51` |
+| M4 | tickets go to every pending member, not only the unreached | caught: `U50`, `U51` |
+| M5 | group ticket acknowledged with a one-to-one receipt | caught: `U51` |
+| M6 | a ticket may fill any existing message | **survived** the first round (DAO guard covered the cases tested); test `U55` added; caught after: `U55` |
+| M7 | give-up fails a group message another member already has | caught: `U54` |
+| M8 | delete-for-me cancels a finished upload | caught: `U56` |
+| M9 | delete-for-everyone does not cancel | caught: `U56` |
+| M10 | `cancelOutgoing` also cancels downloads | caught: `U62` |
+| M11 | prune ignores messages that still show the row | caught: `HubFileDaoTest` `U05` |
+| M12 | prune treats a deleted message as still showing | caught: `U05` |
+| M13 | prune removes an unfinished upload | caught: `U02` |
+
+**Adversarial review findings, and what was done.**
+
+1. **Receipt retires everything** (surprise 1) → group receipt, per-member accounting, active members only (M5; fixed).
+2. **Bare and ticket in either order** → the ticket may fill a bare row of the same author and group, and a bare frame
+   never undoes a ticket (U53; fixed).
+3. **A ticket under someone else's message id** → refused in Kotlin and again in SQL (U55, M6; fixed).
+4. **Forged ticket** from a non-member, an unlinked group, a removed device, or a member who left → refused, no receipt,
+   probe `hubfile.group.drop` (U52, M1, M2; fixed).
+5. **Key in a group frame** → none: the ticket is sealed per member, and the drain never falls back to the bare message
+   (U50, M3).
+6. **One stuck member fails the message** → a give-up fails the message only when nobody has it (U54, M7; fixed).
+7. **Restart in the middle of fan-out** → the recipients are in `hub_file.recipients` and the deliveries in
+   `group_delivery`, both durable, so the drain resumes with the same list (D26). Covered by the same state as U50/U51; no
+   separate kill test (open, `HUBFILE-G01` repeats it on a device).
+8. **Signature does not bind the file.** The group signature covers the message header only, as a group attachment's does
+   today; a member can attach any file to a genuine header it holds. Recorded as a known limit (ADR-217, security.md).
+9. **Removed member keeps what it fetched.** Same as any file; no per-sender keys (FO-27). The hub refuses its later reads.
+10. **Member added after the send** is a hub recipient (the hub's roster is live) but has no ticket, so it never sees the
+    file. Accepted: it was not in the group at send time.
+11. **Delete after delivery.** Deleting for everyone takes the file from a recipient who has a ticket and has not finished
+    downloading; it sees "no longer on the hub". This is what "delete for everyone" means. Deleting for me after the upload
+    leaves the file on the hub until retention, counting against the sender's quota (accepted; the Files card shows usage).
+12. **One cancel removes it for everyone** (explain-back risk 5): there is no per-member cancel. Accepted.
+13. **Stale hub-link flag.** The receiver trusts its local `isGroupLinkedToHub`; if a group is unlinked and this device
+    has not heard yet, a ticket is stored, but the hub refuses the read. Accepted: the hub governs.
+14. **Prune keeps finished rows a visible message shows**, so the table still grows with chat history. It is bounded by
+    messages, not unbounded (P3 finding 12 narrowed; the sort without an index remains, fine for thousands).
+15. **Group name** on the sender's row is the short id (D24).
+
+**Extra situations handled beyond the plan (each tested).**
+- A ticket replayed, or the same message id with another key, changes nothing and is acknowledged (U53).
+- A group message whose members are all reachable directly uploads nothing (`group.file.fanout hub=0`, U50).
+- Recipient ids that are blank or contain a comma are dropped before the row is written; no recipients → the hub is not used
+  (U61).
+- A refused group file (too large, no sealing key, old hub) is a Failed row linked to its message so the message shows why
+  (U61).
+- A member who left (`isActive = false`) cannot send a ticket (U52).
+- An upgrade from schema 18 keeps its rows, with no group id (HUBFILE-P4-U04; device check `G08`).
+- Cancelling twice is harmless; cancelling an unknown id or a download is a no-op (U62).
+- A finished row whose message was deleted is pruned; one still shown is kept (U05, U63).
+
+**Open risks the owner should know.**
+- The group scope (D21): only hub-linked groups. Confirm, or say what unlinked groups should do.
+- Paired-only auto-download (D18) still awaits the owner's answer; a group sender who is not paired is asked about.
+- No LAN ↔ hub hand-over; a peer that discovery sees but cannot be dialled stays on the LAN path.
+- Nothing is deployed or device-verified; the first real test is `HUBFILE-C01`.
+
+**Self-score against HUB-QUALITY-CONTRACT section 3.**
+
+| # | Category | Status |
+|---|---|---|
+| 1 | Failure paths | covered: refused at claim (U61), give-up partial and total (U54), forged and unauthorised tickets (U52), hub unreachable reuses P2/P3 paths |
+| 2 | Hostile input | covered: codec rules for `groupId` and `groupSig` with 1,000 fuzzed inputs (U20–U22), id reuse (U55), forged author (U52) |
+| 3 | Concurrency and ordering | covered: ticket and bare message in either order (U53), receipts from several members (U51), one outbox row retired once; not covered: a real concurrent kill mid fan-out (device check) |
+| 4 | Lifecycle | covered: migration 18 → 19 on both hosts, prune at start (U63), detach |
+| 5 | Scale | partly: group size is bounded by the group limit (20, 32 postponed); one upload for any N; 1,000 fuzzed frames; no 20-member device run |
+| 6 | Security | covered: four new rows in security.md, mutations M1–M7; the signature-does-not-bind-the-file limit is stated, not closed |
+| 7 | Compatibility | covered: a P3 build rejects a group ticket by name; an unlinked group keeps today's path; an old hub gives `HUB_OLD` |
+| 8 | Both hosts | covered: Android and desktop wiring compile and the logic is in `commonMain`; desktop and Android host suites green |
+| 9 | UI honesty | partly: refusal text reuses the plan's table; the group row shows a short id (D24); no browser check of the console card |
+| 10 | Observability | covered: `hubfile.group.drop`, `hubfile.rows.pruned`, the `group`/`hub` fields on existing probes (PROBES.md) |
+| 11 | Documentation | covered: protocol.md, security.md, PROBES.md, plan sections 6 and 9, ADR-217, TEST-BACKLOG `G01..G08`, progress, handoff, AGENTS section 29. `docs/protocol-routes.txt`: no new route |
+| 12 | Admin and support view | covered: the console Files card (limits and usage); deployment-guide rows added for the card and for group files |

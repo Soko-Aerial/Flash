@@ -5470,3 +5470,59 @@ devices with content sealing published, paired with each other unless the step s
 - **Pass:** the recipient's bubble says "This file is no longer on the hub. Ask <name> to send it again." and offers no download; `hubfile.ticket.in expired=true`.
 - **Source:** HUBFILE-U24.
 - **Status:** TODO
+
+## 4zzzzzzzzzzzzzz. Hub files P4 — group files, pruning, console Files card (HUBFILE-G, 2026-10-20; see `docs/plans/HUB-FILES-PLAN.md` section 9 and ADR-217)
+
+Built and unit-tested (`RealFlashChatRepositoryHubFileTest` U50-U54, `HubFileFrameCodecTest` U20-U22, `HubFileDaoTest` U01-U05,
+`FlashJvmMigrationsTest` U04, `filelimits.test.mjs`), **not deployed, not device-verified**. Group files go through the hub only
+for a **hub-linked group** (D21), and only to the members the direct pipeline could not reach (D23). Setup for all: a test hub
+with P1-P4, three enrolled devices A, B, C in one hub-linked group, A and B on one LAN, C on mobile data.
+
+### HUBFILE-G01 — A group file reaches the member the LAN cannot
+
+- **Steps:** A sends a 10 MB PDF to the group. B is on A's LAN; C is not.
+- **Pass:** A logs `group.file.fanout ... hub=1`, then `hubfile.send.claimed group=true`, then `hubfile.upload step=done`; B receives the file by the normal LAN path (no `hubfile.ticket.in` on B); C logs `hubfile.ticket.in fresh=true`, shows the file in the **group** chat, and downloads it with an equal SHA-256; A's message ends Delivered only after both B and C acknowledged.
+- **Source:** ADR-217, HUBFILE-P4-U50/U51.
+- **Status:** TODO
+
+### HUBFILE-G02 — Nobody is reachable directly
+
+- **Steps:** A on its own network sends to B and C.
+- **Pass:** one upload (hub console shows one file, not two); both members get a ticket; each downloads; A's row in Transfers shows the group name or its short id and "Through the hub".
+- **Source:** D23. **Status:** TODO
+
+### HUBFILE-G03 — A member removed from the group cannot fetch
+
+- **Steps:** A sends; before C downloads, the owner removes C; C tries to download.
+- **Pass:** the download ends with the hub's refusal sentence (no partial file kept); `hubfile.group.drop` is NOT expected here (it is for refused tickets, not refused reads); hub audit shows a 403/404 for C.
+- **Source:** security.md "A forged or unauthorised group ticket". **Status:** TODO
+
+### HUBFILE-G04 — A group that is not linked to the hub keeps today's behaviour
+
+- **Steps:** repeat G01 in a group that has no hub link.
+- **Pass:** no `hubfile.*` lines on A; C simply does not get the file until it is reachable, exactly as before P4.
+- **Source:** D21. **Status:** TODO
+
+### HUBFILE-G05 — Forged ticket
+
+- **Steps:** with a debug build, send C a group ticket whose author is not a member (or whose group is not linked).
+- **Pass:** C stores nothing, logs `hubfile.group.drop reason=sender_not_allowed` (or `not_linked`), and sends no receipt.
+- **Source:** HUBFILE-P4-U52. **Status:** TODO
+
+### HUBFILE-G06 — Old rows disappear; rows a chat still shows do not
+
+- **Steps:** with the device clock advanced 31 days (or a seeded database), start the app twice.
+- **Pass:** `hubfile.rows.pruned count=N` on the first start with N greater than 0 for finished rows whose message was deleted; a finished file still visible in a chat keeps its row and its bubble stays openable.
+- **Source:** HUBFILE-P4-U01..U05. **Status:** TODO
+
+### HUBFILE-G07 — Console Files card
+
+- **Steps:** open the hub console Settings; change each of the four file limits (per file, per device, hub total, retention); enter an invalid value (0, negative, a per-file limit above the hub total).
+- **Pass:** valid values save and a new upload honours them; invalid values show the sentence naming the bound and nothing is saved; usage figures match `GET /admin/api/v1/files/stats`.
+- **Source:** `filelimits.test.mjs`, P4-A. **Status:** TODO
+
+### HUBFILE-G08 — Schema 18 to 19 upgrade keeps hub files
+
+- **Steps:** install the P3 build, receive a hub file, upgrade to the P4 build without clearing data.
+- **Pass:** the file still opens; no crash at start; old rows have no group id.
+- **Source:** HUBFILE-P4-U04. **Status:** TODO
