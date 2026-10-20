@@ -853,3 +853,73 @@ closing fixes, had 3 failures:
 | 10 | Observability | covered: six new probes in PROBES.md, keyed by the file id |
 | 11 | Documentation | covered: protocol.md, security.md (five P3 rows), PROBES.md, plan sections 6 and 9, ADR-216, TEST-BACKLOG, deploy troubleshooting, progress, handoff, AGENTS section 29. `docs/protocol-routes.txt`: no new route. `docs/android-platform-notes.md`: `noBackupFilesDir` is long-standing platform behaviour; no new fact used |
 | 12 | Admin and support view | covered: five troubleshooting rows in `docs/deploy/HUB-SERVER-DEPLOYMENT.md` section 13, each naming the next step |
+
+### P4 explain-back — 2026-10-20
+
+**What P4 must achieve.** Three things P3 left open. (1) The owner's first sentence, "adjustable by an administrator on
+the dashboard", is still only an API: the four limits and the usage route exist (P1) but the console has no Files card.
+(2) A file sent to a **group** still takes the old swarm / whole-file path and reaches only members the sender is
+connected to; a colleague who is on another network gets a text-less row or nothing. P4 lets the sender upload the file
+once, to the hub, and hand each member the LAN cannot reach a sealed ticket in a message of their own (D7: the key never
+rides in a group frame). (3) The client keeps `hub_file` rows for ever and deleting a message leaves its transfer running;
+P4 prunes finished rows and cancels on delete. Nothing in P4 changes what happens when a direct path exists, and a group
+that the hub does not know (not linked) keeps today's behaviour.
+
+**Files.**
+- Console (`:server`, `admin-ui`): `js/filelimits.js` (pure: MB/GB <-> bytes, bounds, the same sentences as the server),
+  a Files card in `views/settings.js` (four limits, usage from `GET /admin/api/v1/files/stats`, each change a step-up
+  `settings.change`), strings in `strings/en.js`, tests in `admin-ui-tests/`.
+- Persistence: Room step 18 -> 19, `hub_file.groupId` (nullable), `STEP_18_19`, `MIGRATION_18_19`, `19.json`, migration
+  tests on both hosts, `HubFileDao` additions (prune, group lookups).
+- Wire: `HubFileFrame` gains `groupId` and `groupSig`; `HubFileFrameCodec` accepts them (still `v=1`; a P3 build rejects a
+  group ticket by name, which is the safe direction).
+- `:core:messaging`: `HubFileMessages.accept` for a group ticket (group conversation, bare-row upgrade), the
+  repository's `onInboundHubFile` gate (hub-linked group, active author, this device not removed, v2 signature), the
+  `DeliveryReceipt` branch for a group message (records that member's delivery, never retires the group's outbox row),
+  `drainGroupMessage` serving a member the LAN cannot reach with a ticket, `queueHubFile` for a group row.
+- `:core:engine`: `HubFileBinding.claimGroup` (one upload, `groupId` on the request), `GroupFileSender` hook for the members
+  it could not announce to, prune at `start()`, cancel on delete.
+- Hosts: `MainActivity` and `DesktopShell` pass the hook to `GroupFileSender`; `DiscoveryEngineHolder` / `DesktopEngine`
+  expose the binding's group claim.
+
+**Three nearest existing classes read first, per new piece.**
+- Files card: `settings.js`'s `inviteDefaults` (form, step-up through `guarded('settings.change', ...)`, toast, re-render),
+  `announcements.js` (pure helpers kept apart so Node can test them), and `format.js` (`formatBytes`). Reused: `field`,
+  `textInput`, `withBusy`, `card`, `dl`. The server's `FileSettings.validate` is the authority; the page repeats its bounds
+  only to explain them before a round trip, and a test reads the real server numbers out of `FileSettings.kt`.
+- Group ticket: `HubFileMessages.accept` (1:1, same transaction rules), the `GroupMedia` branch of
+  `onInboundGroupWireFrame` (the gate a group attachment already passes: removed-here, active member, v2 signature via
+  `verifiedAuthorLabel`), and `sendGroupViaPaths` (LAN first, hub for a linked group). Reused: `isActiveGroupMember`,
+  `isV2Group`, `signedGroups.verifiedAuthorLabel`, `isRemovedHere`, `storedSentAt`, `recordGroupDelivery`.
+- Sender: `HubFileBinding.intercept` (claim, refusals as a Failed row, probe), `GroupFileSender.send` (who was
+  announced, who not), and `drainGroupMessage` (per-member deliveries with a retry ladder). The member list is the existing
+  `group_delivery` rows; no new per-member table.
+
+**Five ways it is most likely to go wrong.**
+1. **Two things reach one member.** A member the LAN cannot reach may get the bare group `Message` frame, the swarm
+   offer, and the ticket, in any order. The first writer wins the row (`localId` is the message id), so a ticket arriving
+   second must upgrade a bare, attachment-less row of the **same author and group** rather than be refused as a collision,
+   and a ticket arriving first must not be overwritten by the bare frame (the insert already ignores a known id).
+2. **A receipt that retires too much.** Today a `DeliveryReceipt` for a message id deletes that id's outbox row. For a
+   group message that would end delivery to every other member after the first receipt, and it is reachable by any
+   colleague who guesses a group message id. A group message's receipt must record one member's delivery and only if that
+   member is an active member.
+3. **The key leaks, or a forged ticket lands in a group.** A group ticket must travel sealed per member only, must be
+   refused unless its author is an active member of a hub-linked group this device has not been removed from, and in a
+   signed (v2) group must carry the author's message signature, checked as a group attachment's is. The hub additionally
+   re-checks the live roster on every read, so a member removed after the send is refused (plan situation 6).
+4. **The roster moves under the send.** A member added after `create` is not a recipient on the hub and must not be sent a
+   ticket (it would fail with 403 and look like a hub fault); a member removed after `create` is refused by the hub. The
+   sender builds its ticket list from the roster at send time, and the hub's list is the one that governs reads.
+5. **Quota and state per group file.** One blob serves N members, so one cancel removes it for all of them, a decline by
+   one member must not cancel anything, and a retention sweep leaves everybody with "no longer on the hub". A schema step
+   is needed for `groupId`, so the migration must be tested from a real 18 database on both hosts.
+
+**Tests written first.** Console: `filelimits.test.mjs` (every bound, unit conversion round trips, the server's numbers),
+a view test that the card renders, saves through step-up and refuses a bad value. `HubFileFrameCodecTest` additions (a
+group frame round trips, `groupSig` bounds, an oversize group id, 1,000 fuzzed inputs). `HubFileDaoTest` (prune keeps
+live rows and recent rows; group column). `RealFlashChatRepositoryHubFileTest` (group ticket stored once, bare row
+upgraded, ticket first then bare frame, not-a-member / removed-here / unlinked / unsigned refused, receipt records one
+member and keeps the outbox row). `HubFileBindingTest` (group claim uploads with the group id, tickets for exactly the
+unreachable members, group too large, a member without a sealing key). Migration 18 -> 19 on both hosts.
+
