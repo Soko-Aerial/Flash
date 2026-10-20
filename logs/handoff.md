@@ -7404,7 +7404,7 @@ AGENTS §29; then commit (do not push without the owner). Known limit: deleting 
   - Deploy P1–P3 to the test hub and run `HUBFILE-M01`, then M03/M04/M05 and C01..C06 (TEST-BACKLOG section
     4zzzzzzzzzzzzz).
   - Or start P4 (groups, console Files card).
-- **Commits:** see the commit made at the end of this session (`git log --oneline -3`). Not pushed. Push only when the
+- **Commit:** `2b075aa8` on `dev`, on top of the P2 commits `7bac665a` and `d695eddf`. None are pushed. Push only when the
   owner says so.
 - **Known load flakes**, to rerun alone: ORGT-U16, `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`,
   `GroupJoinTest.testApprovalMissedWhileOfflineCompletesOnReconnect`.
