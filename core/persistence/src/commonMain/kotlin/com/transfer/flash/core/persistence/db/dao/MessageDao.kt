@@ -113,6 +113,28 @@ public interface MessageDao {
         senderName: String,
     ): Int
 
+    /**
+     * A hub-file ticket for a group message that already arrived bare (HUB-FILES P4): the group `Message` frame, a swarm
+     * offer and the sealed ticket may reach one member in any order, so the ticket fills in the attachment of the
+     * attachment-less row of the same author in the same group. Anything else (another author, another group, a row that
+     * already has an attachment, a deleted row) is left alone.
+     * @return rows changed (1 when the bare row was upgraded).
+     */
+    @Query(
+        "UPDATE messages SET attachmentTransferId = :transferId, attachmentName = :name, attachmentMime = :mime, " +
+            "attachmentSize = :size WHERE localId = :localId AND senderId = :senderId AND conversationId = :groupId " +
+            "AND attachmentTransferId IS NULL AND deletedAt IS NULL",
+    )
+    public suspend fun attachHubFileToBare(
+        localId: String,
+        senderId: String,
+        groupId: String,
+        transferId: String,
+        name: String,
+        mime: String,
+        size: Long,
+    ): Int
+
     @Query("UPDATE messages SET status = :status WHERE localId = :localId")
     public suspend fun updateStatus(localId: String, status: String)
 

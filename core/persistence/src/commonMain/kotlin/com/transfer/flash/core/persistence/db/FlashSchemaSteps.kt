@@ -418,8 +418,22 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v18 → v19: a hub file can belong to a group (ADR-217, HUB-FILES P4). Adds the nullable `hub_file.groupId`: the
+     * group an outgoing file was uploaded for (an upload resumed after a restart must name it again) and the group an
+     * incoming ticket arrived in; and `hub_file.recipients`, the members an outgoing group file's ticket is for.
+     */
+    val STEP_18_19: FlashSchemaStep = FlashSchemaStep(
+        from = 18,
+        to = 19,
+        statements = listOf(
+            "ALTER TABLE `hub_file` ADD COLUMN `groupId` TEXT",
+            "ALTER TABLE `hub_file` ADD COLUMN `recipients` TEXT",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19
     )
 }

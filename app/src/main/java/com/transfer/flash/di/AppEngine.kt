@@ -132,6 +132,16 @@ class AppEngine @Inject constructor(
     ): Pair<com.transfer.flash.core.swarm.model.SwarmManifest, String>? =
         DiscoveryEngineHolder.prepareSwarmOrigin(groupId, messageId, fileName, mimeType, sizeBytes, uri)
 
+    /** Sends a group file through the hub for the members the direct pipeline could not reach; the hub transfer id, or null. */
+    suspend fun sendGroupFileThroughHub(
+        groupId: String,
+        messageId: String,
+        uri: String,
+        fileName: String,
+        sizeBytes: Long,
+        recipients: List<String>,
+    ): String? = DiscoveryEngineHolder.sendGroupFileThroughHub(groupId, messageId, uri, fileName, sizeBytes, recipients)
+
     /** Peer features (such as "sw1") advertised by a connected session peer. */
     fun peerFeatures(peerId: String): Set<String> =
         network?.activeSessions?.value?.get(com.transfer.flash.core.common.model.FlashDeviceId(peerId))?.peer?.features.orEmpty()

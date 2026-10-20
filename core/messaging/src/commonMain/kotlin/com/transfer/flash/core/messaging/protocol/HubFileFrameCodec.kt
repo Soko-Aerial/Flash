@@ -26,6 +26,13 @@ public data class HubFileFrame(
     val mime: String,
     /** The voice-note metadata the text column carries for an audio file (duration and waveform), else empty. */
     val meta: String,
+    /**
+     * The group this file was sent to, or null for a one-to-one file (ADR-217, HUB-FILES P4). A group file still travels
+     * sealed to each member on its own: the key never rides a group frame.
+     */
+    val groupId: String? = null,
+    /** The author's group message signature (the one the group message carries), for a signed group; else null. */
+    val groupSig: String? = null,
 ) {
     /** Never prints the key: data classes print their fields, and this one sits next to log lines. */
     override fun toString(): String =
@@ -50,6 +57,7 @@ public object HubFileFrameCodec {
     public const val MAX_NAME_CHARS: Int = 255
     public const val MAX_MIME_CHARS: Int = 127
     public const val MAX_META_CHARS: Int = 4096
+    public const val MAX_SIGNATURE_CHARS: Int = 1024
 
     /**
      * Senders seal 1 MiB chunks. A tiny chunk size is legal for the hub but would make a recipient issue one request per
@@ -84,6 +92,9 @@ public object HubFileFrameCodec {
                 "name" to frame.fileName,
                 "mime" to frame.mime,
                 "meta" to frame.meta,
+            ) + listOfNotNull(
+                frame.groupId?.let { "groupId" to it },
+                frame.groupSig?.let { "groupSig" to it },
             ),
         )
     }
@@ -91,8 +102,6 @@ public object HubFileFrameCodec {
     public fun decode(text: String): Result? {
         val f = FlashTextFraming.parseFields(text, PREFIX) ?: return null
         if (f["v"]?.toIntOrNull() != VERSION) return Result.Invalid("version")
-        // A group id here would mean someone tried to hand a group's key out in the open; the format has no such field.
-        if ("groupId" in f) return Result.Invalid("groupId")
 
         val localId = f["localId"]?.takeIf { it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) }
             ?: return Result.Invalid("localId")
@@ -116,6 +125,15 @@ public object HubFileFrameCodec {
             .takeIf { it.length <= MAX_MIME_CHARS && it.none(Char::isISOControl) }
             ?: return Result.Invalid("mime")
         val meta = (f["meta"] ?: "").takeIf { it.length <= MAX_META_CHARS } ?: return Result.Invalid("meta")
+        // Both optional. A signature without a group is meaningless, and a P3 build that sees `groupId` refuses the frame
+        // by name, which is the safe direction: it never files a group's file under a one-to-one chat.
+        val groupId = f["groupId"]?.let { id ->
+            id.takeIf { it.isNotBlank() && it.length <= MAX_ID_CHARS && it.none(Char::isISOControl) } ?: return Result.Invalid("groupId")
+        }
+        val groupSig = f["groupSig"]?.let { sig ->
+            if (groupId == null) return Result.Invalid("groupSig")
+            sig.takeIf { it.isNotBlank() && it.length <= MAX_SIGNATURE_CHARS && it.none(Char::isISOControl) } ?: return Result.Invalid("groupSig")
+        }
 
         return Result.Frame(
             HubFileFrame(
@@ -135,6 +153,8 @@ public object HubFileFrameCodec {
                 fileName = name,
                 mime = mime,
                 meta = meta,
+                groupId = groupId,
+                groupSig = groupSig,
             ),
         )
     }

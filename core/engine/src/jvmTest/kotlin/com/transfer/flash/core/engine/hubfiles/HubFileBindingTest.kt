@@ -102,6 +102,8 @@ class HubFileBindingTest {
         enrolled: Boolean = true,
         autoDownload: Boolean = false,
         retryDelayMs: Long = 20L,
+        groupRoute: HubFileRoute = HubFileRoute.READY,
+        registered: CopyOnWriteArrayList<Pair<String, String>> = CopyOnWriteArrayList(),
     ): Rig {
         val scope = CoroutineScope(SupervisorJob() + worker).also { scopes += it }
         val opener = FileSourceOpener { uri -> FileSystem.SYSTEM.source(uri.toPath()) }
@@ -125,6 +127,9 @@ class HubFileBindingTest {
             isDirectlyReachable = { reachable },
             peerName = { id -> if (id == "dev-a") "Ann" else if (id == "dev-b") "Bea" else null },
             autoDownload = { peer, mime -> autoDownload && peer == "dev-a" && mime == "text/plain" },
+            groupFileRoute = { groupRoute },
+            groupName = { id -> if (id == "g-team") "Team" else null },
+            registerGroupFile = { message, transfer -> registered += message to transfer },
             workerDispatcher = worker,
             retryDelayMs = retryDelayMs,
             maxRetryDelayMs = retryDelayMs * 2,
@@ -137,6 +142,9 @@ class HubFileBindingTest {
         val f = File(tempDir, "src-$seed-$bytes.bin").apply { writeBytes(data) }
         return f to data
     }
+
+    private suspend fun Rig.claimGroup(file: File, recipients: List<String> = listOf("dev-b", "dev-c"), group: String = "g-team", message: String = "m-1") =
+        binding.claimGroup(group, message, file.path, "report.pdf", file.length(), recipients)
 
     private val bea = FlashDevice(FlashDeviceId("dev-b"), "Bea", FlashTransportType.LAN)
 
@@ -437,5 +445,87 @@ class HubFileBindingTest {
         r.binding.start()
         delay(150)
         assertEquals(HubFileStates.UPLOADING, r.dao.get(second)?.state, "start never resumes what the person paused")
+    }
+
+    @Test
+    fun `HUBFILE-P4-U60 a group file is uploaded once for the group, its recipients are recorded and the message is linked`() = runBlocking(worker) {
+        val registered = CopyOnWriteArrayList<Pair<String, String>>()
+        val r = rig("dev-a", registered = registered)
+        val (file, _) = source(2 * 1024 * 1024 + 5)
+        val id = assertNotNull(r.claimGroup(file)).value
+        assertEquals(listOf("m-1" to id), registered.toList())
+        eventually("the ticket is handed to the chat") { r.queued == listOf(id) }
+        val row = assertNotNull(r.dao.get(id))
+        assertEquals("g-team", row.groupId)
+        assertEquals("g-team", row.peerId)
+        assertEquals("dev-b,dev-c", row.recipients)
+        assertEquals(1, server.files.size, "one upload for the whole group")
+        val stored = assertNotNull(server.files[row.fileId])
+        assertEquals("g-team", stored.request.groupId)
+        assertNull(stored.request.toDeviceId)
+        assertNull(stored.request.nameHint)
+        eventually("the row names the group") { r.binding.rows.value.any { it.id.value == id && it.peerName == "Team" } }
+    }
+
+    @Test
+    fun `HUBFILE-P4-U61 a group file the hub cannot carry is left to the direct pipeline or shown as failed`() = runBlocking(worker) {
+        val (file, _) = source(4096)
+        val registered = CopyOnWriteArrayList<Pair<String, String>>()
+        val unavailable = rig("dev-a", groupRoute = HubFileRoute.UNAVAILABLE, registered = registered)
+        assertNull(unavailable.claimGroup(file), "an unlinked group or a device without a hub is not taken")
+        assertNull(rig("dev-a", enrolled = false, registered = registered).claimGroup(file))
+        assertNull(rig("dev-a", registered = registered).claimGroup(file, recipients = emptyList()), "nobody to send to")
+        assertNull(rig("dev-a", registered = registered).claimGroup(file, recipients = listOf("", "dev,b")), "blank and comma-bearing ids are dropped")
+        assertTrue(registered.isEmpty())
+
+        val sealing = rig("dev-a", groupRoute = HubFileRoute.NEEDS_SEALING, registered = registered)
+        val a = assertNotNull(sealing.claimGroup(file)).value
+        assertEquals(HubFileStates.FAILED, sealing.dao.get(a)?.state)
+        assertEquals(HubFileText.needsSealing("Team"), sealing.dao.get(a)?.errorText)
+
+        server.maxFileBytes = 1000
+        val big = rig("dev-a", registered = registered)
+        val b = assertNotNull(big.claimGroup(file)).value
+        assertEquals(HubFileText.tooLarge(TransferFailureText.formatSize(4096), TransferFailureText.formatSize(1000)), big.dao.get(b)?.errorText)
+        assertEquals(0, server.files.size)
+        assertEquals(2, registered.size, "a refused file is still linked to its message so the message can show why")
+    }
+
+    @Test
+    fun `HUBFILE-P4-U62 cancelling the outgoing file of a deleted message stops it and deletes it on the hub, but never touches a download`() = runBlocking(worker) {
+        val r = rig("dev-a", retryDelayMs = 60_000L)
+        var puts = 0
+        r.api.beforeCall = { route -> if (route == FakeHubFilesApi.ROUTE_PUT && ++puts > 1) r.api.offline = true }
+        val (file, _) = source(3 * 1024 * 1024)
+        val id = assertNotNull(r.claimGroup(file)).value
+        eventually("the upload is waiting") { r.dao.get(id)?.errorText != null }
+        val fileId = assertNotNull(r.dao.get(id)).fileId
+        r.api.beforeCall = {}
+        r.api.offline = false
+        r.binding.cancelOutgoing(id)
+        assertEquals(HubFileStates.CANCELLED, r.dao.get(id)?.state)
+        assertNull(server.files[fileId])
+        assertEquals(listOf(id), r.ended.toList())
+        r.binding.cancelOutgoing(id)
+        assertEquals(1, r.ended.size, "a second call is harmless")
+
+        val ticket = ticketFromAnn(Random(3).nextBytes(2048))
+        val incoming = offeredRow(ticket)
+        r.dao.insert(incoming)
+        r.binding.cancelOutgoing(incoming.transferId)
+        assertEquals(HubFileStates.OFFERED, r.dao.get(incoming.transferId)?.state, "a received file is the recipient's own copy")
+        r.binding.cancelOutgoing("hf-out-unknown")
+    }
+
+    @Test
+    fun `HUBFILE-P4-U63 start removes finished rows nothing shows, and keeps a finished row its message still shows`() = runBlocking(worker) {
+        val r = rig("dev-a")
+        val old = System.currentTimeMillis() - 40L * 24 * 3_600_000L
+        val ticket = ticketFromAnn(Random(4).nextBytes(2048))
+        val finished = offeredRow(ticket).copy(state = HubFileStates.DONE, updatedAtMs = old, messageId = null)
+        r.dao.insert(finished)
+        r.binding.start()
+        eventually("the unreferenced finished row is pruned") { r.dao.get(finished.transferId) == null }
+        r.binding.detach()
     }
 }

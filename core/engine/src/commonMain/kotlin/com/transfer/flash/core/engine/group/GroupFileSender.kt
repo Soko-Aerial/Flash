@@ -69,6 +69,19 @@ public class GroupFileSender(
      * to as a swarm, so a member that connects later learns of the file through catch-up (ERROR-117).
      */
     private val recordSwarmOffer: ((messageId: String, root: String, pieceSize: Int, rootSig: String) -> Unit)? = null,
+    /**
+     * Sends the file through the hub for the members the direct pipeline could not reach (ADR-217): it uploads once, links the
+     * upload to the group message [messageId] and returns the hub transfer id, or null when the hub cannot carry it now.
+     */
+    private val hubGroupFile: (suspend (
+        groupId: String,
+        messageId: String,
+        uri: String,
+        displayName: String,
+        mimeType: String,
+        sizeBytes: Long,
+        recipients: List<String>,
+    ) -> String?)? = null,
 ) {
     public constructor(
         localDeviceId: () -> String,
@@ -150,6 +163,7 @@ public class GroupFileSender(
         var wholeFiles = 0
         var notReached = 0
         var noFeatures = 0
+        val unreached = mutableListOf<String>()
         for (member in members) {
             val recipientTransferId = idFactory()
             val features = peerFeatures?.invoke(member.id).orEmpty()
@@ -190,6 +204,7 @@ public class GroupFileSender(
             }
             if (!announced) {
                 notReached++
+                unreached += member.id
                 continue
             }
             if (useSwarmForPeer) swarmOffers++ else wholeFiles++
@@ -208,6 +223,8 @@ public class GroupFileSender(
                 )
             }
         }
+        // ADR-217: whoever could not be reached is sent the file through the hub, one upload for all of them.
+        val hubTransferId = if (unreached.isEmpty()) null else hubGroupFile?.invoke(groupId, sharedMessageId, uri, displayName, mimeType, sizeBytes, unreached)
         FlashProbe.emit(
             "group.file.fanout",
             "group" to FlashProbe.short(groupId),
@@ -217,15 +234,18 @@ public class GroupFileSender(
             "wholeFiles" to wholeFiles,
             "notReached" to notReached,
             "noFeatures" to noFeatures,
+            "hub" to (hubTransferId != null),
         )
         if (swarmOrigin != null) {
             val (manifest, rootSig) = swarmOrigin
             recordSwarmOffer?.invoke(sharedMessageId, manifest.root.hex, manifest.pieceSize, rootSig)
         }
+        // When nobody got the file directly, the bubble shows the hub upload's progress; otherwise it shows the direct send's.
+        val bubbleTransferId = if (hubTransferId != null && swarmOffers + wholeFiles == 0) hubTransferId else sharedMessageId
         sendGroupAttachment(
             groupId,
             sharedMessageId,
-            sharedMessageId,
+            bubbleTransferId,
             displayName,
             mimeType,
             sizeBytes,

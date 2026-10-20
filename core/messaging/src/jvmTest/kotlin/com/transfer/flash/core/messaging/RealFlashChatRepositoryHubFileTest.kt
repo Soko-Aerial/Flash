@@ -12,10 +12,14 @@ import com.transfer.flash.core.messaging.hub.HubInbound
 import com.transfer.flash.core.messaging.hub.HubSealingStatus
 import com.transfer.flash.core.messaging.hub.ListedHubDirectory
 import com.transfer.flash.core.messaging.hub.ScriptedHubSealing
+import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.HubFileFrame
 import com.transfer.flash.core.messaging.protocol.HubFileFrameCodec
 import com.transfer.flash.core.persistence.db.FlashDatabase
+import com.transfer.flash.core.persistence.db.entity.ConversationEntity
+import com.transfer.flash.core.persistence.db.entity.GroupMemberEntity
 import com.transfer.flash.core.persistence.db.entity.HubFileEntity
+import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import com.transfer.flash.core.persistence.db.entity.HubFileStates
 import com.transfer.flash.core.persistence.db.openEncryptedFlashDatabase
 import com.transfer.flash.core.persistence.db.runInWriteTransaction
@@ -25,6 +29,7 @@ import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
 import java.io.File
 import java.nio.file.Files
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
@@ -67,6 +72,9 @@ class RealFlashChatRepositoryHubFileTest {
         val repo: RealFlashChatRepository,
         val sealing: ScriptedHubSealing,
         val notified: AtomicInteger,
+        val trust: MemoryEnterpriseTrustStore,
+        /** Group frames this device sent over the direct (LAN) group sink, with their targets. */
+        val groupFrames: CopyOnWriteArrayList<Pair<String, GroupWireFrame>>,
     ) {
         var forwarded = 0
     }
@@ -81,12 +89,13 @@ class RealFlashChatRepositoryHubFileTest {
         ),
     )
 
-    private fun device(id: String, takesHubFiles: Boolean = true): Device {
+    private fun device(id: String, takesHubFiles: Boolean = true, paired: Set<String> = emptySet()): Device {
         val db = openEncryptedFlashDatabase(File(tempDir, "$id.db"), "key-$id").also { dbs += it }
         val relay = FakeHubRelay()
         val sealing = ScriptedHubSealing()
         val notified = AtomicInteger()
         val trust = MemoryEnterpriseTrustStore(credentials(id))
+        val groupFrames = CopyOnWriteArrayList<Pair<String, GroupWireFrame>>()
         val directory = ListedHubDirectory(setOf("alice", "bob", "mallory"))
         val repo = RealFlashChatRepository(
             localDeviceId = id,
@@ -98,6 +107,10 @@ class RealFlashChatRepositoryHubFileTest {
             draftDao = db.draftDao(),
             recentSearchDao = db.recentSearchDao(),
             reactionDao = db.reactionDao(),
+            groupMemberDao = db.groupMemberDao(),
+            groupDeliveryDao = db.groupDeliveryDao(),
+            isTrustedPeer = { it in paired },
+            groupTransportSink = GroupTransportSink { target, frame -> groupFrames += target to frame; true },
             transportSink = MessageTransportSink { _, _ -> false },
             runInTransaction = { block -> db.runInWriteTransaction(block) },
             onInboundAttachmentWithGroupTitle = { _, _, _, _, _ -> notified.incrementAndGet() },
@@ -108,7 +121,7 @@ class RealFlashChatRepositoryHubFileTest {
             hubSealing = sealing,
             hubFileDao = if (takesHubFiles) db.hubFileDao() else null,
         ).also { repos += it }
-        return Device(id, db, relay, repo, sealing, notified)
+        return Device(id, db, relay, repo, sealing, notified, trust, groupFrames)
     }
 
     /** Hands everything [from] sent since the last pump to [to]'s relay, as the hub would. */
@@ -357,5 +370,285 @@ class RealFlashChatRepositoryHubFileTest {
         awaitUntil("bob's row") { bob.db.hubFileDao().get(inId) != null }
         assertEquals("image/png", bob.db.hubFileDao().get(inId)?.mime)
         assertEquals("image/png", bob.db.messageDao().getByLocalId(sentMessage(alice)!!.localId)?.attachmentMime)
+    }
+
+    // ----- group files (ADR-217, HUB-FILES P4) -----------------------------------------------------------------------
+
+    private val groupId = "g-team"
+    private val groupMessageId = "m-grp-1"
+
+    /** A group of [members] plus [d], each an active member; the group is linked to the hub. */
+    private suspend fun createGroup(d: Device, members: List<String>, linked: Boolean = true, selfActive: Boolean = true) {
+        d.db.conversationDao().upsert(ConversationEntity(id = groupId, title = "Team", isGroup = true))
+        for (m in members) {
+            d.db.groupMemberDao().upsert(GroupMemberEntity(groupId, m, m, joinedAt = 1L, membershipVersion = 1L, operationId = "op-$m"))
+        }
+        d.db.groupMemberDao().upsert(
+            GroupMemberEntity(groupId, d.id, d.id, joinedAt = 1L, membershipVersion = 1L, operationId = "op-${d.id}", isActive = selfActive),
+        )
+        if (linked) d.trust.linkGroupToHub(groupId)
+    }
+
+    /** What the hub-file engine writes when it claims a group send for the members the direct pipeline did not reach. */
+    private suspend fun claimGroupUpload(d: Device, recipients: String) {
+        d.db.hubFileDao().insert(
+            HubFileEntity(
+                transferId = outId, direction = HubFileStates.OUT, fileId = fileId, peerId = groupId, hubUrl = "https://hub.example.test",
+                fileName = "report.pdf", mime = "application/pdf", plainBytes = 3_000_000L, sourceUri = "content://doc/1",
+                fileKey = null, cipherSha256 = null, cipherChunkBytes = 0, chunkCount = 0, expiresAtMs = 0L, messageId = null,
+                state = HubFileStates.UPLOADING, paused = false, errorText = null, bytesDone = 0L, localPath = null,
+                createdAtMs = 1L, updatedAtMs = 1L, groupId = groupId, recipients = recipients,
+            ),
+        )
+    }
+
+    private fun groupFrame(
+        sender: String = "alice",
+        group: String = groupId,
+        localId: String = groupMessageId,
+        sig: String? = null,
+        k: HubFileKey = key,
+    ) = HubFileFrame(
+        localId = localId, senderId = sender, senderName = sender, sentAt = System.currentTimeMillis(),
+        ticket = HubFileTicket(fileId, k, "ab".repeat(32), 3_000_000L, 1_048_576, 3, System.currentTimeMillis() + 86_400_000L),
+        fileName = "report.pdf", mime = "application/pdf", meta = "", groupId = group, groupSig = sig,
+    )
+
+    private fun deliverTicket(to: Device, sender: String, relayId: String, f: HubFileFrame) = to.relay.deliver(
+        HubInbound(from = sender, id = relayId, type = HubSealing.ENVELOPE_TYPE, sentAt = f.sentAt,
+            payload = HubChatBridge.HUB_FILE + "\n" + HubFileFrameCodec.encode(f)),
+    )
+
+    private fun decodeTicket(s: FakeHubRelay.Sent): HubFileFrame =
+        (HubFileFrameCodec.decode(s.payload.removePrefix(HubChatBridge.HUB_FILE + "\n")) as HubFileFrameCodec.Result.Frame).frame
+
+    @Test
+    fun `HUBFILE-P4-U50 a group file sends one ticket to each member the direct pipeline missed and none to the rest`(): Unit = runBlocking {
+        val alice = device("alice", paired = setOf("bob", "carol", "dave"))
+        createGroup(alice, listOf("bob", "carol", "dave"))
+        assertEquals(HubFileRoute.READY, alice.repo.hubGroupFileRoute(groupId))
+
+        claimGroupUpload(alice, recipients = "bob,carol")
+        alice.repo.registerHubGroupFile(groupMessageId, outId)
+        alice.repo.sendGroupAttachment(groupId, groupMessageId, outId, "report.pdf", "application/pdf", 3_000_000L, null, 0L, emptyList())
+        awaitUntil("the group message") { alice.db.messageDao().getByLocalId(groupMessageId) != null }
+        awaitUntil("the upload linked to the message") { alice.db.hubFileDao().get(outId)?.messageId == groupMessageId }
+        assertEquals(setOf("bob", "carol", "dave"), alice.db.groupDeliveryDao().pendingForMessage(groupMessageId).map { it.memberId }.toSet())
+        delay(100)
+        assertTrue(tickets(alice).isEmpty(), "no ticket before the file is on the hub")
+
+        finishUpload(alice)
+        assertTrue(alice.repo.queueHubFile(outId))
+        awaitUntil("a ticket for each of the two") { tickets(alice).map { it.to }.toSet() == setOf("bob", "carol") }
+        assertTrue(tickets(alice).none { it.to == "dave" }, "dave got the file another way and gets no ticket")
+        for (t in tickets(alice)) {
+            val f = decodeTicket(t)
+            assertEquals(groupId, f.groupId)
+            assertEquals(groupMessageId, f.localId)
+            assertEquals(fileId, f.ticket.fileId)
+        }
+        assertTrue(alice.groupFrames.isEmpty(), "the bare group message frame must never follow a file ticket")
+        assertTrue(alice.relay.sent.none { it.type == HubChatBridge.GROUP_FRAME }, "and not through the hub either")
+        assertEquals("SENT", alice.db.messageDao().getByLocalId(groupMessageId)!!.status)
+        assertEquals(1, alice.db.outboxDao().observeCount().first())
+    }
+
+    @Test
+    fun `HUBFILE-P4-U51 a member stores the group ticket, acknowledges it as a group receipt, and the author waits for everyone`(): Unit = runBlocking {
+        val alice = device("alice", paired = setOf("bob", "carol", "dave"))
+        val bob = device("bob", paired = setOf("alice", "carol"))
+        createGroup(alice, listOf("bob", "carol", "dave"))
+        createGroup(bob, listOf("alice", "carol"))
+        claimGroupUpload(alice, recipients = "bob,carol")
+        alice.repo.registerHubGroupFile(groupMessageId, outId)
+        alice.repo.sendGroupAttachment(groupId, groupMessageId, outId, "report.pdf", "application/pdf", 3_000_000L, null, 0L, emptyList())
+        awaitUntil("linked") { alice.db.hubFileDao().get(outId)?.messageId == groupMessageId }
+        finishUpload(alice)
+        alice.repo.queueHubFile(outId)
+        awaitUntil("tickets") { tickets(alice).map { it.to }.toSet() == setOf("bob", "carol") }
+
+        pump(alice, bob)
+        awaitUntil("bob's hub_file row") { bob.db.hubFileDao().get(inId) != null }
+        val row = bob.db.hubFileDao().get(inId)!!
+        assertEquals(groupId, row.groupId)
+        assertEquals("alice", row.peerId)
+        assertEquals(HubFileStates.OFFERED, row.state)
+        val message = bob.db.messageDao().getByLocalId(groupMessageId)!!
+        assertEquals(groupId, message.conversationId, "the file lands in the group chat, not in a chat with its sender")
+        assertEquals(inId, message.attachmentTransferId)
+        assertEquals(1, bob.notified.get())
+        awaitUntil("bob's group receipt") { bob.groupFrames.any { it.second is GroupWireFrame.Receipt } }
+        val receipt = bob.groupFrames.map { it.second }.filterIsInstance<GroupWireFrame.Receipt>().single()
+        assertEquals("alice", bob.groupFrames.first().first)
+        assertEquals(groupMessageId, receipt.messageId)
+        assertTrue(bob.relay.sent.none { it.type == HubChatBridge.CHAT_FRAME }, "no one-to-one receipt for a group ticket")
+
+        alice.repo.onInboundGroupWireFrame("bob", receipt)
+        awaitUntil("bob counted") { alice.db.groupDeliveryDao().deliveredCount(groupMessageId) == 1 }
+        assertEquals(1, alice.db.outboxDao().observeCount().first(), "carol and dave have not acknowledged, so the ticket row stays")
+        assertEquals(setOf("carol", "dave"), alice.db.groupDeliveryDao().pendingForMessage(groupMessageId).map { it.memberId }.toSet())
+
+        alice.repo.onInboundGroupWireFrame("carol", receipt.copy(from = "carol"))
+        alice.repo.onInboundGroupWireFrame("dave", receipt.copy(from = "dave"))
+        awaitUntil("everyone counted") { alice.db.groupDeliveryDao().deliveredCount(groupMessageId) == 3 }
+        awaitUntil("the outbox row retired") { alice.db.outboxDao().observeCount().first() == 0 }
+        assertEquals("DELIVERED", alice.db.messageDao().getByLocalId(groupMessageId)!!.status)
+    }
+
+    @Test
+    fun `HUBFILE-P4-U52 a group ticket from a stranger, an unlinked group, a removed device or a non-member is refused`(): Unit = runBlocking {
+        suspend fun refused(what: String, setup: suspend (Device) -> Unit, sender: String = "alice", group: String = groupId) {
+            val bob = device("bob-$what", paired = setOf("alice", "mallory"))
+            setup(bob)
+            deliverTicket(bob, sender, "r-$what", groupFrame(sender = sender, group = group, localId = "m-$what"))
+            awaitUntil("$what acknowledged to the hub") { bob.relay.recvAcks.isNotEmpty() }
+            assertNull(bob.db.hubFileDao().byFileId(HubFileStates.IN, fileId), "$what: no hub_file row")
+            assertNull(bob.db.messageDao().getByLocalId("m-$what"), "$what: no message")
+            assertTrue(bob.groupFrames.isEmpty(), "$what: no receipt")
+            assertEquals(0, bob.notified.get(), "$what: no notification")
+        }
+        refused("unlinked", { createGroup(it, listOf("alice"), linked = false) })
+        refused("removed", { createGroup(it, listOf("alice"), selfActive = false) })
+        refused("nonmember", { createGroup(it, listOf("alice")) }, sender = "mallory")
+        refused("unknowngroup", { }, group = "g-other")
+        refused("leftsender", { d ->
+            createGroup(d, listOf("alice"))
+            d.db.groupMemberDao().upsert(GroupMemberEntity(groupId, "alice", "alice", joinedAt = 1L, membershipVersion = 2L, operationId = "op-left", isActive = false))
+        })
+    }
+
+    @Test
+    fun `HUBFILE-P4-U53 the group ticket and the bare group message may arrive in either order and make one bubble`(): Unit = runBlocking {
+        suspend fun bare(d: Device) = d.repo.onInboundGroupWireFrame(
+            "alice",
+            GroupWireFrame.Message(groupId = groupId, messageId = groupMessageId, from = "alice", senderName = "alice", sentAt = System.currentTimeMillis(), text = ""),
+        )
+
+        val ticketFirst = device("bob", paired = setOf("alice"))
+        createGroup(ticketFirst, listOf("alice"))
+        deliverTicket(ticketFirst, "alice", "r-1", groupFrame())
+        awaitUntil("the ticket stored") { ticketFirst.db.hubFileDao().get(inId) != null }
+        bare(ticketFirst)
+        delay(100)
+        assertEquals(inId, ticketFirst.db.messageDao().getByLocalId(groupMessageId)!!.attachmentTransferId, "the bare frame did not undo the file")
+        assertEquals(1, ticketFirst.db.messageDao().historyBefore(groupId, Long.MAX_VALUE, "￿", 10).size)
+
+        val bareFirst = device("carol", paired = setOf("alice"))
+        createGroup(bareFirst, listOf("alice"))
+        bare(bareFirst)
+        awaitUntil("the bare message") { bareFirst.db.messageDao().getByLocalId(groupMessageId) != null }
+        assertNull(bareFirst.db.messageDao().getByLocalId(groupMessageId)!!.attachmentTransferId)
+        deliverTicket(bareFirst, "alice", "r-2", groupFrame())
+        awaitUntil("the ticket stored") { bareFirst.db.hubFileDao().get(inId) != null }
+        assertEquals(inId, bareFirst.db.messageDao().getByLocalId(groupMessageId)!!.attachmentTransferId)
+        assertEquals(1, bareFirst.db.messageDao().historyBefore(groupId, Long.MAX_VALUE, "￿", 10).size)
+        awaitUntil("a receipt") { bareFirst.groupFrames.any { it.second is GroupWireFrame.Receipt } }
+
+        // The same ticket again, or another file under the same message, changes nothing.
+        deliverTicket(bareFirst, "alice", "r-3", groupFrame())
+        deliverTicket(bareFirst, "alice", "r-4", groupFrame(k = HubFileKey.generate()))
+        awaitUntil("both acknowledged") { bareFirst.relay.recvAcks.size >= 3 }
+        assertEquals(key.encode(), bareFirst.db.hubFileDao().get(inId)!!.fileKey)
+    }
+
+    @Test
+    fun `HUBFILE-P4-U54 a group file that ends for good fails its message only when nobody got it, and always retires its ticket`(): Unit = runBlocking {
+        val alice = device("alice", paired = setOf("bob", "carol"))
+        createGroup(alice, listOf("bob", "carol"))
+        claimGroupUpload(alice, recipients = "bob")
+        alice.repo.registerHubGroupFile(groupMessageId, outId)
+        alice.repo.sendGroupAttachment(groupId, groupMessageId, outId, "report.pdf", "application/pdf", 3_000_000L, null, 0L, emptyList())
+        awaitUntil("linked") { alice.db.hubFileDao().get(outId)?.messageId == groupMessageId }
+        alice.relay.usable = false
+        finishUpload(alice)
+        alice.repo.queueHubFile(outId)
+        awaitUntil("queued") { alice.db.outboxDao().observeCount().first() == 1 }
+
+        // Carol already has the file another way: ending the hub copy must not fail the message.
+        alice.repo.onInboundGroupWireFrame("carol", GroupWireFrame.Receipt(groupId, groupMessageId, "carol", 5L))
+        awaitUntil("carol counted") { alice.db.groupDeliveryDao().deliveredCount(groupMessageId) == 1 }
+        alice.db.hubFileDao().moveState(outId, HubFileStates.QUEUED, HubFileStates.CANCELLED, null, 3L)
+        alice.repo.hubFileEnded(outId)
+        assertEquals(0, alice.db.outboxDao().observeCount().first())
+        assertTrue(alice.db.messageDao().getByLocalId(groupMessageId)!!.status != "FAILED")
+    }
+
+    @Test
+    fun `HUBFILE-P4-U55 a ticket never takes over a message id another author, another chat or a deleted message already uses`(): Unit = runBlocking {
+        suspend fun refused(what: String, existing: MessageEntity) {
+            val bob = device("bob-$what", paired = setOf("alice", "mallory"))
+            createGroup(bob, listOf("alice", "mallory"))
+            bob.db.messageDao().insert(existing)
+            deliverTicket(bob, "alice", "r-$what", groupFrame(localId = existing.localId))
+            awaitUntil("$what acknowledged to the hub") { bob.relay.recvAcks.isNotEmpty() }
+            assertNull(bob.db.hubFileDao().byFileId(HubFileStates.IN, fileId), "$what: no hub_file row")
+            assertTrue(bob.groupFrames.isEmpty(), "$what: no receipt, so the author is not told it was delivered")
+            assertEquals(existing.attachmentTransferId, bob.db.messageDao().getByLocalId(existing.localId)!!.attachmentTransferId, "$what: the message is unchanged")
+        }
+        fun message(id: String, sender: String, conversation: String = groupId, attachment: String? = null, deletedAt: Long? = null) =
+            MessageEntity(
+                localId = id, conversationId = conversation, senderId = sender, senderName = sender, text = "", sentAt = 1L,
+                status = "DELIVERED", attachmentTransferId = attachment, deletedAt = deletedAt,
+            )
+        refused("otherauthor-with-file", message("m-oa", "mallory", attachment = "t-theirs"))
+        refused("otherauthor-bare", message("m-ob", "mallory"))
+        refused("otherchat", message("m-oc", "alice", conversation = "alice", attachment = "t-theirs"))
+        refused("deleted", message("m-del", "alice", deletedAt = 5L))
+    }
+
+    @Test
+    fun `HUBFILE-P4-U56 deleting a hub file's message for everyone, or while it uploads, cancels the upload, and deleting a received one does not`(): Unit = runBlocking {
+        suspend fun sentOneToOne(name: String, state: String = HubFileStates.UPLOADING): Pair<Device, CopyOnWriteArrayList<String>> {
+            val alice = device("alice-$name")
+            val calls = CopyOnWriteArrayList<String>()
+            alice.repo.onHubFileMessageDeleted = { calls += it }
+            claimUpload(alice, state = state)
+            alice.repo.sendAttachment("bob", outId, "report.pdf", "application/pdf", 3_000_000L, null)
+            awaitUntil("the message row") { sentMessage(alice) != null }
+            return alice to calls
+        }
+
+        // Still uploading: either delete stops the upload.
+        val (uploading, uploadingCalls) = sentOneToOne("uploading")
+        uploading.repo.deleteMessage(sentMessage(uploading)!!.localId)
+        awaitUntil("the upload is cancelled") { uploadingCalls.toList() == listOf(outId) }
+
+        // Finished and delivered tickets: "delete for me" leaves the file for the recipients, "for everyone" takes it away.
+        val (done, doneCalls) = sentOneToOne("done")
+        finishUpload(done)
+        val id = sentMessage(done)!!.localId
+        done.repo.deleteMessage(id)
+        awaitUntil("the message is hidden") { done.db.messageDao().getByLocalId(id)?.deletedAt != null }
+        delay(100)
+        assertTrue(doneCalls.isEmpty(), "delete for me must not take the file from the recipient")
+
+        val (everyone, everyoneCalls) = sentOneToOne("everyone")
+        finishUpload(everyone)
+        everyone.repo.deleteMessageForEveryone(sentMessage(everyone)!!.localId)
+        awaitUntil("the upload is cancelled for everyone") { everyoneCalls.toList() == listOf(outId) }
+
+        // A group file the same way.
+        val group = device("alice-group", paired = setOf("bob", "carol"))
+        createGroup(group, listOf("bob", "carol"))
+        val groupCalls = CopyOnWriteArrayList<String>()
+        group.repo.onHubFileMessageDeleted = { groupCalls += it }
+        claimGroupUpload(group, recipients = "bob")
+        group.repo.registerHubGroupFile(groupMessageId, outId)
+        group.repo.sendGroupAttachment(groupId, groupMessageId, outId, "report.pdf", "application/pdf", 3_000_000L, null, 0L, emptyList())
+        awaitUntil("the upload linked to the group message") { group.db.hubFileDao().get(outId)?.messageId == groupMessageId }
+        group.repo.deleteMessageForEveryone(groupMessageId)
+        awaitUntil("the group upload is cancelled") { groupCalls.toList() == listOf(outId) }
+
+        // A received file is the recipient's own copy: deleting it cancels nothing.
+        val bob = device("bob-recipient", paired = setOf("alice"))
+        val bobCalls = CopyOnWriteArrayList<String>()
+        bob.repo.onHubFileMessageDeleted = { bobCalls += it }
+        createGroup(bob, listOf("alice"))
+        deliverTicket(bob, "alice", "r-del", groupFrame())
+        awaitUntil("the ticket stored") { bob.db.hubFileDao().get(inId) != null }
+        bob.repo.deleteMessage(groupMessageId)
+        awaitUntil("hidden") { bob.db.messageDao().getByLocalId(groupMessageId)?.deletedAt != null }
+        delay(100)
+        assertTrue(bobCalls.isEmpty())
     }
 }

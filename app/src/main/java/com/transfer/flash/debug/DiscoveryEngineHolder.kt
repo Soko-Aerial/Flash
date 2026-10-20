@@ -523,6 +523,19 @@ object DiscoveryEngineHolder {
         }
     }
 
+    /**
+     * Sends group file [messageId] through the hub for [recipients], the members the direct pipeline could not reach
+     * (ADR-217). Returns the hub transfer id, or null when the hub cannot carry it now.
+     */
+    suspend fun sendGroupFileThroughHub(
+        groupId: String,
+        messageId: String,
+        uri: String,
+        fileName: String,
+        sizeBytes: Long,
+        recipients: List<String>,
+    ): String? = hubFileBindingRef?.claimGroup(groupId, messageId, uri, fileName, sizeBytes, recipients)?.value
+
     suspend fun prepareSwarmOrigin(
         groupId: String,
         messageId: String,
@@ -1972,6 +1985,8 @@ object DiscoveryEngineHolder {
             transferRepository = transferImpl,
             hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
             fileRoute = chatImpl::hubFileRoute,
+            groupFileRoute = chatImpl::hubGroupFileRoute,
+            registerGroupFile = chatImpl::registerHubGroupFile,
             queueTicket = chatImpl::queueHubFile,
             outgoingEnded = chatImpl::hubFileEnded,
             openSource = { uriString -> openSource(uriString, appContext).source() },
@@ -1990,6 +2005,8 @@ object DiscoveryEngineHolder {
                 }
             },
         ).also { it.start() }
+        // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
+        chatImpl.onHubFileMessageDeleted = { transferId -> appScope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
         pairing = pairingCoordinator
         appScope.launch {
             pairingCoordinator.pairing.collect { model ->

@@ -75,7 +75,9 @@ import okio.Path.Companion.toPath
  * - **Resume.** All progress is on disk (the engine's chunk bitmap, this table). [start] resumes every unfinished row; a
  *   run that the network interrupted tries again with a growing delay for as long as the row stays unfinished.
  *
- * Group sends are not taken (deviation D14).
+ * - **Group files (ADR-217).** [claimGroup] uploads a group's file once, for the members the direct pipeline could not
+ *   reach, and records who they are; the chat then sends each of them a sealed ticket. The members the direct pipeline did
+ *   reach never see the hub copy.
  */
 @OptIn(FlashInternalApi::class)
 public class HubFileBinding(
@@ -102,6 +104,12 @@ public class HubFileBinding(
      * only for a paired peer (AGENTS.md section 19; a hub colleague who is not paired is asked about, deviation D18).
      */
     private val autoDownload: (peerId: String, mime: String) -> Boolean,
+    /** Whether a file of the group may go through the hub now (the chat repository's `hubGroupFileRoute`). */
+    private val groupFileRoute: (groupId: String) -> HubFileRoute = { HubFileRoute.UNAVAILABLE },
+    /** The group's title, for the Transfers list. */
+    private val groupName: (groupId: String) -> String? = { null },
+    /** A group file's upload was started for chat message [messageId] (the chat repository's `registerHubGroupFile`). */
+    private val registerGroupFile: (messageId: String, transferId: String) -> Unit = { _, _ -> },
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
     private val timeSource: FlashTimeSource = SystemTimeSource,
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -128,7 +136,11 @@ public class HubFileBinding(
     /** Every hub file row as a transfer, newest first. */
     public val rows: StateFlow<List<FlashTransfer>> =
         combine(dao.observeRecent(ROW_LIMIT), live, running) { entities, progress, active ->
-            entities.map { HubFileRows.toTransfer(it, progress[it.transferId], it.transferId in active, peerName(it.peerId)) }
+            entities.map {
+                val group = it.groupId
+                val name = if (it.direction == HubFileStates.OUT && group != null) groupName(group) else peerName(it.peerId)
+                HubFileRows.toTransfer(it, progress[it.transferId], it.transferId in active, name)
+            }
         }.stateIn(bindingScope, SharingStarted.Eagerly, emptyList())
 
     private val control = object : ExternalTransferControl {
@@ -175,6 +187,9 @@ public class HubFileBinding(
     /** Resumes every unfinished row (at start-up, and after the host returns from the background). Idempotent. */
     public fun start() {
         bindingScope.launch(workerDispatcher) {
+            val now = timeSource.nowMs()
+            val pruned = dao.prune(terminalBeforeMs = now - PRUNE_FINISHED_AFTER_MS, expiredBeforeMs = now - PRUNE_EXPIRED_AFTER_MS)
+            if (pruned > 0) FlashProbe.emit("hubfile.rows.pruned", "count" to pruned)
             for (row in dao.runnable(HubFileStates.RUNNING)) launchRun(row.transferId)
             acceptAutomatically(dao.runnable(OFFERED_ONLY))
         }
@@ -191,18 +206,59 @@ public class HubFileBinding(
     private suspend fun intercept(target: FlashDevice, fileUri: String, displayName: String, fileSize: Long): FlashTransferId? {
         val peer = target.id.value
         if (peer.isBlank() || isDirectlyReachable(peer)) return null
-        val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: return null
         val route = fileRoute(peer)
         if (route == HubFileRoute.UNAVAILABLE) return null
+        val name = peerName(peer)?.ifBlank { null } ?: target.friendlyName.ifBlank { peer.take(8) }
+        return record(Outgoing(peerId = peer, groupId = null, recipients = null, route = route, label = name), fileUri, displayName, fileSize)
+    }
+
+    /**
+     * Takes group [groupId]'s file for the members in [recipients] (the ones the direct pipeline could not reach): uploads it
+     * once and records who the tickets are for. Null when the hub cannot carry a group file now (the caller keeps what it
+     * has), otherwise the transfer id, which is a Failed row when the hub refused the file (too large, an older hub). The
+     * upload is linked to the chat message [messageId] through [registerGroupFile].
+     */
+    public suspend fun claimGroup(
+        groupId: String,
+        messageId: String,
+        fileUri: String,
+        displayName: String,
+        fileSize: Long,
+        recipients: List<String>,
+    ): FlashTransferId? {
+        val ids = recipients.filter { it.isNotBlank() && ',' !in it }.distinct()
+        if (groupId.isBlank() || ids.isEmpty()) return null
+        val route = groupFileRoute(groupId)
+        if (route == HubFileRoute.UNAVAILABLE) return null
+        val label = groupName(groupId)?.ifBlank { null } ?: groupId.take(8)
+        val claimed = record(Outgoing(peerId = groupId, groupId = groupId, recipients = ids.joinToString(","), route = route, label = label), fileUri, displayName, fileSize)
+        if (claimed != null) registerGroupFile(messageId, claimed.value)
+        return claimed
+    }
+
+    /**
+     * Stops the upload of [transferId] because the person deleted its chat message for everyone (or while it was still
+     * uploading), and deletes what the hub holds. Does nothing for a download or an unknown id: a received file is the
+     * recipient's own copy.
+     */
+    public suspend fun cancelOutgoing(transferId: String) {
+        if (dao.get(transferId)?.direction == HubFileStates.OUT) cancel(transferId)
+    }
+
+    /** Where an outgoing file goes: one peer, or one group's [recipients] (comma separated). [label] names them in a sentence. */
+    private class Outgoing(val peerId: String, val groupId: String?, val recipients: String?, val route: HubFileRoute, val label: String)
+
+    /** Records the file in `hub_file` and starts its upload, or records why the hub will not take it. Null leaves the send to the caller. */
+    private suspend fun record(to: Outgoing, fileUri: String, displayName: String, fileSize: Long): FlashTransferId? {
+        val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: return null
         val size = if (fileSize > 0L) fileSize else withContext(workerDispatcher) {
             runCatching { StreamingHubFileSource.measure(openSource, fileUri) }.getOrDefault(0L)
         }
         // An empty file (or one that cannot be read) stays on the direct path, which reports it (situation 11).
         if (size <= 0L) return null
 
-        val name = peerName(peer)?.ifBlank { null } ?: target.friendlyName.ifBlank { peer.take(8) }
-        val failure = if (route == HubFileRoute.NEEDS_SEALING) {
-            HubFileText.needsSealing(name)
+        val failure = if (to.route == HubFileRoute.NEEDS_SEALING) {
+            HubFileText.needsSealing(to.label)
         } else {
             val limit = maxFileBytes(hub)
             when {
@@ -219,7 +275,7 @@ public class HubFileBinding(
                 transferId = transferId,
                 direction = HubFileStates.OUT,
                 fileId = fileId,
-                peerId = peer,
+                peerId = to.peerId,
                 hubUrl = hub,
                 // A display name, made safe here so the recipient's checks never refuse the ticket for it.
                 fileName = FlashPathSanitizer.sanitizeFileName(displayName),
@@ -240,14 +296,17 @@ public class HubFileBinding(
                 localPath = null,
                 createdAtMs = now,
                 updatedAtMs = now,
+                groupId = to.groupId,
+                recipients = to.recipients,
             ),
         )
         FlashProbe.emit(
             "hubfile.send.claimed",
             "id" to FlashProbe.short(fileId),
-            "peer" to FlashProbe.short(peer),
+            "peer" to FlashProbe.short(to.peerId),
             "bytes" to size,
             "outcome" to if (failure == null) "upload" else "refused",
+            "group" to (to.groupId != null),
         )
         if (failure == null) launchRun(transferId)
         return FlashTransferId(transferId)
@@ -343,7 +402,9 @@ public class HubFileBinding(
                     hubUrl = row.hubUrl,
                     fileId = row.fileId,
                     source = source,
-                    toDeviceId = row.peerId,
+                    // A group file is addressed to the group: the hub checks its roster on every read.
+                    toDeviceId = if (row.groupId == null) row.peerId else null,
+                    groupId = row.groupId,
                     // No name on the hub: the name travels only inside the sealed ticket.
                     nameHint = null,
                     maxFileBytes = maxFileBytes(row.hubUrl) ?: Long.MAX_VALUE,
@@ -502,6 +563,12 @@ public class HubFileBinding(
         public const val DEFAULT_INFO_TTL_MS: Long = 10L * 60_000L
 
         private const val ROW_LIMIT = 200
+
+        /** A finished row nothing shows any more is removed after this long. */
+        private const val PRUNE_FINISHED_AFTER_MS = 30L * 24 * 60 * 60 * 1000
+
+        /** A row whose file left the hub is removed this long after it expired. */
+        private const val PRUNE_EXPIRED_AFTER_MS = 24L * 60 * 60 * 1000
         private const val DEFAULT_MIME = "application/octet-stream"
         private val OFFERED_ONLY = listOf(HubFileStates.OFFERED)
         private val OUT_CANCELLABLE = listOf(HubFileStates.UPLOADING, HubFileStates.READY, HubFileStates.QUEUED)

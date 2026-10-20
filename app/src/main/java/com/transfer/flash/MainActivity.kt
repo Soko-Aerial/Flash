@@ -1621,6 +1621,9 @@ private fun FlashShell(
             recordSwarmOffer = { messageId, root, pieceSize, rootSig ->
                 chatRepository.recordSwarmOffer(messageId, root, pieceSize, rootSig)
             },
+            hubGroupFile = { groupId, messageId, uri, fileName, _, sizeBytes, recipients ->
+                engine.sendGroupFileThroughHub(groupId, messageId, uri, fileName, sizeBytes, recipients)
+            },
         )
     }
 
