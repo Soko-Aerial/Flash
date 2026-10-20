@@ -100,6 +100,20 @@ class RealFlashChatRepositoryTest {
             .take(limit)
 
         override suspend fun getByLocalId(localId: String): MessageEntity? = messages[localId]
+        override suspend fun attachHubFileToBare(
+            localId: String,
+            senderId: String,
+            groupId: String,
+            transferId: String,
+            name: String,
+            mime: String,
+            size: Long,
+        ): Int {
+            val row = messages[localId] ?: return 0
+            if (row.attachmentTransferId != null || row.deletedAt != null || row.senderId != senderId || row.conversationId != groupId) return 0
+            messages[localId] = row.copy(attachmentTransferId = transferId, attachmentName = name, attachmentMime = mime, attachmentSize = size)
+            return 1
+        }
 
         override suspend fun updateStatus(localId: String, status: String) {
             messages[localId]?.let {

@@ -515,6 +515,19 @@ public class DesktopEngine(
     public fun peerFeatures(peerId: String): Set<String> =
         networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId))?.peer?.features.orEmpty()
 
+    /**
+     * Sends group file [messageId] through the hub for [recipients], the members the direct pipeline could not reach
+     * (ADR-217). Returns the hub transfer id, or null when the hub cannot carry it now.
+     */
+    public suspend fun sendGroupFileThroughHub(
+        groupId: String,
+        messageId: String,
+        uri: String,
+        fileName: String,
+        sizeBytes: Long,
+        recipients: List<String>,
+    ): String? = hubFileBindingRef?.claimGroup(groupId, messageId, uri, fileName, sizeBytes, recipients)?.value
+
     public suspend fun prepareSwarmOrigin(
         groupId: String,
         messageId: String,
@@ -1640,6 +1653,8 @@ public class DesktopEngine(
                     transferRepository = transfer,
                     hubUrl = { enterpriseTrustStore.credentials.value?.hubUrl },
                     fileRoute = c::hubFileRoute,
+                    groupFileRoute = c::hubGroupFileRoute,
+                    registerGroupFile = c::registerHubGroupFile,
                     queueTicket = c::queueHubFile,
                     outgoingEnded = c::hubFileEnded,
                     openSource = fileOpener,
@@ -1660,6 +1675,8 @@ public class DesktopEngine(
                         shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
                     },
                 ).also { it.start() }
+                // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.
+                c.onHubFileMessageDeleted = { transferId -> scope.launch { hubFileBindingRef?.cancelOutgoing(transferId) } }
             }
             // The coordinator above may have finished its first sync while hubRosterChat was still null: project the
             // stored rosters now so a group an administrator put this device in appears without waiting for the next sync.

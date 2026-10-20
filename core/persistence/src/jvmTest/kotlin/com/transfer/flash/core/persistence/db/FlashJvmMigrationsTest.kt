@@ -470,6 +470,39 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `HUBFILE-P4-U04 migration from 18 to 19 adds the nullable group column and keeps existing rows`() {
+        helper.createDatabase(18).use { v18 ->
+            v18.execSQL(
+                "INSERT INTO hub_file (transferId, direction, fileId, peerId, hubUrl, fileName, mime, plainBytes, " +
+                    "cipherChunkBytes, chunkCount, expiresAtMs, state, paused, bytesDone, createdAtMs, updatedAtMs) " +
+                    "VALUES ('t1', 'IN', 'f1', 'p1', 'https://hub', 'a.pdf', 'application/pdf', 5, 1048576, 1, 0, 'OFFERED', 0, 0, 1, 1)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT peerId, groupId FROM hub_file WHERE transferId = 't1'").use { row ->
+                assertTrue(row.step(), "the hub_file row must survive migration 18->19")
+                assertEquals("p1", row.getText(0))
+                assertTrue(row.isNull(1), "an existing one-to-one row has no group")
+            }
+            upgraded.prepare("SELECT recipients FROM hub_file WHERE transferId = 't1'").use { row ->
+                assertTrue(row.step())
+                assertTrue(row.isNull(0), "an existing row has no ticket recipients")
+            }
+            upgraded.execSQL(
+                "INSERT INTO hub_file (transferId, direction, fileId, peerId, hubUrl, fileName, mime, plainBytes, " +
+                    "cipherChunkBytes, chunkCount, expiresAtMs, state, paused, bytesDone, createdAtMs, updatedAtMs, groupId, recipients) " +
+                    "VALUES ('t2', 'OUT', 'f2', 'g2-team', 'https://hub', 'b.pdf', 'application/pdf', 5, 1048576, 1, 0, 'UPLOADING', 0, 0, 1, 1, 'g2-team', 'm1,m2')",
+            )
+            upgraded.prepare("SELECT groupId, recipients FROM hub_file WHERE transferId = 't2'").use { row ->
+                assertTrue(row.step())
+                assertEquals("g2-team", row.getText(0))
+                assertEquals("m1,m2", row.getText(1))
+            }
+        }
+    }
+
+    @Test
     fun `the public desktop opener upgrades an older file instead of failing`() = runBlocking {
         helper.createDatabase(3).use { v3 -> insertMessage(v3, version = 3) }
 

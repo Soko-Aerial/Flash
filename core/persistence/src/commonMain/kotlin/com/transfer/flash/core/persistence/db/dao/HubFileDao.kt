@@ -86,4 +86,23 @@ public interface HubFileDao {
 
     @Query("DELETE FROM hub_file WHERE transferId = :transferId")
     public suspend fun delete(transferId: String)
+
+    /** The row that shows chat message [messageId], either direction (one message carries at most one hub file). */
+    @Query("SELECT * FROM hub_file WHERE messageId = :messageId LIMIT 1")
+    public suspend fun byMessageId(messageId: String): HubFileEntity?
+
+    /**
+     * Removes rows nothing will use again (HUB-FILES P4): a finished row older than [terminalBeforeMs], and a row whose file
+     * left the hub before [expiredBeforeMs] (its ticket or download can never work). A row that is running, paused or
+     * waiting on its first byte is never touched, a ticket still queued for delivery is kept until its file expired, and a
+     * row that a message still shows is kept whatever its state: the bubble finds its file (or its failure) through it.
+     * @return rows removed.
+     */
+    @Query(
+        "DELETE FROM hub_file WHERE " +
+            "((state IN ('DONE', 'FAILED', 'CANCELLED', 'DECLINED') AND updatedAtMs < :terminalBeforeMs) OR " +
+            "(state IN ('OFFERED', 'READY', 'QUEUED') AND expiresAtMs > 0 AND expiresAtMs < :expiredBeforeMs)) AND " +
+            "(messageId IS NULL OR messageId NOT IN (SELECT localId FROM messages WHERE deletedAt IS NULL))",
+    )
+    public suspend fun prune(terminalBeforeMs: Long, expiredBeforeMs: Long): Int
 }

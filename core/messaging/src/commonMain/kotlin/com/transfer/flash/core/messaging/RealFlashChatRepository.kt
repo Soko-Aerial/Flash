@@ -117,6 +117,7 @@ import com.transfer.flash.core.persistence.db.dao.MessagePinDao
 import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
 import com.transfer.flash.core.persistence.db.dao.HubFileDao
 import com.transfer.flash.core.persistence.db.entity.HubFileEntity
+import com.transfer.flash.core.persistence.db.entity.HubFileStates
 import com.transfer.flash.core.persistence.db.entity.HubAnnouncementStateEntity
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementsApi
 import com.transfer.flash.core.enterprise.announcements.HubAnnouncementError
@@ -588,6 +589,8 @@ public class RealFlashChatRepository(
         timeSource = timeSource,
         hubUrl = { enterpriseTrustStore?.credentials?.value?.hubUrl },
         upsertConversation = ::upsertDirectConversation,
+        touchGroup = { id, at -> touchConversationInTransaction(id, at) },
+        groupDeliveredCount = { groupDeliveryDao?.deliveredCount(it) ?: 0 },
         peerName = peerNameResolver,
         wakeOutbox = ::notifyOutboxDrain,
     )
@@ -595,6 +598,10 @@ public class RealFlashChatRepository(
     /** Whether a file may go to [peerId] through the hub now (ADR-216). [HubFileRoute.UNAVAILABLE] without a hub. */
     public suspend fun hubFileRoute(peerId: String): HubFileRoute =
         if (hubFiles == null) HubFileRoute.UNAVAILABLE else hubBridge?.fileRoute(peerId) ?: HubFileRoute.UNAVAILABLE
+
+    /** Whether a file of group [groupId] may go through the hub now (ADR-217). [HubFileRoute.UNAVAILABLE] without a hub. */
+    public fun hubGroupFileRoute(groupId: String): HubFileRoute =
+        if (hubFiles == null) HubFileRoute.UNAVAILABLE else hubBridge?.groupFileRoute(groupId) ?: HubFileRoute.UNAVAILABLE
 
     /**
      * The hub-file engine finished uploading [transferId]: queue its ticket message if the chat message already exists
@@ -838,6 +845,14 @@ public class RealFlashChatRepository(
 
     override var swarmAnnouncementListener: GroupSwarmAnnouncementListener? = null
     override var onGroupMessageDeletedForEveryone: ((groupId: String, messageId: String) -> Unit)? = null
+
+    /**
+     * Called with the transfer id of an outgoing hub file whose chat message the person deleted: for everyone (the hub then
+     * forgets the file, so a recipient that has not fetched it yet sees "no longer on the hub"), or for themselves while the
+     * upload is still running (nobody wants the rest of it). A finished upload is left alone by "delete for me": the
+     * recipients still hold tickets for it. The host cancels the upload (`HubFileBinding.cancelOutgoing`).
+     */
+    public var onHubFileMessageDeleted: ((transferId: String) -> Unit)? = null
 
     public val groupGate: com.transfer.flash.core.messaging.group.GroupGate =
         com.transfer.flash.core.messaging.group.RosterGroupGate(
@@ -3139,6 +3154,7 @@ public class RealFlashChatRepository(
                     signedGroups?.signSwarmAnnouncement(conversationId, messageId, root, sizeBytes, fileName, mimeType, sentAt) ?: sig,
                 )
             }
+            val hubTransferId = pendingHubGroupFiles.remove(messageId)
             val signature = cached?.second ?: if (conv.groupProto == GroupPolicy.V2_PROTOCOL) {
                 val signed = signedGroups
                 if (signed == null) {
@@ -3159,14 +3175,21 @@ public class RealFlashChatRepository(
                         (PeerTrustPolicy.mayServeSwarm(isPaired = isTrustedPeer(it.deviceId), isOrg = effectiveIsOrgPeer(it.deviceId)) || (swarmOffer != null && isGroupPeerTrusted(conversationId, it.deviceId)))
                 }
                 .orEmpty()
+            // ADR-217: the members the direct pipeline could not reach are sent a hub ticket and are recipients of their own.
+            val hubMembers = hubTransferId?.let { hubFiles?.recipientsFor(it) }.orEmpty()
+            val hubRecipients = members?.activeMembers(conversationId)
+                ?.filter { it.deviceId != localDeviceId && it.deviceId in hubMembers }
+                .orEmpty()
+            val deliveryIds = (recipients + hubRecipients).map { it.deviceId }.distinct()
             val activeOthers = members?.activeMembers(conversationId).orEmpty().count { it.deviceId != localDeviceId }
             FlashProbe.emit(
                 "group.media.out",
                 "group" to FlashProbe.short(conversationId),
                 "swarm" to (swarmOffer != null),
-                "recipients" to recipients.size,
+                "recipients" to deliveryIds.size,
+                "hub" to hubRecipients.size,
                 "activeMembers" to activeOthers,
-                "notAnnounced" to (activeOthers - recipients.size),
+                "notAnnounced" to (activeOthers - deliveryIds.size),
                 "signed" to (signature != null),
             )
             messageDao.insert(
@@ -3177,7 +3200,7 @@ public class RealFlashChatRepository(
                     senderName = localDisplayName,
                     text = rowText,
                     sentAt = sentAt,
-                    status = if (recipients.isEmpty()) "SENT" else "PENDING",
+                    status = if (deliveryIds.isEmpty()) "SENT" else "PENDING",
                     attachmentTransferId = transferId,
                     attachmentName = fileName,
                     attachmentMime = mimeType,
@@ -3189,19 +3212,30 @@ public class RealFlashChatRepository(
                     swarmRootSig = swarmOffer?.third,
                 ),
             )
-            if (recipients.isNotEmpty() && deliveries != null) {
+            if (deliveryIds.isNotEmpty() && deliveries != null) {
                 deliveries.insertAll(
-                    recipients.map { recipient ->
+                    deliveryIds.map { memberId ->
                         GroupDeliveryEntity(
                             messageId = messageId,
-                            memberId = recipient.deviceId,
+                            memberId = memberId,
                             nextAttemptAt = now,
                         )
                     },
                 )
             }
             touchConversation(conversationId, now)
+            // The message and its delivery rows exist now, so the ticket can be queued as soon as the upload is done.
+            if (hubTransferId != null) hubFiles?.attachMessage(hubTransferId, messageId)
         }
+    }
+
+    /**
+     * Declares that group file [messageId] also goes through the hub (ADR-217): [hubTransferId] is the hub-file transfer the
+     * engine started for the members the direct pipeline could not reach. Call it before [sendGroupAttachment], which
+     * adds those members as recipients and links the message to the upload.
+     */
+    public fun registerHubGroupFile(messageId: String, hubTransferId: String) {
+        pendingHubGroupFiles[messageId] = hubTransferId
     }
 
     /**
@@ -4407,6 +4441,9 @@ public class RealFlashChatRepository(
      * exact same timestamp and signature, and the subsequent [sendGroupAttachment] persists them identically.
      */
     private val pendingGroupAttachmentSignatures = SyncMap<String, Pair<Long, String?>>()
+
+    /** messageId -> hub-file transfer id of a group file between [registerHubGroupFile] and its row (ADR-217). */
+    private val pendingHubGroupFiles = SyncMap<String, String>()
 
     /** messageId -> (root, pieceSize, rootSig) of a swarm file between its first announcement and its row (ERROR-108). */
     private val pendingSwarmOffers = SyncMap<String, Triple<String, Int, String>>()
@@ -5844,7 +5881,40 @@ public class RealFlashChatRepository(
      */
     private suspend fun onInboundHubFile(frame: HubFileFrame, from: String): Boolean {
         val files = hubFiles ?: return false
-        val stored = files.accept(frame, from) as? HubFileMessages.Accepted.Stored ?: return false
+        val groupId = frame.groupId
+        var accepted = frame
+        if (groupId != null) {
+            // ADR-217: a group ticket is taken only from an active member of a hub-linked group, by a device that is still a
+            // member itself, and in a signed group only with the author's signature over the message.
+            val members = groupMemberDao ?: return false
+            val linked = enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true
+            if (!linked || !isActiveGroupMember(members, groupId, from)) {
+                probeGroupMessageDrop("hubfile.group.drop", groupId, from, if (linked) "sender_not_allowed" else "not_linked", frame.sentAt)
+                return false
+            }
+            if (isV2Group(groupId)) {
+                val label = signedGroups?.verifiedAuthorLabel(
+                    groupId, from, frame.localId, frame.sentAt, null, null, "", frame.groupSig.orEmpty(),
+                )
+                if (label == null) {
+                    probeGroupMessageDrop("hubfile.group.drop", groupId, from, "bad_signature", frame.sentAt)
+                    FlashLog.w("CHAT", "SECURITY: group file ticket dropped, no valid signature (group=${groupId.take(8)} msg=${frame.localId.take(8)})")
+                    return false
+                }
+                accepted = frame.copy(senderName = label)
+            }
+        }
+        val stored = files.accept(accepted, from) as? HubFileMessages.Accepted.Stored ?: return false
+        if (groupId != null) {
+            if (stored.fresh) {
+                runCatching { onInboundAttachmentWithGroupTitle(groupId, accepted.senderName.ifBlank { null }, stored.fileName, stored.mime, conversationDao.get(groupId)?.title?.ifBlank { null }) }
+            }
+            groupTransportSink?.send(
+                from,
+                GroupWireFrame.Receipt(groupId = groupId, messageId = frame.localId, from = localDeviceId, deliveredAt = timeSource.nowMs()),
+            )
+            return true
+        }
         if (stored.fresh) {
             runCatching { onInboundAttachmentWithGroupTitle(from, frame.senderName.ifBlank { null }, stored.fileName, stored.mime, null) }
             maybeAutoPairColleague(from)
@@ -6225,6 +6295,67 @@ public class RealFlashChatRepository(
         return nextAttemptAt
     }
 
+    /**
+     * The tickets of a group file sent through the hub (ADR-217): one sealed ticket per member the direct pipeline could not
+     * reach, until that member acknowledges it. The members that got the file another way are not sent a ticket.
+     *
+     * @return when this row is next due, or null when the pass ended it.
+     */
+    private suspend fun drainGroupHubFile(
+        item: OutboxEntity,
+        message: MessageEntity,
+        row: HubFileEntity,
+        deliveries: GroupDeliveryDao,
+        now: Long,
+        queuedForMs: Long,
+    ): Long? {
+        val files = hubFiles ?: return null
+        val bridge = hubBridge ?: return null
+        val members = groupMemberDao ?: return null
+        val groupId = message.conversationId
+        val linked = enterpriseTrustStore?.isGroupLinkedToHub(groupId) == true
+        val frame = files.frameFor(row, message, localDeviceId, localDisplayName)?.copy(groupId = groupId, groupSig = message.groupSig)
+        if (frame == null || !linked || files.isDead(row, now) || queuedForMs >= HUB_GIVE_UP_AFTER_MS) {
+            files.giveUpGroup(item.localId, row, if (linked) row.state.lowercase() else "unlinked")
+            return null
+        }
+        val pending = deliveries.pendingForMessage(item.localId)
+        if (pending.isEmpty()) {
+            messageDao.updateStatusIfUnacknowledged(item.localId, "DELIVERED")
+            outboxDao.delete(item.localId)
+            return null
+        }
+        val wanted = files.recipientsOf(row)
+        val due = pending.filter { it.memberId in wanted && members.member(groupId, it.memberId)?.isActive == true }
+        if (due.isEmpty()) {
+            outboxDao.delete(item.localId)
+            return null
+        }
+        val results = coroutineScope {
+            due.map { delivery ->
+                async {
+                    val sent = sendWithTimeout(item.localId, delivery.memberId) {
+                        bridge.sendHubFile(delivery.memberId, item.localId, message.sentAt, frame)
+                    }
+                    delivery.memberId to sent
+                }
+            }.awaitAll()
+        }
+        val anySent = results.any { it.second }
+        val nextAttemptAt = now + if (anySent && bridge.isHubAccepted(item.localId)) HUB_RESEND_MS else backoffDelayMs(item.attempts + 1)
+        for ((memberId, sent) in results) {
+            deliveries.reschedule(
+                messageId = item.localId,
+                memberId = memberId,
+                state = if (sent) "SENT" else "PENDING",
+                nextAttemptAt = nextAttemptAt,
+            )
+        }
+        if (anySent) messageDao.updateStatusIfUnacknowledged(item.localId, "SENT")
+        outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
+        return nextAttemptAt
+    }
+
     /** @return when this row is next due, or null when the pass ended it (given up, delivered, or unsendable). */
     private suspend fun drainGroupMessage(
         item: OutboxEntity,
@@ -6233,6 +6364,10 @@ public class RealFlashChatRepository(
         queuedForMs: Long,
     ): Long? {
         val deliveries = groupDeliveryDao ?: return null
+        hubFiles?.outgoingFor(message)?.takeIf { it.groupId != null }?.let { row ->
+            // A group file ticket never falls through to the bare message frame: it would give every receiver an empty bubble.
+            return drainGroupHubFile(item, message, row, deliveries, now, queuedForMs)
+        }
         val sink = lanGroupTransportSink ?: return null
         val hubHolds = hubBridge != null && enterpriseTrustStore?.isGroupLinkedToHub(message.conversationId) == true
         if (queuedForMs >= (if (hubHolds) HUB_GIVE_UP_AFTER_MS else OUTBOX_GIVE_UP_AFTER_MS)) {
@@ -6632,7 +6767,9 @@ public class RealFlashChatRepository(
         scope.launch(ioDispatcher) {
             // Tombstone rather than hard-delete so history keyset pagination stays stable; the
             // observe/history queries filter `deletedAt IS NULL`, so it vanishes from the thread.
+            val upload = messageDao.getByLocalId(localId)?.let { hubFiles?.outgoingFor(it) }
             messageDao.markDeleted(localId, timeSource.nowMs())
+            if (upload != null && upload.state == HubFileStates.UPLOADING) onHubFileMessageDeleted?.invoke(upload.transferId)
             // Also drop any pending outbox row: a message deleted before it drained must NOT still
             // be transmitted to the peer. The drain loop additionally re-checks the tombstone, so a
             // row already claimed for this tick is discarded rather than sent.
@@ -6648,9 +6785,11 @@ public class RealFlashChatRepository(
 
             // Apply the local tombstone before attempting the network, and always retire a queued
             // message so an older payload cannot be sent after its deletion action.
+            val upload = hubFiles?.outgoingFor(message)
             messageDao.markDeleted(localId, timeSource.nowMs())
             messageDao.clearReplyPreviews(localId)
             outboxDao.delete(localId)
+            upload?.let { onHubFileMessageDeleted?.invoke(it.transferId) }
 
             if (conversation.isGroup) {
                 onGroupMessageDeletedForEveryone?.invoke(conversation.id, localId)

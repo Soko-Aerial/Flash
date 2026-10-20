@@ -288,6 +288,14 @@ public class HubChatBridge(
         return if (status == HubSealingStatus.AVAILABLE) HubFileRoute.READY else HubFileRoute.NEEDS_SEALING
     }
 
+    /**
+     * Whether a file of group [groupId] may go through the hub (ADR-217): the hub is usable, the device can seal, and the hub
+     * knows the group's roster (a linked group). Each member's ticket is sealed on its own, so a member without a published
+     * key only waits; it never makes the route unavailable for the others.
+     */
+    public fun groupFileRoute(groupId: String): HubFileRoute =
+        if (port.usable && sealing != null && groupLinked(groupId)) HubFileRoute.READY else HubFileRoute.UNAVAILABLE
+
     /** Sender trust for ephemeral signals: paired, or an organisation member. */
     public suspend fun isSenderAllowed(deviceId: String): Boolean =
         isPaired(deviceId) || standing(deviceId) == HubPeerStanding.MEMBER

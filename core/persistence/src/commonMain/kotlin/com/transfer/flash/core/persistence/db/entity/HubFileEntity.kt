@@ -52,6 +52,17 @@ public data class HubFileEntity(
     val localPath: String?,
     val createdAtMs: Long,
     val updatedAtMs: Long,
+    /**
+     * The group this file belongs to, or null for a one-to-one file. OUT: the group the upload was created for (the hub
+     * decides the readers from its own roster of it), kept so a resumed upload names it again. IN: the group the ticket
+     * arrived in. [peerId] is the group id for an outgoing group file and the sender for an incoming one.
+     */
+    val groupId: String? = null,
+    /**
+     * OUT, group files only: the member device ids this file's tickets are for, comma separated. They are the members the
+     * direct pipeline could not reach when the file was sent; the others got the file another way. Null for everything else.
+     */
+    val recipients: String? = null,
 )
 
 /** The values of [HubFileEntity.direction] and [HubFileEntity.state]. */

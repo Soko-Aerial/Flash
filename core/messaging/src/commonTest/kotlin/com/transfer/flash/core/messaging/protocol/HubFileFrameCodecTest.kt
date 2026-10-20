@@ -23,6 +23,8 @@ class HubFileFrameCodecTest {
         size: Long = 3_000_000L,
         name: String = "Quarterly report = final.pdf",
         meta: String = "",
+        groupId: String? = null,
+        groupSig: String? = null,
     ): HubFileFrame {
         val layout = HubFileLayout.of(size, 1_048_576)!!
         return HubFileFrame(
@@ -42,6 +44,8 @@ class HubFileFrameCodecTest {
             fileName = name,
             mime = "application/pdf",
             meta = meta,
+            groupId = groupId,
+            groupSig = groupSig,
         )
     }
 
@@ -103,7 +107,42 @@ class HubFileFrameCodecTest {
         assertEquals("expiresAt", invalid(with("expiresAt", "-5")))
         assertEquals("mime", invalid(with("mime", "x".repeat(128))))
         assertEquals("meta", invalid(with("meta", "m".repeat(4097))))
-        assertEquals("groupId", invalid(with("groupId", "g2-crew")), "a group key must never ride this frame")
+    }
+
+    @Test
+    fun `HUBFILE-P4-U20 a group ticket round trips and a one-to-one ticket has no group`() {
+        val group = decoded(HubFileFrameCodec.encode(frame(groupId = "g2-crew", groupSig = "c2ln/+9=")))
+        assertEquals("g2-crew", group.groupId)
+        assertEquals("c2ln/+9=", group.groupSig)
+        val unsigned = decoded(HubFileFrameCodec.encode(frame(groupId = "g-legacy")))
+        assertEquals("g-legacy", unsigned.groupId)
+        assertNull(unsigned.groupSig, "a legacy group has no signature to carry")
+        val plain = decoded(HubFileFrameCodec.encode(frame()))
+        assertNull(plain.groupId)
+        assertNull(plain.groupSig)
+        assertFalse("groupId" in FlashTextFraming.parseFields(HubFileFrameCodec.encode(frame()), HubFileFrameCodec.PREFIX)!!)
+    }
+
+    @Test
+    fun `HUBFILE-P4-U21 the group fields refuse by name`() {
+        assertEquals("groupId", invalid(with("groupId", "")))
+        assertEquals("groupId", invalid(with("groupId", "g".repeat(129))))
+        assertEquals("groupId", invalid(with("groupId", "g2\u0000x")))
+        assertEquals("groupSig", invalid(with("groupSig", "c2ln")), "a signature with no group is meaningless")
+        val grouped = HubFileFrameCodec.encode(frame(groupId = "g2-crew"))
+        val fields = FlashTextFraming.parseFields(grouped, HubFileFrameCodec.PREFIX)!!.toMutableMap()
+        fun withSig(value: String) = FlashTextFraming.encodeFields(HubFileFrameCodec.PREFIX, (fields + ("groupSig" to value)).toList())
+        assertEquals("groupSig", invalid(withSig("")))
+        assertEquals("groupSig", invalid(withSig("s".repeat(1025))))
+        assertEquals("groupSig", invalid(withSig("a\nb")))
+    }
+
+    @Test
+    fun `HUBFILE-P4-U22 the printed form of a group ticket hides the key and the signature`() {
+        val text = frame(groupId = "g2-crew", groupSig = "SECRETSIGNATURE").toString()
+        assertFalse(text.contains(key.encode()))
+        assertFalse(text.contains("SECRETSIGNATURE"))
+        assertFalse(text.contains("g2-crew"), "ids in logs are cut to 8 characters; the group id is not printed whole")
     }
 
     @Test
@@ -125,7 +164,7 @@ class HubFileFrameCodecTest {
     @Test
     fun `HUBFILE-U14 1000 mutated or random inputs never throw`() {
         val random = Random(20261020)
-        val valid = HubFileFrameCodec.encode(frame())
+        val valid = HubFileFrameCodec.encode(frame(groupId = "g2-crew", groupSig = "c2ln"))
         val alphabet = " =%./\\\u0000\n abcdefxyz0123456789ABCDEF-_hfk1.FLASH_HUBFILE"
         repeat(1000) { round ->
             val input = when (round % 4) {
@@ -134,7 +173,7 @@ class HubFileFrameCodecTest {
                     repeat(1 + random.nextInt(6)) { chars[random.nextInt(chars.size)] = alphabet[random.nextInt(alphabet.length)] }
                 }.concatToString()
                 2 -> HubFileFrameCodec.PREFIX + " " + (1..random.nextInt(40)).joinToString(" ") {
-                    listOf("v", "localId", "fileId", "key", "size", "chunks", "chunkBytes", "name", "sha256").random(random) +
+                    listOf("v", "localId", "fileId", "key", "size", "chunks", "chunkBytes", "name", "sha256", "groupId", "groupSig").random(random) +
                         "=" + (1..random.nextInt(20)).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
                 }
                 else -> (1..random.nextInt(300)).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
@@ -145,6 +184,7 @@ class HubFileFrameCodecTest {
                 val t = result.frame.ticket
                 assertEquals(HubFileLayout.of(t.plainBytes, t.cipherChunkBytes)!!.chunkCount, t.chunkCount)
                 assertTrue(result.frame.fileName.none { it == '/' || it == '\\' })
+                assertTrue(result.frame.groupSig == null || result.frame.groupId != null, "a signature never outlives its group")
             }
         }
     }

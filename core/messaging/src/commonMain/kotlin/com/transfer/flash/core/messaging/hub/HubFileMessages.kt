@@ -27,7 +27,9 @@ import kotlinx.coroutines.sync.withLock
  * when both exist ([attachMessage], [queue], under one lock and a conditional update). Incoming, a ticket becomes a
  * chat message and a `hub_file` row in one transaction ([accept]); the download itself belongs to the engine.
  *
- * Group files do not take this path (deviation D14): there is no per-member sealed key yet.
+ * A group file (ADR-217, HUB-FILES P4) is one upload for the whole group and one sealed ticket per member the direct
+ * pipeline could not reach. Its outbox row drives those tickets ([recipientsOf]); an incoming group ticket fills in the
+ * bare message of the same author in the same group if the group's own frame got here first ([accept]).
  */
 internal class HubFileMessages(
     private val dao: HubFileDao,
@@ -39,6 +41,10 @@ internal class HubFileMessages(
     private val hubUrl: () -> String?,
     /** Creates or refreshes the direct chat's row; called inside the insert's transaction (ERROR-087). */
     private val upsertConversation: suspend (conversationId: String, title: String?, sortOrder: Long) -> Unit,
+    /** Moves an existing group chat to the top; called inside the insert's transaction. */
+    private val touchGroup: suspend (groupId: String, sentAt: Long) -> Unit,
+    /** How many members have acknowledged group message [messageId] (by any path). */
+    private val groupDeliveredCount: suspend (messageId: String) -> Int,
     private val peerName: (String) -> String?,
     private val wakeOutbox: () -> Unit,
 ) {
@@ -70,8 +76,25 @@ internal class HubFileMessages(
     suspend fun ended(transferId: String) {
         val row = dao.get(transferId)?.takeIf { it.direction == HubFileStates.OUT } ?: return
         val messageId = row.messageId ?: return
-        giveUp(messageId, row, row.state.lowercase())
+        if (row.groupId != null) giveUpGroup(messageId, row, row.state.lowercase()) else giveUp(messageId, row, row.state.lowercase())
     }
+
+    /**
+     * Ends the tickets of group file [messageId]. Other members may have the file another way, so the message is Failed only
+     * when nobody has acknowledged it.
+     */
+    suspend fun giveUpGroup(messageId: String, row: HubFileEntity, reason: String) {
+        val delivered = groupDeliveredCount(messageId)
+        runInTransaction {
+            if (delivered == 0) messageDao.updateStatusIfUnacknowledged(messageId, "FAILED")
+            outboxDao.delete(messageId)
+        }
+        FlashProbe.emit("hubfile.ticket.dropped", "id" to FlashProbe.short(row.fileId), "reason" to reason, "group" to true)
+    }
+
+    /** The members a group file's tickets are for (empty for anything else). */
+    fun recipientsOf(row: HubFileEntity): Set<String> =
+        row.recipients?.split(',')?.filter { it.isNotBlank() }?.toSet().orEmpty()
 
     /** Ends ticket [messageId] in one transaction, so no reader sees a Failed message that still has an outbox row. */
     suspend fun giveUp(messageId: String, row: HubFileEntity, reason: String) {
@@ -112,10 +135,18 @@ internal class HubFileMessages(
 
     /** The OUT row whose ticket [message] carries, or null when [message] is not a hub file ticket. */
     suspend fun outgoingFor(message: MessageEntity): HubFileEntity? {
-        val transferId = message.attachmentTransferId ?: return null
-        val row = dao.get(transferId) ?: return null
+        // A group file some members got another way keeps that way's transfer id on its bubble, so the row is found by the
+        // message it is linked to as well.
+        val row = message.attachmentTransferId?.let { dao.get(it) } ?: dao.byMessageId(message.localId) ?: return null
         return row.takeIf { it.direction == HubFileStates.OUT && it.messageId == message.localId }
     }
+
+    /** The members the tickets of outgoing group file [transferId] are for (empty when it is not a group file). */
+    suspend fun recipientsFor(transferId: String): Set<String> =
+        dao.get(transferId)
+            ?.takeIf { it.direction == HubFileStates.OUT && it.state != HubFileStates.FAILED && it.state != HubFileStates.CANCELLED }
+            ?.let(::recipientsOf)
+            .orEmpty()
 
     /** The ticket to send for [row], or null when the row has no usable ticket (the caller then gives the message up). */
     fun frameFor(row: HubFileEntity, message: MessageEntity, senderId: String, senderName: String): HubFileFrame? {
@@ -158,6 +189,7 @@ internal class HubFileMessages(
         if (frame.senderId != from) return Accepted.Refused
         val hub = hubUrl()?.takeIf { it.isNotBlank() } ?: return Accepted.Refused
         val ticket = frame.ticket
+        val groupId = frame.groupId
         val transferId = HubFileStates.TRANSFER_PREFIX_IN + ticket.fileId
         val now = timeSource.nowMs()
         val sentAt = minOf(frame.sentAt, now)
@@ -170,28 +202,46 @@ internal class HubFileMessages(
             if (known != null) {
                 // The same ticket again (the receipt was lost). The message may have been deleted here since; the
                 // sender still gets its receipt, and nothing is recreated.
-                val same = known.peerId == from && known.fileKey == ticket.key.encode() && known.messageId == frame.localId
+                val same = known.peerId == from && known.fileKey == ticket.key.encode() && known.messageId == frame.localId &&
+                    known.groupId == groupId
                 result = if (same) Accepted.Stored(false, known.fileName, known.mime) else Accepted.Refused
                 return@runInTransaction
             }
-            // A message id already in use by another message: never put a file under someone else's bubble.
-            if (messageDao.getByLocalId(frame.localId) != null) return@runInTransaction
-            messageDao.insert(
-                MessageEntity(
-                    localId = frame.localId,
-                    conversationId = from,
-                    senderId = from,
-                    senderName = senderName,
-                    text = if (frame.mime.startsWith("audio/")) frame.meta else "",
-                    sentAt = sentAt,
-                    status = "DELIVERED",
-                    attachmentTransferId = transferId,
-                    attachmentName = frame.fileName,
-                    attachmentMime = frame.mime,
-                    attachmentSize = ticket.plainBytes,
-                    attachmentPath = null,
-                ),
-            )
+            val existing = messageDao.getByLocalId(frame.localId)
+            if (existing != null) {
+                // A message id already in use: never put a file under someone else's bubble. The one exception is a group
+                // ticket for the bare message its own author already sent to this group (the frames arrive in any order).
+                val bare = groupId != null && existing.senderId == from && existing.conversationId == groupId && existing.deletedAt == null
+                if (!bare) return@runInTransaction
+                if (existing.attachmentTransferId != null) {
+                    // The file reached this device another way (a push or a swarm offer). Nothing to add; the author still
+                    // deserves its receipt.
+                    result = Accepted.Stored(false, existing.attachmentName ?: frame.fileName, existing.attachmentMime ?: frame.mime)
+                    return@runInTransaction
+                }
+                val filled = messageDao.attachHubFileToBare(
+                    frame.localId, from, groupId.orEmpty(), transferId, frame.fileName, frame.mime, ticket.plainBytes,
+                )
+                if (filled != 1) return@runInTransaction
+            } else {
+                messageDao.insert(
+                    MessageEntity(
+                        localId = frame.localId,
+                        conversationId = groupId ?: from,
+                        senderId = from,
+                        senderName = senderName,
+                        text = if (frame.mime.startsWith("audio/")) frame.meta else "",
+                        sentAt = sentAt,
+                        status = "DELIVERED",
+                        attachmentTransferId = transferId,
+                        attachmentName = frame.fileName,
+                        attachmentMime = frame.mime,
+                        attachmentSize = ticket.plainBytes,
+                        attachmentPath = null,
+                        groupSig = frame.groupSig,
+                    ),
+                )
+            }
             dao.insert(
                 HubFileEntity(
                     transferId = transferId,
@@ -216,10 +266,15 @@ internal class HubFileMessages(
                     localPath = null,
                     createdAtMs = now,
                     updatedAtMs = now,
+                    groupId = groupId,
                 ),
             )
-            upsertConversation(from, peerName(from)?.ifBlank { null } ?: senderName ?: from, sentAt)
-            result = Accepted.Stored(true, frame.fileName, frame.mime)
+            if (groupId != null) {
+                if (existing == null) touchGroup(groupId, sentAt)
+            } else {
+                upsertConversation(from, peerName(from)?.ifBlank { null } ?: senderName ?: from, sentAt)
+            }
+            result = Accepted.Stored(existing == null, frame.fileName, frame.mime)
         }
         when (val r = result) {
             is Accepted.Stored -> FlashProbe.emit(
