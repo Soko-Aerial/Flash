@@ -5700,3 +5700,27 @@ scope for this release. Record results in the Results log; a FAIL blocks the upl
 - **Pass:** no unexpected permission prompt at first run (no Bluetooth or overlay prompt unless the user opens those features);
   notifications permission is asked once; the app does not crash on API 24-26 (notification APIs).
 - **Status:** TODO
+
+## 4zzzzzzzzzzzzzzzz. Network move and swarm greeting (2026-10-20; ERROR-742, ERROR-743)
+
+### NETMOVE-01 — Reconnect after moving to another Wi-Fi
+- **Setup:** phone and desktop paired and connected on Wi-Fi A; then move both (or just the phone) to Wi-Fi B on a different subnet.
+- **Steps:** switch the phone's Wi-Fi to B, wait up to 60 s, with no manual action.
+- **Pass:** the phone log shows `WS connecting address=<desktop's new IPv4>` soon after discovery finds it, a session comes up, the online dot becomes connected; no endless dials to Wi-Fi A addresses.
+- **Source:** ERROR-743. **Status:** TODO
+
+### SWM-48 — Group image after a session swap
+- **Setup:** two-member group, swarm on, phone and desktop connected.
+- **Steps:** send a 100 KB+ image from the phone right after (re)starting the phone app, so the first session may lack `sw1`.
+- **Pass:** desktop log shows `SWARM: peer up` for the phone and the image arrives; the row does not stay at "accepted".
+- **Source:** ERROR-742. **Status:** TODO
+
+### DLOG-01 — A second desktop launch leaves the running log alone
+- **Steps:** start the Windows app, note the last lines of `~/.flash/desktop.log`, launch the app a second time (shortcut or exe).
+- **Pass:** the first window is brought to the front, and `desktop.log` still contains the earlier lines (no truncation, no NUL padding).
+- **Source:** ERROR-744. **Status:** TODO
+
+### TLS-ID-01 — Who dials the phone with a certificate the dialer refuses
+- **Steps:** keep three or more Flash devices on one Wi-Fi, change the phone's network once, export the phone log after 10 minutes.
+- **Pass:** every `WS handshake rejected from=<address>` line names a dialer address; the address belongs to a device whose pin for the phone is wrong or to a stale route. No such line for the desktop once both are connected.
+- **Source:** ERROR-745. **Status:** TODO

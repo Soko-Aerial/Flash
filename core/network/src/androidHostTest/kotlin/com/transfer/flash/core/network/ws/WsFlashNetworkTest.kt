@@ -390,6 +390,47 @@ class WsFlashNetworkTest {
         }
     }
 
+    /**
+     * Log 2026-10-20 ("online, not connected" after the phone moved from the work Wi-Fi to the home Wi-Fi). The dialer's
+     * primary redial loop kept dialing the address of the old network for ever, and while it ran the auto-connect
+     * planner was forbidden to dial the peer (planner rule 3), so the address discovery had just found was never tried.
+     *
+     * The host goes away (an unexpected drop, so the client's primary loop starts on the dead route) and comes back on
+     * another port. Discovery reports the new route through `rememberEndpoint`; the loop must follow it.
+     */
+    @Test(timeout = 25_000L)
+    fun testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale() {
+        runBlocking {
+            val hostId = "device-host-retarget"
+            val clientId = "device-client-retarget"
+
+            serverNetwork = WsFlashNetwork(null, hostId, "Host Phone")
+            val oldPort = (serverNetwork!!.start(0) as FlashResult.Success).value
+            clientNetwork = WsFlashNetwork(null, clientId, "Client Phone")
+            clientNetwork!!.start(0)
+            assertTrue(clientNetwork!!.connectManual("127.0.0.1", oldPort, hostId) is FlashResult.Success)
+
+            // The old network is gone: the host stops, the client's session drops and its redial loop starts.
+            serverNetwork!!.stop()
+            withTimeout(10_000L) {
+                while (clientNetwork!!.activeSessions.value.isNotEmpty()) delay(25)
+            }
+            withTimeout(5_000L) {
+                while (!clientNetwork!!.isReconnectInFlight(hostId)) delay(25)
+            }
+
+            // The host is back, somewhere else, and discovery says so.
+            serverNetwork = WsFlashNetwork(null, hostId, "Host Phone")
+            val newPort = (serverNetwork!!.start(0) as FlashResult.Success).value
+            assertTrue("the test needs a different port", newPort != oldPort)
+            clientNetwork!!.rememberEndpoint(hostId, "127.0.0.1", newPort)
+
+            withTimeout(10_000L) {
+                while (clientNetwork!!.activeSessions.value[FlashDeviceId(hostId)] == null) delay(25)
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------------------------
     // ERROR-031: a stale session must never veto its own replacement.
     // -------------------------------------------------------------------------------------------

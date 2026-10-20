@@ -1,5 +1,9 @@
 # Current Handoff
 
+## 2026-10-20 (later) - Log-driven fixes before release: ERROR-742 swarm greeting, ERROR-743 stale redial loop, ERROR-744 log truncation, ERROR-745 diagnostic
+
+- Fixed in code, unit-tested, mutation-checked where noted, NOT device-verified: see `logs/errors.md` ERROR-742..745 and the backlog items `NETMOVE-01`, `SWM-48`, `DLOG-01`, `TLS-ID-01`. The 2.1.0 artifacts were rebuilt after these fixes (see `logs/progress.md`).
+
 ## 2026-10-20 - Release 2.1.0 prepared (apps only): docs and version updated, build/tests green, NOT uploaded
 
 - **Current branch:** `dev` (release-doc edits uncommitted until committed). **Status:** unit tests and `assembleRelease` green;

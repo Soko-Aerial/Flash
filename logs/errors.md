@@ -1,5 +1,144 @@
 # Error Log
 
+## ERROR-743 — "Online, not connected" after moving to another Wi-Fi: the redial loop kept dialing the old network and blocked the planner
+
+### Date
+2026-10-20
+
+### Area
+Network / reconnect engine (`WsFlashNetwork`, `JvmWsFlashNetwork`) and `ConnectionPlanner` rule 3
+
+### Symptoms
+Owner went from the work Wi-Fi (192.168.1.x) to the home Wi-Fi (192.168.0.x). Phone and desktop both saw each other in discovery
+("online") but never connected, for 25+ minutes. Phone log: multicast "Found Flash Hedgehog at 192.168.0.168:45822" at 15:15:28, then
+no dial to 192.168.0.168 ever; instead a `WS connecting` every ~15 s to `192.168.1.144` / `192.168.1.145` (`routed-fallback`) and the
+gateway `192.168.0.1`.
+
+### Environment
+Infinix X6882B (Android 14), Windows desktop, build 2.1.0 (debug), same home Wi-Fi after a work Wi-Fi.
+
+### Root cause
+`rememberEndpoint` (discovery -> network) updated `knownEndpoints` only. The dialer's primary redial loop reads `reconnectTargets` (the
+route it last dialed, the work-network address) and, as long as the target exists and no session is live, redials it for ever. While
+that loop exists `isReconnectInFlight(deviceId)` is true, and planner rule 3 ("the reconnect engine goes first") forbids any planner
+dial of that peer, so the freshly discovered endpoint was never tried. Nothing ever cleared the stale target. The desktop twin
+(`JvmWsFlashNetwork`) has the same code.
+
+### Failed attempts
+None; found by reading the logs against `AutoConnector`, `ConnectionPlanner`, `RememberedRoutes` and the reconnect engine.
+
+### Working fix
+`rememberEndpoint` now compares with the previous route; when discovery reports the peer at a new address and there is no live
+session, the primary redial target follows it (compare-and-set), the peer's backoff is reset, and a running loop restarts at once
+(`retargetStaleRedial`, both hosts). Only a changed route retargets, so the 20 s presence refreshes do nothing.
+
+### Verification
+New `WsFlashNetworkTest.testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale` (host stops, comes back on another port, discovery
+reports it, the client reconnects). Mutation: with the call removed the test fails; restored. `:core:network:jvmTest` green,
+`:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` clean. NOT device-verified (`NETMOVE-01`).
+
+### Related files
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
+- `core/network/src/jvmMain/kotlin/com/transfer/flash/core/network/ws/JvmWsFlashNetwork.kt`
+- `core/network/src/androidHostTest/kotlin/com/transfer/flash/core/network/ws/WsFlashNetworkTest.kt`
+
+### Status
+FIXED IN CODE 2026-10-20, unit-tested and mutation-checked, NOT device-verified. Not proven: why the desktop did not dial either (its
+log was truncated by a second launch, see ERROR-744 note below); the same stale-loop cause is the likely explanation. Separately
+observed, not investigated: repeated `SSLV3_ALERT_CERTIFICATE_UNKNOWN` handshake rejections on the phone's server side since 14:29.
+
+## ERROR-742 — Group image stuck: the swarm never greeted an origin whose session was replaced by one that advertised `sw1`
+
+### Date
+2026-10-20
+
+### Area
+Group swarm (`SwarmDriver`)
+
+### Symptoms
+A 87 KB and a 313 KB image sent in a two-member group: the desktop accepted the offer (`swarm.accepted`) and then nothing, for ever.
+
+### Environment
+Windows desktop receiver, Infinix phone origin, group swarm on by default.
+
+### Root cause
+The phone's first session had features `cv1,gs1,hrs1` (no `sw1`) and was superseded 11 s later by an inbound session with `sw1`. The
+driver only sent `PeerUp` for device ids newly added to the connected-peers map; the id never left the map, so no `PeerUp`, the engine
+never learned the origin was connected, and it requested nothing. Why the first HELLO lacked `sw1` is not proven (suspected start-up
+race around `localFeatures`).
+
+### Working fix
+`SwarmDriver` also sends `PeerUp` to a connected peer that gains `sw1` under the same id (`gainedSwarm`). Not covered: a session swapped
+for one with identical features.
+
+### Verification
+New `SwarmDriverPeerFeatureTest` (2 tests); mutation: removing `gainedSwarm` fails the first test; restored. `:core:swarm:jvmTest`
+green. `SwarmInteropTest...OriginDropAndRejoin` failed once in a full `:core:engine:jvmTest` run and passes alone with and without the
+change (load flake). NOT device-verified (`SWM-48`).
+
+### Related files
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriver.kt`
+- `core/swarm/src/jvmTest/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriverPeerFeatureTest.kt`
+
+### Status
+FIXED IN CODE 2026-10-20, unit-tested and mutation-checked, NOT device-verified.
+
+## ERROR-744 — Starting a second desktop instance truncates the running instance's `desktop.log`
+
+### Date
+2026-10-20
+
+### Area
+Desktop logging (`DesktopMain.main`)
+
+### Symptoms
+`~/.flash/desktop.log` held 29 lines starting at the second launch (line 4 is NUL padding); the primary's log from before was gone.
+
+### Root cause
+`installDesktopLogSink()` (opens the file with `append = false`) ran before the single-instance check, so the duplicate process
+truncated the file the running instance was still writing (hence the NUL padding when the primary's file offset ran past the end).
+
+### Working fix
+`main` now acquires the single-instance lock first and installs the log sink only afterwards; a duplicate exits without touching the file.
+
+### Verification
+Compiles (`:desktop:compileKotlinJvm`). Not unit-tested (process entry point). Check `DLOG-01` in the test backlog.
+
+### Status
+FIXED IN CODE 2026-10-20, NOT device-verified.
+
+## ERROR-745 — Repeated `SSLV3_ALERT_CERTIFICATE_UNKNOWN` handshake rejections on the phone's server side
+
+### Date
+2026-10-20
+
+### Area
+TLS / `WsTransferServer`
+
+### Symptoms
+Phone log 2026-10-20: 39 `WS handshake rejected (Read error ... SSLV3_ALERT_CERTIFICATE_UNKNOWN)` lines between 14:29 and 14:38 (3-6 a
+minute) while the phone shared the work Wi-Fi with the desktop, another test device and a third phone. None after the phone moved to the
+home Wi-Fi.
+
+### Root cause (analysis, not proven)
+The phone is the TLS server in those lines, so the alert comes from the DIALER: it refused the phone's certificate. The dialer's trust
+manager (`TofuX509TrustManager`) rejects when the dial names an expected device id and the presented key does not match that device's
+pin. That is the designed outcome of a stale named route (a remembered route, a presence tip or a redial target of another device that
+now answers at the phone's address after a DHCP change); it costs one failed dial and the dialer drops that route
+(`onIdentityMismatch`). It is not a fault of the phone's certificate: the same phone's sessions to the desktop were established and
+carried traffic in the same minutes. The log did not say who dialed, so the dialer was not identified.
+
+### Working fix (diagnostic only)
+Both `WsTransferServer` implementations now log `from=<remote address>` and, for this alert, a sentence saying the dialer refused our
+certificate because it expected another device there (a stale route). The next capture names the dialer.
+
+### Verification
+Compiles. Not unit-tested (log text). If the lines continue after a capture shows a dialer that should be the phone, reopen as a pin
+problem (compare the dialer's pin for the phone with the phone's SPKI fingerprint).
+
+### Status
+OPEN (diagnosed as most likely benign; diagnostic added; cause not proven).
+
 ## ERROR-741 — Hub-routed 1:1 chat showed the colleague Offline and dropped the typing indicator
 
 ### Date

@@ -81,6 +81,9 @@ radio gateway are **not** part of this release and stay experimental; see "Exper
 
 ### Fixed
 
+- Moving to another Wi-Fi no longer leaves two paired devices "online, not connected": the redial loop used to keep dialing the old network's address and blocked the new one; it now follows the address discovery reports.
+- A group image no longer sticks at "accepted" when the sender's first connection was replaced by one that supports the group swarm.
+- Starting Flash a second time on Windows no longer wipes the running instance's `desktop.log`.
 - **Security**: a dial to a named peer is refused when the HELLO device id differs from the dialed id (R-02, both network twins);
   the exported share target refuses `file:` URIs and Flash's own content providers (R-05).
 - **WebSocket**: a ping or pong between the fragments of a message no longer drops the message (R-11, RFC 6455 section 5.4).

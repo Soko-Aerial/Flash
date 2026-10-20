@@ -1,5 +1,23 @@
 # Progress Log
 
+## 2026-10-20 - Fixes from the owner's logs: swarm greeting after a session swap, redial loop stuck on the old network
+
+### Worked on
+Two reports: a group image stuck at "accepted" on the desktop, and phone and desktop "online, not connected" at home after work.
+
+### Changed
+- `SwarmDriver`: a connected peer that gains `sw1` under the same device id now gets a `PeerUp` (ERROR-742).
+- `WsFlashNetwork` / `JvmWsFlashNetwork.rememberEndpoint`: a changed discovery route retargets the primary redial loop and restarts it, so
+  the loop no longer redials the old network for ever and no longer blocks the planner (ERROR-743).
+
+### Verification
+`SwarmDriverPeerFeatureTest`, `WsFlashNetworkTest.testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale`, both mutation-checked;
+`:core:swarm:jvmTest`, `:core:network:jvmTest`, desktop and app compile green. NOT device-verified; NOT committed; the dist 2.1.0
+artifacts predate these fixes and need a rebuild. ERROR-744 (duplicate launch truncates `desktop.log`) is open.
+
+### Next AI
+Owner to ask for commit and rebuild; then NETMOVE-01 and SWM-48 in `docs/testing/TEST-BACKLOG.md`.
+
 ## 2026-10-20 - Release 2.1.0 readiness check and documentation update (hub, radio, server, library excluded)
 
 ### Worked on
