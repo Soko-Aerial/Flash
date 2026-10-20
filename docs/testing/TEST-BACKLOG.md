@@ -5656,3 +5656,47 @@ with P1-P4, three enrolled devices A, B, C in one hub-linked group, A and B on o
 - **Steps:** install the P3 build, receive a hub file, upgrade to the P4 build without clearing data.
 - **Pass:** the file still opens; no crash at start; old rows have no group id.
 - **Source:** HUBFILE-P4-U04. **Status:** TODO
+
+## 4zzzzzzzzzzzzzzz. Release 2.1.0 smoke checks (2026-10-20; see `CHANGELOG.md` and `docs/release-build.md`)
+
+Run these on the **signed release APK and the installers that will be uploaded**, not on a debug build. Hub and radio are out of
+scope for this release. Record results in the Results log; a FAIL blocks the upload.
+
+### REL-01 — The uploaded APK is the release-signed one
+- **Steps:** `apksigner verify --print-certs -v Flash-2.1.0.apk`; compare with `SHA256SUMS.txt`.
+- **Pass:** v2 and v3 verify; `CN=Flash, OU=Release`; certificate SHA-256 `b695f4d6...e89af`; `versionName 2.1.0`, `versionCode 4`
+  (`aapt dump badging`).
+- **Status:** TODO
+
+### REL-02 — Fresh install of the release APK (R8 build) on two phones
+- **Steps:** install, open, grant permissions, pair the two phones, send a text, a photo and a 200 MB file, start a voice and a video call.
+- **Pass:** no crash; the same flows that work on a debug build work on the R8 release build (release-only ProGuard failures are
+  invisible to debug builds; no record in the logs says an R8 build of this tree was run on a device). No `FATAL EXCEPTION`/`ClassNotFound`/`NoSuchMethod` in logcat.
+- **Source:** `docs/release-build.md`, progress 2026-09-04 ("nobody has installed the release APK"). **Status:** TODO
+
+### REL-03 — Update over an older release-signed build keeps data (MIG-01 for the release key)
+- **Steps:** install `Flash-2.1.0-beta.apk` (release-signed, from `dist/2.1.0-beta`), pair and chat, then install `Flash-2.1.0.apk` over it.
+- **Pass:** installs as an update; chats, pairings and groups are intact; no `A migration from` / Room error in logcat.
+  versionCode 3 to 4. **Status:** TODO
+
+### REL-04 — v2.0.0-beta (debug-signed) is refused as an update, as the README says
+- **Steps:** install `v2.0.0-beta`, try to install 2.1.0 over it; then uninstall and install 2.1.0 clean.
+- **Pass:** the over-install is refused with a signature conflict; the clean install works. The README/CHANGELOG instruction is accurate. **Status:** TODO
+
+### REL-05 — Windows MSI and EXE install, run, upgrade and uninstall
+- **Steps:** on a clean Windows 11 user, install the MSI, launch, pair with a phone, chat, call; then install the EXE over it; then
+  uninstall. Repeat the install on a PC that already has `%USERPROFILE%\.flash\chat\flash.db` (MIG-02).
+- **Pass:** no admin prompt; SmartScreen shows only "unknown publisher"; the existing database opens and history is present;
+  `desktop.log` has no Room/migration error; uninstall leaves the user's data.
+- **Status:** TODO
+
+### REL-06 — Settings: Enterprise and Radio entries do not mislead
+- **Steps:** on a device that is not enrolled, open Settings; open "Radio gateway (beta)" and the Enterprise section.
+- **Pass:** the radio page says it is beta and fails with a sentence (no fake controller, ERROR-660); Enterprise offers enrolment only.
+  Nothing crashes with no hub and no radio. **Status:** TODO
+
+### REL-07 — Manifest permissions behave on a clean install
+- **Steps:** fresh install on Android 14 and Android 7/8 (BelFone SCP810 if available); do not open the Hiber/keep-alive screens.
+- **Pass:** no unexpected permission prompt at first run (no Bluetooth or overlay prompt unless the user opens those features);
+  notifications permission is asked once; the app does not crash on API 24-26 (notification APIs).
+- **Status:** TODO

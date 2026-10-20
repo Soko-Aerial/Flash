@@ -16,8 +16,8 @@ android {
         applicationId = "com.transfer.flash"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "2.1.0-beta"
+        versionCode = 4
+        versionName = "2.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

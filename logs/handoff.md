@@ -1,5 +1,16 @@
 # Current Handoff
 
+## 2026-10-20 - Release 2.1.0 prepared (apps only): docs and version updated, build/tests green, NOT uploaded
+
+- **Current branch:** `dev` (release-doc edits uncommitted until committed). **Status:** unit tests and `assembleRelease` green;
+  nothing device-tested; nothing uploaded or tagged.
+- **The one thing to know:** the release is 2.1.0 (Android code 4, Windows 2.1.0) for the **apps only**; hub, radio, server and the
+  library are experimental and excluded. v2.0.0-beta was debug-signed, so existing beta installs must be uninstalled once.
+- **Recommended next task:** commit the docs, run `tools\build-release.ps1`, check the APK certificate digest
+  (`b695f4d6...e89af`), run `REL-01`..`REL-07` (TEST-BACKLOG), then upload APK + MSI + EXE + SHA256SUMS to a GitHub release
+  (tag `v2.1.0`) once the owner confirms. Details: `logs/progress.md` 2026-10-20 "Release 2.1.0".
+- **Files most relevant:** `CHANGELOG.md`, `README.md`, `docs/release-build.md`, `app/build.gradle.kts`.
+
 ## 2026-10-20 — Hub files P4: group files, cancel on delete, pruning, console Files card
 
 - **Current branch:** `dev`. P4 is committed in focused commits on top of `07c5136f` (hashes in `git log`); **not pushed**: the owner confirmed the push of P1-P3 only.

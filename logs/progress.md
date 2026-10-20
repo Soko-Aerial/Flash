@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-10-20 - Release 2.1.0 readiness check and documentation update (hub, radio, server, library excluded)
+
+### Worked on
+Owner asked for a readiness check before an official release of the apps. Hub, radio, server and the JitPack library are
+experimental and were left out of the verdict.
+
+### Verified
+- `tools/flash-gradle.cmd --continue` over the non-hub modules: `jvmTest` for common, persistence, security, discovery, network,
+  transfer, messaging, engine, swarm, calling, ptt, ui:chat, ui:callui, ui:theme, desktop; `testAndroidHostTest` for messaging,
+  persistence, engine, ui:chat; `:app:testDebugUnitTest`; `:app:assembleRelease`; `:desktop:compileKotlinJvm`.
+  **BUILD SUCCESSFUL, 588 tasks, 0 failures** (11 m 29 s), before the version bump.
+- The 2.1.0-beta APK of 2026-10-09 is signed with the release key (`CN=Flash, OU=Release`, v2+v3); the production Room opener has no
+  destructive fallback (the one in `openInMemory` is test-only); no dev bypass markers in shipping source.
+- NOT verified: lint (not run this session), the R8 release APK on a device, any device behaviour. `docs/testing/TEST-BACKLOG.md` still has
+  hundreds of TODO device checks; the owner's last broad device pass was 2026-09-23.
+
+### Changed
+- `app/build.gradle.kts`: `versionName 2.1.0`, `versionCode 4` (nothing public ever used 3; v2.0.0-beta was code 2).
+- `CHANGELOG.md`: `[2.1.0] - 2026-10-20` replaces `[2.1.0-beta] - unreleased`: upgrade notes (signing-key change), accurate
+  swarm-on-by-default, search, Transsion keep-alive, restored Bluetooth/overlay manifest entries, an "Experimental" section, honest known issues.
+- `README.md`: new "Get the app" section; the library section renamed "Install the library" (still `v2.1.0-beta.1`).
+- `docs/release-build.md`: version table, app vs library versioning, signing decision.
+- `docs/testing/TEST-BACKLOG.md`: section 4zzzzzzzzzzzzzzz `REL-01`..`REL-07` (release smoke checks).
+
+### Findings the owner should know
+- v2.0.0-beta was debug-signed, so 2.1.0 cannot update it: testers must uninstall once (documented).
+- `main` is 616 commits behind `dev` and `dev` is 5 ahead of `origin/dev`; the release is tagged from whichever commit is built.
+- Release builds show "Enterprise & Organization" and "Radio gateway (beta)" in Settings (owner chose to leave them visible, labelled).
+
+### Remaining
+Build the signed APK and installers from the final commit, run `REL-01`..`REL-07`, then upload (owner confirms the upload).
+
+### Next AI
+Do not upload anything without the owner's go-ahead. Rebuild with `tools\build-release.ps1`, verify the certificate digest, and
+update the CHANGELOG date if the release slips.
+
 ## 2026-10-20 - Search upgrade (branch `agent/search-upgrades`) merged into `dev`
 
 ### Worked on

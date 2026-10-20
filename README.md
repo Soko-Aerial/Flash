@@ -19,7 +19,21 @@ take the whole engine or just the transport pieces you need. Supports **Android 
 
 [![](https://jitpack.io/v/Kali452345/Flash.svg)](https://jitpack.io/#Kali452345/Flash)
 
-## Install
+## Get the app
+
+The latest Android APK and Windows installers (`Flash-2.1.0.msi`, `Flash-2.1.0.exe`) are on the
+[Releases page](https://github.com/Kali452345/Flash/releases), with a `SHA256SUMS.txt` to check them against.
+
+- **Android 7.0 (API 24) or newer.** Allow "install unknown apps" for your browser or file manager, then open the APK.
+  **If you have `v2.0.0-beta` installed, uninstall it first** (this deletes its chats and pairings): that build was signed with a
+  debug key and Android will not update it with the release-signed 2.1.0. Updates after 2.1.0 install in place.
+- **Windows 10/11.** Per-user install, no administrator rights. The installers are not code-signed yet, so SmartScreen shows
+  "unknown publisher": choose *More info*, then *Run anyway*.
+- Both devices must be on the same Wi-Fi network (or one phone's hotspot) to find each other.
+- The Flash Hub (organisation server) and the Radio gateway are experimental and not part of this release; see
+  [CHANGELOG.md](CHANGELOG.md).
+
+## Install the library
 
 Flash is distributed via [JitPack](https://jitpack.io). Add the repository, then the
 one umbrella artifact (`core-engine`) that wires everything together:

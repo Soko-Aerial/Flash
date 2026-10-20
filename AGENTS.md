@@ -917,6 +917,11 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Release 2.1.0 (2026-10-20): prepared for the apps only (Android `versionName 2.1.0` / `versionCode 4`, Windows `Flash-2.1.0.msi`/`.exe`);
+unit tests and `assembleRelease` green, NOT device-verified, NOT uploaded or tagged.** The hub, the server, the radio gateway and the
+JitPack library (`2.1.0-beta.1`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.
+Release checks `REL-01..REL-07` in `docs/testing/TEST-BACKLOG.md`; steps in `docs/release-build.md`; notes in `CHANGELOG.md`.
+
 **Hub files P4 (2026-10-20, ADR-217): group files through the hub, cancel on delete, pruning and the console Files card; built and
 unit-tested, NOT deployed, NOT device-verified.** A file to a **hub-linked group** is uploaded once; every member the direct pipeline
 (swarm / whole-file push) could not reach gets a sealed `FLASH_HUBFILE v=1` ticket with optional `groupId` and `groupSig`, and

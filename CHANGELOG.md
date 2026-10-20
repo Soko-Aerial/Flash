@@ -8,15 +8,32 @@ Unless an entry says *device-verified*, it was built, unit-tested and compiled, 
 laptops**. The only things the owner has device-verified so far are pairing, chat, 1:1 calls, file transfers and upgrading an
 install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
-## [2.1.0-beta] - unreleased
+## [2.1.0] - 2026-10-20
 
-Versions in this release: library `2.1.0-beta.1` (`flashLibraryVersion` in `gradle.properties`), Android `versionName 2.1.0-beta` /
-`versionCode 3`, Windows installer `2.1.0`. Source: 138 commits since `v2.0.0-beta`, plus work that is still uncommitted in the
-working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026-10-09-overnight-report.md`).
+First official release since `v2.0.0-beta`. Android `versionName 2.1.0` / `versionCode 4`, Windows installers `Flash-2.1.0.msi` and
+`Flash-2.1.0.exe`. Source: 337 commits on `dev` since `v2.0.0-beta`.
+
+**This release covers the apps only.** The library (`core-*`, `ui-*`, JitPack, still `2.1.0-beta.1`), the Flash Hub server and the
+radio gateway are **not** part of this release and stay experimental; see "Experimental" below.
+
+### Upgrading from v2.0.0-beta
+
+- **Android: uninstall v2.0.0-beta first.** That APK was signed with Android Studio's debug key; 2.1.0 is signed with a real release
+  key (`CN=Flash, OU=Release`, certificate SHA-256 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`). Android
+  refuses an update signed with a different key ("App not installed"), so the old install must be removed, which **deletes its chats,
+  pairings and device identity**. Every later update will install in place. Back up the release key
+  (`~/.flash-signing/flash-release.jks` and its password): without it nobody can update.
+- Windows: install the new MSI or EXE over the old one. The installers are not Authenticode-signed, so SmartScreen shows "unknown
+  publisher" (More info, Run anyway). The existing chat database is migrated in place by the same migration chain as Android
+  (unit-tested; the device check `MIG-02` is still owed).
+- Pairings made with v1 builds keep working (device-verified 2026-09-23). The database schema moves from 4 to 19 through migrations
+  that are tested in unit tests (`FlashMigrationsChainTest`, `FlashJvmMigrationsTest`); an upgrade over a real old install (`MIG-01`)
+  is still owed on a device.
 
 ### Added
 
-- **Group swarm file transfer** (`core-swarm`, ADR-070..075, switch off by default): a group file is fetched in pieces from every
+- **Group swarm file transfer** (`core-swarm`, ADR-070..075, **on by default** since owner decision O-8, 2026-10-19; Settings turns
+  it off and an explicit off is kept): a group file is fetched in pieces from every
   member that holds it, verified against the whole-file SHA-256, with cancel-everywhere (signed tombstones), delete-for-everyone,
   Android 15 foreground-service timeout handling and availability UI. Unit-tested; device checks `SWM-07`..`SWM-29` owed.
 - **Group membership by group id + secret** (Track GM, ADR-074, ADR-076): invite links (`flash://g/1/...`), mutual group proofs,
@@ -28,13 +45,15 @@ working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026
   keyring vault and XDG paths on Linux (ADR-092, plan L0+L1; laptop checks `LNX-*` owed).
 - **Voice and video calls**: group calls that reach unpaired members, late joiners, a group video audit (ADR-064..066), typed media
   failures with an audio-only fallback and camera banner, and 1:1 voice-to-video upgrade (ADR-078/079), 540p group video (ADR-098).
-- **Group history sync** (ADR-100, UI-057, **uncommitted**): a signed history limit (default 30 days), a join card, "Load older
+- **Group history sync** (ADR-100, UI-057): a signed history limit (default 30 days), a join card, "Load older
   messages", paged catch-up with a progress banner, Room schema 13. Unit-tested; `GSY-01`..`GSY-12` owed.
-- **Screen share in calls** (ADR-102, **uncommitted**): a desktop device can share a screen or window in 1:1 and group video calls;
+- **Screen share in calls** (ADR-102): a desktop device can share a screen or window in 1:1 and group video calls;
   every receiver can watch. The Android presenter is **not built**. Unit-tested; `SHARE-01`..`SHARE-14` and `EXP-024` owed.
-- **Serial-port / Bluetooth radio link groundwork** (ADR-101 PROPOSED, **uncommitted**): KISS and AX.25 codecs, a compact AEAD radio
-  frame, a serial link (jSerialComm 2.11.4, desktop only) and an RFCOMM link. It is not wired to pairing or the connection planner,
-  so it is **not usable in the apps**. The Gradle-only tester (`:desktop:radioLinkTest`) is not shipped in the installer.
+- **Search** (UI-023/024, ADR-218): global and in-chat search now finds file names and captions as well as text, with scopes (All,
+  Chats, Messages, Files, Media, Links), recent searches, structured results (chat, sender, snippet, time) and a tap that opens the
+  chat and highlights the message. Unit-tested; `SEARCH-01`..`12` owed.
+- **Android keep-alive on Transsion phones** (HIB-12..17): tiered, session-aware keep-alive, a set-up guide, an optional home-screen
+  widget and notification overhaul. Live-checked on one Infinix handset; background delivery is still **not** claimed as supported.
 - **Ink launch splash** (UI-056): the pen writes "Flash" on a cold start; Settings turns it off. `SPLASH-01`..`08` owed.
 - **UI polish roadmap** (phases 0..3): redesigned detail panes, transfers screen, settings screen, message forwarding sheet,
   attachment staging tray, shared-content viewer, pinned-messages banner, motion polish. `UIP-01`..`UIP-10` owed.
@@ -51,10 +70,11 @@ working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026
   build. Before this, the published POMs pointed at `com.shepeliev:webrtc-kmp-android:0.125.11-flash-1`, which exists nowhere, so a
   consumer of the calling modules could not resolve it. Local development is unchanged (included-build substitution).
 - `FlashConfig` moved to common code and now holds `receivedFilesPath: String?`; Android keeps a source-compatible overload and
-  accessor taking a `File` (**uncommitted** engine refactor, ERROR-125).
+  accessor taking a `File` (ERROR-125).
 - Group video sizes: HIGH 540p, MEDIUM and LOW 360p (ADR-098).
-- Android manifest: the unused `BLUETOOTH_CONNECT` / `BLUETOOTH_SCAN` permissions are removed until the radio link has a real
-  Android entry point (ADR-101).
+- Android manifest: `BLUETOOTH_CONNECT` / `BLUETOOTH_SCAN` (scan flagged `neverForLocation`), `SYSTEM_ALERT_WINDOW` and a
+  `mediaPlayback` foreground-service type are declared again. They serve the Transsion keep-alive tiers and the experimental radio
+  link; the keep-alive overlay is only used after the user grants "display over other apps".
 - Android `FileProvider` roots are limited to the directories Flash shares from; the whole-filesystem `root-path` and the entire
   private `files` tree are no longer exposed (R-15).
 - `README.md`: minSdk 24 is Android 7.0 (it said 8.0), new version and installer names, the fork and desktop WebRTC native note.
@@ -77,14 +97,30 @@ working tree on 2026-10-09 (marked **uncommitted** below; see `docs/reports/2026
   NSD registration across reconnects.
 - Transfers: a received file is checked as a whole and a mismatch fails the transfer on both ends; a receive that cannot fit is
   refused by name; failures are worded for people (ADR-068/069).
+- Messaging: the 1:1 reaction trust gate was disabled by a leftover `if (false)` and is restored.
+
+### Experimental (not part of this release's promise)
+
+These are in the apps but unfinished and not device-verified. Do not rely on them.
+
+- **Flash Hub** (organisation server, enrolment via `flash://enroll`, directory, announcements, hub-carried chat and sealed files up
+  to 50 MB). The server is in beta and is **not released or deployed with 2.1.0**. Settings shows an "Enterprise & Organization"
+  section; leave it alone unless you run a hub.
+- **Radio gateway (beta)** (Settings, Network): Bluetooth/serial link to a packet radio. Radios have not been tested end to end;
+  radio audio is not built.
+- **Library publishing** (JitPack `core-*` / `ui-*` modules, tag `v2.1.0-beta.1`): unchanged by this release.
 
 ### Known issues and not verified
 
-- Almost everything above is unit-tested only. Owed device checks are listed in `docs/testing/TEST-BACKLOG.md`.
-- ERROR-106: `DesktopEngineGroupSessionUpTest` in `:desktop:jvmTest` (see the release report for its status).
-- Background transfer is not claimed as supported: liveness differs by handset (Transsion devices freeze Flash at screen off).
-- Wi-Fi Direct is not implemented (ADR-056). The Android screen-share presenter and the radio pairing adapter are not built.
-- JitPack tag `v2.1.0-beta` is burned: its first build failed (JDK 25 toolchain download, foojay HTTP 400), JitPack caches a failed build per version string and the owner cannot clear it. The library is published as `v2.1.0-beta.1` (same code plus the `jitpack.yml` fix). The Android app keeps `versionName 2.1.0-beta`.
+- **Most of the work above is unit-tested only.** The owner has device-verified pairing, chat, 1:1 calls, file transfers and a v1-pairing
+  upgrade (2026-09-23) plus the Transsion keep-alive on one handset. Everything else, including groups, the swarm, group history, group
+  calls, screen share, search and the UI polish, still has its device checks owed in `docs/testing/TEST-BACKLOG.md`.
+- Background transfer is not claimed as supported: liveness differs by handset (Transsion devices freeze Flash at screen off and
+  destroy its sockets; EXP-002, HIB-10).
+- Wi-Fi Direct is not implemented (ADR-056). The Android screen-share presenter is not built (an Android device can watch a share,
+  not start one).
+- The Windows installers are unsigned (SmartScreen warning). The Linux desktop port has code but no release build.
+- ERROR-168: on Linux, a member who leaves and rejoins a group call can sit on "Connecting" for about 40 s.
 
 ## [2.0.0-beta]
 

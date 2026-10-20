@@ -42,11 +42,15 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 | What | File | Current (2026-10-09) |
 |---|---|---|
 | Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta.1` |
-| Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0-beta` / `3` |
+| Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0` / `4` (2026-10-20) |
 | Windows installer `packageVersion` (MSI/EXE need a numeric `x.y.z`, so no `-beta`) | `desktop/build.gradle.kts` | `2.1.0` |
 | Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta.1` |
 | README install snippets, installer names | `README.md` | `v2.1.0-beta.1`, `Flash-2.1.0.*` |
-| Release notes | `CHANGELOG.md` | `[2.1.0-beta]` |
+| Release notes | `CHANGELOG.md` | `[2.1.0]` |
+
+The app (`2.1.0`) and the library (`2.1.0-beta.1`) are versioned separately on purpose: the 2.1.0 release ships the apps only, so a
+git tag `v2.1.0` must not be taken to mean the JitPack modules were released. If the tag is pushed, JitPack builds it only when
+someone requests it; the README library snippets still say `v2.1.0-beta.1`.
 
 `versionCode` must go up for Android to accept the APK as an update (it was 2 in `v2.0.0-beta`). The library version is
 only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta.1`) and
@@ -127,6 +131,14 @@ never paste them into a chat, issue or log. Passwords are never read by Gradle.
 **Back up the `.jks` file and its password somewhere other than this PC.** Android only installs an update if it's
 signed with the same key as the installed app. If the key or password is lost, every existing install must be
 uninstalled, which deletes its chats, trust list and identity, before a new build can be installed.
+
+### Decision recorded 2026-10-20: 2.1.0 is signed with the release key
+
+Option 1 below applies to 2.1.0 (the release key already existed and signed the 2.1.0-beta build; the owner asked for an official
+release and has not asked for the debug key): `Flash-2.1.0.apk` is signed with `~/.flash-signing/flash-release.jks`
+(`CN=Flash, OU=Release`, certificate SHA-256 `b695f4d6f36117037113a9cab6c1de3a3ab64d63e487c9cc913aa7bc611e89af`, checked with
+`apksigner` on the 2.1.0-beta build of 2026-10-09). Testers on v2.0.0-beta uninstall once; the README and CHANGELOG say so.
+Re-check the certificate digest of the final APK before uploading it.
 
 ### The v2.0.0-beta APK was signed with the debug key
 
