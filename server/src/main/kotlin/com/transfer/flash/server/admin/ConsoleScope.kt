@@ -109,6 +109,8 @@ object AdminRoutePolicies {
         "DELETE /admin/api/v1/announcements/{id}" to AdminRoutePolicy.OWN,
         "POST /admin/api/v1/announcements/{id}/pin" to AdminRoutePolicy.OWN,
         "POST /admin/api/v1/announcements/{id}/unpin" to AdminRoutePolicy.OWN,
+        // Sealed files (ADR-215): the counts and bytes the hub is holding; no name, no recipient, no content.
+        "GET /admin/api/v1/files/stats" to AdminRoutePolicy.ORG,
         // Hub trust and operations (org admin only).
         "GET /admin/api/v1/overview" to AdminRoutePolicy.OWN,
         "GET /admin/api/v1/metrics" to AdminRoutePolicy.ORG,

@@ -307,3 +307,78 @@ concurrent uploads (memory blow-up); (5) the group recipient list going stale be
 **Tests written first.** `FileStoreTest` (create idempotency, chunk maths, one-over limits, quota release on cancel,
 sweep), `FileRoutesTest` (auth, 403 for a non-recipient, 409 replay, 404 unknown, 413 oversize, resume after a partial
 upload), `FileUploadIntegrationTest` (real Ktor host, 50 MB synthetic, byte-identical download).
+
+### P1 result — built, unit-tested, NOT deployed (2026-10-20)
+
+**Status.** `HF-S1..HF-S6` exist in the working tree. The full `:server:test` run: **566 tests, one failure** —
+`RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`, which passes when rerun in
+isolation and belongs to the documented load-flake family (`RelayLoadTest`,
+`E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession`; `logs/handoff.md` "known flaky"). The 33 file tests pass
+alone and inside that run. Nothing is deployed, nothing is device-verified.
+
+**Built.**
+
+| Item | File | Notes |
+|---|---|---|
+| Contract + DTOs | `core/hub-protocol/.../HubContract.kt`, `rest/HubFileDtos.kt`, `rest/RestDtos.kt` (`HubInfo.maxFileBytes`) | `PATH_FILES`, `MAX_CHUNK_BYTES` (1 MiB), `MAX_FILE_CHUNKS` (4096), `DEFAULT_MAX_FILE_BYTES` (50 MB), `MAX_FILE_BYTES_CEILING` (2 GiB), `MIN_FILE_BYTES_FLOOR` (1 MiB) |
+| Policy + messages | `server/.../files/FileModels.kt`, `FileSettings.kt` | `FileLimits`, `FileOutcome`, `SweepResult`, `FileMessages`; the four console settings parsed in one place |
+| Store | `server/.../files/FileStore.kt` | migration component `files` v1 (`file_blob`, `file_recipient`, `file_chunk`), create/putChunk/complete/status/readChunk/cancel/sweep/reconcile/stats; storage at `<dataDir>/files/<fileId>/<index>.chunk` via `.part` + atomic move |
+| Routes | `server/.../files/FileRoutes.kt` | six routes, `receiveBoundedBinary` (413 before buffering), `HubRateLimits.fileWrite` (burst 120, 20/s) and `fileRead` (burst 240, 40/s), audit without content |
+| Wiring | `HubServices.kt`, `auth/AuthRoutes.kt` (`maxFileBytes`), `auth/ApiGate.kt`, `auth/RateLimiter.kt` | store opened after the admin service (its settings are the limits), swept by the existing housekeeping tick, `HubInfo.maxFileBytes` read live |
+| Admin | `admin/AdminApi.kt` (`SettingsDto`, settings validation, `GET /admin/api/v1/files/stats`), `AdminApiDtos.kt`, `ConsoleScope.kt` | the four settings are validated with a sentence naming the bound; the stats route is `ORG` in the declared policy table |
+| Docs | `docs/protocol.md` "Hub files API", `docs/protocol-routes.txt`, `docs/security.md`, `docs/deploy/HUB-SERVER-DEPLOYMENT.md` | wire spec, checked route list, threat rows, backup/ops notes |
+
+**Where the build deviates from this plan, and why.** The plan text above is left as written so the decision history stays
+visible; each deviation is deliberate.
+
+| # | The plan said | Built | Why |
+|---|---|---|---|
+| D1 | `fil1` in the `HubInfo` feature list and the relay `HELLO` capabilities | **no `fil1`**; availability is `HubInfo.maxFileBytes > 0` | one advertisement instead of two that can disagree, and no relay wire change at all. A hub that does not answer the field reads as `0`, which is the "not available" path the client already has |
+| D2 | a chunk body streamed straight to disk, "never fully buffered" | one chunk buffered (≤ `MAX_CHUNK_BYTES`), then written to `.part` and atomically moved | a chunk is already the retry and hashing unit; the buffer is bounded at 1 MiB per in-flight PUT and a bigger body is refused **before** it is read. Streaming mid-transaction would leave half a chunk file when the transaction rolls back |
+| D3 | `maxChunkBytes` as an admin setting | constant `MAX_CHUNK_BYTES`; `create` refuses a larger declared `chunkSize` | chunk size is a protocol constant; an admin lowering it mid-upload could only break clients. An upload that declared 1 MiB keeps finishing |
+| D4 | `maxUploadHours` as a setting | constant 24 h | no operator has asked for it; one fewer setting to get wrong |
+| D5 | a separate `FileStats.kt` | `FileSettings.kt` (policy parsing) + `FileStore.stats()` | stats need the same SQL connection; a second file would only add indirection |
+| D6 | an unknown recipient answers `ERR_BAD_REQUEST` | `ERR_UNKNOWN_RECIPIENT` (404) | matches the relay's own vocabulary for "that device is not here" |
+| D7 | files keep `CANCELLED` / `EXPIRED` rows | cancel and sweep **delete** the rows | the client's sentence for "gone" is the same 404 either way; tombstones would only grow the database. The DTO states stay for a future version that wants them |
+
+**Evidence (HF-S1..S6).**
+
+| Step | Test | Result |
+|---|---|---|
+| HF-S1 | contract constants compile; DTOs round-trip through `HubRestCodec` inside every route test | pass |
+| HF-S2 | `FileStoreTest` (23 cases): create idempotency and conflict, chunk maths, per-index replay, quotas (device, global, count), cancel, sweep, expiry, live group roster, path-traversal ids, reconcile, 50 MB, stats, **two-thread quota race** | pass |
+| HF-S3 | `FileRoutesTest` (10 cases): six routes without a bearer, the whole send/receive/cancel journey with the audit rules, 413 before buffering, the admin limit sentence, per-device 429 + `Retry-After`, bad JSON/bad index, group visibility, 404s, 503 when the bytes are gone, **50 MB over the real Ktor host** | pass |
+| HF-S4 | sweep / expiry / reconcile / unavailable-byte cases (inside `FileStoreTest`) | pass |
+| HF-S5 | `AdminApiTest.theFileLimitIsBoundedAndTheFilesStatsRouteIsOrgOnly`, `ConsoleScopeTest.everyAdminRouteHasADeclaredPolicy` | pass |
+| HF-S6 | `RouteTableContractTest`, `docs/protocol.md`, `docs/protocol-routes.txt` | pass |
+
+**The 50 MB acceptance run.** `FileRoutesTest.aFiftyMegabyteFileGoesThroughTheRealKtorHostAndComesBackIdentically` —
+50 × 1 MiB `PUT`s over the real Ktor test host, whole-blob hash computed incrementally (the test never holds 50 MB),
+download of the last chunk byte-identical, 1.9 s. `FileStoreTest.aFiftyMegabyteFileIsAcceptedWhenTheLimitAllowsIt` — the
+same size at store level, 2.0 s.
+
+**Quota race.** `FileStoreTest.twoSendersRacingForTheLastBytesCannotBothWin`: two threads, 2 × 4096 bytes against a
+5000-byte global cap, on a shared-cache in-memory database with a 4-connection pool. Exactly one `Ok` and one `Refused`,
+and `stats().uploadingBytes` equals one file. This is what proves the caps sit **inside** the write transaction rather
+than being "usually right".
+
+**Mutation checks (each caught by a named test, each restored, suite green afterwards).**
+
+| Mutation | Caught by |
+|---|---|
+| the device-quota check drops the incoming size (`senderBytes > cap`) | `theDeviceAndGlobalQuotasCountReservationsAndReleaseOnCancel` |
+| the declared chunk-length check becomes `>` instead of `!=` (a short chunk is stored) | `aChunkOfTheWrongSizeOrHashIsRefused` |
+| the recipient list is only enforced for group files | `anOutsiderCannotReadMetadataOrAChunk`, `aSealedFileTravelsFromOneDeviceToAnotherAndTheAuditStaysShort` |
+
+**Known limits, recorded rather than hidden.**
+
+- No client exists yet, so no file travels end to end; the routes are exercised with synthetic ciphertext.
+- The HTTP proof is on the test host: real-network, real-disk and real-phone behaviour is `HUBFILE-*` (P4).
+- A crash between writing a chunk file and committing its row leaves an orphan `*.chunk` in an otherwise valid directory;
+  the sweeper removes it with the file at expiry, `reconcile()` does not hunt single files.
+- The reservation model lets a client declare 50 MB and hold that quota with one byte sent; the 24 h upload window and
+  `maxFilesPerDevice` bound the abuse.
+- `HubServices.housekeeping()` runs `sweep()` on its existing tick; that interval was not tuned for files.
+- The console **Files** card is P4; the JSON stats route and the four settings exist now.
+- `HubInfo.maxFileBytes` is clamped to `globalStoredBytes` (never below 1 MiB), so the number advertised and the number
+  accepted are the same one.

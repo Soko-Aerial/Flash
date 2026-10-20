@@ -248,6 +248,11 @@ public data class HubInfo(
     public val maxPayloadBytes: Int = HubContract.MAX_PAYLOAD_BYTES,
     public val serverTime: Long = 0L,
     public val announcementLimits: AnnouncementLimitsDto? = null,
+    /**
+     * The largest single sealed file this hub accepts (ADR-215), or 0 when it carries no files at all. The client refuses
+     * a bigger file before uploading and names this number in the refusal.
+     */
+    public val maxFileBytes: Long = 0L,
 )
 
 

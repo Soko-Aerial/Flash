@@ -1,5 +1,66 @@
 # Progress Log
 
+## 2026-10-20 — Hub files P1: the server stores sealed 50 MB files, with an administrator's limit, quotas and a sweeper
+
+### Worked on
+Phase P1 of `docs/plans/HUB-FILES-PLAN.md` (ADR-215): the hub half of "send files through the hub". The owner's ask was
+"a ~50 MB file should go through the hub, with an administrator-adjustable limit, and the file must stay sealed so the hub
+cannot read it". P1 delivers the storage, the six REST routes, the limits, the console settings and the sweeper; no client
+exists yet (P2/P3), so nothing travels end to end.
+
+### Changed
+- **`:core:hub-protocol`**: `PATH_FILES`, `MAX_CHUNK_BYTES` (1 MiB), `MAX_FILE_CHUNKS` (4096), `DEFAULT_MAX_FILE_BYTES`
+  (50 MB), `MAX_FILE_BYTES_CEILING` (2 GiB), `MIN_FILE_BYTES_FLOOR` (1 MiB); new `rest/HubFileDtos.kt`
+  (`CreateFileRequestDto`, `FileTicketDto`, `FileStatusDto`, `FileStates`, `FileUsageRowDto`, `FileStatsDto`);
+  `HubInfo.maxFileBytes` (absent on an older hub, which reads as "no files").
+- **`:server` new package `files`**: `FileModels.kt` (limits, outcomes, fixed sentences), `FileSettings.kt` (the four
+  console settings parsed and bounded in one place, `maxFileBytes` clamped to `globalStoredBytes`), `FileStore.kt`
+  (migration component `files` v1: `file_blob`, `file_recipient`, `file_chunk`; create/putChunk/complete/status/readChunk/
+  cancel/sweep/reconcile/stats; bytes at `<dataDir>/files/<fileId>/<index>.chunk` written `.part` + atomic move), and
+  `FileRoutes.kt` (the six routes, per-device `fileWrite`/`fileRead` budgets, audit lines with 8-character ids only).
+- **`receiveBoundedBinary`** in `auth/ApiGate.kt`: reads a raw body of at most N bytes and answers 413 **before** buffering
+  more (the existing bounded-text helper never handled binary).
+- **Wiring**: `HubServices` opens the store after the admin service (its settings are the limits), sweeps it on the existing
+  housekeeping tick, advertises `maxFileBytes` on `/api/v1/hub`, and registers the routes; `knownDevice` accepts only
+  `ACTIVE` devices; a group's roster is re-checked live on every read.
+- **Admin**: the four settings (`maxFileBytes`, `fileRetentionDays`, `deviceStoredBytes`, `globalStoredBytes`) appear in
+  `SettingsDto`, are validated with a sentence that names the bound, and `GET /admin/api/v1/files/stats` returns counts and
+  bytes (declared `ORG` in `AdminRoutePolicies`).
+- **Docs**: `docs/protocol.md` "Hub files API" rewritten to what was built (including the deliberate `fil1` removal),
+  `docs/protocol-routes.txt` regenerated, `docs/security.md` threat rows, `docs/deploy/HUB-SERVER-DEPLOYMENT.md` backup and
+  operations notes (`files/` must be copied with the database).
+
+### Verified
+- `:server:test` full: **566 tests, one failure** — `RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`,
+  which passes in isolation and is one of the documented load flakes (shared PC, parallel agents). All 33 file tests pass
+  in the same run.
+- `FileStoreTest` 23 cases (create idempotency/conflict, chunk arithmetic, per-index replay, device/global/count quotas,
+  cancel, sweep, expiry, live group roster, path-traversal ids, reconcile, 50 MB, stats, **two-thread quota race**),
+  `FileRoutesTest` 10 cases (auth on all six routes, the full journey, 413 before buffering, admin limit sentence, 429 with
+  `Retry-After`, bad JSON/index, group visibility, 404/503, **50 MB over the real Ktor host in 1.9 s**),
+  `AdminApiTest.theFileLimitIsBoundedAndTheFilesStatsRouteIsOrgOnly`, `ConsoleScopeTest`, `RouteTableContractTest`.
+- Mutation checks, each caught by a named test and restored: device quota without the incoming size; chunk-length check
+  `>` instead of `!=`; recipient check applied only to group files.
+
+### Problems
+- `RouteTableContractTest` failed twice before passing: a first `Set-Content -Encoding UTF8` wrote a BOM that defeated the
+  test's "skip `#` lines" filter, and an earlier pass had not regenerated the list at all.
+- Two thought-through-but-wrong test expectations of mine: the global-quota case had already reserved its bytes (the store
+  was right, the test was wrong), and `FileLimits` requires `globalStoredBytes >= deviceStoredBytes`.
+
+### Remaining
+- P2 (client transport: DTO fuzz, `RealHubFilesApi` behind `HubUrlPolicy`, sealing with golden vectors, resume engine),
+  P3 (`HUB_FILE` message + Room step, key delivery, UI, both hosts), P4 (group edge cases, console Files card,
+  `HUBFILE-01..12` device tests).
+- Not deployed, not device-verified. A client cannot use any of it yet.
+- Recorded limits: an orphan `*.chunk` after a crash is left to the sweeper; the reservation model lets a declared size
+  hold quota; the housekeeping interval was not tuned for files.
+
+### Next AI
+Start P2. Read `docs/plans/HUB-FILES-PLAN.md` §4 and §9 ("P1 result", deviations D1–D7) first: the plan's `fil1` capability
+and `maxChunkBytes` setting were **deliberately not built**, and `docs/protocol.md` is the authority now. Do not change the
+server's wire shape without reading D1–D7.
+
 ## 2026-10-20 — Radio link fixes (F3.1–F3.3): insecure-first RFCOMM with a channel probe, control-device detection, and an honest "the radio closed the link" state
 
 ### Worked on

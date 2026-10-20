@@ -7,6 +7,7 @@ DELETE /admin/api/v1/groups/{id}
 DELETE /admin/api/v1/groups/{id}/members/{deviceId}
 DELETE /api/v1/announcements/{id}
 DELETE /api/v1/device/sealing-key
+DELETE /api/v1/files/{fileId}
 DELETE /api/v1/groups/{id}
 GET /
 GET /admin
@@ -22,6 +23,7 @@ GET /admin/api/v1/delegation
 GET /admin/api/v1/departments
 GET /admin/api/v1/devices
 GET /admin/api/v1/devices/{id}
+GET /admin/api/v1/files/stats
 GET /admin/api/v1/groups
 GET /admin/api/v1/invites
 GET /admin/api/v1/join-requests
@@ -52,6 +54,8 @@ GET /api/v1/directory/members
 GET /api/v1/directory/people
 GET /api/v1/directory/people/{deviceId}
 GET /api/v1/directory/sync
+GET /api/v1/files/{fileId}
+GET /api/v1/files/{fileId}/chunks/{index}
 GET /api/v1/groups/join-requests
 GET /api/v1/hub
 GET /api/v1/revocations
@@ -107,6 +111,8 @@ POST /api/v1/departments
 POST /api/v1/device/unenroll
 POST /api/v1/enroll
 POST /api/v1/enroll/renew
+POST /api/v1/files
+POST /api/v1/files/{fileId}/complete
 POST /api/v1/groups
 POST /api/v1/groups/join-request
 POST /api/v1/groups/join-requests/decision
@@ -119,4 +125,5 @@ PUT /admin/api/v1/groups/{id}
 PUT /admin/api/v1/settings
 PUT /api/v1/announcements/{id}
 PUT /api/v1/device/sealing-key
+PUT /api/v1/files/{fileId}/chunks/{index}
 PUT /api/v1/groups/{id}

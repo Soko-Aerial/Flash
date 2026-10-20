@@ -120,6 +120,29 @@ public object HubContract {
     /** Feature capability for announcement push over WebSocket relay (Plan A3 §3.7). */
     public const val FEATURE_ANNOUNCEMENTS_V1: String = "ann1"
 
+    // ---- sealed files (ADR-215) -----------------------------------------------------------------------------
+
+    /**
+     * `POST` creates a sealed upload; `/{fileId}` reads or cancels it; `/{fileId}/chunks/{index}` moves bytes;
+     * `/{fileId}/complete` finishes the upload. See `docs/plans/HUB-FILES-PLAN.md`.
+     */
+    public const val PATH_FILES: String = "$PATH_API/files"
+
+    /** Largest body a client may send to `PUT .../chunks/{index}`, and the largest chunk size it may declare. */
+    public const val MAX_CHUNK_BYTES: Int = 1024 * 1024
+
+    /** Most chunks one file may be split into (a 1 MiB chunk size gives 4 GiB; the byte cap is what actually binds). */
+    public const val MAX_FILE_CHUNKS: Int = 4096
+
+    /** Default cap on one file; the administrator may change it (`maxFileBytes` in the console). */
+    public const val DEFAULT_MAX_FILE_BYTES: Long = 50L * 1024 * 1024
+
+    /** Highest value an administrator may set for `maxFileBytes` (a hub is not a file server). */
+    public const val MAX_FILE_BYTES_CEILING: Long = 2L * 1024 * 1024 * 1024
+
+    /** Smallest value an administrator may set for `maxFileBytes` (one chunk). */
+    public const val MIN_FILE_BYTES_FLOOR: Long = MAX_CHUNK_BYTES.toLong()
+
 
     // ---- headers --------------------------------------------------------------------------------------------
 
