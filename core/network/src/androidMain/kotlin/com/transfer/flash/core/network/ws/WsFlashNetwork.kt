@@ -294,7 +294,24 @@ public class WsFlashNetwork(
     // ------------------------------------------------------------------
 
     override fun rememberEndpoint(deviceId: String, host: String, port: Int) {
-        knownEndpoints[deviceId] = Endpoint(host, port)
+        val fresh = Endpoint(host, port)
+        val previous = knownEndpoints.put(deviceId, fresh)
+        if (previous != fresh) retargetStaleRedial(deviceId, fresh)
+    }
+
+    /**
+     * Desktop/phone log 2026-10-20 ("online, not connected" after moving from the work Wi-Fi to the home Wi-Fi): the
+     * primary redial loop kept dialing the address of the OLD network (`192.168.1.144`) for ever, and while a loop runs
+     * [isReconnectInFlight] stops the auto-connect planner from dialing the peer at all (planner rule 3), so the
+     * address discovery had just found (`192.168.0.168`) was never tried. When discovery reports the peer somewhere
+     * new and there is no live session, the redial target follows it and a running loop restarts at once.
+     */
+    private fun retargetStaleRedial(deviceId: String, fresh: Endpoint) {
+        if (!running.get() || deviceId in localDisconnects || hasLiveSession(deviceId)) return
+        val old = reconnectTargets[deviceId] ?: return
+        if (old == fresh || !reconnectTargets.replace(deviceId, old, fresh)) return
+        reconnectPolicies.remove(deviceId)
+        if (reconnectJobs.containsKey(deviceId)) scheduleReconnect(deviceId, immediate = true)
     }
 
     /**

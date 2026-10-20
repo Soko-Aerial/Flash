@@ -129,7 +129,16 @@ public class WsTransferServer(
                         }
                         handshake(activeSocket) { clientLeaf }
                     }.onFailure { error ->
-                        WsLog.d(TAG, "WS handshake rejected (${error.message ?: error::class.java.simpleName})")
+                        // Who dialed is the first thing a field report needs. A CERTIFICATE_UNKNOWN alert is the DIALER refusing
+                        // OUR certificate: it expected another device at this address (a stale route), not a local fault.
+                        val detail = error.message ?: error::class.java.simpleName
+                        val refusedOurCertificate = detail.contains("CERTIFICATE_UNKNOWN") || detail.contains("certificate_unknown")
+                        WsLog.d(
+                            TAG,
+                            "WS handshake rejected from=${runCatching { client.inetAddress.hostAddress }.getOrNull()}" +
+                                (if (refusedOurCertificate) " (dialer refused our certificate: it expected another device here, a stale route)" else "") +
+                                " ($detail)",
+                        )
                         runCatching { activeSocket.close() }
                     }
                 } finally {

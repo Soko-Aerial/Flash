@@ -63,8 +63,6 @@ import java.io.PrintWriter
  * desktop window is manual testing, not a gate scenario.
  */
 public fun main(args: Array<String> = emptyArray()) {
-    installDesktopLogSink()
-
     // Skiko vsync and framerate tuning to prevent GPU spin on integrated graphics (e.g. Intel UHD 620)
     if (System.getProperty("skiko.vsync.enabled") == null) {
         System.setProperty("skiko.vsync.enabled", "true")
@@ -74,10 +72,14 @@ public fun main(args: Array<String> = emptyArray()) {
     }
 
     // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
+    // Before the log sink on purpose (ERROR-744): the sink truncates `desktop.log`, and a duplicate launch used to
+    // wipe the running instance's log, the file a bug report depends on.
     if (!SingleInstanceController.acquireOrActivate(args = args)) {
         FlashLog.i("MAIN", "Flash is already running. Request forwarded to existing instance. Exiting duplicate instance.")
         return
     }
+
+    installDesktopLogSink()
 
     installNativeWebRtcLogging()
 

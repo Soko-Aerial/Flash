@@ -225,8 +225,15 @@ public class SwarmDriver(
             transport.connectedPeers.collect { currentPeers ->
                 val added = currentPeers.keys - previousPeers.keys
                 val removed = previousPeers.keys - currentPeers.keys
+                // A peer that is already connected but only now lists "sw1" is just as new to the swarm: the first session can
+                // lack it and be superseded by a richer one under the same device id, and a StateFlow merges the
+                // down and the up into one map change in which the key never leaves (desktop log 2026-10-20: the offer was
+                // accepted and the transfer never started because no PeerUp was ever sent for the origin).
+                val gainedSwarm = currentPeers.keys.filter { id ->
+                    id in previousPeers && "sw1" in currentPeers[id].orEmpty() && "sw1" !in previousPeers[id].orEmpty()
+                }.toSet()
                 restored.await()
-                for (peerId in added) {
+                for (peerId in added + gainedSwarm) {
                     val features = currentPeers[peerId].orEmpty()
                     if ("sw1" in features) {
                         val denied = knownGroups.toSet().filter { !groupContext.isPeerAllowed(it, peerId) }.toSet()
