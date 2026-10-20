@@ -2672,6 +2672,136 @@ All of this is unit-tested only. Nothing here has been run on a phone, a real hu
 - **Pass:** phone A must approve (and the browser key confirm); phone B alone cannot take over.
 - **Source:** ADR-131. **Status:** TODO
 
+## 4zzzzzzzzzzzz Search — UI-023 / UI-024 upgrade (2026-10-20, ADR-218)
+
+Built and unit-tested; **none of these have been run on a device**. Design: `docs/ui/search-ui.md`
+"Upgrade 2026-10-20".
+
+### SEARCH-01 — Find a file by its name from the chat list
+
+- **Setup:** two paired phones (or desktop + phone). In a chat titled "Design Team" send a file named
+  `Budget_Q4.pdf` (about 1 MB), then leave the chat and let the message be older than the visible
+  preview.
+- **Steps:** open the chat list, tap the search icon, type `budget`.
+- **Pass:** a **Files** section appears with one row showing `Budget_Q4.pdf`, "Design Team", the
+  sender's name and the time; the row is not duplicated in **Messages**; the result counter says
+  "n results" matching the visible rows.
+- **Source:** ADR-218, `MessageDao.searchMessages`, `RealFlashChatRepositoryTest.searchChats...`.
+- **Status:** TODO
+
+### SEARCH-02 — Find a word that only exists deep in a thread
+
+- **Setup:** in a chat, send ~30 short messages, then one that says "the budget is approved", then
+  ~30 more.
+- **Steps:** search `budget` from the chat list.
+- **Pass:** a **Messages** section row shows the sentence (not the chat's latest preview), with the
+  sender and time; the chat row for that chat is absent unless the chat's own title/preview matches.
+- **Source:** ADR-218.
+- **Status:** TODO
+
+### SEARCH-03 — Scope chips narrow and count correctly
+
+- **Setup:** a history with (a) a chat whose title matches `budget`, (b) a text message matching it,
+  (c) a PDF matching it, (d) a JPEG named `budget-photo.jpg`, (e) a message containing
+  `https://example.com/budget`.
+- **Steps:** search `budget`; read the chip row; tap each chip in turn.
+- **Pass:** chips read All / Chats / Messages / Files / Media / Links. `Chats` shows only (a);
+  `Messages` shows (b) and (e); `Files` shows (c) only; `Media` shows (d) only; `Links` shows (e)
+  only. No row appears under a chip where it does not belong, and the bold/selected chip follows the
+  tap with a tick haptic.
+- **Source:** ADR-218, `FlashSearchResultMathTest`.
+- **Status:** TODO
+
+### SEARCH-04 — "See all" and the three-row preview
+
+- **Setup:** a query with more than 3 matching messages in several chats.
+- **Steps:** search; look at the Messages section; tap "See all"; then tap the "All" chip again.
+- **Pass:** All shows at most 3 message rows plus "See all"; tapping it switches to the Messages chip
+  with every hit; returning to All restores the 3-row preview; sections with ≤ 3 rows show no
+  "See all".
+- **Source:** `FlashSearchResultMath.SECTION_PREVIEW_LIMIT`.
+- **Status:** TODO
+
+### SEARCH-05 — Jumping to a hit, and Back afterwards
+
+- **Steps:** search a term; tap a **message** row; then tap a **file** row; then press Back once.
+- **Pass:** each tap opens the chat scrolled to that exact message with the pulse highlight, the
+  search overlay is gone, and Back returns to the chat list (one press), not to the previous hit.
+  Tapping two hits in the chat that is already open moves to the second message without a push
+  animation and still needs one Back to leave.
+- **Source:** ADR-218, `FlashNavigationLogicTest` target tests.
+- **Status:** TODO
+
+### SEARCH-06 — Recent searches persist and clear
+
+- **Steps:** search `budget`, close search, search again and submit with the keyboard's Search key;
+  kill the app from the recent-apps list; reopen and open search; then tap "Clear".
+- **Pass:** the query appears once among the recent chips (not twice), survives the app kill, tapping
+  a chip runs that search, and "Clear" removes the chips and they stay gone after another kill.
+- **Source:** ADR-218, `RecentSearchDao`.
+- **Status:** TODO
+
+### SEARCH-07 — In-chat search finds files, captions and links
+
+- **Setup:** in one chat send: a text "ship it", a file `invoice_2026.pdf`, an image with the caption
+  "rooftop sunset", and a message containing `https://meet.example.com/abc123`.
+- **Steps:** open the chat, tap search, type `invoice`, then `sunset`, then `abc123`, then `ship`.
+- **Pass:** each query finds exactly the expected message; the counter reads `1 / 1`; a file-name or
+  caption match highlights the message rather than nothing.
+- **Source:** ADR-218, `FlashChatSearchHitsTest`.
+- **Status:** TODO
+
+### SEARCH-08 — The in-chat results drawer
+
+- **Steps:** in a long chat search a common word (≥ 6 matches); tap the chevron next to the counter.
+- **Pass:** a panel expands under the bar listing every match with sender, time and a highlighted
+  snippet; it scrolls independently and caps at 320 dp so the thread stays visible; tapping a row
+  jumps and highlights that message; the chevron rotates and collapses it; typing keeps the panel
+  open; closing search collapses it.
+- **Source:** ADR-218, `FlashChatSearchResultsPanel`.
+- **Status:** TODO
+
+### SEARCH-09 — In-chat scope chips
+
+- **Steps:** with the same setup as SEARCH-07, search a term that matches both a message and a file
+  name; tap Messages, Files and Links.
+- **Pass:** the chip row reads All / Messages / Files / Links (no Chats, no Media); Files hides pure
+  text matches; Links shows only matches inside a URL; the "n results" line follows the filter.
+- **Source:** ADR-218, `ConversationSearchScopes`.
+- **Status:** TODO
+
+### SEARCH-10 — Shared content is searchable per tab
+
+- **Setup:** a chat with ≥ 10 media items, files, voice notes and links.
+- **Steps:** open the conversation menu → Shared content; type part of one file's name; switch tabs
+  while the query is present; type a query with no match.
+- **Pass:** the query stays across tab switches, each tab's count reflects the filter, the grid/list
+  shows only matches, a no-match tab says "No <tab> matches \"q\"", and clearing the field (X)
+  restores the full lists.
+- **Source:** ADR-218, `FlashSharedContentSheet`, `FlashSharedContentMathTest` filters.
+- **Status:** TODO
+
+### SEARCH-11 — Desktop parity
+
+- **Steps:** on Windows, run SEARCH-01, SEARCH-03, SEARCH-05 and SEARCH-08; use the mouse and the
+  keyboard (Tab into the field, Enter to submit).
+- **Pass:** the same results and layouts as on the phone, the drawer expands within the window, the
+  deep link selects the chat in the list pane and shows the message in the detail pane, and Enter
+  records the recent search without closing search prematurely.
+- **Source:** ADR-218 host wiring (`DesktopShell.kt`).
+- **Status:** TODO
+
+### SEARCH-12 — Long history, accessibility and appearance
+
+- **Setup:** a history with ≥ 5,000 messages and ≥ 200 attachments on a mid-range phone.
+- **Steps:** search a very common word; measure the pause before results appear (stopwatch, three
+  runs); run with TalkBack on; test dark mode and 200 % font scale.
+- **Pass:** results appear within ~1 s per run (record the numbers), TalkBack announces the counter
+  and each row ("Budget_Q4.pdf, file, Design Team, 10:12"), no chip or row clips at 200 % font, and
+  the chip/section/row colours use the theme tokens in both light and dark (no hard-coded colours).
+- **Source:** ADR-218, performance and accessibility sections of `docs/ui/search-ui.md`.
+- **Status:** TODO
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.

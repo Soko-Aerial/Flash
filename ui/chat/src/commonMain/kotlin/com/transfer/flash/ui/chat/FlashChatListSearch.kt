@@ -17,7 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -110,6 +113,7 @@ fun FlashChatListSearchBar(
     onClose: () -> Unit,
     resultCount: Int?,
     modifier: Modifier = Modifier,
+    onSearchSubmit: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -148,7 +152,7 @@ fun FlashChatListSearchBar(
                 .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space8)
                 .semantics {
                     contentDescription = if (resultCount != null && resultCount > 0) {
-                        "Searching ${query}, ${FlashChatListSearchMath.resultCountLabel(resultCount)}"
+                        "Searching ${query}, ${FlashSearchResultMath.countLabel(resultCount)}"
                     } else {
                         "Searching $query"
                     }
@@ -161,10 +165,12 @@ fun FlashChatListSearchBar(
                 singleLine = true,
                 textStyle = typography.bodyDefault.copy(color = colors.textPrimary),
                 cursorBrush = SolidColor(colors.accentPrimary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSearchSubmit?.invoke() }),
                 decorationBox = { innerTextField ->
                     if (query.isEmpty()) {
                         FlashText(
-                            text = "Search chats",
+                            text = "Search messages and files",
                             style = typography.bodyDefault,
                             color = colors.textTertiary,
                             maxLines = 1,
@@ -182,7 +188,7 @@ fun FlashChatListSearchBar(
             Spacer(modifier = Modifier.width(FlashDimensions.minTouchTarget))
         } else {
             FlashText(
-                text = if (resultCount == 0) "No matches" else FlashChatListSearchMath.resultCountLabel(resultCount),
+                text = if (resultCount == 0) "No matches" else FlashSearchResultMath.countLabel(resultCount),
                 style = typography.metadataDefault,
                 color = if (resultCount == 0) colors.textTertiary else colors.textSecondary,
                 maxLines = 1,

@@ -138,6 +138,62 @@ public object FlashSharedContentMath {
         return results
     }
 
+    // ── Search inside the shared-content sheet (UI-023/UI-024 upgrade) ──────────────────────────
+    // The sheet used to be a read-only gallery with no way to find one file among hundreds in the
+    // same conversation. These filters are pure and case-insensitive; a blank query returns the
+    // list unchanged so the caller can compose them unconditionally.
+
+    /** Media whose caption matches, or every item for a blank query. */
+    public fun filterMedia(
+        items: List<FlashSharedMediaItem>,
+        query: String,
+    ): List<FlashSharedMediaItem> {
+        val q = query.trim()
+        if (q.isEmpty()) return items
+        return items.filter { item ->
+            item.image.caption?.contains(q, ignoreCase = true) == true ||
+                item.senderName.contains(q, ignoreCase = true)
+        }
+    }
+
+    /** Files whose name (or sender) matches. The filename is the main thing people remember. */
+    public fun filterFiles(
+        items: List<FlashSharedFileItem>,
+        query: String,
+    ): List<FlashSharedFileItem> {
+        val q = query.trim()
+        if (q.isEmpty()) return items
+        return items.filter { item ->
+            item.file.name.contains(q, ignoreCase = true) ||
+                item.senderName.contains(q, ignoreCase = true)
+        }
+    }
+
+    /** Voice notes have no text of their own: match the sender's name. */
+    public fun filterAudio(
+        items: List<FlashSharedAudioItem>,
+        query: String,
+    ): List<FlashSharedAudioItem> {
+        val q = query.trim()
+        if (q.isEmpty()) return items
+        return items.filter { it.senderName.contains(q, ignoreCase = true) }
+    }
+
+    /** Links matched on the URL, its domain, the message snippet or the sender. */
+    public fun filterLinks(
+        items: List<FlashSharedLinkItem>,
+        query: String,
+    ): List<FlashSharedLinkItem> {
+        val q = query.trim()
+        if (q.isEmpty()) return items
+        return items.filter { item ->
+            item.url.contains(q, ignoreCase = true) ||
+                item.domain.contains(q, ignoreCase = true) ||
+                item.snippet.contains(q, ignoreCase = true) ||
+                item.senderName.contains(q, ignoreCase = true)
+        }
+    }
+
     /**
      * Parses host/domain from a URL string, returning "Link" if malformed.
      */
