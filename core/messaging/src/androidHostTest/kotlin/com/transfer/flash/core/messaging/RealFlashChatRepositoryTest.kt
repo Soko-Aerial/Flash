@@ -164,7 +164,11 @@ class RealFlashChatRepositoryTest {
 
         override suspend fun searchMessages(query: String, limit: Int): List<MessageEntity> =
             messages.values
-                .filter { it.deletedAt == null && it.text.contains(query, ignoreCase = true) }
+                .filter {
+                    it.deletedAt == null &&
+                        (it.text.contains(query, ignoreCase = true) ||
+                            it.attachmentName?.contains(query, ignoreCase = true) == true)
+                }
                 .sortedByDescending { it.sentAt }
                 .take(limit)
 
@@ -174,7 +178,11 @@ class RealFlashChatRepositoryTest {
             limit: Int,
         ): List<MessageEntity> =
             messages.values
-                .filter { it.conversationId == conversationId && it.deletedAt == null && it.text.contains(query, ignoreCase = true) }
+                .filter {
+                    it.conversationId == conversationId && it.deletedAt == null &&
+                        (it.text.contains(query, ignoreCase = true) ||
+                            it.attachmentName?.contains(query, ignoreCase = true) == true)
+                }
                 .sortedByDescending { it.sentAt }
                 .take(limit)
 
@@ -1112,6 +1120,64 @@ class RealFlashChatRepositoryTest {
 
         // Blank query short-circuits to empty without touching the DAO.
         assertTrue(repository.searchMessageBodies("   ").isEmpty())
+    }
+
+    @Test
+    fun `searchChats separates message hits from attachment-name hits with chat context`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        conversationDao.upsert(ConversationEntity(id = "conv-A", title = "Design Team", isGroup = true))
+        val repository = newRepository(messageDao = messageDao, conversationDao = conversationDao)
+
+        messageDao.insert(
+            msg("m1", "conv-A", "ship the release build").copy(
+                attachmentName = "Budget_Q4.pdf",
+                attachmentMime = "application/pdf",
+                attachmentSize = 12_345L,
+            ),
+        )
+        messageDao.insert(
+            msg("m2", "conv-A", "nothing here").copy(attachmentName = "notes.txt"),
+        )
+        messageDao.insert(msg("m3", "conv-A", "the budget is approved"))
+        messageDao.insert(msg("m4", "conv-A", "old budget note").copy(deletedAt = 1L))
+
+        val results = repository.searchChats("budget")
+
+        // Only the text row is a message hit; the attachment row is a file hit; the tombstoned row
+        // is invisible to both.
+        assertEquals(listOf("m3"), results.messageHits.map { it.messageId })
+        assertEquals(listOf("m1"), results.fileHits.map { it.messageId })
+
+        val file = results.fileHits.single()
+        assertEquals("Budget_Q4.pdf", file.fileName)
+        assertEquals("Design Team", file.conversationTitle)
+        assertEquals("Peer", file.senderName)
+        assertEquals(12_345L, file.fileSizeBytes)
+        assertEquals("application/pdf", file.mimeType)
+        assertEquals("conv-A", file.conversationId)
+
+        // The conversation-id view used by the list filter is derived from both hit kinds.
+        assertEquals(setOf("conv-A"), results.conversationIds)
+        assertTrue(repository.searchMessageBodies("   ").isEmpty())
+        assertTrue(repository.searchChats("   ").isEmpty)
+    }
+
+    @Test
+    fun `recent searches are recorded trimmed, deduplicated and cleared`() = runBlocking {
+        val recentSearchDao = FakeRecentSearchDao()
+        val repository = newRepository(recentSearchDao = recentSearchDao)
+
+        repository.recordRecentSearch("  budget ")
+        repository.recordRecentSearch("invoice")
+        repository.recordRecentSearch("budget")
+        repository.recordRecentSearch("   ")
+
+        assertEquals(listOf("budget", "invoice"), repository.observeRecentSearches(8).first())
+
+        repository.clearRecentSearches()
+
+        assertTrue(repository.observeRecentSearches(8).first().isEmpty())
     }
 
     @Test
@@ -3514,6 +3580,7 @@ class RealFlashChatRepositoryTest {
         conversationDao: ConversationDao = FakeConversationDao(),
         outboxDao: OutboxDao = FakeOutboxDao(),
         reactionDao: FakeReactionDao = FakeReactionDao(),
+        recentSearchDao: RecentSearchDao = FakeRecentSearchDao(),
         groupMemberDao: GroupMemberDao? = null,
         groupDeliveryDao: GroupDeliveryDao? = null,
         messagePinDao: MessagePinDao? = null,
@@ -3537,7 +3604,7 @@ class RealFlashChatRepositoryTest {
         outboxDao = outboxDao,
         receiptDao = FakeReceiptDao(),
         draftDao = FakeDraftDao(),
-        recentSearchDao = FakeRecentSearchDao(),
+        recentSearchDao = recentSearchDao,
         reactionDao = reactionDao,
         groupMemberDao = groupMemberDao,
         groupDeliveryDao = groupDeliveryDao,

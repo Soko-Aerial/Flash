@@ -44,10 +44,12 @@ import com.transfer.flash.core.messaging.model.FlashCallEventUi
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashChatListItemUi
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
+import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
 import com.transfer.flash.core.messaging.model.FlashConversationUiState
 import com.transfer.flash.core.messaging.model.FlashHubNoticeUi
 import com.transfer.flash.core.security.enterprise.HubSealingPin
 import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
+import com.transfer.flash.core.messaging.model.FlashFileSearchHitUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashGroupJoinRequestUi
 import com.transfer.flash.core.messaging.model.FlashGroupMemberUi
@@ -56,10 +58,12 @@ import com.transfer.flash.core.messaging.model.FlashGroupSyncUi
 import com.transfer.flash.core.messaging.model.FlashImageAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.model.FlashMessageInfoUi
+import com.transfer.flash.core.messaging.model.FlashMessageSearchHitUi
 import com.transfer.flash.core.messaging.model.FlashMessageStatus
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.core.messaging.model.FlashQuotedReplyUi
+import com.transfer.flash.core.messaging.model.FlashSearchText
 import com.transfer.flash.core.messaging.model.FlashSelfMembership
 import com.transfer.flash.core.messaging.model.FlashReaction
 import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
@@ -6379,20 +6383,100 @@ public class RealFlashChatRepository(
             .replace("_", "\\_")
     }
 
-    override suspend fun searchMessageBodies(query: String): Set<String> {
+    override suspend fun searchMessageBodies(query: String): Set<String> =
+        searchChats(query).conversationIds
+
+    /**
+     * Structured global search (UI-024 upgrade). One Room query matches message text **or the
+     * attachment file name**; the rows are then split into message hits (text matched) and file hits
+     * (attachment name matched), each with the chat title, sender, snippet and timestamp the result
+     * rows need. Previously every row was collapsed to a conversation id, so the UI could not say
+     * *what* matched and a file name was not searchable at all.
+     *
+     * A row whose text and file name both match yields one hit of each kind: they are two different
+     * things to find, and the scopes filter them independently. Tombstoned rows are excluded by the
+     * DAO query. Titles come from the conversation row (peer name resolver for 1:1 chats), resolved
+     * once per distinct conversation per query.
+     */
+    override suspend fun searchChats(query: String, limit: Int): FlashChatSearchResultsUi {
         val trimmed = query.trim()
-        if (trimmed.isEmpty()) return emptySet()
+        if (trimmed.isEmpty()) return FlashChatSearchResultsUi.Empty
         val escaped = escapeSqlLike(trimmed)
-        // Case-insensitive substring match over ALL message bodies (LIKE is case-insensitive for
-        // ASCII in SQLite), newest-first, capped. Collapse to the distinct set of conversations so
-        // the chat list can surface a thread whose only match is deep in history (#12). Tombstoned
-        // rows are already excluded by the query.
         return kotlinx.coroutines.withContext(ioDispatcher) {
-            messageDao.searchMessages(escaped, limit = SEARCH_RESULT_LIMIT)
-                .asSequence()
-                .map { it.conversationId }
-                .toSet()
+            val rows = messageDao.searchMessages(escaped, limit = limit)
+            if (rows.isEmpty()) return@withContext FlashChatSearchResultsUi.Empty
+            val nowMs = timeSource.nowMs()
+            val titles = HashMap<String, String>()
+            suspend fun titleOf(conversationId: String): String {
+                titles[conversationId]?.let { return it }
+                val entity = conversationDao.get(conversationId)
+                val title = if (entity?.isGroup == true) {
+                    entity.title.ifBlank { conversationId }
+                } else {
+                    peerNameResolver(conversationId)?.ifBlank { null }
+                        ?: entity?.title?.ifBlank { null }
+                        ?: conversationId
+                }
+                titles[conversationId] = title
+                return title
+            }
+            fun senderOf(row: MessageEntity): String =
+                row.senderName?.ifBlank { null }
+                    ?: if (row.senderId == localDeviceId) "You" else "Peer"
+            val messageHits = ArrayList<FlashMessageSearchHitUi>()
+            val fileHits = ArrayList<FlashFileSearchHitUi>()
+            for (row in rows) {
+                val textMatches = FlashSearchText.contains(row.text, trimmed)
+                val fileName = row.attachmentName?.takeIf { it.isNotBlank() }
+                val nameMatches = fileName != null && FlashSearchText.contains(fileName, trimmed)
+                if (!textMatches && !nameMatches) continue
+                val title = titleOf(row.conversationId)
+                val sender = senderOf(row)
+                val timeLabel = formatTimestamp(row.sentAt, nowMs)
+                if (textMatches) {
+                    messageHits += FlashMessageSearchHitUi(
+                        messageId = row.localId,
+                        conversationId = row.conversationId,
+                        conversationTitle = title,
+                        senderName = sender,
+                        snippet = FlashSearchText.snippet(row.text, trimmed),
+                        timestampMs = row.sentAt,
+                        timeLabel = timeLabel,
+                        isMine = row.senderId == localDeviceId,
+                    )
+                }
+                if (fileName != null) {
+                    fileHits += FlashFileSearchHitUi(
+                        messageId = row.localId,
+                        conversationId = row.conversationId,
+                        conversationTitle = title,
+                        senderName = sender,
+                        fileName = fileName,
+                        fileSizeBytes = row.attachmentSize,
+                        mimeType = row.attachmentMime ?: "application/octet-stream",
+                        timestampMs = row.sentAt,
+                        timeLabel = timeLabel,
+                        isMine = row.senderId == localDeviceId,
+                    )
+                }
+            }
+            FlashChatSearchResultsUi(messageHits = messageHits, fileHits = fileHits)
         }
+    }
+
+    override fun observeRecentSearches(limit: Int): Flow<List<String>> =
+        recentSearchDao.observeRecent(limit).map { rows -> rows.map { it.query } }
+
+    override suspend fun recordRecentSearch(query: String) {
+        val trimmed = query.trim()
+        if (trimmed.isEmpty()) return
+        kotlinx.coroutines.withContext(ioDispatcher) {
+            recentSearchDao.upsert(RecentSearchEntity(query = trimmed, usedAt = timeSource.nowMs()))
+        }
+    }
+
+    override suspend fun clearRecentSearches() {
+        kotlinx.coroutines.withContext(ioDispatcher) { recentSearchDao.clearAll() }
     }
 
     override suspend fun searchColleagues(query: String, limit: Int): Set<String> {

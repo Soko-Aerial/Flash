@@ -318,6 +318,83 @@ public data class FlashChatListItemUi(
     val orgName: String? = null,
 )
 
+/**
+ * One message-body hit of a global (cross-conversation) search (UI-024 upgrade).
+ *
+ * The old search path collapsed every matching row into a `Set<String>` of conversation ids,
+ * which is why a chat could appear as a result with no way to see *what* matched. This carries the
+ * fields the result row renders — a snippet around the first match, who said it and when — plus the
+ * message id the host deep-links to.
+ */
+@Immutable
+public data class FlashMessageSearchHitUi(
+    val messageId: String,
+    val conversationId: String,
+    val conversationTitle: String,
+    val senderName: String,
+    /** Query-centred extract of the message body, with leading/trailing ellipses when trimmed. */
+    val snippet: String,
+    val timestampMs: Long,
+    /** Pre-formatted relative/absolute label ("Now", "3h", "Oct 8") built against the device clock. */
+    val timeLabel: String,
+    val isMine: Boolean = false,
+) {
+    /** True when the matching message also carries a link, so the Links scope can show it. */
+    public val containsLink: Boolean
+        get() = FlashSearchText.firstUrl(snippet) != null
+}
+
+/**
+ * One attachment-name hit of a global search (UI-024 upgrade, SEARCH-01).
+ *
+ * Attachments used to be invisible to search: only `messages.text` was queried. A file hit is a
+ * first-class result (name, size, type, chat, date) and carries the owning message id so tapping it
+ * opens the conversation at that file.
+ */
+@Immutable
+public data class FlashFileSearchHitUi(
+    val messageId: String,
+    val conversationId: String,
+    val conversationTitle: String,
+    val senderName: String,
+    val fileName: String,
+    val fileSizeBytes: Long,
+    val mimeType: String,
+    val timestampMs: Long,
+    val timeLabel: String,
+    val isMine: Boolean = false,
+) {
+    /** Images and videos: the Media scope, and the file card's own tile grammar. */
+    public val isMedia: Boolean
+        get() = FlashSearchText.isMediaMime(mimeType)
+}
+
+/**
+ * Structured global-search result (UI-024 upgrade): the chats/rows split the UI renders as
+ * sections instead of a flat, context-free conversation list.
+ *
+ * [conversationIds] is derived, not stored, so the chat-list filter keeps its old contract without
+ * a second field drifting out of sync.
+ */
+@Immutable
+public data class FlashChatSearchResultsUi(
+    val messageHits: List<FlashMessageSearchHitUi> = emptyList(),
+    val fileHits: List<FlashFileSearchHitUi> = emptyList(),
+) {
+    public val conversationIds: Set<String>
+        get() = buildSet {
+            messageHits.forEach { add(it.conversationId) }
+            fileHits.forEach { add(it.conversationId) }
+        }
+
+    public val isEmpty: Boolean
+        get() = messageHits.isEmpty() && fileHits.isEmpty()
+
+    public companion object {
+        public val Empty: FlashChatSearchResultsUi = FlashChatSearchResultsUi()
+    }
+}
+
 @Immutable
 public data class FlashChatListUiState(
     val items: List<FlashChatListItemUi> = emptyList(),
