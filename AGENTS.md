@@ -917,7 +917,23 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Radio link fixes (2026-10-20, ADR-214): built and unit-tested, NOT device-verified.** The owner's "the radio page pairs but does not
+**Hub files P1 (2026-10-20, ADR-215): server built and unit-tested, NOT deployed, NOT device-verified, and no client exists yet.**
+The owner's "a ~50 MB file should go through the hub, with an administrator-adjustable limit, sealed so the hub cannot read it" now has
+its server half (`docs/plans/HUB-FILES-PLAN.md`, P1 report in §9): `HubContract.PATH_FILES` + `rest/HubFileDtos.kt`, `HubInfo.maxFileBytes`
+(the only availability advertisement — the planned `fil1` relay token was deliberately **not** built, deviation D1), and a new
+`:server/files` package with `FileStore` (migration component `files` v1, bytes at `<dataDir>/files/<fileId>/<index>.chunk`, `.part` +
+atomic move, `BEGIN IMMEDIATE` quotas for per-file 50 MB default / 500 MB device / 5 GB hub / 50 files, 7-day retention, 24 h upload
+window, sweeper + startup reconcile) and six routes (`POST /api/v1/files`, `PUT|GET .../{fileId}/chunks/{index}`, `POST .../complete`,
+`GET /api/v1/files/{fileId}`, `DELETE`). A group's roster is re-checked live on every read; audit lines carry 8-character ids only; a
+missing payload answers 503 rather than an empty body. Admin: the four limits are settings validated with the bound named,
+`GET /admin/api/v1/files/stats`. Verified: `:server:test` 566 tests with one documented load flake
+(`RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`, green when rerun alone), 33 file tests
+green including a 50 MB upload through the real Ktor host and a two-thread quota race, three mutations caught and restored. The
+`fil1`/`maxChunkBytes` deviations and the other seven are listed in `docs/plans/HUB-FILES-PLAN.md` §9 — **read them before touching the
+file wire shape**; `docs/protocol.md` "Hub files API" is the authority. Next: P2 client transport, then P3 messaging/UI, then P4.
+Nothing may claim hub file transfer works until a phone sends a real file through a deployed hub (`HUBFILE-*`, P4).
+
+**Radio link fixes (2026-10-20, ADR-214): committed `9d9a1fac` and pushed, built and unit-tested, NOT device-verified.** The owner's "the radio page pairs but does not
 stay connected" had three causes: Android opened the **secure** RFCOMM socket while these handhelds accept only null-auth (and can
 advertise a channel the firmware then refuses), the radio appears as **two** Bluetooth devices so pairing by name could bond the audio
 endpoint (no serial channel ever), and the driver reported `Connected` the moment the socket opened so a refused channel looked like a

@@ -43,6 +43,9 @@ import com.transfer.flash.server.directory.SealingKeyLookup
 import com.transfer.flash.server.directory.directoryRoutes
 import com.transfer.flash.server.announcements.AnnouncementStore
 import com.transfer.flash.server.announcements.announcementRoutes
+import com.transfer.flash.server.files.FileSettings
+import com.transfer.flash.server.files.FileStore
+import com.transfer.flash.server.files.fileRoutes
 import com.transfer.flash.server.relay.RelayFrameRouter
 import com.transfer.flash.server.identity.DeviceStatus
 import com.transfer.flash.server.identity.IdentityStore
@@ -97,6 +100,7 @@ class HubServices private constructor(
     val identities: IdentityStore,
     val directory: OrganizationDirectory,
     val announcements: AnnouncementStore? = null,
+    val files: FileStore? = null,
     val admins: AdminAuthService,
     val audit: AuditLogger,
     val revocations: SqliteRevocationService?,
@@ -141,6 +145,18 @@ class HubServices private constructor(
                 }
             }
         }.onFailure { log.warn("Announcement purge failed: {}", it.toString()) }
+        runCatching {
+            files?.let { store ->
+                val swept = store.sweep()
+                if (swept.filesExpired + swept.uploadsAbandoned > 0) {
+                    audit.logUnauthenticated(
+                        "system",
+                        "file.sweep",
+                        "abandoned=${swept.uploadsAbandoned} expired=${swept.filesExpired} bytes=${swept.bytesFreed}",
+                    )
+                }
+            }
+        }.onFailure { log.warn("File sweep failed: {}", it.toString()) }
     }
 
     private fun watchDelegationFile() {
@@ -241,6 +257,20 @@ class HubServices private constructor(
                 secrets = dataSecrets,
             )
             admins.sealLegacySecrets().let { if (it > 0) log.info("Sealed {} administrator authenticator seed(s) that were stored in plain text", it) }
+
+            // Sealed files (ADR-215): the hub stores opaque chunks and never sees a key. The limits are read from the
+            // console settings on every request, so raising maxFileBytes takes effect without a restart.
+            val fileStore = FileStore.open(
+                db = db,
+                rootDir = File(dataDir, "files"),
+                clock = clock,
+                limits = { FileSettings.limits(admins::getSetting) },
+                groupMembers = { groupId -> directory.getGroup(groupId)?.memberDeviceIds },
+                knownDevice = { deviceId ->
+                    identities.device(deviceId)?.status == DeviceStatus.ACTIVE
+                },
+            )
+
             val stepUp = StepUpAuth(admins, identities, clock = clock)
             val tls = TlsSupport.loadOrCreate(config)
             tls?.let { log.info("TLS certificate fingerprint (SHA-256, give it to clients that pin): {}", it.fingerprint) }
@@ -371,6 +401,7 @@ class HubServices private constructor(
                             metrics = metrics,
                             hubPublicKey = delegate.publicKey,
                             announcements = announcements,
+                            files = fileStore,
                             router = routerRef,
                         ),
                     )
@@ -381,6 +412,12 @@ class HubServices private constructor(
                         audit = audit,
                         limits = limits,
                         clock = clock,
+                    )
+                    fileRoutes(
+                        store = fileStore,
+                        principalResolver = resolver,
+                        audit = audit,
+                        limits = limits,
                     )
                     directoryRoutes(
                         directory = directory,
@@ -416,6 +453,7 @@ class HubServices private constructor(
                             hubName = config.hubName,
                             clock = clock,
                             principalResolver = resolver,
+                            maxFileBytes = { FileSettings.maxFileBytes(admins::getSetting) },
                         )
                     }
                 },
@@ -423,7 +461,7 @@ class HubServices private constructor(
             routerRef = engine.relayFrameRouter
 
             return HubServices(
-                config, engine, db, delegations, identities, directory, announcements, admins, audit, revocations, enrollment,
+                config, engine, db, delegations, identities, directory, announcements, fileStore, admins, audit, revocations, enrollment,
                 challengeAuth, bearerTokens, limits, tls, scheduler, delegationFile,
             )
         }

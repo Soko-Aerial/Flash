@@ -650,6 +650,43 @@ class AdminApiTest {
         assertEquals(r.now + 120 * 60_000L, created.invite.expiresAt)
     }
 
+    @Test
+    fun theFileLimitIsBoundedAndTheFilesStatsRouteIsOrgOnly() = testApplication {
+        val r = Realm()
+        mount(r)
+        val s = client.signIn(r)
+
+        suspend fun put(key: String, value: String): HttpResponse = client.put("/admin/api/v1/settings") {
+            withSession(s, stepUp = client.stepUp(r, s, StepUpActions.SETTINGS_CHANGE, "$key=$value"))
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(SettingChangeBody(key, value)))
+        }
+
+        // ADR-215: every bound is named in the answer, so an operator knows what to type instead.
+        val tooSmall = put("maxFileBytes", "1024")
+        assertEquals(HttpStatusCode.BadRequest, tooSmall.status)
+        assertTrue(tooSmall.bodyAsText().contains("at least 1 MB"), tooSmall.bodyAsText())
+        val tooBig = put("maxFileBytes", (3L * 1024 * 1024 * 1024).toString())
+        assertEquals(HttpStatusCode.BadRequest, tooBig.status)
+        assertTrue(tooBig.bodyAsText().contains("at most 2048 MB"), tooBig.bodyAsText())
+        assertEquals(HttpStatusCode.BadRequest, put("fileRetentionDays", "0").status)
+        assertEquals(HttpStatusCode.BadRequest, put("fileRetentionDays", "366").status)
+        assertEquals(HttpStatusCode.BadRequest, put("deviceStoredBytes", "abc").status)
+        assertEquals(HttpStatusCode.BadRequest, put("globalStoredBytes", "1024").status)
+
+        // 100 MB is accepted and shows up in the settings the console reads.
+        assertEquals(HttpStatusCode.OK, put("maxFileBytes", "104857600").status)
+        val settings = HubRestCodec.decode<SettingsDto>(client.getA("/settings", s).bodyAsText())
+        assertEquals(104_857_600L, settings.maxFileBytes)
+        assertEquals(7, settings.fileRetentionDays)
+
+        val stats = client.getA("/files/stats", s)
+        assertEquals(HttpStatusCode.OK, stats.status)
+        val dto = HubRestCodec.decode<com.transfer.flash.core.hubprotocol.rest.FileStatsDto>(stats.bodyAsText())
+        assertEquals(0, dto.ready)
+        assertEquals(0L, dto.readyBytes)
+    }
+
     // ------------------------------------------------------------------------------------------------ accounts
 
     @Test

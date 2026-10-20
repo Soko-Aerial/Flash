@@ -343,6 +343,11 @@ data class SettingsDto(
     val inviteDefaultTtlMinutes: Long,
     val inviteDefaultMaxUses: Int,
     val delegationFile: String,
+    /** ADR-215: largest single sealed file, in bytes. */
+    val maxFileBytes: Long = com.transfer.flash.core.hubprotocol.HubContract.DEFAULT_MAX_FILE_BYTES,
+    val fileRetentionDays: Int = com.transfer.flash.server.files.FileSettings.DEFAULT_RETENTION_DAYS,
+    val deviceStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_DEVICE_STORED_BYTES,
+    val globalStoredBytes: Long = com.transfer.flash.server.files.FileSettings.DEFAULT_GLOBAL_STORED_BYTES,
 )
 
 @Serializable

@@ -377,8 +377,9 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 
 | File | What it is | If lost |
 |---|---|---|
-| `flash-hub.db` | devices, directory, groups, announcements, audit, mailbox | organisation must be re-enrolled |
+| `flash-hub.db` | devices, directory, groups, announcements, audit, mailbox, sealed-file index | organisation must be re-enrolled |
 | `data.key` | seals sensitive columns (e.g. authenticator seeds) | **those columns become unreadable**: admins must re-enrol their authenticator |
+| `files/` | the sealed file payloads, one directory per `fileId` (ADR-215) | the index survives and every download answers `503` until the sweeper removes those rows after retention |
 | `server-identity.pk8` / `server-identity.pub` | the hub's own delegate key pair (owner-only) | issue a new delegation; devices re-enrol |
 | `delegation.cert` | the root-signed delegation | re-issue from the root |
 | `setup-token.txt` | first-admin bootstrap | regenerate (only matters before the first admin) |
@@ -386,6 +387,12 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
 - **Stop the hub (or use a filesystem snapshot) for a consistent database copy.** SQLite in
   WAL mode tolerates a hot copy only if you copy the `-wal` file too; the simplest safe
   backup is `systemctl stop` → copy → `systemctl start` (the downtime is seconds).
+- **Copy `files/` with the database, in the same operation.** The payloads carry no key (the hub
+  cannot read them) but they are the half of a transfer that the index points at; a database-only
+  restore is honest about it (downloads answer `503`, the sweeper eventually clears the rows) but
+  the files the recipients had not fetched yet are then gone. Files are replaceable by re-sending;
+  the organisation's trust state is not, so when space is tight back up `flash-hub.db` and
+  `data.key` first.
 - **Keep `data.key` in a different place from database backups.** It is the only thing that
   makes a stolen database copy useless on its own; storing them together throws that away.
 - Test a restore once, on a spare machine, before you need one.
@@ -400,10 +407,17 @@ Everything of value is under the data directory (`FLASH_DATA_DIR`):
   caller, or anyone holding `FLASH_MANAGEMENT_TOKEN`.
 - **Audit**: Console → **Audit**. Entries are chained and signed with the delegate key.
 - **Rate limits** (per device or per address, whichever the route uses): sign-in/verify,
-  enrolment, admin login, directory sync, people listing, announcements. A refused request
-  answers `429` with `Retry-After`. Device checks that exceed them are a misconfiguration,
-  not an outage.
+  enrolment, admin login, directory sync, people listing, announcements, and sealed-file
+  uploads/reads. A refused request answers `429` with `Retry-After`. Device checks that exceed
+  them are a misconfiguration, not an outage.
 - **Quota**: `FLASH_DEVICE_QUOTA` caps enrolled devices.
+- **Sealed files** (ADR-215): Console → **Settings** carries `maxFileBytes` (default 50 MB),
+  `fileRetentionDays` (7), `deviceStoredBytes` (500 MB) and `globalStoredBytes` (5 GB). A change
+  applies to the next upload; uploads already started keep the size they declared. Disk use is
+  `GET /admin/api/v1/files/stats`. The hub stores ciphertext it cannot read, so a file on disk
+  is not a privacy problem but it is a disk-space problem: reaching `globalStoredBytes` refuses new
+  uploads with `429 ERR_QUOTA_EXCEEDED`, while a physically full disk fails that one upload (the
+  client can retry) until the sweeper frees expired files on its next pass.
 - **Locked-out administrator**: `server admin-recovery --username <name>` on the server's
   own console prints a one-time password, a new authenticator secret and recovery codes, and
   ends that admin's sessions.

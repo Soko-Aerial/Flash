@@ -1,5 +1,39 @@
 # Current Handoff
 
+## 2026-10-20 — Hub files P1 (server): sealed 50 MB files, admin limit, quotas, sweeper
+
+- **Current branch:** `dev`. This entry covers the uncommitted `:core:hub-protocol` + `:server` + docs work of
+  `docs/plans/HUB-FILES-PLAN.md` P1 (ADR-215). It sits on top of the radio-fix commit `9d9a1fac` and the design commit
+  `a091c2a9`.
+- **Status:** implemented and unit-tested; **NOT deployed, NOT device-verified**, and **no client exists yet** (P2/P3), so
+  nothing can travel end to end today.
+- **The one thing to know:** the hub now stores files **it cannot read** — the client seals them (P2) and the hub keeps
+  opaque chunks, their SHA-256 and the recipient list. Availability is advertised as `HubInfo.maxFileBytes` (default
+  50 MB, admin setting); there is deliberately **no `fil1` capability token** and no relay wire change.
+- **What changed:**
+  - `:core:hub-protocol`: `PATH_FILES`, `MAX_CHUNK_BYTES` (1 MiB), `MAX_FILE_CHUNKS` (4096),
+    `DEFAULT_MAX_FILE_BYTES` (50 MB), `MAX_FILE_BYTES_CEILING` (2 GiB), `MIN_FILE_BYTES_FLOOR`; new
+    `rest/HubFileDtos.kt`; `HubInfo.maxFileBytes`.
+  - `:server/files/`: `FileModels`, `FileSettings`, `FileStore` (migration component `files` v1, bytes under
+    `<dataDir>/files/<fileId>/<index>.chunk`, `.part` + atomic move), `FileRoutes` (six routes, `fileWrite`/`fileRead`
+    budgets, audit ids truncated to 8 characters).
+  - `auth/ApiGate.kt` `receiveBoundedBinary` (413 before buffering); `HubServices` wiring (store after the admin service,
+    swept on the existing housekeeping tick, `maxFileBytes` served on `/api/v1/hub`); admin settings validation +
+    `GET /admin/api/v1/files/stats` (`ORG` policy).
+  - Docs: `docs/protocol.md` "Hub files API" (authority now), `docs/protocol-routes.txt`, `docs/security.md` rows,
+    `docs/deploy/HUB-SERVER-DEPLOYMENT.md` (copy `files/` with the database), and the P1 report in
+    `docs/plans/HUB-FILES-PLAN.md` §9 with deviations **D1–D7**.
+- **Last test:** `:server:test` full — 566 tests, one failure
+  (`RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`), which passes when rerun
+  alone (documented load flake on this shared PC). File suite: `FileStoreTest` 23 + `FileRoutesTest` 10 = 33 pass, including
+  a 50 MB upload through the real Ktor host (1.9 s) and a two-thread quota race. `AdminApiTest`,
+  `ConsoleScopeTest`, `RouteTableContractTest` pass. Three mutations (quota arithmetic, chunk length, recipient gate) were
+  each caught and restored.
+- **Owed next:** P2 (client transport). Deployment of the new server build is **not** required for the owner's presence fix
+  but is required before any file can be sent; see `docs/deploy/HUB-SERVER-DEPLOYMENT.md` §14 for the `myserver` steps.
+- **Still open for the owner:** hub live calls need TURN + a signalling wire change (ADR), radio audio needs the ADR-210 /
+  FO-28 decision, and the earlier hub review items F-1..F-4 stay untouched.
+
 ## 2026-10-20 — Radio link fixes (insecure-first RFCOMM + channel probe, control-device detection, honest closed-link state)
 
 - **Current branch:** `dev`. Everything below is in the working tree together with the

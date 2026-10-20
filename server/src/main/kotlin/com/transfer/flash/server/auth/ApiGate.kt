@@ -137,6 +137,25 @@ suspend fun ApplicationCall.receiveBoundedText(maxBytes: Int = HubContract.MAX_R
     return bytes.decodeToString()
 }
 
+/**
+ * Reads a raw binary body of at most [maxBytes] (ADR-215: one sealed chunk), refusing more with a 413 BEFORE buffering
+ * it all. Returns null after having responded. The bytes are never decoded: a sealed chunk is opaque to the hub.
+ */
+suspend fun ApplicationCall.receiveBoundedBinary(maxBytes: Int): ByteArray? {
+    val declared = request.headers["Content-Length"]?.toLongOrNull()
+    if (declared != null && declared > maxBytes) {
+        respondError(HttpStatusCode.PayloadTooLarge, HubErrorCodes.ERR_TOO_LARGE, MESSAGE_TOO_LARGE)
+        return null
+    }
+    val packet = receiveChannel().readRemaining(maxBytes + 1L)
+    val bytes = packet.readByteArray()
+    if (bytes.size > maxBytes) {
+        respondError(HttpStatusCode.PayloadTooLarge, HubErrorCodes.ERR_TOO_LARGE, MESSAGE_TOO_LARGE)
+        return null
+    }
+    return bytes
+}
+
 internal const val MESSAGE_AUTH_REQUIRED = "Authentication required."
 internal const val MESSAGE_RATE_LIMITED = "Too many requests. Try again later."
 internal const val MESSAGE_TOO_LARGE = "The request is too large."

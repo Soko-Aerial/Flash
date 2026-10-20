@@ -68,6 +68,8 @@ class AdminApiDeps(
     val hubPublicKey: String = "",
     val startedAtMs: Long = System.currentTimeMillis(),
     val announcements: com.transfer.flash.server.announcements.AnnouncementStore? = null,
+    /** The sealed file store (ADR-215); null on a hub built without one (tests that do not need it). */
+    val files: com.transfer.flash.server.files.FileStore? = null,
     val router: com.transfer.flash.server.relay.RelayFrameRouter? = null,
 )
 
@@ -103,6 +105,7 @@ fun Route.adminApiRoutes(d: AdminApiDeps) {
         adminAccountRoutes(d)
         auditRoutes(d)
         announcementAdminRoutes(d)
+        fileAdminRoutes(d)
     }
 }
 
@@ -741,6 +744,10 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
                     inviteDefaultTtlMinutes = d.admins.getSetting(SETTING_TTL)?.toLongOrNull() ?: DEFAULT_TTL_MINUTES,
                     inviteDefaultMaxUses = d.admins.getSetting(SETTING_USES)?.toIntOrNull() ?: 1,
                     delegationFile = c.delegationPath.name,
+                    maxFileBytes = fileLimits(d).maxFileBytes,
+                    fileRetentionDays = (fileLimits(d).retentionMs / DAY_MS).toInt(),
+                    deviceStoredBytes = fileLimits(d).deviceStoredBytes,
+                    globalStoredBytes = fileLimits(d).globalStoredBytes,
                 ),
             )
         }
@@ -749,16 +756,48 @@ private fun Route.settingsRoutes(d: AdminApiDeps) {
             val session = call.adminSession(d) ?: return@put
             if (!call.requireOrg(d.scopeOf(session))) return@put
             val b = call.body<SettingChangeBody>() ?: return@put
-            val ok = when (b.key) {
-                SETTING_TTL -> b.value.toLongOrNull()?.let { it in 5..MAX_TTL_MINUTES } == true
-                SETTING_USES -> b.value.toIntOrNull()?.let { it in 1..EnrollmentService.MAX_INVITE_USES } == true
-                else -> false
+            val invalid = when (b.key) {
+                SETTING_TTL -> if (b.value.toLongOrNull()?.let { it in 5..MAX_TTL_MINUTES } == true) {
+                    null
+                } else {
+                    "$SETTING_TTL must be a whole number of minutes between 5 and $MAX_TTL_MINUTES"
+                }
+                SETTING_USES -> if (b.value.toIntOrNull()?.let { it in 1..EnrollmentService.MAX_INVITE_USES } == true) {
+                    null
+                } else {
+                    "$SETTING_USES must be a whole number between 1 and ${EnrollmentService.MAX_INVITE_USES}"
+                }
+                else -> com.transfer.flash.server.files.FileSettings.validate(b.key, b.value)
             }
-            if (!ok) return@put call.badRequest()
+            if (invalid != null) {
+                return@put call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, invalid)
+            }
             if (!call.stepUpOk(d, session, StepUpActions.SETTINGS_CHANGE, "${b.key}=${b.value}")) return@put
             d.admins.putSetting(b.key, b.value, session.username)
             d.audit.log(session.username, "settings.change", "${b.key}=${b.value}")
             call.respondJson(OkDto())
+        }
+    }
+}
+
+/** The administrator's file policy (ADR-215), read from the settings on every call. */
+internal fun fileLimits(d: AdminApiDeps): com.transfer.flash.server.files.FileLimits =
+    com.transfer.flash.server.files.FileSettings.limits(d.admins::getSetting)
+
+/**
+ * `GET /admin/api/v1/files/stats`: what the hub is holding, for the operator. Counts and bytes only: the console never
+ * sees a file name, a recipient list or any content (ADR-215).
+ */
+private fun Route.fileAdminRoutes(d: AdminApiDeps) {
+    route("/files") {
+        get("/stats") {
+            val session = call.adminSession(d) ?: return@get
+            if (!call.requireOrg(d.scopeOf(session))) return@get
+            val store = d.files
+            if (store == null) {
+                return@get call.respondJson(com.transfer.flash.core.hubprotocol.rest.FileStatsDto())
+            }
+            call.respondJson(store.stats())
         }
     }
 }

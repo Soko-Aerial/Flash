@@ -1614,11 +1614,17 @@ and passes it on to at most 24 `hrs1` members. Offers are also sent when a peer 
 and peer are members, and the peer is ORG. Legacy and `g2-` groups use their own gates, unchanged. ORG-only members never get PTT, group
 creation or administration. "Add member" is disabled for hub groups. Roster rows are written with `operationId = "hub-roster-v<version>"`.
 
-## Hub files API (ADR-215, 2026-10-20; DESIGNED, P1 server in progress)
+## Hub files API (ADR-215, 2026-10-20; P1 server built and unit-tested, client phases P2–P4 pending)
 
 **What it is.** A file crosses the hub as a **client-sealed blob** in numbered chunks. The hub stores opaque bytes and never
-receives a key. Capability token `fil1` (also in the relay `HELLO` capability list). Contract constants and DTOs live in
-`:core:hub-protocol` (`HubContract.PATH_FILES*`, `rest/HubFileDtos.kt`); the design is `docs/plans/HUB-FILES-PLAN.md`.
+receives a key. Contract constants and DTOs live in `:core:hub-protocol` (`HubContract.PATH_FILES`, `MAX_CHUNK_BYTES`,
+`DEFAULT_MAX_FILE_BYTES`, `rest/HubFileDtos.kt`); the design is `docs/plans/HUB-FILES-PLAN.md`.
+
+**How a client learns it is available.** `GET /api/v1/hub` returns `HubInfo.maxFileBytes`: the largest single sealed file
+this hub accepts. `0` (also what an older hub answers, since the field is absent) means "this hub carries no files" and the
+client shows its existing not-available path. There is deliberately **no `fil1` relay capability token**: the REST field is
+the single advertisement, so no relay `HELLO` token has to be negotiated and no wire shape changed. This is a recorded
+deviation from the first draft of the plan (P1 explain-back, `docs/plans/HUB-FILES-PLAN.md` section 9).
 
 **Identifiers.** `fileId` is minted by the client: exactly 32 lowercase hex characters, and it is the idempotency key of the
 whole upload. It is also the only value used to build a storage path, so anything that is not 32 hex characters is
@@ -1628,33 +1634,63 @@ whole upload. It is also the only value used to build a storage path, so anythin
 
 | Method | Path | Body | Answers |
 |---|---|---|---|
-| `POST` | `/api/v1/files` | `CreateFileRequestDto` | `201 FileTicketDto`; `409 ERR_CONFLICT` if the id exists with different metadata; `413 ERR_TOO_LARGE` over `maxFileBytes`; `429 ERR_QUOTA_EXCEEDED` or `ERR_RATE_LIMIT` |
-| `PUT` | `/api/v1/files/{fileId}/chunks/{index}` | raw bytes, `content-type: application/octet-stream` | `204`; `404` unknown file; `403` not the sender; `409` wrong state or different bytes for an index already stored; `413` a chunk larger than the declared `chunkSize` |
-| `POST` | `/api/v1/files/{fileId}/complete` | empty | `200 FileStatusDto`; `409` a chunk is missing |
-| `GET` | `/api/v1/files/{fileId}` | — | `200 FileStatusDto`; `403` not the sender and not a recipient; `404` unknown or expired |
-| `GET` | `/api/v1/files/{fileId}/chunks/{index}` | — | `200 application/octet-stream`; `404` index not uploaded yet; `409` the file is not `READY`; `503` the chunk row exists but its file is gone (a restore without `data/files`) |
+| `POST` | `/api/v1/files` | `CreateFileRequestDto` | `201 FileTicketDto`; `409 ERR_CONFLICT` if the id exists with different metadata; `400` bad sizes or two/zero recipients; `404 ERR_UNKNOWN_RECIPIENT` unknown device or group; `413 ERR_TOO_LARGE` over `maxFileBytes` or over `MAX_CHUNK_BYTES`; `429 ERR_QUOTA_EXCEEDED` device/global bytes or file count; `429 ERR_RATE_LIMIT` |
+| `PUT` | `/api/v1/files/{fileId}/chunks/{index}` | raw bytes, `content-type: application/octet-stream` | `204`; `404` unknown file or index out of range; `403` not the sender; `409` wrong state or different bytes for an index already stored; `400` a body that is not the declared size or does not match `X-Flash-Chunk-Sha256`; `413` a body larger than the declared `chunkSize` or than `MAX_CHUNK_BYTES` |
+| `POST` | `/api/v1/files/{fileId}/complete` | empty | `200 FileStatusDto`; `403` not the sender; `409` a chunk is missing; `503` a stored chunk's bytes are gone |
+| `GET` | `/api/v1/files/{fileId}` | — | `200 FileStatusDto` (sender at any state; recipient only when `READY`); `403` not the sender and not a recipient; `404` unknown or expired |
+| `GET` | `/api/v1/files/{fileId}/chunks/{index}` | — | `200 application/octet-stream`; `403` not a recipient; `404` unknown index or expired; `409` the file is not `READY`; `503` the chunk row exists but its file is gone (a restore without `data/files`) |
 | `DELETE` | `/api/v1/files/{fileId}` | — | `204`; `403` not the sender |
 
+`PUT` also accepts an optional `X-Flash-Chunk-Sha256` header (64 lowercase hex): when present the hub compares it with the
+SHA-256 of the body it received and answers `400` on a mismatch. The hub stores that hash per chunk, so a byte-identical
+retry is recognised without the header too.
+
 **Rules.** `chunkSize` is 1..`MAX_CHUNK_BYTES` (1 MiB) and identical for every `PUT` of one file; `chunkCount` must equal
-`ceil(totalBytes / chunkSize)`; the last chunk may be shorter. `PUT` is idempotent per index: the same bytes answer `204`
-and do not change any counter, different bytes answer `409` and never overwrite. Chunks may arrive in any order. A file
-becomes `READY` only when every index 0..chunkCount-1 is present and the stored byte sum equals `totalBytes`; before that,
-a recipient's `GET` answers `404` (the file is not listed to them yet). `sha256` in the request is the hash of the whole
-**ciphertext** and is what the recipient checks before it decrypts; the hub only stores the value and returns it.
+`ceil(totalBytes / chunkSize)` and may not exceed `MAX_FILE_CHUNKS` (4096); the last chunk may be shorter. `PUT` is
+idempotent per index: the same bytes answer `204` and do not change any counter, different bytes answer `409` and never
+overwrite. Chunks may arrive in any order. A file becomes `READY` only when every index 0..chunkCount-1 is present and the
+stored byte sum equals `totalBytes`; before that a recipient's `GET` answers `404` (the file is not listed to them yet) while
+the sender sees `UPLOADING`. `sha256` in the request is the hash of the whole **ciphertext** and is what the recipient checks
+before it decrypts; the hub only stores the value and returns it.
 
 **Recipients.** Exactly one of `toDeviceId` (a 1:1 send) or `groupId` is present. For a group the hub resolves the roster
-**at create time** and stores the device ids; `GET`/`readChunk` re-check every caller against the live roster, so a member
-removed after the send can no longer download, while a member added after it never could. `FileStatusDto.recipients` lists
-the stored ids.
+**at create time** and stores the device ids; `GET` and chunk reads re-check every caller against the **live** roster, so a
+member removed after the send can no longer download, while a member added after it never could. `FileStatusDto.recipients`
+lists the stored ids. A group that resolves to nobody but the sender is refused (`ERR_BAD_REQUEST`).
 
-**Retention and limits.** `expiresAtMs` is `now + fileRetentionDays` at completion; an upload that is never completed is
-swept after `maxUploadHours`. The hub enforces `maxFileBytes` (default 50 MB, admin setting), `deviceStoredBytes`
-(default 500 MB), `globalStoredBytes` (default 5 GB) and `maxFilesPerDevice` (default 50), all inside the write transaction.
-A sender cancels with `DELETE`.
+**Retention, quotas and sweeper.** `expiresAtMs` is `now + fileRetentionDays` at completion, and an upload that is never
+completed is deleted after 24 hours. The hub enforces `maxFileBytes`, `deviceStoredBytes` (sender's uploads plus ready files),
+`globalStoredBytes` and `maxFilesPerDevice` (50) inside the same `BEGIN IMMEDIATE` transaction that inserts the row, so two
+senders can never jointly overshoot a cap; an in-flight upload counts against the byte caps from `create`. A sender cancels
+with `DELETE`, which removes the rows and the bytes. A housekeeping pass deletes expired and abandoned files (bytes first,
+then rows) and reconciles the index at startup: a chunk row whose file vanished on an unfinished upload is dropped so the
+sender can send it again, while a `READY` file whose bytes are missing keeps its row and answers `503` instead of pretending
+to be empty.
+
+**Storage.** Metadata is SQLite (migration component `files`, version 1: `file_blob`, `file_recipient`, `file_chunk`); the
+bytes are `<dataDir>/files/<fileId>/<index>.chunk`, written to a `.part` file and atomically moved. A backup that copies the
+database but not `data/files` therefore keeps the index and loses the payloads, which is exactly the `503` case above.
 
 **What the hub can see.** Size, chunk timing, sender, recipients, and the ciphertext hash. Not the content, not the name
 (only an operator log hint), not the key. Group keys travel in sealed direct messages, never in a group frame (ADR-215 D7).
 
-**Compatibility.** A hub without `fil1` has no `/api/v1/files` and answers `404`; a client must show the existing
-"not available over the hub" path rather than a new failure. The feature is additive: no relay frame changed, no existing
-endpoint changed, and nothing here is needed by a client that does not send files.
+**Audit.** `file.create`, `file.chunk`, `file.complete`, `file.read`, `file.cancel` (device actor) and `file.sweep` (`system`)
+carry only the first 8 characters of the file id, the chunk index and byte counts. No name, no recipient list, no content.
+
+**Administrator view and limits.** `GET /admin/api/v1/files/stats` (org admin) returns `FileStatsDto`: uploading and ready
+counts and bytes plus the five largest sending devices. The four adjustable settings (read by `GET /admin/api/v1/settings`,
+written with `PUT` `{"key","value"}`) are:
+
+| key | default | accepted |
+|---|---|---|
+| `maxFileBytes` | `52428800` (50 MB) | 1 MiB .. 2 GiB |
+| `fileRetentionDays` | `7` | 1 .. 365 |
+| `deviceStoredBytes` | `524288000` (500 MB) | 1 MiB .. 1 TiB, clamped to `globalStoredBytes` |
+| `globalStoredBytes` | `5368709120` (5 GB) | 1 MiB .. 100 TiB |
+
+A change applies to the next `POST /api/v1/files` without a restart. A value that is not a number, or is out of bounds, is
+refused with `400 ERR_BAD_REQUEST` and a sentence naming the bound.
+
+**Compatibility.** The feature is additive: no relay frame changed, no existing endpoint changed, and a client that does not
+send files needs none of it. A hub with `maxFileBytes == 0`, or an older hub that does not answer the field at all, makes the
+client show its existing "not available over the hub" path rather than a new failure.

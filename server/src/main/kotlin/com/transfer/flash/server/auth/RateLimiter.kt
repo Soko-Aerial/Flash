@@ -109,9 +109,16 @@ class HubRateLimits(
     val announcementPost: TokenBucketLimiter = TokenBucketLimiter(5, 5.0 / 60.0, clock = clock),
     /** Per authenticated device on `GET /api/v1/announcements` (feed/search/single item): burst 60, then 1 per second. */
     val announcementRead: TokenBucketLimiter = TokenBucketLimiter(60, 1.0, clock = clock),
+    /**
+     * Per device on `POST /api/v1/files`, chunk PUTs, complete and cancel: burst 120, then 20 per second (ADR-215). At a
+     * 1 MiB chunk that is ~20 MiB/s, comfortably above a phone's uplink while still stopping a runaway loop.
+     */
+    val fileWrite: TokenBucketLimiter = TokenBucketLimiter(120, 20.0, clock = clock),
+    /** Per device on `GET /api/v1/files...`: burst 240, then 40 per second (a 50 MB file is 50 chunk reads). */
+    val fileRead: TokenBucketLimiter = TokenBucketLimiter(240, 40.0, clock = clock),
 ) {
     fun sweepAll() {
-        auth.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep()
+        auth.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep(); fileWrite.sweep(); fileRead.sweep()
     }
 
     companion object {
@@ -129,6 +136,8 @@ class HubRateLimits(
                 directoryPeople = big(),
                 announcementPost = big(),
                 announcementRead = big(),
+                fileWrite = big(),
+                fileRead = big(),
             )
         }
     }
