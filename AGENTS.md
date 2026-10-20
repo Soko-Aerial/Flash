@@ -917,6 +917,19 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Search upgrade (2026-10-20, ADR-217): files are searchable, results are structured, hits deep-link; built and unit-tested on a
+separate branch (`agent/search-upgrades`, worktree `E:/FlashWork/S3-search`), NOT device-verified, NOT merged into `dev`.**
+`MessageDao.searchMessages` / `searchConversationMessages` match `text OR attachmentName`, and
+`FlashChatRepository.searchChats(query)` returns `FlashMessageSearchHitUi` + `FlashFileSearchHitUi` with chat title, sender,
+snippet and time (`searchMessageBodies` delegates to it, so old callers are unchanged). Global scopes are All / Chats / Messages /
+Files / Media / Links and in-chat All / Messages / Files / Links; a pure `FlashSearchResultMath` arranges the single heterogeneous
+result list (3-row sections plus "See all"). A result tap records the query as a recent search, opens the chat and jumps+pulses the
+message through the new `FlashBackStackState.targetMessageId` (saved third field; re-targeting the open chat replaces the entry).
+The in-chat search bar gained a results drawer, and matching now includes file names, image captions and link text; the
+shared-content sheet gained a per-tab search field. `RecentSearchDao` is finally read and written (no schema change: the table
+already existed at version 18). FTS5 is deliberately deferred (ADR-217). Design and decisions: `docs/ui/search-ui.md` "Upgrade
+2026-10-20". Device checks `SEARCH-01..SEARCH-12` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzz.
+
 **Hub files P3 (2026-10-20, ADR-216): 1:1 files go through the hub from chat, on both hosts; built and unit-tested, NOT deployed,
 NOT device-verified.** A 1:1 send to a peer with no live session that discovery does not see is taken by `HubFileBinding`
 (`:core:engine/hubfiles`, via `RealFlashTransferRepository.sendInterceptor`). It is uploaded sealed (P2), and its key travels only in a
