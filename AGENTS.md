@@ -919,7 +919,7 @@ This section must be updated by the AI as implementation progresses.
 
 **Release 2.1.0 (2026-10-20): prepared for the apps only (Android `versionName 2.1.0` / `versionCode 4`, Windows `Flash-2.1.0.msi`/`.exe`);
 unit tests and `assembleRelease` green, NOT device-verified, NOT uploaded or tagged.** The hub, the server, the radio gateway and the
-JitPack library (`2.1.0-beta.1`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.
+JitPack library (`2.1.0-beta.2`, tag `v2.1.0-beta.2`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.
 Release checks `REL-01..REL-07` in `docs/testing/TEST-BACKLOG.md`; steps in `docs/release-build.md`; notes in `CHANGELOG.md`.
 
 **Hub files P4 (2026-10-20, ADR-217): group files through the hub, cancel on delete, pruning and the console Files card; built and

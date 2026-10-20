@@ -41,19 +41,19 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 
 | What | File | Current (2026-10-09) |
 |---|---|---|
-| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta.1` |
+| Library version, every JitPack module and the `webrtc-kmp` fork | `gradle.properties` -> `flashLibraryVersion` | `2.1.0-beta.2` |
 | Android `versionName` / `versionCode` | `app/build.gradle.kts` | `2.1.0` / `4` (2026-10-20) |
 | Windows installer `packageVersion` (MSI/EXE need a numeric `x.y.z`, so no `-beta`) | `desktop/build.gradle.kts` | `2.1.0` |
-| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta.1` |
-| README install snippets, installer names | `README.md` | `v2.1.0-beta.1`, `Flash-2.1.0.*` |
+| Desktop sample consumer's dependency | `sample/consumer-desktop/build.gradle.kts` | `2.1.0-beta.2` |
+| README install snippets, installer names | `README.md` | `v2.1.0-beta.2`, `Flash-2.1.0.*` |
 | Release notes | `CHANGELOG.md` | `[2.1.0]` |
 
-The app (`2.1.0`) and the library (`2.1.0-beta.1`) are versioned separately on purpose: the 2.1.0 release ships the apps only, so a
-git tag `v2.1.0` must not be taken to mean the JitPack modules were released. If the tag is pushed, JitPack builds it only when
-someone requests it; the README library snippets still say `v2.1.0-beta.1`.
+The app (`2.1.0`) and the library (`2.1.0-beta.2`) are versioned separately on purpose: the git tag `v2.1.0` is the app release (GitHub
+release with the APK and installers) and must not be taken to mean the library is at 2.1.0; JitPack builds `v2.1.0` only if someone
+requests it. The library is published by the tag `v2.1.0-beta.2` (`v2.1.0-beta.1` is already built on JitPack and a tag name is never reused).
 
 `versionCode` must go up for Android to accept the APK as an update (it was 2 in `v2.0.0-beta`). The library version is
-only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta.1`) and
+only the Maven version for local builds; JitPack replaces it with the git tag, so the tag (`v2.1.0-beta.2`) and
 `flashLibraryVersion` should say the same thing.
 
 ## Publishing the library (JitPack) and the WebRTC fork
