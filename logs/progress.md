@@ -17679,3 +17679,6 @@ Publishing the library as a new JitPack tag. `v2.1.0-beta.1` is already built on
 
 ### Remaining
 The APK/MSI/EXE in `dist\2.1.0` were built before this bump, so their bundled licence list names the webrtc-kmp fork as `2.1.0-beta.1`; nothing else differs. Check the JitPack build of `v2.1.0-beta.2` (`https://jitpack.io/api/builds/com.github.Kali452345/Flash`) and a consumer once it is green.
+
+### Update — JitPack result (2026-10-20)
+JitPack built `v2.1.0-beta.2`: status `ok`. `core-engine`, `ui-callui` and `webrtc-kmp-jvm` POMs answer 200, and the `ui-callui` POM names `core-calling:v2.1.0-beta.2` at runtime scope. GitHub release `v2.1.0` is live with the APK, installers and SHA256SUMS. No consumer project has resolved the artifacts yet.
