@@ -305,7 +305,10 @@ class FlashBackgroundService : Service() {
                 ((transfer.bytesDone * 100) / transfer.bytesTotal).toInt().coerceIn(0, 100)
             } else 0
 
-            if (prevState == null) {
+            if (prevState == null && transfer.restored) {
+                // Read back from the store after a restart (C-09): listed in Transfers, not announced again.
+                Unit
+            } else if (prevState == null) {
                 when (transfer.state) {
                     FlashTransferState.Completed -> {
                         FlashNotificationManager.showTransferCompleted(this, transfer)

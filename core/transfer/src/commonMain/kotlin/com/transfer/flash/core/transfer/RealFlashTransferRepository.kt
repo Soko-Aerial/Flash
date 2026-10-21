@@ -159,6 +159,7 @@ public class RealFlashTransferRepository(
         val finished = _activeTransfers.value.filter { it.state == FlashTransferState.Completed }
         if (finished.isEmpty()) return
         dismissedFinishedIds.update { it + finished.map { row -> row.id.value } }
+        persistDismissed(finished.map { row -> row.id.value })
         updateMergedTransfers()
     }
 
@@ -166,6 +167,7 @@ public class RealFlashTransferRepository(
         val row = _activeTransfers.value.firstOrNull { it.id == transferId } ?: return
         if (!row.state.isFinished()) return
         dismissedFinishedIds.update { it + transferId.value }
+        persistDismissed(listOf(transferId.value))
         updateMergedTransfers()
     }
 
@@ -173,6 +175,7 @@ public class RealFlashTransferRepository(
         val rows = _activeTransfers.value.filter { it.state == FlashTransferState.Failed || it.state == FlashTransferState.Cancelled }
         if (rows.isEmpty()) return
         dismissedFinishedIds.update { it + rows.map { row -> row.id.value } }
+        persistDismissed(rows.map { row -> row.id.value })
         updateMergedTransfers()
     }
 
@@ -243,6 +246,9 @@ public class RealFlashTransferRepository(
     public data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
 
     public companion object {
+        /** How long a finished or interrupted row is kept for the Transfers list after its last change (C-05). */
+        public const val HISTORY_RETENTION_MS: Long = 30L * 24 * 60 * 60 * 1000
+
         /** Shown on the receiving side when the assembled file does not match the digest the sender offered (ADR-068). */
         public const val INTEGRITY_FAILED_MESSAGE: String =
             "The file arrived damaged and was discarded. Try again to receive it afresh."
@@ -1543,5 +1549,111 @@ public class RealFlashTransferRepository(
         updateInternalTransfers { list ->
             list.map { if (it.id.value == transferId) transform(it) else it }
         }
+    }
+
+    // ---- C-09 / C-05: a transfer's identity survives the process -------------------------------------------------
+
+    /** What was last written for a row; a row is written again only when one of these changes (not on every progress tick). */
+    private data class IdentitySignature(
+        val state: FlashTransferState,
+        val errorMessage: String?,
+        val localPath: String?,
+        val bytesTotal: Long,
+    )
+
+    /** Only the identity-persistence coroutine touches this. */
+    private val persistedIdentity = HashMap<String, IdentitySignature>()
+
+    private fun FlashTransfer.identitySignature() = IdentitySignature(state, errorMessage, localPath, bytesTotal)
+
+    private fun persistDismissed(ids: List<String>) {
+        val activeStore = store ?: return
+        if (ids.isEmpty()) return
+        repositoryScope.launch { runCatching { activeStore.dismissStored(ids) } }
+    }
+
+    /**
+     * Brings the stored rows back into the list once at start (Failed, Cancelled and Paused rows as they were; a row that
+     * was still running when the process died comes back Failed with a sentence, never resumed by itself), then keeps the
+     * store current as rows change state. Rows the person dismissed, and rows untouched for [HISTORY_RETENTION_MS], are not
+     * restored (C-05). Without a store nothing is restored and nothing is written.
+     */
+    private fun startIdentityPersistence() {
+        val activeStore = store ?: return
+        repositoryScope.launch {
+            try {
+                restoreStoredTransfers(activeStore)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                runCatching { FlashLog.w("TRANSFER", "restoring stored transfers failed: ${t::class.simpleName}") }
+            }
+            _internalTransfers.collect { rows ->
+                for (row in rows) {
+                    val signature = row.identitySignature()
+                    if (persistedIdentity[row.id.value] == signature) continue
+                    persistedIdentity[row.id.value] = signature
+                    runCatching { activeStore.saveIdentity(row.toStored()) }
+                }
+            }
+        }
+    }
+
+    private fun FlashTransfer.toStored() = TransferStore.StoredTransfer(
+        transferId = id.value,
+        peerDeviceId = peerDeviceId,
+        peerName = peerName,
+        fileName = fileName,
+        direction = direction.name,
+        totalBytes = bytesTotal,
+        bytesDone = bytesDone,
+        state = state.name,
+        errorMessage = errorMessage,
+        sourceUri = sourceUri,
+        wireFileId = wireFileId,
+        localPath = localPath,
+        updatedAtMs = SystemTimeSource.nowMs(),
+    )
+
+    private suspend fun restoreStoredTransfers(activeStore: TransferStore) {
+        val since = SystemTimeSource.nowMs() - HISTORY_RETENTION_MS
+        activeStore.deleteStoredBefore(since)
+        val restored = activeStore.restorableTransfers(since).mapNotNull { stored ->
+            val state = FlashTransferState.entries.firstOrNull { it.name == stored.state } ?: return@mapNotNull null
+            val direction = FlashTransferDirection.entries.firstOrNull { it.name == stored.direction } ?: return@mapNotNull null
+            // A finished receive is in the chat; an offer nobody answered has no live session to answer on.
+            if (state == FlashTransferState.Completed || state == FlashTransferState.Offered) return@mapNotNull null
+            val interrupted = state == FlashTransferState.Queued ||
+                state == FlashTransferState.Transferring || state == FlashTransferState.Verifying
+            val row = FlashTransfer(
+                id = FlashTransferId(stored.transferId),
+                peerName = stored.peerName,
+                fileName = stored.fileName,
+                direction = direction,
+                bytesDone = stored.bytesDone,
+                bytesTotal = stored.totalBytes,
+                state = if (interrupted) FlashTransferState.Failed else state,
+                errorMessage = if (interrupted) TransferFailureText.INTERRUPTED_BY_RESTART else stored.errorMessage,
+                sourceUri = stored.sourceUri,
+                wireFileId = stored.wireFileId,
+                peerDeviceId = stored.peerDeviceId,
+                localPath = stored.localPath,
+                isEncrypted = stored.peerDeviceId?.let(isPeerEncrypted) ?: false,
+                restored = true,
+            )
+            row to interrupted
+        }
+        if (restored.isEmpty()) return
+        updateInternalTransfers { current ->
+            val have = current.mapTo(HashSet()) { it.id.value }
+            current + restored.map { it.first }.filter { it.id.value !in have }
+        }
+        // A row restored as it was needs no rewrite; one converted to Failed is written so the store agrees with the list.
+        for ((row, interrupted) in restored) if (!interrupted) persistedIdentity[row.id.value] = row.identitySignature()
+        runCatching { FlashLog.i("TRANSFER", "restored ${restored.size} stored transfer(s)") }
+    }
+
+    init {
+        startIdentityPersistence()
     }
 }
