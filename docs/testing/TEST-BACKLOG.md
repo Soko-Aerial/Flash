@@ -5841,3 +5841,31 @@ confirm the audit's reading of the code.
 - **Pass:** the three cases read differently ("Cancelled by A", "Deleted by A", an expiry line), not all as a bare "Cancelled".
 - **Source:** B-19 (`SwarmDriver` drops the tombstone reason; `TransferFailureText.cancelledBy/deletedBy` have no caller). **Status:** TODO
 
+
+### CNCL-15 — A "paused by Android" 1:1 row resumes by itself when the service returns (open-items C-02)
+- **Setup:** a long 1:1 transfer in the background; make the dataSync timeout fire (see CNCL-02) so the row is Paused with "Paused by Android".
+- **Steps:** bring Flash to the foreground so the foreground service starts again. Also pause one row by hand and repeat.
+- **Pass:** the system-paused row continues from its done-set without a tap; the hand-paused row stays Paused. **Source:** C-02 (`ae91f59b`, `resumeSystemPaused`). **Status:** TODO
+
+### CNCL-16 — Desktop toast: Accept / Decline / Retry (C-06)
+- **Setup:** Windows app minimised or behind another window; a phone sends a file; separately make a desktop send fail.
+- **Steps:** the offer toast appears bottom-right; press Accept on one offer and Decline on another; press Retry on a failed-send toast; leave a failure toast alone for 30 s.
+- **Pass:** Accept starts the receive, Decline cancels it on the sender with a sentence, Retry restarts the send, the failure toast disappears by itself, offers stay until answered, nothing steals focus, and nothing shows while Flash is in front. **Source:** C-06 (`2225fe3c`). **Status:** TODO
+
+### CNCL-17 — A hub upload older than 24 h fails with a sentence and can be retried (C-07)
+- **Setup:** a hub-linked 1:1 upload interrupted (peer offline / hub unreachable) for more than 24 h, then the app reopened (or a clock set forward in a test build).
+- **Pass:** the row reads "the upload window ended" (Failed), Retry starts a fresh upload and the chat message returns to Pending; a download whose ticket expired fails with the hub's not-found sentence. **Source:** C-07 (`91b0c69f`, ADR-220). **Status:** TODO
+
+### CNCL-18 — A retried receive with no sender fails again within 30 s (C-08)
+- **Setup:** a failed 1:1 receive; close Flash on the sender.
+- **Steps:** press Retry on the receiver.
+- **Pass:** within about 30 s the row returns to Failed with "the sender did not resume" instead of sitting at Downloading. **Source:** C-08. **Status:** TODO
+
+### CNCL-19 — Dismiss, Clear and 30-day history survive a restart (C-09, C-05, C-10)
+- **Setup:** one Failed, one Cancelled and one Paused 1:1 row, plus one running at ~50 %.
+- **Steps:** dismiss the Cancelled row, `adb shell am force-stop com.transfer.flash`, reopen, open Transfers. Later set the phone date 31 days ahead and reopen.
+- **Pass:** the dismissed row stays gone; Failed and Paused rows are back, the running one is Failed with "Flash was closed while this was transferring. Tap Retry to continue."; no notification storm on start; rows older than 30 days are gone. **Source:** C-09/C-05 (`3df0bfa5`, Room step 20; supersedes the "today the list starts empty" part of CNCL-11). Desktop does not persist yet (store = null, D5). **Status:** TODO
+
+### CNCL-20 — Receiver's refusal names its reason on the sender (C-11)
+- **Setup:** B with a full storage / a session ceiling reached / a write error.
+- **Pass:** A's row fails with B's sentence ("busy", "refused the file", "not enough storage") and Retry is offered; an old build as B still behaves as before (cancel without reason). **Source:** C-11 (`3e828b8b`, ADR-221, `docs/protocol.md`). Not built: a Failed row on the refusing device. **Status:** TODO

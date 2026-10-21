@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-21 (later) - Cancel stream: C-02, C-06..C-13 built on `agent/A-cancel` (unit-tested, NOT device-verified)
+
+- **Commits:** `57af1ad8`, `2225fe3c`, `91b0c69f` (ADR-220), `ae91f59b`, `3e828b8b` (ADR-221), `3df0bfa5` (Room step 20) plus the C-10 and C-08 commits.
+- **Behaviour to know:** the Transfers list now survives a restart on Android (running rows come back Failed, Retry restarts them; 30-day history; dismissals persist); a receiver's refusal reason reaches the sender; rows paused by Android resume when the service returns; desktop shows an actionable toast; desktop still does not persist (`store = null`, D5).
+- **Merge caution:** schema 20 here vs 19 on `dev`; ADR numbering (218 on `agent/search-upgrades`).
+- **Recommended next task:** device checks `CNCL-15..20`; then the remaining tracker items (H-15 device, C-01/C-03/C-04 no change).
+
 ## 2026-10-21 - Cancel, error and resume: audit defects fixed in code (unit-tested, NOT device-verified, see commit on `agent/A-cancel`)
 
 - **Branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel`. Fixes for B-01..B-07, B-09, B-10, B-12, B-16 and part of B-14; the

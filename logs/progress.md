@@ -17768,3 +17768,28 @@ The APK/MSI/EXE in `dist\2.1.0` were built before this bump, so their bundled li
 
 ### Update — JitPack result (2026-10-20)
 JitPack built `v2.1.0-beta.2`: status `ok`. `core-engine`, `ui-callui` and `webrtc-kmp-jvm` POMs answer 200, and the `ui-callui` POM names `core-calling:v2.1.0-beta.2` at runtime scope. GitHub release `v2.1.0` is live with the APK, installers and SHA256SUMS. No consumer project has resolved the artifacts yet.
+
+
+## 2026-10-21 — Open-items stream C: auto-resume, desktop toast, 24 h bound, retry watchdog, persistence, refusal reasons
+
+### Worked on
+Owner decisions on the cancel/error/resume audit leftovers (tracker `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` in the main checkout), implemented one by one on `agent/A-cancel`.
+
+### Changed
+- C-12/C-13 (`57af1ad8`), C-06 desktop toast with Accept / Decline / Retry (`2225fe3c`), C-10 dismiss and "Clear failed", C-08 retried receive with no sender fails after 30 s (`SENDER_DID_NOT_RESUME`).
+- C-07 (`91b0c69f`, ADR-220): hub upload older than 24 h fails with `UPLOAD_WINDOW_ENDED`; an expired download ticket fails; a Failed hub row can be retried and the message returns to Pending.
+- C-02 (`ae91f59b`): `resumeSystemPaused()` resumes rows paused by Android when the foreground service starts.
+- C-11 (`3e828b8b`, ADR-221, `docs/protocol.md`): a receiver refusal carries `reason` on the `cancel` frame; the sender fails with the receiver's sentence.
+- C-09 / C-05 / C-10 persistence (`3df0bfa5`): Room step 20 adds identity columns to `transfers`; the repository writes rows behind the scenes and restores them at start (running rows come back Failed with `INTERRUPTED_BY_RESTART`), 30-day retention, dismissals stored, restored rows are not announced.
+
+### Verification
+Unit tests green: `:core:transfer:testAndroidHostTest`, `:core:persistence` (host + jvm), `:core:engine:jvmTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, `:desktop:jvmTest`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`. NOT device-verified. Timing flakes under load that pass alone: `ExternalSourcesAndInterceptorTest` (two tests), `RealFlashTransferRepositoryTest` "B-01 resume refuses a cancelled or declined row...".
+
+### Remaining
+- Desktop still passes `store = null`, so desktop rows are not restored (D5 owner decision).
+- C-11: the refusing device shows no Failed row (the event carries no metadata).
+- **Merge caution:** this branch is at Room schema 20; the main checkout is still at 19 and has step 20 free. ADR-218 belongs to the unmerged `agent/search-upgrades`, ADR-219 to this branch.
+- Device checks `CNCL-15..20` (new) and `CNCL-11`, `CNCL-13`.
+
+### Next AI
+Merge `agent/A-cancel` after renumbering any competing schema step 20; run the CNCL device checks.
