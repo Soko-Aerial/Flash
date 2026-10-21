@@ -197,6 +197,26 @@ public object HubContract {
     /** Largest REST request or response body, in UTF-8 bytes. */
     public const val MAX_REST_BODY_BYTES: Int = 64 * 1024
 
+    /**
+     * Largest `GET /api/v1/directory/sync` response body, in UTF-8 bytes (DIR-04). Only this route may exceed
+     * [MAX_REST_BODY_BYTES]: one signed member statement is ~600 bytes, so a 64 KiB bound refused a page of ~110 members.
+     * The client passes it explicitly to the decoder; every other REST body keeps the 64 KiB default.
+     */
+    public const val MAX_DIRECTORY_SYNC_BODY_BYTES: Int = 2 * 1024 * 1024
+
+    /**
+     * What the hub spends on `members` in one directory sync page, in encoded bytes. The rest of a page (departments,
+     * removals, up to [MAX_DIRECTORY_SYNC_ROSTERS] rosters, the delegation chain) is bounded separately and fits in the
+     * remainder of [MAX_DIRECTORY_SYNC_BODY_BYTES]: a hub must never emit a body its own client is defined to refuse.
+     */
+    public const val DIRECTORY_SYNC_MEMBER_BUDGET_BYTES: Int = 1024 * 1024
+
+    /** Members a device asks for per directory sync page (about 115 KB); the hub may return fewer to honour the byte budget. */
+    public const val DIRECTORY_SYNC_PAGE_LIMIT: Int = 200
+
+    /** Most group rosters one directory sync carries; a device in more groups gets `rostersTruncated = true`. */
+    public const val MAX_DIRECTORY_SYNC_ROSTERS: Int = 64
+
     /** Longest identifier (device id, message id, group id, nonce) accepted in any field. */
     public const val MAX_ID_LENGTH: Int = 128
 

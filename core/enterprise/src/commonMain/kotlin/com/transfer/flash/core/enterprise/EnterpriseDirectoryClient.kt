@@ -404,7 +404,10 @@ public class EnterpriseDirectoryClient(
         val status = reply.response.status
         when (status.value) {
             200 -> {
-                val dto = runCatching { HubRestCodec.decode<DirectorySyncDto>(reply.body) }.getOrNull()
+                // This route alone may exceed the 64 KiB default: a page of signed member statements is far larger (DIR-04).
+                val dto = runCatching {
+                    HubRestCodec.decode<DirectorySyncDto>(reply.body, HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES)
+                }.getOrNull()
                 if (dto != null) DirectorySyncPageResult.Success(dto)
                 else DirectorySyncPageResult.ServerError(200, "Malformed directory sync response")
             }

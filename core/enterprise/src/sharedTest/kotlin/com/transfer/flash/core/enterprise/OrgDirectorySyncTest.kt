@@ -1278,6 +1278,33 @@ class OrgDirectorySyncTest {
     }
 
     @Test
+    fun `SRVHUB-14 a truncated roster list keeps the stored roster of a group it does not mention (DIR-05)`() {
+        val dao = FakeOrgDirectoryDao()
+        TestScope2.syncWith(dao, rosterPage(signedRoster(4L), signedRoster(4L, groupId = "grp-2"), signedRoster(4L, groupId = "grp-3")))
+        assertEquals(setOf("grp-1", "grp-2", "grp-3"), dao.storedRosters.keys)
+
+        // The hub answers with only two of the three and says so: grp-3 is NOT a group the device left.
+        val truncated = rosterPage(signedRoster(5L), signedRoster(5L, groupId = "grp-2"), fullResync = true).copy(rostersTruncated = true)
+        val outcome = TestScope2.syncWith(dao, truncated)
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertEquals(setOf("grp-1", "grp-2", "grp-3"), dao.storedRosters.keys, "the unmentioned group keeps its stored roster")
+        assertEquals(5L, dao.storedRosters.getValue("grp-1").version)
+        assertEquals(4L, dao.storedRosters.getValue("grp-3").version)
+    }
+
+    @Test
+    fun `SRVHUB-14 a truncated answer with no rosters at all keeps every stored roster until its own validity ends`() {
+        val dao = FakeOrgDirectoryDao()
+        TestScope2.syncWith(dao, rosterPage(signedRoster(4L), signedRoster(4L, groupId = "grp-2", validUntilMs = nowMs + 1_000L)))
+        val none = rosterPage(fullResync = true).copy(rostersTruncated = true)
+        TestScope2.syncWith(dao, none)
+        assertEquals(setOf("grp-1", "grp-2"), dao.storedRosters.keys)
+        // Without the flag, the same empty answer is the authoritative "no groups" and clears the set.
+        TestScope2.syncWith(dao, rosterPage(fullResync = true))
+        assertTrue(dao.storedRosters.isEmpty())
+    }
+
+    @Test
     fun `ORGT-U46 a gossip offer is adopted only when verified newer and the local device is a member`() = runBlocking {
         val dao = FakeOrgDirectoryDao()
         val rosters = HubGroupRosters(dao, { creds }, verifier, { "local-device" }, clock = { nowMs })

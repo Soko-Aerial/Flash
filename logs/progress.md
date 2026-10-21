@@ -17963,3 +17963,21 @@ F6 (owner decision), F7 (measure), section 8, INVESTIGATE 1; the baseline redial
 ### Next AI
 Commit these fixes if the owner agrees, then look at the redial test failure.
 
+
+
+## 2026-10-21 - Server internals audit, step 1: directory sync size budget
+
+### Worked on
+Item 1 of `docs/audit/2026-10-21-server-hub-internals-audit.md` §11 (DIR-04 High, DIR-05, DOC-01 D-1).
+
+### Changed
+`HubContract` constants (2 MiB body bound for the sync route only, 1 MiB member budget, page limit 200, 64 rosters); `DirectorySyncDto.rostersTruncated`; server pages by rows or bytes and reports truncation; client decodes with the sync bound, asks 200 per page and keeps stored rosters when the hub says the list is incomplete; `docs/protocol.md`; audit §12; backlog SRVHUB-13/14.
+
+### Verification
+`DirectorySyncTransportTest` (7), `E2eDirectorySyncSizeTest` (2, real route and client), `OrgDirectorySyncTest` (+2), `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM and Android host tests green. Mutation: client decode bound back to 64 KiB -> E2E test fails, restored. NOT device-verified.
+
+### Remaining
+Plan items 2-10.
+
+### Next AI
+Continue with item 2 (announcement transactions), one commit per item.
