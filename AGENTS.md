@@ -917,6 +917,15 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Hub/server audit decisions (2026-10-21): RECORDED, NOT IMPLEMENTED.** The owner answered the five questions of
+`docs/audit/2026-10-21-server-hub-internals-audit.md` §8 and asked for them to be written down only; **ADR-222** in `docs/decisions.md`
+is the authority. In one line each: 64 group rosters per sync with a 2 MiB body bound and byte-budget paging for `/directory/sync`;
+device certificates **30 days and adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`); a department move takes effect **immediately**
+(registry-derived principal + bearer revoke + relay kick); an unopenable sealed mailbox row is **quarantined** and its sender told
+`DROPPED`; `/auth/verify` is limited **per device**; an announcement edit **keeps** its expiry (`clearExpiry` clears it). The audit's
+§11 is the ordered implementation plan (item 1 = DIR-04, the 64 KiB sync-body defect that stops offline org trust above ~110 people).
+No hub code has been changed; do not describe any of this as available, and do not update `docs/protocol.md` before the code lands.
+
 **Cancel/error/resume audit (2026-10-20, docs only, branch `agent/A-cancel`): NO code changed, nothing built, nothing device-verified.**
 `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` traces every cancel/decline/pause/resume/timeout path for 1:1, swarm,
 hub, calls, PTT and pairing, and records 19 defects (B-01..B-19) with `file:line`, 8 improvements and 8 needed features. The two to

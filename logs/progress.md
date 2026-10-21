@@ -1,5 +1,32 @@
 # Progress Log
 
+## 2026-10-21 (latest) - Owner answered the five audit questions; recorded as ADR-222 (docs only, NOT implemented)
+
+### Worked on
+The owner answered `docs/audit/2026-10-21-server-hub-internals-audit.md` §8 and asked for the answers to be recorded in the audit, explicitly **not implemented**. So this session only wrote decisions, an implementation plan and the tests they will owe.
+
+### Decisions (ADR-222, `docs/decisions.md`)
+1. **Sync transport (§8.1):** keep **64** rosters per sync (the code's 256 changes to 64); `/directory/sync` gets its own **2 MiB** body bound, the server pages by bytes, the client asks for 200 members per page, and truncation becomes explicit (`rostersTruncated`). Closes DIR-04 (the 64 KiB guard that made any org above ~110 members unsyncable) and DIR-05.
+2. **Device certificates (§8.2):** **30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`, default 30, 1..365); renewal window/grace derived from the lifetime with clamps; startup warning when the delegation is shorter than lifetime + grace; the leaf still never outlives its delegation.
+3. **Department move (§8.2):** **immediate** — the principal's role/department come from the registry after the certificate authenticates the device, plus bearer revoke + relay kick + honest console copy. No automatic re-issue exists (enrolment needs an invite).
+4. **Unopenable sealed mailbox row (§8.3):** **quarantine** — keep the row with `undeliverable_reason`, skip it, tell the sender `DROPPED`, age out with the 7-day TTL.
+5. **Re-authentication (§8.4):** `/auth/verify` gets its own **per-device** bucket (burst 5, 1 per 5 s); `/challenge` and `/hub` stay per-IP; client refresh single-flight + jitter; supported scale ≈ 200 devices behind one IP.
+6. **Announcement expiry (§8.5):** an edit **keeps** it; `clearExpiry: Boolean = false` makes clearing explicit; the console gains the field on create and edit.
+
+### Changed
+- `docs/audit/2026-10-21-server-hub-internals-audit.md`: §8 rewritten as "Owner questions and decisions" with an implementation spec per item; each affected finding now carries a **Decision** line; DOC-01 D-1 records that 64 wins; §9 lists `SRVHUB-01..16`; §10 says the decisions are recorded but not implemented; **new §11** is the ordered implementation plan (10 items, each naming the findings and tests it closes).
+- `docs/decisions.md`: **ADR-222**.
+- `docs/testing/TEST-BACKLOG.md`: `SRVHUB-02/04/05/08/13/14` now describe the decided behaviour, plus new `SRVHUB-15` (certificate lifetime knob) and `SRVHUB-16` (expiry tri-state).
+
+### Verification
+Read-only again. The numbers behind the decisions were checked in the source, not assumed: `DeviceCert.DEFAULT_VALIDITY_MS` = 7 days, `RENEW_EARLY_WINDOW_MS` = 24 h, `RENEW_GRACE_MS` = 72 h, `HubContract.MAX_REST_BODY_BYTES` = 64 KiB, `DeviceRecord` already carries `role`/`department`, `BearerTokenStore.revokeDevice` and `RelayFrameRouter.kick` exist, `EnrollmentService.enrol` needs an invite token, and the console never sends `expiresAtMs` (it only reads it). No Gradle command was run, so the §36 lock was not needed.
+
+### Remaining
+Nothing implemented: §11's ten items are all untouched. Item 1 (sync transport) is the one that decides whether the offline-trust feature works above ~110 people.
+
+### Next AI
+Read ADR-222 and the audit's §11 before touching hub code; the §8 questions are answered and must not be re-asked. Start with §11 item 1 (DIR-04) unless the owner says otherwise. Do not update `docs/protocol.md` for any of this until the matching code lands.
+
 ## 2026-10-21 (latest) - Server & Hub audit addendum: DIR-04 (High) and DIR-05 found while answering the owner's questions
 
 ### Worked on
