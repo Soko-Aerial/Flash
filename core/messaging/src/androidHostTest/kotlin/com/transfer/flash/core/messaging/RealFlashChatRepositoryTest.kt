@@ -1215,6 +1215,27 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `searchChats gives a text match with a non-matching attachment one message hit and no file hit`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val conversationDao = FakeConversationDao()
+        conversationDao.upsert(ConversationEntity(id = "conv-A", title = "Design Team", isGroup = true))
+        val repository = newRepository(messageDao = messageDao, conversationDao = conversationDao)
+
+        messageDao.insert(
+            msg("m1", "conv-A", "ship the release build").copy(
+                attachmentName = "Budget_Q4.pdf",
+                attachmentMime = "application/pdf",
+                attachmentSize = 12_345L,
+            ),
+        )
+
+        val results = repository.searchChats("release")
+
+        assertEquals(listOf("m1"), results.messageHits.map { it.messageId })
+        assertTrue("the attachment name did not match, so it is not a file hit", results.fileHits.isEmpty())
+    }
+
+    @Test
     fun `recent searches are recorded trimmed, deduplicated and cleared`() = runBlocking {
         val recentSearchDao = FakeRecentSearchDao()
         val repository = newRepository(recentSearchDao = recentSearchDao)

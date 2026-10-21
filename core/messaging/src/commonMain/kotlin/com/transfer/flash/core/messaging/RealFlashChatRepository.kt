@@ -6589,7 +6589,8 @@ public class RealFlashChatRepository(
                         isMine = row.senderId == localDeviceId,
                     )
                 }
-                if (fileName != null) {
+                // A file hit only when the attachment's own name matched; a text match must not drag an unrelated attachment in.
+                if (fileName != null && nameMatches) {
                     fileHits += FlashFileSearchHitUi(
                         messageId = row.localId,
                         conversationId = row.conversationId,
