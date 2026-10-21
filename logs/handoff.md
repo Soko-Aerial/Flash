@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-21 (brutal code review fixes) - uncommitted on `dev`, unit-tested, NOT device-verified
+
+- Implemented F1, F2 (test), F3, F4, F5, F8, F9, F10 from `docs/audit/2026-10-21-brutal-code-review.md` (status block at its top). Not done: F6 (owner decision), F7 (measure first), section 8, INVESTIGATE 1.
+- F8 adds `desktop/.../ReceivedFilesManifest.kt` (`received-files.txt` in the state dir) fed by the direct-receive sink, `JvmPieceStorage(onPlaced)` and `HubFileBinding(onPlaced)`; Clear deletes only manifest entries (all root children only on the default root).
+- Verified: `:server:test`, `:core:messaging:testAndroidHostTest`, `:core:engine:jvmTest`, `:desktop:jvmTest`, `:core:network` (both targets) except `WsFlashNetworkTest...FollowsADiscoveredRoute...` which fails on the baseline too; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green.
+- Owed: `BRUT-01..04` in `docs/testing/TEST-BACKLOG.md`. Local commit `18cf4344` (tracker note) is also unpushed.
+
 ## 2026-10-21 (open-items tracker) - read `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` first
 
 - Stream H (H-16..H-26) is done in this working tree, uncommitted; device checks `CHATFIX-09..16`.

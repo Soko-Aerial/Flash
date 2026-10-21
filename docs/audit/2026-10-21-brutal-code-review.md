@@ -1,5 +1,17 @@
 # Brutal Code Review
 
+> **Fix status (2026-10-21, `dev`, uncommitted until the owner says otherwise; unit-tested, NOT device-verified):**
+> F1 fixed (a text hit with a non-matching attachment gives one message hit, no file hit; test in `RealFlashChatRepositoryTest`).
+> F2 pinned by `everyRouteDeclaredOrgRefusesADepartmentHead` (no live escalation found; `AdminRoutePolicies` KDoc now says it is a declaration, not enforcement).
+> F3 fixed (`AdminAuthService.allowUnbackedSessions`, default false in production).
+> F4 fixed (`FileStore.create` refuses a group file from a non-member).
+> F5 fixed (`IdentityStore.activeDeviceIds`; head overview no longer capped at 500 rows).
+> F8 fixed (desktop `ReceivedFilesManifest`: Clear deletes only what Flash wrote; the default `~/FlashReceived` root still clears fully; files received into a user-picked folder before this change are no longer cleared).
+> F9 fixed (the pooled buffer is always copied and released; pinned by a pool-reuse test, mutation-checked).
+> F10 comment corrected and shared frame fixtures run on both transports.
+> **Not done:** F6 (needs the owner's decision: account-only lockout or IP rate limit), F7 (measure on devices first, EXP entry owed), section 8 SQL simplifications, INVESTIGATE 1.
+> Pre-existing, not from this work: `WsFlashNetworkTest.testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale` fails on the baseline commit as well.
+
 Scope: `dev` at `51469a842c3eccc822d8bb9def9442257318aed6` (1 commit ahead of `origin/dev`), reviewed 2026-10-21 in two passes: a security-first pass over the highest-risk paths, then a module-by-module pass (coverage table in §1). Areas actually read: `server/` (auth, admin API + console guard, client-address/CSRF, `FileStore`, `FileRoutes`, `RelayAuth`, `AnnouncementStore` + routes, `Main`/healthcheck), `core/enterprise` (`HubFileTransfers`, `HubFileSealing`, `KtorRelayTransport`), `core/security` (`PlatformCrypto` both actuals, `FlashCrypto`, `Hkdf`, `HubSealing`, `GroupInviteCodec`), `core/hub-protocol` (`AuthCanonicalWriter`, `RelayFrameCodec`, `HubJson`, `HubContract`), `core/messaging` (search path, `HubFileFrameCodec`, `FlashTextFraming`), `core/persistence` (schema steps, DB opener, search SQL), `core/network` (`WebSocketCodec` both copies, `ByteArrayPool`), `core/transfer` (`ResumeBitVector`, `MultiStreamDispatcher`, `Chunker`), `core/engine` (`FlashPathSanitizer`, `HubFileBinding`), `core/swarm` (`ServePolicy`), `core/radio` (`AndroidRadioDiscovery`), `app` (`MainActivity`, `FlashLogContext`), `desktop` (`DesktopHelpers`, `DesktopEngine`, `DesktopShell`), `ui/chat` (search scopes, settings storage card), `gradle/libs.versions.toml`.
 
 Not read: `core/calling` beyond one method, `core/ptt`, `ui/callui`, `ui/theme`, `ui/platform-shims`, `server/relay/RelayFrameRouter` internals, the admin console's 44 JS files (beyond an `innerHTML` sweep), `tools/`, `third_party/` (vendored), and the uncommitted hub-UI redesign (a second agent is editing it).

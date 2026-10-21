@@ -17862,3 +17862,25 @@ Unit tests green: `:core:transfer:testAndroidHostTest`, `:core:persistence` (hos
 
 ### Next AI
 Merge `agent/A-cancel` after renumbering any competing schema step 20; run the CNCL device checks.
+
+## 2026-10-21 - Brutal code review fixes (F1-F5, F8-F10)
+
+### Worked on
+`docs/audit/2026-10-21-brutal-code-review.md`, tasks F1, F2, F3, F4, F5, F8, F9, F10.
+
+### Changed
+- F1 `RealFlashChatRepository.searchChats`: file hit only when the file name matched.
+- F8 desktop `ReceivedFilesManifest` + `onPlaced` hooks in `JvmPieceStorage`/`HubFileBinding`; Clear deletes only what Flash wrote.
+- F4 `FileStore.create` refuses a non-member group sender. F5 `IdentityStore.activeDeviceIds` for the head overview.
+- F3 `AdminAuthService.allowUnbackedSessions` (default false). F2 route-matrix test + KDoc.
+- F9 Android `WebSocketCodec.readFramePayload` always copies and releases the pooled buffer. F10 comment fixed; shared frame fixtures on both transports.
+
+### Verification
+New tests per fix; F9 mutation-checked (old shortcut fails the pool-reuse test). Green: `:server:test`, `:core:messaging:testAndroidHostTest`, `:core:engine:jvmTest`, `:desktop:jvmTest`, `:core:network` except the baseline failure `WsFlashNetworkTest.testRedialLoopFollowsADiscoveredRouteAfterTheOldOneWentStale`; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm`. NOT device-verified.
+
+### Remaining
+F6 (owner decision), F7 (measure), section 8, INVESTIGATE 1; the baseline redial test failure; device checks `BRUT-01..04`.
+
+### Next AI
+Commit these fixes if the owner agrees, then look at the redial test failure.
+
