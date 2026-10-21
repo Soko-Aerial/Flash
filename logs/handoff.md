@@ -1,11 +1,12 @@
 # Current Handoff
 
-## 2026-10-21 (server internals audit, implementation steps 1-2 of 10) - built and tested, NOT device-verified
+## 2026-10-21 (server internals audit, implementation steps 1-3 of 10) - built and tested, NOT device-verified
 
 - **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
 - **Step 2 done too:** ANN-01 — announcement writes run in `BEGIN IMMEDIATE` transactions (`AnnouncementStoreConcurrencyTest`, mutation-checked; audit §12). Test-harness trap: race tests need a WAL file database with a pool > 1 (`ServerDatabase.inMemory()` has one connection).
-- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 3-10 are NOT started.
-- **Recommended next task:** item 3 (announcement expiry tri-state), then 4, 5.
+- **Step 3 done too:** ANN-02 — announcement expiry is tri-state (`clearExpiry`), console expiry field + "No expiry" box, a device edit no longer wipes the expiry (audit §12).
+- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 4-10 are NOT started.
+- **Recommended next task:** item 4 (device certificate lifetime 30 days, adjustable), then 5 (registry-derived principal).
 - **Wire change to remember:** `DirectorySyncDto.rostersTruncated` (default false) and the client now asks `limit = 200`. A hub older than this build still answers (it just caps at 500 rows and may exceed 2 MiB only if its rows are huge).
 
 ## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented

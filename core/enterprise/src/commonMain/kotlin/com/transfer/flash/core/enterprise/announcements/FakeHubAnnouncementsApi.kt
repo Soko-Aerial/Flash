@@ -120,7 +120,7 @@ public class FakeHubAnnouncementsApi : HubAnnouncementsApi {
             title = request.title.ifBlank { existing.title },
             body = request.body.ifBlank { existing.body },
             pinned = request.pinned ?: existing.pinned,
-            expiresAt = request.expiresAtMs ?: existing.expiresAt,
+            expiresAt = if (request.clearExpiry) null else request.expiresAtMs ?: existing.expiresAt,
             edited = true,
             seq = seq,
             updatedAt = 1000L * seq,

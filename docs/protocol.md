@@ -1420,10 +1420,12 @@ Announcements are stored and broadcast in **plain text** on the hub. Hub adminis
 | `GET /api/v1/announcements?since=&q=&scope=&departmentId=&before=&limit=` | bearer | `since` seq for delta sync (tombstones returned), or `q` search query (max 64 chars), or filters | `AnnouncementFeedDto` (if `since`) or `AnnouncementSearchResponseDto` | served (A3) |
 | `GET /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` (404 if deleted or caller lacks access) | served (A3) |
 | `POST /api/v1/announcements` | bearer | `PostAnnouncementRequestDto` | `201 Created` with `AnnouncementItemDto` | served (A3) |
-| `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` | `AnnouncementItemDto` (409 if `expectedSeq` mismatch) | served (A3) |
+| `PUT /api/v1/announcements/{id}` | bearer | `UpdateAnnouncementRequestDto` (expiry is tri-state, see below) | `AnnouncementItemDto` (409 if `expectedSeq` mismatch; 400 if `expiresAtMs` and `clearExpiry` are both set) | served (A3) |
 | `DELETE /api/v1/announcements/{id}` | bearer | announcement ID | `AnnouncementItemDto` tombstone (soft deleted, seq incremented) | served (A3) |
 | `POST /api/v1/announcements/{id}/pin` | bearer | announcement ID | `AnnouncementItemDto` (409 `ERR_PIN_LIMIT` if already 3 pinned) | served (A3) |
 | `POST /api/v1/announcements/{id}/unpin` | bearer | announcement ID | `AnnouncementItemDto` | served (A3) |
+
+**Announcement expiry on edit (ANN-02, ADR-222).** `UpdateAnnouncementRequestDto` carries `expiresAtMs` and `clearExpiry` (default false). `expiresAtMs` set: the expiry becomes that value. `expiresAtMs` absent or null and `clearExpiry` false: the stored expiry is KEPT (an edit is a new text, not a new lifetime; the wire cannot tell absent from null because `explicitNulls = false`). `expiresAtMs` absent or null and `clearExpiry` true: the expiry is removed. Both set: `400`. Create (`PostAnnouncementRequestDto.expiresAtMs`) is unchanged. An older client that sends only `null` now keeps the expiry, which is the safe direction.
 
 Keys (D9, `DIRECTORY_KEYS_ORG_WIDE=true`): identity + sealing keys are org-visible
 for non-hidden departments and never for hidden ones to outsiders (delivered only

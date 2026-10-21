@@ -17999,3 +17999,21 @@ Plan items 3-10.
 
 ### Next AI
 Item 3: announcement expiry tri-state (`clearExpiry`), console field.
+
+
+## 2026-10-21 - Server internals audit, step 3: announcement expiry tri-state (ANN-02)
+
+### Worked on
+Item 3 of the server-internals audit plan (ADR-222 decision 6).
+
+### Changed
+`UpdateAnnouncementRequestDto.clearExpiry`; store and both PUT routes (set / keep / clear, both = 400); console composer expiry field and "No expiry" box via the pure `announcement-expiry.js`; `FakeHubAnnouncementsApi`; `docs/protocol.md`; audit section 12.
+
+### Verification
+`:server:test --tests *Announcement*`, `:core:hub-protocol:jvmTest`, `:core:enterprise:jvmTest` green; 82 console node tests green; mutation (`else -> null`) fails the route test. NOT device-verified; the console form needs an eyes-on browser check.
+
+### Remaining
+Plan items 4-10.
+
+### Next AI
+Item 4: `FLASH_DEVICE_CERT_VALIDITY_DAYS` (30 days default, bounds 1..365), derived renewal window.
