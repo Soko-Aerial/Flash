@@ -25,6 +25,10 @@ import java.sql.Connection
  * - **v3** (ADR-130, FO-15a) adds `sealed`: 1 when `payload` is AES-256-GCM ciphertext under the hub data key. A marker column, not a
  *   byte prefix, because a payload is arbitrary sender-controlled bytes. `payload_bytes` keeps the PLAIN size, so the quotas and the
  *   totals triggers do not change.
+ * - **v4** (RLY-01, ADR-222) adds `undeliverable_reason`: set when a sealed row can not be opened (wrong or lost data key, a row moved to
+ *   another message id). A quarantined row is kept (a restored key can still read it until the TTL sweeper removes it) but is never
+ *   fetched again, so one unreadable row can not stop a device's drain. The partial index serves the page fetch, which only wants
+ *   the others.
  */
 object MailboxSchema {
     const val COMPONENT = "mailbox"
@@ -37,6 +41,14 @@ object MailboxSchema {
         Migration(2, "server-clock ordering, unique dedup key, quotas, totals") { conn -> v2(conn, clock()) },
         Migration(3, "sealed marker: payloads encrypted at rest under the hub data key (ADR-130)") { conn ->
             conn.createStatement().use { it.execute("ALTER TABLE mailbox_envelopes ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0") }
+        },
+        Migration(4, "quarantine marker for rows that can not be opened (RLY-01)") { conn ->
+            conn.createStatement().use { stmt ->
+                stmt.execute("ALTER TABLE mailbox_envelopes ADD COLUMN undeliverable_reason TEXT")
+                stmt.execute(
+                    "CREATE INDEX idx_mailbox_target_deliverable ON mailbox_envelopes(target_device_id, seq) WHERE undeliverable_reason IS NULL",
+                )
+            }
         },
     )
 

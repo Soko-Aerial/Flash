@@ -130,7 +130,7 @@ class RelayMetrics {
             RATE_LIMIT_HITS to "Frames refused by the per-session rate limit.",
             SESSIONS_CLOSED to "Relay sessions ended, by reason.",
             DB_ERRORS to "Storage errors, by operation.",
-            MAILBOX_EVENTS to "Mailbox lifecycle events: delivered, expired, dropped, spilled.",
+            MAILBOX_EVENTS to "Mailbox lifecycle events: delivered, expired, dropped, spilled, quarantined.",
             REJECTED_CONNECTIONS to "Connections refused before the handshake (global or per-IP cap, shutdown).",
         )
     }

@@ -415,4 +415,5 @@ data class MetricsDto(
     val mailboxDelivered: Long = 0,
     val mailboxExpired: Long = 0,
     val mailboxDropped: Long = 0,
+    val mailboxQuarantined: Long = 0,
 )

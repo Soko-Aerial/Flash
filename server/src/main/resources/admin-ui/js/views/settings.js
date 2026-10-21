@@ -235,6 +235,7 @@ export function mountSettings(container, ctx) {
           ['mailboxDelivered', formatNumber(m.mailboxDelivered)],
           ['mailboxExpired', formatNumber(m.mailboxExpired)],
           ['mailboxDropped', formatNumber(m.mailboxDropped)],
+          ['mailboxQuarantined', formatNumber(m.mailboxQuarantined)],
         ];
         return [
           card({ title: t('settings.health.title'), id: 'set-health' }, dl(checks)),

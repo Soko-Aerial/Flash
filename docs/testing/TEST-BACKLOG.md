@@ -6019,7 +6019,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-02 — A sealed mailbox row that cannot be opened does not block the queue (RLY-01)
 - **Setup:** a hub with queued messages for one device; stop it (and back up `data.key`), remove or replace `data.key` in the data dir, start it again.
 - **Steps:** reconnect that device; send it a new message from another device; inspect the mailbox table.
-- **Pass:** the unreadable rows are still present but marked `undeliverable_reason` and skipped; their senders get `FLASH_QUEUE_STATE state=DROPPED`; the new message arrives in the same connection; the log/metric names the count (8-character device id only); the rows disappear with the normal 7-day TTL. Today: the device gets nothing until the TTL expires and no sender is told. **Source:** RLY-01, ADR-222 decision 4. **Status:** TODO
+- **Pass:** the unreadable rows are still present but marked `undeliverable_reason` and skipped; their senders get `FLASH_QUEUE_STATE state=DROPPED`; the new message arrives in the same connection; the log/metric names the count (8-character device id only); the rows disappear with the normal 7-day TTL. Today: the device gets nothing until the TTL expires and no sender is told. **Source:** RLY-01, ADR-222 decision 4. **Status:** AUTOMATED PASS 2026-10-21 (`MailboxQuarantineTest` with a real router drain; the real-hub run with a replaced `data.key` and a device is still owed)
 
 ### SRVHUB-03 — Two admins writing at the same time cannot duplicate a `seq` or lose an edit (ANN-01)
 - **Setup:** two console sessions; or two `POST /api/v1/announcements` in parallel with `curl` (also with the same `clientRequestId`), and two `PUT`s of one announcement with the same `expectedSeq`.
