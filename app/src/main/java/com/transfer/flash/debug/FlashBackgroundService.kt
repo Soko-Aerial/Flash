@@ -109,6 +109,10 @@ class FlashBackgroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // C-02: a transfer the platform paused (foreground-service time limit) continues once the service runs again.
+        if (isForeground) {
+            scope.launch { runCatching { DiscoveryEngineHolder.currentTransfers()?.resumeSystemPaused() } }
+        }
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             val transferId = intent.getStringExtra(EXTRA_TRANSFER_ID)
             if (transferId != null) {

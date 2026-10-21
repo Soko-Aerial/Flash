@@ -568,6 +568,23 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `C-02 resumeSystemPaused continues a system pause and leaves a person's pause alone`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-s", "fx-s", "d.bin", 1024L, "Pixel", "peer-s")
+        repo.onIncomingOffered("tx-u", "fx-u", "e.bin", 1024L, "Pixel", "peer-u")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-s")) is FlashResult.Success)
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-u")) is FlashResult.Success)
+        assertTrue(repo.pauseForSystem(FlashTransferId("tx-s"), "SERVICE_TIMEOUT") is FlashResult.Success)
+        assertTrue(repo.pauseTransfer(FlashTransferId("tx-u")) is FlashResult.Success)
+
+        assertEquals(1, repo.resumeSystemPaused())
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-s")).state)
+        assertEquals(FlashTransferState.Paused, repo.snapshot(FlashTransferId("tx-u")).state)
+        assertEquals(0, repo.resumeSystemPaused())
+        Unit
+    }
+
+    @Test
     fun `B-02 pauseForSystem keeps a 1to1 row and says Android paused it`() = runBlocking {
         val repo = offerRepo()
         repo.onIncomingOffered("tx-sys", "fx-sys", "d.bin", 1024L, "Pixel", "peer-sys")

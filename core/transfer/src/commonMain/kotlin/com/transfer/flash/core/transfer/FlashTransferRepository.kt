@@ -78,6 +78,13 @@ public interface FlashTransferRepository {
     public suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit> =
         pauseTransfer(transferId)
 
+    /**
+     * Resumes every 1:1 row that [pauseForSystem] paused (open-items C-02): called when the host can run transfers again
+     * (the Android foreground service is back). A row the person paused is never touched. Default does nothing.
+     * @return how many rows were resumed.
+     */
+    public suspend fun resumeSystemPaused(): Int = 0
+
     public suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit>
     public suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit>
 
