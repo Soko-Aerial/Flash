@@ -60,4 +60,17 @@ class TransferFailureTextTest {
         assertEquals(TransferFailureText.GENERIC, TransferFailureText.friendly(""))
         assertEquals(TransferFailureText.GENERIC, TransferFailureText.friendly("some arbitrary unhandled error"))
     }
+
+    @Test
+    fun displayReasonTurnsControlReasonsIntoSentencesAndPassesOthersThrough() {
+        assertEquals(TransferFailureText.CANCELLED_BY_PEER, TransferFailureText.displayReason("cancelled by receiver"))
+        assertEquals(TransferFailureText.CANCELLED_BY_PEER, TransferFailureText.displayReason("cancelled by sender"))
+        assertEquals(TransferFailureText.DECLINED_BY_PEER, TransferFailureText.displayReason("declined"))
+        assertEquals(TransferFailureText.PAUSED_BY_PEER, TransferFailureText.displayReason("paused by sender"))
+        assertEquals(TransferFailureText.PAUSED_BY_SYSTEM, TransferFailureText.displayReason("paused by system"))
+        assertEquals(TransferFailureText.WAITING_FOR_ACCEPT, TransferFailureText.displayReason("waiting for receiver to accept"))
+        // Already a sentence (or something this function does not know): unchanged, never GENERIC.
+        assertEquals("peer left", TransferFailureText.displayReason("peer left"))
+        assertEquals(null, TransferFailureText.displayReason(null))
+    }
 }

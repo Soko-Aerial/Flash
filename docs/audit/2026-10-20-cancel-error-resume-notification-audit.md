@@ -536,3 +536,31 @@ finding it exercises. Nothing in this audit is device-verified; every B-* is a s
 - No log file from a real session was inspected for these paths (there is no capture of a cancel/decline flow in `logs/`);
   the claims therefore rest on source only.
 - Timing-dependent races (B-03's late PAUSE, B-17's cancel-during-Done) are reasoned from code, not observed.
+
+---
+
+## 10. Fix status (2026-10-21, same branch `agent/A-cancel`)
+
+Verified against the code before fixing; two findings were not confirmed or are decisions. Status of each:
+
+| Finding | Result |
+|---|---|
+| B-01 | **Fixed.** `resumeTransfer` refuses a Cancelled row (`FlashError.Cancelled`, no wire traffic). `FlashFileTransferStatus.Cancelled` added; the three host mappers, the group aggregate and the file/voice cards use it; a cancelled bubble reads "Cancelled" and has no Retry. |
+| B-02 | **Fixed with an assumption** (owner question 1 answered "pause", the audit's recommendation): `TimeoutStopPlan` pauses every Transferring row and cancels none. A 1:1 row does not restart by itself, so it says "Paused by Android. Tap Resume to continue." instead of `SYSTEM_TIMEOUT`'s "continues automatically". Auto-resume of a 1:1 row after the service returns is NOT built. |
+| B-03 | **Fixed.** Terminal-state guard at the top of `onRemoteTransferControl`. |
+| B-04 | **Fixed (drop, not confirm).** `FlashTransfer.groupOrigin`; the notification no longer offers Cancel for a group file's origin and the receiver refuses a stale one. The in-app confirmed cancel is unchanged. The 1:1 "Cancel for everyone?" wording on the Transfers screen and bubble is NOT changed. |
+| B-05 | **Fixed for the chat bubble** (see B-01). The Transfers screen still folds Cancelled into its Failed section (labelled "Cancelled", no Retry). |
+| B-06 | **Fixed in part.** `FlashTransfer.canRetry` is the single predicate; the failed notification and the Transfers screen both read it. A failed 1:1 *receive* that has no session still sits at "Downloading" after Retry (needs a re-offer frame or a bounded wait): NOT fixed. |
+| B-07 | **Fixed.** `Queued` clears the ongoing progress notification. |
+| B-08 | **Not changed.** Unbounded hub retry is ADR-216's deliberate design; bounding it needs a working hub Retry first. Decision for the owner. |
+| B-09 | **Fixed.** The call notification is cancelled when the engine is gone, when the call clears and when the service is destroyed. |
+| B-10 | **Fixed.** The notification is cleared after the work and only if it did not throw; the scope is per broadcast and cancelled. |
+| B-11, B-13, B-15, B-19 | **Not fixed** (features / wire changes / engine plumbing). |
+| B-12 | **Fixed for display.** `TransferFailureText.displayReason` maps the stored control reasons for the Transfers screen, the Android failure notification and the desktop toast; storage keeps the raw tokens (tests pin them). `cancelTransfer` clears a stale message. |
+| B-14 | **Partly fixed.** Desktop now notifies an inbound offer and shows the failure reason; stale ids are pruned. Paused/Cancelled toasts and actions are not built. |
+| B-16 | **Fixed.** Slot allocation skips an id held by another transfer. |
+| B-17 | **Not confirmed.** `cancelUpload` takes the same `u:$fileId` lock as `upload`, and `HubFileBinding.cancel` always issues the hub DELETE for a row it moved, so a completed object cannot be orphaned. No change. |
+| B-18 | Logged only (a cancel on an unknown row now writes a warning). The desktop prune is in B-14. |
+
+Tests added: `RealFlashTransferRepositoryTest` (B-01 x2, B-03, stale notice, B-02), `TransferFailureTextTest`, `TransfersUiMapperTest`,
+`TimeoutStopPlanTest` (rewritten). Built and unit-tested 2026-10-21 (`:core:transfer`, `:core:messaging`, `:core:swarm`, `:ui:chat`, `:app`, `:desktop`), no mutation check, not device-verified; `CNCL-*` remain TODO. Decisions: ADR-219.

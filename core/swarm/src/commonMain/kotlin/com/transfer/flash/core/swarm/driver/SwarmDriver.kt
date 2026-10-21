@@ -754,6 +754,7 @@ public class SwarmDriver(
                 else -> null
             },
             sourceUri = if (record?.role == SwarmRole.ORIGIN) record.sourceUri else null,
+            groupOrigin = record?.role == SwarmRole.ORIGIN,
             recipients = snapshot?.recipients.orEmpty().map {
                 FlashTransferRecipient(
                     peerId = it.peerId,
