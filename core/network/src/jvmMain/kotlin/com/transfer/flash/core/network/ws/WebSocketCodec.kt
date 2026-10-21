@@ -11,9 +11,14 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * DESKTOP DUPLICATE (Phase 15-3) of the `androidMain` original — byte-identical apart from
- * this note. D1 = Option B forbids a shared JVM tier, so JDK-bound plumbing is duplicated
- * per target (CONVENTIONS.md R5 amendment). Do NOT edit one copy without the other.
+ * DESKTOP DUPLICATE (Phase 15-3) of the `androidMain` original. D1 = Option B forbids a shared JVM tier, so JDK-bound
+ * plumbing is duplicated per target (CONVENTIONS.md R5 amendment). Do NOT edit one copy without the other.
+ *
+ * It is NOT byte-identical: the Android copy reads frames of up to 32 KiB through `ByteArrayPool` (and releases the buffers
+ * it no longer needs), this copy allocates one array per frame and has no pool. The wire behaviour must stay identical, and
+ * `WebSocketFrameFixtureTest` (same table in `jvmTest` and `androidHostTest`, `WebSocketFrameFixtures` in `commonTest`)
+ * fails for whichever copy drifts. `WsConnection` and `SecureSocketUpgrader` are still byte-identical to their originals
+ * apart from their duplicate note.
 
  * Minimal RFC 6455 WebSocket codec for the experimental LAN transfer track.
  *
