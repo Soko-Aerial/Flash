@@ -58,6 +58,9 @@ class DesktopReceivedStorageTest {
         val nested = File(engine.receivedDirectory, "transfer-1").apply { mkdirs() }
         File(nested, "payload.bin").writeBytes(ByteArray(2048))
         File(engine.receivedDirectory, "direct.bin").writeBytes(ByteArray(1024))
+        // What the receive pipelines record: the per-transfer directory and a swarm file placed straight in the root.
+        engine.receivedManifest.record(engine.receivedDirectory, nested)
+        engine.receivedManifest.record(engine.receivedDirectory, File(engine.receivedDirectory, "direct.bin"))
 
         // Nested files count too — the receive pipeline writes per-transfer subdirectories, so a
         // non-recursive scan would report a directory full of files as empty.
@@ -67,14 +70,51 @@ class DesktopReceivedStorageTest {
     @Test
     fun clearingEmptiesTheEnginesRoot_andTheRescanSaysSo() {
         val engine = engineWithTempRoot()
-        File(File(engine.receivedDirectory, "transfer-1").apply { mkdirs() }, "payload.bin")
-            .writeBytes(ByteArray(4096))
+        val transferDir = File(engine.receivedDirectory, "transfer-1").apply { mkdirs() }
+        File(transferDir, "payload.bin").writeBytes(ByteArray(4096))
+        engine.receivedManifest.record(engine.receivedDirectory, File(transferDir, "payload.bin"))
         assertTrue(DesktopHelpers.receivedFilesBytes(engine) > 0L)
 
         DesktopHelpers.clearReceivedFiles(engine)
 
         assertEquals(0L, DesktopHelpers.receivedFilesBytes(engine))
         assertTrue(engine.receivedDirectory.exists(), "the root itself must survive the clear")
+    }
+
+    @Test
+    fun clearDeletesOnlyWhatFlashReceived_aForeignFileInTheSaveFolderSurvives() {
+        // F8: the save folder is whatever the user picked (Downloads, Desktop). Only recorded entries may go.
+        val engine = engineWithTempRoot()
+        val root = engine.receivedDirectory
+        val transferDir = File(root, "transfer-1").apply { mkdirs() }
+        val payload = File(transferDir, "payload.bin").apply { writeBytes(ByteArray(2048)) }
+        val holiday = File(root, "holiday.jpg").apply { writeBytes(ByteArray(5000)) }
+        val foreignDir = File(root, "taxes").apply { mkdirs() }
+        File(foreignDir, "2025.pdf").writeBytes(ByteArray(10))
+        engine.receivedManifest.record(root, payload)
+
+        // The figure the confirmation shows is exactly the set that will be deleted.
+        assertEquals(2048L, DesktopHelpers.receivedFilesBytes(engine))
+
+        DesktopHelpers.clearReceivedFiles(engine)
+
+        assertTrue(!payload.exists() && !transferDir.exists(), "the received transfer directory is gone")
+        assertTrue(holiday.exists(), "a file Flash never received must survive")
+        assertTrue(File(foreignDir, "2025.pdf").exists(), "a foreign folder must survive")
+        assertEquals(0L, DesktopHelpers.receivedFilesBytes(engine))
+    }
+
+    @Test
+    fun anEntryRecordedForAnEarlierRootIsNotDeletedUnderANewRoot() {
+        val engine = engineWithTempRoot()
+        val elsewhere = Files.createTempDirectory("flash-desktop-storage-old-root").toFile().also { tempDirs += it }
+        val old = File(elsewhere, "transfer-9").apply { mkdirs() }
+        File(old, "a.bin").writeBytes(ByteArray(10))
+        engine.receivedManifest.record(elsewhere, old)
+
+        DesktopHelpers.clearReceivedFiles(engine)
+
+        assertTrue(old.exists(), "an entry that is not a child of the current root is never touched")
     }
 
     @Test
@@ -87,6 +127,7 @@ class DesktopReceivedStorageTest {
 
         val engine = engineWithTempRoot()
         File(engine.receivedDirectory, "payload.bin").writeBytes(ByteArray(128))
+        engine.receivedManifest.record(engine.receivedDirectory, File(engine.receivedDirectory, "payload.bin"))
         DesktopHelpers.clearReceivedFiles(engine)
 
         assertEquals(

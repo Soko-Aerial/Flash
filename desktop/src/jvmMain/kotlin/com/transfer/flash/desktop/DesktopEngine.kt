@@ -449,6 +449,7 @@ public class DesktopEngine(
             val storage = JvmPieceStorage(
                 partialDir = File(stateDir, "swarm/partial"),
                 destinationDir = canonicalRoot,
+                onPlaced = { placed -> receivedManifest.record(canonicalRoot, placed) },
             )
             val stateStore = RoomSwarmStateStore(db.swarmDao())
             val binding = SwarmHostBinding(
@@ -919,6 +920,16 @@ public class DesktopEngine(
      * a symlink-resolved twin of it.
      */
     public val receivedDirectory: File get() = _canonicalRoot
+
+    /** What this engine wrote under the received folder; "Clear received files" deletes only this (brutal-review F8). */
+    internal val receivedManifest = ReceivedFilesManifest(File(stateDir, "received-files.txt"))
+
+    /**
+     * True when the received folder is Flash's own default one (`~/FlashReceived`, never picked by the user). Only there is
+     * everything in the folder Flash's, so only there may a clear also remove files received before the manifest existed.
+     */
+    internal val receivedRootIsFlashsOwn: Boolean
+        get() = runCatching { _canonicalRoot == DesktopPaths.receivedRoot().canonicalFile }.getOrDefault(false)
 
     /**
      * Passphrase for the chat database: random hex generated once, kept in `<stateDir>/chat/db-key.bin` and, since ADR-132,
@@ -1661,6 +1672,7 @@ public class DesktopEngine(
                     outgoingRetried = c::hubFileRetried,
                     openSource = fileOpener,
                     receivedDirectory = { canonicalRoot.path },
+                    onPlaced = { placed -> receivedManifest.record(canonicalRoot, File(placed)) },
                     isDirectlyReachable = { peerId ->
                         network.activeSessions.value.containsKey(FlashDeviceId(peerId)) ||
                             discovery.discoveredEndpoints.value.any { it.deviceId.value == peerId }
@@ -1799,6 +1811,7 @@ public class DesktopEngine(
                     "path traversal escape: ${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
+                receivedManifest.record(canonicalRoot, destDir)
                 receivedPaths[start.transferId] = dest.absolutePath
                 val handle = OkioRandomAccessSinkHandle(dest.absolutePath.toPath(), start.totalBytes)
                 openHandles[start.transferId] = handle

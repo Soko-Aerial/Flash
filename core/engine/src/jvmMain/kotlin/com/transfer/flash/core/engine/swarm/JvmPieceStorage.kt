@@ -25,10 +25,13 @@ import java.security.MessageDigest
  *
  * @param partialDir Directory for app-private `.part` files (e.g. `~/.flash/swarm/partial`).
  * @param destinationDir Directory for completed/finalized downloads (e.g. `FlashReceived` or `~/Downloads/Flash`).
+ * @param onPlaced Called with the final file after a download was moved into [destinationDir] (the desktop host records it
+ *   so "Clear received files" deletes only what Flash wrote).
  */
 public class JvmPieceStorage(
     public val partialDir: File,
     public val destinationDir: File,
+    private val onPlaced: (File) -> Unit = {},
 ) : PieceStorage {
 
     private fun partialFileForKey(key: String): File {
@@ -272,6 +275,7 @@ public class JvmPieceStorage(
             )
         }
 
+        runCatching { onPlaced(targetFile) }
         val identity = FileIdentity(sizeBytes = targetFile.length(), lastModifiedMs = targetFile.lastModified())
         StorageFinalizeResult(
             ok = true,
