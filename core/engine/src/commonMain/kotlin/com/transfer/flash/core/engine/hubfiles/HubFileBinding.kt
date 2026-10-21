@@ -112,6 +112,8 @@ public class HubFileBinding(
     private val groupName: (groupId: String) -> String? = { null },
     /** A group file's upload was started for chat message [messageId] (the chat repository's `registerHubGroupFile`). */
     private val registerGroupFile: (messageId: String, transferId: String) -> Unit = { _, _ -> },
+    /** A received file was moved to [path] under [receivedDirectory] (the desktop host records it for "Clear received files"). */
+    private val onPlaced: (path: String) -> Unit = {},
     private val fileSystem: FileSystem = FileSystem.SYSTEM,
     private val timeSource: FlashTimeSource = SystemTimeSource,
     private val workerDispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -530,6 +532,7 @@ public class HubFileBinding(
             fileSystem.copy(from, target)
             fileSystem.delete(from, mustExist = false)
         }
+        runCatching { onPlaced(target.toString()) }
         return target.toString()
     }
 

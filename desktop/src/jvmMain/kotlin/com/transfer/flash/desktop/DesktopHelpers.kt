@@ -181,23 +181,36 @@ internal object DesktopHelpers {
     // ---- received-storage helpers (Settings tab; `:app` scans DiscoveryEngineHolder's root,
     // the desktop equivalent scans DesktopEngine's received root) ----
 
+    /**
+     * The entries "Clear received files" may delete and the size card may count (brutal-review F8).
+     *
+     * The received folder is the user's "Save location": it can be `Downloads` or `Desktop`, so it is NOT all Flash's. Only
+     * what the receive pipelines recorded in [DesktopEngine.receivedManifest] counts. The one exception is Flash's own default
+     * folder (`~/FlashReceived`), where everything is Flash's and files received before the manifest existed are cleared too.
+     */
+    internal fun ownedReceivedEntries(engine: DesktopEngine): List<File> {
+        val root = engine.receivedDirectory
+        if (!root.exists()) return emptyList()
+        val recorded = engine.receivedManifest.entriesUnder(root)
+        if (!engine.receivedRootIsFlashsOwn) return recorded
+        return (root.listFiles()?.toList().orEmpty() + recorded).distinctBy { it.path }
+    }
+
     fun clearReceivedFiles(engine: DesktopEngine) {
         // Asks the ENGINE for its root. This used to re-derive `~/FlashReceived` from the user home,
         // which silently ignored `DesktopEngine(receivedRoot = …)` — the constructor every desktop
         // test uses — so it reported and cleared a directory the engine was not writing to.
-        val root = engine.receivedDirectory
-        if (!root.exists()) return
-        // Only delete under the engine's canonical root — same containment discipline the
-        // receive pipeline applies on write.
-        root.listFiles()?.forEach { child -> runCatching { child.deleteRecursively() } }
+        val owned = ownedReceivedEntries(engine)
+        owned.forEach { entry -> runCatching { entry.deleteRecursively() } }
+        engine.receivedManifest.forget(owned)
     }
 
     /**
-     * Total bytes under the engine's received-files root, or 0 when there are none.
+     * Total bytes of the received files Flash owns (see [ownedReceivedEntries]), or 0 when there are none.
      *
      * Blocking directory walk — call it off the UI thread. Mirrors what `:app` gets from its
-     * MediaStore-backed scan; there is no equivalent index on desktop, so the filesystem IS the
-     * index.
+     * MediaStore-backed scan; there is no equivalent index on desktop, so the filesystem plus the engine's manifest is the
+     * index. The figure is exactly the set a clear would delete, so the confirmation dialog does not overstate it.
      *
      * Answers 0 rather than null on an empty directory **on purpose**: the Settings card's clear
      * control is enabled only for a `totalBytes != null && > 0` scan (see
@@ -205,11 +218,8 @@ internal object DesktopHelpers {
      * control correctly disabled. Returning null would instead print "Storage usage unavailable",
      * which is a claim about a failure that did not happen.
      */
-    fun receivedFilesBytes(engine: DesktopEngine): Long {
-        val root = engine.receivedDirectory
-        if (!root.exists()) return 0L
-        return runCatching {
-            root.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+    fun receivedFilesBytes(engine: DesktopEngine): Long =
+        runCatching {
+            ownedReceivedEntries(engine).sumOf { entry -> entry.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
         }.getOrDefault(0L)
-    }
 }
