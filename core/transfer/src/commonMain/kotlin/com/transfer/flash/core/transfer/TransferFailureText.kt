@@ -33,6 +33,15 @@ public object TransferFailureText {
 
     public const val CANCELLED_BY_PEER: String = "The other device cancelled the transfer."
 
+    public const val DECLINED_BY_PEER: String = "The other device declined the file."
+
+    public const val PAUSED_BY_PEER: String = "Paused by the other device."
+
+    /** A 1:1 transfer paused by the Android service timeout: its progress is kept, but it does not restart itself. */
+    public const val PAUSED_BY_SYSTEM: String = "Paused by Android. Tap Resume to continue."
+
+    public const val WAITING_FOR_ACCEPT: String = "Waiting for the other device to accept."
+
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
 
     /** The receiver could not write a chunk to storage (R-06): full disk, removed card, revoked folder access. */
@@ -115,6 +124,23 @@ public object TransferFailureText {
     public fun notEnoughSpace(needed: Long, free: Long): String =
         "Not enough free space to receive this file. It needs ${formatSize(needed)} and only ${formatSize(free)} " +
             "is available. Free up some space, then ask for it to be sent again."
+
+    /**
+     * The sentence for the control-flow reasons the repository stores on a row that is stopped, paused or waiting on
+     * purpose (`cancelled by receiver`, `declined`, `paused by sender`, ...). These are not failures, so unlike
+     * [friendly] this neither logs nor falls back to [GENERIC]: an unrecognised reason is returned unchanged.
+     */
+    public fun displayReason(rawReason: String?): String? {
+        val raw = rawReason?.trim() ?: return null
+        return when (raw.lowercase()) {
+            "cancelled by receiver", "cancelled by sender", "cancelled by peer" -> CANCELLED_BY_PEER
+            "declined" -> DECLINED_BY_PEER
+            "paused by receiver", "paused by sender" -> PAUSED_BY_PEER
+            "paused by system" -> PAUSED_BY_SYSTEM
+            "waiting for receiver to accept" -> WAITING_FOR_ACCEPT
+            else -> raw
+        }
+    }
 
     /** Reads a sentence for [rawReason]; logs the raw reason (never shown) against [transferId]. */
     public fun friendly(rawReason: String?, transferId: String? = null): String {

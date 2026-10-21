@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-10-21 - Cancel, error and resume: the audit's defects fixed (B-01..B-07, B-09, B-10, B-12, B-14 part, B-16)
+
+### Worked on
+Reviewed the 2026-10-20 audit on `agent/A-cancel` against the code and fixed the confirmed defects. Status per finding:
+`docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` section 10.
+
+### Changed
+- `core:transfer`: `resumeTransfer` refuses a Cancelled row (B-01); `onRemoteTransferControl` ignores a late PAUSE/RESUME/CANCEL on a
+  finished row (B-03); `pauseForSystem` marks a 1:1 row `paused by system` (B-02); `cancelTransfer` clears a stale message;
+  `FlashTransfer.canRetry` and `groupOrigin`; `TransferFailureText.displayReason` turns the stored control tokens into sentences (B-12).
+- `core:messaging` + three host mappers: `FlashFileTransferStatus.Cancelled` (was folded into Failed); group aggregate handles it.
+- `ui:chat`: file and voice cards show "Cancelled" with no Retry.
+- `app`: the dataSync timeout only pauses (`TimeoutStopPlan` rewritten, B-02); Queued clears the ongoing notification (B-07); no group
+  Cancel action and no dead Retry on notifications (B-04, B-06); collision-free notification slots (B-16); the action receiver clears
+  the notification only after the work succeeded (B-10); the call notification is cancelled on every exit (B-09).
+- `desktop`: inbound offer toast, failure reason through `displayReason`, stale ids pruned (B-14 part).
+
+### Decisions taken (owner questions of audit section 7, owner may overrule)
+Q1 pause, not cancel, on the timeout; Q2 a cancelled send is not recoverable by retry (send again from the composer); Q3 drop the
+group Cancel action from the notification rather than add a confirmation. See ADR-219.
+
+### Verification
+Through `tools\flash-gradle.ps1` (the first attempt waited 45 min behind a running `:desktop:run` and exited 75; the second ran
+after it ended). Green: `:core:transfer:testAndroidHostTest` (217) and `jvmTest` (136), `:core:messaging:jvmTest` (362),
+`:core:swarm:jvmTest` (146), `:ui:chat:jvmTest` (672), `:desktop:jvmTest` DesktopNotificationManager filter, `:app:testDebugUnitTest`
+`TransfersUiMapperTest` + `TimeoutStopPlanTest` (14); `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` clean.
+New tests: five in `RealFlashTransferRepositoryTest`, `TransferFailureTextTest`, `TransfersUiMapperTest`, `TimeoutStopPlanTest`.
+**Not device-verified; no mutation check was run.** `CNCL-*` stay TODO.
+
+### Not fixed
+B-08 (unbounded hub retry, owner decision), B-11/F-01, B-13, B-15, B-19 (features / wire / engine plumbing), the failed-1:1-receive
+"Downloading with no session" half of B-06, the 1:1 "Cancel for everyone?" wording, B-17 (not confirmed), B-18 first half (warning only).
+
+### Next AI
+Run `CNCL-01..04, 06, 07, 09, 10, 12` on a phone. Then decide B-08 and build F-01 (a cancel/failure history row).
+
 ## 2026-10-20 - Cancel, error and resume audit: what each stop actually does to the peer, the row and the notification
 
 ### Worked on

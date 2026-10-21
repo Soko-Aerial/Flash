@@ -88,6 +88,8 @@ class FlashCallService : Service() {
         val calling = callingSnapshot ?: DiscoveryEngineHolder.currentCalling()
         if (calling == null) {
             Log.w(TAG, "No call engine available — stopping service")
+            // A call notification posted by an earlier instance must not outlive the engine it controls (audit B-09).
+            runCatching { notificationManager.cancel(NOTIFICATION_ID) }
             stopSelf()
             return START_NOT_STICKY
         }
@@ -105,6 +107,9 @@ class FlashCallService : Service() {
                     } else {
                         // Call fully cleared (the engine nulled activeCall).
                         stopForeground(STOP_FOREGROUND_REMOVE)
+                        // REMOVE only drops a notification the service is foreground with; one posted without
+                        // promotion needs the explicit cancel (audit B-09).
+                        runCatching { notificationManager.cancel(NOTIFICATION_ID) }
                         stopSelf()
                     }
                 }
@@ -118,6 +123,8 @@ class FlashCallService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        // The call controls live in this process; once the service is gone nothing can answer its buttons (audit B-09).
+        runCatching { notificationManager.cancel(NOTIFICATION_ID) }
         super.onDestroy()
     }
 
@@ -415,7 +422,7 @@ class FlashCallService : Service() {
 
         /** The pre-ringer channel, which played a one-shot notification ding. Deleted on create. */
         private const val LEGACY_CHANNEL_ID = "flash_calls"
-        private const val NOTIFICATION_ID = 42
+        internal const val NOTIFICATION_ID = 42
         private const val REQUEST_ANSWER = 1001
         private const val REQUEST_DECLINE = 1002
         private const val REQUEST_HANGUP = 1003

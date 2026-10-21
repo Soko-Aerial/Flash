@@ -7043,12 +7043,16 @@ public class RealFlashChatRepository(
                 val anyTransferring = recipientTransfers.any { it.status == FlashFileTransferStatus.Transferring }
                 val anyPaused = recipientTransfers.any { it.status == FlashFileTransferStatus.Paused }
                 val anyAwaiting = recipientTransfers.any { it.status == FlashFileTransferStatus.AwaitingAcceptance }
-                val allFailed = recipientTransfers.all { it.status == FlashFileTransferStatus.Failed }
+                val allCancelled = recipientTransfers.all { it.status == FlashFileTransferStatus.Cancelled }
+                val allFailed = recipientTransfers.all {
+                    it.status == FlashFileTransferStatus.Failed || it.status == FlashFileTransferStatus.Cancelled
+                }
                 val status = when {
                     allDownloaded -> FlashFileTransferStatus.Downloaded
                     anyTransferring -> FlashFileTransferStatus.Transferring
                     anyPaused -> FlashFileTransferStatus.Paused
                     anyAwaiting -> FlashFileTransferStatus.AwaitingAcceptance
+                    allCancelled -> FlashFileTransferStatus.Cancelled
                     allFailed -> FlashFileTransferStatus.Failed
                     else -> FlashFileTransferStatus.Transferring
                 }

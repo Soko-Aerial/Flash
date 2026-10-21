@@ -152,12 +152,9 @@ class FlashBackgroundService : Service() {
         Log.w(TAG, "Foreground service timeout reached: startId=$startId, fgsType=$fgsType")
         val transfers = DiscoveryEngineHolder.currentTransfers()
         val allTransfers = transfers?.activeTransfers?.value ?: emptyList()
-        val plan = TimeoutStopPlan.of(allTransfers, isSwarmRow = { id -> transfers?.isExternalRow(id.value) == true })
-        for (transfer in plan.toCancel) {
-            // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
-            timeoutCleanupScope.launch { runCatching { transfers?.cancelTransfer(transfer.id) } }
-        }
+        val plan = TimeoutStopPlan.of(allTransfers)
         for (transfer in plan.toPause) {
+            // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
             timeoutCleanupScope.launch { runCatching { transfers?.pauseForSystem(transfer.id, "SERVICE_TIMEOUT") } }
         }
         stopSelf()
@@ -356,6 +353,13 @@ class FlashBackgroundService : Service() {
                         lastProgressPostMs[id] = System.currentTimeMillis()
                         lastProgressPercent[id] = percent
                         FlashNotificationManager.showTransferProgress(this, transfer)
+                    }
+                    FlashTransferState.Queued -> {
+                        // Waiting (peer away, network, Android): an ongoing bar frozen at the last percentage, with a
+                        // Cancel button, would be false information (audit B-07). The Transfers tab shows the wait.
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.clearTransfer(this, id)
                     }
                     else -> Unit
                 }

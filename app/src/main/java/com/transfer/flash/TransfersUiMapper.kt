@@ -3,6 +3,7 @@
 package com.transfer.flash
 
 import com.transfer.flash.core.enterprise.files.HubFileText
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection as DomainDirection
 import com.transfer.flash.core.transfer.model.FlashTransferState as DomainState
@@ -41,16 +42,14 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     speedBytesPerSec = speedBytesPerSec,
     // The UI treats null / non-positive ETA as "no estimate"; normalise 0 → null at the boundary.
     etaSeconds = etaSeconds.takeIf { it > 0L },
-    errorMessage = errorMessage ?: if (state == DomainState.Cancelled) "Cancelled" else null,
+    errorMessage = TransferFailureText.displayReason(errorMessage) ?: if (state == DomainState.Cancelled) "Cancelled" else null,
     verified = state == DomainState.Completed,
     // Received file path when inbound; the source URI when outbound. Enables open & share.
     localPath = localPath ?: sourceUri,
     // A cancelled/declined transfer shares the Failed section but cannot be resumed: both sides
-    // tore the session down, and resumeTransfer returns without doing anything. Flagging it here
-    // keeps the screen from rendering a Retry button that could only ever look broken.
-    // A hub file fails only for a reason a retry cannot change (too large, no sealing key); a dropped network keeps it
-    // queued and it continues by itself (ADR-216).
-    retryable = state != DomainState.Cancelled && !viaHub,
+    // tore the session down, and resumeTransfer refuses a Cancelled row. The predicate lives on the
+    // model ([FlashTransfer.canRetry]) so the notification reads the same answer.
+    retryable = canRetry,
     transportLabel = if (viaHub) HubFileText.VIA_HUB else null,
     waitReason = waitReason,
     canGoOffline = canGoOffline,

@@ -1,5 +1,15 @@
 # Current Handoff
 
+## 2026-10-21 - Cancel, error and resume: audit defects fixed in code (unit-tested, NOT device-verified, see commit on `agent/A-cancel`)
+
+- **Branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel`. Fixes for B-01..B-07, B-09, B-10, B-12, B-16 and part of B-14; the
+  per-finding table is audit section 10. Tests green as listed in `logs/progress.md` (2026-10-21).
+- **Behaviour changes to know:** a cancelled send cannot be retried from the bubble; Android's dataSync timeout now **pauses** 1:1
+  transfers (they do not restart by themselves: "Paused by Android. Tap Resume to continue."); the notification no longer offers
+  Cancel for a group file's origin; `FlashFileTransferStatus` has a `Cancelled` value (any exhaustive `when` needs it).
+- **Open owner calls:** B-08 (bound the hub retry?), auto-resume of a 1:1 row after a timeout, the "Cancel for everyone?" wording.
+- **Recommended next task:** device checks `CNCL-01..04, 06, 07, 09, 10, 12`; then F-01 (cancel/failure history row, B-11).
+
 ## 2026-10-20 (audit) - Cancel, error and resume: the notification correlation audit (docs only, 19 findings)
 
 - **Current branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel` (based on `dev` @ `51469a84`; the main checkout belongs to

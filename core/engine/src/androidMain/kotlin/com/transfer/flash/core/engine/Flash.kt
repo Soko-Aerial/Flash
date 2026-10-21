@@ -554,9 +554,10 @@ private class Wiring(
                             com.transfer.flash.core.transfer.model.FlashTransferState.Completed,
                             com.transfer.flash.core.transfer.model.FlashTransferState.Verifying ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Downloaded
-                            com.transfer.flash.core.transfer.model.FlashTransferState.Failed,
-                            com.transfer.flash.core.transfer.model.FlashTransferState.Cancelled ->
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Failed ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Failed
+                            com.transfer.flash.core.transfer.model.FlashTransferState.Cancelled ->
+                                com.transfer.flash.core.messaging.model.FlashFileTransferStatus.Cancelled
                             com.transfer.flash.core.transfer.model.FlashTransferState.Offered ->
                                 com.transfer.flash.core.messaging.model.FlashFileTransferStatus.AwaitingAcceptance
                             com.transfer.flash.core.transfer.model.FlashTransferState.Paused ->

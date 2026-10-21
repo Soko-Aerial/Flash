@@ -5745,8 +5745,8 @@ confirm the audit's reading of the code.
   running (transfers tab open, then backgrounded).
 - **Steps:** trigger `onTimeout`. If the device exposes it, `adb shell device_config put activity_manager
   data_sync_fgs_timeout_duration 60000` (API 35; not on every release build) and wait; otherwise this needs a real 6-hour run.
-- **Pass:** the row becomes Paused/Queued with "Paused by Android; continues automatically." (not Cancelled), the done-set is
-  kept, and Resume continues from where it stopped. Today the code cancels it (`FlashBackgroundService.onTimeout` →
+- **Pass:** the row becomes Paused with "Paused by Android. Tap Resume to continue." (not Cancelled; fixed in code 2026-10-21, a
+  1:1 row does not restart by itself), the done-set is kept, and Resume continues from where it stopped. Today the code cancels it (`FlashBackgroundService.onTimeout` →
   `TimeoutStopPlan.toCancel`).
 - **Source:** B-02. **Status:** TODO
 
@@ -5762,7 +5762,7 @@ confirm the audit's reading of the code.
 - **Setup:** a 3-member v2 group, swarm on, a 50 MB file from A.
 - **Steps:** while A's file is still uploading (the notification's button reads "Cancel"), press it. Then repeat with a plain 1:1
   send from the Transfers tab.
-- **Pass:** the group case either confirms or is labelled "Cancel for everyone" (today it destroys the file for all members with
+- **Pass (fix 2026-10-21: the notification has no Cancel for a group file's origin; the in-app confirmed cancel remains):** the group case either confirms or is labelled "Cancel for everyone" (before the fix it destroyed the file for all members with
   no confirmation); the 1:1 case says plain "Cancel" (today it asks "Cancel for everyone?"). After a group cancel, B and C show a
   row that says who cancelled (see CNCL-14), not a silent disappearance.
 - **Source:** B-04 (`FlashNotificationManager.kt:239-240` vs `SwarmHostBinding.kt:168-175`; `FlashTransfersScreen.kt:315`). **Status:** TODO
@@ -5773,7 +5773,7 @@ confirm the audit's reading of the code.
 - **Pass:** all three surfaces use one vocabulary (Cancelled / Declined / Failed) and the cancelled bubble shows no Retry.
 - **Source:** B-05 (`FlashFileTransferStatus` has no Cancelled member; `TransfersUiMapper.kt:38-39`). **Status:** TODO
 
-### CNCL-06 — No dead Retry
+### CNCL-06 — No dead Retry (fixed in code 2026-10-21 for the hub notification; the 1:1 failed-receive part is still open)
 - **Setup:** a hub-linked 1:1 file that fails for a reason a retry cannot change (e.g. above the hub's `maxFileBytes`), and a 1:1
   receive that fails on the receiver only (disk full).
 - **Steps:** press Retry on the failed-transfer notification for each; then press Retry on the 1:1 failed receive while the sender

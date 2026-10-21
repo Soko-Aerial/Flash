@@ -69,7 +69,21 @@ public data class FlashTransfer(
     val recipients: List<FlashTransferRecipient> = emptyList(),
     /** The bytes travel sealed through the organisation hub instead of a direct connection (ADR-215, ADR-216). */
     val viaHub: Boolean = false,
-)
+    /**
+     * This device is the origin of a group swarm file. Cancelling it sends a signed tombstone that removes the file for
+     * every member, so only a confirmed in-app action may do it, never a one-tap notification button (audit B-04).
+     */
+    val groupOrigin: Boolean = false,
+) {
+    /**
+     * Whether a Retry control can do anything for this row. One predicate for every surface (the Transfers screen and
+     * the notification), so none of them guesses (audit 2026-10-20 B-06). A cancelled or declined transfer is a
+     * decision, not a fault; a hub file fails only for a reason a retry cannot change, and a dropped network keeps it
+     * queued so it continues by itself (ADR-216).
+     */
+    public val canRetry: Boolean
+        get() = state != FlashTransferState.Cancelled && !viaHub
+}
 
 /** One member's copy of a file being sent to a group (see [FlashTransfer.recipients]). */
 public data class FlashTransferRecipient(

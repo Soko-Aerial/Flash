@@ -224,6 +224,8 @@ public class RealFlashTransferRepository(
 
         public const val ACTION_PAUSE: String = "pause"
         public const val ACTION_RESUME: String = "resume"
+        /** Stored on a 1:1 row paused because the Android foreground-service timeout stopped the service. */
+        public const val REASON_PAUSED_BY_SYSTEM: String = "paused by system"
         public const val ACTION_CANCEL: String = "cancel"
 
         /**
@@ -737,7 +739,13 @@ public class RealFlashTransferRepository(
             external.pauseForSystem(transferId.value, reason)
             return FlashResult.Success(Unit)
         }
-        return pauseTransfer(transferId)
+        // A 1:1 transfer keeps its done-set while paused, but nothing resumes it by itself when the service
+        // comes back, so the row says so instead of promising "continues automatically" (audit B-02).
+        val result = pauseTransfer(transferId)
+        if (result is FlashResult.Success) {
+            updateTransferState(transferId.value) { it.copy(errorMessage = REASON_PAUSED_BY_SYSTEM) }
+        }
+        return result
     }
 
     override suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit> {
@@ -752,6 +760,13 @@ public class RealFlashTransferRepository(
         if (transfer.state == FlashTransferState.Completed) {
             return FlashResult.Success(Unit)
         }
+        // Cancelled is a decision, not a fault (audit 2026-10-20 B-01): a cancelled or declined send
+        // must never be relaunched by a tap on its bubble or a stale Retry, and a cancelled receive
+        // must not re-request bytes the user stopped. Sending again is a new send from the composer.
+        if (transfer.state == FlashTransferState.Cancelled) {
+            runCatching { FlashLog.i("TRANSFER", "resumeTransfer ignored id=${transferId.value} state=Cancelled") }
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Cancelled("transfer was cancelled"))
+        }
 
         val dispatcher = registryLock.withLock { runningDispatchers[transferId.value] }
         // isActive, not mere presence: executeSend's finally only retires its OWN dispatcher/job
@@ -765,7 +780,7 @@ public class RealFlashTransferRepository(
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
 
-        // Outbound with no live worker — a Failed, Cancelled, or stalled transfer being retried, or a resume
+        // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
         // issued after executeSend already retired its registrations. Relaunch a fresh send job!
         if (transfer.direction == FlashTransferDirection.Sending && !liveSender) {
             relaunchSend(transfer, notifyPeer = true)
@@ -776,8 +791,7 @@ public class RealFlashTransferRepository(
         // state: bailing out on a state mismatch left the wire paused with no way back.
         if (!wirePaused &&
             transfer.state != FlashTransferState.Paused &&
-            transfer.state != FlashTransferState.Failed &&
-            transfer.state != FlashTransferState.Cancelled
+            transfer.state != FlashTransferState.Failed
         ) {
             return FlashResult.Success(Unit)
         }
@@ -885,8 +899,12 @@ public class RealFlashTransferRepository(
         dispatcher?.setPaused(false) // unpause so cancellation lands at the next suspension point
         job?.cancel()
 
+        if (transfer == null) {
+            runCatching { FlashLog.w("TRANSFER", "cancelTransfer on unknown row id=${transferId.value}: torn down locally, peer not told") }
+        }
+        // errorMessage is cleared: a stale "paused by receiver" must not outlive the cancel (B-12).
         updateTransferState(transferId.value) {
-            it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L)
+            it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L, errorMessage = null)
         }
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
         forgetChunks(transferId.value, null)
@@ -908,6 +926,21 @@ public class RealFlashTransferRepository(
     public fun onRemoteTransferControl(transferId: String, action: String) {
         runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId") }
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return
+        // A late frame must not rewrite a finished transfer (audit B-03): PAUSE never applies once the
+        // row is finished or failed, CANCEL never to a finished one, and RESUME only to a row that is
+        // not Completed/Cancelled (a Failed send IS resumed by the receiver's Retry).
+        val terminal = when (action) {
+            ACTION_PAUSE -> transfer.state in setOf(
+                FlashTransferState.Completed, FlashTransferState.Cancelled, FlashTransferState.Failed,
+            )
+            ACTION_CANCEL, ACTION_RESUME -> transfer.state == FlashTransferState.Completed ||
+                transfer.state == FlashTransferState.Cancelled
+            else -> false
+        }
+        if (terminal) {
+            runCatching { FlashLog.i("TRANSFER", "remote control ignored action=$action transferId=$transferId state=${transfer.state}") }
+            return
+        }
         when (action) {
             ACTION_PAUSE -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {

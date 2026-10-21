@@ -6395,3 +6395,26 @@ Search now answers "where is Budget_Q4.pdf" as well as "where did we discuss the
 
 ### Revisit when
 Device tests (`SEARCH-01`…`SEARCH-12`) show the 3-row section preview to be the wrong size, the LIKE scan to be too slow on a large history, or people ask for word-stem matching — then evaluate FTS5 with a measured baseline; or when a paged message list lands, which must move in-chat search into the DAO.
+
+
+## ADR-219 - A service timeout pauses a 1:1 transfer; a cancelled send is not retryable; a group origin has no notification Cancel
+
+### Decision
+(1) Android's dataSync timeout pauses every Transferring row (as swarm and hub already did) and cancels none. (2) A Cancelled 1:1 send
+is final: tapping it does nothing, and `resumeTransfer` returns `FlashError.Cancelled`; the user sends again from the composer.
+(3) The notification of a group file's origin has no Cancel action; cancelling a group file stays an in-app, confirmed action.
+
+### Context
+Audit `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` B-01, B-02, B-04. The owner had not answered section 7 when the
+fixes were made; the audit's recommendations were taken and are recorded here so they can be reversed.
+
+### Alternatives considered
+Cancel on timeout (loses chunk state, contradicts the app's own sentence); retry that re-sends a cancelled file (surprising, a
+consent problem); a confirmation dialog from a notification (cannot be shown reliably from a receiver).
+
+### Consequences
+A paused 1:1 transfer waits for the user: auto-resume after the service returns is not built. The rest of the group sees one fewer way
+to destroy a file by accident.
+
+### Revisit when
+Device checks `CNCL-02` or `CNCL-04` show users expect the transfer to continue by itself, or the owner wants cancel from the notification.

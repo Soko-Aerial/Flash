@@ -1527,9 +1527,10 @@ public class DesktopEngine(
                                 FlashTransferState.Completed,
                                 FlashTransferState.Verifying ->
                                     FlashFileTransferStatus.Downloaded
-                                FlashTransferState.Failed,
-                                FlashTransferState.Cancelled ->
+                                FlashTransferState.Failed ->
                                     FlashFileTransferStatus.Failed
+                                FlashTransferState.Cancelled ->
+                                    FlashFileTransferStatus.Cancelled
                                 FlashTransferState.Offered ->
                                     FlashFileTransferStatus.AwaitingAcceptance
                                 FlashTransferState.Paused ->
