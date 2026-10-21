@@ -28,6 +28,7 @@ import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.RollingRateMeter
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +87,12 @@ public class RealFlashTransferRepository(
      * Null never blocks a transfer: an unknown amount is not a reason to refuse.
      */
     private val freeSpaceBytes: () -> Long? = { null },
+    /**
+     * How long a retried receive may sit at "Downloading" without a single new byte before it goes back to Failed with
+     * [TransferFailureText.SENDER_DID_NOT_RESUME] (C-08). A receiver cannot restart a sender that is gone, so without a
+     * bound the row would never say so.
+     */
+    private val retryReceiveWaitMs: Long = RETRY_RECEIVE_WAIT_MS,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -260,6 +267,9 @@ public class RealFlashTransferRepository(
 
         /** The source [attachExternalRows] uses when the caller names none (the swarm binding before ADR-216). */
         public const val DEFAULT_EXTERNAL_SOURCE: String = "external"
+
+        /** See the `retryReceiveWaitMs` constructor parameter. */
+        public const val RETRY_RECEIVE_WAIT_MS: Long = 30_000L
     }
 
     /**
@@ -834,6 +844,7 @@ public class RealFlashTransferRepository(
                 emitIncoming(transferId.value, ACTION_RESUME)
             }
             emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_RESUME)
+            if (transfer.state == FlashTransferState.Failed) watchRetriedReceive(transferId.value, transfer.bytesDone)
             return FlashResult.Success(Unit)
         }
 
@@ -1487,6 +1498,27 @@ public class RealFlashTransferRepository(
                     speedBytesPerSec = 0L,
                     etaSeconds = 0L,
                 )
+            }
+        }
+    }
+
+    /**
+     * C-08: after Retry on a Failed receive the row shows "Downloading", but the receiver only asked the sender to
+     * continue; a sender that is gone or already finished never will. If no new byte arrived within
+     * [retryReceiveWaitMs] the row goes back to Failed with a sentence that says what to do.
+     */
+    private fun watchRetriedReceive(transferId: String, bytesAtRetry: Long) {
+        repositoryScope.launch {
+            delay(retryReceiveWaitMs)
+            updateTransferState(transferId) { row ->
+                if (row.direction == FlashTransferDirection.Receiving &&
+                    row.state == FlashTransferState.Transferring &&
+                    row.bytesDone <= bytesAtRetry
+                ) {
+                    row.copy(state = FlashTransferState.Failed, errorMessage = TransferFailureText.SENDER_DID_NOT_RESUME)
+                } else {
+                    row
+                }
             }
         }
     }

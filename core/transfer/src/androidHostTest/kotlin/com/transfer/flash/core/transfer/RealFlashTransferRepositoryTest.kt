@@ -696,6 +696,60 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `a retried receive that gets no bytes goes back to Failed with a sentence (C-08)`() = runBlocking {
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { Buffer().write(ByteArray(0)) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            retryReceiveWaitMs = 150L,
+        )
+        repo.onIncomingOffered("tx-r", "fx-r", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-r"))
+        repo.onIncomingFailed("tx-r", "boom")
+        repo.resumeTransfer(FlashTransferId("tx-r"))
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-r")).state)
+
+        awaitUntil(describe = { "row never returned to Failed" }) {
+            repo.snapshot(FlashTransferId("tx-r")).state == FlashTransferState.Failed
+        }
+        assertEquals(TransferFailureText.SENDER_DID_NOT_RESUME, repo.snapshot(FlashTransferId("tx-r")).errorMessage)
+    }
+
+    @Test
+    fun `a retried receive that gets bytes is left alone (C-08)`() = runBlocking {
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { Buffer().write(ByteArray(0)) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            retryReceiveWaitMs = 150L,
+        )
+        repo.onIncomingOffered("tx-r", "fx-r", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-r"))
+        repo.onIncomingFailed("tx-r", "boom")
+        repo.resumeTransfer(FlashTransferId("tx-r"))
+        repo.onIncomingProgress("tx-r", 512L)
+
+        Thread.sleep(400)
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-r")).state)
+    }
+
+    @Test
     fun `sendFile preserves an explicit wire file id`() = runBlocking {
         val repo = RealFlashTransferRepository(
             chunker = Chunker(),
