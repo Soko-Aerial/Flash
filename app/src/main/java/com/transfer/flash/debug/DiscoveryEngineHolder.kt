@@ -1990,6 +1990,7 @@ object DiscoveryEngineHolder {
             registerGroupFile = chatImpl::registerHubGroupFile,
             queueTicket = chatImpl::queueHubFile,
             outgoingEnded = chatImpl::hubFileEnded,
+            outgoingRetried = chatImpl::hubFileRetried,
             openSource = { uriString -> openSource(uriString, appContext).source() },
             receivedDirectory = { receivedDir.path },
             isDirectlyReachable = { peerId ->

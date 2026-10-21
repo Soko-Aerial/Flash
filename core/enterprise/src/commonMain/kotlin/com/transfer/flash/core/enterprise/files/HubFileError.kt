@@ -159,6 +159,10 @@ public object HubFileText {
 
     public fun expired(senderName: String): String = "This file is no longer on the hub. Ask ${senderName.ifBlank { "the sender" }} to send it again."
 
+    /** An upload that kept being interrupted for the hub's whole 24 hour upload window (C-07). */
+    public const val UPLOAD_WINDOW_ENDED: String =
+        "This file did not reach the hub within 24 hours, so the upload was stopped. Tap Retry to try again, or send it again."
+
     public fun failed(reason: String): String = "The hub could not take this file. $reason"
 
     public fun needsSealing(name: String): String = "Files can only go through the hub when content sealing is on for $name."

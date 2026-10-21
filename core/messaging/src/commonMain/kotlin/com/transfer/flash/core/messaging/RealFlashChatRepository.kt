@@ -618,6 +618,11 @@ public class RealFlashChatRepository(
         hubFiles?.ended(transferId)
     }
 
+    /** A Failed outgoing hub file was retried: its message waits for a ticket again (C-07). */
+    public suspend fun hubFileRetried(transferId: String) {
+        hubFiles?.retried(transferId)
+    }
+
     /** What the hub said about each message this device sent through it (bubble notes). Empty without a hub. */
     override val hubDeliveryNotes: StateFlow<Map<String, HubDeliveryNote>> =
         hubBridge?.notes ?: MutableStateFlow(emptyMap())
