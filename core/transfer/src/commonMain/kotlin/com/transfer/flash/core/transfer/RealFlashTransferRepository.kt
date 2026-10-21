@@ -780,6 +780,18 @@ public class RealFlashTransferRepository(
         return result
     }
 
+    override suspend fun resumeSystemPaused(): Int {
+        val rows = _activeTransfers.value.filter {
+            it.state == FlashTransferState.Paused && it.errorMessage == REASON_PAUSED_BY_SYSTEM && externalControlFor(it.id.value) == null
+        }
+        var resumed = 0
+        for (row in rows) {
+            if (resumeTransfer(row.id) is FlashResult.Success) resumed++
+        }
+        if (resumed > 0) runCatching { FlashLog.i("TRANSFER", "auto-resumed $resumed transfer(s) paused by the system") }
+        return resumed
+    }
+
     override suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit> {
         externalControlFor(transferId.value)?.let { external ->
             external.resume(transferId.value)
