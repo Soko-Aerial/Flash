@@ -1,5 +1,13 @@
 # Current Handoff
 
+## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented
+
+- **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md` §8 and §11, and **ADR-222** in `docs/decisions.md`. The owner answered all five audit questions and asked that they be recorded, **not implemented**.
+- **Decided:** (1) 64 rosters per sync, `/directory/sync` gets a 2 MiB bound, byte-budget paging, 200 members/page, `rostersTruncated`; (2) device certificates **30 days and adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), window/grace derived; (3) a department move is **immediate** (registry-derived principal + bearer revoke + kick); (4) an unopenable sealed mailbox row is **quarantined** and its sender told `DROPPED`; (5) `/auth/verify` limited **per device**; (6) an announcement edit **keeps** its expiry (`clearExpiry` clears it).
+- **Nothing was implemented, built or run.** No product code changed.
+- **Recommended next task:** audit §11 item 1 — DIR-04 (sync body budget). It is the only defect that stops the whole offline-trust feature above ~110 members. Then item 2 (ANN-01 transactions) and item 3 (announcement expiry).
+- **Do not:** re-ask the §8 questions, or update `docs/protocol.md` for these decisions before the code lands.
+
 ## 2026-10-21 (server & hub internals audit, addendum) - DOCS ONLY, nothing built, nothing device-verified
 
 - **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md` (it now has 18 findings). While the owner's five §8 questions were being explained, one **High** defect was found: **DIR-04** — the client asks `/directory/sync` for 500 members and then rejects any answer above **64 KiB**; a member DTO is ~576 B, so more than ~110 changed members (or ~64 small rosters on the last page) produce `ServerError(200, "Malformed directory sync response")` and org trust never lands. Not caught before because every client sync test uses `FakeDirectorySyncApi` (EXP-022's 500-member pages never left the JVM).

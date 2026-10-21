@@ -6009,7 +6009,7 @@ confirm the audit's reading of the code.
 
 ## 4zzzzzzzzzzzzzzzzzzzz. Server & Hub internals audit (SRVHUB, 2026-10-21; see `docs/audit/2026-10-21-server-hub-internals-audit.md`)
 
-Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. Each one is the test named in the audit's §3 for that finding; none was run, so each also stands as a device/console check where the row says so.
+Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. Each one is the test named in the audit's §3 for that finding; none was run, so each also stands as a device/console check where the row says so. The owner's answers to the audit's five questions (ADR-222) are the expected behaviour each Pass line now describes.
 
 ### SRVHUB-01 — `/directory/people` pages past one page (DIR-01)
 - **Setup:** a hub with 250 members (`limit = 100`), or an org of 600 with `limit = 500`.
@@ -6018,22 +6018,22 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 
 ### SRVHUB-02 — A sealed mailbox row that cannot be opened does not block the queue (RLY-01)
 - **Setup:** a hub with queued messages for one device; stop it (and back up `data.key`), remove or replace `data.key` in the data dir, start it again.
-- **Steps:** reconnect that device; send it a new message from another device.
-- **Pass:** the unreadable messages are removed and their senders get `FLASH_QUEUE_STATE state=DROPPED`; the new message arrives; the log names the count and the device; a metric/console row shows the drops. Today: the device gets nothing until the TTL expires (7 days) and no sender is told. **Source:** RLY-01. **Status:** TODO
+- **Steps:** reconnect that device; send it a new message from another device; inspect the mailbox table.
+- **Pass:** the unreadable rows are still present but marked `undeliverable_reason` and skipped; their senders get `FLASH_QUEUE_STATE state=DROPPED`; the new message arrives in the same connection; the log/metric names the count (8-character device id only); the rows disappear with the normal 7-day TTL. Today: the device gets nothing until the TTL expires and no sender is told. **Source:** RLY-01, ADR-222 decision 4. **Status:** TODO
 
 ### SRVHUB-03 — Two admins writing at the same time cannot duplicate a `seq` or lose an edit (ANN-01)
 - **Setup:** two console sessions; or two `POST /api/v1/announcements` in parallel with `curl` (also with the same `clientRequestId`), and two `PUT`s of one announcement with the same `expectedSeq`.
 - **Pass:** every created announcement has a distinct `seq` (check `SELECT seq, COUNT(*) FROM announcement GROUP BY seq HAVING COUNT(*) > 1`, no rows); exactly one of the two `PUT`s succeeds and the other answers `409`; one `clientRequestId` yields one announcement; a 4th pin answers `ERR_PIN_LIMIT` on both a device and a console route, with the **same** status code. **Source:** ANN-01. **Status:** TODO
 
-### SRVHUB-04 — A department move takes effect without a certificate renewal (DEV-01)
+### SRVHUB-04 — A department move takes effect within seconds (DEV-01)
 - **Setup:** an enrolled device in department A; a department-scoped announcement for A and one for B.
-- **Steps:** as org admin, move the device to B in the console; wait for the next poll (no re-enrol, no renewal, no app restart).
-- **Pass:** B's announcement reaches the device and A's stops, and the Hub tab puts it in B. Today: nothing changes until the certificate is renewed, i.e. within 7 days of the move for a running device (certificates live 7 days; renewal starts a day before expiry). **Source:** DEV-01. **Status:** TODO
+- **Steps:** as org admin, move the device to B in the console; do not re-enrol, renew or restart anything.
+- **Pass:** the device is kicked and reconnects by itself, B's announcement reaches it and A's stops, the Hub tab puts it in B, and the log shows one kick and one re-handshake. Today: nothing changes until the certificate is renewed. **Source:** DEV-01, ADR-222 decision 3. **Status:** TODO
 
 ### SRVHUB-05 — A console edit keeps an announcement's expiry (ANN-02)
-- **Setup:** an announcement created through the API with `expiresAtMs = now + 10 min`.
-- **Steps:** fix a typo in its body in the console; wait past the expiry; reopen the Hub tab and the console.
-- **Pass:** it disappears at the expiry. Today: the edit clears `expires_at` and it stays for ever. **Source:** ANN-02. **Status:** TODO
+- **Setup:** an announcement created through the API (or the new console field) with `expiresAtMs = now + 10 min`.
+- **Steps:** fix a typo in its body in the console; wait past the expiry; reopen the Hub tab and the console. Then repeat with "Remove expiry" instead of a typo fix.
+- **Pass:** after the typo fix it still disappears at the expiry; after "Remove expiry" it stays. Today: every edit clears `expires_at` and it stays for ever. **Source:** ANN-02, ADR-222 decision 6. **Status:** TODO
 
 ### SRVHUB-06 — A hidden department's removed member does not leak (DIR-02)
 - **Setup:** a hidden department with one member; a second device outside it.
@@ -6046,9 +6046,9 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 - **Pass:** X is listed in both syncs and is never deleted from the peer's directory; `removedDeviceIds` no longer names it. Today: it is deleted on every sync. **Source:** DIR-03. **Status:** TODO
 
 ### SRVHUB-08 — A hub restart does not lock out an office (AUTH-01)
-- **Setup:** 40 devices behind one NAT/reverse proxy (or a load test that signs in 40 times from one address).
+- **Setup:** 50 devices behind one NAT/reverse proxy (or a load test that signs in 50 times from one address).
 - **Steps:** restart the hub; watch the clients.
-- **Pass:** every device signs in again within a minute and none shows the sign-in failure sentence. Today: about 15 per burst, then one per 2 s, so ~40 devices take a minute and more than 15 failures are visible. **Source:** AUTH-01. **Status:** TODO
+- **Pass:** every device signs in again within a minute, `/auth/verify` is limited per device rather than per IP, and no device shows the sign-in failure sentence. Today: about 15 per burst, then one per 2 s, so 50 devices take over a minute and the throttled ones show an auth failure. **Source:** AUTH-01, ADR-222 decision 5. **Status:** TODO
 
 ### SRVHUB-09 — One sender cannot flood a large group (RLY-02)
 - **Setup:** a group of 100 members, all online; one member scripted to send 64 KiB frames at 60 frames/s.
@@ -6071,10 +6071,20 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 
 ### SRVHUB-13 — A 300-member organisation syncs through the real client (DIR-04)
 - **Setup:** a real Ktor hub (in `:server:test`, or a local instance) with 300 enrolled members; a real `RealEnterpriseDirectoryClient` pointed at it; an `OrgDirectorySync` with a real DAO.
-- **Steps:** run one `syncOnce`; repeat with 1,000 members and with a device in 20 groups.
-- **Pass:** 300 (and 1,000) members are stored, `HubSyncStatus` is not `FAILED`, and no page is refused. Today: the first page is ≈ 288 KB and the client's 64 KiB guard turns it into `ServerError(200, "Malformed directory sync response")`, so nothing lands. Also assert each response stays under whatever bound `docs/protocol.md` documents. **Source:** DIR-04. **Status:** TODO
+- **Steps:** run one `syncOnce`; repeat with 1,000 members and with a device in 20 groups (last page carrying rosters).
+- **Pass:** 300 (and 1,000) members are stored, `HubSyncStatus` is not `FAILED`, and no page is refused; every response stays under the documented bound (`MAX_DIRECTORY_SYNC_BODY_BYTES`, 2 MiB after ADR-222) and under the byte budget the server targets. Today: the first page is ≈ 288 KB and the client's 64 KiB guard turns it into `ServerError(200, "Malformed directory sync response")`, so nothing lands. **Source:** DIR-04, ADR-222 decision 1. **Status:** TODO
 
 ### SRVHUB-14 — A truncated roster list does not delete groups the device is still in (DIR-05)
 - **Setup:** a device that is a member of three hub groups; force `MAX_ROSTERS_PER_SYNC` to 2 (test build).
 - **Steps:** run a sync; then remove one of the two delivered groups so the third would be delivered; sync again.
-- **Pass:** the response says it was truncated (`rostersTruncated`, once implemented), the third group's stored roster survives, and the device never silently drops a group it still belongs to. Today: the client replaces its set, so the third group vanishes as if it had left it. **Source:** DIR-05. **Status:** TODO
+- **Pass:** the response says it was truncated (`rostersTruncated`, once implemented), the third group's stored roster survives, and the device never silently drops a group it still belongs to. Today: the client replaces its set, so the third group vanishes as if it had left it. **Source:** DIR-05, ADR-222 decision 1. **Status:** TODO
+
+### SRVHUB-15 — The device certificate lifetime is 30 days and adjustable (ADR-222 decision 2)
+- **Setup:** a hub started with `FLASH_DEVICE_CERT_VALIDITY_DAYS=30` (and once with `=90`), a delegation issued for 90 days, and an enrolled device.
+- **Steps:** enrol the device; read `validTo - validFrom` from its certificate; restart the hub with a delegation that expires in 10 days and enrol again; restart with `FLASH_DEVICE_CERT_VALIDITY_DAYS=0` and `=400`.
+- **Pass:** the certificate is 30 days (and 90 days when asked); the leaf never outlives its delegation (SEC-18) and the hub logs a startup warning when the delegation is shorter than lifetime + grace; out-of-range values are refused with a message naming the setting; a client on the current build renews without any client change (the renewal window scales: 3 days of a 30-day certificate, not 1). **Source:** ADR-222 decision 2. **Status:** TODO
+
+### SRVHUB-16 — Announcement expiry is a tri-state on the wire (ADR-222 decision 6)
+- **Setup:** an announcement with `expiresAtMs` set; `curl` or a test client.
+- **Steps:** `PUT` with only `title`/`body`; `PUT` with `expiresAtMs: null` and `clearExpiry: false`; `PUT` with `expiresAtMs: null` and `clearExpiry: true`; `PUT` with both `expiresAtMs` and `clearExpiry: true`.
+- **Pass:** the first two leave the expiry unchanged, the third clears it, the fourth answers `400` naming the conflict. **Source:** ADR-222 decision 6. **Status:** TODO

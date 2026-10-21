@@ -6460,3 +6460,57 @@ fails a row there).
 
 ### Revisit when
 Device checks show senders and receivers disagree about a refusal, or a future wire version carries file metadata in the reject.
+
+## ADR-222 - Hub operational policy: sync body budget, 30-day certificates, mailbox quarantine, per-device re-auth, announcement expiry on edit
+
+### Decision
+The owner answered the five questions of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 8 on 2026-10-21. **Recorded,
+not implemented** (owner: "edit the audit, you will not be implementing it").
+
+1. **Directory sync transport.** 64 group rosters per sync is the cap (the protocol text wins; `MAX_ROSTERS_PER_SYNC` 256 -> 64).
+   `/api/v1/directory/sync` gets its own body bound, `MAX_DIRECTORY_SYNC_BODY_BYTES = 2 MiB`, while every other REST body keeps
+   `MAX_REST_BODY_BYTES = 64 KiB`. The server pages by bytes as well as rows and never emits a body its client would refuse; the
+   client asks for 200 members per page; truncation becomes explicit (`rostersTruncated`) instead of a silent replace.
+2. **Device certificate lifetime.** 30 days by default, adjustable on the server (`FLASH_DEVICE_CERT_VALIDITY_DAYS`, 1..365). The
+   renewal window and grace are derived from the lifetime with clamps (window >= 1 day and about 10 %, grace >= 3 days and about
+   5 %) and remain overridable. A delegation shorter than lifetime + grace is warned about at startup; the leaf still never outlives
+   its delegation (SEC-18). No client change is needed: `RenewalPolicy` reads the certificate's own `validTo`.
+3. **A department move is immediate.** Because a 30-day certificate makes certificate-carried authorisation stale for longer, the
+   principal's role and department come from the registry (`IdentityStore.device`) after the certificate authenticates the device;
+   the move also revokes that device's bearers and kicks its live relay session, and the console says it takes effect immediately.
+   There is no automatic re-issue: enrolment needs an invite token.
+4. **An unopenable sealed mailbox row is quarantined.** The row keeps its place with an `undeliverable_reason`, `fetchPage` skips it
+   (applying its `LIMIT` after the skip), the sender is told `DROPPED`, and the row ages out with the existing 7-day TTL. Refusing to
+   drain the device is rejected: one row would otherwise become a permanent, unexplained outage.
+5. **Re-authentication is limited per device, not per address.** `/auth/verify` gets its own bucket keyed by the `deviceId` in the
+   body (burst 5, one per 5 s), falling back to the client IP when the body carries no parsable device id; `/auth/challenge` and
+   `GET /api/v1/hub` stay on the per-IP bucket. The client refreshes a bearer single-flight (CLI-01) and jitters its first attempt.
+   Supported scale: about 200 devices behind one public IP.
+6. **An announcement edit keeps its expiry.** `expiresAtMs` non-null sets it, and clearing becomes explicit with
+   `clearExpiry: Boolean = false`; omit plus no clear leaves it untouched. The console gains the expiry field on create and edit.
+
+### Context
+Read from the code at `df212ac2`: the client refused any sync body above 64 KiB while asking for 500 members a page (~288 KB), so any
+organisation above ~110 members never synchronised (DIR-04, found while answering these questions); rosters were truncated silently
+under replace-all semantics (DIR-05); a certificate lived 7 hard-coded days and carried the department that relay and announcements
+scoped on (DEV-01); one undecryptable mailbox page stopped a device's drain for ever (RLY-01); `/auth/challenge` and `/auth/verify`
+shared one per-IP bucket (AUTH-01); and a console edit cleared an announcement's expiry (ANN-02).
+
+### Alternatives considered
+- Raise `MAX_ROSTERS_PER_SYNC` to 256 and leave the 64 KiB guard: rejected, 256 rosters cannot fit in a single response and the guard
+  is correct for every other route.
+- Keep certificates at 7 days: rejected by the owner (too much churn for an on-prem hub), which is why decision 3 is required.
+- Refuse to drain a device with an unopenable row: rejected, it converts a backup mistake into a permanent device outage.
+- Persist REST bearers across a restart: rejected, revocation is re-checked when a token resolves and that is worth keeping.
+- Let an edit clear the expiry: rejected, an edit is a new body, not a new lifetime, and the wire could not express "unchanged".
+
+### Consequences
+- Six implementation items, ordered in the audit's section 11, none started. The first three are prerequisites for putting a hub in
+  front of real users.
+- `docs/protocol.md` must be updated with the sync body budget, the roster cap and the announcement expiry tri-state when those land.
+- The 30-day default widens the window in which any *other* certificate-carried attribute could be stale; decision 3 closes it for
+  role and department, which are the only such attributes today.
+
+### Revisit when
+An organisation needs role changes without a new invite (that would make role a registry attribute everywhere), or measurements show
+200 members per page is the wrong size for a slow link.
