@@ -138,8 +138,13 @@ public class RealFlashTransferRepository(
         _activeTransfers.value = if (dismissed.isEmpty()) {
             merged
         } else {
-            // Only a still-completed row stays hidden: a row that left Completed (never expected) shows again.
-            merged.filterNot { it.state == FlashTransferState.Completed && it.id.value in dismissed }
+            // Only a still-finished row stays hidden: a Failed row that is retried (or any row that left its finished state)
+            // shows again, and its id is forgotten below so a later failure is not hidden by an old dismissal.
+            merged.filterNot { it.state.isFinished() && it.id.value in dismissed }
+        }
+        if (dismissed.isNotEmpty()) {
+            val revived = merged.filter { !it.state.isFinished() && it.id.value in dismissed }.mapTo(HashSet()) { it.id.value }
+            if (revived.isNotEmpty()) dismissedFinishedIds.update { it - revived }
         }
     }
 
@@ -149,6 +154,23 @@ public class RealFlashTransferRepository(
         dismissedFinishedIds.update { it + finished.map { row -> row.id.value } }
         updateMergedTransfers()
     }
+
+    override fun dismissTransfer(transferId: FlashTransferId) {
+        val row = _activeTransfers.value.firstOrNull { it.id == transferId } ?: return
+        if (!row.state.isFinished()) return
+        dismissedFinishedIds.update { it + transferId.value }
+        updateMergedTransfers()
+    }
+
+    override fun clearFailedHistory() {
+        val rows = _activeTransfers.value.filter { it.state == FlashTransferState.Failed || it.state == FlashTransferState.Cancelled }
+        if (rows.isEmpty()) return
+        dismissedFinishedIds.update { it + rows.map { row -> row.id.value } }
+        updateMergedTransfers()
+    }
+
+    private fun FlashTransferState.isFinished(): Boolean =
+        this == FlashTransferState.Completed || this == FlashTransferState.Failed || this == FlashTransferState.Cancelled
 
     private fun updateInternalTransfers(transform: (List<FlashTransfer>) -> List<FlashTransfer>) {
         _internalTransfers.update(transform)

@@ -1869,6 +1869,15 @@ public fun DesktopShell(
                             selectedTransferItem = null
                             engine.transfers?.clearFinishedHistory()
                         },
+                        // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
+                        onDismissItem = { item ->
+                            if (selectedTransferItem?.id == item.id) selectedTransferItem = null
+                            engine.transfers?.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                        },
+                        onClearFailed = {
+                            selectedTransferItem = null
+                            engine.transfers?.clearFailedHistory()
+                        },
                         modifier = Modifier.fillMaxSize(),
                         listState = transfersScroll,
                         bottomInset = tabBottomInset,

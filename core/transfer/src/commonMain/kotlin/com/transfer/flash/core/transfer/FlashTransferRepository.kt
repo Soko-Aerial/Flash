@@ -58,6 +58,16 @@ public interface FlashTransferRepository {
      */
     public fun clearFinishedHistory() {}
 
+    /**
+     * Hides one finished row ([FlashTransferState.Completed], [FlashTransferState.Failed] or [FlashTransferState.Cancelled])
+     * from [activeTransfers] (open-items tracker C-10). Only a row that is still finished stays hidden, so a Failed row that
+     * is retried shows again. Nothing on disk or on the peer is touched. Default no-op.
+     */
+    public fun dismissTransfer(transferId: FlashTransferId) {}
+
+    /** [dismissTransfer] for every Failed and Cancelled row: the Transfers tab's "Clear failed". Default no-op. */
+    public fun clearFailedHistory() {}
+
     public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
 
     /**

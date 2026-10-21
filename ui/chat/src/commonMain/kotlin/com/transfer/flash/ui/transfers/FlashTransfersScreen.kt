@@ -290,6 +290,10 @@ fun FlashTransfersScreen(
     onHistoryShare: (FlashTransferItemUi) -> Unit = onHistoryOpen,
     /** Optional action to clear completed transfer history from the view. */
     onClearHistory: (() -> Unit)? = null,
+    /** Hides one Failed or Cancelled row (C-10). A host that passes this gets a dismiss glyph on those rows. */
+    onDismissItem: ((FlashTransferItemUi) -> Unit)? = null,
+    /** Hides every Failed and Cancelled row (C-10): the "Clear" beside those two section labels. */
+    onClearFailed: (() -> Unit)? = null,
 ) {
     // Every branch clears the status bar: this page is its own top-level surface and has no
     // top bar of its own to own that inset (Chats/Conversation do it in their headers).
@@ -327,6 +331,8 @@ fun FlashTransfersScreen(
                 onAcceptOffer = onAcceptOffer,
                 onDeclineOffer = onDeclineOffer,
                 onClearHistory = onClearHistory,
+                onDismissItem = onDismissItem,
+                onClearFailed = onClearFailed,
                 modifier = surface,
                 listState = listState,
                 bottomInset = bottomInset,
@@ -446,6 +452,8 @@ private fun PopulatedSections(
     onAcceptOffer: (FlashTransferItemUi) -> Unit,
     onDeclineOffer: (FlashTransferItemUi) -> Unit,
     onClearHistory: (() -> Unit)?,
+    onDismissItem: ((FlashTransferItemUi) -> Unit)?,
+    onClearFailed: (() -> Unit)?,
     modifier: Modifier,
     listState: LazyListState,
     bottomInset: Dp,
@@ -557,7 +565,7 @@ private fun PopulatedSections(
             }
         }
         if (retryableFailed.isNotEmpty()) {
-            item(key = "label-failed") { SectionLabel("FAILED") }
+            item(key = "label-failed") { SectionLabelWithClear("FAILED", onClearFailed) }
             items(retryableFailed, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
@@ -568,17 +576,33 @@ private fun PopulatedSections(
                             description = "Retry",
                             onClick = { onRetryClick(item) },
                         )
+                        if (onDismissItem != null) {
+                            Spacer(Modifier.width(FlashSpacing.space8))
+                            RowIcon(
+                                icon = FlashIcons.Close,
+                                description = "Dismiss",
+                                onClick = { onDismissItem(item) },
+                            )
+                        }
                     },
                 )
             }
         }
         if (cancelledOrDeclined.isNotEmpty()) {
-            item(key = "label-cancelled") { SectionLabel("CANCELLED / DECLINED") }
+            item(key = "label-cancelled") { SectionLabelWithClear("CANCELLED / DECLINED", onClearFailed) }
             items(cancelledOrDeclined, key = { it.id }, contentType = { "failed" }) { item ->
                 TransferRow(
                     item = item,
                     modifier = flashAnimateItem(motion),
-                    trailing = {},
+                    trailing = {
+                        if (onDismissItem != null) {
+                            RowIcon(
+                                icon = FlashIcons.Close,
+                                description = "Dismiss",
+                                onClick = { onDismissItem(item) },
+                            )
+                        }
+                    },
                 )
             }
         }
@@ -713,6 +737,39 @@ private fun SectionLabel(text: String) {
         color = FlashTheme.colors.textTertiary,
         modifier = Modifier.padding(top = FlashSpacing.space8),
     )
+}
+
+/** A section label with an optional "Clear" chip at its end (C-10), styled like the History section's. */
+@Composable
+private fun SectionLabelWithClear(text: String, onClear: (() -> Unit)?) {
+    if (onClear == null) {
+        SectionLabel(text)
+        return
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = FlashSpacing.space8),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlashText(
+            text = text,
+            style = FlashTheme.typography.captionEmphasis,
+            color = FlashTheme.colors.textTertiary,
+        )
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(FlashShapes.radius8))
+                .background(FlashTheme.colors.backgroundSurfaceSubtle)
+                .clickable { onClear() }
+                .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4),
+        ) {
+            FlashText(
+                text = "Clear",
+                style = FlashTheme.typography.captionEmphasis,
+                color = FlashTheme.colors.textSecondary,
+            )
+        }
+    }
 }
 
 @Composable
