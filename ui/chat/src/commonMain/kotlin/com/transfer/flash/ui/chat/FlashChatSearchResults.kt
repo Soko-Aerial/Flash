@@ -216,6 +216,7 @@ public object FlashChatSearchHits {
             val include = when (scope) {
                 FlashSearchScope.Files -> fileMatch
                 FlashSearchScope.Links -> linkMatch
+                FlashSearchScope.Messages -> textMatch
                 else -> textMatch || fileMatch || linkMatch
             }
             if (!include) return@mapNotNull null
@@ -224,6 +225,7 @@ public object FlashChatSearchHits {
                 // both a "meeting.pdf" and a link is a File hit in Files and a Link hit in Links.
                 scope == FlashSearchScope.Files -> FlashChatSearchKind.File
                 scope == FlashSearchScope.Links -> FlashChatSearchKind.Link
+                scope == FlashSearchScope.Messages -> FlashChatSearchKind.Message
                 fileMatch -> FlashChatSearchKind.File
                 linkMatch -> FlashChatSearchKind.Link
                 else -> FlashChatSearchKind.Message

@@ -239,6 +239,7 @@ fun FlashMessageList(
                 val onPauseTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnPauseTransfer(currentMessage, file) } }
                 val onResumeTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(currentMessage, file) } }
                 val onCancelTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(currentMessage, file) } }
+                val onRetryMessageLambda = remember(message.id) { { _: String -> currentOnRetryMessage(message.id) } }
                 val onOpenMessageInfoLambda = remember(message.id) { { currentOnOpenMessageInfo?.invoke(currentMessage); Unit } }
 
                 FlashMessageBubble(
@@ -258,7 +259,7 @@ fun FlashMessageList(
                     onResumeTransfer = onResumeTransferLambda,
                     onCancelTransfer = onCancelTransferLambda,
                     onOpenMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(message)) onOpenMessageInfoLambda else null,
-                    onRetryMessage = { currentOnRetryMessage(message.id) },
+                    onRetryMessage = onRetryMessageLambda,
                     onJoinInvite = currentOnJoinInvite,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,

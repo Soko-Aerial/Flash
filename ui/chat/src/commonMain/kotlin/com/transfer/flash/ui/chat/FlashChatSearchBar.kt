@@ -97,17 +97,20 @@ object FlashChatSearchMath {
 
     fun stepIndex(current: Int, count: Int, forward: Boolean): Int {
         if (count <= 0) return -1
+        // The hits can shrink under a stale index (a narrower scope, a deleted message): stay inside the new range.
+        val at = current.coerceAtMost(count - 1)
         return when {
-            current < 0 -> count - 1
-            forward -> (current + 1) % count
-            else -> (current - 1 + count) % count
+            at < 0 -> count - 1
+            forward -> (at + 1) % count
+            else -> (at - 1 + count) % count
         }
     }
 
     /** "3 / 7" tabular counter label. */
     fun counterLabel(activeIndex: Int, total: Int): String {
         if (total <= 0 || activeIndex < 0) return "0 / 0"
-        return "${activeIndex + 1} / $total"
+        // H-26: never "12 / 2" when the hits shrank under a stale index.
+        return "${activeIndex.coerceAtMost(total - 1) + 1} / $total"
     }
 
     fun hasResults(activeIndex: Int, total: Int): Boolean = total > 0 && activeIndex in 0 until total

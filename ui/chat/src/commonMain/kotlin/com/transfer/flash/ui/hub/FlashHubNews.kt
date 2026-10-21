@@ -1,5 +1,8 @@
 package com.transfer.flash.ui.hub
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,7 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
@@ -56,6 +58,7 @@ import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
@@ -110,12 +113,18 @@ internal fun LazyListScope.hubNewsItems(
         if (pinned.isNotEmpty()) item(key = "news-h-pinned", contentType = "header") { FlashHubSectionTitle(FlashHubCopy.ANN_SECTION_PINNED) }
         items(pinned.size, key = { "a:${pinned[it].id}" }, contentType = { "card" }) { index ->
             val a = pinned[index]
-            FlashAnnouncementCard(a, FlashHubMath.scopeLabel(a, departmentName), FlashHubMath.rights(a, posting).any, nowMs, { onOpen(a.id) }, { onMenu(a.id) })
+            FlashAnnouncementCard(
+                a, FlashHubMath.scopeLabel(a, departmentName), FlashHubMath.rights(a, posting).any, nowMs, { onOpen(a.id) }, { onMenu(a.id) },
+                modifier = flashAnimateItem(FlashTheme.motion).hubStagger(if (index < HUB_STAGGER_ITEMS) index else -1, "hub-news"),
+            )
         }
         if (pinned.isNotEmpty() && latest.isNotEmpty()) item(key = "news-h-latest", contentType = "header") { FlashHubSectionTitle(FlashHubCopy.ANN_SECTION_LATEST) }
         items(latest.size, key = { "a:${latest[it].id}" }, contentType = { "card" }) { index ->
             val a = latest[index]
-            FlashAnnouncementCard(a, FlashHubMath.scopeLabel(a, departmentName), FlashHubMath.rights(a, posting).any, nowMs, { onOpen(a.id) }, { onMenu(a.id) })
+            FlashAnnouncementCard(
+                a, FlashHubMath.scopeLabel(a, departmentName), FlashHubMath.rights(a, posting).any, nowMs, { onOpen(a.id) }, { onMenu(a.id) },
+                modifier = flashAnimateItem(FlashTheme.motion).hubStagger((pinned.size + index).let { if (it < HUB_STAGGER_ITEMS) it else -1 }, "hub-news"),
+            )
         }
     }
     item(key = "news-honesty", contentType = "footer") {
@@ -128,25 +137,27 @@ internal fun LazyListScope.hubNewsItems(
     }
 }
 
+/** Cards past this position appear at once; only the first screenful staggers in. */
+internal const val HUB_STAGGER_ITEMS: Int = 6
+
 /** The "Share an update" row at the top of News for people who may post. The whole row is the button. */
 @Composable
 internal fun FlashHubComposeEntry(subtitle: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
-    val shape = FlashShapes.attachment
     Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .fillMaxWidth()
-            .clip(shape)
-            .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.45f), shape)
-            .clickable(role = Role.Button, onClick = onClick)
+            .clip(HubShapes.card)
+            .background(colors.accentPrimary.copy(alpha = 0.07f))
+            .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.40f), HubShapes.card)
+            .hubClickable(onClick = onClick)
             .padding(FlashSpacing.space12)
             .semantics(mergeDescendants = true) { contentDescription = "${FlashHubCopy.ANN_COMPOSE_TITLE}. $subtitle" },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        Box(Modifier.size(44.dp).clip(CircleShape).background(colors.accentPrimary), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(44.dp).clip(HubShapes.mark(44.dp)).background(colors.accentPrimary), contentAlignment = Alignment.Center) {
             FlashIcon(icon = FlashIcons.Announcement, contentDescription = null, tint = colors.textOnAccent, size = FlashDimensions.iconMd)
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
@@ -204,7 +215,6 @@ internal fun FlashAnnouncementCard(
     val roleChip = FlashHubMath.authorRoleChip(a.authorRole)
     val time = FlashHubMath.relativeTime(a.createdAtMs, nowMs)
     var truncated by remember(a.id, a.body) { mutableStateOf(false) }
-    val shape = FlashShapes.attachment
     val spoken = buildString {
         append(scopeLabel).append(", ").append(a.title).append(", ").append(a.authorName)
         if (roleChip != null) append(", ").append(roleChip)
@@ -212,32 +222,41 @@ internal fun FlashAnnouncementCard(
         if (a.pinned) append(", ").append(FlashHubCopy.ANN_PINNED)
         if (!a.isRead) append(", ").append(FlashHubCopy.ANN_UNREAD)
     }
-    val edge = when {
-        !a.isRead -> colors.accentPrimary
-        a.pinned -> colors.accentPrimary.copy(alpha = 0.45f)
-        else -> androidx.compose.ui.graphics.Color.Transparent
+    val edge by animateColorAsState(
+        targetValue = when {
+            !a.isRead -> colors.accentPrimary
+            a.pinned -> colors.accentPrimary.copy(alpha = 0.45f)
+            else -> colors.accentPrimary.copy(alpha = 0f)
+        },
+        animationSpec = FlashTheme.motion.tweenNormalSpec(),
+        label = "hubCardEdge",
+    )
+    val wash = if (a.pinned && hubDecorAllowed()) {
+        androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(colors.accentPrimary.copy(alpha = 0.10f), colors.backgroundSurface))
+    } else {
+        androidx.compose.ui.graphics.SolidColor(colors.backgroundSurface)
     }
     Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .fillMaxWidth()
             .height(IntrinsicSize.Min)
-            .clip(shape)
-            .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, if (a.pinned) colors.accentPrimary else colors.borderSubtle, shape)
-            .clickable(role = Role.Button, onClick = onOpen)
+            .clip(HubShapes.card)
+            .background(wash)
+            .border(FlashDimensions.borderHairline, if (a.pinned) colors.accentPrimary.copy(alpha = 0.55f) else colors.borderSubtle, HubShapes.card)
+            .hubClickable(onClick = onOpen)
             .semantics(mergeDescendants = true) {
                 contentDescription = spoken
                 if (hasMenu) customActions = listOf(CustomAccessibilityAction("More actions") { onMenu(); true })
             },
     ) {
-        Box(Modifier.width(4.dp).fillMaxHeight().background(edge))
+        Box(Modifier.width(3.dp).fillMaxHeight().background(edge))
         Column(
-            modifier = Modifier.weight(1f).padding(FlashSpacing.space12),
+            modifier = Modifier.weight(1f).padding(FlashSpacing.space16),
             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12)) {
-                FlashAvatar(initials = FlashHubMath.initials(a.authorName), size = 36.dp, seed = a.authorName)
+                HubMark(initials = FlashHubMath.initials(a.authorName), seed = a.authorName, size = 36.dp)
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                         FlashText(a.authorName, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 1,
@@ -270,11 +289,17 @@ internal fun FlashAnnouncementCard(
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                 FlashHubChip(scopeLabel, emphasised = true, modifier = Modifier.weight(1f, fill = false))
-                if (a.pinned) FlashHubChip(FlashHubCopy.ANN_PINNED)
+                if (a.pinned) FlashHubChip(FlashHubCopy.ANN_PINNED, icon = FlashIcons.Pin)
                 Box(Modifier.weight(1f))
-                if (!a.isRead) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(colors.accentPrimary))
-                    FlashText(FlashHubCopy.ANN_UNREAD, style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary, maxLines = 1)
+                AnimatedVisibility(
+                    visible = !a.isRead,
+                    enter = FlashTheme.motion.badgePopEnter(),
+                    exit = FlashTheme.motion.badgePopExit(),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
+                        Box(Modifier.size(8.dp).clip(HubShapes.capsule).background(colors.accentPrimary))
+                        FlashText(FlashHubCopy.ANN_UNREAD, style = FlashTheme.typography.metadataEmphasis, color = colors.accentPrimary, maxLines = 1)
+                    }
                 }
             }
         }
@@ -439,7 +464,7 @@ internal fun FlashAnnouncementComposer(
         if (canPin) {
             Row(
                 modifier = Modifier.fillMaxWidth().heightIn(min = FlashDimensions.minTouchTarget)
-                    .clickable(role = Role.Switch) { onChange(state.copy(pinned = !state.pinned, failure = null)) }
+                    .hubClickable(role = Role.Switch) { onChange(state.copy(pinned = !state.pinned, failure = null)) }
                     .semantics(mergeDescendants = true) { stateDescription = if (state.pinned) FlashHubCopy.SWITCH_ON else FlashHubCopy.SWITCH_OFF },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
@@ -448,9 +473,10 @@ internal fun FlashAnnouncementComposer(
                 FlashHubSwitch(state.pinned)
             }
         }
-        state.failure?.let { f ->
+        AnimatedVisibility(visible = state.failure != null, enter = FlashTheme.motion.composerExpandEnter()) {
+          state.failure?.let { f ->
             Row(
-                modifier = Modifier.fillMaxWidth().clip(FlashShapes.attachment).background(colors.textError.copy(alpha = 0.10f))
+                modifier = Modifier.fillMaxWidth().clip(HubShapes.control).background(colors.textError.copy(alpha = 0.10f))
                     .padding(FlashSpacing.space12).semantics { liveRegion = LiveRegionMode.Assertive },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
@@ -458,6 +484,7 @@ internal fun FlashAnnouncementComposer(
                 FlashIcon(icon = FlashIcons.Failed, contentDescription = null, tint = colors.textError, size = FlashDimensions.iconSm)
                 FlashText(f.text, modifier = Modifier.weight(1f), style = FlashTheme.typography.bodyDefault, color = colors.textError)
             }
+          }
         }
         FlashText(FlashHubCopy.ANN_HONESTY, style = FlashTheme.typography.metadataDefault, color = colors.textTertiary)
         Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), modifier = Modifier.fillMaxWidth()) {
@@ -480,17 +507,30 @@ internal fun FlashAnnouncementComposer(
 @Composable
 private fun FlashHubCounter(used: Int, max: Int, tone: FlashHubMath.CounterTone) {
     val colors = FlashTheme.colors
-    FlashText(
-        FlashHubCopy.annCounter(used, max),
-        modifier = Modifier.fillMaxWidth(),
-        style = FlashTheme.typography.numericDefault,
-        color = when (tone) {
-            FlashHubMath.CounterTone.NORMAL -> colors.textTertiary
-            FlashHubMath.CounterTone.WARNING -> colors.textPrimary
+    val tint by animateColorAsState(
+        targetValue = when (tone) {
+            FlashHubMath.CounterTone.NORMAL -> colors.accentPrimary
+            FlashHubMath.CounterTone.WARNING -> colors.accentSecondary
             FlashHubMath.CounterTone.ERROR -> colors.textError
         },
-        textAlign = androidx.compose.ui.text.style.TextAlign.End,
+        animationSpec = FlashTheme.motion.tweenFastSpec(),
+        label = "hubCounterTint",
     )
+    val fraction by animateFloatAsState(
+        targetValue = if (max <= 0) 0f else (used.toFloat() / max).coerceIn(0f, 1f),
+        animationSpec = FlashTheme.motion.tweenFastSpec(),
+        label = "hubCounterFraction",
+    )
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
+        Box(Modifier.weight(1f).height(3.dp).clip(HubShapes.capsule).background(colors.backgroundSurfaceStrong)) {
+            Box(Modifier.fillMaxHeight().fillMaxWidth(fraction).clip(HubShapes.capsule).background(tint))
+        }
+        FlashText(
+            FlashHubCopy.annCounter(used, max),
+            style = FlashTheme.typography.numericDefault,
+            color = if (tone == FlashHubMath.CounterTone.NORMAL) colors.textTertiary else tint,
+        )
+    }
 }
 
 @Composable
@@ -507,9 +547,9 @@ internal fun FlashHubField(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = minHeight)
-            .clip(FlashShapes.attachment)
+            .clip(HubShapes.control)
             .background(colors.composerInputBackground)
-            .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.attachment)
+            .border(FlashDimensions.borderHairline, colors.borderSubtle, HubShapes.control)
             .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12),
     ) {
         BasicTextField(

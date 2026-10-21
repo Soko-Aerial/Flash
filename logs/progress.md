@@ -1,5 +1,72 @@
 # Progress Log
 
+## 2026-10-21 - Chat conversation, chat list and Hub: confirmed defects from the pasted review fixed (working tree, NOT committed)
+
+### Worked on
+Three pasted reports (chat list / shell / Hub, conversation screen, piece map). Each claim was checked against the code; what held was fixed in the working tree on top of the uncommitted Hub redesign (owner: "do it in the uncommitted hub redesign"). Nothing is committed.
+
+### Changed
+- **Wrong recipient / draft loss:** both hosts wrap the conversation screen in `key(conversationId)` (`MainActivity.conversationScreenContent`, `DesktopShell.conversationPaneContent`), so composer, reply target, selection, scroll and the new-messages count no longer carry from one chat to the next. `FlashChatRepository.saveDraft(conversationId, text)` is new; the screens persist under the id they were opened for, because Back closes the active conversation before the dispose runs (the old id-less call returned early and dropped the draft).
+- **Conversation screen:** pinned banner and shared-content jumps use `jumpToMessage` (reverse-layout index); "typing..." is repeated every 3 s and stopped on Back; a paste over the limit is shortened instead of dropped (surrogate-safe, `FlashPinnedMessageMath.capLength`); reply previews use `previewSnippet` (attachments say "Attachment", no split emoji); the focus overlay closes when its message is deleted; the in-chat "Messages" scope is text-only; the retry callback is `remember`ed.
+- **Chat list:** Back from Archived closes an open search first; archived search shows only archived chats' hits; the list search scope resets on close; the selection bar shows the count only (full sentence for TalkBack); duplicate file hits no longer crash the LazyColumn on a key clash.
+- **Hub:** People was empty on first open (`flowOf(allPeople)` froze the first snapshot): fixed in `FlashHubRoute`; default segment counts live announcements only; tapping the Hub tab again scrolls to the top, then jumps to News (`reselectSignal`, both hosts); the entrance stagger plays once per item; `FlashAnimatedScreen` keeps each tab's saveable state (open announcement, search, filter, scroll) across tab switches (conversations still open fresh).
+- **Cost:** the piece map is two layers (static grid + a pulse layer that exists only while a block is in flight, instead of pulsing whenever the transfer is Active) and uses dp metrics; the Transfers and Hub shimmers build their gradient once and translate it.
+
+### Verification
+Through `tools\flash-gradle.ps1`: `:core:messaging:testAndroidHostTest --tests *RealFlashChatRepositoryTest*` (92), `:ui:chat:jvmTest` (688), `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green. New tests: draft by id across Back and a two-pane switch, surrogate-safe cut and paste cap, Messages scope, duplicate file key. No mutation checks. **Not device-verified.**
+
+### Not changed (checked or deferred)
+- Segment underline "8 dp off" (claim 9): not changed. Whether `positionInParent` includes the parent's padding could not be settled without running it, and the existing `+ space8` may be deliberate. Check on a device (HUBFIX-09).
+- Two-pane Hub-opens-chat replaces the Hub (claim 8), attachments in selection mode, undownloaded voice note, swipe-to-reply per-frame recomposition, repeated same-target search jump, dead `FlashMessageActionsSheet`, ultra-low bubble border, shared-content Audio Play, caption + attachment as two messages: not done.
+- Unproven items stay unproven (read-marking timer, desktop `hubRoute` key resetting `tipSeen`).
+- Piece map LOW tier still draws the grid (only ULTRA_LOW has the text path).
+
+### Next AI
+Run `CHATFIX-01..08` and `HUBFIX-01..09` (TEST-BACKLOG). Then the deferred items above, in the review's order.
+
+## 2026-10-20 (later) - Hub redesigned again as a squared "ledger"; review of server console and Hub written
+
+### Worked on
+Owner: review server and Hub for missing or insufficient features, the Hub is too roundy, design a whole new concept.
+
+### Changed
+- Third pass after "too boxy": soft layered surfaces (cards 16 dp, controls 12 dp, chips 6 dp, squircle marks, hero card, count tiles). Tests and both host compiles green.
+- Review: `docs/ui/hub-review-and-redesign-2026-10-20.md` (verified gaps G1..G8, nothing server-side built).
+- Redesign: 2 and 4 dp corners (`HubShapes`), hairline-ruled rows instead of cards, text tabs with a gliding underline, flat masthead with a tick meter and a three-column count ledger, square marks (`HubMark`), square live marker, caps section labels. `FlashHubMotion/Parts/News/People/Org/Status`.
+
+### Verification
+See the entry below once the compile and tests are green; not run on a device (`HUBL-01..08`).
+
+### Next AI
+Owner picks which of G1..G8 to build. Start with G1 (announcement expiry) and G8 (who to ask), neither needs a wire change. Not committed.
+
+## 2026-10-20 - Hub tab redesign: best of the three contest entries plus own ideas, animation and modes
+
+### Worked on
+Owner asked to take the best of the three contest results (`apex`, `novahub`, `opencode`), add own ideas and redesign the production Hub tab
+and pages: nicer, animated, mode-aware, professional.
+
+### Changed
+- New `FlashHubVisualMath.kt` (lease days/ring/tone, share bars, count-up, sweep), `FlashHubMotion.kt` (decor/loop gating, tone colours, `hubStagger`,
+  `hubClickable`, `HubLiveDot`, `HubRing`, count-up/grow helpers, shimmer, hero brush, `rememberLastNonNull`), `FlashHubStatus.kt` (Hub status page).
+- Rewrote `FlashHubParts.kt`: hero overview (live dot, lease ring, stat tiles), sliding segmented control, tone-washed animated status strip, top bar
+  crossfade, press-scale buttons/chips, gliding switch, shimmer skeleton, breathing empty state.
+- `FlashHubScreen.kt`: `AnimatedContent` page transitions, stats jump to segments, status sheet and back handling, animated compact reader/department
+  overlays. `FlashHubNews/People/Org.kt`: card edge/wash/unread animation, staggered first items, placement animation, department share bars,
+  person-sheet hero and reachability card, composer counter bar. `FlashHubCopy.kt`: status page strings. Previews for every mode.
+- Docs: `docs/ui/flash-hub-tab.md` "Redesign 2026-10-20".
+
+### Verification
+`:ui:chat:jvmTest` for `com.transfer.flash.ui.hub.*` green (includes `FlashHubNoDeadActionsTest`, `FlashHubMathTest`, new `FlashHubVisualMathTest` 8,
+`FlashHubStatusRowsTest` 4); `:ui:chat:compileKotlinJvm`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green. **Not run on a device**, not
+screenshotted; animation smoothness, light/dark and the low-tier modes are owed (`HUBV-01..10`). The contest packages are untouched.
+
+### Remaining
+Device pass. If the sliding indicator misplaces on a very narrow window, check the bounds measured by `onGloballyPositioned` in `FlashHubSegments`.
+
+### Next AI
+Do not wire the contest packages. Run `HUBV-*`, then tune motion timings from what the device shows, not by guess. Not committed.
+
 ## 2026-10-20 - Fixes from the owner's logs: swarm greeting after a session swap, redial loop stuck on the old network
 
 ### Worked on
@@ -17682,3 +17749,7 @@ The APK/MSI/EXE in `dist\2.1.0` were built before this bump, so their bundled li
 
 ### Update — JitPack result (2026-10-20)
 JitPack built `v2.1.0-beta.2`: status `ok`. `core-engine`, `ui-callui` and `webrtc-kmp-jvm` POMs answer 200, and the `ui-callui` POM names `core-calling:v2.1.0-beta.2` at runtime scope. GitHub release `v2.1.0` is live with the APK, installers and SHA256SUMS. No consumer project has resolved the artifacts yet.
+
+## 2026-10-21 - Open-items stream H: Hub list pane, multi-select, voice download, search re-jump, reaction race
+
+Items H-16..H-26 of `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` are done in the working tree (uncommitted, unit-tested, NOT device-verified): see the tracker's implementation log for each verdict (H-24 kept as is; H-26 claims judged one by one). Owed device checks: `CHATFIX-09..16` in `docs/testing/TEST-BACKLOG.md`. Stream C (cancel/transfer) is on `agent/A-cancel` (C-02, C-05..C-13 done, `CNCL-15..20` owed).

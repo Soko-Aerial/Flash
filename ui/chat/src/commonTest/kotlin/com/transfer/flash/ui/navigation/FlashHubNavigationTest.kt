@@ -106,6 +106,31 @@ class FlashHubNavigationTest {
     }
 
     @Test
+    fun `a chat opened from the Hub is flagged so two-pane keeps the Hub beside it (H-16)`() {
+        val nav = FlashNavigationState()
+        nav.updateHubEnrolled(true)
+        nav.selectTab(FlashDestination.Hub)
+        assertEquals(false, nav.conversationOpenedFromHub)
+        nav.navigate(FlashDestination.Conversation, "c1")
+        assertEquals(true, nav.conversationOpenedFromHub)
+        assertEquals(FlashDestination.Hub, nav.shellTab)
+        // Another colleague tapped in the Hub pane stacks on the first chat; it still came from the Hub.
+        nav.navigate(FlashDestination.Conversation, "c2")
+        assertEquals(true, nav.conversationOpenedFromHub)
+        nav.selectTab(FlashDestination.Hub)
+        assertEquals(false, nav.conversationOpenedFromHub)
+    }
+
+    @Test
+    fun `a chat opened from the chat list is not flagged as coming from the Hub`() {
+        val nav = FlashNavigationState()
+        nav.updateHubEnrolled(true)
+        nav.navigate(FlashDestination.Conversation, "c1")
+        assertEquals(false, nav.conversationOpenedFromHub)
+        assertEquals(FlashDestination.ChatList, nav.shellTab)
+    }
+
+    @Test
     fun `unenrol while on Hub falls back to Chats`() {
         val nav = FlashNavigationState()
         nav.updateHubEnrolled(true)

@@ -62,6 +62,23 @@ class FlashPinnedMessageMathTest {
     }
 
     @Test
+    fun `a cut never splits an emoji surrogate pair`() {
+        val text = "ab" + "\uD83D\uDE00" + "cd" // "ab", one emoji in units 2 and 3, "cd"
+        assertEquals("ab", FlashPinnedMessageMath.takeWithoutSplittingPair(text, 3))
+        assertEquals("ab\uD83D\uDE00", FlashPinnedMessageMath.takeWithoutSplittingPair(text, 4))
+        assertEquals(text, FlashPinnedMessageMath.takeWithoutSplittingPair(text, 99))
+        assertEquals("", FlashPinnedMessageMath.takeWithoutSplittingPair(text, 0))
+        assertEquals("ab\u2026", FlashPinnedMessageMath.previewSnippet(text, maxChars = 3))
+    }
+
+    @Test
+    fun `capLength shortens an over-long paste instead of dropping it`() {
+        val pasted = "x".repeat(5_000)
+        assertEquals(4_000, FlashPinnedMessageMath.capLength(pasted, 4_000).length)
+        assertEquals("short", FlashPinnedMessageMath.capLength("short", 4_000))
+    }
+
+    @Test
     fun `isPinnedIn checks the whole list`() {
         assertTrue(FlashPinnedMessageMath.isPinnedIn("b", listOf("a", "b")))
         assertFalse(FlashPinnedMessageMath.isPinnedIn("c", listOf("a", "b")))

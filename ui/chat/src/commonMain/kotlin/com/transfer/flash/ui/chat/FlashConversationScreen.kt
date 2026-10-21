@@ -82,6 +82,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
+/** How often "typing…" is repeated while the composer holds text; the receiver forgets it after 6 s (TYPING_EXPIRY_MS). */
+private const val TYPING_KEEPALIVE_MS: Long = 3_000L
+
 @Composable
 fun FlashConversationScreen(
     state: FlashConversationUiState,
@@ -323,6 +326,7 @@ fun FlashConversationScreen(
      * newest position as before.
      */
     targetMessageId: String? = null,
+    targetNonce: Int = 0,
 ) {
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
@@ -423,6 +427,23 @@ fun FlashConversationScreen(
     val latestDraft by rememberUpdatedState(draft)
     DisposableEffect(Unit) {
         onDispose { onPersistDraft(latestDraft) }
+    }
+    // Back: the host closes the repository's active conversation inside onBack, after which the typing signal (and, before the
+    // draft became id-aware, the draft) could no longer be sent. So stop typing first, then leave.
+    val latestOnTypingChanged by rememberUpdatedState(onTypingChanged)
+    val leaveConversation: () -> Unit = {
+        if (isTypingSignalled) {
+            isTypingSignalled = false
+            latestOnTypingChanged(false)
+        }
+        onBack()
+    }
+    // 4: the receiver expires "typing…" after 6 s, so a long message needs the signal repeated while it is being written.
+    LaunchedEffect(isTypingSignalled) {
+        while (isTypingSignalled) {
+            delay(TYPING_KEEPALIVE_MS)
+            if (isTypingSignalled) latestOnTypingChanged(true)
+        }
     }
     var focusedMessage by remember { mutableStateOf<FlashMessageUi?>(null) }
     // UI-051: the message whose info sheet is open (its id, so the content follows the live list).
@@ -579,8 +600,8 @@ fun FlashConversationScreen(
     // UI-024 upgrade: deep link from a global search result. The target may arrive before the
     // thread's first Room emission, so the effect waits until the message is actually present and
     // then jumps exactly once per target (new messages must not re-scroll the thread).
-    var targetJumpDone by remember(targetMessageId) { mutableStateOf(false) }
-    LaunchedEffect(targetMessageId, localMessages.size) {
+    var targetJumpDone by remember(targetMessageId, targetNonce) { mutableStateOf(false) }
+    LaunchedEffect(targetMessageId, targetNonce, localMessages.size) {
         val target = targetMessageId ?: return@LaunchedEffect
         if (targetJumpDone || localMessages.none { it.id == target }) return@LaunchedEffect
         targetJumpDone = true
@@ -686,7 +707,7 @@ fun FlashConversationScreen(
                         Column {
                             FlashChatHeader(
                                 state = state.header,
-                                onBack = onBack,
+                                onBack = leaveConversation,
                                 showVideoCallAction = showVideoCallAction,
                                 onAvatarClick = {
                                     if (state.header.isGroup) {
@@ -856,13 +877,8 @@ fun FlashConversationScreen(
                                         position = pinnedIndex,
                                         total = pinnedMessages.size,
                                         onClick = {
-                                            val idx = localMessages.indexOfFirst { it.id == pinnedMessage.id }
-                                            if (idx >= 0) {
-                                                coroutineScope.launch {
-                                                    listState.animateScrollToItem(idx)
-                                                }
-                                                highlightedMessageId = pinnedMessage.id
-                                            }
+                                            // The list is reverse-layout: jumpToMessage maps the id to the mirrored item index.
+                                            jumpToMessage(pinnedMessage.id)
                                             pinBannerIndex = FlashPinnedMessageMath.nextIndex(pinnedIndex, pinnedMessages.size)
                                         },
                                         onUnpin = { setPinned(pinnedMessage.id, false) },
@@ -881,9 +897,7 @@ fun FlashConversationScreen(
             } else FlashComposer(
                 draft = draft,
                 onDraftChanged = {
-                    val capped = if (it.length > com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
-                        it.take(com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
-                    } else it
+                    val capped = FlashPinnedMessageMath.capLength(it, com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
                     draft = capped
                     // #11: fire only on transitions (not every keystroke) to keep the wire quiet.
                     val typingNow = capped.isNotBlank()
@@ -917,7 +931,7 @@ fun FlashConversationScreen(
                         if (text.isNotEmpty()) {
                             if (quoted != null) {
                                 // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
-                                onSendReply(text, quoted.id, quoted.text.take(120))
+                                onSendReply(text, quoted.id, FlashPinnedMessageMath.previewSnippet(quoted.text, maxChars = 120))
                             } else {
                                 onSendText(text)
                             }
@@ -1087,6 +1101,13 @@ fun FlashConversationScreen(
                 )
             }
         }
+    }
+
+    // A message deleted for everyone while its overlay is open must close the overlay: Reply / Copy / Forward on a message
+    // nobody has any more would act on a stale snapshot.
+    LaunchedEffect(localMessages, focusedMessage?.id) {
+        val open = focusedMessage
+        if (open != null && localMessages.none { it.id == open.id }) focusedMessage = null
     }
 
     // UI-007 / UI-008 Immersive Message Focus Overlay & Context Menu (in-screen, not a Dialog)
@@ -1447,13 +1468,7 @@ fun FlashConversationScreen(
             onJoinInviteGroup = onJoinInviteGroup,
             onJumpToMessage = { targetId ->
                 showSharedContent = false
-                val idx = localMessages.indexOfFirst { it.id == targetId }
-                if (idx >= 0) {
-                    coroutineScope.launch {
-                        listState.animateScrollToItem(idx)
-                    }
-                    highlightedMessageId = targetId
-                }
+                jumpToMessage(targetId)
             },
         )
     }

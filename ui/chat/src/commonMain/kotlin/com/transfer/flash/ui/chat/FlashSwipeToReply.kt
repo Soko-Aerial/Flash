@@ -70,8 +70,10 @@ fun FlashSwipeToReplyContainer(
 
     val offsetX = remember { Animatable(0f) }
     var hasTriggeredHaptic by remember { mutableStateOf(false) }
-
-    val progress = (abs(offsetX.value) / thresholdPx).coerceIn(0f, 1f)
+    // H-19: nothing in composition reads the drag offset. The bubble moves through a layout-phase `offset { }` and the badge through
+    // a draw-phase `graphicsLayer { }`, so a drag recomposes nothing per frame; `revealed` flips only at the start and end of a gesture
+    // (it also keeps the badge composed while the spring settles) so an idle bubble carries no badge at all.
+    var revealed by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -80,6 +82,7 @@ fun FlashSwipeToReplyContainer(
                 detectHorizontalDragGestures(
                     onDragStart = {
                         hasTriggeredHaptic = false
+                        revealed = true
                     },
                     onDragEnd = {
                         val reachedThreshold = abs(offsetX.value) >= thresholdPx
@@ -98,11 +101,13 @@ fun FlashSwipeToReplyContainer(
                                     ),
                                 )
                             }
+                            revealed = false
                         }
                     },
                     onDragCancel = {
                         coroutineScope.launch {
                             offsetX.animateTo(0f, spring())
+                            revealed = false
                         }
                     },
                     onHorizontalDrag = { change, dragAmount ->
@@ -137,20 +142,18 @@ fun FlashSwipeToReplyContainer(
             },
     ) {
         // Behind-the-bubble reply icon badge (revealed on the right side)
-        if (progress > 0.05f) {
-            val iconScale = (0.4f + (0.6f * progress)).coerceIn(0.4f, 1.15f)
-            val iconRotation = -35f * (1f - progress)
-            val iconAlpha = (progress * progress).coerceIn(0f, 1f)
-
+        if (revealed) {
             Box(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = FlashSpacing.space8)
                     .graphicsLayer {
+                        val progress = (abs(offsetX.value) / thresholdPx).coerceIn(0f, 1f)
+                        val iconScale = (0.4f + (0.6f * progress)).coerceIn(0.4f, 1.15f)
                         scaleX = iconScale
                         scaleY = iconScale
-                        rotationZ = iconRotation
-                        alpha = iconAlpha
+                        rotationZ = -35f * (1f - progress)
+                        alpha = if (progress > 0.05f) (progress * progress).coerceIn(0f, 1f) else 0f
                     }
                     .size(FlashSpacing.space32)
                     .clip(CircleShape)

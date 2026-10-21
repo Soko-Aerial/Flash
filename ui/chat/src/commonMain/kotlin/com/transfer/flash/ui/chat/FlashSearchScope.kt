@@ -160,6 +160,21 @@ public object FlashSearchResultMath {
         chats: List<FlashChatListItemUi>,
         results: FlashChatSearchResultsUi,
         sectionLimit: Int = SECTION_PREVIEW_LIMIT,
+    ): List<FlashSearchListEntry> =
+        // A message with two same-named attachments gives two hits with one key ("Key was already used" crash in the
+        // LazyColumn); the second row would be indistinguishable from the first anyway.
+        buildEntries(
+            scope,
+            chats,
+            results.copy(fileHits = results.fileHits.distinctBy { it.messageId to it.fileName }),
+            sectionLimit,
+        )
+
+    private fun buildEntries(
+        scope: FlashSearchScope,
+        chats: List<FlashChatListItemUi>,
+        results: FlashChatSearchResultsUi,
+        sectionLimit: Int,
     ): List<FlashSearchListEntry> {
         if (scope != FlashSearchScope.All) {
             val rows = when (scope) {

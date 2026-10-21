@@ -45,10 +45,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -883,24 +885,28 @@ internal fun TransferProgressBar(
         val fillModifier = if (skipShimmer || shimmerProgress == null) {
             baseBarModifier
         } else {
-            baseBarModifier.drawWithContent {
-                drawContent()
-                val progress = shimmerProgress.value
+            // The gradient is built once per bar size and only translated each frame; building a new Brush (a new shader) per
+            // frame for every active row was the heavier cost of this animation.
+            baseBarModifier.drawWithCache {
                 val barWidth = size.width
-                if (barWidth > 0f) {
-                    val sweepX = barWidth * progress
-                    val shimmerWidth = (barWidth * 0.45f).coerceAtLeast(40f)
-                    drawRect(
-                        brush = Brush.linearGradient(
-                            colors = listOf(
-                                Color.Transparent,
-                                Color.White.copy(alpha = 0.35f),
-                                Color.Transparent,
-                            ),
-                            start = Offset(sweepX - shimmerWidth, 0f),
-                            end = Offset(sweepX + shimmerWidth, size.height),
-                        ),
-                    )
+                val shimmerWidth = (barWidth * 0.45f).coerceAtLeast(40f)
+                val brush = Brush.linearGradient(
+                    colors = listOf(
+                        Color.Transparent,
+                        Color.White.copy(alpha = 0.35f),
+                        Color.Transparent,
+                    ),
+                    start = Offset(-shimmerWidth, 0f),
+                    end = Offset(shimmerWidth, size.height),
+                )
+                val band = Size(shimmerWidth * 2f, size.height)
+                onDrawWithContent {
+                    drawContent()
+                    if (barWidth > 0f) {
+                        translate(left = barWidth * shimmerProgress.value) {
+                            drawRect(brush = brush, topLeft = Offset(-shimmerWidth, 0f), size = band)
+                        }
+                    }
                 }
             }
         }

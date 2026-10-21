@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.transfer.flash.ui.icons.FlashIcon
@@ -60,13 +62,17 @@ fun FlashChatListSelectionBar(
             ) {
                 FlashIcon(icon = FlashIcons.Close, contentDescription = "Exit selection")
             }
+            // Six 48 dp targets leave a 360 dp phone about 60 dp for this label, which "3 selected" does not fit in; the number
+            // is what matters visually, the full sentence is what a screen reader hears.
             Text(
-                text = "$selectedCount selected",
+                text = "$selectedCount",
                 modifier = Modifier
                     .weight(1f)
-                    .padding(start = FlashSpacing.space4),
+                    .padding(start = FlashSpacing.space4)
+                    .semantics { contentDescription = "$selectedCount selected" },
                 style = typography.headingMedium,
                 color = colors.textPrimary,
+                maxLines = 1,
             )
             IconButton(
                 onClick = onPin,

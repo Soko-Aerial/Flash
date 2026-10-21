@@ -57,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -1965,9 +1966,11 @@ private fun FlashShell(
         } else if (selectedNearbyPeer != null) {
             selectedNearbyPeer = null
         } else if (nav.current.destination == FlashDestination.Conversation) {
+            // H-16: a chat opened from the Hub goes back to the Hub, not to the chat list.
+            val backToHub = nav.conversationOpenedFromHub
             chatRepository.closeConversation()
             selectedChatConversationId = null
-            nav.navigate(FlashDestination.ChatList)
+            if (backToHub) nav.selectTab(FlashDestination.Hub) else nav.navigate(FlashDestination.ChatList)
         }
     }
 
@@ -1979,8 +1982,11 @@ private fun FlashShell(
     val systemBottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     val tabBottomInset = if (useNavRail) 0.dp else (FlashBottomNavDefaults.contentInset + systemBottomInset)
 
-    val conversationScreenContent: @Composable () -> Unit = {
+    val conversationScreenBody: @Composable () -> Unit = {
         val conversationId = nav.current.conversationId
+        // The chat this composition belongs to: the draft is saved under it when the screen leaves, after Back has already
+        // closed the repository's active conversation (or, in two-pane, after the next chat was opened).
+        val draftOwnerId = conversationId ?: selectedChatConversationId
         FlashConversationScreen(
             state = conversationState,
             onBack = {
@@ -2009,7 +2015,7 @@ private fun FlashShell(
             onSendReply = { text, replyToId, replyToPreview ->
                 chatRepository.sendReply(text, replyToId, replyToPreview)
             },
-            onPersistDraft = chatRepository::saveDraft,
+            onPersistDraft = { text -> draftOwnerId?.let { chatRepository.saveDraft(it, text) } },
             onSetMessagePinned = chatRepository::setMessagePinned,
             onToggleReaction = { messageId, emoji ->
                 chatRepository.toggleReaction(messageId, emoji)
@@ -2279,6 +2285,7 @@ private fun FlashShell(
             conversationId = conversationId,
             // UI-024 upgrade: open at the message a global search result pointed to.
             targetMessageId = nav.current.targetMessageId,
+            targetNonce = nav.current.targetNonce,
             addablePeers = trustedPeerRoster.filter { candidate ->
                 conversationState.members.none { it.id == candidate.id }
             },
@@ -2558,6 +2565,13 @@ private fun FlashShell(
         )
     }
 
+    // One screen instance per conversation. In two-pane the detail pane is the same call site for every chat, so without a key
+    // the composer text, reply target, selection, scroll position and "N new messages" count of the previous chat carried over
+    // to the next one (and a typed note was then sent to the wrong person).
+    val conversationScreenContent: @Composable () -> Unit = {
+        key(nav.current.conversationId ?: selectedChatConversationId) { conversationScreenBody() }
+    }
+
     val transfersScreenContent: @Composable () -> Unit = {
         FlashTransfersScreen(
             state = transfersUi,
@@ -2833,6 +2847,8 @@ private fun FlashShell(
             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
+    // Bumped when the Hub tab is tapped while it is already showing; the Hub scrolls to the top (or jumps to News).
+    var hubReselectTick by remember { mutableStateOf(0) }
     val hubScreenContent: @Composable () -> Unit = {
         val hubHost = remember(chatRepository, settings.hubStatus?.hubHost, hubRoute) {
             com.transfer.flash.ui.hub.FlashHubHost(
@@ -2888,6 +2904,7 @@ private fun FlashShell(
             link = settings.hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
             host = hubHost,
             modifier = Modifier.padding(bottom = tabBottomInset),
+            reselectSignal = hubReselectTick,
         )
     }
     // UI-024 upgrade: a structured hit opens the conversation AT that message. Search is closed
@@ -2927,6 +2944,8 @@ private fun FlashShell(
             onCloseSearch = {
                 isSearching = false
                 searchQuery = ""
+                // A scope chosen for one search ("Files") must not hide the chat rows of the next one.
+                searchScope = FlashSearchScope.All
             },
             messageBodyMatches = messageBodyMatches,
             colleagueMatchIds = colleagueMatchIds,
@@ -3044,7 +3063,8 @@ private fun FlashShell(
                         when (nav.current.destination) {
                             FlashDestination.ChatList, FlashDestination.Conversation -> {
                                 FlashAdaptiveTwoPane(
-                                    listPane = chatListScreenContent,
+                                    // H-16: a chat opened from the Hub keeps the Hub beside it instead of swapping in the chat list.
+                                    listPane = if (nav.conversationOpenedFromHub) hubScreenContent else chatListScreenContent,
                                     detailPane = {
                                         val activeConvId = nav.current.conversationId ?: selectedChatConversationId
                                         if (activeConvId != null) {
@@ -3319,6 +3339,10 @@ private fun FlashShell(
                             // A pushed Transfers (enrolled device) keeps the bar; the highlighted tab under it is a way back, not a scroll.
                             if (!com.transfer.flash.ui.navigation.FlashNavigationMath.isTabRoot(nav.current.destination, nav.hubEnrolled)) {
                                 nav.selectTab(destination)
+                                return@FlashBottomNav
+                            }
+                            if (destination == FlashDestination.Hub) {
+                                hubReselectTick++
                                 return@FlashBottomNav
                             }
                             val listState = when (destination) {

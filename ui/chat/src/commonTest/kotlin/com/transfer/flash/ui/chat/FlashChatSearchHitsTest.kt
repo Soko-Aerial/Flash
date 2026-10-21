@@ -35,6 +35,19 @@ class FlashChatSearchHitsTest {
     )
 
     @Test
+    fun `the Messages scope is text only and differs from All`() {
+        val messages = listOf(
+            message("m1", "budget review", files = listOf("notes.pdf")),
+            message("m2", "see you", files = listOf("Budget_Q4.pdf")),
+        )
+        val all = FlashChatSearchHits.hits(messages, "budget", FlashSearchScope.All).map { it.messageId }
+        val onlyMessages = FlashChatSearchHits.hits(messages, "budget", FlashSearchScope.Messages)
+        assertEquals(listOf("m1", "m2"), all)
+        assertEquals(listOf("m1"), onlyMessages.map { it.messageId })
+        assertEquals(FlashChatSearchKind.Message, onlyMessages.single().kind)
+    }
+
+    @Test
     fun `findMatches includes attachment file names`() {
         val messages = listOf(
             message("m1", "here it is", files = listOf("Budget_Q4.pdf")),

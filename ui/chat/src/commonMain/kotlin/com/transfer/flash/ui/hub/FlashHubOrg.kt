@@ -2,7 +2,9 @@ package com.transfer.flash.ui.hub
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.avatar.flashAvatarColorsFor
@@ -35,6 +38,7 @@ import com.transfer.flash.core.messaging.model.HubPersonUi
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.settings.FlashHubStatusMath
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
@@ -51,32 +55,35 @@ internal fun LazyListScope.hubDepartmentItems(
         }
         return
     }
+    val largest = departments.maxOf { it.memberCount }
     items(departments.size, key = { "d:${departments[it].id}" }, contentType = { "department" }) { i ->
         val d = departments[i]
-        FlashHubDepartmentCard(d, onClick = { onOpen(d.id) })
+        FlashHubDepartmentCard(
+            d, onClick = { onOpen(d.id) },
+            share = FlashHubVisualMath.share(d.memberCount, largest),
+            modifier = flashAnimateItem(FlashTheme.motion).hubStagger(if (i < HUB_STAGGER_ITEMS) i else -1, "hub-dept"),
+        )
     }
 }
 
 @Composable
-internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, modifier: Modifier = Modifier) {
+internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, modifier: Modifier = Modifier, share: Float? = null) {
     val colors = FlashTheme.colors
-    val (tileBg, tileFg) = flashAvatarColorsFor(d.id)
+    val grown = rememberHubGrow(share ?: 0f, label = "hubDeptShare")
     Row(
         modifier = modifier
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .fillMaxWidth()
-            .clip(FlashShapes.attachment)
+            .clip(HubShapes.card)
             .background(colors.backgroundSurface)
-            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentPrimary else colors.borderSubtle, FlashShapes.attachment)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(FlashSpacing.space12)
+            .border(FlashDimensions.borderHairline, if (d.isMine) colors.accentPrimary else colors.borderSubtle, HubShapes.card)
+            .hubClickable(onClick = onClick)
+            .padding(FlashSpacing.space16)
             .semantics(mergeDescendants = true) { contentDescription = FlashHubMath.departmentAccessibility(d) },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        Box(Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(tileBg), contentAlignment = Alignment.Center) {
-            FlashText(FlashHubMath.initials(d.name).take(2).uppercase(), style = FlashTheme.typography.bodyEmphasis, color = tileFg, maxLines = 1)
-        }
+        HubMark(initials = FlashHubMath.initials(d.name), seed = d.id, size = 48.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                 FlashText(d.name, modifier = Modifier.weight(1f, fill = false), style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary,
@@ -85,6 +92,11 @@ internal fun FlashHubDepartmentCard(d: HubDepartmentUi, onClick: () -> Unit, mod
             }
             FlashText(FlashHubMath.departmentSummary(d), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary)
             FlashText(FlashHubMath.headsLine(d), style = FlashTheme.typography.metadataDefault, color = colors.textTertiary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (share != null) {
+                Box(Modifier.fillMaxWidth().padding(top = FlashSpacing.space4).height(4.dp).clip(HubShapes.capsule).background(colors.backgroundSurfaceStrong)) {
+                    Box(Modifier.fillMaxHeight().fillMaxWidth(grown).clip(HubShapes.capsule).background(colors.accentPrimary.copy(alpha = if (d.isMine) 1f else 0.6f)))
+                }
+            }
         }
     }
 }
@@ -157,8 +169,7 @@ private const val MEMBER_PREVIEW = 25
 
 @Composable
 private fun HubBlockTitle(text: String) {
-    FlashText(text, modifier = Modifier.padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4).semantics { heading() },
-        style = FlashTheme.typography.metadataEmphasis, color = FlashTheme.colors.textSecondary)
+    FlashHubSectionTitle(text)
 }
 
 @Composable
@@ -179,8 +190,7 @@ internal fun LazyListScope.hubGroupItems(
 ) {
     if (feedback != null) {
         item(key = "groups-feedback", contentType = "banner") {
-            FlashText(feedback, modifier = Modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
-                .semantics { liveRegion = LiveRegionMode.Polite }, style = FlashTheme.typography.bodyDefault, color = FlashTheme.colors.textPrimary)
+            FlashHubNoteCard(FlashIcons.Chat, feedback, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         }
     }
     if (groups.isEmpty()) {
@@ -198,7 +208,7 @@ internal fun LazyListScope.hubGroupItems(
         item(key = "gs:${section.title}", contentType = "header") { HubBlockTitle(section.title) }
         items(section.groups.size, key = { "g:${section.groups[it].groupId}" }, contentType = { "group" }) { i ->
             val g = section.groups[i]
-            FlashHubGroupRow(g, busy = joiningGroupId == g.groupId, onAction = { onAction(g) })
+            FlashHubGroupRow(g, busy = joiningGroupId == g.groupId, onAction = { onAction(g) }, modifier = flashAnimateItem(FlashTheme.motion))
         }
     }
     if (onManage != null) {
@@ -217,12 +227,13 @@ internal fun FlashHubGroupRow(g: HubGroupUi, busy: Boolean, onAction: () -> Unit
     val colors = FlashTheme.colors
     val label = FlashHubMath.groupButtonLabel(g)
     Row(
-        modifier = modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
+        modifier = modifier.fillMaxWidth().heightIn(min = 64.dp)
+            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
             .semantics(mergeDescendants = false) { },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        FlashAvatar(initials = FlashHubMath.initials(g.name), size = 44.dp, seed = g.groupId)
+        HubMark(initials = FlashHubMath.initials(g.name), seed = g.groupId, size = 44.dp)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
             FlashText(g.name, style = FlashTheme.typography.bodyEmphasis, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis)
             FlashText(FlashHubMath.groupMeta(g), style = FlashTheme.typography.metadataDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)

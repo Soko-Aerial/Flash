@@ -293,3 +293,60 @@ Status: IMPLEMENTED, unit-tested (`FlashHubMathTest` overview cases), NOT seen o
 - **Composer**: "Visible to: <audience>" line, a real switch for "Pin to the top", the failure banner is a tinted box with an icon.
 - **Departments**: monogram tile per department. **Groups**: avatar per group.
 - No new dependency, no new colour tokens, no wire or repository change.
+
+## Redesign 2026-10-20 (owner: "take the best of the three contest results, add your own, nicer, animations and modes, professional")
+
+Status: IMPLEMENTED on the production Hub, unit-tested (`FlashHubVisualMathTest`, `FlashHubStatusRowsTest`), `:desktop:compileKotlinJvm` and
+`:app:compileDebugKotlin` green, NOT seen on a device (`HUBV-01..HUBV-10` in `docs/testing/TEST-BACKLOG.md`). The three contest packages
+(`competition/apex`, `novahub`, `opencode`) are untouched and still not wired in; only ideas were borrowed, no mock data or Trust-Vault style
+pages (the production Hub has no data for them).
+
+### What came from where
+
+| Idea | From | Where it landed |
+|---|---|---|
+| Tone washes, staggered entrance, decor gated by `minimalChrome` / `ultraLowUi`, shimmer skeleton, stat tiles | Nova | `FlashHubMotion.kt` (`hubStagger`, `hubDecorAllowed`, `hubShimmer`), `FlashHubSkeleton`, the three stat tiles in the overview |
+| Honest wording, ring gauge for lease validity, filter chips, "how it is reached" explanation | Command Deck (opencode) | lease `HubRing` in the overview, reachability card in the person sheet, status page copy |
+| Hero header with live connection state, accent-washed pinned card, unread badge pop, tappable header | Apex | overview hero with `HubLiveDot`, pinned news card wash, segment badge pop, hero opens the status page |
+| Own additions | this redesign | sliding segment indicator, page slide between segments, stats that jump to a segment, department share bars, animated overlays for the compact reader and department page, composer counter bar, Hub status page |
+
+### The pieces
+
+- **Overview hero** (`FlashHubOverview`): gradient surface, monogram tile, live dot (breathes only while connected), offline-trust ring showing days
+  left (green > 7 days, amber <= 7, red ended; `FlashHubVisualMath`), role chips, three count-up stat tiles (People, Departments, Groups) that open
+  that segment. Tapping the title row opens the status page.
+- **Segments** (`FlashHubSegments`): one track, one indicator that glides with a spring, icon and label per pill, the News unread badge pops in and out,
+  the selected pill is kept in view when the window is narrow. The per-segment counts moved into the hero.
+- **Pages**: `AnimatedContent` keyed on the page. Tabs slide toward the new tab (`tabEnter/tabExit`); search results and reduce-motion crossfade.
+- **Status strip**: tone-washed (success / accent / amber) with an icon, crossfades when the state changes, "Updating" turns its arrow.
+- **Status page** (`FlashHubStatus.kt`, a sheet): Company server, Colleague list, Offline trust, Device clock, each with a tone and a plain
+  sentence, "Refresh now" (`actions.onRefresh`) and the existing "Why" explanation. Built only from data the screen already has.
+- **News**: cards fade their edge colour, the unread dot pops out when read, pinned cards get an accent wash and a Pin chip, the first six cards stagger in.
+  **People**: letter headers with a rule, animated filter chips, rows animate placement. **Departments**: member-share bar per card. **Groups**: placement
+  animation, feedback in a note card. **Person sheet**: gradient hero, reachability card with a tone and icon (LAN success, hub accent, offline neutral),
+  honesty text as a note. **Composer**: the counter has a progress bar that turns amber then red; the failure banner expands in.
+- **Compact reader and department page** slide in and out (`screenPushEnter/PopExit`) and keep their last content while exiting.
+- **Every tappable surface** uses `hubClickable` (press scale spring plus the host indication); the switch thumb glides.
+
+### Modes (all through existing flags, no Hub setting)
+
+| Mode | What changes |
+|---|---|
+| Full | everything above |
+| Reduced motion (`FlashTheme.motion.reduceMotion`: user, performance tier, platform) | nothing moves: staggers, count-ups, ring and bar growth, pulses, shimmer and page slides all report their end value at once; shapes and colours are still drawn |
+| Minimal chrome | no gradients or glows (flat tint), no looping decoration |
+| Ultra-low UI | as minimal chrome, flat fills only |
+
+Light and dark use the same tokens; the amber tone is `accentSecondary` (there is no warning token, none was added).
+
+### Not done / deliberately left
+
+- No new dependency, no new colour token, no stock Material icon, no wire, repository or `FlashHubActions` change.
+- Online dots in long lists stay still (a pulsing dot per row would run one infinite transition per visible row); only the hero dot breathes.
+- Contest-only ideas needing data the hub does not give the client (relay packet traces, certificate trees, trust vault) were not built.
+- Previews: light/dark x full / reduced / minimal / ultra low, lease soon, loading dark, status page (two states) in `FlashHubPreviews.kt`.
+
+## Redesign 2026-10-20 (second and third pass)
+
+Owner: first pass "too roundy", second ("ledger") "too boxy", wants "beautiful and professional". Current look and the server/Hub gap review:
+`docs/ui/hub-review-and-redesign-2026-10-20.md`. Shapes live in `HubShapes` (`FlashHubMotion.kt`); not device-verified (`HUBL-01..08`).

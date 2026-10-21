@@ -141,7 +141,9 @@ fun FlashChatListScreen(
     var viewingArchived by rememberSaveable { mutableStateOf(false) }
 
     FlashBackHandler(enabled = viewingArchived) {
-        viewingArchived = false
+        // This handler is composed after the host's search handler and so wins: close an open search first, otherwise Back
+        // left the archive with the search bar and query still active over the inbox.
+        if (isSearching) onCloseSearch() else viewingArchived = false
     }
 
     val activeItems = if (viewingArchived) state.archivedItems else state.items
@@ -154,11 +156,23 @@ fun FlashChatListScreen(
     val titleMatchedChats = remember(activeItems, searchQuery, colleagueMatchIds) {
         FlashChatListSearchMath.filterChats(activeItems, searchQuery, colleagueMatchIds = colleagueMatchIds)
     }
-    val searchEntries = remember(searchScope, titleMatchedChats, searchResults) {
-        FlashSearchResultMath.entries(searchScope, titleMatchedChats, searchResults)
+    // "Search archived chats" must stay inside the archive: the repository's hits cover every chat.
+    val visibleSearchResults = remember(searchResults, viewingArchived, state.archivedItems) {
+        if (!viewingArchived) {
+            searchResults
+        } else {
+            val archivedIds = state.archivedItems.mapTo(HashSet()) { it.id }
+            FlashChatSearchResultsUi(
+                messageHits = searchResults.messageHits.filter { it.conversationId in archivedIds },
+                fileHits = searchResults.fileHits.filter { it.conversationId in archivedIds },
+            )
+        }
     }
-    val scopedResultCount = remember(searchScope, titleMatchedChats, searchResults) {
-        FlashSearchResultMath.scopeCount(searchScope, titleMatchedChats, searchResults)
+    val searchEntries = remember(searchScope, titleMatchedChats, visibleSearchResults) {
+        FlashSearchResultMath.entries(searchScope, titleMatchedChats, visibleSearchResults)
+    }
+    val scopedResultCount = remember(searchScope, titleMatchedChats, visibleSearchResults) {
+        FlashSearchResultMath.scopeCount(searchScope, titleMatchedChats, visibleSearchResults)
     }
     val showRecents = isSearching && !searchActive && recentSearches.isNotEmpty()
     val showPending = pendingApprovalGroupNames.isNotEmpty() && !viewingArchived && !isSearching

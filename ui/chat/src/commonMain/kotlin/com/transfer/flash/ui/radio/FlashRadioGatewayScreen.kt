@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
@@ -50,6 +52,8 @@ public fun FlashRadioGatewayScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
+    /** Space the hosting shell's bottom bar occupies; the last card scrolls clear of it (the test-message card was hidden under it). */
+    bottomInset: Dp = 0.dp,
 ) {
     val state by controller.state.collectAsState()
     var showAuthorisationDialog by remember { mutableStateOf(false) }
@@ -146,6 +150,7 @@ public fun FlashRadioGatewayScreen(
                         // Left Column: Transport, Checklist, Scan, Devices
                         LazyColumn(
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(bottom = FlashSpacing.space16 + bottomInset),
                             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
                         ) {
                             item(key = "master-switch") {
@@ -215,6 +220,7 @@ public fun FlashRadioGatewayScreen(
                         // Right Column: Security, Modes, Diagnostics
                         LazyColumn(
                             modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(bottom = FlashSpacing.space16 + bottomInset),
                             verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
                         ) {
                             if (state.enabled) {
@@ -250,7 +256,8 @@ public fun FlashRadioGatewayScreen(
                         state = listState,
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8),
+                            .padding(horizontal = FlashSpacing.space16),
+                        contentPadding = PaddingValues(top = FlashSpacing.space8, bottom = FlashSpacing.space16 + bottomInset),
                         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
                     ) {
                         item(key = "master-switch") {

@@ -486,6 +486,7 @@ fun FlashSettingsScreen(
         com.transfer.flash.ui.radio.FlashRadioGatewayScreen(
             controller = radioGatewayController,
             onBack = { showRadioGateway = false },
+            bottomInset = bottomInset,
         )
         return
     }

@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.transfer.flash.ui.theme.FlashTheme
@@ -45,6 +46,11 @@ data class FlashBackStackState(
      * than a one-shot event) so it survives the rotation that can happen while the thread loads.
      */
     val targetMessageId: String? = null,
+    /**
+     * Bumped when the SAME search hit is tapped again while its chat is already open, so the screen jumps again (it jumps once per
+     * (target, nonce)). Transient: never saved, because a restored stack must not replay a jump.
+     */
+    val targetNonce: Int = 0,
 ) {
     fun isValid(): Boolean = when (destination) {
         FlashDestination.Conversation -> !conversationId.isNullOrBlank()
@@ -169,6 +175,10 @@ object FlashNavigationMath {
                 current.targetMessageId, next.targetMessageId,
             )
         ) {
+            // The same search hit tapped again in the chat that is open: keep the entry but ask the screen to jump once more.
+            if (current.destination == FlashDestination.Conversation && next.targetMessageId != null) {
+                return entries.dropLast(1) + current.copy(targetNonce = current.targetNonce + 1)
+            }
             return entries
         }
         // Same conversation, new target (a second search hit inside the chat already open):
@@ -217,6 +227,17 @@ object FlashNavigationMath {
     }
 
     /**
+     * True when the top of [entries] is a conversation that was reached from the Hub tab (open-items tracker H-16): walking down
+     * through any conversations stacked on each other, the first other entry is [FlashDestination.Hub]. Two-pane hosts then keep
+     * the Hub as the list pane next to the chat, so opening a colleague does not swap the Hub for the chat list, and Back lands on
+     * the Hub exactly as it was.
+     */
+    fun conversationOpenedFromHub(entries: List<FlashBackStackState>, hubEnrolled: Boolean): Boolean {
+        if (!hubEnrolled || entries.lastOrNull()?.destination != FlashDestination.Conversation) return false
+        return entries.lastOrNull { it.destination != FlashDestination.Conversation }?.destination == FlashDestination.Hub
+    }
+
+    /**
      * Which tab the shell bar / rail / sidebar highlights for [entries]. A tab root highlights
      * itself; a conversation highlights Chats (unchanged behaviour); any other pushed destination
      * (Transfers while enrolled) highlights the nearest tab root beneath it, else Chats.
@@ -224,7 +245,8 @@ object FlashNavigationMath {
     fun shellTab(entries: List<FlashBackStackState>, hubEnrolled: Boolean): FlashDestination {
         val top = entries.lastOrNull()?.destination ?: return HOME_TAB
         return when {
-            top == FlashDestination.Conversation -> FlashDestination.ChatList
+            top == FlashDestination.Conversation ->
+                if (conversationOpenedFromHub(entries, hubEnrolled)) FlashDestination.Hub else FlashDestination.ChatList
             isTabRoot(top, hubEnrolled) -> top
             else -> entries.lastOrNull { isTabRoot(it.destination, hubEnrolled) }?.destination ?: HOME_TAB
         }
@@ -318,6 +340,10 @@ class FlashNavigationState internal constructor(
     /** The tab the shell bar / rail / sidebar highlights now (see [FlashNavigationMath.shellTab]). */
     val shellTab: FlashDestination
         get() = FlashNavigationMath.shellTab(entries, hubEnrolled)
+
+    /** The open conversation was reached from the Hub (see [FlashNavigationMath.conversationOpenedFromHub]). */
+    val conversationOpenedFromHub: Boolean
+        get() = FlashNavigationMath.conversationOpenedFromHub(entries, hubEnrolled)
 
     /**
      * True when [back] will consume the press: either an entry sits above the root, or we are
@@ -455,6 +481,7 @@ fun FlashAnimatedScreen(
     content: @Composable (FlashBackStackState) -> Unit,
 ) {
     val motion = FlashTheme.motion
+    val saveableStateHolder = rememberSaveableStateHolder()
     AnimatedContent(
         targetState = targetState,
         modifier = modifier,
@@ -491,7 +518,14 @@ fun FlashAnimatedScreen(
         },
         label = "flashNavigation",
     ) { page ->
-        content(page)
+        // AnimatedContent discards the page it leaves, and `rememberSaveable` state (the Hub's open announcement, search,
+        // People filter, list scroll) goes with it. A tab page therefore keeps its saveable state under its destination.
+        // A conversation is deliberately NOT kept: it must open fresh, not with the last visit's composer or search.
+        if (page.destination == FlashDestination.Conversation) {
+            content(page)
+        } else {
+            saveableStateHolder.SaveableStateProvider(page.destination.name) { content(page) }
+        }
     }
 }
 
