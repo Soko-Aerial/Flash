@@ -14,6 +14,7 @@ import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { icon } from '../icons.js';
+import { expiryFields, toLocalInput } from '../announcement-expiry.js';
 
 function isOrgAdmin() {
   const role = (session.role || '').toLowerCase();
@@ -296,6 +297,7 @@ export function mountAnnouncements(container, ctx) {
           badge(it.scope === 'org' ? t('announcements.filter.scope.org') : departmentName(it.departmentId), it.scope === 'org' ? 'neutral' : 'info'),
           it.pinned ? badge(t('announcements.status.pinned'), 'accent') : null,
           h('span', { class: 'muted text-sm' }, formatDateTime(it.createdAt)),
+          it.expiresAt ? h('span', { class: 'muted text-sm', text: t('announcements.detail.expires', { when: formatDateTime(it.expiresAt) }) }) : null,
         ),
         h('div', { class: 'announcement-body-view' },
           h('p', { class: 'plain-text-body', text: it.body }),
@@ -340,6 +342,17 @@ export function mountAnnouncements(container, ctx) {
 
     const pinCheck = h('input', { type: 'checkbox', class: 'checkbox', checked: existing ? existing.pinned : false });
     const pinLabel = h('label', { class: 'checkbox-label' }, pinCheck, h('span', { text: t('announcements.field.pinned') }));
+
+    // Expiry (ANN-02): optional date and time, local. Editing without touching it keeps the stored expiry; ticking
+    // "No expiry" on an announcement that has one removes it (the server needs the explicit clearExpiry for that).
+    const hadExpiry = !!(existing && existing.expiresAt);
+    const expiryIn = textInput({ type: 'datetime-local', value: hadExpiry ? toLocalInput(existing.expiresAt) : '' });
+    const noExpiryCheck = h('input', { type: 'checkbox', class: 'checkbox', checked: !hadExpiry });
+    const noExpiryLabel = h('label', { class: 'checkbox-label' }, noExpiryCheck, h('span', { text: t('announcements.field.expires.none') }));
+    const expiryError = h('p', { class: 'field-error text-sm', role: 'alert', hidden: true });
+    function syncExpiry() { expiryIn.disabled = noExpiryCheck.checked; }
+    noExpiryCheck.addEventListener('change', syncExpiry);
+    syncExpiry();
 
     // Live preview elements
     const prevAudBadge = badge(t('announcements.filter.scope.org'), 'neutral');
@@ -430,6 +443,14 @@ export function mountAnnouncements(container, ctx) {
           const scope = selVal === 'org' ? 'org' : 'department';
           const deptId = selVal.startsWith('dept:') ? selVal.substring(5) : null;
 
+          const expiry = expiryFields(existing ? existing.expiresAt : null, noExpiryCheck.checked, expiryIn.value, Date.now(), isEdit);
+          if (!expiry.ok) {
+            expiryError.textContent = t(expiry.reason === 'past' ? 'announcements.expiry.past' : 'announcements.expiry.invalid');
+            expiryError.hidden = false;
+            return;
+          }
+          expiryError.hidden = true;
+
           try {
             if (isEdit) {
               await api.put('/announcements/' + encodeURIComponent(existing.id), {
@@ -437,6 +458,7 @@ export function mountAnnouncements(container, ctx) {
                 title: curTitle,
                 body: curBody,
                 pinned: pinCheck.checked,
+                ...expiry.fields,
               });
             } else {
               await api.post('/announcements', {
@@ -445,6 +467,7 @@ export function mountAnnouncements(container, ctx) {
                 title: curTitle,
                 body: curBody,
                 pinned: pinCheck.checked,
+                ...expiry.fields,
               });
             }
             dlg.close();
@@ -488,6 +511,12 @@ export function mountAnnouncements(container, ctx) {
           bodyCounter,
         ),
         h('div', { class: 'field' }, pinLabel),
+        h('div', { class: 'field' },
+          h('label', { class: 'label', text: t('announcements.field.expires') }),
+          expiryIn,
+          noExpiryLabel,
+          expiryError,
+        ),
         h('div', { class: 'preview-container' },
           h('h4', { class: 'preview-heading', text: t('announcements.preview.title') }),
           previewPanel,

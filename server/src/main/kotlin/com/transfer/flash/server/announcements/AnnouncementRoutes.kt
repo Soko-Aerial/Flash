@@ -261,6 +261,11 @@ fun Route.announcementRoutes(
                     return@put
                 }
 
+                if (req.expiresAtMs != null && req.clearExpiry) {
+                    call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "expiresAtMs and clearExpiry cannot both be set")
+                    return@put
+                }
+
                 if (req.expectedSeq != existing.seq) {
                     call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_CONFLICT, "Concurrent edit conflict")
                     return@put
@@ -292,6 +297,7 @@ fun Route.announcementRoutes(
                         body = cleanBody,
                         pinned = req.pinned,
                         expiresAtMs = req.expiresAtMs,
+                        clearExpiry = req.clearExpiry,
                         actorRole = principal.role,
                         actorDeptId = principal.departmentId,
                         actorRef = principal.deviceId,

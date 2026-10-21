@@ -69,7 +69,14 @@ public data class UpdateAnnouncementRequestDto(
     public val body: String = "",
     public val expectedSeq: Long = 0L,
     public val pinned: Boolean? = null,
+    /**
+     * Expiry, tri-state because the wire cannot tell an absent field from a null one (`explicitNulls = false`):
+     * `expiresAtMs != null` sets it; `null` with [clearExpiry] false KEEPS the stored expiry (an edit is a new text, not a
+     * new lifetime); `null` with [clearExpiry] true removes it. Both at once is a `400`. An older client that only ever
+     * sends `null` therefore keeps the expiry, which is the safe direction (ANN-02).
+     */
     public val expiresAtMs: Long? = null,
+    public val clearExpiry: Boolean = false,
 )
 
 @FlashInternalApi

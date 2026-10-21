@@ -191,7 +191,10 @@ public class AnnouncementStore(
         actorDeptId: String? = null,
         actorRef: String = "",
         clientRequestId: String? = null,
+        clearExpiry: Boolean = false,
     ): AnnouncementItemDto {
+        // Tri-state expiry (ANN-02): a value sets it, null keeps it, null + clearExpiry removes it.
+        require(!(expiresAtMs != null && clearExpiry)) { "expiresAtMs and clearExpiry are mutually exclusive" }
         return db.withTransaction { conn ->
             val current = getByIdInternal(conn, id)
                 ?: throw AnnouncementNotFoundException("Announcement $id does not exist")
@@ -218,6 +221,11 @@ public class AnnouncementStore(
 
             val newSeq = nextSeq(conn)
             val newPinnedAt = if (newPinned) (current.pinnedAt ?: now) else null
+            val newExpiresAt = when {
+                expiresAtMs != null -> expiresAtMs
+                clearExpiry -> null
+                else -> current.expiresAt
+            }
 
             val sql = """
                 UPDATE announcement SET
@@ -237,7 +245,7 @@ public class AnnouncementStore(
                 stmt.setString(2, cleanedBody)
                 stmt.setInt(3, if (newPinned) 1 else 0)
                 if (newPinnedAt != null) stmt.setLong(4, newPinnedAt) else stmt.setNull(4, java.sql.Types.INTEGER)
-                if (expiresAtMs != null) stmt.setLong(5, expiresAtMs) else stmt.setNull(5, java.sql.Types.INTEGER)
+                if (newExpiresAt != null) stmt.setLong(5, newExpiresAt) else stmt.setNull(5, java.sql.Types.INTEGER)
                 stmt.setLong(6, now)
                 stmt.setLong(7, newSeq)
                 stmt.setString(8, id)
@@ -253,7 +261,7 @@ public class AnnouncementStore(
                 body = cleanedBody,
                 pinned = newPinned,
                 pinnedAt = newPinnedAt,
-                expiresAt = expiresAtMs,
+                expiresAt = newExpiresAt,
                 updatedAt = now,
                 edited = true,
                 seq = newSeq,

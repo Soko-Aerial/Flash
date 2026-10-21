@@ -6033,7 +6033,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-05 — A console edit keeps an announcement's expiry (ANN-02)
 - **Setup:** an announcement created through the API (or the new console field) with `expiresAtMs = now + 10 min`.
 - **Steps:** fix a typo in its body in the console; wait past the expiry; reopen the Hub tab and the console. Then repeat with "Remove expiry" instead of a typo fix.
-- **Pass:** after the typo fix it still disappears at the expiry; after "Remove expiry" it stays. Today: every edit clears `expires_at` and it stays for ever. **Source:** ANN-02, ADR-222 decision 6. **Status:** TODO
+- **Pass:** after the typo fix it still disappears at the expiry; after "Remove expiry" it stays. Today: every edit clears `expires_at` and it stays for ever. **Source:** ANN-02, ADR-222 decision 6. **Status:** AUTOMATED PASS 2026-10-21 (`AnnouncementRoutesTest.anEditKeepsTheExpiryUnlessItIsClearedOnPurpose`, mutation-checked; the console form itself, expiry field and "No expiry" box, still needs an eyes-on check in a browser)
 
 ### SRVHUB-06 — A hidden department's removed member does not leak (DIR-02)
 - **Setup:** a hidden department with one member; a second device outside it.
@@ -6087,4 +6087,4 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-16 — Announcement expiry is a tri-state on the wire (ADR-222 decision 6)
 - **Setup:** an announcement with `expiresAtMs` set; `curl` or a test client.
 - **Steps:** `PUT` with only `title`/`body`; `PUT` with `expiresAtMs: null` and `clearExpiry: false`; `PUT` with `expiresAtMs: null` and `clearExpiry: true`; `PUT` with both `expiresAtMs` and `clearExpiry: true`.
-- **Pass:** the first two leave the expiry unchanged, the third clears it, the fourth answers `400` naming the conflict. **Source:** ADR-222 decision 6. **Status:** TODO
+- **Pass:** the first two leave the expiry unchanged, the third clears it, the fourth answers `400` naming the conflict. **Source:** ADR-222 decision 6. **Status:** AUTOMATED PASS 2026-10-21 (route test above + `server/admin-ui-tests/announcements.test.mjs` for the composer rules)

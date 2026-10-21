@@ -308,6 +308,36 @@ class AnnouncementRoutesTest {
     }
 
     @Test
+    fun anEditKeepsTheExpiryUnlessItIsClearedOnPurpose() = testApplication { // SRVHUB-05, SRVHUB-16
+        val w = World()
+        mount(w)
+        val adminToken = w.token("admin-01", "ORG_ADMIN", null)
+        val firstExpiry = 4_000_000_000_000L
+        val secondExpiry = 4_100_000_000_000L
+
+        val created = HubRestCodec.decode<AnnouncementItemDto>(
+            client.postAs("/api/v1/announcements", adminToken, PostAnnouncementRequestDto("org", null, "Maintenance", "Window", expiresAtMs = firstExpiry)).bodyAsText(),
+        )
+        assertEquals(firstExpiry, created.expiresAt)
+
+        suspend fun put(seq: Long, request: UpdateAnnouncementRequestDto) = client.putAs("/api/v1/announcements/${created.id}", adminToken, request)
+
+        // A new text, no expiry field at all (an old client, or the device composer): the expiry stays.
+        val kept = HubRestCodec.decode<AnnouncementItemDto>(put(created.seq, UpdateAnnouncementRequestDto(title = "Maintenance 2", expectedSeq = created.seq)).bodyAsText())
+        assertEquals(firstExpiry, kept.expiresAt, "an edit is a new text, not a new lifetime")
+
+        val moved = HubRestCodec.decode<AnnouncementItemDto>(put(kept.seq, UpdateAnnouncementRequestDto(expiresAtMs = secondExpiry, expectedSeq = kept.seq)).bodyAsText())
+        assertEquals(secondExpiry, moved.expiresAt)
+
+        val both = put(moved.seq, UpdateAnnouncementRequestDto(expiresAtMs = firstExpiry, clearExpiry = true, expectedSeq = moved.seq))
+        assertEquals(HttpStatusCode.BadRequest, both.status, "a value and a clear in one request is ambiguous")
+
+        val cleared = HubRestCodec.decode<AnnouncementItemDto>(put(moved.seq, UpdateAnnouncementRequestDto(clearExpiry = true, expectedSeq = moved.seq)).bodyAsText())
+        assertEquals(null, cleared.expiresAt, "only an explicit clear removes it")
+        assertEquals("Maintenance 2", cleared.title, "and clearing does not touch the text")
+    }
+
+    @Test
     fun softDeleteLeavesTombstoneInChangesFeed() = testApplication {
         val w = World()
         mount(w)

@@ -284,6 +284,11 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                 return@put
             }
 
+            if (req.expiresAtMs != null && req.clearExpiry) {
+                call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, "expiresAtMs and clearExpiry cannot both be set")
+                return@put
+            }
+
             if (req.expectedSeq != existing.seq) {
                 call.respondError(HttpStatusCode.Conflict, HubErrorCodes.ERR_CONFLICT, "Concurrent edit conflict")
                 return@put
@@ -315,6 +320,7 @@ fun Route.announcementAdminRoutes(d: AdminApiDeps) {
                     body = cleanBody,
                     pinned = req.pinned,
                     expiresAtMs = req.expiresAtMs,
+                    clearExpiry = req.clearExpiry,
                     actorRole = if (isOrgAdmin) "ORG_ADMIN" else "DEPT_HEAD",
                     actorDeptId = if (isOrgAdmin) null else (scope as? ConsoleScope.Departments)?.ids?.singleOrNull(),
                     actorRef = session.username,

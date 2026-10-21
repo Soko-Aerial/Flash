@@ -85,3 +85,41 @@ test('Optimistic concurrency: 409 conflict prompts reload confirmation', () => {
   assert.ok(annView.includes("t('announcements.conflict.title')"));
   assert.ok(annView.includes("t('announcements.conflict.reload')"));
 });
+
+// ---- ANN-02 / ADR-222 decision 6: the composer's expiry is tri-state on the wire --------------------------------------
+
+const { expiryFields, toLocalInput } = await import('../src/main/resources/admin-ui/js/announcement-expiry.js');
+
+test('SRVHUB-16: an edit that does not touch the expiry sends nothing, so the hub keeps it', () => {
+  const stored = new Date('2031-05-04T09:30:00').getTime();
+  const r = expiryFields(stored, false, toLocalInput(stored), Date.now(), true);
+  assert.deepEqual(r, { ok: true, fields: {} });
+  // seconds on the stored value are not a change: the input only has minutes
+  const r2 = expiryFields(stored + 31_000, false, toLocalInput(stored), Date.now(), true);
+  assert.deepEqual(r2, { ok: true, fields: {} });
+});
+
+test('SRVHUB-16: removing an expiry is an explicit clearExpiry, and only when there is one to remove', () => {
+  const stored = new Date('2031-05-04T09:30:00').getTime();
+  assert.deepEqual(expiryFields(stored, true, '', Date.now(), true), { ok: true, fields: { clearExpiry: true } });
+  assert.deepEqual(expiryFields(null, true, '', Date.now(), true), { ok: true, fields: {} }, 'nothing to remove');
+  assert.deepEqual(expiryFields(null, true, '', Date.now(), false), { ok: true, fields: {} }, 'create without expiry');
+});
+
+test('SRVHUB-16: a new date is sent as expiresAtMs, a past or garbage date is refused before the request', () => {
+  const now = new Date('2030-01-01T00:00:00').getTime();
+  const r = expiryFields(null, false, '2030-06-01T12:00', now, false);
+  assert.equal(r.ok, true);
+  assert.equal(r.fields.expiresAtMs, new Date('2030-06-01T12:00').getTime());
+  assert.equal('clearExpiry' in r.fields, false, 'never both');
+  assert.deepEqual(expiryFields(null, false, '2029-06-01T12:00', now, false), { ok: false, reason: 'past' });
+  assert.deepEqual(expiryFields(null, false, 'not a date', now, false), { ok: false, reason: 'invalid' });
+});
+
+test('the composer has an expiry field and a No expiry box, with strings for both errors', () => {
+  assert.ok(annView.includes('expiryFields('), 'the view decides through the pure module');
+  assert.ok(annView.includes("type: 'datetime-local'"));
+  for (const k of ['announcements.field.expires', 'announcements.field.expires.none', 'announcements.expiry.past', 'announcements.expiry.invalid', 'announcements.detail.expires']) {
+    assert.ok(en[k] && en[k].length > 0, `missing string ${k}`);
+  }
+});
