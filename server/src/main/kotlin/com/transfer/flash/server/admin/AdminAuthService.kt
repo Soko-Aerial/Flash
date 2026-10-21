@@ -119,6 +119,12 @@ class AdminAuthService(
     private val secureRandom: SecureRandom = SecureRandom(),
     /** Seals the authenticator seeds at rest (REV-03). [SecretBox.None] keeps them as given (tests). */
     private val secrets: SecretBox = SecretBox.None,
+    /**
+     * Keeps a session valid whose administrator row does not exist while the hub has no administrators at all. Off in
+     * production (review F3): an unbacked session is then always rejected. Only unit tests that mint a session for a name
+     * without an admin row turn it on.
+     */
+    private val allowUnbackedSessions: Boolean = false,
 ) {
     companion object {
         const val PBKDF2_ITERATIONS: Int = 600_000
@@ -515,8 +521,9 @@ class AdminAuthService(
         return session.copy(lastSeenMs = now)
     }
 
-    /** Sessions created directly for a name that has no admin row (unit tests of the routes) stay valid. */
-    private fun isTestPrincipal(username: String): Boolean = loadAdmin(username) == null && !hasAdmins()
+    /** Sessions created directly for a name that has no admin row (unit tests of the routes) stay valid, only when [allowUnbackedSessions]. */
+    private fun isTestPrincipal(username: String): Boolean =
+        allowUnbackedSessions && loadAdmin(username) == null && !hasAdmins()
 
     fun invalidateSession(token: String) {
         db.withConnection { it.update("DELETE FROM admin_sessions WHERE token_hash = ?", sha256Hex(token)) }

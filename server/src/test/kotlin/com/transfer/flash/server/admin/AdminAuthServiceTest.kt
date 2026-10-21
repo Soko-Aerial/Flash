@@ -24,6 +24,7 @@ class AdminAuthServiceTest {
         iterations: Int = 1000,
         tokenFile: Path? = null,
         explicitToken: String? = null,
+        allowUnbackedSessions: Boolean = false,
     ) = AdminAuthService(
         printSetupTokenToConsole = false,
         db = db,
@@ -31,6 +32,7 @@ class AdminAuthServiceTest {
         passwordIterations = iterations,
         setupTokenFile = tokenFile,
         explicitSetupToken = explicitToken,
+        allowUnbackedSessions = allowUnbackedSessions,
     )
 
     /** Creates the first administrator through the real setup path and returns (service, totp secret). */
@@ -319,6 +321,19 @@ class AdminAuthServiceTest {
     }
 
     // ------------------------------------------------------------------------------------------ sessions
+
+    @Test
+    fun aSessionWhoseAdministratorRowIsGoneIsRejectedInProduction_F3() {
+        // No administrators exist and none ever did: a session row for "ghost" must not be accepted.
+        val production = service()
+        val ghost = production.createSession("ghost", "ORG_ADMIN")
+        assertNull(production.validateSession(ghost.token))
+
+        // The test seam is explicit and off by default.
+        val lenient = service(allowUnbackedSessions = true)
+        val allowed = lenient.createSession("ghost", "ORG_ADMIN")
+        assertNotNull(lenient.validateSession(allowed.token))
+    }
 
     @Test
     fun sessionsAreStoredHashedExpireAndAreCappedPerAdministrator() {

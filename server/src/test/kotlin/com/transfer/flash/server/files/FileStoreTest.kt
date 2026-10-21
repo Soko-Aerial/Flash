@@ -290,6 +290,18 @@ class FileStoreTest {
     }
 
     @Test
+    fun aDeviceThatIsNotInTheGroupCannotCreateAGroupFile() {
+        groups["group-closed"] = listOf(recipient, "device-third")
+
+        val refusal = refused(store.create(sender, createRequest(toDeviceId = null, groupId = "group-closed")))
+
+        assertEquals(HubErrorCodes.ERR_FORBIDDEN, refusal.code)
+        // Nothing was created: the same id is still free, and a member can create it.
+        groups["group-closed"] = listOf(sender, recipient)
+        ok(store.create(sender, createRequest(toDeviceId = null, groupId = "group-closed")))
+    }
+
+    @Test
     fun aGroupThatDoesNotExistOrHasNoOtherMembersIsRefused() {
         assertEquals(
             HubErrorCodes.ERR_UNKNOWN_RECIPIENT,

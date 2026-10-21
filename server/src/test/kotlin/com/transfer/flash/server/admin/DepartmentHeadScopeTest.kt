@@ -26,6 +26,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.put
+import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -97,7 +98,7 @@ class DepartmentHeadScopeTest {
             headEmptyTotp = admins.createHead("head-empty", headPassword, "boss", "No Depts", emptyList(), null).totpSecret
         }
 
-        private fun enrollDevice(id: String, dept: String, role: String) {
+        fun enrollDevice(id: String, dept: String, role: String) {
             val issuer = FlashCrypto.generateEcKeyPair()
             val key = FlashCrypto.generateEcKeyPair()
             identities.createInvite("tok-$id", dept, role, emptySet(), emptySet(), now + 100_000_000, 1, now)
@@ -192,6 +193,47 @@ class DepartmentHeadScopeTest {
         val empty = client.loginAs(r, "head-empty", headPassword, r.headEmptyTotp)
         assertEquals(HttpStatusCode.OK, client.getA("/departments", empty).status)
         assertEquals("[]", client.getA("/departments", empty).bodyAsText())
+    }
+
+    // Review F2: the policy table is only a declaration; this proves every route it marks ORG really refuses a head.
+    @Test
+    fun everyRouteDeclaredOrgRefusesADepartmentHead() = testApplication {
+        val r = Realm()
+        mount(r)
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+        val orgRoutes = AdminRoutePolicies.ALL.filterValues { it == AdminRoutePolicy.ORG }.keys
+        assertTrue(orgRoutes.isNotEmpty())
+        val failures = ArrayList<String>()
+        for (key in orgRoutes) {
+            val method = key.substringBefore(' ')
+            val path = key.substringAfter(' ').replace(Regex("[{][^}]+[}]"), "x")
+            val resp = client.request(path) {
+                this.method = io.ktor.http.HttpMethod.parse(method)
+                withSession(head)
+                if (method == "POST" || method == "PUT") {
+                    contentType(ContentType.Application.Json)
+                    setBody("{}")
+                }
+            }
+            if (resp.status != HttpStatusCode.Forbidden) failures += "$key -> ${resp.status}"
+        }
+        assertEquals(emptyList(), failures, "ORG routes that did not answer 403 to a department head")
+    }
+
+    // Review F5: the head's overview counts every device of the department, not the ones inside the newest 500 rows.
+    @Test
+    fun headOverviewCountsPastFiveHundredDevices() = testApplication {
+        val r = Realm()
+        mount(r)
+        r.enrollDevice("dev-a2", "dept-a", "member")
+        r.enrollDevice("dev-a3", "dept-a", "member")
+        // Newer than every dept-a device, so the old 500-row slice no longer reached them.
+        for (i in 1..520) r.enrollDevice("dev-b-%03d".format(i), "dept-b", "member")
+        val head = client.loginAs(r, "head-a", headPassword, r.headTotp)
+
+        val overview = HubRestCodec.decode<OverviewDto>(client.getA("/overview", head).bodyAsText())
+
+        assertEquals(3L, overview.devicesByStatus["ACTIVE"])
     }
 
     // DEPH-U05: IDOR answers byte-equal to a non-existent id.

@@ -82,6 +82,11 @@ class FileStore(
             else -> {
                 val members = groupId?.let(groupMembers)
                     ?: return FileOutcome.Refused(HubErrorCodes.ERR_UNKNOWN_RECIPIENT, FileMessages.UNKNOWN_RECIPIENT)
+                // Only a current member may address the group (brutal-review F4); otherwise a former member that
+                // still knows the id could spam its members and probe the roster.
+                if (sender !in members) {
+                    return FileOutcome.Refused(HubErrorCodes.ERR_FORBIDDEN, FileMessages.NOT_RECIPIENT)
+                }
                 val rest = (members.toSet() - sender).toList().sorted()
                 if (rest.isEmpty()) return FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.UNKNOWN_RECIPIENT)
                 rest
