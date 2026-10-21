@@ -611,6 +611,9 @@ public class SwarmEngine(
                 bytesDone = content.bytesDone,
                 totalSize = content.totalSize,
                 failReason = content.failReason,
+                cancelReason = if (content.state == SwarmLifecycleState.CANCELLED) {
+                    tombstones[content.groupId to content.messageId]?.reason
+                } else null,
             )
         )
     }

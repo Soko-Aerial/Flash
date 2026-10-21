@@ -83,6 +83,7 @@ public class SwarmDriver(
 
     /** groupId -> the group's name, resolved when the group is first seen (the row builder is not suspending). */
     private val groupTitles = SyncMap<String, String>()
+    private val originNames = SyncMap<Pair<String, String>, String>()
 
     private val contentRecords = SyncMap<Pair<String, ContentRoot>, SwarmContentRecord>()
     private val transferIdToKey = SyncMap<String, Pair<String, ContentRoot>>()
@@ -274,6 +275,7 @@ public class SwarmDriver(
                     emitMembership(g, recheckInactive = false)
                 }
                 for (record in records) {
+                    rememberOriginName(record.groupId, record.originId)
                     val normalized = rememberRecord(record)
                     eventChannel.send(SwarmEvent.Restored(normalized, now()))
                 }
@@ -716,9 +718,19 @@ public class SwarmDriver(
             null -> null
         }
 
-        val errorMessage = if (cmd.state == SwarmLifecycleState.FAILED) {
-            TransferFailureText.friendly(cmd.failReason, transferId)
-        } else null
+        val errorMessage = when {
+            cmd.state == SwarmLifecycleState.FAILED -> TransferFailureText.friendly(cmd.failReason, transferId)
+            // B-19: a receiver reads who stopped the file and how, not a bare "Failed". The origin's own row says "Cancelled".
+            cmd.state == SwarmLifecycleState.CANCELLED && record != null && record.role != SwarmRole.ORIGIN -> {
+                val who = originNames[cmd.groupId to record.originId] ?: "the sender"
+                when (cmd.cancelReason) {
+                    SwarmTombstoneReason.USER -> TransferFailureText.cancelledBy(who)
+                    SwarmTombstoneReason.DELETED -> TransferFailureText.deletedBy(who)
+                    null -> null
+                }
+            }
+            else -> null
+        }
 
         val snapshot = engine.snapshot().contents[cmd.groupId to cmd.root]
         val canGoOffline = snapshot?.canGoOffline ?: false
@@ -910,6 +922,12 @@ public class SwarmDriver(
         eventChannel.send(SwarmEvent.Tick(nowMs))
     }
 
+    /** Caches the sender's name so a later non-suspending row update can say "Cancelled by Ada" (B-19). */
+    private suspend fun rememberOriginName(groupId: String, originId: String) {
+        val name = runCatching { groupContext.memberName(groupId, originId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+        originNames[groupId to originId] = name
+    }
+
     private suspend fun rememberGroupTitle(groupId: String) {
         val title = runCatching { groupContext.groupTitle(groupId) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
         groupTitles[groupId] = title
@@ -925,6 +943,7 @@ public class SwarmDriver(
         // A group's peers must be classified before anything about it is announced to them.
         if (knownGroups.add(event.groupId)) emitMembership(event.groupId, recheckInactive = false)
         rememberGroupTitle(event.groupId)
+        if (!event.isOrigin) rememberOriginName(event.groupId, event.originId)
         FlashLog.i("SWARM", "announce root=${event.root.hex.take(8)} group=${event.groupId} origin=${event.isOrigin} size=${event.totalSize}")
         eventChannel.send(event)
     }

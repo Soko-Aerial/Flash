@@ -2691,15 +2691,18 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     },
     speedBytesPerSec = speedBytesPerSec,
     etaSeconds = etaSeconds.takeIf { it > 0L },
-    errorMessage = errorMessage ?: if (state == DomainState.Cancelled) "Cancelled" else null,
+    errorMessage = com.transfer.flash.core.transfer.TransferFailureText.displayReason(errorMessage)
+        ?: if (state == DomainState.Cancelled) "Cancelled" else null,
     verified = state == DomainState.Completed,
     localPath = localPath ?: sourceUri,
-    retryable = state != DomainState.Cancelled && !viaHub,
+    // The one predicate lives on the model so the app, the desktop and the notifications agree.
+    retryable = canRetry,
     transportLabel = if (viaHub) com.transfer.flash.core.enterprise.files.HubFileText.VIA_HUB else null,
     waitReason = waitReason,
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,
     pieceBlocks = pieceBlocks,
+    isGroupFile = groupOrigin,
 )
 
 /** Desktop twin of `:app`'s `TransfersUiState.fromDomain` (mandatory boot flags, ERROR-034). */
