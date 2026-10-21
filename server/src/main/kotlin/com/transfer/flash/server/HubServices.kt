@@ -175,6 +175,7 @@ class HubServices private constructor(
 
     companion object {
         private const val HOUSEKEEPING_PERIOD_S = 60L
+        private const val DAY_MS = 86_400_000L
         private const val ROOT_FINGERPRINT_META = "root.fingerprint"
         private const val HIGHEST_DELEGATION_SERIAL_META = "delegation.highest-serial"
         private val log = LoggerFactory.getLogger(HubServices::class.java)
@@ -323,8 +324,11 @@ class HubServices private constructor(
                     delegations = delegations,
                     revocations = revocationService,
                     requireHttpsInvites = !config.allowInsecure,
+                    certValidityMs = config.deviceCertValidityDays * DAY_MS,
+                    renewEarlyWindowMs = config.renewEarlyDays?.let { it * DAY_MS },
+                    renewGraceMs = config.renewGraceDays?.let { it * DAY_MS },
                     onEnrolled = { event -> applyToDirectory(directory, event) },
-                )
+                ).also { service -> service.delegationLifetimeWarning(clock())?.let { log.warn(it) } }
                 installDroppedRevocationLists(File(dataDir, "revocations"), revocationService)
                 if (revocationService.isDelegationRevoked(cert.serial)) {
                     log.error("This hub's delegation (serial {}) was REVOKED by the organisation root: it will issue no certificate until a new delegation is installed.", cert.serial)

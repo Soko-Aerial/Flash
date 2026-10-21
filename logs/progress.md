@@ -18017,3 +18017,21 @@ Plan items 4-10.
 
 ### Next AI
 Item 4: `FLASH_DEVICE_CERT_VALIDITY_DAYS` (30 days default, bounds 1..365), derived renewal window.
+
+
+## 2026-10-21 - Server internals audit, step 4: device certificate lifetime (SRVHUB-15)
+
+### Worked on
+Plan item 4 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (owner decision 8.2, first half).
+
+### Changed
+- `ServerConfig.deviceCertValidityDays` (default 30, 1..365) plus optional renewal overrides; `EnrollmentService.certValidityMs`; renewal windows derived from the presented certificate's lifetime (`RenewalPolicy.earlyWindowFor` / `graceFor`); `delegationLifetimeWarning` logged at start; keytool usage text; protocol, security and deployment docs.
+
+### Verification
+`CertificateLifetimeTest` (8) green with `ServerConfigTest`, `RevocationAndEnrolmentTest`, `ChallengeResponseAuthTest`; mutation (leaf ignores the configured lifetime) failed 4 tests and was restored. NOT device-verified.
+
+### Remaining
+Plan items 5-10.
+
+### Next AI
+Item 5: registry-derived principal (DEV-01).

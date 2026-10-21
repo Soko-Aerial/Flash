@@ -55,6 +55,12 @@ public data class ServerConfig(
     val tlsKeystorePassword: String? = null,
     val hubName: String = DEFAULT_HUB_NAME,
     val deviceQuota: Int = DEFAULT_DEVICE_QUOTA,
+    /** How long a new device certificate lives, in days (`FLASH_DEVICE_CERT_VALIDITY_DAYS`, 1..365, default 30; ADR-222). */
+    val deviceCertValidityDays: Int = DEFAULT_DEVICE_CERT_VALIDITY_DAYS,
+    /** Renewal opens this many days before expiry; null derives it from the lifetime (`max(1 day, 10 %)`). */
+    val renewEarlyDays: Int? = null,
+    /** Renewal stays open this many days after expiry; null derives it from the lifetime (`max(3 days, 5 %)`). */
+    val renewGraceDays: Int? = null,
     val rootFingerprint: String? = null,
     /** Refuse the first delegation unless [rootFingerprint] is set: no trust on first use of whatever file appears (REV-16). */
     val requireRootPin: Boolean = false,
@@ -77,6 +83,11 @@ public data class ServerConfig(
         require(challengeTimeoutMs > 0) { "challengeTimeoutMs must be positive, was: $challengeTimeoutMs" }
         require(mailboxTtlDays > 0) { "mailboxTtlDays must be positive, was: $mailboxTtlDays" }
         require(deviceQuota > 0) { "deviceQuota must be positive, was: $deviceQuota" }
+        require(deviceCertValidityDays in MIN_DEVICE_CERT_VALIDITY_DAYS..MAX_DEVICE_CERT_VALIDITY_DAYS) {
+            "deviceCertValidityDays must be between $MIN_DEVICE_CERT_VALIDITY_DAYS and $MAX_DEVICE_CERT_VALIDITY_DAYS, was: $deviceCertValidityDays"
+        }
+        require(renewEarlyDays == null || renewEarlyDays in 1..MAX_DEVICE_CERT_VALIDITY_DAYS) { "renewEarlyDays must be between 1 and $MAX_DEVICE_CERT_VALIDITY_DAYS, was: $renewEarlyDays" }
+        require(renewGraceDays == null || renewGraceDays in 1..MAX_DEVICE_CERT_VALIDITY_DAYS) { "renewGraceDays must be between 1 and $MAX_DEVICE_CERT_VALIDITY_DAYS, was: $renewGraceDays" }
         require(externalUrl.isNotBlank()) { "externalUrl must not be blank" }
         val scheme = runCatching { URI(externalUrl).scheme?.lowercase() }.getOrNull()
         require(scheme == "https" || scheme == "http") { "externalUrl must be an http(s) URL, was: '$externalUrl'" }
@@ -132,6 +143,9 @@ public data class ServerConfig(
         public const val DEFAULT_MAILBOX_TTL_DAYS: Int = 7
         public const val DEFAULT_HUB_NAME: String = "Flash Hub"
         public const val DEFAULT_DEVICE_QUOTA: Int = 1000
+        public const val DEFAULT_DEVICE_CERT_VALIDITY_DAYS: Int = 30
+        public const val MIN_DEVICE_CERT_VALIDITY_DAYS: Int = 1
+        public const val MAX_DEVICE_CERT_VALIDITY_DAYS: Int = 365
 
         public const val TLS_PROXY: String = "proxy"
         public const val TLS_SELF: String = "self"
@@ -203,6 +217,16 @@ public data class ServerConfig(
                 tlsKeystorePassword = text("tls-keystore-password", "tlsKeystorePassword", envName = "FLASH_TLS_KEYSTORE_PASSWORD"),
                 hubName = text("hub-name", "hubName", envName = "FLASH_HUB_NAME") ?: DEFAULT_HUB_NAME,
                 deviceQuota = int("device-quota", "deviceQuota", envName = "FLASH_DEVICE_QUOTA", default = DEFAULT_DEVICE_QUOTA),
+                deviceCertValidityDays = int(
+                    "device-cert-validity-days", "deviceCertValidityDays",
+                    envName = "FLASH_DEVICE_CERT_VALIDITY_DAYS", default = DEFAULT_DEVICE_CERT_VALIDITY_DAYS,
+                ),
+                renewEarlyDays = text("renew-early-days", "renewEarlyDays", envName = "FLASH_RENEW_EARLY_DAYS")?.let {
+                    it.trim().toIntOrNull() ?: throw IllegalArgumentException("FLASH_RENEW_EARLY_DAYS must be a whole number, was: '$it'")
+                },
+                renewGraceDays = text("renew-grace-days", "renewGraceDays", envName = "FLASH_RENEW_GRACE_DAYS")?.let {
+                    it.trim().toIntOrNull() ?: throw IllegalArgumentException("FLASH_RENEW_GRACE_DAYS must be a whole number, was: '$it'")
+                },
                 rootFingerprint = text("root-fingerprint", "rootFingerprint", envName = "FLASH_ROOT_FINGERPRINT"),
                 requireRootPin = text("require-root-pin", "requireRootPin", envName = "FLASH_REQUIRE_ROOT_PIN")?.equals("true", ignoreCase = true) == true,
             )

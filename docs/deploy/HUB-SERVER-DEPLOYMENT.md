@@ -216,6 +216,8 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_MANAGEMENT_TOKEN` | `--management-token` | unset | Bearer token (≥16 chars) for `/health/detail` and `/metrics`. Without it only a direct loopback caller (no proxy headers) may read them |
 | `FLASH_HUB_NAME` | `--hub-name` | `Flash Hub` | The name devices show in Settings |
 | `FLASH_DEVICE_QUOTA` | `--device-quota` | `1000` | Maximum enrolled devices |
+| `FLASH_DEVICE_CERT_VALIDITY_DAYS` | `--device-cert-validity-days` | `30` | How long a device certificate lives (1..365). A device renews inside a window derived from it (3 days before / 3 days after for 30 days). The delegation (`keytool delegate --valid-days`, default 90) must outlive lifetime + grace; the hub logs a warning at start when it does not |
+| `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | `--renew-early-days`, `--renew-grace-days` | derived | Optional fixed renewal window before and after expiry (1..365 days) |
 | `FLASH_MAILBOX_TTL_DAYS` | `--mailbox-ttl-days` | `7` | How long the hub holds mail for an absent device |
 | `FLASH_CHALLENGE_TIMEOUT_MS` | `--challenge-timeout-ms` | `60000` | Auth challenge validity |
 

@@ -921,7 +921,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 1 | **Sync transport budget**: `MAX_DIRECTORY_SYNC_BODY_BYTES` (2 MiB) for `fetchSync` only, server byte-budget paging, client `limit` 200, `MAX_ROSTERS_PER_SYNC` 64, `rostersTruncated` | DIR-04 (High), DIR-05, DOC-01 D-1 | SRVHUB-13, 14 **DONE 2026-10-21** |
 | 2 | **Announcement writes in one transaction**: `createAnnouncement`, `updateAnnouncement`, `setPinned`, `clientRequestId` check under `withTransaction`, `nextSeq` returning its own UPDATE's value | ANN-01 | SRVHUB-03 **DONE 2026-10-21** |
 | 3 | **Announcement expiry tri-state** + console field on create and edit (do it with #2 — same DTO, same store file) | ANN-02, §8.5 | SRVHUB-05, 16 **DONE 2026-10-21** |
-| 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 |
+| 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 **DONE 2026-10-21** |
 | 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 |
 | 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 |
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 |
@@ -958,3 +958,12 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - Behaviour change to know: the device composer (`FlashHubScreen`) never sets an expiry, so a device edit used to wipe an expiry set from the console and now keeps it. `FakeHubAnnouncementsApi` follows the same rule.
 - Tests: `AnnouncementRoutesTest.anEditKeepsTheExpiryUnlessItIsClearedOnPurpose` (keep, set, both -> 400, clear; **mutation:** `else -> null` in the store makes it fail, restored); `announcements.test.mjs` +4 (82 console tests green).
 - Not done: a server-side "expiry must be in the future" check (not in the decision; the console checks it, a device cannot set one).
+
+### Step 4 - Certificate lifetime 30 days, adjustable (section 8.2, first half; SRVHUB-15): DONE, unit tested, NOT device-verified
+
+- `ServerConfig.deviceCertValidityDays` (`FLASH_DEVICE_CERT_VALIDITY_DAYS` / `--device-cert-validity-days`, default 30, bounds 1..365) and optional `renewEarlyDays` / `renewGraceDays` overrides (`FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS`); a malformed value names its setting.
+- `EnrollmentService(certValidityMs = DeviceCert.DEFAULT_VALIDITY_MS, renewEarlyWindowMs: Long? = null, renewGraceMs: Long? = null)`: a new leaf is `min(now + certValidityMs, delegation.validTo)` (SEC-18 clamp kept); the renewal window is derived from the PRESENTED certificate's own lifetime via `RenewalPolicy.earlyWindowFor` (`max(1 d, 10 %)`) and `graceFor` (`max(3 d, 5 %)`), so certificates issued under the old 7-day rule keep 1 d / 3 d and a 30-day one gets 3 d / 3 d. Overrides win when set.
+- `EnrollmentService.delegationLifetimeWarning(nowMs)` is logged at start when the delegation expires sooner than lifetime + grace (it names the smallest sufficient `--valid-days`). Keytool usage text states the rule.
+- A client needs no change: it starts renewing 24 h before `validTo` (`HubContract.RENEW_EARLY_WINDOW_MS`), inside every derived window (`aClientThatOnlyKnowsTheDefaultWindowsStillRenewsAThirtyDayCertificate`). Certificates already issued keep their 7 days until they renew.
+- Tests: `CertificateLifetimeTest` (8). **Mutation:** `signLeaf` using `DEFAULT_VALIDITY_MS` again failed 4 of them; restored. A fresh certificate has `validFrom = now - 10 s` (ISSUE_BACKDATE_MS), so the lifetime is asserted on `validTo`.
+- Docs: `docs/protocol.md` (leaf rule, env table), `docs/security.md`, `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
