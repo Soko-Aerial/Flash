@@ -9,8 +9,8 @@ A new AI: read this file first when resuming. Update the **Status** of an item t
 
 | Stream | Checkout | Branch | Commit policy |
 |---|---|---|---|
-| **C** cancel / transfer items | `E:/FlashWork/A-cancel` | `agent/A-cancel` (unpushed, not merged into `dev`) | focused commits on that branch |
-| **H** chat / chat list / Hub items | `C:\Users\KaliOxygen\Downloads\Flash` | `dev`, **uncommitted**, mixed with the other agent's Hub redesign | do NOT commit; the owner/other agent commits |
+| **C** cancel / transfer items | `E:/FlashWork/A-cancel` | `agent/A-cancel` — **MERGED into `dev` 2026-10-21** (`4a6c8dc7`); the worktree can be removed | (was: focused commits on that branch) |
+| **H** chat / chat list / Hub items | `C:\Users\KaliOxygen\Downloads\Flash` | `dev` — **committed 2026-10-21** (`1d604a89`, together with the Hub redesign files) | owner asked for the commit |
 
 The two checkouts overlap in 4 files (`RealFlashChatRepository.kt`, `TEST-BACKLOG.md`, `handoff.md`, `progress.md`), so `agent/A-cancel` cannot be merged
 into the dirty `dev`. All Gradle goes through `tools\flash-gradle.cmd` (AGENTS §36). Do not touch the phone.
@@ -89,3 +89,26 @@ _(each finished item appends one line here: date, item, what changed, tests run)
 - 2026-10-21 C-12/C-13: PublishRow.cancelReason, receivers' Cancelled row says "Cancelled by/Deleted by <name>"; `FlashCancelCopy` dialog wording; desktop transfer mapper aligned. `:core:swarm` SwarmCancelLifecycleTest, compiles of engine/ui/desktop/app green. Commit 57af1ad8 on agent/A-cancel.
 - 2026-10-21 H-16..H-25: Hub stays the list pane when a chat opens from it in two-pane (`FlashNavigationMath.conversationOpenedFromHub`, both hosts; Back/Esc return to the Hub; Android segment kept via prefs, the Hub's search selection/scroll resets). Multi-select works on attachments; undownloaded voice note downloads; swipe badge animates in graphicsLayer; same search hit twice re-jumps (targetNonce); actions sheet marked OBSOLETE; ultra-low bubble shape; shared Audio Download button; piece map text view for minimal chrome. `:ui:chat:jvmTest` (692 tests), `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green. Not committed (stream H).
 - 2026-10-21 H-26 verdicts: (1) read-marking timer: by design, a re-arm only delays marking by <= 1 s, NOT a defect. (2) desktop tipSeen reset: NOT real, `tipSeen` re-reads the persisted `DesktopHubUiPrefs`. (3) optimistic-reaction race: REAL, two quick taps both read "not reacted"; `toggleReaction` now read-modify-writes under `reactionToggleLock`. (4) search counter "12 / 2": REAL (stale index after the hits shrink); `counterLabel`/`stepIndex` clamp, test added. (5) rejected send clearing the draft: composer already caps at MAX_MESSAGE_TEXT_LENGTH, the removed-from-group case swaps the composer for a notice; no repro by reading, left as is.
+
+## Recommendations for later (written 2026-10-21 at the owner's request; nothing here is scheduled)
+
+Each line: the problem, what I recommend, and what would make me change my mind. Pick these up after the device checks
+(`CNCL-*`, `CHATFIX-*`, `HUBFIX-*`) tell us what is real.
+
+| ID | Problem / state | Recommendation for later | Revisit when |
+|---|---|---|---|
+| C-01 | dataSync timeout *pauses* a 1:1 transfer (kept). C-02 now resumes it when the service returns. | Keep pause + auto-resume. Run `CNCL-02`/`CNCL-15` first: if Android does not restart the service on its own, add a "Resume" action to the "Paused by Android" notification. | `CNCL-15` shows the row stays paused for hours |
+| C-03 | A cancelled send is final; the bubble offers no retry. | Keep. If people re-send often, add an explicit "Send again" that makes a **new** transfer id, never revive the cancelled one (that was B-01). | owner reports confusion about "how do I send it again" |
+| C-04 | No Cancel in a group-file origin's notification (cancelling there would delete it for everyone). | Keep. If wanted, add "Stop sharing" with a confirm step, only from the bubble. | owner asks for it |
+| H-15 | Hub segment underline may be 8 dp off. | Device check `HUBFIX-09` first. If off, measure with the label's own `onGloballyPositioned` rect instead of `positionInParent`. | `HUBFIX-09` fails |
+| H-24 | Caption + attachment go out as two messages. | Keep. Sending them as one message needs a wire/storage change (caption on the attachment message) and an ADR; not worth it until groups of images with captions are a real complaint. | product asks for it |
+| B-17 | Not reproducible; worst case an object lingers on the hub up to 7 days. | Optional belt and braces: when `markUploaded` returns 0, send one idempotent hub DELETE. About 5 lines in `HubFileBinding.upload`, plus a test with a fake server. | the hub's storage stats show orphaned files |
+| B-18 | Cancelling a vanished row only logs a warning. | Nothing more to do. If it shows up in logs often, find who calls `cancelTransfer` with a stale id. | log line `cancel of unknown transfer` is frequent |
+| C-09 | **Desktop does not restore transfers** (`store = null`; D5 pending). | After the owner answers D5: add a JVM `TransferStore` adapter over the existing Room JVM database (the shared `FlashSchemaSteps` step 20 already has the columns), pass it in `DesktopEngine`, then decide whether desktop also resumes across restarts (it would). Add a `CNCL-19` desktop variant. | owner decides D5 |
+| C-11 | The device that **refuses** a file shows no Failed row. | Extend `ReceiveEvent.Rejected` with name/size/peer so the router can create a Failed row ("You could not receive X: not enough space"). Needs a small event change in `FlashInboundRouter` + one test per refusal reason. | owner wants the receiver to see what it refused |
+| C-09 | Room schema is now 20 on `dev`. Any other branch still holding its own step 20 needs renumbering. | Before merging another branch run `git diff dev -- core/persistence` and renumber (`FlashSchemaSteps`, `FlashMigrations`, `FlashMigrationsChainTest`, regenerate `schemas/*/N.json`). `agent/search-upgrades` adds no schema step (ADR-218), so it is safe. ADR numbers 218 (search) and 219-221 (cancel) are taken. | before each merge |
+| Tests | Timing flakes under load, pass alone: `ExternalSourcesAndInterceptorTest` (two tests), `RealFlashTransferRepositoryTest` "B-01 resume refuses a cancelled or declined row...". | Replace the `Thread.sleep`/real-clock waits with an injected `TimeSource` and a channel the test awaits (the `TransferRestoreTest` `await` helper is a start). Do not raise timeouts. | the flakes fail a CI run |
+| H-19 | Swipe-to-reply recomposition fixed by reading the code only. | Measure once on a mid-range phone (frame times with a long image thread). Only add more work if the numbers are bad. | `CHATFIX-12` stutters |
+| H-26 | Optimistic reaction race and search counter fixed by code; the read-marking timer and desktop `tipSeen` were judged not defects. | If `CHATFIX-15`/`16` pass, nothing more. If read-marking is reported late, instrument it with a probe before changing the 1 s re-arm. | a device test fails |
+| D-ops | Device order if time is short (item 29). | `CNCL-01`, `CNCL-02`, `CNCL-04`, `CNCL-19`, `CHATFIX-01`, `CHATFIX-02`, `HUBFIX-01`, `HUBFIX-03`. | — |
+| Cleanup | The `E:/FlashWork/A-cancel` worktree and `agent/A-cancel` branch are merged. | Remove the worktree (`git worktree remove E:/FlashWork/A-cancel`) and keep the branch until the owner confirms the device checks. | after `CNCL-*` pass |
