@@ -92,9 +92,12 @@ internal class SwitchingTransferRepository : FlashTransferRepository {
     ) = target.current.sendFile(targetDevice, fileUri, displayName, fileSize, transferId, wireFileId)
 
     override fun clearFinishedHistory() = target.current.clearFinishedHistory()
+    override fun dismissTransfer(transferId: FlashTransferId) = target.current.dismissTransfer(transferId)
+    override fun clearFailedHistory() = target.current.clearFailedHistory()
     override suspend fun pauseTransfer(transferId: FlashTransferId) = target.current.pauseTransfer(transferId)
     override suspend fun pauseForSystem(transferId: FlashTransferId, reason: String) =
         target.current.pauseForSystem(transferId, reason)
+    override suspend fun resumeSystemPaused() = target.current.resumeSystemPaused()
     override suspend fun resumeTransfer(transferId: FlashTransferId) = target.current.resumeTransfer(transferId)
     override suspend fun cancelTransfer(transferId: FlashTransferId) = target.current.cancelTransfer(transferId)
     override fun isExternalRow(transferId: String) = target.current.isExternalRow(transferId)

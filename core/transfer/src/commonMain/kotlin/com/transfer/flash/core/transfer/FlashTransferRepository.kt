@@ -58,6 +58,16 @@ public interface FlashTransferRepository {
      */
     public fun clearFinishedHistory() {}
 
+    /**
+     * Hides one finished row ([FlashTransferState.Completed], [FlashTransferState.Failed] or [FlashTransferState.Cancelled])
+     * from [activeTransfers] (open-items tracker C-10). Only a row that is still finished stays hidden, so a Failed row that
+     * is retried shows again. Nothing on disk or on the peer is touched. Default no-op.
+     */
+    public fun dismissTransfer(transferId: FlashTransferId) {}
+
+    /** [dismissTransfer] for every Failed and Cancelled row: the Transfers tab's "Clear failed". Default no-op. */
+    public fun clearFailedHistory() {}
+
     public suspend fun pauseTransfer(transferId: FlashTransferId): FlashResult<Unit>
 
     /**
@@ -67,6 +77,13 @@ public interface FlashTransferRepository {
      */
     public suspend fun pauseForSystem(transferId: FlashTransferId, reason: String): FlashResult<Unit> =
         pauseTransfer(transferId)
+
+    /**
+     * Resumes every 1:1 row that [pauseForSystem] paused (open-items C-02): called when the host can run transfers again
+     * (the Android foreground service is back). A row the person paused is never touched. Default does nothing.
+     * @return how many rows were resumed.
+     */
+    public suspend fun resumeSystemPaused(): Int = 0
 
     public suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit>
     public suspend fun cancelTransfer(transferId: FlashTransferId): FlashResult<Unit>

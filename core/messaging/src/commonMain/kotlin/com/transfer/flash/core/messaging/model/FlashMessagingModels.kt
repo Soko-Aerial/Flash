@@ -56,6 +56,9 @@ public enum class FlashFileTransferStatus {
     Paused,
     Downloaded,
     Failed,
+
+    /** The user (or the peer) stopped the transfer on purpose. Not a fault, and never retried by a tap. */
+    Cancelled,
 }
 
 @Immutable

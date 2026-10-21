@@ -57,5 +57,8 @@ public class MessagingSwarmGroupContext(
 
     override suspend fun groupTitle(groupId: String): String? = groupTitleLookup(groupId)
 
+    override suspend fun memberName(groupId: String, memberId: String): String? =
+        groupMemberDao()?.member(groupId, memberId)?.displayName?.takeIf { it.isNotBlank() }
+
     override val membershipChanges: Flow<String> = groupGate.changes
 }

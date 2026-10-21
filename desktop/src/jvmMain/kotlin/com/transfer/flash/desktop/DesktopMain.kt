@@ -43,6 +43,7 @@ import java.awt.SystemTray
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.File
+import kotlinx.coroutines.launch
 import java.io.FileWriter
 import java.io.PrintWriter
 
@@ -376,6 +377,41 @@ public fun main(args: Array<String> = emptyArray()) {
             }
         }
     }
+    }
+
+    // C-06: Accept / Decline (and Retry) on a card while Flash is not in front; the OS banner cannot carry buttons.
+    run {
+        val toastReady by engine.ready.collectAsState()
+        val toastRepo = if (toastReady) engine.transfers else null
+        val noTransfers = remember { kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.transfer.flash.core.transfer.model.FlashTransfer>()) }
+        val toastTransfers by (toastRepo?.activeTransfers ?: noTransfers).collectAsState()
+        val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
+        val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
+        FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
+            FlashTheme(
+                darkTheme = toastDark,
+                dynamicAccent = desktopSettings.dynamicAccent,
+                hapticsEnabled = false,
+                minimalChrome = toastPerformance.minimalChrome,
+                motion = rememberFlashMotion(toastPerformance.reduceMotion),
+            ) {
+                DesktopTransferToastWindow(
+                    transfers = toastTransfers,
+                    appInForeground = isWindowVisible && isWindowFocused && !windowState.isMinimized,
+                    onAction = { action, id ->
+                        val repo = engine.transfers ?: return@DesktopTransferToastWindow
+                        engine.scope.launch {
+                            when (action) {
+                                ToastAction.Accept -> repo.acceptIncoming(id)
+                                ToastAction.Decline -> repo.declineIncoming(id)
+                                ToastAction.Retry -> repo.resumeTransfer(id)
+                                ToastAction.Dismiss -> Unit
+                            }
+                        }
+                    },
+                )
+            }
+        }
     }
 
     // Teardown, in a `DisposableEffect` and NOT as a bare statement — this one line is why pairing

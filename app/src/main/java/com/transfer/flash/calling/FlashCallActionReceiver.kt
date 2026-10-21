@@ -26,6 +26,8 @@ class FlashCallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val calling = DiscoveryEngineHolder.currentCalling()
         if (calling == null) {
+            // The buttons on this notification can do nothing now, so the notification must not stay (audit B-09).
+            runCatching { androidx.core.app.NotificationManagerCompat.from(context).cancel(FlashCallService.NOTIFICATION_ID) }
             Log.w(TAG, "No call engine — ignoring action ${intent.action}")
             return
         }

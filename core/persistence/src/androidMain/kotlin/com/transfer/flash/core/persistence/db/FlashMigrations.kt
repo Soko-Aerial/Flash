@@ -70,6 +70,9 @@ public object FlashMigrations {
     /** v18 -> v19: a hub file can belong to a group (ADR-217). */
     public val MIGRATION_18_19: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_18_19)
 
+    /** v19 -> v20: a 1:1 transfer row keeps its identity (C-09). */
+    public val MIGRATION_19_20: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_19_20)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

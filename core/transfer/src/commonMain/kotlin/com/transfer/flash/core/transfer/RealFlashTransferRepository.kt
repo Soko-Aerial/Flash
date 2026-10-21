@@ -28,6 +28,7 @@ import com.transfer.flash.core.transfer.multistream.MultiStreamResult
 import com.transfer.flash.core.transfer.multistream.RollingRateMeter
 import com.transfer.flash.core.transfer.multistream.StreamChannelFactory
 import com.transfer.flash.core.transfer.store.TransferStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -86,6 +87,12 @@ public class RealFlashTransferRepository(
      * Null never blocks a transfer: an unknown amount is not a reason to refuse.
      */
     private val freeSpaceBytes: () -> Long? = { null },
+    /**
+     * How long a retried receive may sit at "Downloading" without a single new byte before it goes back to Failed with
+     * [TransferFailureText.SENDER_DID_NOT_RESUME] (C-08). A receiver cannot restart a sender that is gone, so without a
+     * bound the row would never say so.
+     */
+    private val retryReceiveWaitMs: Long = RETRY_RECEIVE_WAIT_MS,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -138,8 +145,13 @@ public class RealFlashTransferRepository(
         _activeTransfers.value = if (dismissed.isEmpty()) {
             merged
         } else {
-            // Only a still-completed row stays hidden: a row that left Completed (never expected) shows again.
-            merged.filterNot { it.state == FlashTransferState.Completed && it.id.value in dismissed }
+            // Only a still-finished row stays hidden: a Failed row that is retried (or any row that left its finished state)
+            // shows again, and its id is forgotten below so a later failure is not hidden by an old dismissal.
+            merged.filterNot { it.state.isFinished() && it.id.value in dismissed }
+        }
+        if (dismissed.isNotEmpty()) {
+            val revived = merged.filter { !it.state.isFinished() && it.id.value in dismissed }.mapTo(HashSet()) { it.id.value }
+            if (revived.isNotEmpty()) dismissedFinishedIds.update { it - revived }
         }
     }
 
@@ -147,8 +159,28 @@ public class RealFlashTransferRepository(
         val finished = _activeTransfers.value.filter { it.state == FlashTransferState.Completed }
         if (finished.isEmpty()) return
         dismissedFinishedIds.update { it + finished.map { row -> row.id.value } }
+        persistDismissed(finished.map { row -> row.id.value })
         updateMergedTransfers()
     }
+
+    override fun dismissTransfer(transferId: FlashTransferId) {
+        val row = _activeTransfers.value.firstOrNull { it.id == transferId } ?: return
+        if (!row.state.isFinished()) return
+        dismissedFinishedIds.update { it + transferId.value }
+        persistDismissed(listOf(transferId.value))
+        updateMergedTransfers()
+    }
+
+    override fun clearFailedHistory() {
+        val rows = _activeTransfers.value.filter { it.state == FlashTransferState.Failed || it.state == FlashTransferState.Cancelled }
+        if (rows.isEmpty()) return
+        dismissedFinishedIds.update { it + rows.map { row -> row.id.value } }
+        persistDismissed(rows.map { row -> row.id.value })
+        updateMergedTransfers()
+    }
+
+    private fun FlashTransferState.isFinished(): Boolean =
+        this == FlashTransferState.Completed || this == FlashTransferState.Failed || this == FlashTransferState.Cancelled
 
     private fun updateInternalTransfers(transform: (List<FlashTransfer>) -> List<FlashTransfer>) {
         _internalTransfers.update(transform)
@@ -214,6 +246,9 @@ public class RealFlashTransferRepository(
     public data class OutgoingControl(val transferId: String, val peerDeviceId: String?, val action: String)
 
     public companion object {
+        /** How long a finished or interrupted row is kept for the Transfers list after its last change (C-05). */
+        public const val HISTORY_RETENTION_MS: Long = 30L * 24 * 60 * 60 * 1000
+
         /** Shown on the receiving side when the assembled file does not match the digest the sender offered (ADR-068). */
         public const val INTEGRITY_FAILED_MESSAGE: String =
             "The file arrived damaged and was discarded. Try again to receive it afresh."
@@ -224,6 +259,8 @@ public class RealFlashTransferRepository(
 
         public const val ACTION_PAUSE: String = "pause"
         public const val ACTION_RESUME: String = "resume"
+        /** Stored on a 1:1 row paused because the Android foreground-service timeout stopped the service. */
+        public const val REASON_PAUSED_BY_SYSTEM: String = "paused by system"
         public const val ACTION_CANCEL: String = "cancel"
 
         /**
@@ -236,6 +273,9 @@ public class RealFlashTransferRepository(
 
         /** The source [attachExternalRows] uses when the caller names none (the swarm binding before ADR-216). */
         public const val DEFAULT_EXTERNAL_SOURCE: String = "external"
+
+        /** See the `retryReceiveWaitMs` constructor parameter. */
+        public const val RETRY_RECEIVE_WAIT_MS: Long = 30_000L
     }
 
     /**
@@ -737,7 +777,25 @@ public class RealFlashTransferRepository(
             external.pauseForSystem(transferId.value, reason)
             return FlashResult.Success(Unit)
         }
-        return pauseTransfer(transferId)
+        // A 1:1 transfer keeps its done-set while paused, but nothing resumes it by itself when the service
+        // comes back, so the row says so instead of promising "continues automatically" (audit B-02).
+        val result = pauseTransfer(transferId)
+        if (result is FlashResult.Success) {
+            updateTransferState(transferId.value) { it.copy(errorMessage = REASON_PAUSED_BY_SYSTEM) }
+        }
+        return result
+    }
+
+    override suspend fun resumeSystemPaused(): Int {
+        val rows = _activeTransfers.value.filter {
+            it.state == FlashTransferState.Paused && it.errorMessage == REASON_PAUSED_BY_SYSTEM && externalControlFor(it.id.value) == null
+        }
+        var resumed = 0
+        for (row in rows) {
+            if (resumeTransfer(row.id) is FlashResult.Success) resumed++
+        }
+        if (resumed > 0) runCatching { FlashLog.i("TRANSFER", "auto-resumed $resumed transfer(s) paused by the system") }
+        return resumed
     }
 
     override suspend fun resumeTransfer(transferId: FlashTransferId): FlashResult<Unit> {
@@ -752,6 +810,13 @@ public class RealFlashTransferRepository(
         if (transfer.state == FlashTransferState.Completed) {
             return FlashResult.Success(Unit)
         }
+        // Cancelled is a decision, not a fault (audit 2026-10-20 B-01): a cancelled or declined send
+        // must never be relaunched by a tap on its bubble or a stale Retry, and a cancelled receive
+        // must not re-request bytes the user stopped. Sending again is a new send from the composer.
+        if (transfer.state == FlashTransferState.Cancelled) {
+            runCatching { FlashLog.i("TRANSFER", "resumeTransfer ignored id=${transferId.value} state=Cancelled") }
+            return FlashResult.Failure(com.transfer.flash.core.common.result.FlashError.Cancelled("transfer was cancelled"))
+        }
 
         val dispatcher = registryLock.withLock { runningDispatchers[transferId.value] }
         // isActive, not mere presence: executeSend's finally only retires its OWN dispatcher/job
@@ -765,7 +830,7 @@ public class RealFlashTransferRepository(
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
 
-        // Outbound with no live worker — a Failed, Cancelled, or stalled transfer being retried, or a resume
+        // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
         // issued after executeSend already retired its registrations. Relaunch a fresh send job!
         if (transfer.direction == FlashTransferDirection.Sending && !liveSender) {
             relaunchSend(transfer, notifyPeer = true)
@@ -776,8 +841,7 @@ public class RealFlashTransferRepository(
         // state: bailing out on a state mismatch left the wire paused with no way back.
         if (!wirePaused &&
             transfer.state != FlashTransferState.Paused &&
-            transfer.state != FlashTransferState.Failed &&
-            transfer.state != FlashTransferState.Cancelled
+            transfer.state != FlashTransferState.Failed
         ) {
             return FlashResult.Success(Unit)
         }
@@ -798,6 +862,7 @@ public class RealFlashTransferRepository(
                 emitIncoming(transferId.value, ACTION_RESUME)
             }
             emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_RESUME)
+            if (transfer.state == FlashTransferState.Failed) watchRetriedReceive(transferId.value, transfer.bytesDone)
             return FlashResult.Success(Unit)
         }
 
@@ -885,8 +950,12 @@ public class RealFlashTransferRepository(
         dispatcher?.setPaused(false) // unpause so cancellation lands at the next suspension point
         job?.cancel()
 
+        if (transfer == null) {
+            runCatching { FlashLog.w("TRANSFER", "cancelTransfer on unknown row id=${transferId.value}: torn down locally, peer not told") }
+        }
+        // errorMessage is cleared: a stale "paused by receiver" must not outlive the cancel (B-12).
         updateTransferState(transferId.value) {
-            it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L)
+            it.copy(state = FlashTransferState.Cancelled, speedBytesPerSec = 0L, etaSeconds = 0L, errorMessage = null)
         }
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
         forgetChunks(transferId.value, null)
@@ -905,9 +974,24 @@ public class RealFlashTransferRepository(
      * Applies a `FLASH_XFER` control frame received from the counterpart peer (ADR-018).
      * Keeps BOTH sides' state and transmission behavior in lockstep.
      */
-    public fun onRemoteTransferControl(transferId: String, action: String) {
-        runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId") }
+    public fun onRemoteTransferControl(transferId: String, action: String, reason: String? = null) {
+        runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId${reason?.let { " reason=$it" } ?: ""}") }
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return
+        // A late frame must not rewrite a finished transfer (audit B-03): PAUSE never applies once the
+        // row is finished or failed, CANCEL never to a finished one, and RESUME only to a row that is
+        // not Completed/Cancelled (a Failed send IS resumed by the receiver's Retry).
+        val terminal = when (action) {
+            ACTION_PAUSE -> transfer.state in setOf(
+                FlashTransferState.Completed, FlashTransferState.Cancelled, FlashTransferState.Failed,
+            )
+            ACTION_CANCEL, ACTION_RESUME -> transfer.state == FlashTransferState.Completed ||
+                transfer.state == FlashTransferState.Cancelled
+            else -> false
+        }
+        if (terminal) {
+            runCatching { FlashLog.i("TRANSFER", "remote control ignored action=$action transferId=$transferId state=${transfer.state}") }
+            return
+        }
         when (action) {
             ACTION_PAUSE -> when (transfer.direction) {
                 FlashTransferDirection.Sending -> {
@@ -982,15 +1066,19 @@ public class RealFlashTransferRepository(
                     // poll loop, and leaving the flag set risks re-parking before teardown.
                     registryLock.withLock { runningDispatchers.remove(transferId) }?.setPaused(false)
                     registryLock.withLock { runningJobs.remove(transferId) }?.cancel()
+                    // C-11: a cancel that names a refusal reason is the receiver being unable to take the file, not the
+                    // person changing their mind, so the row fails with the receiver's reason and can be retried.
+                    val refusal = TransferFailureText.refusalSentence(reason)
+                    val endState = if (refusal != null) FlashTransferState.Failed else FlashTransferState.Cancelled
                     updateTransferState(transferId) {
                         it.copy(
-                            state = FlashTransferState.Cancelled,
+                            state = endState,
                             speedBytesPerSec = 0L,
                             etaSeconds = 0L,
-                            errorMessage = "cancelled by receiver",
+                            errorMessage = refusal ?: "cancelled by receiver",
                         )
                     }
-                    forgetChunks(transferId, FlashTransferState.Cancelled)
+                    forgetChunks(transferId, endState)
                 }
                 FlashTransferDirection.Receiving -> {
                     // Host tears down sink + pipeline session on this event.
@@ -1436,9 +1524,136 @@ public class RealFlashTransferRepository(
         }
     }
 
+    /**
+     * C-08: after Retry on a Failed receive the row shows "Downloading", but the receiver only asked the sender to
+     * continue; a sender that is gone or already finished never will. If no new byte arrived within
+     * [retryReceiveWaitMs] the row goes back to Failed with a sentence that says what to do.
+     */
+    private fun watchRetriedReceive(transferId: String, bytesAtRetry: Long) {
+        repositoryScope.launch {
+            delay(retryReceiveWaitMs)
+            updateTransferState(transferId) { row ->
+                if (row.direction == FlashTransferDirection.Receiving &&
+                    row.state == FlashTransferState.Transferring &&
+                    row.bytesDone <= bytesAtRetry
+                ) {
+                    row.copy(state = FlashTransferState.Failed, errorMessage = TransferFailureText.SENDER_DID_NOT_RESUME)
+                } else {
+                    row
+                }
+            }
+        }
+    }
+
     private fun updateTransferState(transferId: String, transform: (FlashTransfer) -> FlashTransfer) {
         updateInternalTransfers { list ->
             list.map { if (it.id.value == transferId) transform(it) else it }
         }
+    }
+
+    // ---- C-09 / C-05: a transfer's identity survives the process -------------------------------------------------
+
+    /** What was last written for a row; a row is written again only when one of these changes (not on every progress tick). */
+    private data class IdentitySignature(
+        val state: FlashTransferState,
+        val errorMessage: String?,
+        val localPath: String?,
+        val bytesTotal: Long,
+    )
+
+    /** Only the identity-persistence coroutine touches this. */
+    private val persistedIdentity = HashMap<String, IdentitySignature>()
+
+    private fun FlashTransfer.identitySignature() = IdentitySignature(state, errorMessage, localPath, bytesTotal)
+
+    private fun persistDismissed(ids: List<String>) {
+        val activeStore = store ?: return
+        if (ids.isEmpty()) return
+        repositoryScope.launch { runCatching { activeStore.dismissStored(ids) } }
+    }
+
+    /**
+     * Brings the stored rows back into the list once at start (Failed, Cancelled and Paused rows as they were; a row that
+     * was still running when the process died comes back Failed with a sentence, never resumed by itself), then keeps the
+     * store current as rows change state. Rows the person dismissed, and rows untouched for [HISTORY_RETENTION_MS], are not
+     * restored (C-05). Without a store nothing is restored and nothing is written.
+     */
+    private fun startIdentityPersistence() {
+        val activeStore = store ?: return
+        repositoryScope.launch {
+            try {
+                restoreStoredTransfers(activeStore)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                runCatching { FlashLog.w("TRANSFER", "restoring stored transfers failed: ${t::class.simpleName}") }
+            }
+            _internalTransfers.collect { rows ->
+                for (row in rows) {
+                    val signature = row.identitySignature()
+                    if (persistedIdentity[row.id.value] == signature) continue
+                    persistedIdentity[row.id.value] = signature
+                    runCatching { activeStore.saveIdentity(row.toStored()) }
+                }
+            }
+        }
+    }
+
+    private fun FlashTransfer.toStored() = TransferStore.StoredTransfer(
+        transferId = id.value,
+        peerDeviceId = peerDeviceId,
+        peerName = peerName,
+        fileName = fileName,
+        direction = direction.name,
+        totalBytes = bytesTotal,
+        bytesDone = bytesDone,
+        state = state.name,
+        errorMessage = errorMessage,
+        sourceUri = sourceUri,
+        wireFileId = wireFileId,
+        localPath = localPath,
+        updatedAtMs = SystemTimeSource.nowMs(),
+    )
+
+    private suspend fun restoreStoredTransfers(activeStore: TransferStore) {
+        val since = SystemTimeSource.nowMs() - HISTORY_RETENTION_MS
+        activeStore.deleteStoredBefore(since)
+        val restored = activeStore.restorableTransfers(since).mapNotNull { stored ->
+            val state = FlashTransferState.entries.firstOrNull { it.name == stored.state } ?: return@mapNotNull null
+            val direction = FlashTransferDirection.entries.firstOrNull { it.name == stored.direction } ?: return@mapNotNull null
+            // A finished receive is in the chat; an offer nobody answered has no live session to answer on.
+            if (state == FlashTransferState.Completed || state == FlashTransferState.Offered) return@mapNotNull null
+            val interrupted = state == FlashTransferState.Queued ||
+                state == FlashTransferState.Transferring || state == FlashTransferState.Verifying
+            val row = FlashTransfer(
+                id = FlashTransferId(stored.transferId),
+                peerName = stored.peerName,
+                fileName = stored.fileName,
+                direction = direction,
+                bytesDone = stored.bytesDone,
+                bytesTotal = stored.totalBytes,
+                state = if (interrupted) FlashTransferState.Failed else state,
+                errorMessage = if (interrupted) TransferFailureText.INTERRUPTED_BY_RESTART else stored.errorMessage,
+                sourceUri = stored.sourceUri,
+                wireFileId = stored.wireFileId,
+                peerDeviceId = stored.peerDeviceId,
+                localPath = stored.localPath,
+                isEncrypted = stored.peerDeviceId?.let(isPeerEncrypted) ?: false,
+                restored = true,
+            )
+            row to interrupted
+        }
+        if (restored.isEmpty()) return
+        updateInternalTransfers { current ->
+            val have = current.mapTo(HashSet()) { it.id.value }
+            current + restored.map { it.first }.filter { it.id.value !in have }
+        }
+        // A row restored as it was needs no rewrite; one converted to Failed is written so the store agrees with the list.
+        for ((row, interrupted) in restored) if (!interrupted) persistedIdentity[row.id.value] = row.identitySignature()
+        runCatching { FlashLog.i("TRANSFER", "restored ${restored.size} stored transfer(s)") }
+    }
+
+    init {
+        startIdentityPersistence()
     }
 }

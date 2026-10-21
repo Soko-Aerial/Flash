@@ -30,6 +30,9 @@ public interface SwarmGroupContext {
     /** The name the user gave the group, for the Transfers row; null when unknown (the row then says "Group"). */
     public suspend fun groupTitle(groupId: String): String? = null
 
+    /** The name of [memberId] in [groupId] for "Cancelled by Ada" on a row; null when unknown (the row says "the sender"). */
+    public suspend fun memberName(groupId: String, memberId: String): String? = null
+
     /** Emits a group ID whenever that group's roster or trust changed. */
     public val membershipChanges: Flow<String>
 }

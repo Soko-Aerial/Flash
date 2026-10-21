@@ -473,7 +473,7 @@ class FlashInboundRouterTest {
         val row = f.row("t1")
         assertEquals(FlashTransferState.Failed, row.state)
         assertTrue(row.errorMessage!!.contains("could not be saved"), "a sentence for people, not an exception: ${row.errorMessage}")
-        assertEquals(listOf("p1:cancel:t1"), f.xfer, "the sender is told once")
+        assertEquals(listOf("p1:refuse:t1:write_failed"), f.xfer, "the sender is told once, with the reason")
         assertEquals(1, handle.closed)
         assertTrue(f.openHandles.isEmpty())
         assertTrue(f.meta.isEmpty(), "incomingMeta must not leak")
@@ -550,6 +550,22 @@ class FlashInboundRouterTest {
 
     @Test
     fun rejectedUnknownTransferAsksTheSenderToCancel() {
+        val f = Fixture()
+        f.route("p1", f.chunkFrames("ghost")[0])
+        assertEquals(listOf("p1:cancel:ghost"), f.xfer)
+    }
+
+    @Test
+    fun c11AnOfferThePipelineHasNoRoomForIsRefusedToTheSenderByReason() {
+        val f = Fixture()
+        // Fill every session slot with an open offer, then one more.
+        var n = 0
+        while (f.xfer.isEmpty() && n < 200) f.route("p1", f.startFrame("t${n++}"))
+        assertEquals(listOf("p1:refuse:t${n - 1}:session_full"), f.xfer, "the sender hears why, once")
+    }
+
+    @Test
+    fun c11AnUnknownTransferStillGetsAPlainCancelNotARefusal() {
         val f = Fixture()
         f.route("p1", f.chunkFrames("ghost")[0])
         assertEquals(listOf("p1:cancel:ghost"), f.xfer)
@@ -899,6 +915,7 @@ class FlashInboundRouterTest {
             fileExistsAndSizeMatches = { _, _ -> sizeMatches },
             sendXferResume = { pid, tid -> xfer += "$pid:resume:$tid" },
             sendXferCancel = { pid, tid -> xfer += "$pid:cancel:$tid" },
+            sendXferRefuse = { pid, tid, reason -> xfer += "$pid:refuse:$tid:$reason" },
             onOfferReceived = offerHook,
             onProgressUpdated = { tid, bytesDone ->
                 progress += tid to bytesDone

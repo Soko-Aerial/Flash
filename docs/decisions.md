@@ -6395,3 +6395,68 @@ Search now answers "where is Budget_Q4.pdf" as well as "where did we discuss the
 
 ### Revisit when
 Device tests (`SEARCH-01`…`SEARCH-12`) show the 3-row section preview to be the wrong size, the LIKE scan to be too slow on a large history, or people ask for word-stem matching — then evaluate FTS5 with a measured baseline; or when a paged message list lands, which must move in-chat search into the DAO.
+
+
+## ADR-219 - A service timeout pauses a 1:1 transfer; a cancelled send is not retryable; a group origin has no notification Cancel
+
+### Decision
+(1) Android's dataSync timeout pauses every Transferring row (as swarm and hub already did) and cancels none. (2) A Cancelled 1:1 send
+is final: tapping it does nothing, and `resumeTransfer` returns `FlashError.Cancelled`; the user sends again from the composer.
+(3) The notification of a group file's origin has no Cancel action; cancelling a group file stays an in-app, confirmed action.
+
+### Context
+Audit `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` B-01, B-02, B-04. The owner had not answered section 7 when the
+fixes were made; the audit's recommendations were taken and are recorded here so they can be reversed.
+
+### Alternatives considered
+Cancel on timeout (loses chunk state, contradicts the app's own sentence); retry that re-sends a cancelled file (surprising, a
+consent problem); a confirmation dialog from a notification (cannot be shown reliably from a receiver).
+
+### Consequences
+A paused 1:1 transfer waits for the user: auto-resume after the service returns is not built. The rest of the group sees one fewer way
+to destroy a file by accident.
+
+### Revisit when
+Device checks `CNCL-02` or `CNCL-04` show users expect the transfer to continue by itself, or the owner wants cancel from the notification.
+
+
+
+## ADR-220 - A hub file stops retrying at the hub's own limits and Failed hub files can be retried (open-items C-07)
+
+### Decision
+An upload that is still being interrupted 24 hours after its row was created (the hub's upload window, counted from `createdAtMs` so it survives a restart) becomes Failed with `HubFileText.UPLOAD_WINDOW_ENDED`. A download whose ticket `expiresAtMs` has passed becomes Failed with the not-found sentence. Retry on a Failed hub row moves it back to Uploading/Downloading; for an upload the chat message, given up when the upload failed, goes back to waiting (`outgoingRetried` -> `hubFileRetried` -> `HubFileMessages.retried`) so the ticket is queued again when the upload finishes. `FlashTransfer.canRetry` is true for a Failed hub row.
+
+### Context
+ADR-216 retried an interrupted hub run with backoff for ever, so a phone that stayed offline kept a row "waiting" after the hub had already discarded the upload session. Retry was hidden for every hub row.
+
+### Alternatives considered
+- Bound by number of attempts: rejected, attempts say nothing about whether the hub can still accept the file.
+- Keep retrying and let the server answer 404: rejected, the person never learns why.
+
+### Revisit when
+Device checks `CNCL-*` show the bound fires while a person is merely away for a day, or the hub's window becomes configurable.
+
+
+## ADR-221 - A receiver that cannot take an offer says why, on the cancel frame (open-items C-11, audit B-15)
+
+### Decision
+The `FLASH_XFER` `cancel` frame gains an optional `reason` (`session_full`, `invalid_file_start`, `write_failed`). A sender that
+receives a cancel with a known reason fails the row (retryable) with the receiver's sentence instead of reading a plain cancel
+or waiting out its acknowledgement timeout. `docs/protocol.md` "Transfer control" is the authority. The router
+(`FlashInboundRouter`, new `sendXferRefuse`), the Android service host (`DiscoveryEngineHolder`), `Flash.kt` and the desktop engine send it.
+
+### Context
+Before this the chunked protocol had no reject frame: the pipeline's `Rejected` event was only logged, so the sender sat at
+Transferring until its timeout and then blamed the connection (audit B-15). The swarm protocol already has `SwarmFrame.Reject`.
+
+### Alternatives considered
+- A new `refuse` action: rejected, an older peer ignores an unknown action, so it would be no worse than today but strictly less
+  informative than the cancel it does understand. A reason on `cancel` degrades to the old behaviour.
+- Refuse `SESSION_CONFLICT` too: rejected, a re-declared session belongs to a transfer that is running fine.
+
+### Not built
+A Failed receive row on the refusing device (the pipeline event carries no file name or peer name; only `write_failed` already
+fails a row there).
+
+### Revisit when
+Device checks show senders and receivers disagree about a refusal, or a future wire version carries file metadata in the reject.

@@ -247,6 +247,8 @@ fun FlashVoiceMessageCard(
             "Voice message, ${FlashVoiceMath.formatDuration(durationMs)}. Double-tap to download."
         FlashFileTransferStatus.Failed ->
             "Voice message failed to download. Double-tap to retry."
+        FlashFileTransferStatus.Cancelled ->
+            "Voice message transfer was cancelled."
         else ->
             "Voice message, ${FlashVoiceMath.formatDuration(durationMs)}. Double-tap to ${if (isPlaying) "pause" else "play"}."
     }
@@ -391,11 +393,13 @@ private fun FlashVoiceBadge(
         FlashFileTransferStatus.NotDownloaded -> Color(0xFF5A6472)
         FlashFileTransferStatus.AwaitingAcceptance -> colors.accentSecondary
         FlashFileTransferStatus.Failed -> colors.textError
+        FlashFileTransferStatus.Cancelled -> Color(0xFF5A6472)
     }
 
     val (icon, description) = when (transferStatus) {
         FlashFileTransferStatus.NotDownloaded -> FlashIcons.Download to "Download voice message"
         FlashFileTransferStatus.Failed -> FlashIcons.Retry to "Retry download"
+        FlashFileTransferStatus.Cancelled -> FlashIcons.Close to "Voice message transfer cancelled"
         FlashFileTransferStatus.Transferring -> FlashIcons.Clock to "Downloading voice message"
         FlashFileTransferStatus.Paused -> FlashIcons.Play to "Resume downloading voice message"
         FlashFileTransferStatus.AwaitingAcceptance -> FlashIcons.Clock to "Voice message waiting to download"

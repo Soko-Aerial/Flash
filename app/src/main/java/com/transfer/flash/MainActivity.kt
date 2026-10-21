@@ -2620,6 +2620,15 @@ private fun FlashShell(
                 engine.transfers?.clearFinishedHistory()
                 FlashNotificationManager.clearAllTransfers(toastContext)
             },
+            // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
+            onDismissItem = { item ->
+                if (selectedTransferItem?.id == item.id) selectedTransferItem = null
+                engine.transfers?.dismissTransfer(FlashTransferId(item.id))
+            },
+            onClearFailed = {
+                selectedTransferItem = null
+                engine.transfers?.clearFailedHistory()
+            },
             modifier = Modifier.fillMaxSize(),
             listState = transfersScroll,
             bottomInset = tabBottomInset,

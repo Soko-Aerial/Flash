@@ -461,6 +461,198 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `B-01 resume refuses a cancelled or declined row and emits nothing to the peer`() = runBlocking {
+        val repo = offerRepo()
+        val scope = newScope()
+        val outgoing = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val incoming = java.util.concurrent.CopyOnWriteArrayList<String>()
+        scope.launch { repo.outgoingControl.collect { outgoing.add(it.action) } }
+        scope.launch { repo.incomingControl.collect { incoming.add(it.action) } }
+        awaitUntil(describe = { "control collectors never subscribed" }) {
+            repo.incomingControl.subscriptionCount.value >= 1 && repo.outgoingControl.subscriptionCount.value >= 1
+        }
+
+        // A receiver's declined offer: tapping the bubble or a stale Retry must not ask the sender to send it again.
+        repo.onIncomingOffered("tx-b01", "fx-b01", "doc.pdf", 2048L, "Pixel", "peer-b01")
+        assertTrue(repo.declineIncoming(FlashTransferId("tx-b01")) is FlashResult.Success)
+        awaitUntil(describe = { "decline traffic never emitted" }) { outgoing.contains("cancel") }
+        outgoing.clear()
+        incoming.clear()
+
+        val result = repo.resumeTransfer(FlashTransferId("tx-b01"))
+        assertTrue("a cancelled row is not resumable", result is FlashResult.Failure)
+        assertEquals(FlashTransferState.Cancelled, repo.snapshot(FlashTransferId("tx-b01")).state)
+        Thread.sleep(150)
+        assertTrue("resume must not reach the peer: $outgoing", outgoing.isEmpty())
+        assertTrue("resume must not reopen the local sink: $incoming", incoming.isEmpty())
+        Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `B-01 a cancelled send is not relaunched by resume`() = runBlocking {
+        val sends = AtomicInteger(0)
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                        sends.incrementAndGet()
+                        return true
+                    }
+                }
+            },
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+        val transferId = (
+            repo.sendFile(peer, "content://media/b01.bin", "b01.bin", eightChunkPayload.size.toLong())
+                as FlashResult.Success
+            ).value
+        assertTrue(repo.cancelTransfer(transferId) is FlashResult.Success)
+        Thread.sleep(300)
+        val framesAtCancel = sends.get()
+
+        assertTrue(repo.resumeTransfer(transferId) is FlashResult.Failure)
+        Thread.sleep(500)
+        assertEquals(FlashTransferState.Cancelled, repo.snapshot(transferId).state)
+        assertEquals("no frame may be sent after a refused resume", framesAtCancel, sends.get())
+        Unit
+    }
+
+    @Test
+    fun `B-03 a late remote control frame does not rewrite a finished row`() = runBlocking {
+        val repo = offerRepo()
+
+        // Cancelled (declined) receive: late CANCEL / PAUSE / RESUME leave it alone, reason included.
+        repo.onIncomingOffered("tx-b03a", "fx-b03a", "a.bin", 1024L, "Pixel", "peer-b03")
+        assertTrue(repo.declineIncoming(FlashTransferId("tx-b03a")) is FlashResult.Success)
+        for (action in listOf(
+            RealFlashTransferRepository.ACTION_CANCEL,
+            RealFlashTransferRepository.ACTION_PAUSE,
+            RealFlashTransferRepository.ACTION_RESUME,
+        )) {
+            repo.onRemoteTransferControl("tx-b03a", action)
+            val row = repo.snapshot(FlashTransferId("tx-b03a"))
+            assertEquals("action=$action", FlashTransferState.Cancelled, row.state)
+            assertEquals("action=$action", "declined", row.errorMessage)
+        }
+
+        // Completed receive: a late PAUSE / CANCEL must not turn it into Paused / Cancelled.
+        repo.onIncomingOffered("tx-b03b", "fx-b03b", "b.bin", 1024L, "Pixel", "peer-b03")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-b03b")) is FlashResult.Success)
+        repo.onIncomingCompleted("tx-b03b", verified = true, localPath = "/tmp/b.bin")
+        assertEquals(FlashTransferState.Completed, repo.snapshot(FlashTransferId("tx-b03b")).state)
+        repo.onRemoteTransferControl("tx-b03b", RealFlashTransferRepository.ACTION_PAUSE)
+        repo.onRemoteTransferControl("tx-b03b", RealFlashTransferRepository.ACTION_CANCEL)
+        repo.onRemoteTransferControl("tx-b03b", RealFlashTransferRepository.ACTION_RESUME)
+        assertEquals(FlashTransferState.Completed, repo.snapshot(FlashTransferId("tx-b03b")).state)
+        Unit
+    }
+
+    @Test
+    fun `a local cancel clears a stale pause notice`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-stale", "fx-stale", "c.bin", 1024L, "Pixel", "peer-stale")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-stale")) is FlashResult.Success)
+        repo.onRemoteTransferControl("tx-stale", RealFlashTransferRepository.ACTION_PAUSE)
+        assertEquals("paused by sender", repo.snapshot(FlashTransferId("tx-stale")).errorMessage)
+
+        assertTrue(repo.cancelTransfer(FlashTransferId("tx-stale")) is FlashResult.Success)
+        val row = repo.snapshot(FlashTransferId("tx-stale"))
+        assertEquals(FlashTransferState.Cancelled, row.state)
+        assertNull(row.errorMessage)
+        Unit
+    }
+
+    @Test
+    fun `C-02 resumeSystemPaused continues a system pause and leaves a person's pause alone`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-s", "fx-s", "d.bin", 1024L, "Pixel", "peer-s")
+        repo.onIncomingOffered("tx-u", "fx-u", "e.bin", 1024L, "Pixel", "peer-u")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-s")) is FlashResult.Success)
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-u")) is FlashResult.Success)
+        assertTrue(repo.pauseForSystem(FlashTransferId("tx-s"), "SERVICE_TIMEOUT") is FlashResult.Success)
+        assertTrue(repo.pauseTransfer(FlashTransferId("tx-u")) is FlashResult.Success)
+
+        assertEquals(1, repo.resumeSystemPaused())
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-s")).state)
+        assertEquals(FlashTransferState.Paused, repo.snapshot(FlashTransferId("tx-u")).state)
+        assertEquals(0, repo.resumeSystemPaused())
+        Unit
+    }
+
+    /** A live 1:1 send held inside its first chunk write, so a remote control frame meets a registered worker. */
+    private suspend fun senderHeldOnTheWire(): Pair<RealFlashTransferRepository, FlashTransferId> {
+        val gate = CompletableDeferred<Unit>()
+        val entered = AtomicBoolean(false)
+        val factory = StreamChannelFactory { channelId, _ ->
+            object : StreamChannel {
+                override val id: Int = channelId
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                    if (ChunkFrame.parse(frameBytes) is ChunkFrame.Chunk && entered.compareAndSet(false, true)) gate.await()
+                    return true
+                }
+            }
+        }
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = factory,
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+        val id = (repo.sendFile(peer, "content://media/c11.bin", "c11.bin", eightChunkPayload.size.toLong()) as FlashResult.Success).value
+        awaitUntil(describe = { "worker never reached the wire" }) { entered.get() }
+        return repo to id
+    }
+
+    @Test(timeout = 60_000)
+    fun `C-11 a cancel that names a refusal fails the send with the receiver's reason`() = runBlocking {
+        val (repo, id) = senderHeldOnTheWire()
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_CANCEL, TransferFailureText.REFUSE_SESSION_FULL)
+        val row = repo.snapshot(id)
+        assertEquals(FlashTransferState.Failed, row.state)
+        assertEquals(TransferFailureText.RECEIVER_BUSY, row.errorMessage)
+        assertTrue("a refused send can be retried", row.canRetry)
+        Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `C-11 a plain cancel, or a reason nobody knows, stays a cancel`() = runBlocking {
+        val (repo, id) = senderHeldOnTheWire()
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_CANCEL, "something_new")
+        assertEquals(FlashTransferState.Cancelled, repo.snapshot(id).state)
+        assertEquals(TransferFailureText.RECEIVER_STORAGE, TransferFailureText.refusalSentence("write_failed"))
+        assertEquals(TransferFailureText.RECEIVER_REFUSED_FILE, TransferFailureText.refusalSentence("INVALID_FILE_START"))
+        assertNull(TransferFailureText.refusalSentence(null))
+        Unit
+    }
+
+    @Test
+    fun `B-02 pauseForSystem keeps a 1to1 row and says Android paused it`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-sys", "fx-sys", "d.bin", 1024L, "Pixel", "peer-sys")
+        assertTrue(repo.acceptIncoming(FlashTransferId("tx-sys")) is FlashResult.Success)
+
+        assertTrue(repo.pauseForSystem(FlashTransferId("tx-sys"), "SERVICE_TIMEOUT") is FlashResult.Success)
+        val row = repo.snapshot(FlashTransferId("tx-sys"))
+        assertEquals(FlashTransferState.Paused, row.state)
+        assertEquals(RealFlashTransferRepository.REASON_PAUSED_BY_SYSTEM, row.errorMessage)
+        assertEquals(TransferFailureText.PAUSED_BY_SYSTEM, TransferFailureText.displayReason(row.errorMessage))
+
+        // And it is still resumable: the done-set was not forgotten, the row was not cancelled.
+        assertTrue(repo.resumeTransfer(FlashTransferId("tx-sys")) is FlashResult.Success)
+        val resumed = repo.snapshot(FlashTransferId("tx-sys"))
+        assertEquals(FlashTransferState.Transferring, resumed.state)
+        assertNull(resumed.errorMessage)
+        Unit
+    }
+
+    @Test
     fun `accept and decline reject a transfer that is not an open offer`() = runBlocking {
         val repo = offerRepo()
         // No such transfer at all.
@@ -529,6 +721,97 @@ class RealFlashTransferRepositoryTest {
         // A later change to another row must not bring the cleared one back.
         repo.onIncomingProgress("tx-live", 512L)
         assertTrue("tx-done" !in repo.activeTransfers.value.map { it.id.value })
+    }
+
+    @Test
+    fun `dismissTransfer hides one failed row and a live row cannot be dismissed (C-10)`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-failed", "fx-failed", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-failed"))
+        repo.onIncomingFailed("tx-failed", "boom")
+        repo.onIncomingOffered("tx-live", "fx-live", "b.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-live"))
+
+        repo.dismissTransfer(FlashTransferId("tx-live"))
+        assertEquals(setOf("tx-failed", "tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+
+        repo.dismissTransfer(FlashTransferId("tx-failed"))
+        assertEquals(setOf("tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+
+        // A later change to another row must not bring the dismissed one back.
+        repo.onIncomingProgress("tx-live", 512L)
+        assertTrue("tx-failed" !in repo.activeTransfers.value.map { it.id.value })
+    }
+
+    @Test
+    fun `clearFailedHistory hides failed and cancelled rows but keeps live and completed ones (C-10)`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-failed", "fx-failed", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-failed"))
+        repo.onIncomingFailed("tx-failed", "boom")
+        repo.onIncomingOffered("tx-done", "fx-done", "a.bin", 1024L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-done"))
+        repo.onIncomingCompleted("tx-done", verified = true, localPath = "/tmp/a.bin")
+        repo.onIncomingOffered("tx-live", "fx-live", "b.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-live"))
+
+        repo.clearFailedHistory()
+
+        assertEquals(setOf("tx-done", "tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+    }
+
+    @Test
+    fun `a retried receive that gets no bytes goes back to Failed with a sentence (C-08)`() = runBlocking {
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { Buffer().write(ByteArray(0)) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            retryReceiveWaitMs = 150L,
+        )
+        repo.onIncomingOffered("tx-r", "fx-r", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-r"))
+        repo.onIncomingFailed("tx-r", "boom")
+        repo.resumeTransfer(FlashTransferId("tx-r"))
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-r")).state)
+
+        awaitUntil(describe = { "row never returned to Failed" }) {
+            repo.snapshot(FlashTransferId("tx-r")).state == FlashTransferState.Failed
+        }
+        assertEquals(TransferFailureText.SENDER_DID_NOT_RESUME, repo.snapshot(FlashTransferId("tx-r")).errorMessage)
+    }
+
+    @Test
+    fun `a retried receive that gets bytes is left alone (C-08)`() = runBlocking {
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = StreamChannelFactory { channelId, _ ->
+                object : StreamChannel {
+                    override val id: Int = channelId
+                    override suspend fun sendFrame(frameBytes: ByteArray): Boolean = true
+                }
+            },
+            fileSourceOpener = { Buffer().write(ByteArray(0)) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+            retryReceiveWaitMs = 150L,
+        )
+        repo.onIncomingOffered("tx-r", "fx-r", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-r"))
+        repo.onIncomingFailed("tx-r", "boom")
+        repo.resumeTransfer(FlashTransferId("tx-r"))
+        repo.onIncomingProgress("tx-r", 512L)
+
+        Thread.sleep(400)
+        assertEquals(FlashTransferState.Transferring, repo.snapshot(FlashTransferId("tx-r")).state)
     }
 
     @Test

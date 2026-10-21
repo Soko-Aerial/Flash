@@ -76,6 +76,22 @@ class TransfersUiMapperTest {
     }
 
     @Test
+    fun rawControlReasonsReachTheScreenAsSentences() {
+        val cancelled = domain(state = FlashTransferState.Cancelled, errorMessage = "cancelled by receiver").toUiItem()
+        assertEquals("The other device cancelled the transfer.", cancelled.errorMessage)
+        val declined = domain(state = FlashTransferState.Cancelled, errorMessage = "declined").toUiItem()
+        assertEquals("The other device declined the file.", declined.errorMessage)
+    }
+
+    @Test
+    fun retryableComesFromTheModelPredicate() {
+        assertFalse(domain(state = FlashTransferState.Cancelled).toUiItem().retryable)
+        assertTrue(domain(state = FlashTransferState.Failed).toUiItem().retryable)
+        assertFalse(domain(state = FlashTransferState.Failed).copy(viaHub = true).toUiItem().retryable)
+        assertEquals(domain(state = FlashTransferState.Failed).canRetry, domain(state = FlashTransferState.Failed).toUiItem().retryable)
+    }
+
+    @Test
     fun nonPositiveEtaNormalisesToNull() {
         assertNull(domain(state = FlashTransferState.Transferring, etaSeconds = 0L).toUiItem().etaSeconds)
         assertNull(domain(state = FlashTransferState.Transferring, etaSeconds = -3L).toUiItem().etaSeconds)

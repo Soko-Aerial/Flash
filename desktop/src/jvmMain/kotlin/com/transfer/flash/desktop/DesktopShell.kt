@@ -1890,6 +1890,15 @@ public fun DesktopShell(
                             selectedTransferItem = null
                             engine.transfers?.clearFinishedHistory()
                         },
+                        // C-10: a Failed or Cancelled row can be dismissed one by one or all at once.
+                        onDismissItem = { item ->
+                            if (selectedTransferItem?.id == item.id) selectedTransferItem = null
+                            engine.transfers?.dismissTransfer(com.transfer.flash.core.transfer.model.FlashTransferId(item.id))
+                        },
+                        onClearFailed = {
+                            selectedTransferItem = null
+                            engine.transfers?.clearFailedHistory()
+                        },
                         modifier = Modifier.fillMaxSize(),
                         listState = transfersScroll,
                         bottomInset = tabBottomInset,
@@ -2719,15 +2728,18 @@ private fun FlashTransfer.toDesktopTransferItemUi(): FlashTransferItemUi = Flash
     },
     speedBytesPerSec = speedBytesPerSec,
     etaSeconds = etaSeconds.takeIf { it > 0L },
-    errorMessage = errorMessage ?: if (state == DomainState.Cancelled) "Cancelled" else null,
+    errorMessage = com.transfer.flash.core.transfer.TransferFailureText.displayReason(errorMessage)
+        ?: if (state == DomainState.Cancelled) "Cancelled" else null,
     verified = state == DomainState.Completed,
     localPath = localPath ?: sourceUri,
-    retryable = state != DomainState.Cancelled && !viaHub,
+    // The one predicate lives on the model so the app, the desktop and the notifications agree.
+    retryable = canRetry,
     transportLabel = if (viaHub) com.transfer.flash.core.enterprise.files.HubFileText.VIA_HUB else null,
     waitReason = waitReason,
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,
     pieceBlocks = pieceBlocks,
+    isGroupFile = groupOrigin,
 )
 
 /** Desktop twin of `:app`'s `TransfersUiState.fromDomain` (mandatory boot flags, ERROR-034). */

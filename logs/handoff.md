@@ -25,6 +25,40 @@
   three contest entries; none of their code is wired in. Reading order: `docs/ui/flash-hub-tab.md` "Redesign 2026-10-20", then `FlashHubMotion.kt`.
 - **Verified:** hub unit tests, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`. **Owed:** `HUBV-01..10` (TEST-BACKLOG).
 - **Recommended next task:** the owner looks at it on the phone and the desktop; tune from what they see.
+## 2026-10-21 (later) - Cancel stream: C-02, C-06..C-13 built on `agent/A-cancel` (unit-tested, NOT device-verified)
+
+- **Commits:** `57af1ad8`, `2225fe3c`, `91b0c69f` (ADR-220), `ae91f59b`, `3e828b8b` (ADR-221), `3df0bfa5` (Room step 20) plus the C-10 and C-08 commits.
+- **Behaviour to know:** the Transfers list now survives a restart on Android (running rows come back Failed, Retry restarts them; 30-day history; dismissals persist); a receiver's refusal reason reaches the sender; rows paused by Android resume when the service returns; desktop shows an actionable toast; desktop still does not persist (`store = null`, D5).
+- **Merge caution:** schema 20 here vs 19 on `dev`; ADR numbering (218 on `agent/search-upgrades`).
+- **Recommended next task:** device checks `CNCL-15..20`; then the remaining tracker items (H-15 device, C-01/C-03/C-04 no change).
+
+## 2026-10-21 - Cancel, error and resume: audit defects fixed in code (unit-tested, NOT device-verified, see commit on `agent/A-cancel`)
+
+- **Branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel`. Fixes for B-01..B-07, B-09, B-10, B-12, B-16 and part of B-14; the
+  per-finding table is audit section 10. Tests green as listed in `logs/progress.md` (2026-10-21).
+- **Behaviour changes to know:** a cancelled send cannot be retried from the bubble; Android's dataSync timeout now **pauses** 1:1
+  transfers (they do not restart by themselves: "Paused by Android. Tap Resume to continue."); the notification no longer offers
+  Cancel for a group file's origin; `FlashFileTransferStatus` has a `Cancelled` value (any exhaustive `when` needs it).
+- **Open owner calls:** B-08 (bound the hub retry?), auto-resume of a 1:1 row after a timeout, the "Cancel for everyone?" wording.
+- **Recommended next task:** device checks `CNCL-01..04, 06, 07, 09, 10, 12`; then F-01 (cancel/failure history row, B-11).
+
+## 2026-10-20 (audit) - Cancel, error and resume: the notification correlation audit (docs only, 19 findings)
+
+- **Current branch:** `agent/A-cancel`, worktree `E:/FlashWork/A-cancel` (based on `dev` @ `51469a84`; the main checkout belongs to
+  another agent). **Status:** audit only — no product code, no build, no device.
+- **The one thing to know:** `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` traces every cancel/decline/pause/
+  resume/timeout path for 1:1, swarm, hub, calls, PTT and pairing, and records 19 defects with `file:line`. The two that would hurt
+  a user today: **B-01** tapping a cancelled attachment re-sends the file (the bubble folds Cancelled into Failed and
+  `resumeTransfer` relaunches a cancelled send), and **B-02** Android's dataSync timeout **cancels** a 1:1 transfer and forgets its
+  chunk state, while swarm and hub pause.
+- **Recommended next task:** take the owner's answers to the audit's §7 (five questions) and then fix B-01 + B-03 (the same missing
+  terminal-state guard, two small edits), B-02, and B-06/B-07 (one `retryable` predicate on `FlashTransfer`).
+- **Owed tests:** `CNCL-01`..`CNCL-14` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzzzzzzz. `CNCL-01/04/12` can confirm the audit
+  on the current build before any fix.
+- **Files most relevant:** `core/transfer/.../RealFlashTransferRepository.kt` (`resumeTransfer`, `cancelTransfer`,
+  `onRemoteTransferControl`), `app/.../notifications/FlashNotificationManager.kt`,
+  `app/.../debug/FlashBackgroundService.kt` (`handleTransfersChanged`, `onTimeout`), `app/.../TransfersUiMapper.kt`,
+  `core/engine/.../hubfiles/HubFileBinding.kt`.
 
 ## 2026-10-20 (later) - Log-driven fixes before release: ERROR-742 swarm greeting, ERROR-743 stale redial loop, ERROR-744 log truncation, ERROR-745 diagnostic
 
