@@ -52,6 +52,32 @@ public object TransferFailureText {
     public const val WRITE_FAILED: String =
         "The file could not be saved on this device. Check that there is free space and that the save location is still available, then ask for it to be sent again."
 
+    /**
+     * The receiver refused the offer (C-11, ADR-221): it already holds as many incoming transfers as it can, the offer
+     * failed its checks, or it could not save the file. Carried to the sender as a `reason` on the `cancel` frame.
+     */
+    public const val RECEIVER_BUSY: String =
+        "The other device is receiving too many files right now. Try again in a moment."
+
+    public const val RECEIVER_REFUSED_FILE: String =
+        "The other device could not accept this file. Send it again, or send it as a smaller file."
+
+    public const val RECEIVER_STORAGE: String =
+        "The other device could not save this file. Ask them to check that they have free space, then send it again."
+
+    /** Wire tokens of the `reason` field of a refusing `cancel` frame (docs/protocol.md "Transfer control"). */
+    public const val REFUSE_SESSION_FULL: String = "session_full"
+    public const val REFUSE_INVALID_FILE_START: String = "invalid_file_start"
+    public const val REFUSE_WRITE_FAILED: String = "write_failed"
+
+    /** The sender-side sentence for a refusal [token], or null when the token is absent or unknown (a plain cancel). */
+    public fun refusalSentence(token: String?): String? = when (token?.trim()?.lowercase()) {
+        REFUSE_SESSION_FULL -> RECEIVER_BUSY
+        REFUSE_INVALID_FILE_START -> RECEIVER_REFUSED_FILE
+        REFUSE_WRITE_FAILED -> RECEIVER_STORAGE
+        else -> null
+    }
+
     // Swarm-specific failure sentences (ADR-072, Table 8.2)
     public const val DAMAGED: String =
         "The received file did not match what was sent. Ask for it to be sent again."

@@ -96,6 +96,7 @@ import com.transfer.flash.ptt.PttSessionService
 import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.transfer.FlashTransferRepository
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.engine.store.RoomRememberedEndpointStore
 import com.transfer.flash.core.engine.store.RoomTransferStore
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
@@ -567,6 +568,9 @@ object DiscoveryEngineHolder {
 
     @Volatile
     private var sendXferControl: ((peerDeviceId: String, action: String, transferId: String) -> Unit)? = null
+
+    /** C-11: a `cancel` frame that names why the receiver refused the file (see `TransferFailureText.refusalSentence`). */
+    private var sendXferRefuseControl: ((peerDeviceId: String, transferId: String, reason: String) -> Unit)? = null
 
     // #16: recreatable so stopAll can cancel every collector/session job launched on it. A cancelled
     // CoroutineScope stays cancelled, so ensureStarted swaps in a fresh one when restarting.
@@ -1760,6 +1764,18 @@ object DiscoveryEngineHolder {
             }
         }
         sendXferControl = sendXfer
+        sendXferRefuseControl = { peerId, transferId, reason ->
+            val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+            if (session != null) {
+                val ok = session.connection.sendText(
+                    FlashTextFraming.encodeFields(
+                        XFER_PREFIX,
+                        listOf("action" to RealFlashTransferRepository.ACTION_CANCEL, "transferId" to transferId, "reason" to reason),
+                    ),
+                )
+                Log.i(TAG_TRANSFER, "XFER refusal ($reason) → $peerId (sent=$ok) transferId=$transferId")
+            }
+        }
 
         // Accepts a pending inbound OFFER (#5): resolve the deferred sink FIRST (so no early chunk
         // is dropped), surface it as Transferring + a chat bubble, then RESUME the parked sender.
@@ -2507,7 +2523,7 @@ object DiscoveryEngineHolder {
         if (xferFields != null) {
             val action = xferFields["action"] ?: return
             val transferId = xferFields["transferId"] ?: return
-            transferImpl.onRemoteTransferControl(transferId, action)
+            transferImpl.onRemoteTransferControl(transferId, action, xferFields["reason"])
             return
         }
         Log.w(TAG_CHAT, "Received unrecognized text frame (${text.length} chars)")
@@ -2704,6 +2720,16 @@ object DiscoveryEngineHolder {
                         Log.d(TAG_TRANSFER, "Late/unmatched frame ignored: reason=UNEXPECTED_DIRECTION transferId=${event.transferId}")
                     } else {
                         Log.w(TAG_TRANSFER, "Receiver rejected chunk frame: reason=${event.reason} transferId=${event.transferId} index=${event.index}")
+                    }
+                    // C-11: an offer this device cannot take is told to the sender, not left to time out.
+                    val refusal = when (event.reason) {
+                        com.transfer.flash.core.transfer.chunked.RejectReason.SESSION_FULL -> TransferFailureText.REFUSE_SESSION_FULL
+                        com.transfer.flash.core.transfer.chunked.RejectReason.INVALID_FILE_START -> TransferFailureText.REFUSE_INVALID_FILE_START
+                        else -> null
+                    }
+                    val refusedId = event.transferId
+                    if (refusal != null && refusedId != null && peerDeviceId != null) {
+                        sendXferRefuseControl?.invoke(peerDeviceId, refusedId, refusal)
                     }
                 }
             }
@@ -3131,6 +3157,7 @@ object DiscoveryEngineHolder {
         localDeviceId = null
         localDeviceName = null
         sendXferControl = null
+        sendXferRefuseControl = null
         onIncomingOffer = null
         dataServer?.stop()
         dataServer = null

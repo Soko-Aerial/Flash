@@ -211,6 +211,7 @@ private class Wiring(
     @Volatile private var transferRef: RealFlashTransferRepository? = null
     @Volatile private var acceptOffer: ((String) -> Unit)? = null
     @Volatile private var sendXfer: ((String, String, String) -> Unit)? = null
+    @Volatile private var sendXferRefuse: ((String, String, String) -> Unit)? = null
     private var onPeerConnectionClosed: ((String) -> Unit)? = null
 
     /**
@@ -638,6 +639,20 @@ private class Wiring(
                 Log.w(TAG, "Cannot deliver XFER $action: no session for $peerId")
             }
         }
+        // C-11: a cancel that carries the reason the receiver refused the file (older peers ignore the extra field).
+        val sendXferRefuseFrame: (String, String, String) -> Unit = { peerId, transferId, reason ->
+            val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+            if (session != null) {
+                session.connection.sendText(
+                    FlashTextFraming.encodeFields(
+                        XFER_PREFIX,
+                        listOf("action" to RealFlashTransferRepository.ACTION_CANCEL, "transferId" to transferId, "reason" to reason),
+                    ),
+                )
+            } else {
+                Log.w(TAG, "Cannot deliver XFER refusal ($reason): no session for $peerId")
+            }
+        }
 
         // Resolve the deferred sink FIRST, surface Transferring + attachment bubble, THEN RESUME the
         // parked sender. autoAcceptIncoming triggers this automatically on the offer (below).
@@ -665,6 +680,7 @@ private class Wiring(
         }
         this.acceptOffer = acceptOffer
         this.sendXfer = sendXfer
+        this.sendXferRefuse = sendXferRefuseFrame
         scope.launch {
             transferImpl.incomingControl.collect { control ->
                 when (control.action) {
@@ -942,6 +958,7 @@ private class Wiring(
             sendXferCancel = { pid, tid ->
                 sendXfer?.invoke(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
             },
+            sendXferRefuse = { pid, tid, reason -> sendXferRefuse?.invoke(pid, tid, reason) },
             incomingOwners = incomingOwners,
             // First thing for every new session, before the already-completed and retry branches: a
             // resumed or already-completed transfer is as much "incoming from this peer" as a fresh

@@ -6435,3 +6435,28 @@ ADR-216 retried an interrupted hub run with backoff for ever, so a phone that st
 
 ### Revisit when
 Device checks `CNCL-*` show the bound fires while a person is merely away for a day, or the hub's window becomes configurable.
+
+
+## ADR-221 - A receiver that cannot take an offer says why, on the cancel frame (open-items C-11, audit B-15)
+
+### Decision
+The `FLASH_XFER` `cancel` frame gains an optional `reason` (`session_full`, `invalid_file_start`, `write_failed`). A sender that
+receives a cancel with a known reason fails the row (retryable) with the receiver's sentence instead of reading a plain cancel
+or waiting out its acknowledgement timeout. `docs/protocol.md` "Transfer control" is the authority. The router
+(`FlashInboundRouter`, new `sendXferRefuse`), the Android service host (`DiscoveryEngineHolder`), `Flash.kt` and the desktop engine send it.
+
+### Context
+Before this the chunked protocol had no reject frame: the pipeline's `Rejected` event was only logged, so the sender sat at
+Transferring until its timeout and then blamed the connection (audit B-15). The swarm protocol already has `SwarmFrame.Reject`.
+
+### Alternatives considered
+- A new `refuse` action: rejected, an older peer ignores an unknown action, so it would be no worse than today but strictly less
+  informative than the cancel it does understand. A reason on `cancel` degrades to the old behaviour.
+- Refuse `SESSION_CONFLICT` too: rejected, a re-declared session belongs to a transfer that is running fine.
+
+### Not built
+A Failed receive row on the refusing device (the pipeline event carries no file name or peer name; only `write_failed` already
+fails a row there).
+
+### Revisit when
+Device checks show senders and receivers disagree about a refusal, or a future wire version carries file metadata in the reject.
