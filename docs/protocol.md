@@ -1763,3 +1763,23 @@ it has the same author and group, is not deleted and carries no attachment; a me
 refused. The receiver answers with a `GroupWireFrame.Receipt`, never a one-to-one `DeliveryReceipt`. The sender keeps one
 outbox row for the group message; each receipt records one member's delivery, and the row is retired when none is pending.
 
+
+## Transfer control `FLASH_XFER` and receiver refusals (ADR-221, 2026-10-21)
+
+A 1:1 transfer is steered by text frames `FLASH_XFER` with fields `action` (`pause`, `resume`, `cancel`), `transferId`
+and, since ADR-221, an optional `reason`. Fields the receiver does not know are ignored, so the extension is compatible
+both ways.
+
+`reason` is only meaningful on `action=cancel` sent **by the receiving side**. It says the receiver could not take the
+file, rather than the person changing their mind:
+
+| `reason` | Sent when | Sender shows |
+|---|---|---|
+| `session_full` | the receiver already holds its maximum of open incoming transfers | "The other device is receiving too many files right now. Try again in a moment." |
+| `invalid_file_start` | the offer failed the receiver's checks (hash, size, chunk maths) | "The other device could not accept this file." |
+| `write_failed` | the receiver could not write a verified chunk (full disk, revoked folder) | "The other device could not save this file." |
+
+A sender that sees one of these tokens marks the row **Failed** (retryable) with that sentence. A `cancel` without a
+`reason`, or with a token it does not know, is a plain cancel (**Cancelled**, final). A re-declared session
+(`SESSION_CONFLICT`) is deliberately never refused this way, because that would end a healthy running transfer. An older
+sender ignores `reason` and shows "Cancelled by the other device", the behaviour before ADR-221.

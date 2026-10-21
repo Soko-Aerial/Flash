@@ -9,9 +9,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Characterisation and unit tests for [TimeoutStopPlan] (SW-2 Part C).
- * Ensures that service timeout preserves existing 1:1 cancel behavior while
- * routing group swarm rows to pause instead of cancel.
+ * Unit tests for [TimeoutStopPlan] (SW-2 Part C, audit B-02): a service timeout pauses
+ * every moving transfer and cancels none.
  */
 class TimeoutStopPlanTest {
 
@@ -31,7 +30,7 @@ class TimeoutStopPlanTest {
     )
 
     @Test
-    fun defaultBehaviorPinsTodaysCancelAllTransferring() {
+    fun everyTransferringRowIsPausedNeverCancelled() {
         val transfers = listOf(
             transfer("t1", FlashTransferState.Transferring),
             transfer("t2", FlashTransferState.Paused),
@@ -39,33 +38,16 @@ class TimeoutStopPlanTest {
             transfer("t4", FlashTransferState.Completed),
             transfer("t5", FlashTransferState.Offered),
             transfer("t6", FlashTransferState.Failed),
+            transfer("t7", FlashTransferState.Cancelled),
         )
 
         val plan = TimeoutStopPlan.of(transfers)
 
-        assertEquals(listOf("t1", "t3"), plan.toCancel.map { it.id.value })
-        assertTrue("toPause must be empty when isSwarmRow is default false", plan.toPause.isEmpty())
-    }
-
-    @Test
-    fun swarmTransfersArePausedInsteadOfCancelled() {
-        val transfers = listOf(
-            transfer("t1-1to1", FlashTransferState.Transferring),
-            transfer("t2-swarm", FlashTransferState.Transferring),
-            transfer("t3-swarm", FlashTransferState.Paused),
-            transfer("t4-1to1", FlashTransferState.Transferring),
-        )
-
-        val plan = TimeoutStopPlan.of(transfers, isSwarmRow = { it.value.contains("swarm") })
-
-        assertEquals(listOf("t1-1to1", "t4-1to1"), plan.toCancel.map { it.id.value })
-        assertEquals(listOf("t2-swarm"), plan.toPause.map { it.id.value })
+        assertEquals(listOf("t1", "t3"), plan.toPause.map { it.id.value })
     }
 
     @Test
     fun emptyListProducesEmptyPlan() {
-        val plan = TimeoutStopPlan.of(emptyList())
-        assertTrue(plan.toCancel.isEmpty())
-        assertTrue(plan.toPause.isEmpty())
+        assertTrue(TimeoutStopPlan.of(emptyList()).toPause.isEmpty())
     }
 }

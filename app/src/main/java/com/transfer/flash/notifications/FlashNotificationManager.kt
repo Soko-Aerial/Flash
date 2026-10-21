@@ -14,6 +14,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import com.transfer.flash.MainActivity
 import com.transfer.flash.R
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.model.FlashTransfer
 import com.transfer.flash.core.transfer.model.FlashTransferDirection
 import java.io.File
@@ -60,6 +61,7 @@ object FlashNotificationManager {
     const val PAIRING_NOTIFICATION_ID = 320
     /** Base ID for individual active/completed/failed transfer notifications */
     const val TRANSFER_NOTIFICATION_BASE = 3000
+    const val TRANSFER_NOTIFICATION_SLOTS = 1000
 
     /** Actions */
     const val ACTION_VIEW_TRANSFERS = "com.transfer.flash.action.VIEW_TRANSFERS"
@@ -234,10 +236,10 @@ object FlashNotificationManager {
 
         val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
         val viewTransfersIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
-        val cancelPendingIntent = createCancelTransferPendingIntent(appContext, transferId)
 
-        val isSwarmOrigin = !isReceiving && transfer.canGoOffline
-        val cancelLabel = if (isSwarmOrigin) "Cancel for everyone" else "Cancel"
+        // Cancelling the origin of a group file tombstones it for every member; that is confirmed in the app,
+        // never from a one-tap notification button (audit B-04).
+        val cancelPendingIntent = if (transfer.groupOrigin) null else createCancelTransferPendingIntent(appContext, transferId)
 
         val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
             .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -248,11 +250,13 @@ object FlashNotificationManager {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(viewTransfersIntent)
-            .addAction(
+        if (cancelPendingIntent != null) {
+            builder.addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                cancelLabel,
+                "Cancel",
                 cancelPendingIntent,
             )
+        }
 
         runCatching {
             NotificationManagerCompat.from(appContext).notify(notificationId, builder.build())
@@ -331,9 +335,8 @@ object FlashNotificationManager {
 
         val requestCodeView = ((notificationId * 2) + 1) and 0x7FFFFFFF
         val contentIntent = createTransfersTabPendingIntent(appContext, requestCodeView, transferId)
-        val retryIntent = createResumeTransferPendingIntent(appContext, transferId)
 
-        val notification = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
+        val builder = NotificationCompat.Builder(appContext, CHANNEL_TRANSFERS)
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setContentTitle(content.title)
             .setContentText(content.body)
@@ -342,11 +345,15 @@ object FlashNotificationManager {
             .setAutoCancel(true)
             .setOngoing(false)
             .setContentIntent(contentIntent)
-            .addAction(
+        // Retry only where it can do something (audit B-06): a hub row fails for a reason a retry cannot change.
+        if (transfer.canRetry) {
+            builder.addAction(
                 android.R.drawable.ic_menu_rotate,
                 "Retry",
-                retryIntent,
+                createResumeTransferPendingIntent(appContext, transferId),
             )
+        }
+        val notification = builder
             .addAction(
                 android.R.drawable.ic_menu_manage,
                 "View Transfers",
@@ -465,7 +472,7 @@ object FlashNotificationManager {
     /** Clears all transfer notifications across the entire allocated range. */
     fun clearAllTransfers(context: Context) {
         val manager = NotificationManagerCompat.from(context)
-        for (i in 0 until 1000) {
+        for (i in 0 until TRANSFER_NOTIFICATION_SLOTS) {
             runCatching { manager.cancel(TRANSFER_NOTIFICATION_BASE + i) }
         }
     }
@@ -720,9 +727,30 @@ object FlashNotificationManager {
     fun notificationIdFor(conversationId: String): Int =
         NOTIFICATION_ID_BASE + (conversationId.hashCode() and 0x7FFFFFFF) % 1000
 
-    /** Stable id per transfer: collapses updates for the same transfer. */
-    fun notificationIdForTransfer(transferId: String): Int =
-        TRANSFER_NOTIFICATION_BASE + (transferId.hashCode() and 0x7FFFFFFF) % 1000
+    private val transferNotificationIds = HashMap<String, Int>()
+
+    /**
+     * Stable id per transfer: collapses updates for the same transfer. The hash picks the slot, but a slot already
+     * held by another transfer is skipped (audit B-16): two live transfers sharing an id overwrote each other's
+     * progress, and a Cancel pressed on one carried the other's transfer id. The assignment lives for the process,
+     * which is as long as the notifications it names are managed here.
+     */
+    fun notificationIdForTransfer(transferId: String): Int = synchronized(transferNotificationIds) {
+        transferNotificationIds[transferId]?.let { return it }
+        val start = (transferId.hashCode() and 0x7FFFFFFF) % TRANSFER_NOTIFICATION_SLOTS
+        val taken = transferNotificationIds.values.toHashSet()
+        var slot = start
+        var probes = 0
+        while (TRANSFER_NOTIFICATION_BASE + slot in taken && probes < TRANSFER_NOTIFICATION_SLOTS) {
+            slot = (slot + 1) % TRANSFER_NOTIFICATION_SLOTS
+            probes++
+        }
+        // Every slot taken (a thousand live transfers): fall back to sharing the hashed one.
+        val id = TRANSFER_NOTIFICATION_BASE + if (probes < TRANSFER_NOTIFICATION_SLOTS) slot else start
+        if (transferNotificationIds.size >= TRANSFER_NOTIFICATION_SLOTS * 4) transferNotificationIds.clear()
+        transferNotificationIds[transferId] = id
+        id
+    }
 }
 
 internal data class FlashNotificationContent(
@@ -777,7 +805,7 @@ internal fun transferFailedNotificationContent(
     isReceiving: Boolean,
 ): FlashNotificationContent {
     val title = if (isReceiving) "Download failed" else "Transfer failed"
-    val body = errorMessage?.ifBlank { null } ?: "Failed to transfer $fileName"
+    val body = TransferFailureText.displayReason(errorMessage)?.ifBlank { null } ?: "Failed to transfer $fileName"
     return FlashNotificationContent(title, body)
 }
 

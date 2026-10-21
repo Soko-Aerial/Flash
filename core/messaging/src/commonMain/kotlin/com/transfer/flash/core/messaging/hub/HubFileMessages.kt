@@ -80,6 +80,16 @@ internal class HubFileMessages(
     }
 
     /**
+     * A Failed outgoing file was retried (C-07): its message, given up when the upload failed, is waiting for a ticket
+     * again. Only an unacknowledged message changes; the ticket is queued once the upload finishes ([queue]).
+     */
+    suspend fun retried(transferId: String) {
+        val row = dao.get(transferId)?.takeIf { it.direction == HubFileStates.OUT } ?: return
+        val messageId = row.messageId ?: return
+        messageDao.updateStatusIfUnacknowledged(messageId, "PENDING")
+    }
+
+    /**
      * Ends the tickets of group file [messageId]. Other members may have the file another way, so the message is Failed only
      * when nobody has acknowledged it.
      */

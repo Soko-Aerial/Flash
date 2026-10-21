@@ -432,8 +432,30 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v19 → v20: a 1:1 transfer row keeps its identity (open-items C-09): who, which file, which way, where it came from
+     * or went, why it stopped, and whether the person dismissed it. A row from before this has an empty `direction` and is
+     * never restored, so existing installs lose nothing and gain nothing until a new transfer is written.
+     */
+    val STEP_19_20: FlashSchemaStep = FlashSchemaStep(
+        from = 19,
+        to = 20,
+        statements = listOf(
+            "ALTER TABLE `transfers` ADD COLUMN `peerDeviceId` TEXT",
+            "ALTER TABLE `transfers` ADD COLUMN `peerName` TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE `transfers` ADD COLUMN `fileName` TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE `transfers` ADD COLUMN `direction` TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE `transfers` ADD COLUMN `sourceUri` TEXT",
+            "ALTER TABLE `transfers` ADD COLUMN `wireFileId` TEXT",
+            "ALTER TABLE `transfers` ADD COLUMN `localPath` TEXT",
+            "ALTER TABLE `transfers` ADD COLUMN `errorMessage` TEXT",
+            "ALTER TABLE `transfers` ADD COLUMN `updatedAtMs` INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE `transfers` ADD COLUMN `dismissed` INTEGER NOT NULL DEFAULT 0",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20
     )
 }

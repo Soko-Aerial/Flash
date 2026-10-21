@@ -101,6 +101,46 @@ class SwarmCancelLifecycleTest {
     }
 
     @Test
+    fun `a verified cancel publishes the Cancelled row with the tombstone reason (B-19)`() {
+        for (reason in SwarmTombstoneReason.values()) {
+            val (manifest, _) = createManifest()
+            val engine = SwarmEngine(config = SwarmConfig(autoAcceptIncoming = true), localDeviceId = "rxNode", seed = 42L)
+            engine.handle(SwarmEvent.PeerUp("originNode", setOf("sw1"), 1000L))
+            engine.handle(
+                SwarmEvent.Announced(
+                    groupId = "g1", messageId = "m1", originId = "originNode", originKey = "keyOrig", root = manifest.root,
+                    totalSize = manifest.totalSize, pieceSize = manifest.pieceSize, fileName = "test.bin",
+                    mime = "application/octet-stream", sentAtMs = 1000L, expiresAtMs = 10_000_000L, isOrigin = false, nowMs = 1000L,
+                )
+            )
+            val cmds = engine.handle(
+                SwarmEvent.CancelArrived(
+                    peerId = "originNode",
+                    frame = SwarmFrame.Cancel("g1", manifest.root, "originNode", "m1", reason, 1050L, ByteArray(64)),
+                    signatureValid = true,
+                    nowMs = 1100L,
+                )
+            )
+            val row = cmds.filterIsInstance<SwarmCommand.PublishRow>().last { it.state == SwarmLifecycleState.CANCELLED }
+            assertEquals(reason, row.cancelReason)
+        }
+    }
+
+    @Test
+    fun `a row that is not cancelled carries no cancel reason`() {
+        val (manifest, _) = createManifest()
+        val engine = SwarmEngine(config = SwarmConfig(autoAcceptIncoming = true), localDeviceId = "rxNode", seed = 42L)
+        val cmds = engine.handle(
+            SwarmEvent.Announced(
+                groupId = "g1", messageId = "m1", originId = "originNode", originKey = "keyOrig", root = manifest.root,
+                totalSize = manifest.totalSize, pieceSize = manifest.pieceSize, fileName = "test.bin",
+                mime = "application/octet-stream", sentAtMs = 1000L, expiresAtMs = 10_000_000L, isOrigin = false, nowMs = 1000L,
+            )
+        )
+        assertTrue(cmds.filterIsInstance<SwarmCommand.PublishRow>().all { it.cancelReason == null })
+    }
+
+    @Test
     fun `origin cancel with USER and DELETED reasons emit corresponding SignTombstone`() {
         val (manifest, _) = createManifest()
         val engine = SwarmEngine(

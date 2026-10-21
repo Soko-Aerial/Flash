@@ -150,9 +150,10 @@ fun FlashFileMessageCard(
                 if (!detail.isNullOrBlank()) {
                     "$detail (Tap to retry)"
                 } else {
-                    "$formattedSize • Failed / Cancelled (Tap to retry)"
+                    "$formattedSize • Failed (Tap to retry)"
                 }
             }
+            FlashFileTransferStatus.Cancelled -> "$formattedSize • Cancelled"
         }
     }
 
@@ -164,6 +165,7 @@ fun FlashFileMessageCard(
             FlashFileTransferStatus.AwaitingAcceptance -> "${attachment.name}, $statusSubtitle. Waiting for you to accept the transfer."
             FlashFileTransferStatus.Downloaded -> "${attachment.name}, $formattedSize. Double-tap to open."
             FlashFileTransferStatus.Failed -> "Failed: ${attachment.name}, $statusSubtitle. Double-tap to retry."
+            FlashFileTransferStatus.Cancelled -> "Cancelled: ${attachment.name}, $statusSubtitle."
         }
     }
 
@@ -637,6 +639,15 @@ fun FlashFileIconBadge(
                 FlashIcon(
                     icon = FlashIcons.Retry,
                     contentDescription = "Retry transfer",
+                    tint = Color.White,
+                    size = FlashDimensions.iconMd,
+                )
+            }
+
+            FlashFileTransferStatus.Cancelled -> {
+                FlashIcon(
+                    icon = FlashIcons.Close,
+                    contentDescription = "Transfer cancelled",
                     tint = Color.White,
                     size = FlashDimensions.iconMd,
                 )

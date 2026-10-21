@@ -142,6 +142,8 @@ public sealed interface SwarmCommand {
         public val bytesDone: Long,
         public val totalSize: Long,
         public val failReason: String? = null,
+        /** Why a [SwarmLifecycleState.CANCELLED] row was cancelled, from the verified tombstone; null when unknown. */
+        public val cancelReason: SwarmTombstoneReason? = null,
     ) : SwarmCommand
 
     /** Structured debug log line. */

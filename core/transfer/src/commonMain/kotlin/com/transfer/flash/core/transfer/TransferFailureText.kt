@@ -33,11 +33,54 @@ public object TransferFailureText {
 
     public const val CANCELLED_BY_PEER: String = "The other device cancelled the transfer."
 
+    public const val DECLINED_BY_PEER: String = "The other device declined the file."
+
+    public const val PAUSED_BY_PEER: String = "Paused by the other device."
+
+    /** A 1:1 transfer paused by the Android service timeout: its progress is kept, but it does not restart itself. */
+    public const val PAUSED_BY_SYSTEM: String = "Paused by Android. Tap Resume to continue."
+
+    /** A retried receive that the sender never continued (open-items tracker C-08): it must not stay at "Downloading". */
+    public const val SENDER_DID_NOT_RESUME: String =
+        "The sender did not continue sending this file. Ask them to send it again."
+
+    public const val WAITING_FOR_ACCEPT: String = "Waiting for the other device to accept."
+
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
+
+    /** A transfer that was running when the process died (C-09): listed again, not resumed by itself. */
+    public const val INTERRUPTED_BY_RESTART: String =
+        "Flash was closed while this was transferring. Tap Retry to continue."
 
     /** The receiver could not write a chunk to storage (R-06): full disk, removed card, revoked folder access. */
     public const val WRITE_FAILED: String =
         "The file could not be saved on this device. Check that there is free space and that the save location is still available, then ask for it to be sent again."
+
+    /**
+     * The receiver refused the offer (C-11, ADR-221): it already holds as many incoming transfers as it can, the offer
+     * failed its checks, or it could not save the file. Carried to the sender as a `reason` on the `cancel` frame.
+     */
+    public const val RECEIVER_BUSY: String =
+        "The other device is receiving too many files right now. Try again in a moment."
+
+    public const val RECEIVER_REFUSED_FILE: String =
+        "The other device could not accept this file. Send it again, or send it as a smaller file."
+
+    public const val RECEIVER_STORAGE: String =
+        "The other device could not save this file. Ask them to check that they have free space, then send it again."
+
+    /** Wire tokens of the `reason` field of a refusing `cancel` frame (docs/protocol.md "Transfer control"). */
+    public const val REFUSE_SESSION_FULL: String = "session_full"
+    public const val REFUSE_INVALID_FILE_START: String = "invalid_file_start"
+    public const val REFUSE_WRITE_FAILED: String = "write_failed"
+
+    /** The sender-side sentence for a refusal [token], or null when the token is absent or unknown (a plain cancel). */
+    public fun refusalSentence(token: String?): String? = when (token?.trim()?.lowercase()) {
+        REFUSE_SESSION_FULL -> RECEIVER_BUSY
+        REFUSE_INVALID_FILE_START -> RECEIVER_REFUSED_FILE
+        REFUSE_WRITE_FAILED -> RECEIVER_STORAGE
+        else -> null
+    }
 
     // Swarm-specific failure sentences (ADR-072, Table 8.2)
     public const val DAMAGED: String =
@@ -115,6 +158,23 @@ public object TransferFailureText {
     public fun notEnoughSpace(needed: Long, free: Long): String =
         "Not enough free space to receive this file. It needs ${formatSize(needed)} and only ${formatSize(free)} " +
             "is available. Free up some space, then ask for it to be sent again."
+
+    /**
+     * The sentence for the control-flow reasons the repository stores on a row that is stopped, paused or waiting on
+     * purpose (`cancelled by receiver`, `declined`, `paused by sender`, ...). These are not failures, so unlike
+     * [friendly] this neither logs nor falls back to [GENERIC]: an unrecognised reason is returned unchanged.
+     */
+    public fun displayReason(rawReason: String?): String? {
+        val raw = rawReason?.trim() ?: return null
+        return when (raw.lowercase()) {
+            "cancelled by receiver", "cancelled by sender", "cancelled by peer" -> CANCELLED_BY_PEER
+            "declined" -> DECLINED_BY_PEER
+            "paused by receiver", "paused by sender" -> PAUSED_BY_PEER
+            "paused by system" -> PAUSED_BY_SYSTEM
+            "waiting for receiver to accept" -> WAITING_FOR_ACCEPT
+            else -> raw
+        }
+    }
 
     /** Reads a sentence for [rawReason]; logs the raw reason (never shown) against [transferId]. */
     public fun friendly(rawReason: String?, transferId: String? = null): String {

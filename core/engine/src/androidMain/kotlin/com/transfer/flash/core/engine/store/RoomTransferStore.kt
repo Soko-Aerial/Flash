@@ -23,6 +23,9 @@ public class RoomTransferStore(
 ) : TransferStore {
 
     override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) {
+        // Keep the identity columns of a row that already exists (the write-behind identity save may have got there
+        // first); a REPLACE would blank them.
+        if (transferDao.resetProgress(transferId, totalBytes, status) > 0) return
         transferDao.insert(
             TransferEntity(
                 transferId = transferId,
@@ -32,6 +35,68 @@ public class RoomTransferStore(
             ),
         )
     }
+
+    override suspend fun saveIdentity(row: TransferStore.StoredTransfer) {
+        val updated = transferDao.updateIdentity(
+            transferId = row.transferId,
+            totalBytes = row.totalBytes,
+            bytesDone = row.bytesDone,
+            status = row.state,
+            peerDeviceId = row.peerDeviceId,
+            peerName = row.peerName,
+            fileName = row.fileName,
+            direction = row.direction,
+            sourceUri = row.sourceUri,
+            wireFileId = row.wireFileId,
+            localPath = row.localPath,
+            errorMessage = row.errorMessage,
+            updatedAtMs = row.updatedAtMs,
+        )
+        if (updated == 0) {
+            transferDao.insert(
+                TransferEntity(
+                    transferId = row.transferId,
+                    totalBytes = row.totalBytes,
+                    bytesDone = row.bytesDone,
+                    status = row.state,
+                    peerDeviceId = row.peerDeviceId,
+                    peerName = row.peerName,
+                    fileName = row.fileName,
+                    direction = row.direction,
+                    sourceUri = row.sourceUri,
+                    wireFileId = row.wireFileId,
+                    localPath = row.localPath,
+                    errorMessage = row.errorMessage,
+                    updatedAtMs = row.updatedAtMs,
+                ),
+            )
+        }
+    }
+
+    override suspend fun restorableTransfers(sinceMs: Long): List<TransferStore.StoredTransfer> =
+        transferDao.restorable(sinceMs).map {
+            TransferStore.StoredTransfer(
+                transferId = it.transferId,
+                peerDeviceId = it.peerDeviceId,
+                peerName = it.peerName,
+                fileName = it.fileName,
+                direction = it.direction,
+                totalBytes = it.totalBytes,
+                bytesDone = it.bytesDone,
+                state = it.status,
+                errorMessage = it.errorMessage,
+                sourceUri = it.sourceUri,
+                wireFileId = it.wireFileId,
+                localPath = it.localPath,
+                updatedAtMs = it.updatedAtMs,
+            )
+        }
+
+    override suspend fun dismissStored(transferIds: List<String>) {
+        if (transferIds.isNotEmpty()) transferDao.dismiss(transferIds)
+    }
+
+    override suspend fun deleteStoredBefore(beforeMs: Long): Int = transferDao.deleteBefore(beforeMs)
 
     override suspend fun setBytesDone(transferId: String, bytesDone: Long) {
         transferDao.setBytesDone(transferId, bytesDone)

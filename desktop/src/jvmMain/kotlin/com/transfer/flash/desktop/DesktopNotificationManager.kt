@@ -8,6 +8,7 @@ import com.transfer.flash.core.calling.model.FlashCallState
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.security.pairing.PairingPhase
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.model.FlashTransferId
 import com.transfer.flash.core.transfer.model.FlashTransferState
 import java.util.concurrent.ConcurrentHashMap
@@ -203,10 +204,26 @@ public class DesktopNotificationManager(
     }
 
     public fun handleTransfersUpdate(transfers: List<com.transfer.flash.core.transfer.model.FlashTransfer>) {
+        // A row that left the list (cleared history) must not keep a stale entry for the whole session (audit B-14/B-18).
+        val liveIds = transfers.mapTo(HashSet()) { it.id }
+        previousTransferStates.keys.removeIf { it !in liveIds }
         transfers.forEach { transfer ->
             val prev = previousTransferStates[transfer.id]
             if (prev != transfer.state) {
                 previousTransferStates[transfer.id] = transfer.state
+
+                // An inbound offer is announced on first sight too: with the window minimised it is otherwise invisible
+                // and the sender waits for an answer nobody knows is being asked (audit B-14).
+                if (transfer.state == FlashTransferState.Offered && prev == null) {
+                    if (isNotificationsEnabled()) {
+                        dispatchNotification(
+                            title = "Incoming file from ${transfer.peerName.ifBlank { "a nearby device" }}",
+                            message = transfer.fileName,
+                            type = Notification.Type.Info,
+                        )
+                    }
+                    return@forEach
+                }
 
                 // Fire notification only if this is a state transition (not initial discovery)
                 if (prev != null) {
@@ -222,7 +239,9 @@ public class DesktopNotificationManager(
                         if (isNotificationsEnabled()) {
                             dispatchNotification(
                                 title = "Transfer Failed",
-                                message = "Failed to transfer ${transfer.fileName}",
+                                // The reason is already a sentence for people (ADR-069); say it instead of hiding it.
+                                message = TransferFailureText.displayReason(transfer.errorMessage)?.ifBlank { null }
+                                    ?: "Failed to transfer ${transfer.fileName}",
                                 type = Notification.Type.Warning,
                             )
                         }

@@ -109,6 +109,10 @@ class FlashBackgroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // C-02: a transfer the platform paused (foreground-service time limit) continues once the service runs again.
+        if (isForeground) {
+            scope.launch { runCatching { DiscoveryEngineHolder.currentTransfers()?.resumeSystemPaused() } }
+        }
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             val transferId = intent.getStringExtra(EXTRA_TRANSFER_ID)
             if (transferId != null) {
@@ -152,12 +156,9 @@ class FlashBackgroundService : Service() {
         Log.w(TAG, "Foreground service timeout reached: startId=$startId, fgsType=$fgsType")
         val transfers = DiscoveryEngineHolder.currentTransfers()
         val allTransfers = transfers?.activeTransfers?.value ?: emptyList()
-        val plan = TimeoutStopPlan.of(allTransfers, isSwarmRow = { id -> transfers?.isExternalRow(id.value) == true })
-        for (transfer in plan.toCancel) {
-            // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
-            timeoutCleanupScope.launch { runCatching { transfers?.cancelTransfer(transfer.id) } }
-        }
+        val plan = TimeoutStopPlan.of(allTransfers)
         for (transfer in plan.toPause) {
+            // Not [scope]: stopSelf() → onDestroy() cancels it before these could run.
             timeoutCleanupScope.launch { runCatching { transfers?.pauseForSystem(transfer.id, "SERVICE_TIMEOUT") } }
         }
         stopSelf()
@@ -304,7 +305,10 @@ class FlashBackgroundService : Service() {
                 ((transfer.bytesDone * 100) / transfer.bytesTotal).toInt().coerceIn(0, 100)
             } else 0
 
-            if (prevState == null) {
+            if (prevState == null && transfer.restored) {
+                // Read back from the store after a restart (C-09): listed in Transfers, not announced again.
+                Unit
+            } else if (prevState == null) {
                 when (transfer.state) {
                     FlashTransferState.Completed -> {
                         FlashNotificationManager.showTransferCompleted(this, transfer)
@@ -356,6 +360,13 @@ class FlashBackgroundService : Service() {
                         lastProgressPostMs[id] = System.currentTimeMillis()
                         lastProgressPercent[id] = percent
                         FlashNotificationManager.showTransferProgress(this, transfer)
+                    }
+                    FlashTransferState.Queued -> {
+                        // Waiting (peer away, network, Android): an ongoing bar frozen at the last percentage, with a
+                        // Cancel button, would be false information (audit B-07). The Transfers tab shows the wait.
+                        lastProgressPostMs.remove(id)
+                        lastProgressPercent.remove(id)
+                        FlashNotificationManager.clearTransfer(this, id)
                     }
                     else -> Unit
                 }

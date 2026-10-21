@@ -66,6 +66,91 @@ Device pass. If the sliding indicator misplaces on a very narrow window, check t
 
 ### Next AI
 Do not wire the contest packages. Run `HUBV-*`, then tune motion timings from what the device shows, not by guess. Not committed.
+## 2026-10-21 - Cancel, error and resume: the audit's defects fixed (B-01..B-07, B-09, B-10, B-12, B-14 part, B-16)
+
+### Worked on
+Reviewed the 2026-10-20 audit on `agent/A-cancel` against the code and fixed the confirmed defects. Status per finding:
+`docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` section 10.
+
+### Changed
+- `core:transfer`: `resumeTransfer` refuses a Cancelled row (B-01); `onRemoteTransferControl` ignores a late PAUSE/RESUME/CANCEL on a
+  finished row (B-03); `pauseForSystem` marks a 1:1 row `paused by system` (B-02); `cancelTransfer` clears a stale message;
+  `FlashTransfer.canRetry` and `groupOrigin`; `TransferFailureText.displayReason` turns the stored control tokens into sentences (B-12).
+- `core:messaging` + three host mappers: `FlashFileTransferStatus.Cancelled` (was folded into Failed); group aggregate handles it.
+- `ui:chat`: file and voice cards show "Cancelled" with no Retry.
+- `app`: the dataSync timeout only pauses (`TimeoutStopPlan` rewritten, B-02); Queued clears the ongoing notification (B-07); no group
+  Cancel action and no dead Retry on notifications (B-04, B-06); collision-free notification slots (B-16); the action receiver clears
+  the notification only after the work succeeded (B-10); the call notification is cancelled on every exit (B-09).
+- `desktop`: inbound offer toast, failure reason through `displayReason`, stale ids pruned (B-14 part).
+
+### Decisions taken (owner questions of audit section 7, owner may overrule)
+Q1 pause, not cancel, on the timeout; Q2 a cancelled send is not recoverable by retry (send again from the composer); Q3 drop the
+group Cancel action from the notification rather than add a confirmation. See ADR-219.
+
+### Verification
+Through `tools\flash-gradle.ps1` (the first attempt waited 45 min behind a running `:desktop:run` and exited 75; the second ran
+after it ended). Green: `:core:transfer:testAndroidHostTest` (217) and `jvmTest` (136), `:core:messaging:jvmTest` (362),
+`:core:swarm:jvmTest` (146), `:ui:chat:jvmTest` (672), `:desktop:jvmTest` DesktopNotificationManager filter, `:app:testDebugUnitTest`
+`TransfersUiMapperTest` + `TimeoutStopPlanTest` (14); `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` clean.
+New tests: five in `RealFlashTransferRepositoryTest`, `TransferFailureTextTest`, `TransfersUiMapperTest`, `TimeoutStopPlanTest`.
+**Not device-verified; no mutation check was run.** `CNCL-*` stay TODO.
+
+### Not fixed
+B-08 (unbounded hub retry, owner decision), B-11/F-01, B-13, B-15, B-19 (features / wire / engine plumbing), the failed-1:1-receive
+"Downloading with no session" half of B-06, the 1:1 "Cancel for everyone?" wording, B-17 (not confirmed), B-18 first half (warning only).
+
+### Next AI
+Run `CNCL-01..04, 06, 07, 09, 10, 12` on a phone. Then decide B-08 and build F-01 (a cancel/failure history row).
+
+## 2026-10-20 - Cancel, error and resume audit: what each stop actually does to the peer, the row and the notification
+
+### Worked on
+Owner asked for a forensic trace of every cancel/exit/error/resume path correlated with notification behaviour ("find all
+cancel exit error and trace and find bugs and improvements etc and also features needed"). Work was done in a separate worktree
+(`E:/FlashWork/A-cancel`, branch `agent/A-cancel` from `dev` @ `51469a84`) so the other agent's tree was untouched.
+
+### Changed
+- New `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md`: trace tables for 1:1, swarm, hub, calls/PTT/pairing,
+  then 19 defects (B-01..B-19), 8 improvements (I-01..I-08), 8 features (F-01..F-08), deliberate behaviour, five owner
+  questions, and what the audit did not do. Every claim carries `file:line`.
+- `docs/testing/TEST-BACKLOG.md`: new section `4zzzzzzzzzzzzzzzzz` with `CNCL-01`..`CNCL-14`, one per actionable finding.
+
+**No product code was changed. Nothing was built, run or installed.** Every finding is static evidence; the doc says so twice.
+
+### Findings that matter most
+- **B-01 (S1) consent:** the chat bubble has no Cancelled state (`FlashFileTransferStatus` folds it into `Failed` on all three
+  hosts) and its tap calls `resumeTransfer`, which relaunches a **Cancelled send** (`RealFlashTransferRepository.kt:770`) — so
+  tapping a cancelled attachment re-sends the file. The mapper comment that assumed otherwise (`TransfersUiMapper.kt:48-50`) is
+  false.
+- **B-02 (S1) loss:** the Android dataSync timeout **cancels** 1:1 transfers and calls `forgetChunks`, while swarm and hub pause;
+  the app's own "Paused by Android; continues automatically." sentence can never describe a 1:1 transfer.
+- **B-03 (S2) state corruption:** `onRemoteTransferControl` has no terminal-state guard, so a late PAUSE turns a Completed row
+  into Paused and a RESUME resurrects a Cancelled or Completed send.
+- **B-04 (S1/S3):** group cancel is confirmed where it is harmless (every 1:1 send asks "Cancel for everyone?") and performed
+  without confirmation where it destroys the file for the whole group (the notification's "Cancel").
+- **B-06 (S2):** hub Failed rows are `retryable = false`, yet `showTransferFailed` always adds Retry, and `HubFileBinding.resume`
+  no-ops on FAILED — a dead button.
+- **B-07 (S2):** `handleTransfersChanged` has `else -> Unit`, so `Transferring → Queued` leaves an ongoing progress notification
+  with a Cancel button for a transfer that is only waiting.
+- **B-11 (S2):** transfer state is never restored: `TransferStore` has no list API, `TransferDao.observe` is unused, and nothing
+  prunes the rows — so no restart-resume (§18) and no history (§22).
+- Also: silent receiver refusals (B-15), raw internal reasons shown to users (B-12), undismissable call notification (B-09),
+  notification id collisions that could cancel the wrong file (B-16).
+
+### Verification
+Documentation only. Read the implementation end to end in the areas listed in the audit's §0 table. No Gradle command was run,
+no device was touched, so nothing here is device-verified and no build claim is made.
+
+### Remaining / next AI
+- Owner decisions in the audit's §7 (1:1 timeout pause vs cancel; recoverable send-cancel; confirmation for a notification
+  action; history retention; desktop action scope).
+- Fix order recommended: B-01 + B-03 (one small guard each, they are the same class), then B-02, then B-06 + B-07 (one predicate
+  on the model), then B-11/F-01 as a feature.
+- The `CNCL-*` device cases stay TODO until the fixes land; `CNCL-01/04/12` can be run now to confirm the audit's reading.
+
+### Next AI
+Read the audit doc's §3 and §7 before touching `RealFlashTransferRepository` or the notification manager. Do not "fix" B-02 by
+making 1:1 cancel faster; the owner's answer to §7 Q1 decides it.
 
 ## 2026-10-20 - Fixes from the owner's logs: swarm greeting after a session swap, redial loop stuck on the old network
 
@@ -17753,3 +17838,27 @@ JitPack built `v2.1.0-beta.2`: status `ok`. `core-engine`, `ui-callui` and `webr
 ## 2026-10-21 - Open-items stream H: Hub list pane, multi-select, voice download, search re-jump, reaction race
 
 Items H-16..H-26 of `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` are done in the working tree (uncommitted, unit-tested, NOT device-verified): see the tracker's implementation log for each verdict (H-24 kept as is; H-26 claims judged one by one). Owed device checks: `CHATFIX-09..16` in `docs/testing/TEST-BACKLOG.md`. Stream C (cancel/transfer) is on `agent/A-cancel` (C-02, C-05..C-13 done, `CNCL-15..20` owed).
+
+## 2026-10-21 — Open-items stream C: auto-resume, desktop toast, 24 h bound, retry watchdog, persistence, refusal reasons
+
+### Worked on
+Owner decisions on the cancel/error/resume audit leftovers (tracker `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` in the main checkout), implemented one by one on `agent/A-cancel`.
+
+### Changed
+- C-12/C-13 (`57af1ad8`), C-06 desktop toast with Accept / Decline / Retry (`2225fe3c`), C-10 dismiss and "Clear failed", C-08 retried receive with no sender fails after 30 s (`SENDER_DID_NOT_RESUME`).
+- C-07 (`91b0c69f`, ADR-220): hub upload older than 24 h fails with `UPLOAD_WINDOW_ENDED`; an expired download ticket fails; a Failed hub row can be retried and the message returns to Pending.
+- C-02 (`ae91f59b`): `resumeSystemPaused()` resumes rows paused by Android when the foreground service starts.
+- C-11 (`3e828b8b`, ADR-221, `docs/protocol.md`): a receiver refusal carries `reason` on the `cancel` frame; the sender fails with the receiver's sentence.
+- C-09 / C-05 / C-10 persistence (`3df0bfa5`): Room step 20 adds identity columns to `transfers`; the repository writes rows behind the scenes and restores them at start (running rows come back Failed with `INTERRUPTED_BY_RESTART`), 30-day retention, dismissals stored, restored rows are not announced.
+
+### Verification
+Unit tests green: `:core:transfer:testAndroidHostTest`, `:core:persistence` (host + jvm), `:core:engine:jvmTest`, `:core:messaging:jvmTest`, `:ui:chat:jvmTest`, `:desktop:jvmTest`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`. NOT device-verified. Timing flakes under load that pass alone: `ExternalSourcesAndInterceptorTest` (two tests), `RealFlashTransferRepositoryTest` "B-01 resume refuses a cancelled or declined row...".
+
+### Remaining
+- Desktop still passes `store = null`, so desktop rows are not restored (D5 owner decision).
+- C-11: the refusing device shows no Failed row (the event carries no metadata).
+- **Merge caution:** this branch is at Room schema 20; the main checkout is still at 19 and has step 20 free. ADR-218 belongs to the unmerged `agent/search-upgrades`, ADR-219 to this branch.
+- Device checks `CNCL-15..20` (new) and `CNCL-11`, `CNCL-13`.
+
+### Next AI
+Merge `agent/A-cancel` after renumbering any competing schema step 20; run the CNCL device checks.

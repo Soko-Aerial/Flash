@@ -1527,9 +1527,10 @@ public class DesktopEngine(
                                 FlashTransferState.Completed,
                                 FlashTransferState.Verifying ->
                                     FlashFileTransferStatus.Downloaded
-                                FlashTransferState.Failed,
-                                FlashTransferState.Cancelled ->
+                                FlashTransferState.Failed ->
                                     FlashFileTransferStatus.Failed
+                                FlashTransferState.Cancelled ->
+                                    FlashFileTransferStatus.Cancelled
                                 FlashTransferState.Offered ->
                                     FlashFileTransferStatus.AwaitingAcceptance
                                 FlashTransferState.Paused ->
@@ -1657,6 +1658,7 @@ public class DesktopEngine(
                     registerGroupFile = c::registerHubGroupFile,
                     queueTicket = c::queueHubFile,
                     outgoingEnded = c::hubFileEnded,
+                    outgoingRetried = c::hubFileRetried,
                     openSource = fileOpener,
                     receivedDirectory = { canonicalRoot.path },
                     isDirectlyReachable = { peerId ->
@@ -2099,13 +2101,13 @@ public class DesktopEngine(
         }
     }
 
-    private fun sendXfer(peerId: String, action: String, transferId: String) {
+    private fun sendXfer(peerId: String, action: String, transferId: String, reason: String? = null) {
         val network = networkImpl ?: return
         val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession ?: return
         session.connection.sendText(
             FlashTextFraming.encodeFields(
                 "FLASH_XFER",
-                listOf("action" to action, "transferId" to transferId),
+                listOfNotNull("action" to action, "transferId" to transferId, reason?.let { "reason" to it }),
             ),
         )
     }
@@ -2141,6 +2143,10 @@ public class DesktopEngine(
             },
             sendXferCancel = { pid, tid ->
                 sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid)
+            },
+            // C-11: the reason the receiver refused the file rides on the cancel frame.
+            sendXferRefuse = { pid, tid, reason ->
+                sendXfer(pid, RealFlashTransferRepository.ACTION_CANCEL, tid, reason)
             },
             incomingOwners = incomingOwners,
             // A re-offer of an already-accepted transfer takes the full accept path (ADR-069 / FA-2
