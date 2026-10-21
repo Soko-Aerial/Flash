@@ -3,7 +3,7 @@
 ## 2026-10-21 (server & hub internals audit) - DOCS ONLY, nothing built, nothing device-verified
 
 - **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md`. It covers the area the 2026-10-19 and 2026-10-21 reviews skipped (relay router internals, mailbox, files read path, directory paging/sync, announcement store, identity/authorisation, hub REST client). 16 findings, none high, four medium: **ANN-01** (autocommit writes → duplicate `seq`, `expectedSeq` TOCTOU), **DEV-01** (a department move does not authorise anything until certificate renewal), **RLY-01** (one page of undecryptable mailbox rows blocks a device's drain for ever), **DIR-01** (`/directory/people` truncates before the cursor, so only one page is ever reachable).
-- **No code changed, no build run, no device run.** The hub is still experimental and undeployed. Committed as `0a140faf`.
+- **No code changed, no build run, no device run.** The hub is still experimental and undeployed. Committed on `dev` as `4e8da46f` (the parent of the commit that records this hash).
 - **Owed:** `SRVHUB-01..12` in `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzzzzzzzzzzz.
 - **Owner questions (audit §8):** rosters per sync 64 (docs) vs 256 (code); should a department move force a certificate re-issue + kick; is "delete the row and tell the sender `DROPPED`" acceptable for an unopenable sealed row; must a hub restart behind one office NAT be supported; does an edit keep or clear an announcement's expiry.
 - **Recommended next task:** ANN-01 — wrap `createAnnouncement`, `updateAnnouncement`, the pin paths and the `clientRequestId` check in `withTransaction` (two-thread tests, mirroring the existing `FileStore` quota race test). Then DIR-01, then DEV-01.
