@@ -110,6 +110,13 @@ internal suspend fun ApplicationCall.tooManyRequests(retryAfterSeconds: Long) {
     respondError(HttpStatusCode.TooManyRequests, HubErrorCodes.ERR_RATE_LIMIT, MESSAGE_RATE_LIMITED)
 }
 
+/** Rate limits the call against [limiter] by an explicit [key] (for example a device id); responds 429 and returns false when over budget. */
+internal suspend fun ApplicationCall.withinKeyLimit(limiter: TokenBucketLimiter, key: String): Boolean {
+    if (limiter.tryAcquire(key)) return true
+    tooManyRequests(limiter.retryAfterSeconds(key))
+    return false
+}
+
 /** Rate limits [call] against [limiter] by client address; responds 429 and returns false when over budget. */
 internal suspend fun ApplicationCall.withinLimit(limiter: TokenBucketLimiter, addresses: ClientAddressResolver): Boolean {
     val ip = addresses.clientKey(this)

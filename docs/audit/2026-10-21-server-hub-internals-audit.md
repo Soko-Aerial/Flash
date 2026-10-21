@@ -30,11 +30,11 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | OPEN |
 | **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | OPEN |
 | **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
-| **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | OPEN |
+| **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
 | **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | OPEN |
 | **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | OPEN |
 | **RLY-03** | Low | `:server` relay | `draining` is set outside the hand-off gate, so a live frame can be delivered in the instant before a drain starts (ordering). | OPEN |
-| **CLI-01** | Low | `:core:enterprise` | A 401 refresh is not single-flight: *M* concurrent 401s cause *M* serialised full sign-ins, which also feeds AUTH-01. | OPEN |
+| **CLI-01** | Low | `:core:enterprise` | A 401 refresh is not single-flight: *M* concurrent 401s cause *M* serialised full sign-ins, which also feeds AUTH-01. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
 | **CLI-02** | Low | `:core:enterprise` | `HubSession.bearer()` holds a mutex across two network round-trips with no client timeout: an unreachable hub stalls every hub call on the device. | OPEN |
 | **CLI-03** | Low | `:core:enterprise` | Eight hub-client call sites read `response.bodyAsText()` with no size bound; the 64 KiB `HubRestCodec.decode` guard runs afterwards. | OPEN |
 | **FL-01** | Low | `:server` files | `FileStore.access` answers `404` for a non-sender whose blob is not `READY`, so the `409 NOT_READY` in `readChunk` is unreachable for recipients and the two paths disagree. No user-visible trigger found in the current app flow. | OPEN |
@@ -535,7 +535,7 @@ So a burst allows ~15 sign-ins, then one every **2 seconds**. Devices behind one
 
 **Decision:** §8.4 — `/auth/verify` gets its own per-device bucket (burst 5, 1 per 5 s), `/challenge` and `/hub` stay per-IP; supported scale ≈ 200 devices behind one public IP; plus single-flight refresh (CLI-01) and jitter.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 7; see section 12).
 
 ---
 
@@ -642,7 +642,7 @@ Two concurrent 401s (the presence poll and a file upload after a hub restart, sa
 
 **Fix direction.** Pass the rejected token into `bearer`: if the cached token is different from the rejected one, return it instead of re-authenticating (the classic single-flight refresh). `HubSession` already has the mutex and the cache; only the comparison is missing.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 7; see section 12).
 
 ---
 
@@ -924,7 +924,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 **DONE 2026-10-21** |
 | 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 **DONE 2026-10-21** |
 | 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 **DONE 2026-10-21** |
-| 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 |
+| 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 **DONE 2026-10-21** |
 | 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 |
 | 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 |
 | 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 |
@@ -988,3 +988,13 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - Tests: `MailboxQuarantineTest` (6): 3 unreadable then 3 readable rows with `LIMIT 3` returns the 3 readable ones and reports the 3; a second fetch neither re-reads nor re-counts them; 250 unreadable rows ahead of one readable; resend after quarantine; the TTL sweep removes quarantined rows; a failing quarantine write reaches the caller; a real router drain delivers the readable rows and the origin receives 3 `DROPPED`. Existing `SealedMailboxPayloadTest` still passes unchanged ("skipped, not deleted"). **Mutations:** removing the `undeliverable_reason IS NULL` filter and the router's `reportQuarantined` call failed two tests; restored.
 - Not done (optional per the spec): a console action to retry quarantined rows after a key restore.
 - Full `:server:test` once failed `RelayLoadTest.everyMessageArrivesAtLeastOnceDespiteRandomDisconnects` with a coroutine timeout while the whole suite ran; it passed 4 times alone (including after `cleanTest`). Treat it like the documented load flake `RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`; if it recurs in isolation, suspect the drain change first.
+
+### Step 7 - Sign-in budget (AUTH-01, CLI-01, section 8.4; SRVHUB-08, SRVHUB-10): DONE, unit and route tested, NOT device-verified
+
+- Server: `HubRateLimits.verify` (per device id: burst 5, refill 1 per 5 s) and `verifyIp` (per address ceiling: burst 600, refill 20/s). `/auth/verify` takes `verifyIp` first, parses the body, then the device bucket; a body that does not parse, or has a blank device id, takes the strict `auth` bucket instead. `/auth/challenge` and `GET /api/v1/hub` keep `auth` (burst 30, 1/s). New `withinKeyLimit` helper in `ApiGate.kt`.
+- Deviation from the spec: the spec had no per-address ceiling for `/verify`. Without one, an attacker rotating made-up device ids pays one ECDSA verification per request with no limit at all, so `verifyIp` was added (burst 600 so 200 devices behind one address fit with room). Revisit if it ever blocks a real office; the knob is the constructor default.
+- Client (`HubSession`): the CLI-01 fix direction was "pass the rejected token into `bearer`"; the `HubBearerSource` interface has a boolean `forceRefresh`, so a generation counter does it instead. A caller records the sign-in generation before it waits; if another caller completed a sign-in meanwhile, it takes that token instead of signing in again. The counter is read without the mutex on purpose (a caller queued behind a running sign-in has to see the number from before it started).
+- Jitter: only when the hub refused a token the device still counted as valid (the hub-restart signature, not an ordinary expiry), `reauthJitterMs` default 0..30 s, applied before the mutex so it never blocks other callers. Tests and the E2E harness pass `{ 0L }` (`EnterpriseHub(reauthJitterMs = ...)`, `HubSession(reauthJitterMs = ...)`).
+- Docs: `HUB-SERVER-DEPLOYMENT.md` states the ~200-devices-behind-one-address scale and the `trustedProxies` requirement; `protocol.md` "Sign-in rate limits".
+- Tests: `AuthVerifyRateLimitTest` (6): 200 devices behind one address are not limited by each other; one device gets its burst of 5 then 429 while a neighbour is untouched; refill after 5 s; garbage without a device id meets the strict per-address limit; the challenge stays per address; made-up device ids cannot bypass the ceiling. `HubSessionTest` (+2): five concurrent refused callers produce one extra sign-in (not five), jitter only applies to a refused still-valid token. **Mutations:** device key replaced by the address bucket failed 2 tests; a single shared key failed 3; sign-in reuse removed (`forceRefresh` always re-signs) failed the single-flight test; all restored.
+- Not done here: the mutex is still held across the network sign-in (CLI-02, step 10).

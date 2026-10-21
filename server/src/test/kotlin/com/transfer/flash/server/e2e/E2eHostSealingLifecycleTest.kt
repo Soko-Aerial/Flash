@@ -68,7 +68,7 @@ class E2eHostSealingLifecycleTest {
         val client: EnterpriseHub = EnterpriseHub(
             deviceId = id, friendlyName = "Test $id", crypto = crypto, trustStore = trust, scope = scope,
             httpClient = http, ownsHttpClient = false, allowCleartext = { true }, clock = hub.clock::now,
-            ioDispatcher = Dispatchers.IO, sealingKeyStore = keys,
+            ioDispatcher = Dispatchers.IO, sealingKeyStore = keys, reauthJitterMs = { 0L },
             relayFactory = { identity ->
                 FlashRelayClient(
                     deviceId = id, friendlyName = "Test $id", hubUrl = trust.credentials.value?.hubUrl.orEmpty(),

@@ -112,11 +112,19 @@ fun Route.authRoutes(
 
             // POST /api/v1/auth/verify
             post("/verify") {
-                if (!call.withinLimit(limits.auth, addresses)) return@post
+                // AUTH-01: a generous per-address ceiling first (made-up device ids must not be free), then the per-device bucket.
+                if (!call.withinLimit(limits.verifyIp, addresses)) return@post
                 val body = call.receiveBoundedText() ?: return@post
                 val request = HubRestCodec.decodeOrNull<AuthVerifyRequest>(body)
                 if (request == null) {
+                    // No parsable device id: a flood of garbage still meets the strict per-address limit.
+                    if (!call.withinLimit(limits.auth, addresses)) return@post
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
+                    return@post
+                }
+                if (request.deviceId.isBlank()) {
+                    if (!call.withinLimit(limits.auth, addresses)) return@post
+                } else if (!call.withinKeyLimit(limits.verify, request.deviceId.take(MAX_DEVICE_ID_KEY_CHARS))) {
                     return@post
                 }
                 if (request.delegationChain.size > 1) {
@@ -322,6 +330,7 @@ private fun refusalReason(error: Throwable): String = "reason=" + when (error) {
 }
 
 private const val MAX_TOKEN_CHARS = 256
+private const val MAX_DEVICE_ID_KEY_CHARS = 128
 private const val MESSAGE_BAD_REQUEST = "The request could not be processed."
 private const val MESSAGE_PROOF_REQUIRED = "Enrollment requires proof of possession of the device key."
 private const val MESSAGE_AUTH_FAILED = "Authentication failed."

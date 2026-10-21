@@ -54,6 +54,7 @@ class EnterpriseHubTest {
             httpClient = fake.client(),
             clock = { now },
             ioDispatcher = dispatcher,
+            reauthJitterMs = { 0L },
             relayFactory = { idp ->
                 FlashRelayClient(
                     deviceId = "dev-1", friendlyName = "Phone", hubUrl = "", identityProvider = idp, transport = transport,

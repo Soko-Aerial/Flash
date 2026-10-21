@@ -275,6 +275,8 @@ proxies, every request appears to come from the proxy's address: the per-address
 so a few failed sign-ins from one device lock everybody out. The hub logs a configuration
 warning at start-up when this is misconfigured.
 
+**Supported scale behind one address (AUTH-01, ADR-222).** Up to about **200 devices behind one public IP** (a campus-sized building) recover within a couple of minutes after the hub restarts. Bearer tokens live in memory, so a restart makes every device sign in again; `POST /api/v1/auth/verify` is therefore limited **per device** (a burst of 5, then one every 5 s), with a generous per-address ceiling (a burst of 600, then 20 a second) so made-up device ids cannot be used to burn signature checks. `GET /api/v1/auth/challenge` and `GET /api/v1/hub` stay limited per address (a burst of 30, then one a second), and the client spreads its first sign-in after a refused token over 0 to 30 s and signs in once for all concurrent requests. **All of this assumes the hub sees each device's real address:** behind a reverse proxy set `FLASH_TRUSTED_PROXIES`, or every device collapses onto the proxy's address and the per-address buckets stop meaning anything.
+
 Caddy (same idea, WebSockets are automatic):
 
 ```text

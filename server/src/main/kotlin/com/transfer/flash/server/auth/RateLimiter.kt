@@ -85,8 +85,19 @@ class TokenBucketLimiter(
  */
 class HubRateLimits(
     clock: () -> Long = System::currentTimeMillis,
-    /** Per client IP on `/auth/challenge` and `/auth/verify`: a burst of 30, then 1 per second. */
+    /** Per client IP on `/auth/challenge` and `GET /api/v1/hub`: a burst of 30, then 1 per second. */
     val auth: TokenBucketLimiter = TokenBucketLimiter(30, 1.0, clock = clock),
+    /**
+     * Per device id on `/auth/verify` (AUTH-01, ADR-222): burst 5, then 1 per 5 s. A verify must present a nonce only `/challenge` can mint, so
+     * it is not the anonymous surface the per-IP bucket protects; keying it by device removes the thundering herd of a hub restart behind one
+     * office address (about 200 devices) without widening the brute-force surface. A body with no parsable device id falls back to the IP.
+     */
+    val verify: TokenBucketLimiter = TokenBucketLimiter(5, 1.0 / 5.0, clock = clock),
+    /**
+     * Per client IP on `/auth/verify`, a generous ceiling over [verify]: burst 600, then 20 per second. It holds a campus-sized building
+     * re-authenticating at once and still stops one address from burning signature checks with an endless stream of made-up device ids.
+     */
+    val verifyIp: TokenBucketLimiter = TokenBucketLimiter(600, 20.0, clock = clock),
     /** Per client IP on `/enroll`, `/enroll/renew` and the landing page: burst 10, then 1 every 6 s. */
     val enroll: TokenBucketLimiter = TokenBucketLimiter(10, 1.0 / 6.0, clock = clock),
     /** Per client IP on admin login / setup: burst 8, then 1 every 15 s. */
@@ -118,7 +129,7 @@ class HubRateLimits(
     val fileRead: TokenBucketLimiter = TokenBucketLimiter(240, 40.0, clock = clock),
 ) {
     fun sweepAll() {
-        auth.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep(); fileWrite.sweep(); fileRead.sweep()
+        auth.sweep(); verify.sweep(); verifyIp.sweep(); enroll.sweep(); adminLogin.sweep(); principal.sweep(); unauthenticated.sweep(); sealingKey.sweep(); directorySync.sweep(); directoryPeople.sweep(); announcementPost.sweep(); announcementRead.sweep(); fileWrite.sweep(); fileRead.sweep()
     }
 
     companion object {
@@ -127,6 +138,8 @@ class HubRateLimits(
             fun big() = TokenBucketLimiter(1_000_000, 1_000_000.0)
             return HubRateLimits(
                 auth = big(),
+                verify = big(),
+                verifyIp = big(),
                 enroll = big(),
                 adminLogin = big(),
                 principal = big(),
