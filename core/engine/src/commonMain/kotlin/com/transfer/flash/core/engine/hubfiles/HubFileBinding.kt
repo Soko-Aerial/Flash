@@ -93,6 +93,8 @@ public class HubFileBinding(
     private val queueTicket: suspend (transferId: String) -> Boolean,
     /** An outgoing file was cancelled or failed for good: the chat gives its message up (`hubFileEnded`). */
     private val outgoingEnded: suspend (transferId: String) -> Unit,
+    /** A Failed outgoing file was retried: the chat puts its message back to waiting (`hubFileRetried`, C-07). */
+    private val outgoingRetried: suspend (transferId: String) -> Unit = {},
     private val openSource: FileSourceOpener,
     /** Where received files go; each one gets its own sub-directory named by its transfer id. */
     private val receivedDirectory: () -> String,
@@ -158,6 +160,7 @@ public class HubFileBinding(
         }
 
         override suspend fun resume(transferId: String) {
+            resumeFailed(transferId)
             dao.setPaused(transferId, false, timeSource.nowMs())
             launchRun(transferId)
         }
@@ -384,10 +387,46 @@ public class HubFileBinding(
                 true
             }
             if (!again) return
+            if (giveUpOnStale(row)) return
             running.update { it - transferId }
             delay(wait)
             wait = (wait * 2).coerceAtMost(maxRetryDelayMs)
             running.update { it + transferId }
+        }
+    }
+
+    /**
+     * C-07: a run that keeps being interrupted must not retry for ever. An upload stops at the hub's own 24 hour window
+     * (counted from the row's creation, so it survives a restart); a download stops once the file has left the hub. The row
+     * becomes Failed with a sentence, and Retry ([resumeFailed]) starts it again.
+     * @return true when the row was failed and the run must end.
+     */
+    private suspend fun giveUpOnStale(row: HubFileEntity): Boolean {
+        val now = timeSource.nowMs()
+        return when {
+            row.direction == HubFileStates.OUT && row.state == HubFileStates.UPLOADING && now - row.createdAtMs > UPLOAD_WINDOW_MS -> {
+                if (dao.moveState(row.transferId, HubFileStates.UPLOADING, HubFileStates.FAILED, HubFileText.UPLOAD_WINDOW_ENDED, now) == 1) {
+                    outgoingEnded(row.transferId)
+                }
+                true
+            }
+            row.direction == HubFileStates.IN && row.state == HubFileStates.DOWNLOADING && row.expiresAtMs in 1 until now -> {
+                failIncoming(row, HubFileError.NotFound, peerName(row.peerId))
+                true
+            }
+            else -> false
+        }
+    }
+
+    /** Retry on a Failed hub row: back to the state it failed from, error cleared, and run again. */
+    private suspend fun resumeFailed(transferId: String) {
+        val row = dao.get(transferId) ?: return
+        if (row.state != HubFileStates.FAILED) return
+        val to = if (row.direction == HubFileStates.OUT) HubFileStates.UPLOADING else HubFileStates.DOWNLOADING
+        if (dao.moveState(transferId, HubFileStates.FAILED, to, null, timeSource.nowMs()) == 1) {
+            FlashLog.i("HUB", "hub file ${transferId.take(14)} retried from Failed")
+            // The chat message was given up when the upload failed; it waits for a ticket again.
+            if (to == HubFileStates.UPLOADING) outgoingRetried(transferId)
         }
     }
 
@@ -557,6 +596,9 @@ public class HubFileBinding(
     public companion object {
         /** The transfer repository's name for this source of external rows. */
         public const val EXTERNAL_SOURCE: String = "hub"
+
+        /** The hub keeps an unfinished upload this long; after it a retrying upload is given up (C-07). */
+        public const val UPLOAD_WINDOW_MS: Long = 24L * 60 * 60 * 1000
 
         public const val DEFAULT_RETRY_DELAY_MS: Long = 15_000L
         public const val DEFAULT_MAX_RETRY_DELAY_MS: Long = 10L * 60_000L

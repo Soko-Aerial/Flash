@@ -1658,6 +1658,7 @@ public class DesktopEngine(
                     registerGroupFile = c::registerHubGroupFile,
                     queueTicket = c::queueHubFile,
                     outgoingEnded = c::hubFileEnded,
+                    outgoingRetried = c::hubFileRetried,
                     openSource = fileOpener,
                     receivedDirectory = { canonicalRoot.path },
                     isDirectlyReachable = { peerId ->

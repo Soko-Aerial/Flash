@@ -82,7 +82,7 @@ public data class FlashTransfer(
      * queued so it continues by itself (ADR-216).
      */
     public val canRetry: Boolean
-        get() = state != FlashTransferState.Cancelled && !viaHub
+        get() = state != FlashTransferState.Cancelled && (!viaHub || state == FlashTransferState.Failed)
 }
 
 /** One member's copy of a file being sent to a group (see [FlashTransfer.recipients]). */

@@ -6,6 +6,8 @@ import com.transfer.flash.core.common.model.FlashDevice
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.model.FlashTransportType
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.time.FlashTimeSource
+import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.enterprise.files.DiskHubFileStorage
 import com.transfer.flash.core.enterprise.files.FakeHubFileServer
 import com.transfer.flash.core.enterprise.files.FakeHubFilesApi
@@ -64,7 +66,7 @@ class HubFileBindingTest {
     private val dbs = mutableListOf<FlashDatabase>()
     private val scopes = mutableListOf<CoroutineScope>()
     private val hub = "https://hub.example"
-    private val server = FakeHubFileServer(maxFileBytes = 8L * 1024 * 1024)
+    private val server = FakeHubFileServer(maxFileBytes = 8L * 1024 * 1024, clockMs = { System.currentTimeMillis() })
     private val fastPolicy = HubTransferPolicy(maxConsecutiveFailures = 1, baseBackoffMs = 0, maxBackoffMs = 0)
 
     @BeforeTest
@@ -89,6 +91,7 @@ class HubFileBindingTest {
         val queued: CopyOnWriteArrayList<String>,
         val ended: CopyOnWriteArrayList<String>,
         val receivedDir: File,
+        val retried: CopyOnWriteArrayList<String>,
     ) {
         val dao get() = db.hubFileDao()
     }
@@ -104,12 +107,14 @@ class HubFileBindingTest {
         retryDelayMs: Long = 20L,
         groupRoute: HubFileRoute = HubFileRoute.READY,
         registered: CopyOnWriteArrayList<Pair<String, String>> = CopyOnWriteArrayList(),
+        timeSource: FlashTimeSource = SystemTimeSource,
     ): Rig {
         val scope = CoroutineScope(SupervisorJob() + worker).also { scopes += it }
         val opener = FileSourceOpener { uri -> FileSystem.SYSTEM.source(uri.toPath()) }
         val repo = RealFlashTransferRepository(streamChannelFactory = { _, _ -> null }, fileSourceOpener = opener, store = null, repositoryScope = scope)
         val queued = CopyOnWriteArrayList<String>()
         val ended = CopyOnWriteArrayList<String>()
+        val retried = CopyOnWriteArrayList<String>()
         val receivedDir = File(tempDir, "received-$deviceId").apply { mkdirs() }
         val transfers = HubFileTransfers(api, DiskHubFileStorage(File(tempDir, "engine-$deviceId").path), fastPolicy, worker, Random(1))
         val binding = HubFileBinding(
@@ -122,6 +127,7 @@ class HubFileBindingTest {
             fileRoute = { route },
             queueTicket = { id -> queued += id; true },
             outgoingEnded = { id -> ended += id },
+            outgoingRetried = { id -> retried += id },
             openSource = opener,
             receivedDirectory = { receivedDir.path },
             isDirectlyReachable = { reachable },
@@ -133,8 +139,9 @@ class HubFileBindingTest {
             workerDispatcher = worker,
             retryDelayMs = retryDelayMs,
             maxRetryDelayMs = retryDelayMs * 2,
+            timeSource = timeSource,
         )
-        return Rig(db, api, repo, binding, queued, ended, receivedDir)
+        return Rig(db, api, repo, binding, queued, ended, receivedDir, retried)
     }
 
     private fun source(bytes: Int, seed: Int = 7): Pair<File, ByteArray> {
@@ -254,6 +261,39 @@ class HubFileBindingTest {
         r.api.offline = false
         eventually("the upload finishes once the hub answers") { r.queued == listOf(id) }
         assertNull(r.dao.get(id)?.errorText)
+    }
+
+    @Test
+    fun `C-07 an upload still interrupted after the hub's 24 hour window fails with a sentence and Retry runs it again`() = runBlocking(worker) {
+        var offsetMs = 0L
+        val clock = object : FlashTimeSource { override fun nowMs(): Long = SystemTimeSource.nowMs() + offsetMs }
+        val r = rig("dev-a", timeSource = clock)
+        r.api.offline = true
+        val (file, _) = source(1024 * 1024 + 5)
+        val id = r.send(file)
+        eventually("the upload is waiting for the network") { r.dao.get(id)?.errorText == HubFileText.reason(HubFileError.Offline) }
+        offsetMs = HubFileBinding.UPLOAD_WINDOW_MS + 60_000L
+        eventually("the 24 hour bound ends the retrying") { r.dao.get(id)?.state == HubFileStates.FAILED }
+        assertEquals(HubFileText.UPLOAD_WINDOW_ENDED, r.dao.get(id)?.errorText)
+        assertEquals(listOf(id), r.ended.toList())
+        r.api.offline = false
+        r.repo.resumeTransfer(FlashTransferId(id))
+        eventually("a retried upload finishes and hands its ticket to the chat") { r.queued == listOf(id) }
+        assertEquals(listOf(id), r.retried.toList())
+        assertNull(r.dao.get(id)?.errorText)
+    }
+
+    @Test
+    fun `C-07 a download whose file has left the hub fails once it is interrupted instead of retrying for ever`() = runBlocking(worker) {
+        val plain = Random(11).nextBytes(1024 * 1024 + 1)
+        val t = ticketFromAnn(plain)
+        val r = rig("dev-b")
+        r.api.offline = true
+        val id = HubFileStates.TRANSFER_PREFIX_IN + t.fileId
+        r.dao.insert(offeredRow(t).copy(expiresAtMs = 5L))
+        r.repo.acceptIncoming(FlashTransferId(id))
+        eventually("the expired download fails") { r.dao.get(id)?.state == HubFileStates.FAILED }
+        assertTrue(r.retried.isEmpty())
     }
 
     @Test

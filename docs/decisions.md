@@ -6418,3 +6418,20 @@ to destroy a file by accident.
 
 ### Revisit when
 Device checks `CNCL-02` or `CNCL-04` show users expect the transfer to continue by itself, or the owner wants cancel from the notification.
+
+
+
+## ADR-220 - A hub file stops retrying at the hub's own limits and Failed hub files can be retried (open-items C-07)
+
+### Decision
+An upload that is still being interrupted 24 hours after its row was created (the hub's upload window, counted from `createdAtMs` so it survives a restart) becomes Failed with `HubFileText.UPLOAD_WINDOW_ENDED`. A download whose ticket `expiresAtMs` has passed becomes Failed with the not-found sentence. Retry on a Failed hub row moves it back to Uploading/Downloading; for an upload the chat message, given up when the upload failed, goes back to waiting (`outgoingRetried` -> `hubFileRetried` -> `HubFileMessages.retried`) so the ticket is queued again when the upload finishes. `FlashTransfer.canRetry` is true for a Failed hub row.
+
+### Context
+ADR-216 retried an interrupted hub run with backoff for ever, so a phone that stayed offline kept a row "waiting" after the hub had already discarded the upload session. Retry was hidden for every hub row.
+
+### Alternatives considered
+- Bound by number of attempts: rejected, attempts say nothing about whether the hub can still accept the file.
+- Keep retrying and let the server answer 404: rejected, the person never learns why.
+
+### Revisit when
+Device checks `CNCL-*` show the bound fires while a person is merely away for a day, or the hub's window becomes configurable.
