@@ -199,6 +199,6 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v16: hub_group_roster for hub-signed group roster statements (Plan B §10, Phase B4).
         // v17: hub_announcement and hub_announcement_state for organization announcements (Plan A3, ADR-138).
         // v18: hub_file for files sent and received through the organisation hub (ADR-215, ADR-216).
-        public const val DATABASE_VERSION: Int = 19
+        public const val DATABASE_VERSION: Int = 20
     }
 }

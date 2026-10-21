@@ -45,6 +45,41 @@ public interface TransferStore {
      */
     public suspend fun purgeFinishedChunks(): Int = 0
 
+    /**
+     * Writes the identity and current state of a 1:1 transfer row so it can be listed again after a restart (open-items
+     * C-09). Inserts the row when [insertTransfer] has not run for it yet. Defaults to a no-op: an adapter without it
+     * keeps the old behaviour (a killed process forgets the list).
+     */
+    public suspend fun saveIdentity(row: StoredTransfer) {}
+
+    /** Rows to list again after a restart: identity known, not dismissed, touched at or after [sinceMs]. */
+    public suspend fun restorableTransfers(sinceMs: Long): List<StoredTransfer> = emptyList()
+
+    /** The person cleared these rows from the Transfers list; they are not restored. */
+    public suspend fun dismissStored(transferIds: List<String>) {}
+
+    /** The history limit (C-05): forgets rows nobody touched since [beforeMs]. Returns how many. */
+    public suspend fun deleteStoredBefore(beforeMs: Long): Int = 0
+
+    /** A transfer row as stored: everything a FlashTransfer needs except live speed. */
+    public data class StoredTransfer(
+        public val transferId: String,
+        public val peerDeviceId: String?,
+        public val peerName: String,
+        public val fileName: String,
+        /** `Sending` or `Receiving`. */
+        public val direction: String,
+        public val totalBytes: Long,
+        public val bytesDone: Long,
+        /** A `FlashTransferState` name. */
+        public val state: String,
+        public val errorMessage: String?,
+        public val sourceUri: String?,
+        public val wireFileId: String?,
+        public val localPath: String?,
+        public val updatedAtMs: Long,
+    )
+
     /** Lightweight `(transferId, chunkIndex)` projection returned by [allDoneChunks]. */
     public data class ChunkRef(public val transferId: String, public val chunkIndex: Int)
 }

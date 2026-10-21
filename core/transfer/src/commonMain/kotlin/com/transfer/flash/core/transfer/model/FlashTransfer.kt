@@ -74,6 +74,11 @@ public data class FlashTransfer(
      * every member, so only a confirmed in-app action may do it, never a one-tap notification button (audit B-04).
      */
     val groupOrigin: Boolean = false,
+    /**
+     * The row was read back from the store after a restart (C-09), not created by something that just happened. Hosts
+     * that announce a new Failed/Paused row must not announce this one: the person has seen (or missed) it already.
+     */
+    val restored: Boolean = false,
 ) {
     /**
      * Whether a Retry control can do anything for this row. One predicate for every surface (the Transfers screen and

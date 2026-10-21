@@ -48,6 +48,10 @@ public object TransferFailureText {
 
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
 
+    /** A transfer that was running when the process died (C-09): listed again, not resumed by itself. */
+    public const val INTERRUPTED_BY_RESTART: String =
+        "Flash was closed while this was transferring. Tap Retry to continue."
+
     /** The receiver could not write a chunk to storage (R-06): full disk, removed card, revoked folder access. */
     public const val WRITE_FAILED: String =
         "The file could not be saved on this device. Check that there is free space and that the save location is still available, then ask for it to be sent again."
