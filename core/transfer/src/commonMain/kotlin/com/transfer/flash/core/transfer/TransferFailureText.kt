@@ -40,6 +40,10 @@ public object TransferFailureText {
     /** A 1:1 transfer paused by the Android service timeout: its progress is kept, but it does not restart itself. */
     public const val PAUSED_BY_SYSTEM: String = "Paused by Android. Tap Resume to continue."
 
+    /** A retried receive that the sender never continued (open-items tracker C-08): it must not stay at "Downloading". */
+    public const val SENDER_DID_NOT_RESUME: String =
+        "The sender did not continue sending this file. Ask them to send it again."
+
     public const val WAITING_FOR_ACCEPT: String = "Waiting for the other device to accept."
 
     public const val GENERIC: String = "The transfer stopped unexpectedly. Try again."
