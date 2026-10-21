@@ -18035,3 +18035,21 @@ Plan items 5-10.
 
 ### Next AI
 Item 5: registry-derived principal (DEV-01).
+
+
+## 2026-10-21 - Server internals audit, step 5: registry-derived principal (SRVHUB-04)
+
+### Worked on
+Plan item 5 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (owner decision 8.2, second half; DEV-01).
+
+### Changed
+- `ChallengeResponseAuth` takes role and department from the device registry (fail closed without an active row); `HubServices` wires it; `PUT /admin/api/v1/devices/{id}` with a real department change revokes the device's bearers and kicks its session (`department_changed`); console move field says "Takes effect immediately. The device reconnects once."; `docs/protocol.md` paragraph.
+
+### Verification
+`RegistryPrincipalTest` (4) and the new `AdminConsoleApiTest` move test green with the existing auth/admin suites and the 82 console node tests; two mutations (certificate attributes back, kick removed) each failed the expected tests and were restored. NOT device-verified (SRVHUB-04 still owes a device run).
+
+### Remaining
+Plan items 6-10.
+
+### Next AI
+Item 6: mailbox quarantine (RLY-01).

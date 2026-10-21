@@ -25,7 +25,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | OPEN |
 | **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | OPEN |
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | FIXED 2026-10-21 (step 2; automated tests, not device-verified) |
-| **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | OPEN |
+| **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | FIXED 2026-10-21 (step 5; automated tests, not device-verified) |
 | **ANN-02** | Medium-low | `:server` announcements | A console edit silently **removes an announcement's expiry**: the edit form never sends `expiresAtMs` and the store treats `null` as "clear". An announcement that should have expired stays live for ever. | FIXED 2026-10-21 (step 3; automated tests, not device-verified) |
 | **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | OPEN |
 | **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | OPEN |
@@ -278,7 +278,7 @@ The KDoc on `IdentityStore.renew` claims the opposite of what the code does at t
 
 **Decision:** §8.2 — the certificate lifetime becomes **30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`, default 30), which makes this worse; the fix is therefore option **(a)** (registry-derived principal + token revoke + kick), with the console sentence as a safety net.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 5; see section 12).
 
 ---
 
@@ -922,7 +922,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 2 | **Announcement writes in one transaction**: `createAnnouncement`, `updateAnnouncement`, `setPinned`, `clientRequestId` check under `withTransaction`, `nextSeq` returning its own UPDATE's value | ANN-01 | SRVHUB-03 **DONE 2026-10-21** |
 | 3 | **Announcement expiry tri-state** + console field on create and edit (do it with #2 — same DTO, same store file) | ANN-02, §8.5 | SRVHUB-05, 16 **DONE 2026-10-21** |
 | 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 **DONE 2026-10-21** |
-| 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 |
+| 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 **DONE 2026-10-21** |
 | 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 |
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 |
 | 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 |
@@ -967,3 +967,12 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - A client needs no change: it starts renewing 24 h before `validTo` (`HubContract.RENEW_EARLY_WINDOW_MS`), inside every derived window (`aClientThatOnlyKnowsTheDefaultWindowsStillRenewsAThirtyDayCertificate`). Certificates already issued keep their 7 days until they renew.
 - Tests: `CertificateLifetimeTest` (8). **Mutation:** `signLeaf` using `DEFAULT_VALIDITY_MS` again failed 4 of them; restored. A fresh certificate has `validFrom = now - 10 s` (ISSUE_BACKDATE_MS), so the lifetime is asserted on `validTo`.
 - Docs: `docs/protocol.md` (leaf rule, env table), `docs/security.md`, `docs/deploy/HUB-SERVER-DEPLOYMENT.md`.
+
+### Step 5 - Registry-derived principal (DEV-01, section 8.2 second half; SRVHUB-04): DONE, unit and route tested, NOT device-verified
+
+- `ChallengeResponseAuth(deviceRegistry: ((String) -> DeviceRecord?)? = null)`: after the chain, revocation and possession checks, `role` and `department` of the principal come from the registry row; `certSerial` stays the certificate's. No row -> `ERR_AUTH`; row `REVOKED` -> `ERR_REVOKED`; `UNENROLLED` -> `ERR_AUTH` (fail closed). Both callers (relay handshake through `CertChainRelayAuthenticator`, REST `/auth/verify`) go through `verifyIdentity`, so the one change covers both. `HubServices` wires `deviceRegistry = { identities.device(it) }`; a null registry (tests that build a chain without one) keeps the certificate's attributes.
+- `PUT /admin/api/v1/devices/{id}` with `moveToDepartment`: when the registry department really changes, `bearerTokens.revokeDevice(id)` and `router.kick(id, "department_changed")`. A rename, or a move to the department the device already has, does neither.
+- Console: the single-device move field has the hint "Takes effect immediately. The device reconnects once." and the bulk dialog text says the same.
+- Tests: `RegistryPrincipalTest` (4: moved device carries the registry department with its old certificate, move to no department, no registry row, revoked/unenrolled rows), `AdminConsoleApiTest.movingADeviceToAnotherDepartmentDropsItsBearersAndKicksItsSessionOnce` (real route; the test Realm now has a real `RelayFrameRouter`). **Mutations:** principal department back to `deviceCert.department` failed both principal tests and the route test; removing the kick failed the route test; both restored.
+- Behaviour change to remember: a device whose registry row is gone (database restored from an older backup, or the row never written) can no longer connect with a still-valid certificate. That is the intended fail-closed rule; the remedy is a new invite.
+- Still open from the audit's D-5: `IdentityStore.setRole` and `serialsOf` have no caller (left alone; a role change is not reachable from the console).

@@ -459,12 +459,19 @@ private fun Route.deviceRoutes(d: AdminApiDeps) {
                     val target = b.department?.trim()?.ifEmpty { null }
                     if (target != null && d.directory.getDepartment(target) == null) throw com.transfer.flash.server.directory.DirectoryNotFoundException("department")
                     val previous = d.directory.getDepartmentMember(id)?.departmentId
+                    val registryBefore = device.department.orEmpty()
                     d.identities.setDepartment(id, target)
                     d.directory.getDepartmentMember(id)?.let { d.directory.registerMember(it.copy(departmentId = target.orEmpty())) }
                     if (previous != null && previous != target.orEmpty()) {
                         d.directory.removeFromAdmins(previous, id)
                     }
                     changes += "department=${target.orEmpty()}"
+                    if (registryBefore != target.orEmpty()) {
+                        // The principal now comes from the registry (DEV-01): drop the old scope everywhere it is cached
+                        // so the device's next handshake carries the new department. The device reconnects by itself.
+                        d.bearerTokens?.revokeDevice(id)
+                        d.router?.kick(id, "department_changed")
+                    }
                 }
                 d.audit.log(session.username, "device.update", "device=${device.deviceId} ${changes.joinToString(" ")}")
                 call.respondJson(d.identities.device(id)!!.toDto(d.directory.isOnline(id)))

@@ -6028,7 +6028,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-04 — A department move takes effect within seconds (DEV-01)
 - **Setup:** an enrolled device in department A; a department-scoped announcement for A and one for B.
 - **Steps:** as org admin, move the device to B in the console; do not re-enrol, renew or restart anything.
-- **Pass:** the device is kicked and reconnects by itself, B's announcement reaches it and A's stops, the Hub tab puts it in B, and the log shows one kick and one re-handshake. Today: nothing changes until the certificate is renewed. **Source:** DEV-01, ADR-222 decision 3. **Status:** TODO
+- **Pass:** the device is kicked and reconnects by itself, B's announcement reaches it and A's stops, the Hub tab puts it in B, and the log shows one kick and one re-handshake. Today: nothing changes until the certificate is renewed. **Source:** DEV-01, ADR-222 decision 3. **Status:** AUTOMATED PASS 2026-10-21 (`RegistryPrincipalTest`, `AdminConsoleApiTest` move test with a real router; the device run through a real client, the announcement scope and the Hub tab are still owed)
 
 ### SRVHUB-05 — A console edit keeps an announcement's expiry (ANN-02)
 - **Setup:** an announcement created through the API (or the new console field) with `expiresAtMs = now + 10 min`.
