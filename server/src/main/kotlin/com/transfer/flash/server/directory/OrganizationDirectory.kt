@@ -701,15 +701,34 @@ class OrganizationDirectory(
      * [DirectoryVisibility.canListMember] allows, filtered by [query] (case-insensitive
      * contains on displayName, `%`/`_` escaped by the caller contract) and optional
      * [departmentId], ordered by `(displayNameFolded, deviceId)`.
+     *
+     * Paging (DIR-01): when [afterFoldedName] is given, only members strictly after `(afterFoldedName, afterDeviceId)` in that order are
+     * returned, and the cut to [limit] happens AFTER that comparison. The route asks for `limit + 1` rows to learn whether a next page
+     * exists, so the cap is one above [DirectoryPrivacy.PEOPLE_MAX_LIMIT].
      */
-    fun searchPeople(actor: DirectoryActor, query: String, departmentId: String?, limit: Int): List<DepartmentMember> = lock.read {
+    fun searchPeople(
+        actor: DirectoryActor,
+        query: String,
+        departmentId: String?,
+        limit: Int,
+        afterFoldedName: String? = null,
+        afterDeviceId: String? = null,
+    ): List<DepartmentMember> = lock.read {
         val q = query.trim().lowercase()
         members.values
             .filter { DirectoryVisibility.canListMember(actor, it, this) }
             .filter { departmentId.isNullOrBlank() || it.departmentId == departmentId }
             .filter { q.isEmpty() || it.displayName.lowercase().contains(q) }
+            .filter {
+                if (afterFoldedName == null) {
+                    true
+                } else {
+                    val folded = it.displayName.lowercase()
+                    folded > afterFoldedName || (folded == afterFoldedName && it.deviceId > (afterDeviceId ?: ""))
+                }
+            }
             .sortedWith(compareBy({ it.displayName.lowercase() }, { it.deviceId }))
-            .take(limit.coerceIn(1, 500))
+            .take(limit.coerceIn(1, DirectoryPrivacy.PEOPLE_MAX_LIMIT + 1))
     }
 
     fun canSee(group: GroupCharter, actor: DirectoryActor): Boolean = lock.read {

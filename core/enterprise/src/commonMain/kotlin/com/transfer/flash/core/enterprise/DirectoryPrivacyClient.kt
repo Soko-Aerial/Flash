@@ -69,10 +69,13 @@ public fun resolvePrivacyStanding(
 @FlashInternalApi
 public fun hubTooOldSentence(): String = "Your company server is out of date. Some people may not be listed."
 
-/** Decodes a people page body; null when the body is not a page. */
+/**
+ * Decodes a people page body; null when the body is not a page. A full page (500 people, about 150 bytes each) is larger than the
+ * 64 KiB bound of an ordinary REST body, so it is read with the directory bound (DIR-01: presence asks for 500 per page).
+ */
 @FlashInternalApi
 public fun decodePeoplePage(body: String): PeoplePage? {
-    val dto = HubRestCodec.decodeOrNull<PeoplePageDto>(body) ?: return null
+    val dto = HubRestCodec.decodeOrNull<PeoplePageDto>(body, HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES) ?: return null
     return PeoplePage(dto.people.map { it.toDirectoryMember() }, dto.nextCursor)
 }
 

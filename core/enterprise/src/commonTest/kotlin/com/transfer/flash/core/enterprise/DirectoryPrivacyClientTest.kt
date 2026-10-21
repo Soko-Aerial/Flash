@@ -41,6 +41,17 @@ class DirectoryPrivacyClientTest {
         assertEquals(1, decodePeoplePage(withExtra)?.people?.size)
     }
 
+    // SRVHUB-01 (DIR-01): presence asks for 500 per page; such a page is larger than an ordinary 64 KiB REST body and must still decode.
+    @Test
+    fun aFullPageOfFiveHundredPeopleDecodes() {
+        val people = (0 until 500).map { PersonDto("device-%05d-with-a-realistic-length-id".format(it), "Colleague Name $it", "dept-engineering", "Engineering and Platform", online = true) }
+        val body = HubRestCodec.encode(PeoplePageDto(people, nextCursor = "c1.some-cursor-value"))
+        assertTrue(body.length > 64 * 1024, "the fixture really exceeds the ordinary REST bound (${body.length})")
+        val page = decodePeoplePage(body)
+        assertEquals(500, page?.people?.size)
+        assertEquals("c1.some-cursor-value", page?.nextCursor)
+    }
+
     // PRIV-U09: cross-department sender is MEMBER via lookup, UNKNOWN on 404, UNAVAILABLE offline.
     @Test
     fun hubPeerDirectoryResolvesCrossDepartmentSendersByKnownId() = kotlinx.coroutines.test.runTest {

@@ -22,7 +22,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | ID | Sev | Layer | Defect | Status |
 |---|---|---|---|---|
 | **DIR-04** | **High** | `:server` + `:core:enterprise` | One legal `/directory/sync` page is larger than the client can decode. The client asks for 500 members and enforces a **64 KiB** body cap on the answer; a member DTO is ~576 B, so a page is refused once it carries ~110 members, or ~70 small group rosters on top of any members at all. Org trust, colleagues and hub group rosters therefore never land for a real organisation, and the failure reads like a server bug. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
-| **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | OPEN |
+| **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | FIXED 2026-10-21 (step 8; automated tests, not device-verified) |
 | **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | FIXED 2026-10-21 (step 6; automated tests, not device-verified) |
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | FIXED 2026-10-21 (step 2; automated tests, not device-verified) |
 | **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | FIXED 2026-10-21 (step 5; automated tests, not device-verified) |
@@ -133,7 +133,7 @@ On page 2 the store again returns the **first** `limit + 1` people; the cursor d
 
 **Test that would catch it.** A store-level test with 250 members and `limit = 100`: page 1 (100 rows) → page 2 must return the next 100 followed by page 3 (50) and `nextCursor == null`, with the union equal to the full sorted list and no duplicates. A client-level test for `hubOnlineDeviceIds` with an online device at position 120 of 250.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 8; see section 12).
 
 ---
 
@@ -925,7 +925,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 **DONE 2026-10-21** |
 | 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 **DONE 2026-10-21** |
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 **DONE 2026-10-21** |
-| 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 |
+| 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 **DONE 2026-10-21** |
 | 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 |
 | 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 |
 
@@ -998,3 +998,11 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - Docs: `HUB-SERVER-DEPLOYMENT.md` states the ~200-devices-behind-one-address scale and the `trustedProxies` requirement; `protocol.md` "Sign-in rate limits".
 - Tests: `AuthVerifyRateLimitTest` (6): 200 devices behind one address are not limited by each other; one device gets its burst of 5 then 429 while a neighbour is untouched; refill after 5 s; garbage without a device id meets the strict per-address limit; the challenge stays per address; made-up device ids cannot bypass the ceiling. `HubSessionTest` (+2): five concurrent refused callers produce one extra sign-in (not five), jitter only applies to a refused still-valid token. **Mutations:** device key replaced by the address bucket failed 2 tests; a single shared key failed 3; sign-in reuse removed (`forceRefresh` always re-signs) failed the single-flight test; all restored.
 - Not done here: the mutex is still held across the network sign-in (CLI-02, step 10).
+
+### Step 8 - People paging cursor in the store (DIR-01; SRVHUB-01): DONE, route tested, NOT device-verified
+
+- `OrganizationDirectory.searchPeople(..., afterFoldedName, afterDeviceId)` applies the cursor comparison before the cut; the route passes the decoded cursor instead of re-filtering a first page. The store's cap is now `PEOPLE_MAX_LIMIT + 1`: the route asks for `limit + 1` rows to learn whether a next page exists, and with `limit = 500` the old cap of 500 silently removed the lookahead row, so a page of exactly 500 never produced `nextCursor`.
+- **A second defect found by the new test, not in the audit:** a full page of 500 people is about 75 KiB of JSON, and `decodePeoplePage` read it with the ordinary 64 KiB REST bound, so the production presence poll (`HubPresenceDefaults.PAGE_SIZE = 500`) would have rejected every full page in an organisation of more than about 400 people, even after the cursor fix. The client now decodes a people page with `MAX_DIRECTORY_SYNC_BODY_BYTES` (2 MiB), the same "a hub must never emit a body its own client refuses" rule step 1 set for the sync.
+- Tests: `DirectoryPrivacyTest.followingTheCursorWalksTheWholeDirectoryExactlyOnce` (1,203 people with repeated display names so page boundaries fall inside runs of equal names; limits 500, 100 and 7; the union equals an independently sorted list, no repeats, no gaps), `DirectoryPrivacyClientTest.aFullPageOfFiveHundredPeopleDecodes`. **Mutations:** cursor filter made always true failed the walk test; client decode back to the 64 KiB bound failed the client test; both restored.
+- The people route limiter (burst 30, then 1 per 2 s) is unchanged; presence uses at most 4 pages per round.
+- Full-suite note: `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` failed once under whole-suite load and passed when rerun alone (known load flake, unrelated to this step).

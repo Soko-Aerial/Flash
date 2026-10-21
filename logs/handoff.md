@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-10-21 (server internals audit, implementation steps 1-7 of 10) - built and tested, NOT device-verified
+## 2026-10-21 (server internals audit, implementation steps 1-8 of 10) - built and tested, NOT device-verified
 
 - **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
 - **Step 2 done too:** ANN-01 — announcement writes run in `BEGIN IMMEDIATE` transactions (`AnnouncementStoreConcurrencyTest`, mutation-checked; audit §12). Test-harness trap: race tests need a WAL file database with a pool > 1 (`ServerDatabase.inMemory()` has one connection).
@@ -9,8 +9,9 @@
 - **Step 5 done too:** DEV-01 - the principal's role and department come from the device registry (fail closed without a row); a console department move drops the device's bearers and kicks its session (`RegistryPrincipalTest`, `AdminConsoleApiTest`, mutation-checked; audit section 12). A device whose registry row is missing can no longer connect.
 - **Step 6 done too:** RLY-01 - unreadable sealed mailbox rows are quarantined (`undeliverable_reason`, migration v4), skipped without ending the drain, and each sender is told `DROPPED` (`MailboxQuarantineTest`, mutation-checked; audit section 12).
 - **Step 7 done too:** AUTH-01 + CLI-01 - `/auth/verify` is limited per device id (burst 5, 1 per 5 s) behind a per-address ceiling (added, not in the spec), the client signs in once for concurrent 401s and jitters its first re-auth 0..30 s after a refused live token (`AuthVerifyRateLimitTest`, `HubSessionTest`, mutation-checked). Deployment doc states ~200 devices behind one address and the `FLASH_TRUSTED_PROXIES` requirement.
-- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 8-10 are NOT started.
-- **Recommended next task:** item 8 (people paging cursor in the store, DIR-01), then 9 (tombstone hygiene).
+- **Step 8 done too:** DIR-01 - the people-paging cursor is applied inside the store before the cut (and the lookahead row is no longer lost at limit 500); plus a defect the new test found: a full 500-person page (~75 KiB) was refused by the client's 64 KiB decode bound, so presence would have failed past ~400 people (`DirectoryPrivacyTest`, `DirectoryPrivacyClientTest`, mutation-checked).
+- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 9-10 are NOT started.
+- **Recommended next task:** item 9 (tombstone hygiene, DIR-02/DIR-03), then 10 (small items).
 - **Wire change to remember:** `DirectorySyncDto.rostersTruncated` (default false) and the client now asks `limit = 200`. A hub older than this build still answers (it just caps at 500 rows and may exceed 2 MiB only if its rows are huge).
 
 ## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented

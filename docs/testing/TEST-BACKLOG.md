@@ -6014,7 +6014,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-01 — `/directory/people` pages past one page (DIR-01)
 - **Setup:** a hub with 250 members (`limit = 100`), or an org of 600 with `limit = 500`.
 - **Steps:** `GET /api/v1/directory/people?limit=100`, follow `nextCursor` until it is `null`; then in the app, mark a colleague at position 120 (250-member org) or 600 (600-member org) online and open a chat with them.
-- **Pass:** the three pages hold 100 + 100 + 50 distinct people and their union equals the full sorted list; the chat header shows that colleague as online. Today: page 2 is empty and the colleague reads Offline for ever. **Source:** DIR-01. **Status:** TODO
+- **Pass:** the three pages hold 100 + 100 + 50 distinct people and their union equals the full sorted list; the chat header shows that colleague as online. Today: page 2 is empty and the colleague reads Offline for ever. **Source:** DIR-01. **Status:** AUTOMATED PASS 2026-10-21 (`DirectoryPrivacyTest` walk of 1,203 people at three page sizes, `DirectoryPrivacyClientTest` for the 500-person page; the real app showing a colleague past position 500 online is still owed)
 
 ### SRVHUB-02 — A sealed mailbox row that cannot be opened does not block the queue (RLY-01)
 - **Setup:** a hub with queued messages for one device; stop it (and back up `data.key`), remove or replace `data.key` in the data dir, start it again.
