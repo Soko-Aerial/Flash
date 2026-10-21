@@ -46,9 +46,14 @@ suspend fun ApplicationCall.requireOrg(scope: ConsoleScope): Boolean {
 enum class AdminRoutePolicy { ORG, OWN, SELF }
 
 /**
- * The declared policy of every admin console route (default deny: a route
- * without an entry fails [AdminRoutePolicyTest]). Keys are `METHOD
- * path-template` exactly as `routeTable()` spells them.
+ * The DECLARED policy of every admin console route. This table is documentation checked by tests, NOT an enforcement point:
+ * authorization itself is applied by each handler (`call.requireOrg(scope)`, the department filters).
+ *
+ * Two tests keep the declaration honest (review F2): `ConsoleScopeTest.everyAdminRouteHasADeclaredPolicy` fails when a route
+ * has no entry here, and `DepartmentHeadScopeTest.everyRouteDeclaredOrgRefusesADepartmentHead` calls every route marked
+ * [AdminRoutePolicy.ORG] with a department-head session and requires 403. A new ORG route therefore needs both a row here and
+ * a `requireOrg` in its handler. `OWN` and `SELF` rows are not exercised by that matrix. Keys are `METHOD path-template`
+ * exactly as `routeTable()` spells them.
  */
 object AdminRoutePolicies {
     val ALL: Map<String, AdminRoutePolicy> = mapOf(

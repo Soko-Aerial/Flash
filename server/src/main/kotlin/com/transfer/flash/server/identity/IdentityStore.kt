@@ -309,6 +309,20 @@ class IdentityStore(private val db: ServerDatabase) {
         conn.query(sql, *params.toTypedArray(), map = ::deviceRow)
     }
 
+    /**
+     * Ids of every ACTIVE device, optionally only those of one [department], with no row cap. The console overview counts
+     * "online now" from these; slicing the first 500 rows before filtering undercounted a large organisation (review F5).
+     */
+    fun activeDeviceIds(department: String? = null): List<String> = db.withConnection { conn ->
+        if (department == null) {
+            conn.query("SELECT device_id FROM hub_devices WHERE status = ?", DeviceStatus.ACTIVE.name) { rs -> rs.getString("device_id") }
+        } else {
+            conn.query(
+                "SELECT device_id FROM hub_devices WHERE status = ? AND department = ?", DeviceStatus.ACTIVE.name, department,
+            ) { rs -> rs.getString("device_id") }
+        }
+    }
+
     fun countByStatus(): Map<DeviceStatus, Long> = db.withConnection { conn ->
         val rows = conn.query("SELECT status, COUNT(*) AS n FROM hub_devices GROUP BY status") { rs ->
             DeviceStatus.valueOf(rs.getString("status")) to rs.getLong("n")

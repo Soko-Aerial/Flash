@@ -369,13 +369,17 @@ private fun Route.overviewRoutes(d: AdminApiDeps) {
             ConsoleScope.Org -> d.directory.listDepartments().size
             is ConsoleScope.Departments -> scope.ids.size
         }
-        val devicesInScope = d.identities.listDevices(DeviceStatus.ACTIVE, limit = 500).filter { inScopeDept(it.department) }
+        // Counted without a row cap (review F5): the department filter runs in SQL, not over the first 500 rows.
+        val activeIdsInScope: List<String> = when (scope) {
+            ConsoleScope.Org -> d.identities.activeDeviceIds()
+            is ConsoleScope.Departments -> scope.ids.flatMap { d.identities.activeDeviceIds(it) }.distinct()
+        }
         call.respondJson(
             OverviewDto(
                 hubName = d.config.hubName,
                 serverId = d.enrollment?.serverId.orEmpty(),
-                devicesByStatus = if (scope is ConsoleScope.Org) d.identities.countByStatus().mapKeys { it.key.name } else mapOf(DeviceStatus.ACTIVE.name to devicesInScope.size.toLong()),
-                onlineDevices = devicesInScope.count { d.directory.isOnline(it.deviceId) },
+                devicesByStatus = if (scope is ConsoleScope.Org) d.identities.countByStatus().mapKeys { it.key.name } else mapOf(DeviceStatus.ACTIVE.name to activeIdsInScope.size.toLong()),
+                onlineDevices = activeIdsInScope.count { d.directory.isOnline(it) },
                 invites = InviteCountsDto(
                     invites[InviteState.PENDING] ?: 0, invites[InviteState.USED] ?: 0,
                     invites[InviteState.EXPIRED] ?: 0, invites[InviteState.REVOKED] ?: 0,
