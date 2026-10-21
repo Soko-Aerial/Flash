@@ -362,6 +362,7 @@ class KeyTool(
                         err.println("Usage: keytool init-root --out <dir> [--no-passphrase]")
                         err.println("       keytool issue-delegation --root-key <file> --server-pub <file|base64> --scopes enrol:member,enrol:dept_admin,revoke:member")
                         err.println("                                [--max-devices N] [--valid-days N] [--serial N] [--out delegation.cert]")
+                        err.println("                                (--valid-days must be at least FLASH_DEVICE_CERT_VALIDITY_DAYS + the renewal grace; default 90)")
                         err.println("       keytool revoke --root-key <file> --delegation-serial N[,N] [--serial N,..] [--device-id a,..] [--base current.json] [--out revocations.signed]")
                         err.println("       keytool rotate")
                         2

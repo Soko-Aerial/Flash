@@ -100,9 +100,20 @@ public object HubAuth {
             identifier.none { it.code < 0x20 || it.code == 0x7F }
 }
 
-/** Renewal window rule (default 24 h before `validTo` to 72 h after; ADR-109). */
+/**
+ * Renewal window rule (default 24 h before `validTo` to 72 h after; ADR-109). The hub derives the windows of a longer-lived
+ * certificate from its own lifetime with [earlyWindowFor] and [graceFor] (ADR-222): a 30-day certificate must not keep a 1-day window.
+ */
 @FlashInternalApi
 public object RenewalPolicy {
+    /** The early renewal window for a certificate that lives [lifetimeMs]: a tenth of it, never under the 24 h default. */
+    public fun earlyWindowFor(lifetimeMs: Long): Long =
+        maxOf(com.transfer.flash.core.hubprotocol.HubContract.RENEW_EARLY_WINDOW_MS, lifetimeMs / 10)
+
+    /** The grace after `validTo` for a certificate that lives [lifetimeMs]: a twentieth of it, never under the 72 h default. */
+    public fun graceFor(lifetimeMs: Long): Long =
+        maxOf(com.transfer.flash.core.hubprotocol.HubContract.RENEW_GRACE_MS, lifetimeMs / 20)
+
     /** True when [cert] may be renewed at [nowMs]. */
     public fun isRenewable(
         cert: DeviceCert,

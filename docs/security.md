@@ -294,7 +294,7 @@ Scope: the organisation hub (`:server`) and the clients that enrol with it. The 
 
 The invite token only authorises a request; it does not authorise a key. The device signs (token, deviceId, subjectPublicKey, serverId) and
 the hub verifies that BEFORE it spends the token or a quota slot (a bad proof does not burn a good invite). The issued leaf is clamped to
-the delegation window (`validFrom = max(now - 10 s, delegation.validFrom)`, `validTo = min(now + 7 days, delegation.validTo)`), so a
+the delegation window (`validFrom = max(now - 10 s, delegation.validFrom)`, `validTo = min(now + the configured lifetime, delegation.validTo)`; the lifetime defaults to 30 days, `FLASH_DEVICE_CERT_VALIDITY_DAYS`), so a
 certificate never outlives or predates the authority that issued it (SEC-18). The client verifies the response chain against the pinned
 root and the invite fingerprint before it stores anything.
 

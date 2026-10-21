@@ -1204,7 +1204,7 @@ well-formed, role in the closed set `member` / `dept_admin` / `admin`, signature
 pinned root, delegation scope allows the role being issued, leaf window inside the delegation window, revocation list, validity windows
 (a clock-skew tolerance of 60 s applies at BOTH ends), then the expiry grace the caller passes. Scope rule (one wildcard rule): a scope
 matches exactly, or is `*`, or `prefix:*`; `admin` is never granted by a wildcard and needs an explicit `enrol:admin`. A leaf is issued
-with `validFrom = max(now - 10 s, delegation.validFrom)` and `validTo = min(now + 7 days, delegation.validTo)`.
+with `validFrom = max(now - 10 s, delegation.validFrom)` and `validTo = min(now + L, delegation.validTo)`, where `L` is the hub's configured device certificate lifetime (`FLASH_DEVICE_CERT_VALIDITY_DAYS`, default 30 days, 1..365; ADR-222). The hub's renewal window is derived from the presented certificate's own lifetime: it opens `max(1 day, 10 %)` before `validTo` and closes `max(3 days, 5 %)` after (`RenewalPolicy.earlyWindowFor` / `graceFor`; 7 days gives today's 1 d / 3 d, 30 days gives 3 d / 3 d). `FLASH_RENEW_EARLY_DAYS` / `FLASH_RENEW_GRACE_DAYS` override both. A client keeps its fixed 24 h start (`HubContract.RENEW_EARLY_WINDOW_MS`), which is inside every derived window, so no client change is needed.
 
 Chain failures map to wire codes: revoked -> `ERR_REVOKED`; expired, not yet valid, delegation expired -> `ERR_EXPIRED`; everything else -> `ERR_AUTH`.
 
@@ -1546,6 +1546,7 @@ failed, 2 bad configuration or usage. `FLASH_ROOT_PASSPHRASE` supplies the keyto
 | `FLASH_SETUP_TOKEN` | generated file | explicit one-time setup token (at least 16 characters) |
 | `FLASH_MANAGEMENT_TOKEN` | none | bearer token for `/health/detail` and `/metrics` (otherwise only a direct loopback caller, no proxy headers) |
 | `FLASH_HUB_NAME`, `FLASH_DEVICE_QUOTA` | `Flash Hub`, from the delegation | name shown to devices; device cap (never above the delegation's) |
+| `FLASH_DEVICE_CERT_VALIDITY_DAYS`, `FLASH_RENEW_EARLY_DAYS`, `FLASH_RENEW_GRACE_DAYS` | 30, derived, derived | device certificate lifetime (1..365); optional fixed renewal window before expiry and grace after it |
 | `FLASH_CHALLENGE_TIMEOUT_MS`, `FLASH_MAILBOX_TTL_DAYS` | 60000, 7 | challenge lifetime; mailbox TTL |
 
 ### Hub review round REV-01..REV-16 (2026-10-13): contract changes

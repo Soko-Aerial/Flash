@@ -109,8 +109,12 @@ class EnrollmentService(
     private val delegations: DelegationManager? = null,
     private val revocations: RevocationService = RevocationService.None,
     private val requireHttpsInvites: Boolean = false,
-    private val renewEarlyWindowMs: Long = com.transfer.flash.core.hubprotocol.HubContract.RENEW_EARLY_WINDOW_MS,
-    private val renewGraceMs: Long = com.transfer.flash.core.hubprotocol.HubContract.RENEW_GRACE_MS,
+    /** How long a newly issued device certificate lives (`ServerConfig.deviceCertValidityDays`, default 30 days; ADR-222). */
+    val certValidityMs: Long = DeviceCert.DEFAULT_VALIDITY_MS,
+    /** Renewal window before `validTo`; null derives it from the presented certificate's own lifetime ([RenewalPolicy.earlyWindowFor]). */
+    private val renewEarlyWindowMs: Long? = null,
+    /** Renewal grace after `validTo`; null derives it from the presented certificate's own lifetime ([RenewalPolicy.graceFor]). */
+    private val renewGraceMs: Long? = null,
     private val onEnrolled: (EnrollmentEvent) -> Unit = {},
 ) {
     private val log = LoggerFactory.getLogger(EnrollmentService::class.java)
@@ -331,7 +335,10 @@ class EnrollmentService(
         if (revocations.isRevoked(presented.serial, presented.deviceId)) {
             return Result.failure(SecurityException("This device has been revoked"))
         }
-        if (!RenewalPolicy.isRenewable(presented, currentTimeMs, renewEarlyWindowMs, renewGraceMs)) {
+        val presentedLifetimeMs = presented.validTo - presented.validFrom
+        val earlyMs = renewEarlyWindowMs ?: RenewalPolicy.earlyWindowFor(presentedLifetimeMs)
+        val graceMs = renewGraceMs ?: RenewalPolicy.graceFor(presentedLifetimeMs)
+        if (!RenewalPolicy.isRenewable(presented, currentTimeMs, earlyMs, graceMs)) {
             return Result.failure(IllegalArgumentException("The certificate is outside its renewal window"))
         }
         val outcome = try {
@@ -374,6 +381,21 @@ class EnrollmentService(
         }
     }
 
+    /**
+     * A sentence for the startup log when the delegation in force expires before a certificate issued now could be renewed
+     * (lifetime plus renewal grace), else null. Past that point every new certificate is clamped to the delegation (SEC-18) and
+     * devices renew more often than the configured lifetime says; the operator should install a longer delegation.
+     */
+    fun delegationLifetimeWarning(nowMs: Long): String? {
+        val needMs = certValidityMs + (renewGraceMs ?: RenewalPolicy.graceFor(certValidityMs))
+        val leftMs = delegationCert.validTo - nowMs
+        if (leftMs >= needMs) return null
+        val day = 86_400_000L
+        return "The delegation expires in ${leftMs / day} days, sooner than a device certificate lives (${certValidityMs / day} days) plus its renewal grace " +
+            "(${(needMs - certValidityMs) / day} days). New certificates are cut short at the delegation's end. Issue a longer delegation " +
+            "(keytool delegate --valid-days N, N at least ${(needMs + day - 1) / day}) before it runs out."
+    }
+
     // ------------------------------------------------------------------------------------------------ internals
 
     private fun signLeaf(
@@ -388,7 +410,7 @@ class EnrollmentService(
         // SEC-18: the leaf never outlives the delegation, and never predates it either (a delegation issued moments
         // ago must still contain the 10 s back-date).
         val validFrom = maxOf(nowMs - DeviceCert.ISSUE_BACKDATE_MS, delegation.validFrom)
-        val validTo = minOf(nowMs + DeviceCert.DEFAULT_VALIDITY_MS, delegation.validTo)
+        val validTo = minOf(nowMs + certValidityMs, delegation.validTo)
         check(validTo > nowMs) { "Server delegation certificate has expired" }
         return DeviceCert.issue(
             issuerPrivateKey = serverPrivateKey,
