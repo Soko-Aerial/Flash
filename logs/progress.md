@@ -1,5 +1,35 @@
 # Progress Log
 
+## 2026-10-21 (later) - Server & Hub internals audit: 16 findings, docs only, nothing built
+
+### Worked on
+Owner: "review the server and the hub for bugs, plus needed and optional features." The two previous reviews explicitly left relay-router internals unread, so this pass covered exactly those areas: relay dispatch/drain/spill/shutdown, the mailbox, the file read path, directory sync and people paging, the announcement store, identity/enrolment/authorisation, and the hub REST client in `:core:enterprise`. **No product code was changed; nothing was compiled; nothing ran on a device.**
+
+### Changed
+Only documentation:
+
+- New `docs/audit/2026-10-21-server-hub-internals-audit.md` — method, 16 findings with `file:line` + quoted code + trigger + consequence + fix direction, the "checked and found correct" list, the docs-vs-code contradictions, needed vs optional feature recommendations, five owner questions, and the device tests owed.
+- `docs/testing/TEST-BACKLOG.md` §4zzzzzzzzzzzzzzzzzzzzz — `SRVHUB-01..12`.
+
+### Findings (none high; four medium)
+- **ANN-01** (medium): announcement writes use `db.withConnection` (autocommit), so `nextSeq`'s UPDATE+SELECT can hand two rows the **same** `seq` (a client using `seq > since` then skips one for ever), `expectedSeq` has no `AND seq = ?` (silent lost update), and the pin limit and `clientRequestId` idempotency are check-then-act races. The directory and mailbox stores already use `withTransaction`; this store is the outlier.
+- **DEV-01** (medium): moving a device to another department in the console writes the registry and the directory, but `ChallengeResponseAuth` builds the principal from the presented **certificate**, so relay and announcement scoping keep the old department until the certificate is renewed (only allowed in the last day before expiry). The KDoc at `IdentityStore.kt:252` claims the opposite of what happens at the point of use.
+- **RLY-01** (medium): `MailboxQueue.fetchPage` applies `LIMIT` to raw rows and then skips undecryptable ones, while `drainPages` treats an empty page as finished. One full page of unopenable rows therefore blocks a device's mailbox for ever (until TTL), with no `DROPPED` frame to the sender. Trigger = lost/replaced `data.key`.
+- **DIR-01** (medium): `/directory/people` truncates in the store (`take(limit)`) before the route applies the cursor, so page 2 is always empty. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged search.
+- Medium-low: **ANN-02** (a console edit silently clears an announcement's expiry — the PUT omits `expiresAtMs` and the store treats null as "clear"), **DIR-02** (tombstones are not privacy-filtered, so removed members of hidden departments leak to everyone through `/directory/sync`), **DIR-03** (a tombstone is never cleared when a device comes back, so a re-enrolled device is deleted by every peer for ever).
+- Low/info: **AUTH-01** (memory-only bearers + one per-IP bucket shared by `/auth/challenge` and `/auth/verify` → an office of 15+ devices behind one NAT recovers from a hub restart at one sign-in per 2 s), **RLY-02** (group fan-out limited by frames, never bytes), **OPS-01** (blocking JDBC in `MailboxStats` on request threads), **RLY-03** (`draining` set outside the gate), **CLI-01/02/03** (no single-flight token refresh, mutex held across network I/O with no client timeout, unbounded `bodyAsText()`), **FL-01** (`409 NOT_READY` unreachable for recipients), **DOC-01** (five doc/code contradictions incl. 64 vs 256 rosters per sync).
+
+### Verification
+Read-only. Every finding was traced route → store → client and quoted; nothing was executed. Two candidate defects from the raw pass were **rejected** after reading the code (expired announcements are filtered by the store *and* the client; the multi-page sync does not lose deletions because the client takes the version from the first page) and are recorded in the audit's §2.3 so they are not re-filed. No Gradle command was run, so the §36 build lock was not needed.
+
+### Remaining
+- The owner answers the audit's §8 (roster cap 64 vs 256; force a re-issue on a department move; what to do with an unopenable sealed row; whether a hub restart behind one NAT must be supported; whether an edit keeps or clears an expiry).
+- Fixing: ANN-01 is the cheapest high-payoff fix (wrap four paths in `withTransaction`), then DIR-01 (cursor into the store), then DEV-01 (re-issue + kick, or say so in the console).
+- No device checks were run; `SRVHUB-01..12` are owed.
+
+### Next AI
+Read the audit's §3 for the finding you are about to fix and its "test that would catch it"; do not re-derive the rejected candidates. Hub work is still experimental and undeployed — do not claim anything here is device-verified.
+
 ## 2026-10-21 - Chat conversation, chat list and Hub: confirmed defects from the pasted review fixed (working tree, NOT committed)
 
 ### Worked on
