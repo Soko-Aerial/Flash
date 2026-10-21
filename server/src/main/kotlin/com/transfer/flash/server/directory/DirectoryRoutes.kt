@@ -183,11 +183,11 @@ fun Route.directoryRoutes(
                     call.respondError(HttpStatusCode.BadRequest, HubErrorCodes.ERR_BAD_REQUEST, MESSAGE_BAD_REQUEST)
                     return@get
                 }
-                val matches = directory.searchPeople(actor, q ?: "", departmentId, limit + 1)
-                val afterCursor = if (cursor == null) matches else matches.filter {
-                    val folded = it.displayName.lowercase()
-                    folded > cursor.foldedName || (folded == cursor.foldedName && it.deviceId > cursor.deviceId)
-                }
+                // DIR-01: the cursor is applied inside the store, before the cut, so page N+1 starts where page N ended.
+                val afterCursor = directory.searchPeople(
+                    actor, q ?: "", departmentId, limit + 1,
+                    afterFoldedName = cursor?.foldedName, afterDeviceId = cursor?.deviceId,
+                )
                 val page = afterCursor.take(limit)
                 val next = if (afterCursor.size > limit && page.isNotEmpty()) {
                     val last = page.last()

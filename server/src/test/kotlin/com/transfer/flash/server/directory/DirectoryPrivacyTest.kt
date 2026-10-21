@@ -141,6 +141,37 @@ class DirectoryPrivacyTest {
         assertTrue(HubRestCodec.decode<PeoplePageDto>(r.bodyAsText()).people.isEmpty())
     }
 
+    // DIR-01 (SRVHUB-01): every page after the first starts where the previous one ended, so a client that follows nextCursor sees everyone once.
+    @Test
+    fun followingTheCursorWalksTheWholeDirectoryExactlyOnce() = testApplication {
+        val w = World()
+        mount(w)
+        // Duplicate display names across devices, so a page boundary can fall inside a run of equal names.
+        for (i in 0 until 1200) w.dir.addDepartmentMember("dept-a", "bulk-%04d".format(i), "Person ${i / 7}")
+        val alice = w.token("alice-01")
+        // The full ordered list, built by hand so it does not use the code under test.
+        val expected = (w.dir.listDepartmentMembers("dept-a") + w.dir.listDepartmentMembers("dept-b"))
+            .sortedWith(compareBy({ m -> m.displayName.lowercase() }, { m -> m.deviceId })).map { m -> m.deviceId }
+        var biggest = 0
+        for (limit in listOf(500, 100, 7)) {
+            val seen = mutableListOf<String>()
+            var cursor: String? = null
+            var pages = 0
+            do {
+                val url = "/api/v1/directory/people?limit=$limit" + (cursor?.let { "&cursor=$it" } ?: "")
+                val body = client.getAs(url, alice).bodyAsText()
+                biggest = maxOf(biggest, body.length)
+                val page = HubRestCodec.decode<PeoplePageDto>(body, com.transfer.flash.core.hubprotocol.HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES)
+                seen += page.people.map { it.deviceId }
+                cursor = page.nextCursor
+                pages++
+            } while (cursor != null && pages < 1000)
+            assertEquals(expected.size, seen.size, "limit=$limit: every listable person is returned")
+            assertEquals(expected, seen, "limit=$limit: in order, none twice, none skipped")
+        }
+        assertTrue(biggest < com.transfer.flash.core.hubprotocol.HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES, "a full page fits the client's directory bound ($biggest bytes)")
+    }
+
     // PRIV-U04: hidden never leaks via search, counts, cursor, groups.
     @Test
     fun hiddenPeopleNeverLeakThroughSearchCountsOrCursors() = testApplication {

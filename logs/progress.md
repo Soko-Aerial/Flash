@@ -18089,3 +18089,21 @@ Plan items 8-10 (CLI-02, the narrow bearer mutex, is in item 10).
 
 ### Next AI
 Item 8: move the people-paging cursor into `searchPeople` (DIR-01).
+
+
+## 2026-10-21 - Server internals audit, step 8: people paging cursor (SRVHUB-01)
+
+### Worked on
+Plan item 8 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (DIR-01).
+
+### Changed
+- `searchPeople` takes the cursor (`afterFoldedName`, `afterDeviceId`) and applies it before the cut; its cap is `PEOPLE_MAX_LIMIT + 1` so the lookahead row survives at limit 500. The route no longer re-filters. `decodePeoplePage` reads a page with the 2 MiB directory bound (a 500-person page is ~75 KiB, over the 64 KiB REST bound). Protocol note.
+
+### Verification
+`DirectoryPrivacyTest` (walk test added) and `DirectoryPrivacyClientTest` (500-person page) green; two mutations (cursor filter always true; client bound back to 64 KiB) failed the expected tests and were restored. NOT device-verified.
+
+### Remaining
+Plan items 9 and 10.
+
+### Next AI
+Item 9: tombstone hygiene (DIR-02, DIR-03).
