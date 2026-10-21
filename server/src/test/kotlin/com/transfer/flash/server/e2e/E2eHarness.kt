@@ -237,6 +237,7 @@ class E2eDevice(
         allowCleartext = { allowCleartext },
         clock = clock::now,
         ioDispatcher = Dispatchers.IO,
+        reauthJitterMs = { 0L },
         relayFactory = { identity ->
             FlashRelayClient(
                 deviceId = id,

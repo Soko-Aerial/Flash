@@ -104,8 +104,14 @@ public class EnterpriseHub(
     private val tickMs: Long = 60_000L,
     /** Minimum time between two maintenance rounds. */
     private val maintenanceEveryMs: Long = 5L * 60L * 1000L,
+    /** Jitter before the first re-authentication after a refused token ([HubSession]); tests pass `{ 0L }`. */
+    reauthJitterMs: (() -> Long)? = null,
 ) {
-    public val session: HubSession = HubSession(httpClient, { trustStore.credentials.value }, crypto, trustStore, ioDispatcher, clock, allowCleartext)
+    public val session: HubSession = if (reauthJitterMs == null) {
+        HubSession(httpClient, { trustStore.credentials.value }, crypto, trustStore, ioDispatcher, clock, allowCleartext)
+    } else {
+        HubSession(httpClient, { trustStore.credentials.value }, crypto, trustStore, ioDispatcher, clock, allowCleartext, reauthJitterMs)
+    }
 
     public val directory: EnterpriseDirectoryClient = EnterpriseDirectoryClient(
         httpClient = httpClient,

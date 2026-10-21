@@ -49,7 +49,7 @@ class EnterpriseHubSealingLifecycleTest {
 
         val hub = EnterpriseHub(
             deviceId = "dev-1", friendlyName = "Phone", crypto = device, trustStore = store, scope = scope,
-            httpClient = fake.client(), clock = { now }, ioDispatcher = dispatcher,
+            httpClient = fake.client(), clock = { now }, ioDispatcher = dispatcher, reauthJitterMs = { 0L },
             sealingKeyStore = keyStore,
             relayFactory = { idp ->
                 FlashRelayClient(

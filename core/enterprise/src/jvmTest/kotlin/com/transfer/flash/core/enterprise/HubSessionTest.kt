@@ -8,6 +8,9 @@ import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
 import io.ktor.http.HttpStatusCode
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,8 +28,10 @@ class HubSessionTest {
     private var now = TestOrg.T0
     private val store = MemoryEnterpriseTrustStore()
 
+    private var jitterMs = 0L
+
     private fun session(allowCleartext: Boolean = false) =
-        HubSession(hub.client(), { store.credentials.value }, device, store, clock = { now }, allowCleartext = { allowCleartext })
+        HubSession(hub.client(), { store.credentials.value }, device, store, clock = { now }, allowCleartext = { allowCleartext }, reauthJitterMs = { jitterMs })
 
     private suspend fun enrolled(validTo: Long = TestOrg.T0 + 30 * TestOrg.DAY, hubUrl: String = "https://hub.example.test") {
         store.saveCredentials(org.credentialsFor("dev-1", device, hubUrl = hubUrl, validTo = validTo))
@@ -59,6 +64,39 @@ class HubSessionTest {
         val s = session()
         s.bearer(false)
         assertEquals("tok-2", s.bearer(true))
+    }
+
+    @Test
+    fun callersRefusedWithTheSameTokenSignInOnce() = runTest {
+        enrolled()
+        scriptAuth()
+        jitterMs = 150L // every caller records which sign-in it was refused on before any of them re-authenticates
+        val s = session()
+        assertEquals("tok-1", s.bearer(false))
+        val tokens = (1..5).map { async(Dispatchers.Default) { s.bearer(true) } }.awaitAll()
+        assertEquals(List(5) { "tok-2" }, tokens, "one sign-in served all five refused callers")
+        assertEquals(2, hub.count(FakeHub.VERIFY), "the first sign-in plus ONE refresh, not five")
+        assertEquals("tok-3", s.bearer(true), "a later refusal of the new token signs in again")
+    }
+
+    @Test
+    fun theFirstSignInWaitsForNoJitterButARefusedLiveTokenDoes() = runTest {
+        enrolled()
+        scriptAuth()
+        val waits = mutableListOf<Long>()
+        val s = HubSession(
+            hub.client(), { store.credentials.value }, device, store, clock = { now },
+            reauthJitterMs = { 7L.also { waits += it } },
+        )
+        s.bearer(true) // nothing cached: nobody refused anything, no reason to wait
+        assertEquals(emptyList(), waits)
+        s.bearer(false)
+        assertEquals(emptyList(), waits, "a cache hit never waits")
+        s.bearer(true) // the hub refused a token this device still thought valid: the hub-restart signature
+        assertEquals(listOf(7L), waits)
+        now += 600_000L // the token expired locally: an ordinary refresh, not a restart
+        s.bearer(true)
+        assertEquals(listOf(7L), waits)
     }
 
     @Test

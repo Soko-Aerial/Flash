@@ -34,12 +34,14 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 
 /** Supplies the bearer for authenticated REST calls; [forceRefresh] drops a token the hub just refused. */
 @FlashInternalApi
@@ -106,12 +108,26 @@ public class HubSession(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val clock: () -> Long = { SystemTimeSource.nowMs() },
     private val allowCleartext: () -> Boolean = { false },
+    /**
+     * How long to wait before the FIRST re-authentication after the hub refused a token this device still thought valid (a hub restart
+     * forgets every bearer, so a whole office would otherwise come back in the same second; AUTH-01). 0 to [REAUTH_JITTER_MAX_MS].
+     */
+    private val reauthJitterMs: () -> Long = { Random.nextLong(0L, REAUTH_JITTER_MAX_MS + 1) },
 ) : HubBearerSource {
 
     private class Cached(val token: String, val expiresAtMs: Long, val serial: Long, val hubUrl: String)
 
     private val mutex = Mutex()
+
+    @kotlin.concurrent.Volatile
     private var cached: Cached? = null
+
+    /**
+     * Counts completed authentications, so concurrent 401 refreshes can tell that another caller already refreshed (CLI-01).
+     * Read WITHOUT the mutex: a caller queued behind a running authentication must see the number from before it started.
+     */
+    @kotlin.concurrent.Volatile
+    private var generation = 0L
 
     private val _authFailure = MutableStateFlow<HubAuthFailure?>(null)
 
@@ -130,16 +146,23 @@ public class HubSession(
 
     override suspend fun bearer(forceRefresh: Boolean): String? = withContext(ioDispatcher) {
         val creds = credentials() ?: return@withContext null
+        // CLI-01: remember which authentication the caller's refused token came from. Callers that were refused by the same token
+        // queue on the mutex; only the first re-authenticates, the others take its result instead of signing again.
+        val seen = generation
+        if (forceRefresh) {
+            val stale = cached
+            val tokenStillLooksValid = stale != null && stale.serial == creds.deviceCert.serial &&
+                stale.hubUrl == creds.hubUrl && clock() < stale.expiresAtMs - EXPIRY_MARGIN_MS
+            if (tokenStillLooksValid) delay(reauthJitterMs().coerceIn(0L, REAUTH_JITTER_MAX_MS))
+        }
         mutex.withLock {
             val now = clock()
             val current = cached
-            if (!forceRefresh && current != null && current.serial == creds.deviceCert.serial &&
+            val usable = current != null && current.serial == creds.deviceCert.serial &&
                 current.hubUrl == creds.hubUrl && now < current.expiresAtMs - EXPIRY_MARGIN_MS
-            ) {
-                return@withLock current.token
-            }
+            if (usable && (!forceRefresh || generation != seen)) return@withLock current!!.token
             cached = null
-            authenticate(creds)?.also { cached = it }?.token
+            authenticate(creds)?.also { cached = it; generation++ }?.token
         }
     }
 
@@ -368,5 +391,8 @@ public class HubSession(
     private companion object {
         /** A token is renewed this long before the hub's TTL ends, so a request never races the expiry. */
         const val EXPIRY_MARGIN_MS: Long = 30_000L
+
+        /** Upper bound of the jitter before the first re-authentication after a refused token (AUTH-01). */
+        const val REAUTH_JITTER_MAX_MS: Long = 30_000L
     }
 }

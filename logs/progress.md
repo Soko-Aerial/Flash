@@ -18071,3 +18071,21 @@ Plan items 7-10; optional console "retry quarantined rows" action.
 
 ### Next AI
 Item 7: `/auth/verify` per-device bucket, client single-flight 401 refresh with jitter, deployment doc.
+
+
+## 2026-10-21 - Server internals audit, step 7: sign-in budget (SRVHUB-08, SRVHUB-10)
+
+### Worked on
+Plan item 7 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (owner decision 8.4; AUTH-01, CLI-01).
+
+### Changed
+- `/auth/verify` limited per device id (burst 5, 1 per 5 s) behind a per-address ceiling (burst 600, 20/s; my addition); challenge and `GET /hub` stay per address. `HubSession.bearer(true)` is single-flight through a generation counter, and the first re-auth after a refused still-valid token waits 0..30 s (`reauthJitterMs`, also on `EnterpriseHub`). Deployment doc and protocol note.
+
+### Verification
+`AuthVerifyRateLimitTest` (6), `HubSessionTest` (18 with two new). Three mutations (address bucket instead of device key, one shared key, no sign-in reuse) each failed the expected tests and were restored. NOT device-verified.
+
+### Remaining
+Plan items 8-10 (CLI-02, the narrow bearer mutex, is in item 10).
+
+### Next AI
+Item 8: move the people-paging cursor into `searchPeople` (DIR-01).

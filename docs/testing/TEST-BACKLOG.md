@@ -6048,7 +6048,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-08 — A hub restart does not lock out an office (AUTH-01)
 - **Setup:** 50 devices behind one NAT/reverse proxy (or a load test that signs in 50 times from one address).
 - **Steps:** restart the hub; watch the clients.
-- **Pass:** every device signs in again within a minute, `/auth/verify` is limited per device rather than per IP, and no device shows the sign-in failure sentence. Today: about 15 per burst, then one per 2 s, so 50 devices take over a minute and the throttled ones show an auth failure. **Source:** AUTH-01, ADR-222 decision 5. **Status:** TODO
+- **Pass:** every device signs in again within a minute, `/auth/verify` is limited per device rather than per IP, and no device shows the sign-in failure sentence. Today: about 15 per burst, then one per 2 s, so 50 devices take over a minute and the throttled ones show an auth failure. **Source:** AUTH-01, ADR-222 decision 5. **Status:** AUTOMATED PASS 2026-10-21 (`AuthVerifyRateLimitTest`; the real restart with 50 devices behind one address is still owed)
 
 ### SRVHUB-09 — One sender cannot flood a large group (RLY-02)
 - **Setup:** a group of 100 members, all online; one member scripted to send 64 KiB frames at 60 frames/s.
@@ -6058,7 +6058,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-10 — A hub restart during a transfer costs one sign-in, not many (CLI-01, CLI-02)
 - **Setup:** a device uploading a multi-chunk hub file while the 15 s presence poll and a directory sync run.
 - **Steps:** restart the hub mid-upload.
-- **Pass:** one `POST /auth/verify` per device (check the hub log), the upload resumes within seconds, and no screen freezes without an error. Today: one sign-in per concurrent 401, serialised, and the mutex is held across the network calls. **Source:** CLI-01/CLI-02. **Status:** TODO
+- **Pass:** one `POST /auth/verify` per device (check the hub log), the upload resumes within seconds, and no screen freezes without an error. Today: one sign-in per concurrent 401, serialised, and the mutex is held across the network calls. **Source:** CLI-01/CLI-02. **Status:** PARTIAL 2026-10-21 (single-flight refresh and jitter built and unit-tested in `HubSessionTest`; the narrow bearer mutex of CLI-02 is step 10; a real hub restart is still owed)
 
 ### SRVHUB-11 — `/health` answers while the hub is busy (OPS-01)
 - **Setup:** a full directory sync of 20,000 members plus a hub file transfer.
