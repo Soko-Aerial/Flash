@@ -5999,3 +5999,10 @@ confirm the audit's reading of the code.
 ### CNCL-20 — Receiver's refusal names its reason on the sender (C-11)
 - **Setup:** B with a full storage / a session ceiling reached / a write error.
 - **Pass:** A's row fails with B's sentence ("busy", "refused the file", "not enough storage") and Retry is offered; an old build as B still behaves as before (cancel without reason). **Source:** C-11 (`3e828b8b`, ADR-221, `docs/protocol.md`). Not built: a Failed row on the refusing device. **Status:** TODO
+
+## 4zzzzzzzzzzzzzzzzzzz. Brutal code review fixes (BRUT, 2026-10-21; see `docs/audit/2026-10-21-brutal-code-review.md`)
+
+- **BRUT-01 (F8, Windows):** Settings -> Storage, set Save location to a folder that holds an unrelated file (e.g. a test `Downloads` copy), receive one file, tap "Clear received files". Pass: only the received file goes, the unrelated file stays, and the size shown in the confirmation matches. Also on the default `~/FlashReceived`: everything inside goes. Source: F8. Status: TODO
+- **BRUT-02 (F1):** search a word that appears in a message text that has an attachment whose name does not contain it. Pass: one message hit, nothing under Files or Media. Source: F1. Status: TODO
+- **BRUT-03 (F5):** hub console as a department head on a hub with more than 500 enrolled devices. Pass: the overview counts match the department roster. Source: F5. Status: TODO
+- **BRUT-04 (F9):** receive a 100 MB file over a slow link on both hosts. Pass: no growth in allocation rate, file hash verifies. Source: F9. Status: TODO
