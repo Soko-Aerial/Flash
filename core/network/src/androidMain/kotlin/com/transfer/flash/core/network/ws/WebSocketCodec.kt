@@ -367,13 +367,13 @@ public object WebSocketCodec {
                     pooled[index] = (pooled[index].toInt() xor maskKey[index and 3].toInt()).toByte()
                 }
             }
-            if (pooled.size == length) {
-                pooled
-            } else {
-                val exact = pooled.copyOf(length)
-                ByteArrayPool.release(pooled)
-                exact
-            }
+            // Always hand the caller an exact COPY and give the pooled buffer back. Returning the pooled array itself when its
+            // size happened to equal the frame length (16 KiB / 32 KiB, the sizes a slow link adapts down to) let it escape
+            // the pool for good: nothing outside this file releases a received payload, so eight such frames emptied the pool
+            // (brutal-review F9). One extra copy of a small frame is cheaper than the allocation churn the pool exists to stop.
+            val exact = pooled.copyOf(length)
+            ByteArrayPool.release(pooled)
+            exact
         } else {
             val buffer = ByteArray(length)
             readFullyInto(input, buffer, 0, length)
