@@ -23,7 +23,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 |---|---|---|---|---|
 | **DIR-04** | **High** | `:server` + `:core:enterprise` | One legal `/directory/sync` page is larger than the client can decode. The client asks for 500 members and enforces a **64 KiB** body cap on the answer; a member DTO is ~576 B, so a page is refused once it carries ~110 members, or ~70 small group rosters on top of any members at all. Org trust, colleagues and hub group rosters therefore never land for a real organisation, and the failure reads like a server bug. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
 | **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | OPEN |
-| **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | OPEN |
+| **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | FIXED 2026-10-21 (step 6; automated tests, not device-verified) |
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | FIXED 2026-10-21 (step 2; automated tests, not device-verified) |
 | **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | FIXED 2026-10-21 (step 5; automated tests, not device-verified) |
 | **ANN-02** | Medium-low | `:server` announcements | A console edit silently **removes an announcement's expiry**: the edit form never sends `expiresAtMs` and the store treats `null` as "clear". An announcement that should have expired stays live for ever. | FIXED 2026-10-21 (step 3; automated tests, not device-verified) |
@@ -185,7 +185,7 @@ while (session.isOpen) {
 
 **Decision:** §8.3 — quarantine: keep the row (`undeliverable_reason`), skip it, tell the sender `DROPPED`, let it age out with the 7-day TTL.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 6; see section 12).
 
 ---
 
@@ -923,7 +923,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 3 | **Announcement expiry tri-state** + console field on create and edit (do it with #2 — same DTO, same store file) | ANN-02, §8.5 | SRVHUB-05, 16 **DONE 2026-10-21** |
 | 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 **DONE 2026-10-21** |
 | 5 | **Registry-derived principal** + `revokeDevice` + `router.kick` on a department move + console copy | DEV-01, §8.2 (second half) | SRVHUB-04 **DONE 2026-10-21** |
-| 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 |
+| 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 **DONE 2026-10-21** |
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 |
 | 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 |
 | 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 |
@@ -976,3 +976,15 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - Tests: `RegistryPrincipalTest` (4: moved device carries the registry department with its old certificate, move to no department, no registry row, revoked/unenrolled rows), `AdminConsoleApiTest.movingADeviceToAnotherDepartmentDropsItsBearersAndKicksItsSessionOnce` (real route; the test Realm now has a real `RelayFrameRouter`). **Mutations:** principal department back to `deviceCert.department` failed both principal tests and the route test; removing the kick failed the route test; both restored.
 - Behaviour change to remember: a device whose registry row is gone (database restored from an older backup, or the row never written) can no longer connect with a still-valid certificate. That is the intended fail-closed rule; the remedy is a new invite.
 - Still open from the audit's D-5: `IdentityStore.setRole` and `serialsOf` have no caller (left alone; a role change is not reachable from the console).
+
+### Step 6 - Mailbox quarantine (RLY-01, section 8.3; SRVHUB-02): DONE, unit tested, NOT device-verified
+
+- Mailbox migration v4: `undeliverable_reason TEXT NULL` plus a partial index `(target_device_id, seq) WHERE undeliverable_reason IS NULL`.
+- `MailboxQueue.fetchPageDetailed` (new, `MailboxStore` default wraps `fetchPage`): scans with `LIMIT` over deliverable rows only, marks the rows it cannot open (reason is the exception class only, never payload bytes) and keeps scanning behind them until the page is full or the mailbox is exhausted (at most 20 rounds; the router just asks again). `fetchPage` is now `fetchPageDetailed(...).messages`, so every existing caller quarantines too.
+- Router: both drain loops use `fetchPageDetailed`, tell each origin `FLASH_QUEUE_STATE DROPPED` (`reportQuarantined`) and no longer end on an empty list while rows were quarantined in that call.
+- A resend of a quarantined `(origin, msgId, target)` deletes the quarantined row inside the enqueue transaction first, so it is delivered instead of being swallowed as `DuplicateQueued`.
+- Counter `MailboxStats.quarantinedTotal()`, metric event `quarantined`, console counter "Stored messages set aside (unreadable)" (`mailboxQuarantined` in the metrics DTO); one log line per fetch naming the recipient by its first 8 characters.
+- If marking fails the exception reaches the router, which cuts the session as before (tested with a trigger that refuses the update).
+- Tests: `MailboxQuarantineTest` (6): 3 unreadable then 3 readable rows with `LIMIT 3` returns the 3 readable ones and reports the 3; a second fetch neither re-reads nor re-counts them; 250 unreadable rows ahead of one readable; resend after quarantine; the TTL sweep removes quarantined rows; a failing quarantine write reaches the caller; a real router drain delivers the readable rows and the origin receives 3 `DROPPED`. Existing `SealedMailboxPayloadTest` still passes unchanged ("skipped, not deleted"). **Mutations:** removing the `undeliverable_reason IS NULL` filter and the router's `reportQuarantined` call failed two tests; restored.
+- Not done (optional per the spec): a console action to retry quarantined rows after a key restore.
+- Full `:server:test` once failed `RelayLoadTest.everyMessageArrivesAtLeastOnceDespiteRandomDisconnects` with a coroutine timeout while the whole suite ran; it passed 4 times alone (including after `cleanTest`). Treat it like the documented load flake `RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`; if it recurs in isolation, suspect the drain change first.

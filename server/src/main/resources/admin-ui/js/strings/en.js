@@ -944,6 +944,7 @@ export default {
   'settings.counter.mailboxDelivered': 'Stored messages delivered',
   'settings.counter.mailboxExpired': 'Stored messages expired',
   'settings.counter.mailboxDropped': 'Stored messages dropped',
+  'settings.counter.mailboxQuarantined': 'Stored messages set aside (unreadable)',
   'settings.about.title': 'This console',
   'settings.about.hub': 'Hub',
   'settings.about.serverId': 'Hub ID',

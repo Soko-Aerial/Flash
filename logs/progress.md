@@ -18053,3 +18053,21 @@ Plan items 6-10.
 
 ### Next AI
 Item 6: mailbox quarantine (RLY-01).
+
+
+## 2026-10-21 - Server internals audit, step 6: mailbox quarantine (SRVHUB-02)
+
+### Worked on
+Plan item 6 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (owner decision 8.3; RLY-01).
+
+### Changed
+- Mailbox migration v4 (`undeliverable_reason` + partial index); `MailboxQueue.fetchPageDetailed` quarantines unreadable rows and fills the page from the rows behind them; both router drain loops tell the senders `DROPPED`; a resend replaces a quarantined row; `quarantinedTotal()` counter, metric event and console counter; protocol note.
+
+### Verification
+`MailboxQuarantineTest` (6) green with the existing mailbox, sealed-payload and router suites; two mutations (filter removed, sender notice removed) failed 2 tests and were restored. NOT device-verified.
+
+### Remaining
+Plan items 7-10; optional console "retry quarantined rows" action.
+
+### Next AI
+Item 7: `/auth/verify` per-device bucket, client single-flight 401 refresh with jitter, deployment doc.

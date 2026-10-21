@@ -29,6 +29,9 @@ interface MailboxStats {
     /** Messages the mailbox refused or lost (quota, unknown recipient, storage error). */
     fun droppedTotal(): Long
 
+    /** Stored rows that could not be opened (data key lost or changed) and were quarantined since the process started (RLY-01). */
+    fun quarantinedTotal(): Long = 0
+
     /** Stats of a hub that has no mailbox. */
     object Empty : MailboxStats {
         override fun queuedCount(): Long = 0

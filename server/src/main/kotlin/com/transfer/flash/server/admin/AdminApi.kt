@@ -897,6 +897,7 @@ private fun Route.metricsRoutes(d: AdminApiDeps) {
                 mailboxDelivered = stats.deliveredTotal(),
                 mailboxExpired = stats.expiredTotal(),
                 mailboxDropped = stats.droppedTotal(),
+                mailboxQuarantined = stats.quarantinedTotal(),
             ),
         )
     }

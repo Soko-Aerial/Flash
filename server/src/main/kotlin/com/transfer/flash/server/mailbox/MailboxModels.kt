@@ -99,6 +99,12 @@ data class QueuedMessage(
     val group: String? = null,
 )
 
+/** A stored row that could not be opened and was quarantined (RLY-01): the sender is told `DROPPED`; the row ages out with the TTL. */
+data class QuarantinedRow(val seq: Long, val origin: String, val target: String, val msgId: String)
+
+/** One page of a drain: the openable [messages] in order, and the rows this fetch quarantined on the way. */
+data class MailboxPage(val messages: List<QueuedMessage>, val quarantined: List<QuarantinedRow> = emptyList())
+
 /** A row removed because its recipient acknowledged it. */
 data class AckedRow(val origin: String, val msgId: String, val createdAt: Long)
 

@@ -382,6 +382,11 @@ public class RelayFrameRouter(
         offerFrame(origin, RelayFrame.QueueState(id = msgId, to = recipientId, state = QueueEvent.EXPIRED, ts = clock()))
     }
 
+    /** Tells each online sender that a message it queued could not be opened and will not be delivered (RLY-01; the row is quarantined). */
+    private fun reportQuarantined(rows: List<com.transfer.flash.server.mailbox.QuarantinedRow>) {
+        for (r in rows) notifyDropped(r.origin, r.target, r.msgId)
+    }
+
     private fun notifyDropped(originId: String, recipientId: String, msgId: String) {
         val origin = connectionPool.get(originId) ?: return
         offerFrame(origin, RelayFrame.QueueState(id = msgId, to = recipientId, state = QueueEvent.DROPPED, ts = clock()))
@@ -489,8 +494,11 @@ public class RelayFrameRouter(
     /** Pushes every mailbox row after the session's cursor, page by page, until a page comes back empty. */
     private suspend fun drainPages(session: RelaySession) {
         while (session.isOpen) {
-            val page = mailboxQueue.fetchPage(session.deviceId, session.cursor, policy.drainPageSize)
-            if (page.isEmpty()) return
+            val fetched = mailboxQueue.fetchPageDetailed(session.deviceId, session.cursor, policy.drainPageSize)
+            reportQuarantined(fetched.quarantined)
+            val page = fetched.messages
+            // A page of only quarantined rows (the fetch gave up skipping) is not the end: ask again, the marked rows are excluded now.
+            if (page.isEmpty() && fetched.quarantined.isEmpty()) return
             for (row in page) {
                 val deliver = RelayFrame.Deliver(
                     from = row.origin, id = row.msgId, type = row.type, sentAt = row.sentAt,
@@ -514,8 +522,10 @@ public class RelayFrameRouter(
     public suspend fun drainMailboxForDevice(session: RelaySession): Int {
         var pushed = 0
         while (session.isOpen) {
-            val page = mailboxQueue.fetchPage(session.deviceId, session.cursor, policy.drainPageSize)
-            if (page.isEmpty()) break
+            val fetched = mailboxQueue.fetchPageDetailed(session.deviceId, session.cursor, policy.drainPageSize)
+            reportQuarantined(fetched.quarantined)
+            val page = fetched.messages
+            if (page.isEmpty() && fetched.quarantined.isEmpty()) break
             for (row in page) {
                 val deliver = RelayFrame.Deliver(
                     from = row.origin, id = row.msgId, type = row.type, sentAt = row.sentAt,

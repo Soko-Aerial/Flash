@@ -44,6 +44,7 @@ class MailboxQueue(
     private val delivered = AtomicLong()
     private val expired = AtomicLong()
     private val dropped = AtomicLong()
+    private val quarantined = AtomicLong()
 
     init {
         MailboxSchema.migrate(database, clock)
@@ -138,6 +139,16 @@ class MailboxQueue(
     private fun insert(conn: Connection, m: MailboxMessage, payload: ByteArray, ttlOverrideMs: Long?): EnqueueResult {
         val now = clock()
 
+        // A quarantined copy (RLY-01) is not a delivery in progress: the sender was told DROPPED, so its resend must not be swallowed
+        // as a duplicate of a row that will never be delivered.
+        conn.prepareStatement(
+            "DELETE FROM mailbox_envelopes WHERE origin_device_id = ? AND msg_id = ? AND target_device_id = ? AND undeliverable_reason IS NOT NULL",
+        ).use { stmt ->
+            stmt.setString(1, m.origin)
+            stmt.setString(2, m.msgId)
+            stmt.setString(3, m.target)
+            stmt.executeUpdate()
+        }
         existingSeq(conn, m)?.let { return EnqueueResult.DuplicateQueued(it) }
 
         val size = payload.size.toLong()
@@ -216,14 +227,55 @@ class MailboxQueue(
             }
         }
 
-    override suspend fun fetchPage(target: String, afterSeq: Long, limit: Int): List<QueuedMessage> {
+    override suspend fun fetchPage(target: String, afterSeq: Long, limit: Int): List<QueuedMessage> =
+        fetchPageDetailed(target, afterSeq, limit).messages
+
+    /**
+     * RLY-01 (ADR-222): a row that can not be opened is quarantined (`undeliverable_reason`) and skipped, and the page is filled from the
+     * rows behind it, so `LIMIT` counts only rows that can be delivered and one bad page can not end a drain. The quarantined rows are
+     * returned so the router can tell the senders. If marking a row fails the exception reaches the caller (the router cuts the session
+     * and the device drains afresh); it is never swallowed into an endless loop.
+     */
+    override suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): MailboxPage {
+        val wanted = limit.coerceIn(1, 1000)
+        val messages = ArrayList<QueuedMessage>()
+        val bad = ArrayList<QuarantinedRow>()
+        var cursor = afterSeq
+        var rounds = 0
+        while (messages.size < wanted && rounds++ < MAX_QUARANTINE_ROUNDS) {
+            val ask = wanted - messages.size
+            val scan = scanRows(target, cursor, ask)
+            messages += scan.messages
+            if (scan.bad.isNotEmpty()) {
+                markQuarantined(scan.bad)
+                bad += scan.bad.map { it.row }
+            }
+            if (scan.scanned < ask) break // fewer rows than asked for: nothing is left behind them
+            cursor = scan.lastSeq
+        }
+        if (bad.isNotEmpty()) {
+            quarantined.addAndGet(bad.size.toLong())
+            metrics?.inc(RelayMetrics.MAILBOX_EVENTS, bad.size.toLong(), "event" to "quarantined")
+            logger.error(
+                "Mailbox of device {}: {} queued message(s) cannot be opened (data key lost or changed?); quarantined, the senders are told DROPPED, the rows expire with the TTL",
+                target.take(DEVICE_ID_LOG_CHARS), bad.size,
+            )
+        }
+        return MailboxPage(messages, bad)
+    }
+
+    private class BadRow(val row: QuarantinedRow, val reason: String)
+
+    private class Scan(val messages: List<QueuedMessage>, val bad: List<BadRow>, val scanned: Int, val lastSeq: Long)
+
+    private suspend fun scanRows(target: String, afterSeq: Long, limit: Int): Scan {
         val now = clock()
         return database.io { conn ->
             conn.prepareStatement(
                 """
                 SELECT seq, origin_device_id, target_device_id, msg_id, kind, payload, sent_at, created_at, expires_at, group_id, sealed
                 FROM mailbox_envelopes
-                WHERE target_device_id = ? AND seq > ? AND expires_at > ?
+                WHERE target_device_id = ? AND seq > ? AND expires_at > ? AND undeliverable_reason IS NULL
                 ORDER BY seq ASC
                 LIMIT ?
                 """.trimIndent(),
@@ -231,17 +283,27 @@ class MailboxQueue(
                 stmt.setString(1, target)
                 stmt.setLong(2, afterSeq)
                 stmt.setLong(3, now)
-                stmt.setInt(4, limit.coerceIn(1, 1000))
+                stmt.setInt(4, limit)
                 stmt.executeQuery().use { rs ->
                     val rows = ArrayList<QueuedMessage>()
+                    val bad = ArrayList<BadRow>()
+                    var scanned = 0
+                    var lastSeq = afterSeq
                     while (rs.next()) {
+                        scanned++
+                        lastSeq = rs.getLong(1)
                         val raw = rs.getBytes(6) ?: ByteArray(0)
                         val plain = if (rs.getInt(11) == 1) {
                             try {
                                 secrets.openBytes(raw, payloadContext(rs.getString(2), rs.getString(3), rs.getString(4)))
                             } catch (e: RuntimeException) {
-                                // Wrong or missing data key, or a tampered row: it cannot be delivered, and one bad row must not block the page.
-                                logger.error("Queued message seq={} cannot be opened ({}): skipped, not deleted", rs.getLong(1), e.javaClass.simpleName)
+                                // Wrong or missing data key, or a tampered row. Only the exception class is kept, never payload bytes.
+                                bad.add(
+                                    BadRow(
+                                        QuarantinedRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4)),
+                                        "unopenable:" + e.javaClass.simpleName,
+                                    ),
+                                )
                                 continue
                             }
                         } else {
@@ -262,8 +324,21 @@ class MailboxQueue(
                             ),
                         )
                     }
-                    rows
+                    Scan(rows, bad, scanned, lastSeq)
                 }
+            }
+        }
+    }
+
+    private suspend fun markQuarantined(rows: List<BadRow>) {
+        database.ioTransaction { conn ->
+            conn.prepareStatement("UPDATE mailbox_envelopes SET undeliverable_reason = ? WHERE seq = ?").use { stmt ->
+                for (r in rows) {
+                    stmt.setString(1, r.reason)
+                    stmt.setLong(2, r.row.seq)
+                    stmt.addBatch()
+                }
+                stmt.executeBatch()
             }
         }
     }
@@ -381,4 +456,14 @@ class MailboxQueue(
     override fun expiredTotal(): Long = expired.get()
 
     override fun droppedTotal(): Long = dropped.get()
+
+    override fun quarantinedTotal(): Long = quarantined.get()
+
+    private companion object {
+        /** Pages of a single fetch spent skipping quarantined rows; the router simply asks again after that. */
+        const val MAX_QUARANTINE_ROUNDS = 20
+
+        /** A device id is logged by its first characters only. */
+        const val DEVICE_ID_LOG_CHARS = 8
+    }
 }

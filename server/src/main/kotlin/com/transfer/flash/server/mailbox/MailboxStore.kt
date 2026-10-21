@@ -17,6 +17,12 @@ interface MailboxStore {
     suspend fun fetchPage(target: String, afterSeq: Long, limit: Int): List<QueuedMessage>
 
     /**
+     * [fetchPage] that also reports the rows it had to quarantine because they could not be opened (RLY-01). A store without
+     * sealed payloads never quarantines, so the default wraps [fetchPage]. The drain uses this to tell the senders.
+     */
+    suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): MailboxPage = MailboxPage(fetchPage(target, afterSeq, limit))
+
+    /**
      * Deletes [target]'s stored copy of [msgId] and returns who sent it. With [origin] only that sender's copy goes; without it only
      * the OLDEST copy goes (two senders may use the same id, one acknowledgement must never destroy both: REV-08).
      * Idempotent: an unknown id returns an empty list.
