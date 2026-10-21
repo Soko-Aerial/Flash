@@ -2,6 +2,7 @@
 
 package com.transfer.flash.core.enterprise
 
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.certs.GroupRosterStatement
 import com.transfer.flash.core.hubprotocol.certs.RosterStatus
 import com.transfer.flash.core.hubprotocol.rest.GroupRosterDto
@@ -198,6 +199,7 @@ public class OrgDirectorySync(
         val accumulatedRemovedDeptIds = LinkedHashSet<String>()
         val accumulatedDelegations = LinkedHashMap<Long, DelegationCert>()
         val offeredRosters = ArrayList<GroupRosterDto>()
+        var rostersTruncated = false
 
         while (true) {
             val pageResult = directoryClient.fetchDirectorySync(
@@ -205,7 +207,7 @@ public class OrgDirectorySync(
                 since = sinceVersion,
                 epoch = currentEpoch,
                 cursor = cursor,
-                limit = 500,
+                limit = HubContract.DIRECTORY_SYNC_PAGE_LIMIT,
             )
 
             when (pageResult) {
@@ -272,6 +274,7 @@ public class OrgDirectorySync(
                     }
 
                     offeredRosters.addAll(dto.groupRosters)
+                    if (dto.rostersTruncated) rostersTruncated = true
 
                     // Process departments
                     for (dept in dto.departments) {
@@ -406,7 +409,10 @@ public class OrgDirectorySync(
         )
 
         val rosters = try {
-            verifiedRosters(offeredRosters, accumulatedDelegations.values.toList(), creds, now, authoritative = isFullResync)
+            verifiedRosters(
+                offeredRosters, accumulatedDelegations.values.toList(), creds, now,
+                authoritative = isFullResync, truncated = rostersTruncated,
+            )
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
             // Failure atomicity (verifier B4 defect 21): a decode or storage error while checking the rosters keeps what is
@@ -471,8 +477,9 @@ public class OrgDirectorySync(
         creds: EnrollmentCredentials,
         now: Long,
         authoritative: Boolean = false,
+        truncated: Boolean = false,
     ): List<HubGroupRosterEntity> {
-        if (offered.isEmpty()) return emptyList()
+        if (offered.isEmpty() && !truncated) return emptyList()
         val stored = orgDirectoryDao.allGroupRosters().associateBy { it.groupId }
         val preVerified = delegations.filter { it.rootPublicKey == creds.rootPublicKey && it.verifySignature(verifier) }.toSet()
         val best = LinkedHashMap<String, Pair<GroupRosterStatement, String>>()
@@ -500,13 +507,18 @@ public class OrgDirectorySync(
             if (current == null || statement.version > current.first.version) best[statement.groupId] = statement to dto.statement
         }
         val chainJson = HubRestCodec.encode(preVerified.toList().sortedBy { it.serial })
-        return best.values.mapNotNull { (statement, json) ->
+        val fresh = best.values.mapNotNull { (statement, json) ->
             val old = stored[statement.groupId]
             // After a full resync (epoch reset, restored hub database) the hub's versions start over, so its statement wins
             // (verifier B4 defect 19); otherwise a lower version never replaces a higher one.
             if (!authoritative && old != null && old.version > statement.version) old
             else HubGroupRosterEntity(statement.groupId, statement.version, json, chainJson, statement.validUntilMs)
         }
+        if (!truncated) return fresh
+        // The hub said the list is not the full set (DIR-05): a group missing from it is NOT a group the device left. Keep
+        // its stored roster until its own validity window ends, which is how a truly stale one ages out.
+        val offeredIds = fresh.mapTo(HashSet()) { it.groupId }
+        return fresh + stored.values.filter { it.groupId !in offeredIds && it.validUntilMs > now }
     }
 
     private fun triggerHardSecurityError(reason: String) {

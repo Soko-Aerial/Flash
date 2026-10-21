@@ -387,6 +387,13 @@ public data class DirectorySyncDto(
     public val removedDepartmentIds: List<String> = emptyList(),
     public val groupRosters: List<GroupRosterDto> = emptyList(),
     public val removedGroupIds: List<String> = emptyList(),
+    /**
+     * True when the hub could not put every roster of the caller's groups in [groupRosters] (more groups than
+     * [com.transfer.flash.core.hubprotocol.HubContract.MAX_DIRECTORY_SYNC_ROSTERS], a group too large to sign, or a
+     * signing failure). A client then keeps the stored rosters of groups that are missing from the answer instead of
+     * treating "not offered" as "left the group" (DIR-05). Absent from an older hub, which means false.
+     */
+    public val rostersTruncated: Boolean = false,
 ) {
     public companion object {
         public const val DEFAULT_OFFLINE_GRACE_DAYS: Int = 30

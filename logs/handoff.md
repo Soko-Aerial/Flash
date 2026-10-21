@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-21 (server internals audit, implementation step 1 of 10) - built and tested, NOT device-verified
+
+- **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
+- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 2-10 are NOT started.
+- **Recommended next task:** item 2 (ANN-01, announcement writes in one transaction), then item 3 (expiry tri-state), then 4, 5.
+- **Wire change to remember:** `DirectorySyncDto.rostersTruncated` (default false) and the client now asks `limit = 200`. A hub older than this build still answers (it just caps at 500 rows and may exceed 2 MiB only if its rows are huge).
+
 ## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented
 
 - **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md` §8 and §11, and **ADR-222** in `docs/decisions.md`. The owner answered all five audit questions and asked that they be recorded, **not implemented**.

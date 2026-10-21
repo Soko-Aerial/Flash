@@ -21,7 +21,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 
 | ID | Sev | Layer | Defect | Status |
 |---|---|---|---|---|
-| **DIR-04** | **High** | `:server` + `:core:enterprise` | One legal `/directory/sync` page is larger than the client can decode. The client asks for 500 members and enforces a **64 KiB** body cap on the answer; a member DTO is ~576 B, so a page is refused once it carries ~110 members, or ~70 small group rosters on top of any members at all. Org trust, colleagues and hub group rosters therefore never land for a real organisation, and the failure reads like a server bug. | OPEN |
+| **DIR-04** | **High** | `:server` + `:core:enterprise` | One legal `/directory/sync` page is larger than the client can decode. The client asks for 500 members and enforces a **64 KiB** body cap on the answer; a member DTO is ~576 B, so a page is refused once it carries ~110 members, or ~70 small group rosters on top of any members at all. Org trust, colleagues and hub group rosters therefore never land for a real organisation, and the failure reads like a server bug. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
 | **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | OPEN |
 | **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | OPEN |
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | OPEN |
@@ -29,7 +29,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **ANN-02** | Medium-low | `:server` announcements | A console edit silently **removes an announcement's expiry**: the edit form never sends `expiresAtMs` and the store treats `null` as "clear". An announcement that should have expired stays live for ever. | OPEN |
 | **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | OPEN |
 | **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | OPEN |
-| **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | OPEN |
+| **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
 | **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | OPEN |
 | **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | OPEN |
 | **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | OPEN |
@@ -918,7 +918,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 
 | # | Work | Closes | Tests |
 |---|---|---|---|
-| 1 | **Sync transport budget**: `MAX_DIRECTORY_SYNC_BODY_BYTES` (2 MiB) for `fetchSync` only, server byte-budget paging, client `limit` 200, `MAX_ROSTERS_PER_SYNC` 64, `rostersTruncated` | DIR-04 (High), DIR-05, DOC-01 D-1 | SRVHUB-13, 14 |
+| 1 | **Sync transport budget**: `MAX_DIRECTORY_SYNC_BODY_BYTES` (2 MiB) for `fetchSync` only, server byte-budget paging, client `limit` 200, `MAX_ROSTERS_PER_SYNC` 64, `rostersTruncated` | DIR-04 (High), DIR-05, DOC-01 D-1 | SRVHUB-13, 14 **DONE 2026-10-21** |
 | 2 | **Announcement writes in one transaction**: `createAnnouncement`, `updateAnnouncement`, `setPinned`, `clientRequestId` check under `withTransaction`, `nextSeq` returning its own UPDATE's value | ANN-01 | SRVHUB-03 |
 | 3 | **Announcement expiry tri-state** + console field on create and edit (do it with #2 — same DTO, same store file) | ANN-02, §8.5 | SRVHUB-05, 16 |
 | 4 | **Certificate lifetime 30 days, adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`), derived renewal window/grace, startup warning when the delegation is shorter | §8.2 (first half) | SRVHUB-15 |
@@ -930,3 +930,17 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 |
 
 Items 1–3 are the ones I would do before any hub is put in front of real users; item 1 alone decides whether the offline-trust feature works at all above ~110 people.
+
+---
+
+## 12. Implementation log (2026-10-21, main checkout, branch `dev`, one commit per plan item)
+
+### Step 1 — Sync transport budget (DIR-04, DIR-05, DOC-01 D-1): DONE, unit and E2E tested, NOT device-verified
+
+- `HubContract`: `MAX_DIRECTORY_SYNC_BODY_BYTES` 2 MiB, `DIRECTORY_SYNC_MEMBER_BUDGET_BYTES` 1 MiB, `DIRECTORY_SYNC_PAGE_LIMIT` 200, `MAX_DIRECTORY_SYNC_ROSTERS` 64.
+- `DirectorySyncDto.rostersTruncated` (default false, older hubs read as complete).
+- Server `OrganizationDirectory.getSyncChanges`: pages end at `limit` rows or at the member byte budget (`memberBudgetBytes` parameter, default the 1 MiB constant, so tests can lower it), at least one row per page; `signedRostersFor` returns `(rosters, truncated)`; `MAX_ROSTERS_PER_SYNC` 256 -> 64 (decision of 2026-10-21).
+- Client `fetchDirectorySync` decodes with the 2 MiB bound; `OrgDirectorySync` asks for 200 per page and, when any page says `rostersTruncated`, keeps the stored rosters of groups the answer does not mention until their own `validUntilMs`.
+- Tests: `DirectorySyncTransportTest` (7: 2,500 members, every page under the bound, no member repeated or skipped; byte budget with a small budget and a budget smaller than one row; 70 groups -> 64 + truncated; complete list not truncated; no signer -> truncated; no group -> not truncated), `E2eDirectorySyncSizeTest` (2, real route + real client: 450 members over >= 3 pages of 200 — the page is larger than 64 KiB; a device in 69 groups is told truncated), `OrgDirectorySyncTest` (2 SRVHUB-14 cases). **Mutation:** putting the client's decode bound back to the 64 KiB default made `E2eDirectorySyncSizeTest` fail at the first page, then restored.
+- Measured while testing: with real rows the 1 MiB member budget does not bind at 1,000 rows (a row is 0.5-1 KB), so it is a safety net for large names/ids, not the normal limit; the page size is set by `limit` 200.
+- Not done: SRVHUB-13's "OrgDirectorySync with a real DAO against the real hub" (the E2E test stops at the real client fetch; the apply path is covered by `OrgDirectorySyncTest`).

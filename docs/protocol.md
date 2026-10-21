@@ -1600,7 +1600,16 @@ scope `enrol:member`, chained to the root. Verification result `RosterStatus`: O
 `offlineGraceDays`; an expired roster accepts nobody.
 
 **Sync.** `GET /api/v1/directory/sync` carries `groupRosters` (`GroupRosterDto`) on the LAST page only: the caller's full current set of groups
-(at most 64 per sync). Groups above 200 members are skipped and counted (`rostersSkippedTooLarge`): "not supported offline". Deviation from
+(at most `HubContract.MAX_DIRECTORY_SYNC_ROSTERS` = 64 per sync). When the list is NOT the full set (more than 64 groups, a group above 200 members that
+cannot be signed, a signing failure, or no roster signer) the last page says `rostersTruncated: true` and a client keeps the stored roster of any group
+it still has that is missing from the answer until that roster's own `validUntilMs` (DIR-05); absent means false, so an older hub reads as complete.
+Groups above 200 members are skipped and counted (`rostersSkippedTooLarge`): "not supported offline".
+
+**Sync page size (DIR-04, ADR-222).** A device asks for `limit = 200` members (`HubContract.DIRECTORY_SYNC_PAGE_LIMIT`; a signed member row is about
+600 bytes, so a page is about 115 KB). The hub ends a page at `limit` rows OR when the encoded members reach
+`DIRECTORY_SYNC_MEMBER_BUDGET_BYTES` (1 MiB), whichever comes first, and always takes at least one row so the cursor advances. The client decodes this
+one response with `MAX_DIRECTORY_SYNC_BODY_BYTES` (2 MiB); every other REST body keeps the 64 KiB `MAX_REST_BODY_BYTES`. The rest of a page (departments,
+removals, up to 64 rosters of 200 members, the delegation chain) fits in the remaining 1 MiB. Deviation from
 the plan: the server group `version` is the directory version at the group's last change, so it increases but not strictly by 1. A client
 stores a roster only if it verifies, and a lower version never replaces a higher one; the set is replaced in the same transaction as the
 member batch (Room schema 16, table `hub_group_roster`).
