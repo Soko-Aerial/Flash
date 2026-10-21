@@ -1,5 +1,12 @@
 # Current Handoff
 
+## 2026-10-21 (server & hub internals audit, addendum) - DOCS ONLY, nothing built, nothing device-verified
+
+- **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md` (it now has 18 findings). While the owner's five §8 questions were being explained, one **High** defect was found: **DIR-04** — the client asks `/directory/sync` for 500 members and then rejects any answer above **64 KiB**; a member DTO is ~576 B, so more than ~110 changed members (or ~64 small rosters on the last page) produce `ServerError(200, "Malformed directory sync response")` and org trust never lands. Not caught before because every client sync test uses `FakeDirectorySyncApi` (EXP-022's 500-member pages never left the JVM).
+- **Also:** **DIR-05** (silent roster truncation + replace-all on the client), **DEV-01 corrected** (certificates live 7 days, renewed in the last day; a role change is not reachable from the console), §8 rewritten, `SRVHUB-13`/`14` added.
+- **No code changed, no build run, no device run.** Committed on `dev` after `7e147f2e`.
+- **Recommended next task:** DIR-04 — a named body cap for this one route (e.g. 2 MiB), byte-budget paging on the server, `limit` lowered to ~200, and a `:core:enterprise` test that runs a real client against a real Ktor hub with 300 members. Then ANN-01 (`withTransaction` on four paths), then DIR-01.
+
 ## 2026-10-21 (server & hub internals audit) - DOCS ONLY, nothing built, nothing device-verified
 
 - **Read:** `docs/audit/2026-10-21-server-hub-internals-audit.md`. It covers the area the 2026-10-19 and 2026-10-21 reviews skipped (relay router internals, mailbox, files read path, directory paging/sync, announcement store, identity/authorisation, hub REST client). 16 findings, none high, four medium: **ANN-01** (autocommit writes → duplicate `seq`, `expectedSeq` TOCTOU), **DEV-01** (a department move does not authorise anything until certificate renewal), **RLY-01** (one page of undecryptable mailbox rows blocks a device's drain for ever), **DIR-01** (`/directory/people` truncates before the cursor, so only one page is ever reachable).
