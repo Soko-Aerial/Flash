@@ -2,14 +2,18 @@
 
 package com.transfer.flash.ui.hub
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyListScope
@@ -19,6 +23,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -30,9 +37,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.messaging.model.HubDepartmentUi
 import com.transfer.flash.core.messaging.model.HubPersonUi
+import com.transfer.flash.core.messaging.model.HubReachability
 import com.transfer.flash.ui.avatar.FlashAvatar
+import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashDimensions
+import com.transfer.flash.ui.theme.flashAnimateItem
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashText
@@ -64,7 +74,10 @@ internal fun LazyListScope.hubPeopleItems(
         when (entry) {
             is FlashHubPeopleItem.Header -> stickyHeader(key = entry.key, contentType = "header") { FlashHubLetterHeader(entry.letter) }
             is FlashHubPeopleItem.Person -> item(key = entry.key, contentType = "person") {
-                FlashHubPersonRow(entry.person, entry.showDepartment, onClick = { onOpenPerson(entry.person.deviceId) })
+                FlashHubPersonRow(
+                    entry.person, entry.showDepartment, onClick = { onOpenPerson(entry.person.deviceId) },
+                    modifier = flashAnimateItem(FlashTheme.motion),
+                )
             }
         }
     }
@@ -73,16 +86,18 @@ internal fun LazyListScope.hubPeopleItems(
 @Composable
 internal fun FlashHubLetterHeader(letter: String, modifier: Modifier = Modifier) {
     val colors = FlashTheme.colors
-    FlashText(
-        text = letter,
+    Row(
         modifier = modifier
             .fillMaxWidth()
             .background(colors.backgroundApp)
             .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space4)
             .semantics { heading() },
-        style = FlashTheme.typography.metadataEmphasis,
-        color = colors.textSecondary,
-    )
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
+    ) {
+        FlashText(text = letter, style = hubCapsStyle(), color = colors.accentPrimary)
+        Box(Modifier.weight(1f).height(1.dp).background(colors.borderSubtle))
+    }
 }
 
 @Composable
@@ -113,12 +128,18 @@ internal fun FlashHubPeopleFilterRow(
 @Composable
 internal fun FlashHubFilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
     val colors = FlashTheme.colors
+    val bg by animateColorAsState(
+        if (selected) colors.accentPrimary.copy(alpha = 0.16f) else colors.backgroundSurfaceSubtle,
+        animationSpec = FlashTheme.motion.tweenFastSpec(),
+        label = "hubFilterBg",
+    )
     Box(
         modifier = Modifier
             .heightIn(min = FlashDimensions.minTouchTarget)
-            .clip(FlashShapes.navBar)
-            .background(if (selected) colors.accentPrimary.copy(alpha = 0.16f) else colors.backgroundSurfaceSubtle)
-            .clickable(role = Role.RadioButton, onClick = onClick)
+            .clip(HubShapes.control)
+            .background(bg)
+            .border(FlashDimensions.borderHairline, if (selected) colors.accentPrimary else colors.borderSubtle, HubShapes.control)
+            .hubClickable(role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = FlashSpacing.space12)
             .semantics { semanticsSelected = selected },
         contentAlignment = Alignment.Center,
@@ -141,15 +162,17 @@ internal fun FlashHubPersonRow(person: HubPersonUi, showDepartment: Boolean, onC
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .padding(horizontal = FlashSpacing.space8)
             .heightIn(min = 64.dp)
-            .clickable(role = Role.Button, onClick = onClick)
-            .padding(horizontal = FlashSpacing.space16, vertical = FlashSpacing.space8)
+            .clip(HubShapes.control)
+            .hubClickable(onClick = onClick)
+            .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space8)
             .semantics(mergeDescendants = true) { contentDescription = spoken },
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
         Box {
-            FlashAvatar(initials = FlashHubMath.initials(person.displayName), size = 44.dp, seed = person.deviceId)
+            HubMark(initials = FlashHubMath.initials(person.displayName), seed = person.deviceId, size = 44.dp)
             FlashHubPresenceDot(person.online, Modifier.align(Alignment.BottomEnd))
         }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space2)) {
@@ -190,13 +213,30 @@ internal fun FlashHubPersonContent(
 ) {
     val colors = FlashTheme.colors
     val sheet = FlashHubMath.personSheet(person, pane.callAllowed, pane.pairAvailable)
+    val (reachIcon, reachTone) = when (person.reachability) {
+        HubReachability.LAN -> FlashIcons.Wifi to HubTone.SUCCESS
+        HubReachability.HUB -> FlashIcons.Relay to HubTone.ACCENT
+        HubReachability.OFFLINE -> FlashIcons.Clock to HubTone.NEUTRAL
+        HubReachability.UNKNOWN -> FlashIcons.Connection to HubTone.NEUTRAL
+    }
+    val reachTint = reachTone.color()
     Column(
         modifier = modifier.fillMaxWidth().padding(horizontal = FlashSpacing.space16).padding(bottom = FlashSpacing.space24),
         verticalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space16)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hubStagger(0, person.deviceId)
+                .clip(HubShapes.card)
+                .background(hubHeroBrush())
+                .border(FlashDimensions.borderHairline, colors.accentPrimary.copy(alpha = 0.28f), HubShapes.card)
+                .padding(FlashSpacing.space16),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space16),
+        ) {
             Box {
-                FlashAvatar(initials = FlashHubMath.initials(person.displayName), size = FlashDimensions.avatarXl, seed = person.deviceId)
+                HubMark(initials = FlashHubMath.initials(person.displayName), seed = person.deviceId, size = FlashDimensions.avatarXl)
                 FlashHubPresenceDot(person.online, Modifier.align(Alignment.BottomEnd))
             }
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(FlashSpacing.space4)) {
@@ -205,15 +245,28 @@ internal fun FlashHubPersonContent(
                 FlashText(sheet.departmentLine, style = FlashTheme.typography.bodyDefault, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8)) {
                     sheet.roleBadge?.let { FlashHubChip(it, emphasised = true) }
-                    if (sheet.pairedBadge) FlashHubChip(FlashHubCopy.PEOPLE_PAIRED)
+                    if (sheet.pairedBadge) FlashHubChip(FlashHubCopy.PEOPLE_PAIRED, icon = FlashIcons.Verified)
                 }
                 FlashText(sheet.idLine, style = FlashTheme.typography.metadataDefault, color = colors.textTertiary)
             }
             if (onClose != null) FlashHubIconButton(FlashIcons.Close, FlashHubCopy.PERSON_CLOSE, onClose)
         }
-        FlashText(sheet.reachabilityLine, style = FlashTheme.typography.bodyDefault, color = colors.textPrimary,
-            modifier = Modifier.semantics { contentDescription = FlashHubCopy.reachabilityAccessibility(sheet.reachabilityLine) })
-        Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .hubStagger(1, person.deviceId)
+                .clip(HubShapes.control)
+                .background(reachTint.copy(alpha = 0.10f))
+                .drawBehind { drawRect(reachTint, size = androidx.compose.ui.geometry.Size(2.dp.toPx(), size.height)) }
+                .padding(start = FlashSpacing.space16, top = FlashSpacing.space12, end = FlashSpacing.space12, bottom = FlashSpacing.space12)
+                .semantics(mergeDescendants = true) { contentDescription = FlashHubCopy.reachabilityAccessibility(sheet.reachabilityLine) },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+        ) {
+            FlashIcon(icon = reachIcon, contentDescription = null, tint = reachTint, size = FlashDimensions.iconSm)
+            FlashText(sheet.reachabilityLine, modifier = Modifier.weight(1f), style = FlashTheme.typography.bodyDefault, color = colors.textPrimary)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8), modifier = Modifier.fillMaxWidth().hubStagger(2, person.deviceId)) {
             FlashHubButton(
                 label = if (pane.busy) FlashHubCopy.PERSON_MESSAGING else sheet.messageLabel,
                 onClick = onMessage,
@@ -224,11 +277,13 @@ internal fun FlashHubPersonContent(
             if (sheet.showCall) FlashHubButton(FlashHubCopy.PERSON_CALL, onCall, icon = FlashIcons.Call, primary = false, modifier = Modifier.weight(1f))
         }
         if (sheet.showPair) FlashHubButton(FlashHubCopy.PERSON_PAIR, onPair, icon = FlashIcons.Connection, primary = false, modifier = Modifier.fillMaxWidth())
-        pane.note?.let {
-            FlashText(it, style = FlashTheme.typography.bodyDefault, color = colors.textError,
-                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+        AnimatedVisibility(visible = pane.note != null, enter = FlashTheme.motion.composerExpandEnter()) {
+            pane.note?.let {
+                FlashText(it, style = FlashTheme.typography.bodyDefault, color = colors.textError,
+                    modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            }
         }
         sheet.footer?.let { FlashText(it, style = FlashTheme.typography.metadataDefault, color = colors.textSecondary) }
-        sheet.honesty?.let { FlashText(it, style = FlashTheme.typography.metadataDefault, color = colors.textTertiary) }
+        sheet.honesty?.let { FlashHubNoteCard(FlashIcons.Encryption, it, horizontalPadding = FlashSpacing.space2) }
     }
 }

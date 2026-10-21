@@ -19,6 +19,12 @@ import com.transfer.flash.ui.icons.FlashIcons
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 
+/**
+ * OBSOLETE (2026-10-21, open-items tracker H-21): nothing calls this sheet. The message menu is
+ * [FlashMessageFocusOverlay] with its quick-reactions bar; this was the first-generation bottom sheet. Kept (not deleted,
+ * AGENTS section 27) until the owner confirms nothing else wants it.
+ */
+@Deprecated("OBSOLETE: the focus overlay replaced this sheet; no caller remains.")
 @Composable
 fun FlashMessageActionsSheet(
     visible: Boolean,

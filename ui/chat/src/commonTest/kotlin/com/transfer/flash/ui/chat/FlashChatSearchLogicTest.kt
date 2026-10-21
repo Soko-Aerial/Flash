@@ -83,6 +83,13 @@ class FlashChatSearchLogicTest {
     }
 
     @Test
+    fun `a stale index after the hits shrink never reads past the total (H-26)`() {
+        assertEquals("2 / 2", FlashChatSearchMath.counterLabel(activeIndex = 11, total = 2))
+        assertEquals(0, FlashChatSearchMath.stepIndex(current = 11, count = 2, forward = true))
+        assertEquals(0, FlashChatSearchMath.stepIndex(current = 11, count = 2, forward = false))
+    }
+
+    @Test
     fun `has results gates stepper visibility`() {
         assertTrue(FlashChatSearchMath.hasResults(activeIndex = 0, total = 3))
         assertTrue(!FlashChatSearchMath.hasResults(activeIndex = -1, total = 0))

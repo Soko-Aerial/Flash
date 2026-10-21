@@ -121,6 +121,28 @@ public object FlashHubCopy {
     public const val OVERVIEW_OFFLINE: String = "Offline"
     public fun plural(count: Int, one: String, many: String): String = if (count == 1) "$count $one" else "$count $many"
 
+    // --- Status page (opened from the header) ------------------------------------------------------------
+    public const val STATUS_OPEN: String = "Open hub status"
+    public const val STATUS_TITLE: String = "Hub status"
+    public const val STATUS_SERVER: String = "Company server"
+    public const val STATUS_DIRECTORY: String = "Colleague list"
+    public const val STATUS_TRUST: String = "Offline trust"
+    public const val STATUS_CLOCK: String = "Device clock"
+    public const val STATUS_CLOCK_OK: String = "Looks right"
+    public const val STATUS_NEVER_SYNCED: String = "Not loaded yet"
+    public const val STATUS_NO_LEASE: String = "Not started yet"
+    public const val STATUS_LEASE_ENDED: String = "Ended. Connect to renew"
+    public const val STATUS_REFRESH: String = "Refresh now"
+    public fun statusUpdated(age: String): String = "Updated $age"
+    public fun statusShowing(age: String): String = "Could not update. Showing information from $age"
+    public fun statusLeaseDays(days: Int): String = "${plural(days, "day", "days")} left"
+    public fun statusLeaseSpoken(days: Int?): String = when (days) {
+        null -> "$STATUS_TRUST: $STATUS_NO_LEASE"
+        0 -> "$STATUS_TRUST: $STATUS_LEASE_ENDED"
+        else -> "$STATUS_TRUST: ${statusLeaseDays(days)}"
+    }
+    public fun statNumberSpoken(count: Int, label: String): String = "$label: $count"
+
     public fun annRate(seconds: Int): String = "You are posting too fast. Try again in $seconds seconds."
     public fun annTooLong(maxChars: Int): String = "This announcement is too long. Shorten it to $maxChars characters."
     public fun annLinkConfirm(url: String): String = "Open this link in your browser? $url"

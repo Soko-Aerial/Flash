@@ -25,8 +25,19 @@ public object FlashPinnedMessageMath {
     public fun previewSnippet(text: String, fallback: String = "Attachment", maxChars: Int = 80): String {
         val trimmed = text.trim().replace('\n', ' ')
         val result = if (trimmed.isBlank()) fallback else trimmed
-        return if (result.length > maxChars) result.take(maxChars) + "…" else result
+        return if (result.length > maxChars) takeWithoutSplittingPair(result, maxChars) + "…" else result
     }
+
+    /** The first [max] UTF-16 units of [text], dropping a trailing high surrogate so an emoji is never cut in half. */
+    public fun takeWithoutSplittingPair(text: String, max: Int): String {
+        if (text.length <= max) return text
+        var end = max.coerceAtLeast(0)
+        if (end > 0 && text[end - 1].isHighSurrogate()) end--
+        return text.substring(0, end)
+    }
+
+    /** [text] limited to [max] UTF-16 units; used by the composer so a paste over the limit is shortened, not dropped. */
+    public fun capLength(text: String, max: Int): String = takeWithoutSplittingPair(text, max)
 
     /**
      * Checks whether the given message id is currently pinned.

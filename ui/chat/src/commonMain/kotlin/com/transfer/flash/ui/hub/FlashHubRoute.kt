@@ -28,6 +28,7 @@ import com.transfer.flash.core.messaging.model.HubUiState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -128,6 +129,8 @@ public fun FlashHubRoute(
     link: HubLinkState,
     host: FlashHubHost,
     modifier: Modifier = Modifier,
+    /** Bumped by the host each time the Hub tab is tapped while it is already showing (scroll to top, then News). */
+    reselectSignal: Int = 0,
 ) {
     val scope = rememberCoroutineScope()
     var selection by rememberSaveable(stateSaver = FlashHubSelectionCodec.saver) { mutableStateOf(FlashHubSelection()) }
@@ -143,9 +146,12 @@ public fun FlashHubRoute(
 
     val query = FlashHubMath.normaliseQuery(selection.query)
     val searching = selection.searchOpen && query.isNotEmpty()
-    val people by remember(repository, searching, query) {
-        if (searching) repository.searchHubPeople(query) else flowOf(allPeople)
-    }.collectAsState(initial = allPeople)
+    // The search result is only a value while searching. It used to be `flowOf(allPeople)` when not searching, which froze
+    // the first (empty) snapshot of allPeople inside the remembered flow: People stayed empty until a search was typed.
+    val searchHits by remember(repository, searching, query) {
+        if (searching) repository.searchHubPeople(query).map<List<HubPersonUi>, List<HubPersonUi>?> { it } else flowOf(null)
+    }.collectAsState(initial = null)
+    val people = if (searching) searchHits ?: allPeople else allPeople
     val openedPerson by remember(repository, selection.personId) {
         selection.personId?.let { repository.hubPerson(it) } ?: flowOf<HubPersonUi?>(null)
     }.collectAsState(initial = null)
@@ -164,7 +170,8 @@ public fun FlashHubRoute(
     LaunchedEffect(Unit) { repository.refreshHub(userInitiated = false) }
 
     // The first time the tab has content: News when something is unread, otherwise the segment used last.
-    val unreadCount by remember { derivedStateOf { news.count { !it.isRead } } }
+    // Expired announcements do not count, exactly like every badge (FlashHubMath.unreadCount).
+    val unreadCount by remember { derivedStateOf { FlashHubMath.unreadCount(news, nowMs) } }
     LaunchedEffect(state.loaded, chosenSegment) {
         if (state.loaded && !chosenSegment) {
             chosenSegment = true
@@ -220,5 +227,12 @@ public fun FlashHubRoute(
         showMovedTip = !tipSeen,
         pendingRoute = FlashHubMath.parseRoute(host.pendingRoute),
     )
-    FlashHubScreen(data = data, selection = selection, onSelection = { selection = it }, actions = actions, modifier = modifier)
+    FlashHubScreen(
+        data = data,
+        selection = selection,
+        onSelection = { selection = it },
+        actions = actions,
+        modifier = modifier,
+        reselectSignal = reselectSignal,
+    )
 }

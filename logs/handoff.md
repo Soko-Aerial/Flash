@@ -1,5 +1,31 @@
 # Current Handoff
 
+## 2026-10-21 (open-items tracker) - read `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` first
+
+- Stream H (H-16..H-26) is done in this working tree, uncommitted; device checks `CHATFIX-09..16`.
+- Stream C is on `agent/A-cancel` (worktree `E:/FlashWork/A-cancel`, last commit `72796042`): C-02, C-05..C-13 done, device checks `CNCL-15..20`. That branch is at Room schema 20 while this tree is at 19: renumber on merge.
+
+## 2026-10-21 - Chat/Hub review fixes in the working tree (uncommitted, unit-tested, NOT device-verified)
+
+- **Where:** the main checkout on `dev`, mixed with the other agent's uncommitted Hub redesign. Nothing committed. Files touched: `MainActivity`, `DesktopShell`, `FlashConversationScreen`, `FlashComposer`, `FlashMessageList`, `FlashChatListScreen`, `FlashChatListSelectionBar`, `FlashSearchScope`, `FlashChatSearchResults`, `FlashPinnedMessageMath`, `FlashSwarmPieceMap`, `FlashTransfersScreen`, `FlashNavigation`, `FlashHubRoute`, `FlashHubScreen`, `FlashHubMotion`, `FlashChatRepository` + `RealFlashChatRepository` (`saveDraft(conversationId, text)`), and tests in `FlashPinnedMessageMathTest`, `FlashChatSearchHitsTest`, `FlashSearchResultMathTest`, `RealFlashChatRepositoryTest`.
+- **Details and the deferred list:** `logs/progress.md` (2026-10-21, chat/Hub review). Owed checks: `CHATFIX-*`, `HUBFIX-*`.
+- **Caution:** `FlashHubMotion`, `FlashHubParts`, `FlashHubPeople`, `FlashSettingsScreen` and `FlashRadioGatewayScreen` are CRLF in the working tree (the Hub redesign's); keep their endings when editing.
+
+## 2026-10-20 (latest) - Hub "ledger" redesign + review, NOT committed, NOT device-verified
+
+- The Hub no longer uses rounded cards, pills or circles; see `docs/ui/hub-review-and-redesign-2026-10-20.md` for the concept and the gap list (G1..G8).
+- To see it: close every running Flash.exe (single instance), run `toolslash-gradle.cmd :desktop:run`.
+- Owed: `HUBL-01..08`. Owner decisions: which of G2..G7 (server features) to build.
+
+## 2026-10-20 (latest) - Hub tab redesigned (UI-058 visual/motion pass), NOT committed, NOT device-verified
+
+- **Current branch:** `dev`; the redesign is uncommitted (ui/chat hub package, docs, logs).
+- **The one thing to know:** the production Hub now has a hero overview (live dot, lease ring, count-up stats), a sliding segmented control, slide
+  transitions between pages, a status page (tap the hero) and mode-aware motion (reduced motion / minimal chrome / ultra low). Ideas came from the
+  three contest entries; none of their code is wired in. Reading order: `docs/ui/flash-hub-tab.md` "Redesign 2026-10-20", then `FlashHubMotion.kt`.
+- **Verified:** hub unit tests, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`. **Owed:** `HUBV-01..10` (TEST-BACKLOG).
+- **Recommended next task:** the owner looks at it on the phone and the desktop; tune from what they see.
+
 ## 2026-10-20 (later) - Log-driven fixes before release: ERROR-742 swarm greeting, ERROR-743 stale redial loop, ERROR-744 log truncation, ERROR-745 diagnostic
 
 - Fixed in code, unit-tested, mutation-checked where noted, NOT device-verified: see `logs/errors.md` ERROR-742..745 and the backlog items `NETMOVE-01`, `SWM-48`, `DLOG-01`, `TLS-ID-01`. The 2.1.0 artifacts were rebuilt after these fixes (see `logs/progress.md`).

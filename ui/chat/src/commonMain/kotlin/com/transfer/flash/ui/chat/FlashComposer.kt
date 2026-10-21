@@ -269,9 +269,13 @@ fun FlashComposer(
                                 BasicTextField(
                                     value = draft,
                                     onValueChange = { newDraft ->
-                                        if (newDraft.length <= com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
-                                            onDraftChanged(newDraft)
-                                        }
+                                        // A paste over the limit is shortened, not dropped (dropping it showed nothing at all).
+                                        onDraftChanged(
+                                            FlashPinnedMessageMath.capLength(
+                                                newDraft,
+                                                com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH,
+                                            ),
+                                        )
                                     },
                                     modifier = Modifier
                                         .fillMaxWidth()

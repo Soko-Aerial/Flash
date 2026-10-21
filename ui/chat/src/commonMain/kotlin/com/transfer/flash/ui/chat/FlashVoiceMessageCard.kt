@@ -171,6 +171,9 @@ fun FlashVoiceMessageCard(
     modifier: Modifier = Modifier,
     /** Long-press opens the message context menu (UI-007/UI-008) — the card consumes presses. */
     onLongPress: () -> Unit = {},
+    /** H-17: while messages are being selected a tap toggles the selection instead of playing. */
+    selectionMode: Boolean = false,
+    onSelectToggle: () -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -256,13 +259,21 @@ fun FlashVoiceMessageCard(
 
     val togglePlay = {
         haptics(FlashHaptic.Tick)
-        if (isPlaying || elapsedMs < durationMs) hasStarted = true
-        if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
-            elapsedMs = 0L
-            audioPlayer?.seekTo(0L)
+        if (selectionMode) {
+            onSelectToggle()
+        } else if (attachment.transferStatus != FlashFileTransferStatus.Downloaded) {
+            // H-18: a note that is not on this device has nothing to play. The badge shows Download / Retry / Resume, so the
+            // tap asks the host to do that (it used to start a silent demo ticker and download nothing).
+            onActionClick()
+        } else {
+            if (isPlaying || elapsedMs < durationMs) hasStarted = true
+            if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
+                elapsedMs = 0L
+                audioPlayer?.seekTo(0L)
+            }
+            isPlaying = !isPlaying
+            onActionClick()
         }
-        isPlaying = !isPlaying
-        onActionClick()
     }
 
     Row(

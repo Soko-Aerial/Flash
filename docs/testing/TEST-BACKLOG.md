@@ -5724,3 +5724,134 @@ scope for this release. Record results in the Results log; a FAIL blocks the upl
 - **Steps:** keep three or more Flash devices on one Wi-Fi, change the phone's network once, export the phone log after 10 minutes.
 - **Pass:** every `WS handshake rejected from=<address>` line names a dialer address; the address belongs to a device whose pin for the phone is wrong or to a stale route. No such line for the desktop once both are connected.
 - **Source:** ERROR-745. **Status:** TODO
+
+## 4zzzzzzzzzzzzzzzzz. Hub tab redesign (HUBV, 2026-10-20; see `docs/ui/flash-hub-tab.md` "Redesign 2026-10-20")
+
+Built and unit-tested (`FlashHubVisualMathTest`, `FlashHubStatusRowsTest`), compiled on both hosts, never run on a device. Use an enrolled device
+with real hub data; items marked (D) are for the Windows desktop.
+
+### HUBV-01 — Hero overview in both themes
+- **Steps:** open the Hub tab in dark and in light theme. Look at the hero: monogram, name, connected dot, trust ring with days, three stat tiles.
+- **Pass:** all readable in both themes; the dot breathes only while connected; the ring colour matches days left (green > 7, amber <= 7, red ended); stat numbers count up once on first show.
+- **Source:** redesign 2026-10-20. **Status:** TODO
+
+### HUBV-02 — Segment control and page slide
+- **Steps:** tap News, People, Departments, Groups in order, then back; tap a stat tile.
+- **Pass:** the indicator glides to the tapped pill, the page slides toward it (right when going forward, left going back), a stat tile opens its segment, each segment keeps its scroll position, the hero does not flicker.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-03 — Reduced motion
+- **Steps:** turn on the system "remove animations" (or the app's reduce-motion setting), reopen the Hub, repeat HUBV-02.
+- **Pass:** no slide, count-up, pulse, shimmer or stagger; pages crossfade or switch at once; the ring and bars show their final size immediately.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-04 — Low-tier, minimal chrome, ultra low UI
+- **Steps:** on a low-end phone (or with the performance setting that turns on minimal chrome / ultra low UI) open the Hub and scroll News and People quickly.
+- **Pass:** flat fills only (no gradient wash, no glow, no shimmer loop), scrolling stays smooth, nothing is clipped or unreadable.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-05 — Status strip and status page
+- **Steps:** with the hub unreachable (airplane mode) open the Hub; tap the hero; tap "Refresh now"; reconnect.
+- **Pass:** the strip changes tone and text with a crossfade, "Updating" turns its arrow; the status page shows Company server / Colleague list / Offline trust / Device clock with matching tones and sentences; Back closes it; Refresh is disabled while updating.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-06 — First load skeleton
+- **Steps:** enrol a fresh device (or first open after install) on a slow network and open the tab.
+- **Pass:** skeleton hero and rows shimmer, TalkBack reads one "Loading", content replaces it without a jump.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-07 — News cards and composer
+- **Steps:** as a poster, open News: read an unread card, pin one, open the composer, type past the title and body limits.
+- **Pass:** the unread dot pops out after read, a pinned card has the wash and the Pin chip, the counter bar turns amber then red near and over the limit, the failure banner expands in on an offline post.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-08 — Person sheet
+- **Steps:** open a colleague on the LAN, one through the hub, one offline.
+- **Pass:** the reachability card shows the right icon and tone for each (LAN success, hub accent, offline neutral) with the existing sentence; Message and Call still work; the honesty text is a note card.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-09 — Compact overlays and desktop two-pane (D)
+- **Steps:** phone: open an announcement and a department, press Back each time. Desktop at a wide window: select the same items.
+- **Pass:** phone: the page slides in and back out showing its own content during the exit; desktop: the list pane keeps its place and the detail pane updates.
+- **Source:** redesign. **Status:** TODO
+
+### HUBV-10 — Large font and TalkBack
+- **Steps:** set the font size to the largest, open every segment, then walk the hero and a stat tile with TalkBack.
+- **Pass:** no text is cut off, the segments scroll horizontally and keep the selected pill in view, TalkBack reads the hero as one sentence (name, summary, role, connected, trust days) and each stat as "label: count".
+- **Source:** redesign. **Status:** TODO
+
+## 4zzzzzzzzzzzzzzzzzz. Hub "ledger" redesign (HUBL, 2026-10-20; see `docs/ui/hub-review-and-redesign-2026-10-20.md`)
+
+Built and compiled, never run on a device. Supersedes the look checked by HUBV-01/02 (HUBV stays valid for motion and modes).
+
+### HUBL-01 — No rounded surfaces left
+- **Steps:** open every Hub section (News, People, Departments, Groups), the person sheet, the status page, the news reader and composer.
+- **Pass:** no pill, circle or large-radius card anywhere; corners are 2 to 4 dp; rows are separated by hairlines.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-02 — Text tabs
+- **Steps:** tap each tab; narrow the window; use the largest font.
+- **Pass:** the underline glides to the tapped tab, the News unread count is a small square, the row scrolls and keeps the selected tab in view.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-03 — Masthead and tick meter
+- **Steps:** open the Hub with a lease of more than 7 days, 7 days or fewer, and ended.
+- **Pass:** ticks fill proportionally (one per day of 30), green / amber / red with the days text, the three counts open their section, the square status marker pulses only while connected.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-04 — Ruled rows and edges
+- **Steps:** scroll People and Departments; open News with unread and pinned items.
+- **Pass:** square marks, inset rules under the text, a 3 dp edge on unread / pinned / your department, nothing clipped.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-05 — Modes
+- **Steps:** repeat HUBL-01..04 with reduced motion, minimal chrome and ultra low UI.
+- **Pass:** no movement or gradient in the reduced modes; shapes and rules identical.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-06 — Dark and light
+- **Steps:** switch theme on each section.
+- **Pass:** hairlines, edges and tone colours stay visible in both; the amber tone is readable on light.
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-07 — Touch targets and screen reader
+- **Steps:** TalkBack on tabs, masthead, stat cells, rows.
+- **Pass:** every target at least 48 dp, the masthead reads as one sentence, stat cells read "label: count".
+- **Source:** ledger redesign. **Status:** TODO
+
+### HUBL-08 — Owner look and feel
+- **Steps:** run `tools\flash-gradle.cmd :desktop:run` after closing every running Flash.exe, look at the Hub.
+- **Pass:** the owner confirms it no longer looks round and generic; otherwise record what to change.
+- **Source:** ledger redesign. **Status:** TODO
+
+
+### CHATFIX-01..08 and HUBFIX-01..09 - chat / chat list / Hub review fixes (2026-10-21, working tree, not committed)
+Source: `logs/progress.md` 2026-10-21. Unit-tested only; every item `Status: TODO`.
+- **CHATFIX-01** Two-pane (tablet or desktop): type a note to Alice without sending, tap Bob. Pass: Bob's composer is empty, Alice's note is back when you reopen Alice, nothing was sent to Bob.
+- **CHATFIX-02** Type in a chat, press Back, reopen. Pass: the draft is there (also after a force-stop).
+- **CHATFIX-03** Tap the pinned banner and a result in Shared content (long thread). Pass: the list scrolls to that message and it pulses (not the mirrored position).
+- **CHATFIX-04** Write a long message for 20 s. Pass: the peer still sees "typing..." throughout; it clears when you press Back.
+- **CHATFIX-05** Paste 5 000 characters. Pass: the first 4 000 appear; no emoji cut in half.
+- **CHATFIX-06** Reply to a file or a photo. Pass: the peer's quote reads "Attachment", not blank.
+- **CHATFIX-07** Open the message menu, delete the message for everyone from the other device. Pass: the menu closes.
+- **CHATFIX-08** In-chat search, scope Messages, a word that is only in a file name. Pass: no hit; All still finds it.
+- **HUBFIX-01** Fresh start, open Hub > People. Pass: colleagues are listed without typing a search.
+- **HUBFIX-02** Open an announcement, switch to Chats and back. Pass: the announcement, search text, People filter and scroll position are still there.
+- **HUBFIX-03** Tap the Hub tab while on it. Pass: first tap scrolls to the top; a second tap at the top goes to News (also on Windows).
+- **HUBFIX-04** Scroll a News list down and up. Pass: cards do not fade in again.
+- **HUBFIX-05** Archived > search > Back. Pass: search closes, you stay in Archived; searching there shows only archived chats' hits; after closing, the scope chip is All.
+- **HUBFIX-06** Select 3 chats on a 360 dp phone. Pass: the count is readable.
+- **HUBFIX-07** A group file transfer on a sender (all pieces verified) and a receiver with pieces in flight. Pass: the sender's piece map is still; the receiver's blocks pulse; profile the screen and compare the GPU cost with the old build.
+- **HUBFIX-08** Two active transfers. Pass: the progress shimmer is smooth and no heavier than before.
+- **HUBFIX-09** Segment underline sits exactly under the selected label (claim 9 of the review was not changed because it could not be proved by reading).
+
+### CHATFIX-09..16 - open-items H-16..H-26 follow-ups (2026-10-21, working tree, not committed)
+Source: `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md`. Unit-tested only; every item `Status: TODO`.
+- **CHATFIX-09** (H-16) Tablet/desktop, Hub tab: open a colleague. Pass: the Hub stays in the list pane, the chat opens in the detail pane, Back/Esc return to the Hub unchanged (scroll and segment kept).
+- **CHATFIX-10** (H-17) Long-press an attachment message, then tap other attachment messages. Pass: taps select/deselect, the viewer does not open until selection ends.
+- **CHATFIX-11** (H-18) An undownloaded voice note. Pass: a download control is offered and the note plays after it finishes.
+- **CHATFIX-12** (H-19) Swipe-to-reply on a bubble with an image. Pass: no stutter; the reply badge follows the finger (measure frame times if it stutters).
+- **CHATFIX-13** (H-20) Tap the same search hit twice (with scrolling away in between). Pass: it jumps and pulses both times.
+- **CHATFIX-14** (H-22, H-23, H-25) Ultra-low motion/bubble setting; shared-content Audio tab with a file not on the device; piece map on a LOW tier. Pass: bubble corners and ripple match, Play is disabled with a download hint, the piece map shows the text view.
+- **CHATFIX-15** (H-26) Tap a reaction rapidly 10 times on a slow link. Pass: the final state matches the number of taps parity and survives a reconnect.
+- **CHATFIX-16** (H-26) In-chat search with hits that shrink after a delete. Pass: the counter never reads "12 / 2".

@@ -430,6 +430,14 @@ public interface FlashChatRepository {
     public fun saveDraft(text: String) {}
 
     /**
+     * Persist the unsent composer text of a NAMED conversation. A screen that is leaving cannot rely on the "active"
+     * conversation: Back closes it before the screen's dispose runs, and in two-pane a chat switch has already opened the
+     * next one, so the active id would be missing or someone else's. Default delegates to [saveDraft] only for
+     * implementations that have no per-conversation store.
+     */
+    public fun saveDraft(conversationId: String, text: String) { saveDraft(text) }
+
+    /**
      * Pin or unpin a message of the active conversation, on this device only: nothing is sent to the peer or the
      * group. Pins survive leaving the chat and a restart and are exposed through
      * [FlashConversationUiState.pinnedMessageIds]. Default no-op for lightweight/sample implementations.

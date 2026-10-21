@@ -533,6 +533,43 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `a draft saved by conversation id survives the close that Back performs first`() = runBlocking {
+        val draftDao = FakeDraftDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = FakeMessageDao(),
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = draftDao,
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = MessageTransportSink { _, _ -> true },
+            ioDispatcher = testDispatcher,
+        )
+
+        repository.openConversation("conv-alex")
+        // Back: the host closes the conversation, THEN the screen leaves composition and persists its text.
+        repository.closeConversation()
+        repository.saveDraft("conv-alex", "unsent note to Alex")
+        kotlinx.coroutines.delay(100)
+        assertEquals("unsent note to Alex", draftDao.drafts["conv-alex"]?.text)
+
+        // The id-less form still has nothing to attach to once the conversation is closed.
+        repository.saveDraft("lost")
+        kotlinx.coroutines.delay(100)
+        assertEquals(1, draftDao.drafts.size)
+
+        // Two-pane switch: the next chat is already active when the previous screen persists, and it must not take its text.
+        repository.openConversation("conv-bob")
+        repository.saveDraft("conv-alex", "alex v2")
+        kotlinx.coroutines.delay(100)
+        assertEquals("alex v2", draftDao.drafts["conv-alex"]?.text)
+        assertTrue(draftDao.drafts["conv-bob"] == null)
+    }
+
+    @Test
     fun `sendText writes message to Room and enqueues in outbox`() = runBlocking {
         val messageDao = FakeMessageDao()
         val conversationDao = FakeConversationDao()

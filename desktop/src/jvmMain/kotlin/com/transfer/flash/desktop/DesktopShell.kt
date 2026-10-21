@@ -16,6 +16,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,6 +90,7 @@ import com.transfer.flash.ui.settings.FlashThemeMode
 import com.transfer.flash.ui.settings.FlashDisplayNameDialog
 import com.transfer.flash.ui.chat.FlashPairingRequestUi
 import com.transfer.flash.ui.navigation.FlashAnimatedScreen
+import com.transfer.flash.ui.navigation.FlashBackStackState
 import com.transfer.flash.ui.navigation.FlashDestination
 import com.transfer.flash.ui.navigation.FlashNavigationMath
 import com.transfer.flash.ui.navigation.FlashNavigationState
@@ -1218,6 +1220,8 @@ public fun DesktopShell(
             onCloseSearch = {
                 isSearching = false
                 searchQuery = ""
+                // A scope chosen for one search ("Files") must not hide the chat rows of the next one.
+                searchScope = FlashSearchScope.All
             },
             messageBodyMatches = messageBodyMatches,
             colleagueMatchIds = colleagueMatchIds,
@@ -1287,7 +1291,13 @@ public fun DesktopShell(
     }
 
     // Active conversation content. In two-pane mode, onBack/leave/clear returns to ChatList without popping the tab.
-    val conversationPaneContent: @Composable () -> Unit = {
+    // Bumped when the Hub tab is tapped while it is already showing; the Hub scrolls to the top (or jumps to News).
+    var hubReselectTick by remember { mutableStateOf(0) }
+
+    val conversationPaneBody: @Composable () -> Unit = {
+        // The chat this composition belongs to: its draft is saved under this id when the screen leaves, after Back has
+        // already closed the repository's active conversation (or the next chat was opened).
+        val draftOwnerId = nav.current.conversationId ?: selectedChatConversationId
         FlashConversationScreen(
             state = conversationState,
             onBack = {
@@ -1335,7 +1345,7 @@ public fun DesktopShell(
             onSendReply = { text, replyToId, replyToPreview ->
                 chatRepository.sendReply(text, replyToId, replyToPreview)
             },
-            onPersistDraft = chatRepository::saveDraft,
+            onPersistDraft = { text -> draftOwnerId?.let { chatRepository.saveDraft(it, text) } },
             onSetMessagePinned = chatRepository::setMessagePinned,
             onToggleReaction = { messageId, emoji ->
                 chatRepository.toggleReaction(messageId, emoji)
@@ -1490,6 +1500,7 @@ public fun DesktopShell(
             conversationId = nav.current.conversationId,
             // UI-024 upgrade: open at the message a global search result pointed to.
             targetMessageId = nav.current.targetMessageId,
+            targetNonce = nav.current.targetNonce,
             addablePeers = trustedPeerRoster.filter { candidate ->
                 conversationState.members.none { it.id == candidate.id }
             },
@@ -1751,15 +1762,24 @@ public fun DesktopShell(
         )
     }
 
+    // One screen instance per conversation (see MainActivity.conversationScreenContent): no state may leak between chats.
+    val conversationPaneContent: @Composable () -> Unit = {
+        key(nav.current.conversationId ?: selectedChatConversationId) { conversationPaneBody() }
+    }
+
     // The tab content, shared by both window layouts. In two-pane mode the transfers/nearby
     // screens additionally drive the detail pane through the selection state. When twoPane is
     // active and the user is in a conversation, the list pane remains on ChatList.
     val listPaneContent: @Composable () -> Unit = {
         Box(Modifier.fillMaxSize()) {
-            if (twoPane && nav.current.destination == FlashDestination.Conversation) {
+            val chatFromHub = twoPane && nav.current.destination == FlashDestination.Conversation && nav.conversationOpenedFromHub
+            if (twoPane && nav.current.destination == FlashDestination.Conversation && !chatFromHub) {
                 chatListPaneContent()
             } else {
-                FlashAnimatedScreen(targetState = nav.current, hubEnrolled = nav.hubEnrolled) { entry ->
+                // H-16: a chat opened from the Hub keeps the Hub as the list pane (a constant Hub entry, so no transition plays
+                // while the chat beside it changes); anything else shows the current entry as before.
+                val listEntry = if (chatFromHub) FlashBackStackState(FlashDestination.Hub) else nav.current
+                FlashAnimatedScreen(targetState = listEntry, hubEnrolled = nav.hubEnrolled) { entry ->
                     when (entry.destination) {
                         FlashDestination.ChatList -> chatListPaneContent()
                         // UI-058 (H7/H8/H9): the Hub tab. Everything it reads and writes goes through the repository.
@@ -1814,6 +1834,7 @@ public fun DesktopShell(
                                 link = hubStatus?.state ?: com.transfer.flash.core.enterprise.HubLinkState.NOT_ENROLLED,
                                 host = hubHost,
                                 modifier = Modifier.padding(bottom = tabBottomInset),
+                                reselectSignal = hubReselectTick,
                             )
                         }
                         FlashDestination.Conversation -> conversationPaneContent()
@@ -2204,9 +2225,12 @@ public fun DesktopShell(
                                 true
                             }
                             nav.current.destination == FlashDestination.Conversation || selectedChatConversationId != null -> {
+                                val backToHub = nav.conversationOpenedFromHub
                                 selectedChatConversationId = null
                                 chatRepository.closeConversation()
-                                if (twoPane) {
+                                if (twoPane && backToHub) {
+                                    nav.selectTab(FlashDestination.Hub)
+                                } else if (twoPane) {
                                     nav.navigate(FlashDestination.ChatList)
                                 } else {
                                     nav.back()
@@ -2573,6 +2597,10 @@ public fun DesktopShell(
                         selectedTab = nav.shellTab,
                         onTabSelected = nav::selectTab,
                         onTabReselected = { destination ->
+                            if (destination == FlashDestination.Hub) {
+                                hubReselectTick++
+                                return@FlashBottomNav
+                            }
                             val listState = when (destination) {
                                 FlashDestination.ChatList -> chatListScroll
                                 FlashDestination.Transfers -> transfersScroll

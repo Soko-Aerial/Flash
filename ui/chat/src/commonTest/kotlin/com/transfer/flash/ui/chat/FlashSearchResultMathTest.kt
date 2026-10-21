@@ -184,4 +184,26 @@ class FlashSearchResultMathTest {
         assertEquals("0 results", FlashSearchResultMath.countLabel(0))
         assertEquals("12 results", FlashSearchResultMath.countLabel(12))
     }
+
+    @Test
+    fun `two same-named attachments of one message cannot produce a duplicate list key`() {
+        fun file() = FlashFileSearchHitUi(
+            messageId = "m1",
+            conversationId = "c1",
+            conversationTitle = "Chat",
+            senderName = "Alex",
+            fileName = "scan.pdf",
+            fileSizeBytes = 10,
+            mimeType = "application/pdf",
+            timestampMs = 1L,
+            timeLabel = "Now",
+        )
+        val entries = FlashSearchResultMath.entries(
+            FlashSearchScope.All,
+            emptyList(),
+            FlashChatSearchResultsUi(fileHits = listOf(file(), file())),
+        )
+        val keys = entries.map { FlashSearchResultMath.key(it) }
+        assertEquals(keys.size, keys.toSet().size)
+    }
 }

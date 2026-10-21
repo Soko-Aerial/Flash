@@ -199,3 +199,75 @@ private fun HubComposerRatePreview() = ComposerPreview(
 private fun HubComposerOverPreview() = ComposerPreview(
     FlashHubComposerState(title = "Long one", body = "x".repeat(FlashHubMath.BODY_MAX + 20)),
 )
+
+// --- Redesign 2026-10-20: the same screen in each mode (docs/ui/flash-hub-tab.md "Redesign 2026-10-20") ---------------------
+
+@Composable
+private fun ModeHost(
+    dark: Boolean,
+    reduceMotion: Boolean = false,
+    minimal: Boolean = false,
+    ultra: Boolean = false,
+    data: FlashHubScreenData = data(posting = HubPostingRights.OrgWide()),
+    selection: FlashHubSelection = FlashHubSelection(segment = FlashHubSegment.NEWS),
+) {
+    FlashTheme(
+        darkTheme = dark,
+        motion = com.transfer.flash.ui.theme.rememberFlashMotion(reduceMotion = reduceMotion),
+        minimalChrome = minimal,
+        ultraLowUi = ultra,
+    ) { FlashHubScreen(data = data, selection = selection, onSelection = {}, actions = actions()) }
+}
+
+@Preview(name = "Hub - dark, full", showBackground = true)
+@Composable
+private fun HubDarkPreview() = ModeHost(dark = true)
+
+@Preview(name = "Hub - light, full", showBackground = true)
+@Composable
+private fun HubLightPreview() = ModeHost(dark = false)
+
+@Preview(name = "Hub - dark, reduced motion", showBackground = true)
+@Composable
+private fun HubReducedMotionPreview() = ModeHost(dark = true, reduceMotion = true)
+
+@Preview(name = "Hub - dark, minimal chrome", showBackground = true)
+@Composable
+private fun HubMinimalPreview() = ModeHost(dark = true, minimal = true)
+
+@Preview(name = "Hub - light, ultra low UI", showBackground = true)
+@Composable
+private fun HubUltraLowPreview() = ModeHost(dark = false, reduceMotion = true, minimal = true, ultra = true)
+
+@Preview(name = "Hub - loading, dark", showBackground = true)
+@Composable
+private fun HubLoadingDarkPreview() = ModeHost(dark = true, data = data(state = HubUiState(enrolled = true, loaded = false)))
+
+@Preview(name = "Hub - lease ending soon, departments", showBackground = true)
+@Composable
+private fun HubLeaseSoonPreview() = ModeHost(
+    dark = false,
+    data = data(state = HubSampleData.state.copy(lease = OrgLease.Valid(NOW + 3 * 24L * 60L * 60L * 1000L))),
+    selection = FlashHubSelection(segment = FlashHubSegment.DEPARTMENTS),
+)
+
+@Preview(name = "Hub - status page", showBackground = true)
+@Composable
+private fun HubStatusPreview() = FlashTheme {
+    FlashHubStatusContent(data = data(state = HubSampleData.state.copy(lastSyncedAtMs = NOW - 4 * 60_000L)), onRefresh = {})
+}
+
+@Preview(name = "Hub - status page, offline and stale", showBackground = true)
+@Composable
+private fun HubStatusOfflinePreview() = FlashTheme {
+    FlashHubStatusContent(
+        data = data(
+            state = HubSampleData.state.copy(
+                syncStatus = HubSyncStatus.FAILED_OFFLINE, lastSyncedAtMs = NOW - 3 * 3_600_000L,
+                lease = OrgLease.Expired(NOW - 1000L, ExpiredReason.TIME), clockWrong = true,
+            ),
+            link = HubLinkState.OFFLINE,
+        ),
+        onRefresh = {},
+    )
+}

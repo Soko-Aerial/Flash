@@ -394,6 +394,7 @@ public fun FlashSharedContentSheet(
                                     items(filteredAudio, key = { it.voice.id }) { item ->
                                         SharedAudioRow(
                                             item = item,
+                                            onDownload = { onDownloadFile(item.voice.id) },
                                             onJumpToMessage = { onJumpToMessage(item.messageId) },
                                         )
                                     }
@@ -531,11 +532,15 @@ private fun SharedFileRow(
 @Composable
 private fun SharedAudioRow(
     item: FlashSharedAudioItem,
+    onDownload: () -> Unit,
     onJumpToMessage: () -> Unit,
 ) {
     val colors = FlashTheme.colors
     val voice = item.voice
     val hasAudio = voice.uri != null && voice.transferStatus == FlashFileTransferStatus.Downloaded
+    // H-23: a note that is not on this device cannot play; its button downloads it (or waits, while it is already coming).
+    val inFlight = voice.transferStatus == FlashFileTransferStatus.Transferring
+    val needsDownload = !hasAudio && voice.transferStatus != FlashFileTransferStatus.Downloaded && !inFlight
     val audioPlayer = rememberFlashAudioPlayer(uri = if (hasAudio) voice.uri else null)
 
     DisposableEffect(audioPlayer) {
@@ -578,13 +583,25 @@ private fun SharedAudioRow(
             modifier = Modifier
                 .size(42.dp)
                 .clip(CircleShape)
-                .background(colors.accentPrimary)
-                .clickable { isPlaying = !isPlaying },
+                .background(if (hasAudio || needsDownload || inFlight) colors.accentPrimary else colors.accentPrimary.copy(alpha = 0.4f))
+                .clickable(enabled = !inFlight) {
+                    if (needsDownload) onDownload() else if (hasAudio) isPlaying = !isPlaying
+                },
             contentAlignment = Alignment.Center,
         ) {
             FlashIcon(
-                icon = if (isPlaying) FlashIcons.Pause else FlashIcons.Play,
-                contentDescription = if (isPlaying) "Pause audio" else "Play audio",
+                icon = when {
+                    needsDownload -> FlashIcons.Download
+                    inFlight -> FlashIcons.Clock
+                    isPlaying -> FlashIcons.Pause
+                    else -> FlashIcons.Play
+                },
+                contentDescription = when {
+                    needsDownload -> "Download voice message"
+                    inFlight -> "Downloading voice message"
+                    isPlaying -> "Pause audio"
+                    else -> "Play audio"
+                },
                 tint = Color.White,
                 size = FlashDimensions.iconSm,
             )

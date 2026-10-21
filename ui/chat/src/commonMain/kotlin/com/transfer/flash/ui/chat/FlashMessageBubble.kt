@@ -66,6 +66,29 @@ import org.jetbrains.compose.ui.tooling.preview.Preview
 private const val BubblePressScale = 0.97f
 
 /**
+ * H-18: what tapping the badge of a voice note that is not downloaded does. The host's file callbacks only read the transfer id
+ * (and the voice note's id is its transfer id), so a voice note is presented to them as a file attachment of the same id.
+ */
+private fun onVoiceTransferAction(
+    voice: com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi,
+    onAcceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit,
+) {
+    val asFile = com.transfer.flash.core.messaging.model.FlashFileAttachmentUi(
+        id = voice.id,
+        name = "Voice message",
+        sizeBytes = 0L,
+        mimeType = voice.mimeType,
+        transferStatus = voice.transferStatus,
+    )
+    when (voice.transferStatus) {
+        FlashFileTransferStatus.NotDownloaded, FlashFileTransferStatus.AwaitingAcceptance -> onAcceptOffer(asFile)
+        FlashFileTransferStatus.Failed, FlashFileTransferStatus.Paused -> onResumeTransfer(asFile)
+        else -> Unit
+    }
+}
+
+/**
  * Caps the bubble at `min(fraction * available, absolute)` (UI-005). The content still decides how
  * wide the bubble actually is; this only tightens the ceiling it may grow to.
  *
@@ -144,6 +167,23 @@ fun FlashMessageBubble(
 ) {
     val alignment = if (message.isMine) Alignment.End else Alignment.Start
 
+    // H-17: while messages are being selected a tap on an attachment toggles the selection like a tap on text does. Before, a photo
+    // opened the viewer and a file card ran its action, so a message with an attachment could not be picked.
+    val imageClick: (Int, com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit =
+        if (inSelectionMode) { _, _ -> onSelectToggle() } else onImageClick
+    val fileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onFileClick
+    val acceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onAcceptOffer
+    val declineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onDeclineOffer
+    val pauseTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onPauseTransfer
+    val resumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onResumeTransfer
+    val cancelTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
+        if (inSelectionMode) { _ -> onSelectToggle() } else onCancelTransfer
+
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = alignment,
@@ -160,13 +200,13 @@ fun FlashMessageBubble(
                 inSelectionMode = inSelectionMode,
                 onSelectToggle = onSelectToggle,
                 onJumpToMessage = onJumpToMessage,
-                onImageClick = onImageClick,
-                onFileClick = onFileClick,
-                onAcceptOffer = onAcceptOffer,
-                onDeclineOffer = onDeclineOffer,
-                onPauseTransfer = onPauseTransfer,
-                onResumeTransfer = onResumeTransfer,
-                onCancelTransfer = onCancelTransfer,
+                onImageClick = imageClick,
+                onFileClick = fileClick,
+                onAcceptOffer = acceptOffer,
+                onDeclineOffer = declineOffer,
+                onPauseTransfer = pauseTransfer,
+                onResumeTransfer = resumeTransfer,
+                onCancelTransfer = cancelTransfer,
                 isHighlighted = isHighlighted,
                 deliveryStatus = deliveryStatus,
                 searchQuery = searchQuery,
@@ -187,13 +227,13 @@ fun FlashMessageBubble(
                     inSelectionMode = inSelectionMode,
                     onSelectToggle = onSelectToggle,
                     onJumpToMessage = onJumpToMessage,
-                    onImageClick = onImageClick,
-                    onFileClick = onFileClick,
-                    onAcceptOffer = onAcceptOffer,
-                    onDeclineOffer = onDeclineOffer,
-                    onPauseTransfer = onPauseTransfer,
-                    onResumeTransfer = onResumeTransfer,
-                    onCancelTransfer = onCancelTransfer,
+                    onImageClick = imageClick,
+                    onFileClick = fileClick,
+                    onAcceptOffer = acceptOffer,
+                    onDeclineOffer = declineOffer,
+                    onPauseTransfer = pauseTransfer,
+                    onResumeTransfer = resumeTransfer,
+                    onCancelTransfer = cancelTransfer,
                     isHighlighted = isHighlighted,
                     deliveryStatus = deliveryStatus,
                     searchQuery = searchQuery,
@@ -250,19 +290,25 @@ private fun FlashMessageBubbleUltraLow(
         null
     }
 
-    // Direct rectangular Box — zero clip, zero graphicsLayer, zero offscreen buffers
+    // Zero clip, zero graphicsLayer, zero offscreen buffers. A rounded `background`/`border` only draws a path (no layer), so the
+    // bubble keeps rounded corners instead of the old hard rectangle; the padded content never reaches the corners, and the
+    // press ripple (an unclipped overdraw that spilled past the border) is dropped: the long-press haptic is the feedback here.
+    val shape = FlashShapes.attachment
+    val interaction = remember { MutableInteractionSource() }
     Box(
         modifier = Modifier
             .bubbleWidthCap()
-            .background(if (message.isMine) colors.chatBgOutgoing else colors.chatBgIncoming)
+            .background(if (message.isMine) colors.chatBgOutgoing else colors.chatBgIncoming, shape)
             .then(
                 if (selectionBorder != null) {
-                    Modifier.border(selectionBorder)
+                    Modifier.border(selectionBorder, shape)
                 } else {
                     Modifier
                 }
             )
             .combinedClickable(
+                interactionSource = interaction,
+                indication = null,
                 onClick = {
                     if (inSelectionMode) {
                         onSelectToggle()
@@ -339,7 +385,9 @@ private fun FlashMessageBubbleUltraLow(
                         attachment = voice,
                         isParentOutgoing = message.isMine,
                         onCardClick = {},
-                        onActionClick = {},
+                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
+                        selectionMode = inSelectionMode,
+                        onSelectToggle = onSelectToggle,
                         onLongPress = {
                             haptics(FlashHaptic.Confirm)
                             onOpenActions()
@@ -593,7 +641,9 @@ private fun FlashBubbleSurface(
                         attachment = voice,
                         isParentOutgoing = message.isMine,
                         onCardClick = {},
-                        onActionClick = {},
+                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
+                        selectionMode = inSelectionMode,
+                        onSelectToggle = onSelectToggle,
                         onLongPress = {
                             haptics(FlashHaptic.Confirm)
                             onOpenActions()

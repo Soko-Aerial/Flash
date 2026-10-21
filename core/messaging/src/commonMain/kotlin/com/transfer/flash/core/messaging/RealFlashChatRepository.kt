@@ -516,6 +516,7 @@ public class RealFlashChatRepository(
     }
 
     private val autoPairLock = kotlinx.coroutines.sync.Mutex()
+    private val reactionToggleLock = Mutex()
     private val autoPairLastAttemptMs = HashMap<String, Long>()
 
     /**
@@ -3041,7 +3042,10 @@ public class RealFlashChatRepository(
     }
 
     override fun saveDraft(text: String) {
-        val conversationId = activeConversationId ?: return
+        saveDraft(activeConversationId ?: return, text)
+    }
+
+    override fun saveDraft(conversationId: String, text: String) {
         scope.launch(ioDispatcher) {
             // Blank text clears the draft; otherwise persist the raw (untrimmed) composer text so
             // the user's in-progress spacing survives navigation / process death (#9).
@@ -6647,11 +6651,15 @@ public class RealFlashChatRepository(
                 return@launch
             }
             // Toggle our own reaction: if we already reacted with this emoji, remove it; else add it.
-            val existing = reactionDao.get(messageId, emoji)
-            val currentlySelf = existing?.selfReacted == true ||
-                (existing != null && localDeviceId in decodeReactorIds(existing.reactorIdsJson))
-            val isAdded = !currentlySelf
-            applyReactionDelta(messageId, emoji, localDeviceId, isAdded)
+            // H-26: read-then-write under one lock, so two quick taps are add then remove instead of both reading "not reacted".
+            val isAdded = reactionToggleLock.withLock {
+                val existing = reactionDao.get(messageId, emoji)
+                val currentlySelf = existing?.selfReacted == true ||
+                    (existing != null && localDeviceId in decodeReactorIds(existing.reactorIdsJson))
+                val adding = !currentlySelf
+                applyReactionDelta(messageId, emoji, localDeviceId, adding)
+                adding
+            }
             val frame = MessageWireFrame.ReactionFrame(
                 messageId = messageId,
                 conversationId = conversationId,

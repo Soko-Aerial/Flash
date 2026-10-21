@@ -29,6 +29,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -62,7 +63,8 @@ public fun FlashSwarmPieceMap(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
 
-    if (FlashTheme.ultraLowUi) {
+    // H-25: the LOW tier (minimal chrome) takes the one-line summary too; it used to draw the whole grid every frame it changed.
+    if (FlashTheme.ultraLowUi || FlashTheme.minimalChrome) {
         val verifiedCount = remember(blocks) { blocks.count { it == 3 } }
         val totalCount = blocks.size
         val percent = if (totalCount > 0) (verifiedCount * 100) / totalCount else 0
@@ -94,8 +96,11 @@ public fun FlashSwarmPieceMap(
         FlashSwarmPieceMapMath.summaryText(statuses)
     }
 
+    // The pulse follows the DATA, not the transfer state: a group sender's map is all verified and a receiver that has its
+    // last piece is still "Active", yet nothing is in flight; animating then re-recorded 64 to 128 rects on every frame.
+    val anyInFlight = remember(statuses) { statuses.any { it == FlashPieceStatus.InFlightDownloading } }
     val pulseTransition = rememberInfiniteTransition(label = "swarm_piece_pulse")
-    val pulseAlpha by if (isDownloading && !motion.reduceMotion) {
+    val pulseAlpha by if (isDownloading && anyInFlight && !motion.reduceMotion) {
         pulseTransition.animateFloat(
             initialValue = 0.45f,
             targetValue = 1.0f,
@@ -156,71 +161,35 @@ public fun FlashSwarmPieceMap(
 
         Spacer(modifier = Modifier.height(FlashSpacing.space8))
 
-        // Canvas micro-block grid
+        // Canvas micro-block grid. Two layers: the static grid reads no animated state, so it is recorded only when the
+        // blocks change; the pulse layer exists only while a block is in flight and draws just those blocks.
         val rows = ((totalBlocks + columns - 1) / columns).coerceAtLeast(1)
-        val blockSpacingPx = 4f
-        val cornerRadiusPx = 3f
+        val gridModifier = Modifier
+            .fillMaxWidth()
+            .height(44.dp)
 
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(44.dp),
-        ) {
-            val totalGapsX = (columns - 1) * blockSpacingPx
-            val blockWidth = (size.width - totalGapsX) / columns
-            val totalGapsY = (rows - 1) * blockSpacingPx
-            val blockHeight = (size.height - totalGapsY) / rows
-            val cornerRadius = CornerRadius(cornerRadiusPx, cornerRadiusPx)
-
-            statuses.forEachIndexed { index, status ->
-                val col = index % columns
-                val row = index / columns
-
-                val x = col * (blockWidth + blockSpacingPx)
-                val y = row * (blockHeight + blockSpacingPx)
-                val blockSize = Size(blockWidth, blockHeight)
-                val offset = Offset(x, y)
-
-                when (status) {
-                    FlashPieceStatus.VerifiedSaved -> {
-                        drawRoundRect(
-                            color = verifiedColor,
-                            topLeft = offset,
-                            size = blockSize,
-                            cornerRadius = cornerRadius,
-                        )
+        Box {
+            Canvas(modifier = gridModifier) {
+                val grid = PieceGrid(size.width, size.height, columns, rows, 1.5.dp.toPx(), 1.dp.toPx())
+                statuses.forEachIndexed { index, status ->
+                    when (status) {
+                        FlashPieceStatus.VerifiedSaved -> grid.fill(this, index, verifiedColor)
+                        FlashPieceStatus.InFlightDownloading -> Unit // drawn by the pulse layer
+                        FlashPieceStatus.AvailableOnPeers -> {
+                            // Amber border / outline to indicate available on swarm peers
+                            grid.fill(this, index, swarmColor.copy(alpha = 0.25f))
+                            grid.stroke(this, index, swarmColor, 1.dp.toPx())
+                        }
+                        FlashPieceStatus.Missing -> grid.fill(this, index, missingColor)
                     }
-                    FlashPieceStatus.InFlightDownloading -> {
-                        drawRoundRect(
-                            color = inFlightColor.copy(alpha = pulseAlpha),
-                            topLeft = offset,
-                            size = blockSize,
-                            cornerRadius = cornerRadius,
-                        )
-                    }
-                    FlashPieceStatus.AvailableOnPeers -> {
-                        // Amber border / outline to indicate available on swarm peers
-                        drawRoundRect(
-                            color = swarmColor.copy(alpha = 0.25f),
-                            topLeft = offset,
-                            size = blockSize,
-                            cornerRadius = cornerRadius,
-                        )
-                        drawRoundRect(
-                            color = swarmColor,
-                            topLeft = offset,
-                            size = blockSize,
-                            cornerRadius = cornerRadius,
-                            style = Stroke(width = 1.5f),
-                        )
-                    }
-                    FlashPieceStatus.Missing -> {
-                        drawRoundRect(
-                            color = missingColor,
-                            topLeft = offset,
-                            size = blockSize,
-                            cornerRadius = cornerRadius,
-                        )
+                }
+            }
+            if (anyInFlight) {
+                Canvas(modifier = gridModifier) {
+                    val grid = PieceGrid(size.width, size.height, columns, rows, 1.5.dp.toPx(), 1.dp.toPx())
+                    val color = inFlightColor.copy(alpha = pulseAlpha)
+                    statuses.forEachIndexed { index, status ->
+                        if (status == FlashPieceStatus.InFlightDownloading) grid.fill(this, index, color)
                     }
                 }
             }
@@ -261,6 +230,40 @@ private fun LegendIndicator(
             text = label,
             style = FlashTheme.typography.captionDefault,
             color = FlashTheme.colors.textSecondary,
+        )
+    }
+}
+
+/** Block geometry for the piece grid in one place, so both canvas layers place a block identically. */
+private class PieceGrid(
+    width: Float,
+    height: Float,
+    private val columns: Int,
+    rows: Int,
+    private val spacing: Float,
+    cornerRadius: Float,
+) {
+    private val blockWidth = (width - (columns - 1) * spacing) / columns
+    private val blockHeight = (height - (rows - 1) * spacing) / rows
+    private val blockSize = Size(blockWidth, blockHeight)
+    private val corner = CornerRadius(cornerRadius, cornerRadius)
+
+    private fun offsetOf(index: Int) = Offset(
+        x = (index % columns) * (blockWidth + spacing),
+        y = (index / columns) * (blockHeight + spacing),
+    )
+
+    fun fill(scope: DrawScope, index: Int, color: Color) {
+        scope.drawRoundRect(color = color, topLeft = offsetOf(index), size = blockSize, cornerRadius = corner)
+    }
+
+    fun stroke(scope: DrawScope, index: Int, color: Color, width: Float) {
+        scope.drawRoundRect(
+            color = color,
+            topLeft = offsetOf(index),
+            size = blockSize,
+            cornerRadius = corner,
+            style = Stroke(width = width),
         )
     }
 }

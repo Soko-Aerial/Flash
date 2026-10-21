@@ -420,11 +420,35 @@ class FlashNavigationLogicTest {
     }
 
     @Test
-    fun `the exact same hit twice is still ignored`() {
+    fun `the exact same hit twice adds no entry but asks the screen to jump again`() {
         val nav = FlashNavigationState()
         nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
+        assertEquals(0, nav.current.targetNonce)
         nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
         assertEquals(2, nav.stackSize)
+        assertEquals(1, nav.current.targetNonce)
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "msg-1")
+        assertEquals(2, nav.current.targetNonce)
+        // The re-jump is not a navigation: no push animation.
+        assertEquals(
+            FlashScreenTransition.None,
+            FlashNavigationMath.transitionFor(
+                FlashBackStackState(FlashDestination.Conversation, "conv-1", "msg-1", 1),
+                nav.current,
+            ),
+        )
+    }
+
+    @Test
+    fun `opening the same chat without a target never bumps the nonce and the nonce is not saved`() {
+        val nav = FlashNavigationState()
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1")
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1")
+        assertEquals(0, nav.current.targetNonce)
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "m")
+        nav.navigate(FlashDestination.Conversation, conversationId = "conv-1", targetMessageId = "m")
+        val saved = with(FlashNavigationStateSaver) { SaverScope { true }.save(nav) }
+        assertEquals(0, FlashNavigationStateSaver.restore(requireNotNull(saved))?.current?.targetNonce)
     }
 
     @Test
