@@ -659,6 +659,43 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `dismissTransfer hides one failed row and a live row cannot be dismissed (C-10)`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-failed", "fx-failed", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-failed"))
+        repo.onIncomingFailed("tx-failed", "boom")
+        repo.onIncomingOffered("tx-live", "fx-live", "b.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-live"))
+
+        repo.dismissTransfer(FlashTransferId("tx-live"))
+        assertEquals(setOf("tx-failed", "tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+
+        repo.dismissTransfer(FlashTransferId("tx-failed"))
+        assertEquals(setOf("tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+
+        // A later change to another row must not bring the dismissed one back.
+        repo.onIncomingProgress("tx-live", 512L)
+        assertTrue("tx-failed" !in repo.activeTransfers.value.map { it.id.value })
+    }
+
+    @Test
+    fun `clearFailedHistory hides failed and cancelled rows but keeps live and completed ones (C-10)`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-failed", "fx-failed", "c.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-failed"))
+        repo.onIncomingFailed("tx-failed", "boom")
+        repo.onIncomingOffered("tx-done", "fx-done", "a.bin", 1024L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-done"))
+        repo.onIncomingCompleted("tx-done", verified = true, localPath = "/tmp/a.bin")
+        repo.onIncomingOffered("tx-live", "fx-live", "b.bin", 2048L, "Pixel", "peer-1")
+        repo.acceptIncoming(FlashTransferId("tx-live"))
+
+        repo.clearFailedHistory()
+
+        assertEquals(setOf("tx-done", "tx-live"), repo.activeTransfers.value.map { it.id.value }.toSet())
+    }
+
+    @Test
     fun `sendFile preserves an explicit wire file id`() = runBlocking {
         val repo = RealFlashTransferRepository(
             chunker = Chunker(),
