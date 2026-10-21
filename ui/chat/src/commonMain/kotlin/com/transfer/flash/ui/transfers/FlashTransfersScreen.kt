@@ -115,6 +115,8 @@ data class FlashTransferItemUi(
     val holdersOnline: Int = 0,
     /** Real swarm piece map (0 missing, 1 on peers, 2 in flight, 3 verified); empty for a 1:1 transfer. */
     val pieceBlocks: List<Int> = emptyList(),
+    /** True for the sending side of a group file: its cancel stops it for every member, not for one peer. */
+    val isGroupFile: Boolean = false,
 )
 
 data class TransfersUiState(
@@ -339,14 +341,14 @@ fun FlashTransfersScreen(
             containerColor = colors.backgroundSurface,
             title = {
                 FlashText(
-                    text = "Cancel for everyone?",
+                    text = FlashCancelCopy.title(pendingCancelItem?.isGroupFile == true),
                     style = FlashTheme.typography.headingMedium,
                     color = colors.textPrimary,
                 )
             },
             text = {
                 FlashText(
-                    text = "Members who already have the file keep it.",
+                    text = FlashCancelCopy.body(pendingCancelItem?.isGroupFile == true),
                     style = FlashTheme.typography.bodyDefault,
                     color = colors.textSecondary,
                 )
@@ -359,7 +361,7 @@ fun FlashTransfersScreen(
                         onCancelClick(itm)
                     }
                 }) {
-                    Text("Cancel for everyone", color = colors.textError)
+                    Text(FlashCancelCopy.confirm(pendingCancelItem?.isGroupFile == true), color = colors.textError)
                 }
             },
             dismissButton = {

@@ -55,6 +55,7 @@ fun FlashTransfer.toUiItem(): FlashTransferItemUi = FlashTransferItemUi(
     canGoOffline = canGoOffline,
     holdersOnline = holdersOnline,
     pieceBlocks = pieceBlocks,
+    isGroupFile = groupOrigin,
 )
 
 /**

@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.transfers.FlashCancelCopy
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashShapes
 import com.transfer.flash.ui.icons.FlashIcon
@@ -1371,14 +1372,14 @@ fun FlashConversationScreen(
             containerColor = colors.backgroundSurface,
             title = {
                 FlashText(
-                    text = "Cancel for everyone?",
+                    text = FlashCancelCopy.title(state.header.isGroup),
                     style = FlashTheme.typography.headingMedium,
                     color = colors.textPrimary,
                 )
             },
             text = {
                 FlashText(
-                    text = "Members who already have the file keep it.",
+                    text = FlashCancelCopy.body(state.header.isGroup),
                     style = FlashTheme.typography.bodyDefault,
                     color = colors.textSecondary,
                 )
@@ -1391,7 +1392,7 @@ fun FlashConversationScreen(
                         onCancelTransfer(fid)
                     }
                 }) {
-                    Text("Cancel for everyone", color = colors.textError)
+                    Text(FlashCancelCopy.confirm(state.header.isGroup), color = colors.textError)
                 }
             },
             dismissButton = {
