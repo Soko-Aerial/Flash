@@ -422,7 +422,7 @@ export function mountDevices(container, ctx) {
       }),
     );
     const dept = selectInput([{ value: '', label: t('devices.move.none') }, ...departments.map((d) => ({ value: d.id, label: d.name }))], device.department || '', { ariaLabel: t('devices.move.label') });
-    const df = field({ label: t('devices.move.label'), control: dept });
+    const df = field({ label: t('devices.move.label'), control: dept, hint: t('devices.move.hint') });
     const saveDept = button({ label: t('common.save'), size: 'sm', variant: 'secondary' });
     saveDept.addEventListener('click', () =>
       withBusy(saveDept, async () => {

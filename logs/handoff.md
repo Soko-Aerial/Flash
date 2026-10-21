@@ -1,13 +1,14 @@
 # Current Handoff
 
-## 2026-10-21 (server internals audit, implementation steps 1-4 of 10) - built and tested, NOT device-verified
+## 2026-10-21 (server internals audit, implementation steps 1-5 of 10) - built and tested, NOT device-verified
 
 - **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
 - **Step 2 done too:** ANN-01 — announcement writes run in `BEGIN IMMEDIATE` transactions (`AnnouncementStoreConcurrencyTest`, mutation-checked; audit §12). Test-harness trap: race tests need a WAL file database with a pool > 1 (`ServerDatabase.inMemory()` has one connection).
 - **Step 3 done too:** ANN-02 — announcement expiry is tri-state (`clearExpiry`), console expiry field + "No expiry" box, a device edit no longer wipes the expiry (audit §12).
 - **Step 4 done too:** device certificate lifetime 30 days, adjustable (FLASH_DEVICE_CERT_VALIDITY_DAYS), renewal window derived from the lifetime, startup warning for a short delegation (CertificateLifetimeTest, mutation-checked; audit section 12). Existing 7-day certificates are unchanged until they renew.
-- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 5-10 are NOT started.
-- **Recommended next task:** item 5 (registry-derived principal), then 6 (mailbox quarantine).
+- **Step 5 done too:** DEV-01 - the principal's role and department come from the device registry (fail closed without a row); a console department move drops the device's bearers and kicks its session (`RegistryPrincipalTest`, `AdminConsoleApiTest`, mutation-checked; audit section 12). A device whose registry row is missing can no longer connect.
+- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Items 6-10 are NOT started.
+- **Recommended next task:** item 6 (mailbox quarantine), then 7 (auth verify bucket + client single-flight).
 - **Wire change to remember:** `DirectorySyncDto.rostersTruncated` (default false) and the client now asks `limit = 200`. A hub older than this build still answers (it just caps at 500 rows and may exceed 2 MiB only if its rows are huge).
 
 ## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented

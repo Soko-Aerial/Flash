@@ -9,6 +9,8 @@ import com.transfer.flash.core.hubprotocol.certs.HubAuth
 import com.transfer.flash.core.hubprotocol.certs.RevocationList
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.security.crypto.FlashCrypto
+import com.transfer.flash.server.identity.DeviceRecord
+import com.transfer.flash.server.identity.DeviceStatus
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -64,6 +66,11 @@ class AuthRejected(val code: String, message: String) : SecurityException(messag
  * @param revocationListProvider must return a list that is ALREADY trusted (signature and issuer verified by whoever
  *   installed it). Production passes `{ revocationService.current() }`; the persisted [RevocationService] is also
  *   consulted directly.
+ * @param deviceRegistry the device registry lookup (production passes `{ identityStore.device(it) }`). When set, the
+ *   certificate only AUTHENTICATES the device (chain, revocation, possession); its role and department are taken from
+ *   the registry row, so a department move in the console is effective on the next handshake instead of at the next
+ *   certificate renewal (DEV-01, ADR-222). A device without an active registry row is refused (fail closed). Null keeps
+ *   the certificate's own attributes, for tests that build a chain without a registry.
  */
 class ChallengeResponseAuth(
     private val rootPublicKey: String,
@@ -76,6 +83,7 @@ class ChallengeResponseAuth(
     private val revocations: RevocationService = RevocationService.None,
     /** Upper bound on outstanding REST nonces: an unauthenticated flood can not grow memory without limit (SEC-09). */
     private val maxActiveChallenges: Int = DEFAULT_MAX_ACTIVE_CHALLENGES,
+    private val deviceRegistry: ((String) -> DeviceRecord?)? = null,
 ) {
     private val activeChallenges = ConcurrentHashMap<String, Long>()
 
@@ -237,11 +245,30 @@ class ChallengeResponseAuth(
             return Result.failure(AuthRejected(HubErrorCodes.ERR_AUTH, "Invalid challenge signature"))
         }
 
+        val registry = deviceRegistry
+            ?: return Result.success(
+                ServerDevicePrincipal(
+                    deviceId = deviceCert.deviceId,
+                    role = deviceCert.role,
+                    department = deviceCert.department,
+                    certSerial = deviceCert.serial,
+                ),
+            )
+
+        // Authorisation comes from the registry, authentication from the certificate (DEV-01). The serial stays the
+        // certificate's: revocation keys on it.
+        val record = registry(deviceId)
+            ?: return Result.failure(AuthRejected(HubErrorCodes.ERR_AUTH, "Device $deviceId presented a valid certificate but has no registry row"))
+        when (record.status) {
+            DeviceStatus.ACTIVE -> Unit
+            DeviceStatus.REVOKED -> return Result.failure(AuthRejected(HubErrorCodes.ERR_REVOKED, "Device $deviceId is revoked in the registry"))
+            DeviceStatus.UNENROLLED -> return Result.failure(AuthRejected(HubErrorCodes.ERR_AUTH, "Device $deviceId has left the organisation"))
+        }
         return Result.success(
             ServerDevicePrincipal(
                 deviceId = deviceCert.deviceId,
-                role = deviceCert.role,
-                department = deviceCert.department,
+                role = record.role,
+                department = record.department,
                 certSerial = deviceCert.serial,
             ),
         )

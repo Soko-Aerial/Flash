@@ -347,9 +347,10 @@ export default {
     other: 'Move {n} devices',
   },
   'devices.move.text': {
-    one: 'Choose the department for this device.',
-    other: 'Choose the department for these {n} devices.',
+    one: 'Choose the department for this device. Takes effect immediately; the device reconnects once.',
+    other: 'Choose the department for these {n} devices. Takes effect immediately; each device reconnects once.',
   },
+  'devices.move.hint': 'Takes effect immediately. The device reconnects once.',
   'devices.move.done': {
     one: '{n} device moved.',
     other: '{n} devices moved.',

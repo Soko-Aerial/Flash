@@ -13,7 +13,16 @@ import com.transfer.flash.server.auth.generateEcKeyPair
 import com.transfer.flash.server.auth.issue
 import com.transfer.flash.server.auth.sign
 import com.transfer.flash.server.auth.toBase64Spki
+import com.transfer.flash.core.hubprotocol.certs.HubAuth
+import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
+import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.server.auth.InviteScope
 import com.transfer.flash.server.config.ServerConfig
+import com.transfer.flash.server.relay.RelayConnectionPool
+import com.transfer.flash.server.relay.RelayFrameRouter
+import com.transfer.flash.server.testsupport.fakeSession
+import io.ktor.client.request.put
+import kotlinx.coroutines.runBlocking
 import com.transfer.flash.server.directory.OrganizationDirectory
 import com.transfer.flash.server.identity.IdentityStore
 import com.transfer.flash.server.storage.ServerDatabase
@@ -81,11 +90,12 @@ class AdminConsoleApiTest {
         val config = ServerConfig(port = 8443, adminPort = 8444, host = "127.0.0.1", dataDir = "./test-data", tlsMode = "proxy")
         val totpSecret = admins.generateTotpSecret()
         val hubKey = serverKey.toBase64Spki()
+        val router = RelayFrameRouter(RelayConnectionPool(), clock = { now })
         val deps = AdminApiDeps(
             web = AdminWeb(admins, externalUrl = "http://localhost"),
             admins = admins, audit = audit, directory = directory, identities = identities, stepUp = stepUp, config = config,
             enrollment = enrollment, revocations = revocations, bearerTokens = tokens, limits = HubRateLimits.unlimited(), clock = { now },
-            hubPublicKey = hubKey,
+            hubPublicKey = hubKey, router = router,
         )
 
         init {
@@ -393,6 +403,52 @@ class AdminConsoleApiTest {
         assertEquals(2, entries.size)
         assertTrue(entries.any { it.details.contains("reason=not on the roster") && !it.details.contains('\n') }, entries.toString())
         assertTrue(entries.any { !it.details.contains("reason=") })
+    }
+
+    private fun Realm.enrolIn(deviceId: String, department: String) {
+        val key = FlashCrypto.generateEcKeyPair()
+        val token = enrollment.generateInviteLink("https://hub.test", InviteScope(department = department, expiry = now + 3_600_000), now)
+            .substringAfter("token=").substringBefore("&")
+        val proof = FlashCrypto.sign(key.private, HubAuth.enrollProofBytes(token, deviceId, key.toBase64Spki(), enrollment.serverId))
+        enrollment.enrollDevice(token, deviceId, key.toBase64Spki(), proof, currentTimeMs = now).getOrThrow()
+    }
+
+    private suspend fun HttpClient.putDevice(id: String, s: Sess, body: DeviceUpdateBody): HttpResponse =
+        put("/admin/api/v1/devices/$id") {
+            withSession(s)
+            contentType(ContentType.Application.Json)
+            setBody(HubRestCodec.encode(body))
+        }
+
+    /** SRVHUB-04 (DEV-01): a move takes effect at once: the old bearer is gone and the live session is kicked to reconnect. */
+    @Test
+    fun movingADeviceToAnotherDepartmentDropsItsBearersAndKicksItsSessionOnce() = testApplication {
+        val r = Realm()
+        mount(r)
+        val s = client.signIn(r)
+        r.directory.createDepartment("dept-a", "Alpha", emptyList(), isOrgAdmin = true)
+        r.directory.createDepartment("dept-b", "Bravo", emptyList(), isOrgAdmin = true)
+        r.enrolIn("dev-1", "dept-a")
+        val (token, _) = r.tokens.issue(HubPrincipal(deviceId = "dev-1", role = "member", departmentId = "dept-a", certSerial = 1L), r.now)
+        assertNotNull(r.tokens.resolve(token, r.now))
+        val (session, ws) = fakeSession("dev-1")
+        r.router.register(session)
+
+        val rename = client.putDevice("dev-1", s, DeviceUpdateBody(name = "Renamed"))
+        assertEquals(HttpStatusCode.OK, rename.status, rename.bodyAsText())
+        assertNotNull(r.tokens.resolve(token, r.now), "a rename changes no authorisation")
+        assertTrue(session.isOpen, "and does not kick")
+
+        val same = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-a", moveToDepartment = true))
+        assertEquals(HttpStatusCode.OK, same.status, same.bodyAsText())
+        assertTrue(session.isOpen, "moving to the department it already has is not a move")
+
+        val moved = client.putDevice("dev-1", s, DeviceUpdateBody(department = "dept-b", moveToDepartment = true))
+        assertEquals(HttpStatusCode.OK, moved.status, moved.bodyAsText())
+        assertEquals("dept-b", r.identities.device("dev-1")!!.department)
+        assertNull(r.tokens.resolve(token, r.now), "the old department's bearer is forgotten")
+        val kick = runBlocking { ws.nextOf<RelayFrame.Kick>() }
+        assertEquals("department_changed", kick.reason)
     }
 
     private companion object {

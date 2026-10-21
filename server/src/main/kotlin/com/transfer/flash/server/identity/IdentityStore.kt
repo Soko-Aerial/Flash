@@ -348,7 +348,10 @@ class IdentityStore(private val db: ServerDatabase) {
         conn.update("UPDATE hub_devices SET name = ? WHERE device_id = ?", name.trim().take(MAX_NAME), deviceId) > 0
     }
 
-    /** Registry department only; the certificate keeps its department until the device renews. */
+    /**
+     * Registry department. Authorisation reads it on every handshake (`ChallengeResponseAuth.deviceRegistry`, DEV-01), so the move is
+     * effective on the device's next connection; the certificate keeps its old department text until the device renews.
+     */
     fun setDepartment(deviceId: String, department: String?): Boolean = db.withConnection { conn ->
         conn.update("UPDATE hub_devices SET department = ? WHERE device_id = ?", department, deviceId) > 0
     }

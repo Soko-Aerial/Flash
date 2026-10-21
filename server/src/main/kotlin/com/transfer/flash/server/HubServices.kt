@@ -314,6 +314,7 @@ class HubServices private constructor(
                     rootPublicKey = rootPub,
                     revocationListProvider = { revocationService.current() },
                     revocations = revocationService,
+                    deviceRegistry = { id -> identities.device(id) },
                 )
                 enrollment = EnrollmentService(
                     rootPublicKey = rootPub,
