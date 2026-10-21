@@ -16,17 +16,19 @@ Related work:
 
 ## 1. Executive summary
 
-Sixteen findings, of which **four are medium** and the rest are medium-low, low or informational — none is high. None is a remote code execution or a broken-crypto defect; the TLS/identity/revocation core held up under reading. The recurring theme is **check-then-act without a transaction or a cursor**, and **authorisation attributes that live in two places and drift**:
+Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the client cannot decode a legal sync page), **four medium**, four medium-low, and the rest low or informational. None is a remote code execution or a broken-crypto defect; the TLS/identity/revocation core held up under reading. The recurring theme is **check-then-act without a transaction or a cursor**, **a size limit on one side of the wire that the other side does not honour**, and **authorisation attributes that live in two places and drift**:
 
 | ID | Sev | Layer | Defect | Status |
 |---|---|---|---|---|
+| **DIR-04** | **High** | `:server` + `:core:enterprise` | One legal `/directory/sync` page is larger than the client can decode. The client asks for 500 members and enforces a **64 KiB** body cap on the answer; a member DTO is ~576 B, so any sync that changes more than ~110 members (or whose last page carries more than ~70 small group rosters) is answered `200` with a body the client refuses as `Malformed directory sync response`. Org trust, colleagues and hub group rosters therefore never land for a real organisation, and the failure reads like a server bug. | OPEN |
 | **DIR-01** | Medium | `:server` directory | `/directory/people` cursor pagination is applied *after* the result list is truncated, so page 2 is empty and only the first `limit` people (100 by default, 500 max) are ever reachable. Its only paging consumer today is hub presence, which therefore caps at 500 people; the route is unusable for any future paged consumer. | OPEN |
 | **RLY-01** | Medium | `:server` mailbox | One page of undecryptable sealed rows stops a device's mailbox drain for ever (until the rows expire): the cursor never advances and no `FLASH_QUEUE_STATE state=DROPPED` is ever sent. | OPEN |
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | OPEN |
-| **DEV-01** | Medium | `:server` identity | Moving a device to another department (or changing its role) in the console changes nothing on the wire until the device's certificate is **renewed** — up to a certificate lifetime. The live session keeps the old department for relay and announcement scoping. | OPEN |
+| **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | OPEN |
 | **ANN-02** | Medium-low | `:server` announcements | A console edit silently **removes an announcement's expiry**: the edit form never sends `expiresAtMs` and the store treats `null` as "clear". An announcement that should have expired stays live for ever. | OPEN |
 | **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | OPEN |
 | **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | OPEN |
+| **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | OPEN |
 | **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | OPEN |
 | **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | OPEN |
 | **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | OPEN |
@@ -221,7 +223,7 @@ The production pool is 10 connections and Ktor serves handlers concurrently, so 
 
 ---
 
-### DEV-01 — A department or role change in the console does not authorise anything until the device renews its certificate (Medium)
+### DEV-01 — A department move in the console does not authorise anything until the device renews its certificate (Medium)
 
 **Files**
 - [`server/.../admin/AdminApi.kt:454-468`](../../server/src/main/kotlin/com/transfer/flash/server/admin/AdminApi.kt)
@@ -252,15 +254,20 @@ return Result.success(ServerDevicePrincipal(
 ))
 ```
 
-and `HubPrincipal.role`/`departmentId` are what `broadcastAnnouncement` (`RelayFrameRouter.kt:804-818`) and the relay/directory scoping use. A certificate is only re-issued by `POST /enroll/renew`, which is restricted to `RenewalPolicy`'s window — about a day before expiry — and `IdentityStore.renew` is the only place that reads the registry's current role/department (`IdentityStore.kt:272`, `issue(serial, current)`). So the change lands at the next renewal: a certificate lifetime, or never if the device never renews. The device is not kicked either, so even a killed connection comes back with the same certificate.
+and `HubPrincipal.role`/`departmentId` are what `broadcastAnnouncement` (`RelayFrameRouter.kt:804-818`) and the relay/directory scoping use. A certificate is only re-issued by `POST /enroll/renew`, which is restricted to `RenewalPolicy`'s window — a day before expiry — and `IdentityStore.renew` is the only place that reads the registry's current role/department (`IdentityStore.kt:272`, `issue(serial, current)`). A device certificate lives **7 days** (`DeviceCert.DEFAULT_VALIDITY_MS`), and the client's five-minute maintenance loop renews it inside the last day (`EnterpriseHub.maintenanceOnce`), so the move lands within 7 days for a device that is running — and never for a device that stays offline past expiry plus the 3-day grace, which needs a new invite. The device is not kicked either, so a killed connection comes back with the same certificate.
 
 The KDoc on `IdentityStore.renew` claims the opposite of what the code does at the point of use — "the registry (not the presented certificate) decides role and department" (`IdentityStore.kt:252`) is true for *renewal* only; `ChallengeResponseAuth` trusts the presented certificate.
 
-**Trigger.** Move a device between departments, or change a role, while it is enrolled.
+**Trigger.** Move a device between departments while it is enrolled. (A *role* change is not reachable from the console: `PUT /admin/api/v1/devices/{id}` accepts a rename and `moveToDepartment` only — `AdminApi.kt:448-468` — so roles change only through a new invite. This keeps the defect at Medium: it is a freshness problem, not a privilege-downgrade window.)
 
-**Consequence.** A stale authorisation attribute on the wire: a moved employee keeps the old department's announcements and relay scope for up to a certificate lifetime. The console reports "done" and the audit line records the change, so an operator has no reason to look again. Revocation still works immediately (it is checked per frame from the revocation list), so this is an authorisation-freshness defect, not a hole in the revoke path.
+**Consequence.** A stale authorisation attribute on the wire, for up to 7 days: a moved employee keeps reading the old department's announcements and sees the old department's people as *their* scope, while the directory statement already shows them in the new department to everybody else (`registerMember` re-signs it immediately). The two views disagree, and the console reports the move as done. Revocation still works immediately (checked per frame from the revocation list), so this is authorisation freshness, not a hole in the revoke path.
 
-**Fix direction.** Either (a) resolve role and department from the registry when building the principal (`ChallengeResponseAuth.verifyIdentity` would need the registry, which it deliberately does not have), or (b) make the console change effective: re-issue the certificate and deliver it, **and** kick the live session (`router.kick(id, "role_changed")`) so the next handshake cannot present the old certificate. (b) is the smaller change against the current architecture and matches what revocation already does through `onDeviceRevoked`.
+**Fix direction.** Three options, in increasing cost and decreasing delay:
+- **(a) Resolve from the registry when building the principal** — map `ServerDevicePrincipal.role/department` through `IdentityStore` right after `ChallengeResponseAuth.authenticate` (the relay router already holds a `directory`, and `AuthRoutes` holds the identity store), then `router.kick(id, "department_changed")` + `bearerTokens.revokeDevice(id)` on the move. Immediate, ≈ 30 lines, and it also repairs any other certificate/registry drift. Must fail closed when the device row is gone.
+- **(b) Be honest in the console** — one line of copy ("takes effect when the device next renews, within 7 days"). Zero risk, no delay fix.
+- **(c) Revoke the device** — available today, forces re-enrolment, but needs a fresh invite and a user action per moved device; disruptive, not a fix.
+
+(b) is the cheapest and should ship regardless; (a) is the correct long-term answer if organisations expect same-minute effect. Anything called "re-issue" must start from the fact that **enrolment needs an invite token** (`EnrollmentService.enrol(token, …)`), so an automatic re-issue does not exist today.
 
 **Test that would catch it.** A server test: enrol, move the device to another department through the admin route, then reconnect with the *old* certificate and assert the principal's department is the new one (or that the handshake is refused with a "re-enrol" error).
 
@@ -380,6 +387,102 @@ for (removedId in dto.removedDeviceIds) {
 **Fix direction.** Delete the tombstone (or stamp `restored_at_version`) inside the same transaction that registers the member, and make `getSyncChanges` ignore tombstones older than the entity's current version.
 
 **Test that would catch it.** Server test: register → remove → register the same id → the next sync lists it in `members` and **not** in `removedDeviceIds`. Client test: a page that carries id X in both must end with X present.
+
+**Status:** OPEN.
+
+---
+
+### DIR-04 — One legal `/directory/sync` page is larger than the client can decode (High)
+
+**Files**
+- [`core/enterprise/.../EnterpriseDirectoryClient.kt:407`](../../core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/EnterpriseDirectoryClient.kt) — `HubRestCodec.decode<DirectorySyncDto>(reply.body)`, default cap
+- [`core/hub-protocol/.../rest/HubRestCodec.kt:34-37`](../../core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/rest/HubRestCodec.kt), [`HubContract.kt:198`](../../core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/HubContract.kt) — `MAX_REST_BODY_BYTES = 64 * 1024`, checked **before** parsing
+- [`core/enterprise/.../OrgDirectorySync.kt:208`](../../core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt) — the client asks for `limit = 500`
+- [`server/.../directory/OrganizationDirectory.kt:1223-1224, 1269`](../../server/src/main/kotlin/com/transfer/flash/server/directory/OrganizationDirectory.kt) — the server honours 500 and measures no bytes
+- [`core/hub-protocol/.../rest/RestDtos.kt:349-356, 363-368`](../../core/hub-protocol/src/commonMain/kotlin/com/transfer/flash/core/hubprotocol/rest/RestDtos.kt) — a member DTO carries the whole signed statement; a roster DTO carries a **JSON string**
+
+**Symptom.** A real hub answers `200 OK` with a well-formed `DirectorySyncDto`, and the client throws it away as `ServerError(200, "Malformed directory sync response")`. `OrgDirectorySync` treats that as a server failure and backs off, so the directory snapshot never lands: no org trust, no colleague conversations, no hub group rosters, and the Hub tab keeps saying it is waiting. Nothing in the server log and nothing in the metrics mentions it.
+
+**Root cause.** The client requests a page the client itself cannot accept. The limit is only ever counted in rows:
+
+```kotlin
+// OrgDirectorySync.kt:208 — the client's page request
+limit = 500,
+```
+```kotlin
+// OrganizationDirectory.kt:1223-1224 — the server never looks at bytes
+val pageSize = limit.coerceIn(1, 1000)
+val membersOnPage = pagedMembers.take(pageSize)
+```
+```kotlin
+// EnterpriseDirectoryClient.kt:407 — and the answer is refused above 64 KiB
+val dto = runCatching { HubRestCodec.decode<DirectorySyncDto>(reply.body) }.getOrNull()
+```
+
+**Measured sizes** (synthetic payloads in the exact DTO shapes, Node, 2026-10-21; a P-256 SPKI is 91 DER bytes → 124 Base64 chars, an ECDSA signature ~96 Base64 chars):
+
+| Payload | Bytes |
+|---|---|
+| one `DirectoryMemberSyncDto` (16-char display name, 36-char department) | ≈ 576 |
+| the same with a 64-char display name | ≈ 624 |
+| one roster DTO, 20 members (statement JSON-escaped a second time) | ≈ 0.9 KB |
+| one roster DTO, 200 members (= `GroupRosterStatement.MAX_MEMBERS`) | ≈ 4.3 KB |
+| an empty `DirectorySyncDto` | ≈ 294 |
+
+So the ceiling is **≈ 110 member DTOs per response**, and a last page carrying 64 rosters of 20 members is ≈ 58 KB *before* any members are added. The server's own documented maximum (500 members per page) is ≈ 288 KB — more than four times the cap.
+
+**Trigger.** Any organisation where one sync changes more than ~110 visible members (a first full sync of 111+ people, a bulk import, a re-enrolment wave), or a device whose last page holds enough rosters (≈ 70 small ones; 15 of the 200-member maximum). Both are ordinary at the scale the plan claims to support (EXP-022 measured 5,000 members).
+
+**Why it survived review.** Every client test injects DTOs through `FakeDirectorySyncApi` (`OrgDirectorySyncTest.kt`, 24 constructions) and never encodes a body; `grep` finds no `MockEngine` in `:core:enterprise`. EXP-022's "5,000 members, 10 pages of 500" was produced by that fake, so the 64 KiB guard was never on the path. The server tests check the JSON shape, not the client's decoder.
+
+**Consequence.**
+- The whole Plan B offline-trust feature is unshippable above ~110 people; below that it works, which is why a demo organisation never shows it.
+- It fails as "the hub sent something malformed", i.e. it blames the wrong side.
+- Raising the roster cap to 256 (or keeping it at 64) changes nothing on its own: rosters alone can exceed the cap (DIR-05).
+
+**Fix direction.**
+1. Give this route its own bound: `MAX_DIRECTORY_SYNC_BODY_BYTES` (e.g. 2 MiB) passed explicitly to `HubRestCodec.decode`, and keep 64 KiB as the default for every other body (that guard is right there).
+2. Page by **bytes** on the server: accumulate members until the encoded estimate passes a threshold below that bound, then stop and return `nextCursor`. A server must never emit a body its own client is defined to reject.
+3. Drop the client's `limit` to a page that fits (200 members ≈ 115 KB) and write the number, and its rationale, into `docs/protocol.md`.
+4. Better still, move the rosters to their own paged route (`GET /api/v1/directory/rosters?cursor=…`): they are the largest variable payload and the only one a device can re-fetch alone.
+
+**Test that would catch it.** A codec test is not enough — it must go through the real client: start a Ktor hub with 300 members, point a real `RealEnterpriseDirectoryClient` at it, run one `syncOnce`, and assert 300 members are stored and `HubSyncStatus` is not `FAILED`. Mirror it at 1,000 members. Cheap, deterministic, `:server:test` + `:core:enterprise:jvmTest` territory.
+
+**Status:** OPEN.
+
+---
+
+### DIR-05 — Silent roster truncation, with replace-all semantics on the client (Medium-low)
+
+**Files**
+- [`server/.../directory/OrganizationDirectory.kt:1267-1307`](../../server/src/main/kotlin/com/transfer/flash/server/directory/OrganizationDirectory.kt) — `.take(MAX_ROSTERS_PER_SYNC)`, `.take(MAX_MEMBERS)`, `rostersSkippedTooLarge`
+- [`core/persistence/.../dao/OrgDirectoryDao.kt:133-146`](../../core/persistence/src/commonMain/kotlin/com/transfer/flash/core/persistence/db/dao/OrgDirectoryDao.kt) — `applySyncBatchWithRosters` ends in `replaceGroupRosters(rosters)`
+- [`core/enterprise/.../OrgDirectorySync.kt:274, 418`](../../core/enterprise/src/commonMain/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySync.kt) — everything the last page offered is applied as the new set
+
+**Symptom.** A device that belongs to more groups than the cap loses the extra rosters from its stored set on the next sync — the same outcome as leaving those groups — and keeps whatever membership rows it had, which are then never refreshed. There is no flag, no count and no user-visible warning on the client; `rostersSkippedTooLarge` is a server-side field no route or metric exposes.
+
+**Root cause.** The last page is documented as "the FULL current set … the client replaces its stored set", but the list is truncated first:
+
+```kotlin
+// OrganizationDirectory.kt:1282-1291
+val out = groups.values
+    .filter { actor.deviceId in it.memberDeviceIds || actor.deviceId in it.adminDeviceIds }
+    .sortedBy { it.id }
+    .take(MAX_ROSTERS_PER_SYNC)        // 256 (protocol says 64)
+    .mapNotNull { g ->
+        val members = (g.memberDeviceIds + g.adminDeviceIds).distinct().sorted()
+        if (members.size > GroupRosterStatement.MAX_MEMBERS) { skipped++; return@mapNotNull null }
+        …
+```
+`replaceGroupRosters` makes the client's view exactly what arrived, so "truncated" and "left the group" are indistinguishable.
+
+**Trigger.** A device in more than `MAX_ROSTERS_PER_SYNC` groups. Unreachable at 256 in practice; **reachable at the protocol's 64** for a busy organisation, and trivially reachable if the owner lowers the cap to bound the body size (DIR-04).
+
+**Consequence.** Stale membership for the affected groups: `refreshHubGroupRosters` → `projectHubRosters` only iterates the groups it still holds, so the vanished group's rows stay active and stop being updated. A removal in such a group is not projected on that device.
+
+**Fix direction.** Either add `rostersTruncated: Boolean` (and let the client keep the rosters of groups it still has) or make the client merge by `groupId` with a version check and a max-age, so a missing roster ages out instead of vanishing. A cap without a truncation flag is the actual defect; the number is secondary.
+
+**Test that would catch it.** Server: 3 groups, cap forced to 2 → the response says it was truncated. Client: apply a truncated page and assert the third group's stored roster survives one sync and is dropped only by age.
 
 **Status:** OPEN.
 
@@ -673,11 +776,11 @@ Not re-litigated here; listed so one place shows what is still owed.
 
 ## 8. Open owner questions
 
-1. **Roster cap**: 64 (protocol) or 256 (code)? One of them is wrong before the next release.
-2. **DEV-01**: should a department move force a re-issue + kick (my recommendation), or should the console be honest that it lands at renewal?
-3. **RLY-01 policy**: when a sealed row cannot be opened, is "delete it and tell the sender `DROPPED`" acceptable, or should the hub refuse to drain that device until an operator restores the key? (Deleting loses content that might still be recoverable from a backup.)
-4. **AUTH-01**: is a hub restart behind one office NAT a supported scenario? If yes, the `/auth` burst must grow with the expected device count.
-5. **Console expiry**: is "an edit keeps the expiry" the intended semantic (my assumption), or is "an edit clears it" deliberate?
+1. **Directory sync transport (was "64 or 256 rosters")**: the roster cap is moot until DIR-04 is fixed — the client refuses any sync body above 64 KiB, which is ≈ 110 members, so a legal page is already undecodable. The real decision is: raise the client's bound for this one route (recommended, 2 MiB), page by bytes on the server, and move rosters to their own paged route; then 64 is a fine number (the code's 256 cannot fit in any single response). If you prefer to keep the 64 KiB cap everywhere, the page size must drop to ~50 members and the roster set must be paged separately — the same work, with a worse payload.
+2. **DEV-01**: a department move takes effect at the next certificate renewal, i.e. **within 7 days** (certificates live 7 days; renewal happens in the last day). Options: (a) resolve role/department from the registry at handshake + kick + revoke the device's bearers (immediate, ≈ 30 lines), (b) say so in the console ("takes effect within 7 days"), (c) revoke the device (forces re-enrolment with a new invite — disruptive). There is no automatic "re-issue" today: enrolment needs an invite token.
+3. **RLY-01 policy**: when a sealed row cannot be opened, is "delete it and tell the sender `DROPPED`" acceptable, or should the hub refuse to drain that device until an operator restores the key? (Deleting loses content that might still be recoverable from a backup; refusing bricks the device. A third option — quarantine the row, tell the sender `DROPPED`, keep it until the 7-day TTL — keeps both.)
+4. **AUTH-01**: is a hub restart behind one office NAT a supported scenario? If yes, the `/auth` burst must grow with the expected device count (the bucket is per IP: burst 30, then 1/s, and `GET /api/v1/hub`, `/auth/challenge` and `/auth/verify` all draw on it).
+5. **Console expiry**: is "an edit keeps the expiry" the intended semantic (my assumption), or is "an edit clears it" deliberate? Note that the console has no expiry field at all today (neither on create nor on edit), so no user can have relied on either behaviour yet — which makes this the cheapest moment to define it.
 
 ---
 
@@ -698,6 +801,9 @@ Nothing here was executed, so every defect needs a device or server test before 
 - **SRVHUB-11** OPS-01 — `/health` and `/health/detail` answer under 1 s while a large sync runs.
 - **SRVHUB-12** FL-01 — a recipient reads a chunk while the blob is `UPLOADING` and gets a retryable answer.
 
+- **SRVHUB-13** DIR-04 — a real hub with 300 members: one `syncOnce` from a real `RealEnterpriseDirectoryClient` stores all 300 (today it fails as "malformed"). Repeat at 1,000.
+- **SRVHUB-14** DIR-05 — force the roster cap below the device's group count: the answer says it was truncated and the client keeps the missing group's roster.
+
 The server-level ones can be automated as JVM tests in `:server:test` (that is where they belong); the device-level ones belong to the owner's eventual hub device session.
 
 ---
@@ -707,4 +813,5 @@ The server-level ones can be automated as JVM tests in `:server:test` (that is w
 - **Code changed:** none.
 - **Build run:** none (`:server` was not rebuilt; nothing here depends on a new compiler result).
 - **Device-verified:** nothing; the hub remains experimental and undeployed per `AGENTS.md` §29.
-- **Next step:** the owner decides §8.1 and §8.2; then ANN-01 (`withTransaction` on four paths — highest correctness payoff for the least code) and DIR-01 (small, self-contained; matters for organisations over 500 people and for any future paged People search) are the cheapest pair to fix and test. RLY-01 needs the §8.3 policy decision first.
+- **Re-opened by this addendum (2026-10-21, same session):** DIR-04 (High) and DIR-05 (Medium-low) were found while answering §8.1, and DEV-01's text was corrected (a role change is not reachable from the console; certificates live 7 days, not a year). The workspace was not rebuilt for these either.
+- **Next step:** DIR-04 first — it is the one defect that stops the whole offline-trust feature above ~110 people, and it is a bounded change (one named cap, byte-budget paging, an end-to-end test through the real client). Then ANN-01 (`withTransaction` on four paths — highest correctness payoff for the least code), then DIR-01 (small, self-contained; matters for organisations over 500 people and for any future paged People search). The owner decides §8.2 and §8.3 before DEV-01 and RLY-01.

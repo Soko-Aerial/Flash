@@ -6028,7 +6028,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-04 — A department move takes effect without a certificate renewal (DEV-01)
 - **Setup:** an enrolled device in department A; a department-scoped announcement for A and one for B.
 - **Steps:** as org admin, move the device to B in the console; wait for the next poll (no re-enrol, no renewal, no app restart).
-- **Pass:** B's announcement reaches the device and A's stops, and the Hub tab puts it in B. Today: nothing changes until the certificate is renewed, up to a certificate lifetime. **Source:** DEV-01. **Status:** TODO
+- **Pass:** B's announcement reaches the device and A's stops, and the Hub tab puts it in B. Today: nothing changes until the certificate is renewed, i.e. within 7 days of the move for a running device (certificates live 7 days; renewal starts a day before expiry). **Source:** DEV-01. **Status:** TODO
 
 ### SRVHUB-05 — A console edit keeps an announcement's expiry (ANN-02)
 - **Setup:** an announcement created through the API with `expiresAtMs = now + 10 min`.
@@ -6068,3 +6068,13 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-12 — A recipient reading an unfinished blob gets a retryable answer (FL-01)
 - **Setup:** create a file, upload some chunks but do not `complete`; then `GET /api/v1/files/{id}/chunks/0` as a **recipient** (not the sender) and as the sender.
 - **Pass:** the recipient gets `409 NOT_READY` and the app retries instead of failing and deleting its partial download; the sender's answer is unchanged. Today: the recipient gets `404`, which the client treats as permanent. Not reachable through the app's own flow (the ticket is sent only after `complete`). **Source:** FL-01. **Status:** TODO
+
+### SRVHUB-13 — A 300-member organisation syncs through the real client (DIR-04)
+- **Setup:** a real Ktor hub (in `:server:test`, or a local instance) with 300 enrolled members; a real `RealEnterpriseDirectoryClient` pointed at it; an `OrgDirectorySync` with a real DAO.
+- **Steps:** run one `syncOnce`; repeat with 1,000 members and with a device in 20 groups.
+- **Pass:** 300 (and 1,000) members are stored, `HubSyncStatus` is not `FAILED`, and no page is refused. Today: the first page is ≈ 288 KB and the client's 64 KiB guard turns it into `ServerError(200, "Malformed directory sync response")`, so nothing lands. Also assert each response stays under whatever bound `docs/protocol.md` documents. **Source:** DIR-04. **Status:** TODO
+
+### SRVHUB-14 — A truncated roster list does not delete groups the device is still in (DIR-05)
+- **Setup:** a device that is a member of three hub groups; force `MAX_ROSTERS_PER_SYNC` to 2 (test build).
+- **Steps:** run a sync; then remove one of the two delivered groups so the third would be delivered; sync again.
+- **Pass:** the response says it was truncated (`rostersTruncated`, once implemented), the third group's stored roster survives, and the device never silently drops a group it still belongs to. Today: the client replaces its set, so the third group vanishes as if it had left it. **Source:** DIR-05. **Status:** TODO

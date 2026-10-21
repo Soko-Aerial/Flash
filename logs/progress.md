@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-10-21 (latest) - Server & Hub audit addendum: DIR-04 (High) and DIR-05 found while answering the owner's questions
+
+### Worked on
+The owner asked the five §8 questions to be explained in detail. Verifying the numbers behind them (roster cap, certificate lifetime, sealed-row policy, `/auth` burst, announcement expiry) turned up a defect the first pass missed, and corrected two statements in the audit itself. **Docs only again: no product code, no build, no device.**
+
+### Changed
+- `docs/audit/2026-10-21-server-hub-internals-audit.md`:
+  - **New DIR-04 (High)** — the client asks `/directory/sync` for 500 members and then refuses the answer above `MAX_REST_BODY_BYTES = 64 KiB` (`EnterpriseDirectoryClient.kt:407`, `HubRestCodec.kt:34-37`), while the server honours 500 (`OrganizationDirectory.kt:1223-1224`) and measures no bytes. Measured DTO sizes (synthetic payloads, exact shapes): ≈ 576 B per member → **≈ 110 members per response**; a 20-member roster ≈ 0.9 KB, a 200-member roster ≈ 4.3 KB, so 64 rosters of 20 members ≈ 58 KB before any member is added. Consequence: above ~110 members a real hub's answer is rejected as `ServerError(200, "Malformed directory sync response")` and org trust, colleagues and hub group rosters never land. Why it survived: all 24 `OrgDirectorySyncTest` constructions use `FakeDirectorySyncApi`, there is no `MockEngine` in `:core:enterprise`, and EXP-022's 10 × 500-member pages were produced by that fake.
+  - **New DIR-05 (Medium-low)** — the last sync page is documented as "the full current set" and the client *replaces* its stored rosters (`OrgDirectoryDao.replaceGroupRosters`), but the server truncates at `MAX_ROSTERS_PER_SYNC` and skips groups above 200 members without telling anyone, so a device in more groups than the cap loses rosters of groups it is still in. Unreachable at 256; reachable at the protocol's 64.
+  - **DEV-01 corrected**: a role change is *not* reachable from the console (`PUT /devices/{id}` takes a rename and `moveToDepartment` only), and a certificate lives **7 days** (`DeviceCert.DEFAULT_VALIDITY_MS`), renewed in the last day — so a department move lands within 7 days, not "up to a lifetime" and not "never". Fix direction rewritten: registry-derived principal + kick + bearer revoke (immediate), or honest console copy, or revoke (forces re-enrolment with a new invite — there is no automatic re-issue).
+  - §8 rewritten for the new facts (Q1 is no longer "64 or 256": the roster cap is moot until the 64 KiB cap is fixed), §9 gained SRVHUB-13/14, §10 next step now starts at DIR-04.
+- `docs/testing/TEST-BACKLOG.md` — `SRVHUB-13` (300-member sync through the real client) and `SRVHUB-14` (truncated roster list), plus SRVHUB-04's "certificate lifetime" corrected to 7 days.
+
+### Verification
+Read-only, plus a local Node calculation of the DTO sizes (no repo files touched by it). No Gradle command, so no §36 lock needed.
+
+### Remaining
+Same as the entry below, with DIR-04 promoted to first: it is the one defect that makes the whole offline-trust feature unusable above ~110 people, and it is bounded work (a named cap for this route, byte-budget paging, one end-to-end test through the real client).
+
+### Next AI
+Do not "fix" the 64/256 contradiction by editing `docs/protocol.md` alone: the real limit is the 64 KiB client guard. Read DIR-04 before touching either number.
+
 ## 2026-10-21 (later) - Server & Hub internals audit: 16 findings, docs only, nothing built
 
 ### Worked on
