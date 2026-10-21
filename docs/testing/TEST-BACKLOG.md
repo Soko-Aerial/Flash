@@ -6006,3 +6006,65 @@ confirm the audit's reading of the code.
 - **BRUT-02 (F1):** search a word that appears in a message text that has an attachment whose name does not contain it. Pass: one message hit, nothing under Files or Media. Source: F1. Status: TODO
 - **BRUT-03 (F5):** hub console as a department head on a hub with more than 500 enrolled devices. Pass: the overview counts match the department roster. Source: F5. Status: TODO
 - **BRUT-04 (F9):** receive a 100 MB file over a slow link on both hosts. Pass: no growth in allocation rate, file hash verifies. Source: F9. Status: TODO
+
+## 4zzzzzzzzzzzzzzzzzzzz. Server & Hub internals audit (SRVHUB, 2026-10-21; see `docs/audit/2026-10-21-server-hub-internals-audit.md`)
+
+Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. Each one is the test named in the audit's §3 for that finding; none was run, so each also stands as a device/console check where the row says so.
+
+### SRVHUB-01 — `/directory/people` pages past one page (DIR-01)
+- **Setup:** a hub with 250 members (`limit = 100`), or an org of 600 with `limit = 500`.
+- **Steps:** `GET /api/v1/directory/people?limit=100`, follow `nextCursor` until it is `null`; then in the app, mark a colleague at position 120 (250-member org) or 600 (600-member org) online and open a chat with them.
+- **Pass:** the three pages hold 100 + 100 + 50 distinct people and their union equals the full sorted list; the chat header shows that colleague as online. Today: page 2 is empty and the colleague reads Offline for ever. **Source:** DIR-01. **Status:** TODO
+
+### SRVHUB-02 — A sealed mailbox row that cannot be opened does not block the queue (RLY-01)
+- **Setup:** a hub with queued messages for one device; stop it (and back up `data.key`), remove or replace `data.key` in the data dir, start it again.
+- **Steps:** reconnect that device; send it a new message from another device.
+- **Pass:** the unreadable messages are removed and their senders get `FLASH_QUEUE_STATE state=DROPPED`; the new message arrives; the log names the count and the device; a metric/console row shows the drops. Today: the device gets nothing until the TTL expires (7 days) and no sender is told. **Source:** RLY-01. **Status:** TODO
+
+### SRVHUB-03 — Two admins writing at the same time cannot duplicate a `seq` or lose an edit (ANN-01)
+- **Setup:** two console sessions; or two `POST /api/v1/announcements` in parallel with `curl` (also with the same `clientRequestId`), and two `PUT`s of one announcement with the same `expectedSeq`.
+- **Pass:** every created announcement has a distinct `seq` (check `SELECT seq, COUNT(*) FROM announcement GROUP BY seq HAVING COUNT(*) > 1`, no rows); exactly one of the two `PUT`s succeeds and the other answers `409`; one `clientRequestId` yields one announcement; a 4th pin answers `ERR_PIN_LIMIT` on both a device and a console route, with the **same** status code. **Source:** ANN-01. **Status:** TODO
+
+### SRVHUB-04 — A department move takes effect without a certificate renewal (DEV-01)
+- **Setup:** an enrolled device in department A; a department-scoped announcement for A and one for B.
+- **Steps:** as org admin, move the device to B in the console; wait for the next poll (no re-enrol, no renewal, no app restart).
+- **Pass:** B's announcement reaches the device and A's stops, and the Hub tab puts it in B. Today: nothing changes until the certificate is renewed, up to a certificate lifetime. **Source:** DEV-01. **Status:** TODO
+
+### SRVHUB-05 — A console edit keeps an announcement's expiry (ANN-02)
+- **Setup:** an announcement created through the API with `expiresAtMs = now + 10 min`.
+- **Steps:** fix a typo in its body in the console; wait past the expiry; reopen the Hub tab and the console.
+- **Pass:** it disappears at the expiry. Today: the edit clears `expires_at` and it stays for ever. **Source:** ANN-02. **Status:** TODO
+
+### SRVHUB-06 — A hidden department's removed member does not leak (DIR-02)
+- **Setup:** a hidden department with one member; a second device outside it.
+- **Steps:** remove the member (revoke or delete); let the outsider's app run a `/directory/sync`; inspect its response (or the app's People list).
+- **Pass:** the outsider's `removedDeviceIds` and `removedDepartmentIds` carry neither the device id nor the department id; an org admin's sync does. **Source:** DIR-02. **Status:** TODO
+
+### SRVHUB-07 — A re-enrolled device appears in the directory again (DIR-03)
+- **Setup:** device X enrolled; note it in a peer's People list.
+- **Steps:** revoke X, unrevoke it, enrol it again with an invite (same device id); let the peer sync twice.
+- **Pass:** X is listed in both syncs and is never deleted from the peer's directory; `removedDeviceIds` no longer names it. Today: it is deleted on every sync. **Source:** DIR-03. **Status:** TODO
+
+### SRVHUB-08 — A hub restart does not lock out an office (AUTH-01)
+- **Setup:** 40 devices behind one NAT/reverse proxy (or a load test that signs in 40 times from one address).
+- **Steps:** restart the hub; watch the clients.
+- **Pass:** every device signs in again within a minute and none shows the sign-in failure sentence. Today: about 15 per burst, then one per 2 s, so ~40 devices take a minute and more than 15 failures are visible. **Source:** AUTH-01. **Status:** TODO
+
+### SRVHUB-09 — One sender cannot flood a large group (RLY-02)
+- **Setup:** a group of 100 members, all online; one member scripted to send 64 KiB frames at 60 frames/s.
+- **Steps:** run it for 30 s; watch the hub's egress and CPU.
+- **Pass:** the hub answers `ERR_RATE_LIMIT` on the byte budget before its uplink saturates and the other members stay responsive. Today: no byte budget exists. **Source:** RLY-02. **Status:** TODO
+
+### SRVHUB-10 — A hub restart during a transfer costs one sign-in, not many (CLI-01, CLI-02)
+- **Setup:** a device uploading a multi-chunk hub file while the 15 s presence poll and a directory sync run.
+- **Steps:** restart the hub mid-upload.
+- **Pass:** one `POST /auth/verify` per device (check the hub log), the upload resumes within seconds, and no screen freezes without an error. Today: one sign-in per concurrent 401, serialised, and the mutex is held across the network calls. **Source:** CLI-01/CLI-02. **Status:** TODO
+
+### SRVHUB-11 — `/health` answers while the hub is busy (OPS-01)
+- **Setup:** a full directory sync of 20,000 members plus a hub file transfer.
+- **Steps:** hit `/health` and `/health/detail` ten times a second during it.
+- **Pass:** every answer is under 1 s (the Docker `HEALTHCHECK` does not time out). Today: blocking pool calls with a 5 s `busy_timeout` behind them. **Source:** OPS-01. **Status:** TODO
+
+### SRVHUB-12 — A recipient reading an unfinished blob gets a retryable answer (FL-01)
+- **Setup:** create a file, upload some chunks but do not `complete`; then `GET /api/v1/files/{id}/chunks/0` as a **recipient** (not the sender) and as the sender.
+- **Pass:** the recipient gets `409 NOT_READY` and the app retries instead of failing and deleting its partial download; the sender's answer is unchanged. Today: the recipient gets `404`, which the client treats as permanent. Not reachable through the app's own flow (the ticket is sent only after `complete`). **Source:** FL-01. **Status:** TODO
