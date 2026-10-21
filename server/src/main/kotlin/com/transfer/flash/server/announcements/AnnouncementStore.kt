@@ -99,13 +99,16 @@ public class AnnouncementStore(
         // Clean text first (throws ValidationException if invalid)
         val cleaned = AnnouncementText.clean(title, body)
 
-        return db.withConnection { conn ->
+        // One write transaction (BEGIN IMMEDIATE): the idempotency check, the pin-limit count, the seq allocation and the
+        // insert can not interleave with another writer (ANN-01). A pooled autocommit connection let two creates share a seq,
+        // two pins both pass a limit of 3, and a retried request insert twice.
+        return db.withTransaction { conn ->
             // 1. Idempotency check: check if clientRequestId was already processed within last 10 min
             pruneOldRequests(conn)
             val existingId = findByClientRequestId(conn, clientRequestId)
             if (existingId != null) {
                 val existing = getByIdInternal(conn, existingId)
-                if (existing != null) return@withConnection existing
+                if (existing != null) return@withTransaction existing
             }
 
             val now = clock()
@@ -189,7 +192,7 @@ public class AnnouncementStore(
         actorRef: String = "",
         clientRequestId: String? = null,
     ): AnnouncementItemDto {
-        return db.withConnection { conn ->
+        return db.withTransaction { conn ->
             val current = getByIdInternal(conn, id)
                 ?: throw AnnouncementNotFoundException("Announcement $id does not exist")
             if (current.deleted) {
@@ -226,10 +229,10 @@ public class AnnouncementStore(
                     updated_at = ?,
                     edited = 1,
                     seq = ?
-                WHERE id = ?
+                WHERE id = ? AND seq = ?
             """.trimIndent()
 
-            conn.prepareStatement(sql).use { stmt ->
+            val changed = conn.prepareStatement(sql).use { stmt ->
                 stmt.setString(1, cleanedTitle)
                 stmt.setString(2, cleanedBody)
                 stmt.setInt(3, if (newPinned) 1 else 0)
@@ -238,8 +241,12 @@ public class AnnouncementStore(
                 stmt.setLong(6, now)
                 stmt.setLong(7, newSeq)
                 stmt.setString(8, id)
+                stmt.setLong(9, current.seq)
                 stmt.executeUpdate()
             }
+            // Belt and braces: the transaction already serialises writers, so the row can only have moved if something
+            // wrote around the store. Roll back (the throw) rather than report a write that did not happen.
+            if (changed != 1) throw AnnouncementConflictException(getByIdInternal(conn, id) ?: current)
 
             current.copy(
                 title = cleanedTitle,
@@ -260,7 +267,7 @@ public class AnnouncementStore(
         actorDeptId: String? = null,
         actorRef: String = "",
     ): AnnouncementItemDto {
-        return db.withConnection { conn ->
+        return db.withTransaction { conn ->
             val current = getByIdInternal(conn, id)
                 ?: throw AnnouncementNotFoundException("Announcement $id does not exist")
             if (current.deleted) {
@@ -312,7 +319,7 @@ public class AnnouncementStore(
         actorDeptId: String? = null,
         actorRef: String = "",
     ): AnnouncementItemDto {
-        return db.withConnection { conn ->
+        return db.withTransaction { conn ->
             val current = getByIdInternal(conn, id)
                 ?: throw AnnouncementNotFoundException("Announcement $id does not exist")
             if (current.deleted) {
@@ -321,7 +328,7 @@ public class AnnouncementStore(
 
             checkCanModify(current, actorRole, actorDeptId, actorRef)
 
-            if (current.pinned == pinned) return@withConnection current
+            if (current.pinned == pinned) return@withTransaction current
 
             val now = clock()
             if (pinned) {
@@ -654,7 +661,7 @@ public class AnnouncementStore(
     // Retention & Housekeeping
     // ---------------------------------------------------------------------------------------------
 
-    public fun purgeExpiredAndOldTombstones(retentionDays: Int = 0, nowMs: Long = clock()): Int = db.withConnection { conn ->
+    public fun purgeExpiredAndOldTombstones(retentionDays: Int = 0, nowMs: Long = clock()): Int = db.withTransaction { conn ->
         pruneOldRequests(conn, nowMs)
 
         var purgedCount = 0
@@ -775,6 +782,7 @@ public class AnnouncementStore(
         }
     }
 
+    /** Allocates the next change number. Call it only inside [ServerDatabase.withTransaction]: the increment and the read are two statements. */
     private fun nextSeq(conn: Connection): Long {
         conn.createStatement().use { st ->
             st.execute("UPDATE announcement_state SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'seq'")

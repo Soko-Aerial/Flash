@@ -17981,3 +17981,21 @@ Plan items 2-10.
 
 ### Next AI
 Continue with item 2 (announcement transactions), one commit per item.
+
+
+## 2026-10-21 - Server internals audit, step 2: announcement writes in one transaction (ANN-01)
+
+### Worked on
+Item 2 of the server-internals audit plan.
+
+### Changed
+`AnnouncementStore` create/update/delete/pin/purge now run under `withTransaction` (BEGIN IMMEDIATE); the update adds `AND seq = ?`. New `AnnouncementStoreConcurrencyTest`.
+
+### Verification
+`:server:test --tests *Announcement*` green. Four race tests (20 creates, 8 same-expectedSeq updates, 8 pins at the limit, 8 same clientRequestId) fail on the pre-change store and pass now. Race tests must use a WAL file database with several pooled connections. NOT device-verified.
+
+### Remaining
+Plan items 3-10.
+
+### Next AI
+Item 3: announcement expiry tri-state (`clearExpiry`), console field.

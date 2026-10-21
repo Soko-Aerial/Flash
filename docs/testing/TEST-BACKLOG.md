@@ -6023,7 +6023,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 
 ### SRVHUB-03 — Two admins writing at the same time cannot duplicate a `seq` or lose an edit (ANN-01)
 - **Setup:** two console sessions; or two `POST /api/v1/announcements` in parallel with `curl` (also with the same `clientRequestId`), and two `PUT`s of one announcement with the same `expectedSeq`.
-- **Pass:** every created announcement has a distinct `seq` (check `SELECT seq, COUNT(*) FROM announcement GROUP BY seq HAVING COUNT(*) > 1`, no rows); exactly one of the two `PUT`s succeeds and the other answers `409`; one `clientRequestId` yields one announcement; a 4th pin answers `ERR_PIN_LIMIT` on both a device and a console route, with the **same** status code. **Source:** ANN-01. **Status:** TODO
+- **Pass:** every created announcement has a distinct `seq` (check `SELECT seq, COUNT(*) FROM announcement GROUP BY seq HAVING COUNT(*) > 1`, no rows); exactly one of the two `PUT`s succeeds and the other answers `409`; one `clientRequestId` yields one announcement; a 4th pin answers `ERR_PIN_LIMIT` on both a device and a console route, with the **same** status code. **Source:** ANN-01. **Status:** AUTOMATED PASS 2026-10-21 (`AnnouncementStoreConcurrencyTest`, racing threads on a WAL file database, mutation-checked; the two-admins-in-the-console device run is still owed)
 
 ### SRVHUB-04 — A department move takes effect within seconds (DEV-01)
 - **Setup:** an enrolled device in department A; a department-scoped announcement for A and one for B.
