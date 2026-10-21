@@ -18,6 +18,7 @@ import com.transfer.flash.core.ptt.FlashPtt
 import com.transfer.flash.core.security.crypto.E2eFrameCodec
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.transfer.RealFlashTransferRepository
+import com.transfer.flash.core.transfer.TransferFailureText
 import com.transfer.flash.core.transfer.chunked.ChunkFrame
 import com.transfer.flash.core.transfer.chunked.ReceiveEvent
 import com.transfer.flash.core.transfer.chunked.ReceivePipeline
@@ -249,7 +250,7 @@ public object FlashInboundRouter {
                     )
                     return true
                 }
-                transferRepository?.onRemoteTransferControl(transferId, action)
+                transferRepository?.onRemoteTransferControl(transferId, action, fields["reason"])
                 return true
             }
         }
@@ -302,6 +303,7 @@ public object FlashInboundRouter {
         fileExistsAndSizeMatches: ((path: String, expectedBytes: Long) -> Boolean)? = null,
         sendXferResume: ((peerDeviceId: String, transferId: String) -> Unit)? = null,
         sendXferCancel: ((peerDeviceId: String, transferId: String) -> Unit)? = null,
+        sendXferRefuse: ((peerDeviceId: String, transferId: String, reason: String) -> Unit)? = null,
         onOfferReceived: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)? = null,
         onProgressUpdated: ((transferId: String, bytesDone: Long) -> Unit)? = null,
         onRejected: ((event: ReceiveEvent.Rejected, peerDeviceId: String?) -> Unit)? = null,
@@ -314,7 +316,7 @@ public object FlashInboundRouter {
         routeBinary(
             peerDeviceId, data, reply, peerLabel, pttProvider, sessionKeyLookup, magicRouter, transferRepository,
             receivePipeline, incomingMeta, receivedPaths, openHandles, fileExistsAndSizeMatches, sendXferResume,
-            sendXferCancel, onOfferReceived, onProgressUpdated, onRejected, onCompleted, onSessionStarted,
+            sendXferCancel, sendXferRefuse, onOfferReceived, onProgressUpdated, onRejected, onCompleted, onSessionStarted,
             onTransferUntracked, onResumableRetry, incomingOwners,
         )
     } catch (t: Throwable) {
@@ -339,6 +341,7 @@ public object FlashInboundRouter {
         fileExistsAndSizeMatches: ((path: String, expectedBytes: Long) -> Boolean)?,
         sendXferResume: ((peerDeviceId: String, transferId: String) -> Unit)?,
         sendXferCancel: ((peerDeviceId: String, transferId: String) -> Unit)?,
+        sendXferRefuse: ((peerDeviceId: String, transferId: String, reason: String) -> Unit)?,
         onOfferReceived: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)?,
         onProgressUpdated: ((transferId: String, bytesDone: Long) -> Unit)?,
         onRejected: ((event: ReceiveEvent.Rejected, peerDeviceId: String?) -> Unit)?,
@@ -430,6 +433,7 @@ public object FlashInboundRouter {
             fileExistsAndSizeMatches = fileExistsAndSizeMatches,
             sendXferResume = sendXferResume,
             sendXferCancel = sendXferCancel,
+            sendXferRefuse = sendXferRefuse,
             onOfferReceived = onOfferReceived,
             onProgressUpdated = onProgressUpdated,
             onRejected = onRejected,
@@ -467,6 +471,7 @@ public object FlashInboundRouter {
         val fileExistsAndSizeMatches: ((path: String, expectedBytes: Long) -> Boolean)?,
         val sendXferResume: ((peerDeviceId: String, transferId: String) -> Unit)?,
         val sendXferCancel: ((peerDeviceId: String, transferId: String) -> Unit)?,
+        val sendXferRefuse: ((peerDeviceId: String, transferId: String, reason: String) -> Unit)?,
         val onOfferReceived: ((frame: ChunkFrame.FileStart, peerDeviceId: String?, secureReply: (ByteArray) -> Boolean) -> Unit)?,
         val onProgressUpdated: ((transferId: String, bytesDone: Long) -> Unit)?,
         val onRejected: ((event: ReceiveEvent.Rejected, peerDeviceId: String?) -> Unit)?,
@@ -491,6 +496,12 @@ public object FlashInboundRouter {
                 // R-06: a storage write failed. This is handled here, before and independently of any host hook, so every
                 // host fails the row, drops the session and tells the sender instead of only logging a rejection.
                 if (event.reason == RejectReason.WRITE_FAILED) handleWriteFailed(host, event)
+                refusalTokenFor(event.reason)?.let { token ->
+                    // C-11: tell the sender why, instead of letting it wait out its timeout and blame the connection.
+                    val tid = event.transferId
+                    val pid = host.peerDeviceId
+                    if (event.reason != RejectReason.WRITE_FAILED && tid != null && pid != null) host.sendXferRefuse?.invoke(pid, tid, token)
+                }
                 if (host.onRejected != null) {
                     host.onRejected.invoke(event, host.peerDeviceId)
                 } else {
@@ -511,6 +522,18 @@ public object FlashInboundRouter {
      * session. Fails the transfer row with a sentence a person can act on, closes the sink, forgets the offer metadata
      * and cancels the sender, whose chunks would otherwise be answered "unknown transfer" one by one.
      */
+    /**
+     * The refusal token a rejected frame is reported with, or null when the reason is not one the sender should hear
+     * about. A re-declared session ([RejectReason.SESSION_CONFLICT]) is deliberately not one: refusing it would kill a
+     * healthy transfer that is already running (ADR-221).
+     */
+    private fun refusalTokenFor(reason: RejectReason): String? = when (reason) {
+        RejectReason.SESSION_FULL -> TransferFailureText.REFUSE_SESSION_FULL
+        RejectReason.INVALID_FILE_START -> TransferFailureText.REFUSE_INVALID_FILE_START
+        RejectReason.WRITE_FAILED -> TransferFailureText.REFUSE_WRITE_FAILED
+        else -> null
+    }
+
     private fun handleWriteFailed(host: ReceiveHost, event: ReceiveEvent.Rejected) {
         val transferId = event.transferId ?: return
         host.pipeline.cancelSession(transferId)
@@ -524,7 +547,11 @@ public object FlashInboundRouter {
         }
         host.incomingMeta?.remove(transferId)
         host.transferRepository?.onIncomingFailed(transferId, "write_failed")
-        host.peerDeviceId?.let { host.sendXferCancel?.invoke(it, transferId) }
+        host.peerDeviceId?.let { pid ->
+            // The reason rides on the cancel (an older sender ignores it and shows a plain cancel).
+            host.sendXferRefuse?.invoke(pid, transferId, TransferFailureText.REFUSE_WRITE_FAILED)
+                ?: host.sendXferCancel?.invoke(pid, transferId)
+        }
         host.incomingOwners?.remove(transferId)
         host.onTransferUntracked?.invoke(transferId)
         FlashLog.w(TAG, "Receive failed: storage write error transferId=$transferId index=${event.index}")

@@ -968,8 +968,8 @@ public class RealFlashTransferRepository(
      * Applies a `FLASH_XFER` control frame received from the counterpart peer (ADR-018).
      * Keeps BOTH sides' state and transmission behavior in lockstep.
      */
-    public fun onRemoteTransferControl(transferId: String, action: String) {
-        runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId") }
+    public fun onRemoteTransferControl(transferId: String, action: String, reason: String? = null) {
+        runCatching { FlashLog.i("TRANSFER", "remote control action=$action transferId=$transferId${reason?.let { " reason=$it" } ?: ""}") }
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return
         // A late frame must not rewrite a finished transfer (audit B-03): PAUSE never applies once the
         // row is finished or failed, CANCEL never to a finished one, and RESUME only to a row that is
@@ -1060,15 +1060,19 @@ public class RealFlashTransferRepository(
                     // poll loop, and leaving the flag set risks re-parking before teardown.
                     registryLock.withLock { runningDispatchers.remove(transferId) }?.setPaused(false)
                     registryLock.withLock { runningJobs.remove(transferId) }?.cancel()
+                    // C-11: a cancel that names a refusal reason is the receiver being unable to take the file, not the
+                    // person changing their mind, so the row fails with the receiver's reason and can be retried.
+                    val refusal = TransferFailureText.refusalSentence(reason)
+                    val endState = if (refusal != null) FlashTransferState.Failed else FlashTransferState.Cancelled
                     updateTransferState(transferId) {
                         it.copy(
-                            state = FlashTransferState.Cancelled,
+                            state = endState,
                             speedBytesPerSec = 0L,
                             etaSeconds = 0L,
-                            errorMessage = "cancelled by receiver",
+                            errorMessage = refusal ?: "cancelled by receiver",
                         )
                     }
-                    forgetChunks(transferId, FlashTransferState.Cancelled)
+                    forgetChunks(transferId, endState)
                 }
                 FlashTransferDirection.Receiving -> {
                     // Host tears down sink + pipeline session on this event.

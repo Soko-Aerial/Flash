@@ -584,6 +584,54 @@ class RealFlashTransferRepositoryTest {
         Unit
     }
 
+    /** A live 1:1 send held inside its first chunk write, so a remote control frame meets a registered worker. */
+    private suspend fun senderHeldOnTheWire(): Pair<RealFlashTransferRepository, FlashTransferId> {
+        val gate = CompletableDeferred<Unit>()
+        val entered = AtomicBoolean(false)
+        val factory = StreamChannelFactory { channelId, _ ->
+            object : StreamChannel {
+                override val id: Int = channelId
+                override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
+                    if (ChunkFrame.parse(frameBytes) is ChunkFrame.Chunk && entered.compareAndSet(false, true)) gate.await()
+                    return true
+                }
+            }
+        }
+        val repo = RealFlashTransferRepository(
+            chunker = Chunker(),
+            streamChannelFactory = factory,
+            fileSourceOpener = { Buffer().write(eightChunkPayload) },
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+        val id = (repo.sendFile(peer, "content://media/c11.bin", "c11.bin", eightChunkPayload.size.toLong()) as FlashResult.Success).value
+        awaitUntil(describe = { "worker never reached the wire" }) { entered.get() }
+        return repo to id
+    }
+
+    @Test(timeout = 60_000)
+    fun `C-11 a cancel that names a refusal fails the send with the receiver's reason`() = runBlocking {
+        val (repo, id) = senderHeldOnTheWire()
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_CANCEL, TransferFailureText.REFUSE_SESSION_FULL)
+        val row = repo.snapshot(id)
+        assertEquals(FlashTransferState.Failed, row.state)
+        assertEquals(TransferFailureText.RECEIVER_BUSY, row.errorMessage)
+        assertTrue("a refused send can be retried", row.canRetry)
+        Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `C-11 a plain cancel, or a reason nobody knows, stays a cancel`() = runBlocking {
+        val (repo, id) = senderHeldOnTheWire()
+        repo.onRemoteTransferControl(id.value, RealFlashTransferRepository.ACTION_CANCEL, "something_new")
+        assertEquals(FlashTransferState.Cancelled, repo.snapshot(id).state)
+        assertEquals(TransferFailureText.RECEIVER_STORAGE, TransferFailureText.refusalSentence("write_failed"))
+        assertEquals(TransferFailureText.RECEIVER_REFUSED_FILE, TransferFailureText.refusalSentence("INVALID_FILE_START"))
+        assertNull(TransferFailureText.refusalSentence(null))
+        Unit
+    }
+
     @Test
     fun `B-02 pauseForSystem keeps a 1to1 row and says Android paused it`() = runBlocking {
         val repo = offerRepo()
