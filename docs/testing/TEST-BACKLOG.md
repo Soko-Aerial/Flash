@@ -6088,3 +6088,28 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 - **Setup:** an announcement with `expiresAtMs` set; `curl` or a test client.
 - **Steps:** `PUT` with only `title`/`body`; `PUT` with `expiresAtMs: null` and `clearExpiry: false`; `PUT` with `expiresAtMs: null` and `clearExpiry: true`; `PUT` with both `expiresAtMs` and `clearExpiry: true`.
 - **Pass:** the first two leave the expiry unchanged, the third clears it, the fourth answers `400` naming the conflict. **Source:** ADR-222 decision 6. **Status:** AUTOMATED PASS 2026-10-21 (route test above + `server/admin-ui-tests/announcements.test.mjs` for the composer rules)
+
+## 4zzzzzzzzzzzzzzzzzzzzz. Brutal code review, round 2 (RVW22, 2026-10-22; see `docs/audit/2026-10-22-brutal-code-review.md`)
+
+All four are automated-green already (§3 of the audit); each stands as the real-device / real-hub check the fix still owes. `F1`/`F2` are server-side, so they are cheapest against the test hub with `curl` plus one phone; `F3`/`F4` need the app.
+
+### RVW22-01 — Quarantined mailbox rows no longer lock a device out (F1, ADR-223)
+- **Setup:** the test hub, two enrolled devices (A and B), `MailboxQueue` reachable (B offline). Follow `SRVHUB-02` to create quarantined rows for B (stop the hub, replace `data.key`, start it, send B a few messages from A).
+- **Steps:** send B messages from A until B's deliverable count is near 1,000 (script `curl`, 40-byte bodies), then bring B online and send one more.
+- **Pass:** `SELECT COUNT(*) FROM mailbox_envelopes WHERE undeliverable_reason IS NOT NULL` is non-zero, the hub never answers `ERR_QUOTA_EXCEEDED` for B while its unreadable rows are the reason it was full, and B receives the last message on reconnect. Before ADR-223 B was refused for the whole 7-day TTL. **Source:** F1, ADR-223. **Status:** TODO (unit tests: `MailboxQuarantineTest`, mutation-checked; the 1,000-row rehearsal on a real hub is owed)
+
+### RVW22-02 — A colleague whose name contains `|` pages once (F2)
+- **Setup:** a hub with 3+ members, one of them named `Alice | Ops`; the phone's People list ordered by name so the bar-named person is on page 2 (set `limit=2` in the request, or use an org large enough to page on the phone).
+- **Steps:** walk the People list to the end on the phone; in parallel `GET /api/v1/directory/people?limit=2` with `curl` and follow `nextCursor` to `null`.
+- **Pass:** `Alice | Ops` appears exactly once in the walk, the walk terminates (`nextCursor` becomes `null`), no request answers `400`, and the phone's list does not re-fetch the same page for ever. A cursor issued by the previous build is still accepted once (legacy parse). **Source:** F2. **Status:** TODO (unit tests: `DirectoryPrivacyTest`, mutation-checked; the phone walk and a real hub upgrade with a cursor in flight are owed)
+
+### RVW22-03 — A long-lived certificate renews instead of expiring (F4)
+- **Setup:** a hub started with `FLASH_DEVICE_CERT_VALIDITY_DAYS=30` (30-day certificate: early window 3 days, grace 3 days by `RenewalPolicy`), one enrolled phone.
+- **Steps:** (a) set the phone's clock forward so the certificate has 2 days left, open the app and watch the log; (b) set the clock to 2 days past `validTo` (still inside the 3-day grace), open the app again.
+- **Pass:** in (a) the app renews by itself with no user action and the serial increments; in (b) it renews after a successful contact instead of showing `CERTIFICATE_INVALID`, and no "outside renewal window" line appears in the log before the request. With the old hardcoded 24 h/72 h windows (b) failed locally without touching the network. **Source:** F4. **Status:** TODO (unit tests: `CertChainTest`, `HubSessionTest`, mutation-checked; the clock-shifted device run against a real hub is owed. Note: the leaf may never outlive its delegation, so the hub's delegation must cover lifetime + grace — see the audit's fold in §F4)
+
+### RVW22-04 — Abrupt drops do not starve the buffer pool (F3)
+- **Setup:** a low-RAM phone (BelFone SCP810 or similar) receiving a 100 MB file from the desktop over Wi-Fi.
+- **Steps:** during the transfer, force 10 drops mid-frame (turn the peer's Wi-Fi off, or kill the desktop app) with a reconnect between each; then transfer another 100 MB.
+- **Pass:** throughput on the second transfer is within measurement noise of the first, the log shows no allocation/GC spike after the drops, and no `OutOfMemoryError`. Before the fix eight drops emptied the 16 KiB bucket for the life of the process. **Source:** F3. **Status:** TODO (unit test: `WebSocketCodecTest` pool-identity test, mutation-checked; the device measurement is owed — see the `MEAS-` series rule in §5)
+

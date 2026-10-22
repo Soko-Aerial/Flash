@@ -1,5 +1,27 @@
 # Current Handoff
 
+## 2026-10-22 (brutal code review, round 2) - F1..F8 fixed on `dev`, unit-tested and mutation-checked, NOT device-verified, NOT deployed
+
+- **Read:** `docs/audit/2026-10-22-brutal-code-review.md` (status block at the top, per-finding record, mutation table). Five real defects fixed (F1
+  quarantined rows locking a device out of its mailbox, F2 a `|` in a display name breaking people paging, F3 a leaked pooled buffer on a cut frame,
+  F4 the client's hardcoded 24 h/72 h renewal window, F5 the cached bearer cleared outside the lock), one latent contract fixed (F6 the cached stats
+  reaching SQLite), one nit needed nothing (F7), and **F8's diagnosis was wrong**: the review blamed Windows ephemeral-port reuse, but
+  `WsTransferServer.start()` ignored the requested port and always bound 45822, so the redial test's "different port" assertion could never hold on a
+  free 45822.
+- **Behaviour changes to know:** a quarantined mailbox row no longer counts against the per-device quota (ADR-223) — disk totals still do; a
+  long-lived device certificate is now renewed instead of being declared invalid; the WebSocket host honours an explicit `listenPort` (production
+  passes `0`, unchanged).
+- **Verified:** `:server:test` 650, `:core:hub-protocol` 124/118, `:core:enterprise` 268/159, `:core:network` 406/313 (jvm/androidHost), all 0
+  failures; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green; six mutation checks (F5 has none by design, said plainly in the audit).
+- **Owed:** `RVW22-01..04` in `docs/testing/TEST-BACKLOG.md`. The test hub still runs the `6861ac61` build, so **redeploy before running RVW22-01/02**
+  (the F1/F2 fixes are server-side and not live there).
+- **Found on the way:** `CachedMailboxStatsTest` asserted an async refresh counter the instant its reader thread returned (flaked once in a full run);
+  de-raced. **ERROR-741**.
+- **Open owner call:** should `LanProbeServer`/`DefaultFlashNetwork.start(listenPort)` honour an explicit port the same way? Same latent pattern, no
+  test depends on it, deliberately not touched.
+- **Numbering caution:** the 2026-10-21 review (`docs/audit/2026-10-21-brutal-code-review.md`) uses F1..F10 for different findings. Comments written
+  by this round say "2026-10-22 review Fn".
+
 ## 2026-10-22 (DEPLOYED) - server internals audit plan is running on the `myserver` test hub
 
 - **Deployed** the build of `6861ac61` (all 10 plan items) to `~/flash-hub` on `myserver`; `/health` ok, container healthy, no migration errors. Rollback: `app.prev` (code) and `data.bak` (data) in `~/flash-hub`. Still NOT pushed and NOT device-verified.
