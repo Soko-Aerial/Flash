@@ -578,14 +578,23 @@ fun FlashConversationScreen(
         }
     }
 
+    val currentPeerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
+        state.header.typingMemberNames.firstOrNull()
+            ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null
+    } else null
+
     fun jumpToMessage(targetId: String) {
         val targetIndex = localMessages.asReversed().indexOfFirst { it.id == targetId }
-        if (targetIndex >= 0) {
+        val scrollIndex = FlashChatScrollMath.targetScrollIndex(
+            messageIndexInReversedList = targetIndex,
+            hasTypingBubble = FlashChatScrollMath.hasTypingBubble(currentPeerTypingName),
+        )
+        if (scrollIndex >= 0) {
             coroutineScope.launch {
                 if (motion.reduceMotion) {
-                    listState.scrollToItem(targetIndex)
+                    listState.scrollToItem(scrollIndex)
                 } else {
-                    listState.animateScrollToItem(targetIndex)
+                    listState.animateScrollToItem(scrollIndex)
                 }
                 highlightedMessageId = targetId
             }
@@ -1080,10 +1089,7 @@ fun FlashConversationScreen(
                 onRetryMessage = onRetryMessage,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
-                peerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
-                    state.header.typingMemberNames.firstOrNull()
-                        ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null
-                } else null,
+                peerTypingName = currentPeerTypingName,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
                 searchQuery = if (isSearchActive) searchQuery else null,
