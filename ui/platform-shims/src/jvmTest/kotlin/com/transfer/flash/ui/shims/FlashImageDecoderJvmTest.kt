@@ -219,4 +219,14 @@ class FlashImageDecoderJvmTest {
         val notVideo = File(tempDir, "fake.mp4").apply { writeText("not a real mp4") }
         assertNull(decode(notVideo.absolutePath, isVideo = true, memoize = false))
     }
+
+    @Test
+    fun `cache key differentiates still and video decodes of the same source`() {
+        val file = writePng("dual.png", 100, 100)
+        val still = assertNotNull(decode(file.absolutePath, isVideo = false, memoize = true))
+
+        // A video decode for the same source must not return the cached still bitmap.
+        val video = decode(file.absolutePath, isVideo = true, memoize = true)
+        assertNull(video)
+    }
 }

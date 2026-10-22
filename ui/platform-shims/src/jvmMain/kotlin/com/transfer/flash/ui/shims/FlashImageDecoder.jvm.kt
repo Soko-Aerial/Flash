@@ -54,7 +54,7 @@ internal object JvmImageDecoder : FlashImageDecoder {
         computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
     ): ImageBitmap? {
         if (source.isNullOrBlank()) return null
-        val key = "$source|$maxLongEdge|$lowColorDepth"
+        val key = "$source|$isVideo|$maxLongEdge|$lowColorDepth"
         if (memoize) {
             // `LinkedHashMap` is not thread-safe and this runs on `Dispatchers.IO`, so both the
             // access-order reshuffle on read and the insert have to be guarded.
