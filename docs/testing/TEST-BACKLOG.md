@@ -6121,3 +6121,11 @@ All four are automated-green already (§3 of the audit); each stands as the real
 - **Pass:** the console renders (no blank page); the browser console shows no `ERR_BLOCKED_BY_CLIENT` for any `admin/ui/js/*` file; the Devices and Security pages show the small symmetric key picture.
 - **Source:** ERROR-746, `server/admin-ui-tests/asset-names.test.mjs`.
 - **Status:** TODO
+
+
+### CONSOLE-KEY-01 — Replacing the browser key with a recovery code (ERROR-747)
+- **Setup:** the test hub redeployed with this build; an administrator who already has a step-up key (made in another browser) and still has a recovery code.
+- **Steps:** in a browser with no key, sign in and try an action that needs confirmation (add an administrator to a department). In the "Set up confirmation on this browser" dialog enter the authenticator code and submit; then paste a full recovery code (`ABCDE-FGHJK`).
+- **Pass:** the first submit turns the box into "Recovery code" with the "needs a recovery code" message (no 8-character cut); the pasted code stays whole, the browser is registered, the action then asks for confirmation normally; Security shows one fewer recovery code. The link "Use a recovery code instead" / "Use the authenticator app instead" switches the box both ways.
+- **Source:** ERROR-747.
+- **Status:** TODO

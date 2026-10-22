@@ -1,5 +1,33 @@
 # Error Log
 
+## ERROR-747 — Console: "Set up confirmation on this browser" cut a recovery code to 8 characters and never offered a recovery-code mode
+
+### Date
+2026-10-22
+
+### Area
+Hub admin console, step-up key enrolment (`admin-ui/js/ui/keydialog.js`, ADR-125, REV-11)
+
+### Symptoms
+Adding an administrator to a department opened the key dialog. The authenticator code was refused with "This account already confirms with a key. To replace it, enter one of your recovery codes", and pasting a recovery code into the box was cut off at 8 characters.
+
+### Root cause
+Two parts. (1) The account already had a step-up key (registered from another browser), and the hub deliberately refuses an authenticator code to replace an existing key (`signerChangeAllowed`, answer `403 ERR_SIGNER_EXISTS`): a stolen session plus a phished code must not swap in the attacker's key. That refusal is correct. (2) The dialog had one input with `maxlength: 8` for both kinds of code and only told the user afterwards, in an error line, to use a recovery code. A recovery code is 11 characters (`ABCDE-FGHJK`, 10 letters/digits plus a dash), so it could never be typed or pasted whole.
+
+### Working fix
+`keydialog.js`: the box takes 32 characters; a link switches it between the authenticator code and the recovery code (same wording and strings as the sign-in page); a `ERR_SIGNER_EXISTS` answer switches it to recovery mode by itself; the dialog opens in recovery mode for `key-mismatch`; validation is per mode (6 digits, or 10+ letters/digits/dashes). The hub is unchanged.
+
+### Verification
+`node --test server/admin-ui-tests/*.test.mjs` 83/83 (no test drives the dialog; it is DOM code). NOT checked in a browser: `CONSOLE-KEY-01` in the test backlog. A recovery code is single use: replacing the key spends one of the 10.
+
+### Related files
+- `server/src/main/resources/admin-ui/js/ui/keydialog.js`, `strings/en.js`
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminApiDirectory.kt` (`signerChangeAllowed`)
+
+### Status
+RESOLVED in code; OPEN until `CONSOLE-KEY-01` passes after a redeploy.
+
+
 ## ERROR-746 — The hub console was a blank page: a content blocker blocked `fingerprint.js`
 
 ### Date

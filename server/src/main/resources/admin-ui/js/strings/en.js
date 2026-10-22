@@ -145,6 +145,7 @@ export default {
   'keydialog.code': 'Code from your authenticator app',
   'keydialog.code.hint': 'The 6-digit code that is showing now.',
   'keydialog.code.invalid': 'Enter the 6-digit code.',
+  'keydialog.code.invalidRecovery': 'Enter the recovery code exactly as it was shown, for example ABCDE-FGHJK.',
   'keydialog.code.refused': 'The code is not right. Wait for the next code and try again.',
   'keydialog.code.needRecovery': 'This account already confirms with a key. To replace it, enter one of your recovery codes (not the authenticator code).',
   'keydialog.label': 'Name for this browser',

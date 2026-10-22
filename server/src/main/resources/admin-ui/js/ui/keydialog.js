@@ -19,12 +19,27 @@ export function askToEnrol(reason, stepUp) {
       'key-mismatch': t('keydialog.intro.mismatch'),
       'no-server-key': t('keydialog.intro.noServerKey'),
     }[reason] || t('keydialog.intro.noKey');
-    const code = textInput({ inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 8, className: 'input-code' });
+    // A recovery code is 11 characters (`ABCDE-FGHJK`), so the box must hold more than a 6-digit authenticator code (ERROR-747).
+    let recovery = reason === 'key-mismatch';
+    const code = textInput({ inputmode: recovery ? 'text' : 'numeric', autocomplete: 'one-time-code', maxlength: 32, className: 'input-code' });
     code.setAttribute('data-autofocus', '');
-    const codeField = field({ label: t('keydialog.code'), control: code, hint: t('keydialog.code.hint'), required: true });
+    const codeField = field({ label: t(recovery ? 'login.recoveryCode' : 'keydialog.code'), control: code, hint: t(recovery ? 'login.recoveryCode.hint' : 'keydialog.code.hint'), required: true });
+    const toggle = h('button', { class: 'link-btn plain', type: 'button', on: { click: () => setRecovery(!recovery) } });
+
+    /** Switches the one code box between the authenticator code and a recovery code (an enrolled account needs the latter to replace its key). */
+    function setRecovery(on) {
+      recovery = on;
+      codeField.el.querySelector('label').firstChild.textContent = t(on ? 'login.recoveryCode' : 'keydialog.code');
+      codeField.el.querySelector('.hint').textContent = t(on ? 'login.recoveryCode.hint' : 'keydialog.code.hint');
+      code.inputMode = on ? 'text' : 'numeric';
+      toggle.textContent = t(on ? 'login.useAuthenticator' : 'login.useRecovery');
+      code.value = '';
+      codeField.clearError();
+    }
+    toggle.textContent = t(recovery ? 'login.useAuthenticator' : 'login.useRecovery');
     const label = textInput({ value: guessLabel(), maxlength: 64 });
     const labelField = field({ label: t('keydialog.label'), control: label, hint: t('keydialog.label.hint') });
-    const form = h('form', { class: 'stack', novalidate: true }, codeField.el, labelField.el);
+    const form = h('form', { class: 'stack', novalidate: true }, codeField.el, h('div', { class: 'auth-links' }, toggle), labelField.el);
     const submit = button({ label: t('keydialog.submit'), variant: 'primary', type: 'submit' });
 
     const dlg = openDialog({
@@ -50,8 +65,9 @@ export function askToEnrol(reason, stepUp) {
       ev.preventDefault();
       codeField.clearError();
       const value = code.value.replace(/\s+/g, '');
-      if (!/^\d{6}$/.test(value) && !/^[A-Za-z0-9-]{8,}$/.test(value)) {
-        codeField.setError(t('keydialog.code.invalid'));
+      const valid = recovery ? /^[A-Za-z0-9-]{10,}$/.test(value) : /^\d{6}$/.test(value);
+      if (!valid) {
+        codeField.setError(t(recovery ? 'keydialog.code.invalidRecovery' : 'keydialog.code.invalid'));
         code.focus();
         return;
       }
@@ -62,7 +78,11 @@ export function askToEnrol(reason, stepUp) {
           dlg.close(true);
         } catch (e) {
           if (e instanceof StepUpError) codeField.setError(t('stepup.approval.' + (e.reason === 'approval-timeout' ? 'timeout' : e.reason === 'cancelled' ? 'cancelled' : e.reason === 'approver-unavailable' ? 'unavailable' : 'none')));
-          else if (e instanceof ApiError && e.code === 'ERR_SIGNER_EXISTS') codeField.setError(t('keydialog.code.needRecovery'));
+          else if (e instanceof ApiError && e.code === 'ERR_SIGNER_EXISTS') {
+            // The account already has a key (made in another browser): the box turns into the recovery-code box instead of asking again.
+            setRecovery(true);
+            codeField.setError(t('keydialog.code.needRecovery'));
+          }
           else if (e instanceof ApiError && e.status === 403) codeField.setError(t('keydialog.code.refused'));
           else if (e instanceof ApiError && e.status === 429) codeField.setError(t('error.rate.wait', { seconds: e.retryAfter || 30 }));
           else codeField.setError((e && e.message) || t('error.generic'));
