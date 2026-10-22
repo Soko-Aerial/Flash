@@ -11,10 +11,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,6 +33,7 @@ import com.transfer.flash.ui.theme.FlashHaptic
 import com.transfer.flash.ui.theme.FlashSpacing
 import com.transfer.flash.ui.theme.FlashTheme
 import com.transfer.flash.ui.theme.rememberFlashHaptics
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.ln
@@ -61,8 +63,9 @@ fun FlashSwipeToReplyContainer(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
-    val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
+    // pointerInput(enabled) keeps the lambdas it first saw, so the reply must be read through this (RVW22 F31).
+    val currentOnReply by rememberUpdatedState(onReply)
 
     val thresholdPx = with(density) { thresholdDp.toPx() }
     val dampingConstantPx = with(density) { 24.dp.toPx() }
@@ -75,6 +78,32 @@ fun FlashSwipeToReplyContainer(
     // (it also keeps the badge composed while the spring settles) so an idle bubble carries no badge at all.
     var revealed by remember { mutableStateOf(false) }
 
+    // Drag positions go through a conflated channel to ONE collector instead of a new coroutine per touch event (a
+    // 120 Hz drag launched hundreds per swipe). `null` means "let go": it is queued behind the last position, so the
+    // settle can never run before a late snap and leave the bubble stuck off-centre.
+    val dragEvents = remember { Channel<Float?>(Channel.CONFLATED) }
+    val lastTarget = remember { FloatArray(1) }
+    val reduceMotion = motion.reduceMotion
+    LaunchedEffect(dragEvents, reduceMotion) {
+        for (event in dragEvents) {
+            if (event != null) {
+                offsetX.snapTo(event)
+            } else {
+                launch {
+                    if (reduceMotion) {
+                        offsetX.snapTo(0f)
+                    } else {
+                        offsetX.animateTo(
+                            targetValue = 0f,
+                            animationSpec = spring(dampingRatio = 0.65f, stiffness = 500f),
+                        )
+                    }
+                    revealed = false
+                }
+            }
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -82,36 +111,24 @@ fun FlashSwipeToReplyContainer(
                 detectHorizontalDragGestures(
                     onDragStart = {
                         hasTriggeredHaptic = false
+                        lastTarget[0] = offsetX.value
                         revealed = true
                     },
                     onDragEnd = {
-                        val reachedThreshold = abs(offsetX.value) >= thresholdPx
+                        val reachedThreshold = abs(lastTarget[0]) >= thresholdPx
                         if (reachedThreshold) {
-                            onReply()
+                            currentOnReply()
                         }
-                        coroutineScope.launch {
-                            if (motion.reduceMotion) {
-                                offsetX.snapTo(0f)
-                            } else {
-                                offsetX.animateTo(
-                                    targetValue = 0f,
-                                    animationSpec = spring(
-                                        dampingRatio = 0.65f,
-                                        stiffness = 500f,
-                                    ),
-                                )
-                            }
-                            revealed = false
-                        }
+                        lastTarget[0] = 0f
+                        dragEvents.trySend(null)
                     },
                     onDragCancel = {
-                        coroutineScope.launch {
-                            offsetX.animateTo(0f, spring())
-                            revealed = false
-                        }
+                        lastTarget[0] = 0f
+                        dragEvents.trySend(null)
                     },
                     onHorizontalDrag = { change, dragAmount ->
-                        val current = offsetX.value
+                        // The latest position this gesture asked for: offsetX itself lags behind the collector.
+                        val current = lastTarget[0]
                         val newRaw = current + dragAmount
 
                         // Only allow leftward swipe (negative translationX)
@@ -126,9 +143,8 @@ fun FlashSwipeToReplyContainer(
                                 -(thresholdPx + dampenedExtra).coerceAtMost(maxDragPx)
                             }
 
-                            coroutineScope.launch {
-                                offsetX.snapTo(dampened)
-                            }
+                            lastTarget[0] = dampened
+                            dragEvents.trySend(dampened)
 
                             if (abs(dampened) >= thresholdPx && !hasTriggeredHaptic) {
                                 haptics(FlashHaptic.Confirm)

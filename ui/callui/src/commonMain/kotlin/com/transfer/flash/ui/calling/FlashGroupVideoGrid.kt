@@ -24,7 +24,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.addOutline
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -77,7 +81,7 @@ internal fun FlashGroupVideoSurfaces(
     // ADR-102: a presentation is the stage of the full layout (first tile, large) and the main tile of the compact one.
     val presenter = groupPresenterPeer(state)
     val ordered = if (main == null && presenter != null) present.sortedByDescending { it.peerId == presenter } else present
-    val tiles = if (main != null) present.filter { it.peerId == main } else ordered
+    val tiles = if (main != null) mainVideoTiles(present, main) else ordered
     val rounded = tiles.size > 1
     val stage = main == null && presenter != null && tiles.size > 1
 
@@ -195,7 +199,9 @@ private fun FlashGroupVideoTile(
     }
     val isSpeaking = participant.isSpeaking
     val speakerPulse = rememberCallPulseScale(isSpeaking)
-    val speakerRingAlpha = FlashCallRippleMath.speakerBorderAlpha(isSpeaking, (speakerPulse.value - 1f) / 0.08f)
+    // The ring's alpha follows the 60 Hz pulse, so it is read in the draw phase only: reading it here recomposed
+    // the whole tile for as long as someone was speaking (RVW22 F70).
+    val speakerRingColor = colors.statusOnline
 
     val interaction = remember { MutableInteractionSource() }
     Box(
@@ -203,7 +209,15 @@ private fun FlashGroupVideoTile(
             .clip(shape)
             .then(
                 if (isSpeaking) {
-                    Modifier.border(2.5.dp, colors.statusOnline.copy(alpha = speakerRingAlpha), shape)
+                    Modifier.drawWithCache {
+                        val ring = Path().apply { addOutline(shape.createOutline(size, layoutDirection, this@drawWithCache)) }
+                        onDrawWithContent {
+                            drawContent()
+                            val alpha = FlashCallRippleMath.speakerBorderAlpha(true, (speakerPulse.value - 1f) / 0.08f)
+                            // The stroke is centred on the edge and the clip hides its outer half: 5 dp draws 2.5 dp.
+                            drawPath(ring, speakerRingColor.copy(alpha = alpha), style = Stroke(width = 5.dp.toPx()))
+                        }
+                    }
                 } else Modifier,
             )
             .then(
@@ -371,6 +385,13 @@ internal fun groupVideoMainPeer(state: FlashCallUiState): String? {
     state.videoMainPeerId?.let { id -> if (present.any { it.peerId == id }) return id }
     return (present.firstOrNull { it.video.hasPicture() } ?: present.firstOrNull())?.peerId
 }
+
+/**
+ * The compact layout's single tile: exactly one entry for [main], even when the participant list briefly holds the
+ * same peer twice during reconnect churn (`single()` threw there and ended the call screen; RVW22 F33).
+ */
+internal fun mainVideoTiles(present: List<FlashCallParticipantUi>, main: String): List<FlashCallParticipantUi> =
+    present.filter { it.peerId == main }.take(1)
 
 /** What a tap on [tapped] pins (UI-050c): the tapped participant, or null (follow the speaker) if it was pinned. */
 internal fun nextVideoFocus(state: FlashCallUiState, tapped: String): String? =

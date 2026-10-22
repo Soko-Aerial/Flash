@@ -1032,28 +1032,30 @@ fun FlashConversationScreen(
                     }
                 },
                 onFileClick = { _, file ->
-                    // A failed card advertises "Failed (Tap to retry)" and a Retry badge, so the
-                    // tap has to retry. Downloaded video files play in-app via FlashMediaViewer.
-                    if (file.transferStatus == FlashFileTransferStatus.Failed || file.transferStatus == FlashFileTransferStatus.Paused) {
-                        onResumeTransfer(file.id)
-                    } else if (file.mimeType.startsWith("video/") && file.localUri != null) {
-                        mediaViewerItems = listOf(
-                            FlashMediaViewerItem(
-                                image = FlashImageAttachmentUi(
-                                    id = file.id,
-                                    uri = file.localUri,
-                                    thumbUri = file.localUri,
-                                    mimeType = file.mimeType,
-                                    isVideo = true,
+                    // What a tap does is decided in flashFileTapAction (failed -> retry, offer -> download,
+                    // downloaded video -> in-app viewer, downloaded file -> external viewer).
+                    when (flashFileTapAction(file)) {
+                        FlashFileTapAction.Resume -> onResumeTransfer(file.id)
+                        FlashFileTapAction.Accept -> onAcceptOffer(file.id)
+                        FlashFileTapAction.PlayVideo -> {
+                            mediaViewerItems = listOf(
+                                FlashMediaViewerItem(
+                                    image = FlashImageAttachmentUi(
+                                        id = file.id,
+                                        uri = file.localUri,
+                                        thumbUri = file.localUri,
+                                        mimeType = file.mimeType,
+                                        isVideo = true,
+                                    ),
+                                    senderName = file.name,
+                                    timeLabel = "",
                                 ),
-                                senderName = file.name,
-                                timeLabel = "",
-                            ),
-                        )
-                        mediaViewerStartIndex = 0
-                        mediaViewerVisible = true
-                    } else {
-                        onOpenAttachment(file.localUri, file.mimeType, file.name)
+                            )
+                            mediaViewerStartIndex = 0
+                            mediaViewerVisible = true
+                        }
+                        FlashFileTapAction.Open -> onOpenAttachment(file.localUri, file.mimeType, file.name)
+                        FlashFileTapAction.Nothing -> Unit
                     }
                 },
                 onAcceptOffer = { _, file ->
