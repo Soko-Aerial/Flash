@@ -83,7 +83,9 @@ public object E2eFrameCodec {
         require(sessionKey.size == FlashCrypto.SESSION_KEY_SIZE_BYTES) {
             "Session key must be ${FlashCrypto.SESSION_KEY_SIZE_BYTES} bytes (AES-256), was ${sessionKey.size}"
         }
-        require(frame.size > NONCE_BYTES + TAG_BITS / Byte.SIZE_BITS) {
+        // `>=`, not `>`: a valid frame carrying an empty plaintext is exactly nonce + tag (12 + 16 = 28
+        // bytes), and GCM authenticates it like any other. Anything smaller cannot even hold the tag.
+        require(frame.size >= NONCE_BYTES + TAG_BITS / Byte.SIZE_BITS) {
             "E2E frame too short (${frame.size} bytes) to contain nonce + tag"
         }
         val plaintext = aesGcmOpen(
