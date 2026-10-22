@@ -1,5 +1,42 @@
 # Error Log
 
+## ERROR-749 — A finished download could stay "Downloading"/"Verifying" in Transfers and in the notification
+
+### Date
+2026-10-22
+
+### Area
+Transfers / notifications: 1:1 receive (`DiscoveryEngineHolder` Completed branch, `RealFlashTransferRepository.onIncomingStarted`) and group-file swarm (`SwarmDriver` Finalize)
+
+### Symptoms
+Owner: "some downloads finish but still show in Transfers as not finished and also in the notification" (1:1 and group sending). Not reproduced; three code paths that can produce exactly this were found by reading the code.
+
+### Root cause (by reading the code; NOT reproduced on a device)
+The notification service (`FlashBackgroundService.handleTransfersChanged`) follows the row's state, so a row that never reaches Completed keeps its progress notification. Three ways a row never got there:
+1. **Android 1:1 receive:** `handleInboundBinary` called `handle.flush()` / `handle.close()` on the sink with no guard. A sink that throws there (revoked folder, full disk, card removed, SAF stream) escaped the function, ended that session's binary-intake loop and skipped `onIncomingFileAssembled`: the file was complete, the row stayed Downloading at 100%, the sender never got COMPLETE. The shared router used on desktop (`FlashInboundRouter.handleCompleted`) already guarded this; the phone host has its own copy that did not.
+2. **Group file (swarm) receive:** the driver's `Finalize` coroutine called `storage.finalize(...)` without a catch. `finalize` can throw (`destinationDir.canonicalFile`, a non-"already exists" `createFile` error, the path-containment `require`), and then no `FinalizeResult` was ever sent, so the engine left the row in VERIFYING for ever.
+3. **Revival:** `RealFlashTransferRepository.onIncomingStarted` turned every existing row except Cancelled back into Transferring, so a Completed row hit by a second sink open went back to "Downloading" with nothing left to complete it, and the service re-posted its progress notification. (The router's own `alreadyCompleted` guard covers the offer path; this closes the rest.)
+
+### Not changed (owner decision needed)
+A **group file's origin (sender) row** is never Completed by design: the origin stays ACTIVE ("Sending, 100%, You can go offline now") until the retention period ends, then turns Failed/Expired. It reads as "not finished" even after every member has the file. The engine only knows connected members and those it saw finish, not the whole roster, so it cannot say "delivered to everyone" without a roster input. Recommendation is in `logs/progress.md`.
+
+### Working fix
+- `onIncomingStarted` never downgrades Completed (as it never did Cancelled).
+- Android Completed branch: flush and close are both attempted, a failure is remembered, and then only a whole-file digest match of the file on disk keeps the transfer alive (otherwise Failed + `COMPLETE verified=false`, as on desktop). The row always reaches a terminal state.
+- `SwarmDriver` Finalize catches a throwing `storage.finalize` and sends `FinalizeResult(ok = false, storageError = true)`; the engine then fails the row with `STORAGE_FAILED` (worded as a storage problem, not "damaged") instead of leaving it in Verifying.
+
+### Verification
+Unit: `RealFlashTransferRepositoryTest` (Completed stays Completed after a second `onIncomingStarted` and a late progress tick) and `SwarmEngineStepTest` step 4i3 (`storageError` fails the row as STORAGE_FAILED); both mutation-checked (guards removed, both fail; restored). `:core:swarm:jvmTest`, `:core:transfer:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The Android Completed branch and the driver's catch have no unit test (inline in the app module / driver needs a full receive flow); they are compile-verified only.
+
+### Related files
+- `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (`ReceiveEvent.Completed`)
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/RealFlashTransferRepository.kt` (`onIncomingStarted`)
+- `core/swarm/src/commonMain/kotlin/com/transfer/flash/core/swarm/driver/SwarmDriver.kt`, `.../engine/SwarmEvent.kt`, `.../engine/TransferScheduler.kt`
+- `core/swarm/src/commonTest/.../SwarmEngineStepTest.kt`, `core/transfer/src/androidHostTest/.../RealFlashTransferRepositoryTest.kt`
+
+### Status
+OPEN: fixed in code, unit-tested in part; stays OPEN until `FINISH-01` passes on a phone and the owner confirms the symptom is gone (the exact trigger of their report is not proven).
+
 ## ERROR-748 — A desktop screen share on the phone was cropped (about half of it missing) instead of fitted
 
 ### Date

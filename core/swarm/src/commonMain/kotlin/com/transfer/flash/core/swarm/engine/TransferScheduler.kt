@@ -250,7 +250,7 @@ internal class TransferScheduler(
                 onStateChanged(content)
             } else {
                 content.state = SwarmLifecycleState.FAILED
-                content.failReason = SwarmFailReason.DAMAGED.reasonCode
+                content.failReason = if (e.storageError) SwarmFailReason.STORAGE_FAILED.reasonCode else SwarmFailReason.DAMAGED.reasonCode
                 onStateChanged(content)
                 commands.add(SwarmCommand.PersistRecord(content.toRecord(e.nowMs)))
             }

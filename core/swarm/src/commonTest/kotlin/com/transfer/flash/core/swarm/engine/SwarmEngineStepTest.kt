@@ -330,6 +330,47 @@ class SwarmEngineStepTest {
     }
 
     @Test
+    fun `step 4i3 - a finalize the storage layer could not run fails the row as a storage problem, not as damage`() {
+        val (manifest, _) = createManifest()
+        val engine = SwarmEngine(
+            config = SwarmConfig(autoAcceptIncoming = true),
+            localDeviceId = "rxNode",
+            seed = 42L,
+        )
+        engine.handle(SwarmEvent.PeerUp("peerA", setOf("sw1"), 1000L))
+        engine.handle(
+            SwarmEvent.Announced(
+                groupId = "g1",
+                messageId = "m1",
+                originId = "origin",
+                originKey = "keyOrig",
+                root = manifest.root,
+                totalSize = manifest.totalSize,
+                pieceSize = manifest.pieceSize,
+                fileName = "test.bin",
+                mime = "application/octet-stream",
+                sentAtMs = 1000L,
+                expiresAtMs = 10_000_000L,
+                isOrigin = false,
+                nowMs = 1000L,
+            )
+        )
+        engine.handle(SwarmEvent.ManifestComplete("peerA", "g1", manifest.root, manifest, true, 1000L))
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, 0, 1000L))
+        engine.handle(SwarmEvent.PieceStored("g1", manifest.root, 1, 1050L))
+
+        val failCmds = engine.handle(
+            SwarmEvent.FinalizeResult("g1", manifest.root, ok = false, storageError = true, nowMs = 1100L)
+        )
+        val snap = engine.snapshot().contents[Pair("g1", manifest.root)]
+        assertNotNull(snap)
+        assertEquals(SwarmLifecycleState.FAILED, snap.state, "a row waiting in VERIFYING must never be left there")
+        val persistCmd = failCmds.filterIsInstance<SwarmCommand.PersistRecord>().firstOrNull()
+        assertNotNull(persistCmd)
+        assertEquals(SwarmFailReason.STORAGE_FAILED.reasonCode, persistCmd.record.failReason)
+    }
+
+    @Test
     fun `step 4j - origin local cancel signs tombstone and broadcasts CANCEL`() {
         val (manifest, _) = createManifest()
         val engine = SwarmEngine(

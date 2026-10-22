@@ -1,5 +1,27 @@
 # Progress Log
 
+## 2026-10-22 (latest) - Finished downloads that stayed "not finished" in Transfers and the notification (ERROR-749)
+
+### Worked on
+Owner: some downloads finish but their Transfers row and notification still say not finished; check group file sending too; and does rotation work.
+
+### Changed
+- `onIncomingStarted` no longer turns a Completed row back into Transferring.
+- Android `DiscoveryEngineHolder` Completed branch: sink flush/close failures no longer escape (they ended the session's intake and skipped completion); a failure is remembered and only a whole-file digest match keeps the transfer alive, as on desktop.
+- `SwarmDriver` Finalize catches a throwing `storage.finalize`; new `FinalizeResult.storageError` fails the row with `STORAGE_FAILED` instead of leaving it in Verifying for ever.
+
+### Verification
+Two new unit tests, both mutation-checked; `:core:swarm:jvmTest`, `:core:transfer:testAndroidHostTest`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. The exact trigger of the owner's report is NOT proven (found by reading code); the Android branch and the driver catch are compile-verified only. Device check `FINISH-01`.
+
+### Not changed - owner decision
+A group file's **sender** row is Active ("Sending 100%, you can go offline now") until retention ends by design, so it keeps an ongoing notification after everyone has the file. The swarm engine knows connected and finished members, not the whole roster, so "delivered to everyone" needs a roster input. Recommendation: when the origin can go offline and every recipient the engine lists has the whole file, show the row as Completed ("Sent to N") and swap the ongoing notification for a finished one; flip back only if a new member appears.
+
+### Rotation (answer, not verified)
+The activity handles `configChanges` itself, nothing locks the orientation, and the video surface re-measures on rotation (ERROR-748): a 16:9 share shows whole with bars in both orientations; the camera fills the box when picture and box share an orientation. Not device-tested (`SHARE-FIT-01`).
+
+### Next AI
+Read ERROR-749; ask the owner for the origin-row decision before touching `SwarmDriver.updateTransferRow`.
+
 ## 2026-10-21 (latest) - Owner answered the five audit questions; recorded as ADR-222 (docs only, NOT implemented)
 
 ### Worked on
