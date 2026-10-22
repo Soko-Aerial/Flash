@@ -654,7 +654,9 @@ public class RealFlashChatRepository(
                         state = "DELIVERED",
                     ),
                 )
-                messageDao.updateStatus(messageId, "DELIVERED")
+                // Same guard as the LAN/hub receipt (F34 of the 2026-10-22 review): a delayed radio ACK
+                // must not walk an acknowledged row back to DELIVERED.
+                messageDao.updateStatusIfUnacknowledged(messageId, "DELIVERED")
                 outboxDao.delete(messageId)
             },
             onMessageFailed = { messageId ->
@@ -6020,7 +6022,11 @@ public class RealFlashChatRepository(
                         state = "DELIVERED",
                     ),
                 )
-                messageDao.updateStatus(frame.messageId, "DELIVERED")
+                // Guarded, never unconditional: a `ReadReceipt` (which this peer may have sent for the
+                // same message just before, or a later one that overtook this frame) sets READ, and an
+                // unconditional write would walk the bubble's ticks backwards to DELIVERED. ERROR-031's
+                // guard also allows FAILED -> DELIVERED, which is right: the peer proved it has it.
+                messageDao.updateStatusIfUnacknowledged(frame.messageId, "DELIVERED")
                 // ERROR-031: this is the outbox row's commit point. The drain keeps the row alive
                 // through a successful socket write precisely so that a frame the kernel accepted
                 // but the peer never got is resent; the receipt is the only proof the peer actually
