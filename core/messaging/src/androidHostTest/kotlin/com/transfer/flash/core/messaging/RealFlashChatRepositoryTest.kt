@@ -360,6 +360,37 @@ class RealFlashChatRepositoryTest {
             receipts.count { it.messageId == messageId }
     }
 
+    /**
+     * Minimal radio port for the receipt path of F34: only [receiptFlow] is driven; the send/inbound sides
+     * are inert so a test can hand the repository an ACK without a radio.
+     */
+    private class FakeRadioOutboxPort : com.transfer.flash.core.messaging.radio.RadioOutboxPort {
+        val receiptFlow =
+            kotlinx.coroutines.flow.MutableSharedFlow<com.transfer.flash.core.messaging.radio.RadioDeliveryReceipt>(replay = 16)
+
+        override val isGatewayEnabled: Boolean = true
+        override val isConnected: Boolean = true
+        override val connectionStatus: MutableStateFlow<com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus> =
+            MutableStateFlow(com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus.CONNECTED)
+
+        override fun isRadioReachable(recipientDeviceId: String): Boolean = true
+
+        override suspend fun sendTextMessage(
+            recipientDeviceId: String,
+            messageId: String,
+            text: String,
+            sentAt: Long,
+            emergency: Boolean,
+        ): com.transfer.flash.core.messaging.radio.RadioSendResult =
+            com.transfer.flash.core.messaging.radio.RadioSendResult.SentWaitingAck
+
+        override val inboundMessages: Flow<com.transfer.flash.core.messaging.radio.RadioInboundMessage> =
+            kotlinx.coroutines.flow.MutableSharedFlow()
+
+        override val deliveryReceipts: Flow<com.transfer.flash.core.messaging.radio.RadioDeliveryReceipt> =
+            receiptFlow
+    }
+
     private class FakeDraftDao : DraftDao {
         val drafts = ConcurrentHashMap<String, DraftEntity>()
         val flow = MutableStateFlow<DraftEntity?>(null)
@@ -1477,6 +1508,138 @@ class RealFlashChatRepositoryTest {
         val settled = writes.get()
         kotlinx.coroutines.delay(1_500)
         assertEquals(settled, writes.get())
+    }
+
+    // ===================== Delivery status is monotonic (F34 of the 2026-10-22 review) =====================
+
+    /**
+     * A `DeliveryReceipt` is not the last word: the peer reads the message and sends `ReadReceipt`, and a
+     * late, duplicated or hub-side copy of the delivery receipt can still arrive afterwards (the same
+     * message can be acknowledged on two paths). The row must not walk back from READ to DELIVERED, which
+     * would flip the bubble's ticks from blue to grey on an already-read message.
+     */
+    @Test
+    fun `a delivery receipt arriving after a read receipt leaves the row READ`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            ioDispatcher = testDispatcher,
+        )
+        messageDao.insert(
+            msg("m-read", "peer-device-id", "already read").copy(senderId = "my-device-id", status = "READ"),
+        )
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-read",
+                attempts = 0,
+                nextAttemptAt = System.currentTimeMillis(),
+                payloadJson = "already read",
+                createdAt = System.currentTimeMillis(),
+            ),
+        )
+
+        repository.onInboundWireFrame(
+            MessageWireFrame.DeliveryReceipt(
+                messageId = "m-read",
+                conversationId = "peer-device-id",
+                memberId = "peer-device-id",
+                deliveredAt = System.currentTimeMillis(),
+            ),
+        )
+
+        assertEquals("READ", messageDao.messages["m-read"]!!.status)
+        // The receipt is still the outbox row's commit point: the row retires whatever the tick shows.
+        assertFalse(outboxDao.queue.containsKey("m-read"))
+    }
+
+    /**
+     * The guard excludes only the two acknowledged states, so a message the drain had given up on still
+     * becomes DELIVERED when the peer's receipt finally arrives (ERROR-031's own rule).
+     */
+    @Test
+    fun `a delivery receipt still turns a failed row into delivered`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            ioDispatcher = testDispatcher,
+        )
+        messageDao.insert(
+            msg("m-failed", "peer-device-id", "late answer").copy(senderId = "my-device-id", status = "FAILED"),
+        )
+
+        repository.onInboundWireFrame(
+            MessageWireFrame.DeliveryReceipt(
+                messageId = "m-failed",
+                conversationId = "peer-device-id",
+                memberId = "peer-device-id",
+                deliveredAt = System.currentTimeMillis(),
+            ),
+        )
+
+        assertEquals("DELIVERED", messageDao.messages["m-failed"]!!.status)
+    }
+
+    /**
+     * The radio path has its own receipt callback (the gateway's ACK, [RadioOutboxPort.deliveryReceipts]);
+     * it must use the same guarded write, or a later ACK rewrites an acknowledged row.
+     */
+    @Test
+    fun `a radio acknowledgement arriving after a read receipt leaves the row READ`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val receiptDao = FakeReceiptDao()
+        val port = FakeRadioOutboxPort()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = FakeOutboxDao(),
+            receiptDao = receiptDao,
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            radioPort = port,
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + testDispatcher,
+            ),
+            ioDispatcher = testDispatcher,
+        )
+        messageDao.insert(
+            msg("m-radio", "peer-device-id", "over the air").copy(senderId = "my-device-id", status = "READ"),
+        )
+
+        port.receiptFlow.emit(
+            com.transfer.flash.core.messaging.radio.RadioDeliveryReceipt(
+                messageId = "m-radio",
+                recipientDeviceId = "peer-device-id",
+                deliveredAtMs = System.currentTimeMillis(),
+            ),
+        )
+        // The bridge's collector runs on the repository scope; wait for the callback rather than guessing.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (receiptDao.receipts.isEmpty() && System.currentTimeMillis() < deadline) {
+            kotlinx.coroutines.delay(20)
+        }
+        assertEquals(1, receiptDao.receipts.size)
+        assertEquals("READ", messageDao.messages["m-radio"]!!.status)
+        repository.close()
     }
 
     @Test
