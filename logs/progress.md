@@ -18107,3 +18107,21 @@ Plan items 9 and 10.
 
 ### Next AI
 Item 9: tombstone hygiene (DIR-02, DIR-03).
+
+
+## 2026-10-21 - Server internals audit, step 9: tombstone hygiene (SRVHUB-06, SRVHUB-07)
+
+### Worked on
+Plan item 9 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (DIR-02, DIR-03).
+
+### Changed
+- Directory migration 4 (`entity_dept`, `entity_hidden` on `directory_tombstone`); the four tombstone sites record the department; `getSyncChanges` filters removals by the same visibility as rows and ignores stale tombstones; `registerMember` and `createDepartment` clear a tombstone when the entity returns; `OrgDirectorySync` applies removals before listed rows. Protocol note.
+
+### Verification
+`DirectoryTombstoneTest` (10), `DirectoryPrivacyTest`, `OrganizationDirectorySyncTest`, `OrgDirectorySyncTest` (31) green. Three mutations (visibility always true; clear and stale check disabled; client reverted) each failed the expected tests and were restored. NOT device-verified.
+
+### Remaining
+Plan item 10 (RLY-02, RLY-03, OPS-01, CLI-02, CLI-03, FL-01).
+
+### Next AI
+Item 10: start with CLI-02 (narrow bearer mutex plus `HttpTimeout`), then CLI-03 (bounded response reads).

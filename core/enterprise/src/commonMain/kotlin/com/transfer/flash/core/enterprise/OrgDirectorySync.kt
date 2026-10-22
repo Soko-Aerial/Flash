@@ -276,8 +276,20 @@ public class OrgDirectorySync(
                     offeredRosters.addAll(dto.groupRosters)
                     if (dto.rostersTruncated) rostersTruncated = true
 
+                    // Removals first, then what the page lists: an id that is both removed and present is present (DIR-03; an older
+                    // hub could send both for a device that was removed and enrolled again).
+                    for (deptId in dto.removedDepartmentIds) {
+                        accumulatedRemovedDeptIds.add(deptId)
+                        accumulatedDepartments.remove(deptId)
+                    }
+                    for (removedId in dto.removedDeviceIds) {
+                        accumulatedRemovedMemberIds.add(removedId)
+                        accumulatedMembers.remove(removedId)
+                    }
+
                     // Process departments
                     for (dept in dto.departments) {
+                        accumulatedRemovedDeptIds.remove(dept.id)
                         accumulatedDepartments[dept.id] = OrgDepartmentEntity(
                             id = dept.id,
                             name = dept.name,
@@ -285,10 +297,6 @@ public class OrgDirectorySync(
                             headDeviceIdsJson = HubRestCodec.encode(dept.headDeviceIds),
                             hidden = dept.hidden,
                         )
-                    }
-                    for (deptId in dto.removedDepartmentIds) {
-                        accumulatedRemovedDeptIds.add(deptId)
-                        accumulatedDepartments.remove(deptId)
                     }
 
                     // Process members
@@ -321,6 +329,7 @@ public class OrgDirectorySync(
 
 
                         pageVerifiedCount++
+                        accumulatedRemovedMemberIds.remove(member.deviceId)
                         val delegationSerial = matchingDelegation.serial
 
                         val spkiBytes = statement.subjectPublicKeyBytes
@@ -368,11 +377,6 @@ public class OrgDirectorySync(
                         recordFailure()
                         FlashProbe.emit("org.sync.fail", "reason" to "all_members_invalid")
                         return OrgSyncOutcome.ServerError(400, "All member statements on page failed verification")
-                    }
-
-                    for (removedId in dto.removedDeviceIds) {
-                        accumulatedRemovedMemberIds.add(removedId)
-                        accumulatedMembers.remove(removedId)
                     }
 
                     cursor = dto.nextCursor

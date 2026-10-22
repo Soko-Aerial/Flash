@@ -105,12 +105,21 @@ data class DepartmentMember(
 /** The sync cursor did not parse; the route answers 400 instead of restarting from the beginning. */
 class InvalidDirectoryCursorException : IllegalArgumentException("The directory sync cursor is not valid.")
 
-/** Tombstone tracking deletion of an entity for incremental directory sync. */
+/**
+ * Tombstone tracking deletion of an entity for incremental directory sync.
+ *
+ * [departmentId] and [departmentHidden] record, at deletion time, which department the entity belonged to (for a department
+ * tombstone: itself) and whether it was hidden, so a sync can keep the removal of a hidden department's member from outsiders
+ * after the department row or the member row is gone (DIR-02). A blank [departmentId] is a departmentless entity: visible to all.
+ * Rows written before directory migration 4 carry the defaults (blank, not hidden) and so behave as before.
+ */
 data class DirectoryTombstone(
     val entityType: String,
     val entityId: String,
     val deletedAtVersion: Long,
     val deletedAtMs: Long,
+    val departmentId: String = "",
+    val departmentHidden: Boolean = false,
 )
 
 /** Interface for signing [OrgMemberStatement]s when members are added or updated. */
@@ -328,15 +337,49 @@ class OrganizationDirectory(
         return currentVersion
     }
 
-    private fun recordTombstoneLocked(type: String, id: String, version: Long, nowMs: Long = clock()) {
+    private fun recordTombstoneLocked(
+        type: String,
+        id: String,
+        version: Long,
+        nowMs: Long = clock(),
+        departmentId: String = "",
+        departmentHidden: Boolean = false,
+    ) {
         persist { c ->
             c.update(
-                "INSERT INTO directory_tombstone(entity_type, entity_id, deleted_at_version, deleted_at_ms) " +
-                    "VALUES(?,?,?,?) ON CONFLICT(entity_type, entity_id) DO UPDATE SET deleted_at_version = excluded.deleted_at_version, deleted_at_ms = excluded.deleted_at_ms",
-                type, id, version, nowMs,
+                "INSERT INTO directory_tombstone(entity_type, entity_id, deleted_at_version, deleted_at_ms, entity_dept, entity_hidden) " +
+                    "VALUES(?,?,?,?,?,?) ON CONFLICT(entity_type, entity_id) DO UPDATE SET deleted_at_version = excluded.deleted_at_version, " +
+                    "deleted_at_ms = excluded.deleted_at_ms, entity_dept = excluded.entity_dept, entity_hidden = excluded.entity_hidden",
+                type, id, version, nowMs, departmentId, if (departmentHidden) 1 else 0,
             )
         }
-        tombstones[type to id] = DirectoryTombstone(type, id, version, nowMs)
+        tombstones[type to id] = DirectoryTombstone(type, id, version, nowMs, departmentId, departmentHidden)
+    }
+
+    /** Forgets the tombstone of an entity that exists again (DIR-03): a device or department that comes back is not deleted again by every peer. */
+    private fun clearTombstoneLocked(type: String, id: String) {
+        if (tombstones.remove(type to id) == null) return
+        persist { c -> c.update("DELETE FROM directory_tombstone WHERE entity_type = ? AND entity_id = ?", type, id) }
+    }
+
+    /** Whether the removal recorded by [t] may be told to [actor]: the same rule as the rows themselves (DIR-02). Org admins see all. */
+    private fun tombstoneVisibleTo(t: DirectoryTombstone, actor: DirectoryActor): Boolean {
+        if (actor.isOrgAdmin) return true
+        if (t.entityType == "member" && t.entityId == actor.deviceId) return true
+        val deptId = t.departmentId
+        if (deptId.isBlank()) return true
+        if (deptId == actor.departmentId) return true
+        val dept = departments[deptId]
+        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        // The department may be gone (a department tombstone itself): fall back to what it was when the entity was removed.
+        return !(dept?.hidden ?: t.departmentHidden)
+    }
+
+    /** A tombstone older than the entity's current row is stale: the entity came back after it was deleted (DIR-03). */
+    private fun tombstoneIsStale(t: DirectoryTombstone): Boolean = when (t.entityType) {
+        "member" -> (members[t.entityId]?.version ?: -1L) > t.deletedAtVersion
+        "department" -> (departments[t.entityId]?.version ?: -1L) > t.deletedAtVersion
+        else -> false
     }
 
     /**
@@ -441,6 +484,7 @@ class OrganizationDirectory(
             val deptWithVer = dept.copy(version = newVer)
             persist { c -> insertDepartment(c, deptWithVer) }
             departments[dept.id] = deptWithVer
+            clearTombstoneLocked("department", dept.id)
             deptWithVer
         }
     }
@@ -457,6 +501,7 @@ class OrganizationDirectory(
             val deptWithVer = dept.copy(version = newVer)
             persist { c -> insertDepartment(c, deptWithVer) }
             departments[dept.id] = deptWithVer
+            clearTombstoneLocked("department", dept.id)
             if (hidden) resetEpoch()
             deptWithVer
         }
@@ -532,7 +577,7 @@ class OrganizationDirectory(
                 throw DirectoryConflictException("Department '$id' still has groups or members")
             }
             val v = bumpVersionLocked()
-            recordTombstoneLocked("department", id, v)
+            recordTombstoneLocked("department", id, v, departmentId = id, departmentHidden = departments[id]?.hidden == true)
             persist { c -> c.update("DELETE FROM dir_departments WHERE id = ?", id) }
             departments.remove(id)
         }
@@ -792,6 +837,7 @@ class OrganizationDirectory(
             )
         }
         members[stored.deviceId] = stored
+        clearTombstoneLocked("member", stored.deviceId)
 
         if (statementSigner != null && !stored.subjectPublicKey.isNullOrBlank()) {
             val roleStr = when (stored.role) {
@@ -822,7 +868,7 @@ class OrganizationDirectory(
             val existing = members[deviceId]
             if (existing != null && existing.departmentId == departmentId) {
                 val v = bumpVersionLocked()
-                recordTombstoneLocked("member", deviceId, v)
+                recordTombstoneLocked("member", deviceId, v, departmentId = departmentId, departmentHidden = departments[departmentId]?.hidden == true)
                 persist { c ->
                     c.update("DELETE FROM dir_members WHERE device_id = ?", deviceId)
                     c.update("DELETE FROM org_member_statement WHERE device_id = ?", deviceId)
@@ -859,7 +905,8 @@ class OrganizationDirectory(
     fun removeDevice(deviceId: String) {
         lock.write {
             val v = bumpVersionLocked()
-            recordTombstoneLocked("member", deviceId, v)
+            val deptOfDevice = members[deviceId]?.departmentId.orEmpty()
+            recordTombstoneLocked("member", deviceId, v, departmentId = deptOfDevice, departmentHidden = departments[deptOfDevice]?.hidden == true)
             persist { c ->
                 c.update("DELETE FROM dir_members WHERE device_id = ?", deviceId)
                 c.update("DELETE FROM org_member_statement WHERE device_id = ?", deviceId)
@@ -1215,7 +1262,7 @@ class OrganizationDirectory(
             )
         }
         val removedDepts = if (isFullResync) emptyList() else tombstones.values
-            .filter { it.entityType == "department" && it.deletedAtVersion > effectiveSince }
+            .filter { it.entityType == "department" && it.deletedAtVersion > effectiveSince && !tombstoneIsStale(it) && tombstoneVisibleTo(it, actor) }
             .map { it.entityId }
 
         // Filter members visible to actor (A2: hidden-department rows never reach outsiders).
@@ -1280,7 +1327,7 @@ class OrganizationDirectory(
         unsignedOnLastPage = unsigned
 
         val removedMembers = if (isFullResync) emptyList() else tombstones.values
-            .filter { it.entityType == "member" && it.deletedAtVersion > effectiveSince }
+            .filter { it.entityType == "member" && it.deletedAtVersion > effectiveSince && !tombstoneIsStale(it) && tombstoneVisibleTo(it, actor) }
             .map { it.entityId }
 
         // B4: every sync that ends (no next page) carries the FULL current set of the caller's group rosters, freshly signed,
@@ -1418,12 +1465,14 @@ class OrganizationDirectory(
             }
 
             // Load directory_tombstone
-            c.query("SELECT entity_type, entity_id, deleted_at_version, deleted_at_ms FROM directory_tombstone") { rs ->
+            c.query("SELECT entity_type, entity_id, deleted_at_version, deleted_at_ms, entity_dept, entity_hidden FROM directory_tombstone") { rs ->
                 DirectoryTombstone(
                     entityType = rs.getString("entity_type"),
                     entityId = rs.getString("entity_id"),
                     deletedAtVersion = rs.getLong("deleted_at_version"),
                     deletedAtMs = rs.getLong("deleted_at_ms"),
+                    departmentId = rs.getString("entity_dept").orEmpty(),
+                    departmentHidden = rs.getInt("entity_hidden") != 0,
                 )
             }.forEach {
                 tombstones[it.entityType to it.entityId] = it
@@ -1538,6 +1587,12 @@ class OrganizationDirectory(
                 conn.createStatement().use { st ->
                     st.execute("ALTER TABLE dir_departments ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
                     st.execute("CREATE INDEX IF NOT EXISTS idx_dir_members_dept_name ON dir_members(department_id, display_name)")
+                }
+            },
+            Migration(4, "directory: tombstones remember the department of the removed entity, for the privacy filter (DIR-02)") { conn ->
+                conn.createStatement().use { st ->
+                    st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_dept TEXT")
+                    st.execute("ALTER TABLE directory_tombstone ADD COLUMN entity_hidden INTEGER NOT NULL DEFAULT 0")
                 }
             },
         )

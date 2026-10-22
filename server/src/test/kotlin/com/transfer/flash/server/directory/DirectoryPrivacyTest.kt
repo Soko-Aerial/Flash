@@ -97,7 +97,7 @@ class DirectoryPrivacyTest {
         assertEquals(2, Migrator(db).currentVersion(OrganizationDirectory.COMPONENT))
         db.withConnection { it.createStatement().use { st -> st.execute("INSERT INTO dir_departments(id, name, admin_ids, version) VALUES('old-d', 'Old', '', 1)") } }
         Migrator(db).apply { register(OrganizationDirectory.COMPONENT, OrganizationDirectory.MIGRATIONS); migrate() }
-        assertEquals(3, Migrator(db).currentVersion(OrganizationDirectory.COMPONENT))
+        assertEquals(OrganizationDirectory.MIGRATIONS.size, Migrator(db).currentVersion(OrganizationDirectory.COMPONENT))
         val dir = OrganizationDirectory(db)
         assertEquals(false, dir.getDepartment("old-d")?.hidden)
         // Idempotent: a second migrate changes nothing.
