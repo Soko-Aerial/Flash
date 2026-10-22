@@ -669,12 +669,16 @@ private fun FlashBubbleSurface(
                     )
                 } else {
                     // UI-023: highlight every occurrence of the active query.
-                    FlashText(
-                        text = buildHighlightedMessageText(
+                    val highlightColor = colors.accentPrimary.copy(alpha = 0.35f)
+                    val highlightedText = remember(message.text, searchQuery, highlightColor) {
+                        buildHighlightedMessageText(
                             text = message.text,
                             query = searchQuery,
-                            highlightColor = colors.accentPrimary.copy(alpha = 0.35f),
-                        ),
+                            highlightColor = highlightColor,
+                        )
+                    }
+                    FlashText(
+                        text = highlightedText,
                         style = typography.bodyDefault,
                         color = bodyColor,
                     )
