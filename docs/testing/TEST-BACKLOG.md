@@ -6113,3 +6113,11 @@ All four are automated-green already (§3 of the audit); each stands as the real
 - **Steps:** during the transfer, force 10 drops mid-frame (turn the peer's Wi-Fi off, or kill the desktop app) with a reconnect between each; then transfer another 100 MB.
 - **Pass:** throughput on the second transfer is within measurement noise of the first, the log shows no allocation/GC spike after the drops, and no `OutOfMemoryError`. Before the fix eight drops emptied the 16 KiB bucket for the life of the process. **Source:** F3. **Status:** TODO (unit test: `WebSocketCodecTest` pool-identity test, mutation-checked; the device measurement is owed — see the `MEAS-` series rule in §5)
 
+
+
+### CONSOLE-BLK-01 — The admin console renders with a content blocker on (ERROR-746)
+- **Setup:** Edge or Firefox with uBlock Origin (default lists incl. EasyPrivacy) enabled; the test hub redeployed with the build that renames `fingerprint.js` to `identicon.js`.
+- **Steps:** open the hub's `/admin/ui/` (loopback 18444 or the console URL); sign in; open Devices and Security.
+- **Pass:** the console renders (no blank page); the browser console shows no `ERR_BLOCKED_BY_CLIENT` for any `admin/ui/js/*` file; the Devices and Security pages show the small symmetric key picture.
+- **Source:** ERROR-746, `server/admin-ui-tests/asset-names.test.mjs`.
+- **Status:** TODO

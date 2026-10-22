@@ -7,7 +7,7 @@ import { api, guarded, events } from '../app.js';
 import { formatNumber, formatDateTime, relativeTime, shortId, groupText } from '../format.js';
 import { toCsv } from '../csv.js';
 import { filterRows, sortRows } from '../tablemodel.js';
-import { renderFingerprint } from '../fingerprint.js';
+import { renderFingerprint } from '../identicon.js';
 import { bytesToBase64, base64ToBytes, toHex } from '../codec.js';
 import { pageHeader, button, badge, banner, emptyState, textInput, selectInput, field, withBusy, timeEl, dl, mono, copyButton, skeleton, errorState } from '../ui/widgets.js';
 import { createTable } from '../ui/table.js';

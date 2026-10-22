@@ -5,7 +5,7 @@ import { formatBytes, formatDuration, formatClock, relativeTime, shortId, groupT
 import { parseCsv, validateBulk, csvCell, toCsv, MAX_BULK_ROWS, toBulkCsv } from '../src/main/resources/admin-ui/js/csv.js';
 import { matchesText, filterRows, sortRows, nextSort, ariaSort, windowRange, Selection } from '../src/main/resources/admin-ui/js/tablemodel.js';
 import { parseHash, buildHash, createRouter } from '../src/main/resources/admin-ui/js/router.js';
-import { fingerprintModel } from '../src/main/resources/admin-ui/js/fingerprint.js';
+import { fingerprintModel } from '../src/main/resources/admin-ui/js/identicon.js';
 import { bytesToBase64, base64ToBytes, proofMessage, consoleKeyId, PROOF_TAG, toHex } from '../src/main/resources/admin-ui/js/codec.js';
 
 // ------------------------------------------------------------------------------------------------ format
