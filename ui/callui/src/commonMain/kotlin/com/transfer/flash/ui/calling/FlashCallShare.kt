@@ -274,6 +274,18 @@ internal fun FlashPresenterLabel(name: String, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Queries sources from [host] safely, showing an empty list when query fails while rethrowing cancellation.
+ */
+internal suspend fun safeListSources(host: FlashCallShareHost): List<ShareSource> =
+    try {
+        host.listSources()
+    } catch (c: kotlinx.coroutines.CancellationException) {
+        throw c
+    } catch (_: Throwable) {
+        emptyList()
+    }
+
 /** The picker: the sources the capturer can see, the quality switch, and a note when the system chooses. */
 @Composable
 internal fun FlashSharePicker(
@@ -283,7 +295,9 @@ internal fun FlashSharePicker(
 ) {
     val colors = FlashTheme.colors
     var lower by remember { mutableStateOf(state.shareQuality == ShareQuality.LOWER) }
-    val loaded by produceState<List<ShareSource>?>(initialValue = null, host) { value = host.listSources() }
+    val loaded by produceState<List<ShareSource>?>(initialValue = null, host) {
+        value = safeListSources(host)
+    }
     val presenter = sharePresenterName(state)
     val takeOver = state.presenterId != null
     FlashCallPanel(title = CallShareText.PICKER_TITLE, onDismiss = onDismiss) {
