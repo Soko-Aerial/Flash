@@ -28,6 +28,7 @@ internal class PttPlayoutCore(
     private val buffer = PttJitterBuffer(targetDepthMs)
     private val zeros = ByteArray(bytesPerPacket)
     private var last: ByteArray? = null
+    private var concealedRun: Int = 0
 
     @Volatile
     private var readyTotal: Long = 0L
@@ -67,13 +68,22 @@ internal class PttPlayoutCore(
             is PttJitterBuffer.Poll.Ready -> {
                 out = tick.pcm
                 last = tick.pcm
+                concealedRun = 0
                 readyTotal += 1
                 level = PttAudioLevel.rms01(tick.pcm)
             }
             is PttJitterBuffer.Poll.Concealed -> {
-                out = last ?: zeros
+                // Repeating the last packet at full volume over a long gap is a buzzing loop: fade it
+                // (half, then a quarter) and go silent from the third packet on (RVW22 F27).
+                concealedRun += 1
+                val repeated = last
+                out = if (repeated == null || concealedRun > MAX_CONCEALED_PACKETS) {
+                    zeros
+                } else {
+                    attenuated(repeated, CONCEALED_GAIN_SHIFT * concealedRun)
+                }
                 concealedTotal += 1
-                level = PttAudioLevel.rms01(out) * CONCEALED_LEVEL_FACTOR
+                level = PttAudioLevel.rms01(out)
             }
             is PttJitterBuffer.Poll.Starving -> {
                 out = zeros
@@ -85,9 +95,23 @@ internal class PttPlayoutCore(
         return out
     }
 
+    /** [pcm] (LE int16) shifted right by [shift] bits, i.e. divided by 2^shift. */
+    private fun attenuated(pcm: ByteArray, shift: Int): ByteArray {
+        val out = ByteArray(pcm.size)
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val sample = ((pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)).toShort().toInt() shr shift
+            out[i] = sample.toByte()
+            out[i + 1] = (sample shr 8).toByte()
+            i += 2
+        }
+        return out
+    }
+
     companion object {
         const val DEFAULT_TARGET_DEPTH_MS: Long = 120L
         const val INBOX_CAPACITY: Int = 64
-        private const val CONCEALED_LEVEL_FACTOR = 0.5f
+        private const val CONCEALED_GAIN_SHIFT = 1
+        private const val MAX_CONCEALED_PACKETS = 2
     }
 }

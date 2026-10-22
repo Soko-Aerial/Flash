@@ -13,6 +13,16 @@ class PttPlayoutCoreTest {
 
     private fun packet(fill: Int) = ByteArray(PACKET_BYTES) { ((it % 50) + fill).toByte() }
 
+    private fun halved(pcm: ByteArray) = ByteArray(pcm.size).also { out ->
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val sample = ((pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)).toShort().toInt() shr 1
+            out[i] = sample.toByte()
+            out[i + 1] = (sample shr 8).toByte()
+            i += 2
+        }
+    }
+
     private fun PttPlayoutCore.offerRun(seqs: List<Long>) {
         seqs.forEach { assertTrue(offer(it, it * 20, packet(it.toInt() + 1))) }
     }
@@ -62,10 +72,25 @@ class PttPlayoutCoreTest {
         val readyLevel = core.lastAmplitude
         val concealed = core.nextPacket() // 2: the gap
 
-        assertContentEquals(packet(2), concealed, "repeats packet 1 (fill = seq + 1)")
+        assertContentEquals(halved(packet(2)), concealed, "repeats packet 1 (fill = seq + 1), at half volume")
         assertEquals(1L, core.snapshot().concealedTotal)
-        assertEquals(readyLevel * 0.5f, core.lastAmplitude, "concealed audio is played quieter")
+        assertEquals(readyLevel * 0.5f, core.lastAmplitude, 0.001f, "concealed audio is played quieter")
         assertContentEquals(packet(4), core.nextPacket(), "audio resumes with seq 3")
+    }
+
+    @Test
+    fun `a long gap fades to silence instead of looping the last packet`() {
+        val core = newCore()
+        core.offerRun(listOf(0, 1, 2, 3, 4, 5)) // nothing follows: every poll after the 6th is a gap
+        repeat(6) { core.nextPacket() }
+
+        val outputs = List(6) { core.nextPacket() }
+        val concealed = outputs.takeWhile { it.any { b -> b.toInt() != 0 } }
+
+        assertEquals(2, concealed.size, "only the first two gap packets carry sound: $outputs")
+        assertContentEquals(halved(packet(6)), concealed[0])
+        assertContentEquals(halved(halved(packet(6))), concealed[1])
+        assertEquals(0f, core.lastAmplitude)
     }
 
     @Test

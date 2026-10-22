@@ -68,12 +68,14 @@ internal class PttPlayout(
         val thread = worker
         worker = null
         runCatching { thread?.interrupt() }
-        runCatching { thread?.join(1000L) }
+        // A blocking AudioTrack.write ignores an interrupt; pausing and flushing first is what returns it,
+        // so the join below does not wait out its whole second (RVW22 F26).
         val track = audioTrack
+        runCatching { track?.pause() }
+        runCatching { track?.flush() }
+        runCatching { thread?.join(1000L) }
         if (track != null) {
             audioTrack = null
-            runCatching { track.pause() }
-            runCatching { track.flush() }
             runCatching { track.stop() }
             runCatching { track.release() }
         }
