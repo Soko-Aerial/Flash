@@ -18253,3 +18253,8 @@ The owner opened the test hub's console on Edge and Firefox and got a blank page
 
 ### Remaining
 Redeploy the test hub (`tools\hub-test-server\deploy.ps1`) to ship the rename; until then allow the hub host in the blocker.
+
+
+## 2026-10-22 - Console key dialog: recovery codes fit and the dialog switches to recovery mode (ERROR-747)
+
+Owner report: adding an administrator to a department "does not take the authenticator" and a pasted recovery code was cut short. The hub was right to refuse an authenticator code (the account already has a key); the dialog's single box was limited to 8 characters (a recovery code is 11) and did not offer recovery mode. `keydialog.js` now holds 32 characters, has the sign-in page's toggle, and switches to recovery mode on `ERR_SIGNER_EXISTS`. Admin UI tests 83/83; browser check owed (`CONSOLE-KEY-01`). Redeploy with `tools\hub-test-server\deploy.ps1`. If the recovery codes are lost, the hub has a break-glass `admin-recovery --username X` command (resets password and authenticator, issues new codes).
