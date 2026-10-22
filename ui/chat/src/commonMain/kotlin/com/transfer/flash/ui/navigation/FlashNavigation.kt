@@ -414,6 +414,21 @@ class FlashNavigationState internal constructor(
         if (!FlashNavigationMath.isTabRoot(destination, hubEnrolled)) return
         entries = listOf(FlashBackStackState(destination))
     }
+
+    /**
+     * Two-pane hosts: taps on the Chats tab, optionally restoring the chat that was open in the detail pane. The stack is
+     * REPLACED with Chats (+ that conversation), never pushed onto the current tab: pushing a conversation on top of the Hub
+     * made [conversationOpenedFromHub] true, so the Hub stayed in the list pane and highlighted while the user was asking for
+     * Chats.
+     */
+    fun selectChatsTab(restoreConversationId: String? = null) {
+        val root = FlashBackStackState(FlashDestination.ChatList)
+        entries = if (restoreConversationId.isNullOrBlank()) {
+            listOf(root)
+        } else {
+            listOf(root, FlashBackStackState(FlashDestination.Conversation, restoreConversationId))
+        }
+    }
 }
 
 private const val ENTRY_SEPARATOR = '|'

@@ -1,5 +1,31 @@
 # Error Log
 
+## ERROR-751 — Chats tab from the Hub kept the Hub on screen; a hub voice note needed Accept in Transfers
+
+### Date
+2026-10-22
+
+### Area
+Two-pane navigation (desktop, Android tablet) / hub file auto-download / voice note card
+
+### Symptoms
+1. On desktop, after opening the Hub tab, clicking Chats kept the Hub in the list pane (Hub still highlighted), so a new message's chat could not be clicked.
+2. A voice note sent to a hub group did not download by itself; the only visible way to accept it was the Transfers screen.
+
+### Root cause
+1. The sidebar/rail Chats tap PUSHED the remembered conversation onto the current stack. On `[Hub]` that made `[Hub, Conversation]`, which `conversationOpenedFromHub` (H-16) reads as "chat opened from the Hub", so the Hub stayed as the list pane. (Found by reading code; not reproduced on a device.)
+2. `HubFileBinding` auto-downloads only for a PAIRED sender (D18); a hub colleague is usually not paired. The voice card then showed a Clock "waiting to download" badge for the incoming offer, which looks like an automatic wait; the tap did call Accept but nothing said so.
+
+### Fix
+1. New `FlashNavigationState.selectChatsTab(restoreConversationId)` replaces the stack with Chats (+ that chat); desktop sidebar and Android rail use it (unit test in `FlashHubNavigationTest`).
+2. A voice note (audio/*) from a verified org colleague (`orgPeerResolver.isOrgPeer`) downloads automatically when the voice auto-download setting is on (default on), desktop `DesktopEngine` and Android `DiscoveryEngineHolder`; all other kinds still need a paired sender. The voice badge for an incoming offer is now a Download action; for our own note it stays a Clock and a tap does nothing.
+
+### Verification
+`:ui:chat:jvmTest --tests *FlashHubNavigationTest*`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green. The auto-download rule and the badge are compile-verified only.
+
+### Status
+OPEN until device checks HUBNAV-01, HUBVOICE-01.
+
 ## ERROR-750 — The console said a restored device "can use the hub again", but it cannot (restore only unblocks the identity)
 
 ### Date

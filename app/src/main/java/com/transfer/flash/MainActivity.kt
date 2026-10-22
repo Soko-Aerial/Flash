@@ -3049,7 +3049,8 @@ private fun FlashShell(
                         if (destination == FlashDestination.ChatList) {
                             if (selectedChatConversationId != null && twoPane) {
                                 chatRepository.openConversation(selectedChatConversationId!!)
-                                nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
+                                // Replace the stack: a push from the Hub tab would keep the Hub as the list pane.
+                                nav.selectChatsTab(selectedChatConversationId)
                             } else if (nav.current.destination == FlashDestination.Conversation) {
                                 chatRepository.closeConversation()
                                 selectedChatConversationId = null

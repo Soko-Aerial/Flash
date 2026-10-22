@@ -2569,12 +2569,9 @@ public fun DesktopShell(
                     selectedTab = nav.shellTab,
                     onTabSelected = { destination ->
                         if (destination == FlashDestination.ChatList) {
-                            if (selectedChatConversationId != null) {
-                                chatRepository.openConversation(selectedChatConversationId!!)
-                                nav.navigate(FlashDestination.Conversation, conversationId = selectedChatConversationId)
-                            } else {
-                                nav.selectTab(FlashDestination.ChatList)
-                            }
+                            // Replace the stack: a push from the Hub tab would keep the Hub as the list pane.
+                            selectedChatConversationId?.let { chatRepository.openConversation(it) }
+                            nav.selectChatsTab(selectedChatConversationId)
                         } else {
                             nav.selectTab(destination)
                         }
