@@ -140,13 +140,16 @@ class MailboxQueue(
         val now = clock()
 
         // A quarantined copy (RLY-01) is not a delivery in progress: the sender was told DROPPED, so its resend must not be swallowed
-        // as a duplicate of a row that will never be delivered.
+        // as a duplicate of a row that will never be delivered. Nor is a row whose lifetime has run out but which the sweeper has not
+        // removed yet: no recipient can fetch it, so answering the resend "duplicate" would lose the message when the sweep runs.
         conn.prepareStatement(
-            "DELETE FROM mailbox_envelopes WHERE origin_device_id = ? AND msg_id = ? AND target_device_id = ? AND undeliverable_reason IS NOT NULL",
+            "DELETE FROM mailbox_envelopes WHERE origin_device_id = ? AND msg_id = ? AND target_device_id = ? " +
+                "AND (undeliverable_reason IS NOT NULL OR expires_at <= ?)",
         ).use { stmt ->
             stmt.setString(1, m.origin)
             stmt.setString(2, m.msgId)
             stmt.setString(3, m.target)
+            stmt.setLong(4, now)
             stmt.executeUpdate()
         }
         existingSeq(conn, m)?.let { return EnqueueResult.DuplicateQueued(it) }
