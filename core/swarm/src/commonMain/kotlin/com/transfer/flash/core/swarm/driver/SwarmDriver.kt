@@ -533,7 +533,18 @@ public class SwarmDriver(
                     val key = partialKeyFor(cmd.root, cmd.groupId)
                     closePartialHandle(key)
                     if (record != null && manifest != null) {
-                        val res = storage.finalize(key, record.fileName, record.mime, manifest.fileSha256)
+                        // The row waits in Verifying for exactly one FinalizeResult. A storage layer that throws (full disk,
+                        // revoked folder, rename failure) used to end this coroutine without one, so the row, and the
+                        // notification, stayed "Verifying" for ever.
+                        val res = try {
+                            storage.finalize(key, record.fileName, record.mime, manifest.fileSha256)
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (t: Throwable) {
+                            FlashLog.w("SWARM", "finalize threw root=${cmd.root.hex.take(8)} error=${t::class.simpleName}")
+                            eventChannel.send(SwarmEvent.FinalizeResult(cmd.groupId, cmd.root, ok = false, storageError = true, nowMs = now()))
+                            return@launch
+                        }
                         FlashLog.i("SWARM", "finalize root=${cmd.root.hex.take(8)} ok=${res.ok} badPieces=${res.badPieces.size}")
                         if (res.ok && res.finalPath != null) {
                             val updated = record.copy(

@@ -6137,3 +6137,11 @@ All four are automated-green already (§3 of the audit); each stands as the real
 - **Pass:** in portrait the whole desktop picture is visible, centred, with black bars above and below and nothing cut off at the sides (title bar and taskbar both visible); in landscape the whole picture is visible with the correct proportions (circles are round); the camera picture of the other side still fills the screen when its orientation matches; no flicker or wrong size when the share starts and stops; the corner preview shows the whole camera picture with bars instead of a cropped one.
 - **Source:** ERROR-748, ADR-102.
 - **Status:** TODO
+
+### FINISH-01 — A finished download leaves no "not finished" row or notification (ERROR-749)
+- **Setup:** two phones (or phone + desktop) in a group; this build on the receiving phone; Flash's download folder reachable.
+- **Steps:** (1) send a 1:1 file of about 100 MB, let it finish; (2) send the same kind of file to the group; (3) repeat (1) once with Wi-Fi switched off for a few seconds right at the end; (4) if you can, make the download folder unwritable at the end (fill the storage or revoke the folder) and send again.
+- **Pass:** after each finish the Transfers row says Completed (or a clear Failed sentence in step 4, never "Downloading" or "Verifying" at 100%), and the notification is the finished/failed one, not the ongoing progress bar. logcat has `Receiver completed transferId=...` for (1)/(3), `SWARM: finalize root=... ok=true` for (2); in step 4 either `Sink flush failed` / `finalize threw` followed by a Failed row.
+- **Also report:** whether the sender's row for the group file (step 2) still says "Sending 100%" after all members have it (known, by design; see ERROR-749).
+- **Source:** ERROR-749.
+- **Status:** TODO

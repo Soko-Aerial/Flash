@@ -1356,8 +1356,11 @@ public class RealFlashTransferRepository(
                 // transfer that failed mid-flight): keep its identity but fill in the now-resolved
                 // destination path and ensure it is Transferring.
                 //
-                // Cancelled is the one state never downgraded — a decline that raced the sink
-                // resolution must stay declined. Failed IS revived on purpose: this callback only
+                // Cancelled and Completed are never downgraded — a decline that raced the sink
+                // resolution must stay declined, and a finished receive that a late re-offer or a
+                // second open of the sink reaches would otherwise return to "Downloading" with
+                // nothing left to complete it (and re-post its progress notification). Failed IS
+                // revived on purpose: this callback only
                 // ever runs when a session just opened for writes, so the sender is streaming
                 // again, and leaving the row Failed made the retry invisible (onIncomingProgress
                 // only advances a Transferring row, so a resume showed zero progress until it
@@ -1365,7 +1368,9 @@ public class RealFlashTransferRepository(
                 list.map { existing ->
                     if (existing.id.value != transferId) {
                         existing
-                    } else if (existing.state == FlashTransferState.Cancelled) {
+                    } else if (existing.state == FlashTransferState.Cancelled ||
+                        existing.state == FlashTransferState.Completed
+                    ) {
                         existing
                     } else {
                         existing.copy(

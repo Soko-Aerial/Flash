@@ -2692,18 +2692,42 @@ object DiscoveryEngineHolder {
                 is ReceiveEvent.Completed -> {
                     val transferId = event.frame.transferId
                     val handle = openHandles.remove(transferId)
-                    handle?.flush()
-                    handle?.close()
+                    // A sink that throws on flush/close (revoked folder, full disk, card removed) used to escape this
+                    // function and end the session's binary intake: the file was complete, the row stayed "Downloading"
+                    // at 100% for ever and the sender never got its COMPLETE. Both calls are attempted, the failure is
+                    // remembered, and only a whole-file digest match of what is on disk may keep the transfer alive
+                    // (the same rule the shared router applies on desktop).
+                    var sinkFailure: Throwable? = null
+                    try {
+                        handle?.flush()
+                    } catch (t: Throwable) {
+                        if (t is kotlinx.coroutines.CancellationException) throw t
+                        sinkFailure = t
+                        Log.w(TAG_TRANSFER, "Sink flush failed transferId=$transferId: ${t.message}")
+                    }
+                    try {
+                        handle?.close()
+                    } catch (t: Throwable) {
+                        if (t is kotlinx.coroutines.CancellationException) throw t
+                        if (sinkFailure == null) sinkFailure = t
+                        Log.w(TAG_TRANSFER, "Sink close failed transferId=$transferId: ${t.message}")
+                    }
                     incomingByPeer.values.forEach { it.remove(transferId) }
                     val path = receivedPaths.remove(transferId)
                     val expectedHex = incomingMeta.remove(transferId)?.fileSha256Hex
+                    val chunksVerified = if (sinkFailure != null) {
+                        com.transfer.flash.core.transfer.chunked.WholeFileVerifier.check(path, expectedHex) == WholeFileCheck.MATCH &&
+                            event.frame.verified
+                    } else {
+                        event.frame.verified
+                    }
                     // #19: whole-file digest recheck against the manifest hash, layered on the
                     // pipeline's per-chunk verify-before-write. Chunk hashes already guarantee each
                     // piece's integrity; this catches assembly/offset faults or manifest/content
                     // divergence before the file is surfaced as trusted.
                     // ADR-068: the shared completion path hashes the file; a mismatch fails the transfer, deletes
                     // the file and forgets the confirmed chunks, so the session goes too and the sender is told.
-                    val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, event.frame.verified)
+                    val wholeFile = transferImpl.onIncomingFileAssembled(transferId, path, expectedHex, chunksVerified)
                     val completeReply = if (wholeFile == WholeFileCheck.MISMATCH) {
                         receivePipeline.cancelSession(transferId)
                         ChunkFrame.Complete(transferId, event.frame.fileId, verified = false)

@@ -668,6 +668,22 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `a finished receive is not taken back to Downloading by a late sink open or progress tick`() = runBlocking {
+        val repo = offerRepo()
+        repo.onIncomingOffered("tx-done", "fx-done", "a.bin", 4096L, "Pixel", "peer-6")
+        repo.onIncomingStarted("tx-done", "fx-done", "a.bin", 4096L, "Pixel", "peer-6", "/tmp/a.bin")
+        repo.onIncomingCompleted("tx-done", verified = true, localPath = "/tmp/a.bin")
+
+        // A re-offer whose reply was lost, or a second accept, reaches the host's sink-open callback again.
+        repo.onIncomingStarted("tx-done", "fx-done", "a.bin", 4096L, "Pixel", "peer-6", "/tmp/a.bin")
+        repo.onIncomingProgress("tx-done", 1024L)
+
+        val row = repo.snapshot(FlashTransferId("tx-done"))
+        assertEquals(FlashTransferState.Completed, row.state)
+        assertEquals(4096L, row.bytesDone)
+    }
+
+    @Test
     fun `onIncomingProgress updates bytesDone, speedBytesPerSec, and etaSeconds`() = runBlocking {
         val repo = offerRepo()
         val totalBytes = 10_000_000L

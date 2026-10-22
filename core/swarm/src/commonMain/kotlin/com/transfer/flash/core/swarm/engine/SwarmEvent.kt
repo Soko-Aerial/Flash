@@ -162,6 +162,8 @@ public sealed interface SwarmEvent {
         public val finalPath: String? = null,
         public val identitySize: Long? = null,
         public val identityModifiedMs: Long? = null,
+        /** The storage layer threw instead of answering (full disk, revoked folder, rename failure): not a damaged file. */
+        public val storageError: Boolean = false,
         override val nowMs: Long,
     ) : SwarmEvent
 
