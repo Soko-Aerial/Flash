@@ -210,10 +210,19 @@ class MailboxQueue(
             stmt.executeQuery().use { rs -> if (rs.next()) rs.getLong(1) else null }
         }
 
-    /** Unexpired rows and bytes held for/by [who] (`column` is a fixed internal name, never client input). */
+    /**
+     * Unexpired rows and bytes still waiting for/by [who] (`column` is a fixed internal name, never client input).
+     *
+     * A quarantined row (RLY-01) is NOT waiting: its sender was told `DROPPED` and its recipient will never receive it, so it must not
+     * count against [MailboxLimits.perRecipientRows]/[MailboxLimits.perSenderRows]. Before this filter a hub whose data key changed
+     * locked each affected device out of its own mailbox for the whole TTL, once 1,000 unopenable rows had piled up (2026-10-22 review F1).
+     * The rows still occupy disk until the TTL sweeps them, so [totals] (the global budget) keeps counting them — it is the triggers in
+     * [MailboxSchema] that maintain it, never this class.
+     */
     private fun usage(conn: Connection, column: String, who: String, now: Long): Pair<Long, Long> =
         conn.prepareStatement(
-            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM mailbox_envelopes WHERE $column = ? AND expires_at > ?",
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM mailbox_envelopes " +
+                "WHERE $column = ? AND expires_at > ? AND undeliverable_reason IS NULL",
         ).use { stmt ->
             stmt.setString(1, who)
             stmt.setLong(2, now)
@@ -413,7 +422,7 @@ class MailboxQueue(
         metrics?.inc(RelayMetrics.MAILBOX_EVENTS, count.toLong(), "event" to "dropped")
     }
 
-    /** Messages currently stored for [target] (unexpired). */
+    /** Messages still deliverable to [target] (unexpired and not quarantined). */
     suspend fun pendingCount(target: String): Int = database.io { conn -> usage(conn, "target_device_id", target, clock()).first.toInt() }
 
     // ---- MailboxStats ----------------------------------------------------------------------------------------
@@ -425,7 +434,8 @@ class MailboxQueue(
     override fun oldestAgeMs(deviceId: String): Long? = database.withConnection { conn ->
         val now = clock()
         conn.prepareStatement(
-            "SELECT created_at FROM mailbox_envelopes WHERE target_device_id = ? AND expires_at > ? ORDER BY seq ASC LIMIT 1",
+            "SELECT created_at FROM mailbox_envelopes WHERE target_device_id = ? AND expires_at > ? AND undeliverable_reason IS NULL " +
+                "ORDER BY seq ASC LIMIT 1",
         ).use { stmt ->
             stmt.setString(1, deviceId)
             stmt.setLong(2, now)
@@ -438,7 +448,7 @@ class MailboxQueue(
         conn.prepareStatement(
             """
             SELECT target_device_id, MIN(created_at) AS oldest FROM mailbox_envelopes
-            WHERE expires_at > ? GROUP BY target_device_id ORDER BY oldest ASC LIMIT ?
+            WHERE expires_at > ? AND undeliverable_reason IS NULL GROUP BY target_device_id ORDER BY oldest ASC LIMIT ?
             """.trimIndent(),
         ).use { stmt ->
             stmt.setLong(1, now)

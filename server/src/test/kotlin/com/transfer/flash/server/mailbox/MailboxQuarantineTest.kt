@@ -16,6 +16,7 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /** SRVHUB-02 (RLY-01, ADR-222 decision 3): a row that can not be opened is quarantined, skipped and reported, never a stuck drain. */
@@ -41,7 +42,8 @@ class MailboxQuarantineTest {
 
     private fun queue(db: ServerDatabase, key: SecretBox) = MailboxQueue(db, MailboxLimits(), clock, DeviceRegistry.AcceptAll, null, key)
 
-    private fun msg(id: String, origin: String = "alice") = MailboxMessage(origin, "bob", id, "MSG_TEXT", "{\"text\":\"$id\"}", now.get(), null)
+    private fun msg(id: String, origin: String = "alice", target: String = "bob") =
+        MailboxMessage(origin, target, id, "MSG_TEXT", "{\"text\":\"$id\"}", now.get(), null)
 
     /** Three rows sealed under a key the reader does not have, then three it can read. */
     private suspend fun mixed(db: ServerDatabase): MailboxQueue {
@@ -128,6 +130,59 @@ class MailboxQuarantineTest {
 
         assertFailsWith<Exception> { q.fetchPageDetailed("bob", 0, 10) }
         assertEquals(0, count(db, "undeliverable_reason IS NOT NULL"))
+    }
+
+    @Test
+    fun quarantinedRowsDoNotCountAgainstTheRecipientQuota() = runTest {
+        val db = fileDb()
+        val limits = MailboxLimits(perRecipientRows = 3)
+        val old = MailboxQueue(db, limits, clock, DeviceRegistry.AcceptAll, null, keyOf(9))
+        listOf("bad1", "bad2", "bad3").forEach { old.enqueue(msg(it)) }
+        val q = MailboxQueue(db, limits, clock, DeviceRegistry.AcceptAll, null, keyOf(1))
+        q.fetchPageDetailed("bob", 0, 10)
+        assertEquals(3, count(db, "undeliverable_reason IS NOT NULL"))
+        assertEquals(0, q.pendingCount("bob"), "nothing in this mailbox can still be delivered")
+
+        // F1: before the fix the three unopenable rows used up the whole recipient quota, and every legitimate message was refused
+        // with ERR_QUOTA_EXCEEDED until the 7-day TTL swept them.
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("fresh1")))
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("fresh2")))
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("fresh3")))
+        val fourth = q.enqueue(msg("fresh4"))
+        assertEquals(QuotaScope.RECIPIENT, assertIs<EnqueueResult.QuotaExceeded>(fourth).scope, "the live rows still cap the mailbox")
+    }
+
+    @Test
+    fun quarantinedRowsDoNotCountAgainstTheSendersQuota() = runTest {
+        val db = fileDb()
+        val limits = MailboxLimits(perSenderRows = 2)
+        val old = MailboxQueue(db, limits, clock, DeviceRegistry.AcceptAll, null, keyOf(9))
+        listOf("bad1", "bad2", "bad3").forEach { old.enqueue(msg(it)) }
+        val q = MailboxQueue(db, limits, clock, DeviceRegistry.AcceptAll, null, keyOf(1))
+        q.fetchPageDetailed("bob", 0, 10)
+
+        // Alice's three unopenable rows were told DROPPED, so they must not stop her from writing to anyone else.
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("carol1", target = "carol")))
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("carol2", target = "carol")))
+        val refused = q.enqueue(msg("carol3", target = "carol"))
+        assertEquals(QuotaScope.SENDER, assertIs<EnqueueResult.QuotaExceeded>(refused).scope)
+    }
+
+    @Test
+    fun quarantinedRowsAreNotWaitingInTheStatsAndStillCountOnDisk() = runTest {
+        val db = fileDb()
+        val old = queue(db, keyOf(9))
+        listOf("bad1", "bad2").forEach { old.enqueue(msg(it)) }
+        now.addAndGet(3_600_000L) // an hour later the hub was restarted with another data key
+        val q = queue(db, keyOf(1))
+        q.enqueue(msg("good"))
+        q.fetchPageDetailed("bob", 0, 10)
+
+        assertEquals(1, q.pendingCount("bob"), "only the readable row is waiting")
+        assertEquals(0L, q.oldestAgeMs("bob"), "the quarantined rows are an hour old, but nobody is waiting for them")
+        assertEquals(mapOf("bob" to 0L), q.oldestAgesMs(10))
+        // The disk budget is a different question: the rows are still stored (their triggers keep the totals honest) until the sweep.
+        assertEquals(3L, q.queuedCount())
     }
 
     @Test
