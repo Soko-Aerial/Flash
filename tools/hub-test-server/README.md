@@ -18,6 +18,21 @@ ssh myserver 'cd ~/flash-hub && sed -i "s/\r$//" *.sh *.yml && chmod +x *.sh'
 - `./status.sh` â€” state, URL, health, console instructions.
 - `./down.sh` â€” stop it (data is kept).
 
+## Deploy a new build (one script)
+
+From the repo root, in PowerShell 5.1 (the owner's prompt) or any shell:
+
+```text
+powershell -File tools\hub-test-server\deploy.ps1              # build + pack + upload + swap + wait for healthy
+powershell -File tools\hub-test-server\deploy.ps1 -SkipBuild   # reuse server\build\install\server
+powershell -File tools\hub-test-server\deploy.ps1 -Rollback    # app.prev back (add -RestoreData for data.bak)
+```
+
+It packs the build as one `.tgz` (a recursive `scp` of 57 jars is slow), keeps the previous code in `app.prev` and a copy of
+`data/` in `data.bak` (`data/` is root-owned, so the copy uses `sudo`; the step runs with `ssh -t` so a password prompt works),
+and fails unless the container reports `healthy`. The hub is only down for the swap. The agents' own ssh deploy is refused by
+the permission classifier, so the owner runs this.
+
 ## What lives where
 
 | Path | What |
