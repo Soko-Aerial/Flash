@@ -434,15 +434,13 @@ public class RelayFrameRouter(
         if (convId.isBlank()) return
 
         val members = groups.membersOf(convId)
-        if (members != null) {
-            if (sender !in members) {
-                offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_NOT_MEMBER, MESSAGE_NOT_MEMBER))
-                return
-            }
-            for (memberId in members) if (memberId != sender) offerEphemeral(memberId, forwarded)
+        if (members == null || sender !in members) {
+            // F64 / ERROR-774: The same answer whether the group does not exist or the sender
+            // is not in it: no membership oracle / group enumeration oracle (matching handleGroupSend).
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_NOT_MEMBER, MESSAGE_NOT_MEMBER))
             return
         }
-        offerEphemeral(convId, forwarded)
+        for (memberId in members) if (memberId != sender) offerEphemeral(memberId, forwarded)
     }
 
     private fun offerEphemeral(deviceId: String, text: String) {
