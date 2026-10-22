@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /** SRVHUB-12 part (OPS-01, ADR-222): a stats read never waits for the database. */
@@ -24,7 +25,8 @@ class CachedMailboxStatsTest {
         }
         override fun queuedCount(): Long { touch(); return count }
         override fun queuedBytes(): Long = bytes
-        override fun oldestAgeMs(deviceId: String): Long? = oldest[deviceId]
+        override fun oldestAgeMs(deviceId: String): Long? =
+            error("the cached snapshot must answer this one (2026-10-22 review F6), never the database")
         override fun oldestAgesMs(limit: Int): Map<String, Long> = oldest.entries.take(limit).associate { it.key to it.value }
         override fun deliveredTotal(): Long = 7
         override fun expiredTotal(): Long = 0
@@ -55,6 +57,10 @@ class CachedMailboxStatsTest {
         reader.join(2_000)
         assertTrue(!reader.isAlive, "the reader was not blocked by the slow database")
         assertEquals(10L, seen, "the old snapshot is served while the refresh is pending")
+        // The refresh runs on the cache's own scope, so "it has started" is not observable at the instant the reader returns:
+        // wait for the delegate to be entered, then assert it was entered exactly once (not once per read).
+        val startedBy = System.currentTimeMillis() + 2_000
+        while (db.loads.get() < 2 && System.currentTimeMillis() < startedBy) Thread.sleep(5)
         assertEquals(2, db.loads.get(), "exactly one refresh was started, not twenty")
 
         db.gate!!.countDown()
@@ -88,6 +94,16 @@ class CachedMailboxStatsTest {
         now = 2_000
         assertEquals(mapOf("dev-a" to 7_000L), stats.oldestAgesMs(1))
         assertEquals(2, stats.oldestAgesMs(10).size)
+    }
+
+    @Test
+    fun oneDevicesOldestAgeComesFromTheSnapshotAndGrowsWithIt() {
+        var now = 0L
+        val db = Counting()
+        val stats = CachedMailboxStats(db, ttlMs = 60_000, clock = { now })
+        now = 2_000
+        assertEquals(7_000L, stats.oldestAgeMs("dev-a"), "5 000 ms at snapshot time plus 2 000 ms of snapshot drift")
+        assertNull(stats.oldestAgeMs("dev-unknown"))
     }
 
     @Test

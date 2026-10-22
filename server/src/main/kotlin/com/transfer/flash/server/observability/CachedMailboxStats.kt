@@ -53,6 +53,19 @@ class CachedMailboxStats(
 
     override fun queuedBytes(): Long = current().bytes
 
+    /**
+     * Answered from the snapshot like the rest (F6): inheriting the delegate's implementation here made this one call reach into SQLite
+     * on the caller's thread, the opposite of what this class promises.
+     *
+     * A device older than the snapshot window ([MAX_CACHED_AGES] devices) answers null until a later snapshot includes it. That is the
+     * same "these numbers are a little old" trade as the counters above, and null already means "nothing known".
+     */
+    override fun oldestAgeMs(deviceId: String): Long? {
+        val s = current()
+        val age = s.oldest[deviceId] ?: return null
+        return age + (clock() - s.takenAt).coerceIn(0L, ttlMs * 4)
+    }
+
     override fun oldestAgesMs(limit: Int): Map<String, Long> {
         val s = current()
         val drift = (clock() - s.takenAt).coerceIn(0L, ttlMs * 4)
