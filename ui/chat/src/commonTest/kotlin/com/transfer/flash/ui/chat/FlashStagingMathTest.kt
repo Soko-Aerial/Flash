@@ -36,4 +36,26 @@ class FlashStagingMathTest {
         assertEquals("Message (sent after the files)...", FlashStagingMath.composerPlaceholder(1))
         assertEquals("Message (sent after the files)...", FlashStagingMath.composerPlaceholder(4))
     }
+
+    @Test
+    fun `two staged items with identical uri have distinct stable ids`() {
+        val item1 = FlashShareItemUi(uri = "file:///img.png", name = "img.png", sizeBytes = 100L)
+        val item2 = FlashShareItemUi(uri = "file:///img.png", name = "img.png", sizeBytes = 100L)
+        assertEquals(item1.uri, item2.uri)
+        kotlin.test.assertNotEquals(item1.id, item2.id)
+    }
+
+    @Test
+    fun `removing staged item preserves stable ids of other items`() {
+        val item1 = FlashShareItemUi(uri = "file:///img1.png", name = "img1.png", sizeBytes = 100L)
+        val item2 = FlashShareItemUi(uri = "file:///img1.png", name = "img1.png", sizeBytes = 100L)
+        val item3 = FlashShareItemUi(uri = "file:///img2.png", name = "img2.png", sizeBytes = 200L)
+
+        val staged = listOf(item1, item2, item3)
+        val remaining = staged.filter { it.id != item1.id }
+
+        assertEquals(2, remaining.size)
+        assertEquals(item2.id, remaining[0].id)
+        assertEquals(item3.id, remaining[1].id)
+    }
 }

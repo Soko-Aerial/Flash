@@ -931,10 +931,7 @@ fun FlashConversationScreen(
                 stagedAttachments = stagedAttachments,
                 placeholderText = FlashStagingMath.composerPlaceholder(stagedAttachments.size),
                 onRemoveStagedAttachment = { item ->
-                    val index = stagedAttachments.indexOf(item)
-                    if (index >= 0) {
-                        stagedAttachments = stagedAttachments.filterIndexed { i, _ -> i != index }
-                    }
+                    stagedAttachments = stagedAttachments.filter { it.id != item.id }
                 },
                 onSend = {
                     val text = draft.trim()
