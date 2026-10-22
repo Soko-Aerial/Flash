@@ -12,6 +12,7 @@ public actual fun FlashVideoSurface(
     seekToMs: Long?,
     onPlaybackStateChanged: (durationMs: Long, positionMs: Long, isCompleted: Boolean) -> Unit,
     onError: (String) -> Unit,
+    onSeekHandled: () -> Unit,
     modifier: Modifier,
 ) {
     // Desktop stub — in-app video playback is provided on Android via VideoView.

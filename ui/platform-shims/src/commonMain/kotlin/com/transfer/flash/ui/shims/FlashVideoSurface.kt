@@ -15,5 +15,6 @@ public expect fun FlashVideoSurface(
     seekToMs: Long? = null,
     onPlaybackStateChanged: (durationMs: Long, positionMs: Long, isCompleted: Boolean) -> Unit = { _, _, _ -> },
     onError: (String) -> Unit = {},
+    onSeekHandled: () -> Unit = {},
     modifier: Modifier = Modifier,
 )
