@@ -102,7 +102,13 @@ public object HubAuth {
 
 /**
  * Renewal window rule (default 24 h before `validTo` to 72 h after; ADR-109). The hub derives the windows of a longer-lived
- * certificate from its own lifetime with [earlyWindowFor] and [graceFor] (ADR-222): a 30-day certificate must not keep a 1-day window.
+ * certificate from its own lifetime with [earlyWindowFor] and [graceFor] (ADR-222): a 30-day certificate must not keep a 1-day
+ * window.
+ *
+ * A client must use the SAME derivation, or it refuses to ask for a renewal the hub would accept, and it starts too late: a
+ * 365-day certificate is renewable for 18.25 days after it expired, but a hardcoded 72-hour grace left the app reporting
+ * CERTIFICATE_INVALID without ever contacting the hub (2026-10-22 review F4). Passing [earlyWindowMs]/[graceMs] explicitly still
+ * wins, so the hub's configured overrides keep their meaning.
  */
 @FlashInternalApi
 public object RenewalPolicy {
@@ -114,18 +120,29 @@ public object RenewalPolicy {
     public fun graceFor(lifetimeMs: Long): Long =
         maxOf(com.transfer.flash.core.hubprotocol.HubContract.RENEW_GRACE_MS, lifetimeMs / 20)
 
-    /** True when [cert] may be renewed at [nowMs]. */
+    /** True when [cert] may be renewed at [nowMs]; null windows mean "derive them from this certificate's lifetime". */
     public fun isRenewable(
         cert: DeviceCert,
         nowMs: Long,
-        earlyWindowMs: Long = com.transfer.flash.core.hubprotocol.HubContract.RENEW_EARLY_WINDOW_MS,
-        graceMs: Long = com.transfer.flash.core.hubprotocol.HubContract.RENEW_GRACE_MS,
-    ): Boolean = nowMs >= cert.validTo - earlyWindowMs && nowMs <= cert.validTo + graceMs
+        earlyWindowMs: Long? = null,
+        graceMs: Long? = null,
+    ): Boolean {
+        val lifetimeMs = cert.validTo - cert.validFrom
+        val early = earlyWindowMs ?: earlyWindowFor(lifetimeMs)
+        val grace = graceMs ?: graceFor(lifetimeMs)
+        return nowMs >= cert.validTo - early && nowMs <= cert.validTo + grace
+    }
 
-    /** True when a client should start trying to renew (inside the early window, or already past `validTo`). */
+    /**
+     * True when a client should start trying to renew (inside the early window, or already past `validTo`); a null
+     * [earlyWindowMs] is derived from the certificate's lifetime.
+     */
     public fun shouldRenew(
         cert: DeviceCert,
         nowMs: Long,
-        earlyWindowMs: Long = com.transfer.flash.core.hubprotocol.HubContract.RENEW_EARLY_WINDOW_MS,
-    ): Boolean = nowMs >= cert.validTo - earlyWindowMs
+        earlyWindowMs: Long? = null,
+    ): Boolean {
+        val early = earlyWindowMs ?: earlyWindowFor(cert.validTo - cert.validFrom)
+        return nowMs >= cert.validTo - early
+    }
 }
