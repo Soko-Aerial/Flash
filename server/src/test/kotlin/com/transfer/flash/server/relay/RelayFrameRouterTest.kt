@@ -572,6 +572,26 @@ class RelayFrameRouterTest {
         assertEquals(emptyList(), bobWs.drainNow(), "SEC-02: nothing reached the group")
     }
 
+    @Test
+    fun groupMetaAnswersErrNotMemberIdenticallyForNonMemberAndMissingGroup() = runBlocking<Unit> {
+        val rig = rig(directory = directoryWithGroup())
+        val (mallory, malloryWs) = rig.connect("mallory")
+
+        // 1. Existing group where mallory is not a member
+        rig.router.processFrame(mallory, RelayFrameCodec.encode(RelayFrame.Meta(action = RelayFrame.Meta.ACTION_TYPING, conversationId = "grp-dev")))
+        val existingGroupErr = malloryWs.nextOf<RelayFrame.Error>()
+        assertEquals(HubErrorCodes.ERR_NOT_MEMBER, existingGroupErr.code)
+
+        // 2. Non-existent group
+        rig.router.processFrame(mallory, RelayFrameCodec.encode(RelayFrame.Meta(action = RelayFrame.Meta.ACTION_TYPING, conversationId = "grp-nonexistent")))
+        val missingGroupErr = malloryWs.nextOf<RelayFrame.Error>()
+        assertEquals(HubErrorCodes.ERR_NOT_MEMBER, missingGroupErr.code)
+
+        // F64 / ERROR-774: Both cases must be indistinguishable to the sender (same code, same message)
+        assertEquals(existingGroupErr.code, missingGroupErr.code)
+        assertEquals(existingGroupErr.message, missingGroupErr.message)
+    }
+
     // ---- group relay (REL-14) ------------------------------------------------------------------------------
 
     @Test
