@@ -7,9 +7,11 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.SocketTimeoutException
 import kotlin.random.Random
+import kotlin.test.assertFailsWith
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -126,6 +128,25 @@ class WebSocketCodecTest {
             assertArrayEquals(payload, message.data)
             com.transfer.flash.core.common.perf.ByteArrayPool.release(reused)
         }
+    }
+
+    @Test
+    fun `a frame cut short mid payload still gives its pooled buffer back (review F3)`() {
+        com.transfer.flash.core.common.perf.ByteArrayPool.clear()
+        // Exactly one 16 KiB buffer waits in the pool, so the codec has to rent THIS array for the frame.
+        val marker = com.transfer.flash.core.common.perf.ByteArrayPool.acquire(com.transfer.flash.core.common.perf.ByteArrayPool.SIZE_16KB)
+        com.transfer.flash.core.common.perf.ByteArrayPool.release(marker)
+
+        // A 1 000-byte binary frame (4-byte header) whose payload stops after 10 bytes: an unexpected disconnect mid-frame.
+        val whole = ByteArrayOutputStream().also {
+            WebSocketCodec.writeFrame(it, WebSocketCodec.OPCODE_BINARY, ByteArray(1_000), masked = false)
+        }.toByteArray()
+        val truncated = whole.copyOf(4 + 10)
+        assertFailsWith<java.io.EOFException> { WebSocketCodec.readMessage(ByteArrayInputStream(truncated)) }
+
+        val back = com.transfer.flash.core.common.perf.ByteArrayPool.acquire(com.transfer.flash.core.common.perf.ByteArrayPool.SIZE_16KB)
+        assertSame("the buffer rented for the cut frame was released back to the pool", marker, back)
+        com.transfer.flash.core.common.perf.ByteArrayPool.release(back)
     }
 
     @Test
