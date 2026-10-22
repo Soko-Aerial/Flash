@@ -419,14 +419,70 @@ class WsFlashNetworkTest {
                 while (!clientNetwork!!.isReconnectInFlight(hostId)) delay(25)
             }
 
-            // The host is back, somewhere else, and discovery says so.
-            serverNetwork = WsFlashNetwork(null, hostId, "Host Phone")
-            val newPort = (serverNetwork!!.start(0) as FlashResult.Success).value
-            assertTrue("the test needs a different port", newPort != oldPort)
+            // The host is back, somewhere else, and discovery says so. The test must move the host to a port the stale
+            // route cannot reach, otherwise a redial to the dead address would also "work" and prove nothing. Asking for
+            // `0` used to be enough only by accident: `FlashNetwork.start(listenPort)` passed the port down and the
+            // server threw it away, always binding PREFERRED_PORT, so the restart kept coming back on the same port
+            // (2026-10-22 review F8). The requested port is honoured now, so ask for one that is not `oldPort`.
+            var newPort = oldPort
+            var attempts = 0
+            while (attempts < 10) {
+                attempts++
+                val candidate = oldPort + attempts
+                serverNetwork = WsFlashNetwork(null, hostId, "Host Phone")
+                val started = (serverNetwork!!.start(candidate) as FlashResult.Success).value
+                newPort = started
+                if (started == candidate && started != oldPort) break
+                serverNetwork!!.stop()
+            }
+            assertTrue("the test needs a different port (got $oldPort ten times)", newPort != oldPort)
             clientNetwork!!.rememberEndpoint(hostId, "127.0.0.1", newPort)
 
             withTimeout(10_000L) {
                 while (clientNetwork!!.activeSessions.value[FlashDeviceId(hostId)] == null) delay(25)
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // 2026-10-22 review F8: the requested port must really be the bound port.
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * `FlashNetwork.start(listenPort)` says "listen on `listenPort`", and [WsFlashNetwork] passed the
+     * value down — but [WsTransferServer] threw it away and always bound [WsTransferServer.PREFERRED_PORT]
+     * (falling back to an ephemeral port only when that bind failed). So a host asked for a specific
+     * port silently listened elsewhere, and only by luck did the redial test above look right.
+     *
+     * `0` keeps the old behaviour (preferred port, ephemeral fallback), which is what production and
+     * the other tests ask for; a positive port is honoured exactly.
+     */
+    @Test(timeout = 25_000L)
+    fun testAnExplicitlyRequestedPortIsThePortTheHostListensOn() {
+        runBlocking {
+            val hostId = "device-host-explicit-port"
+
+            // Ask the kernel for a free port and release it, so "somebody else already has it" is not the
+            // reason this test fails. A tiny race is possible; a second candidate settles it.
+            var wanted = 0
+            var started = 0
+            for (attempt in 1..5) {
+                wanted = java.net.ServerSocket(0).use { it.localPort }
+                serverNetwork = WsFlashNetwork(null, hostId, "Host Phone")
+                started = (serverNetwork!!.start(wanted) as FlashResult.Success).value
+                if (started == wanted) break
+                serverNetwork!!.stop()
+            }
+            assertEquals("the requested port must be the bound port", wanted, started)
+
+            // ...and the host really answers there, so this is a live listener and not just a number.
+            clientNetwork = WsFlashNetwork(null, "device-client-explicit-port", "Client Phone")
+            clientNetwork!!.start(0)
+            assertTrue(
+                clientNetwork!!.connectManual("127.0.0.1", wanted, hostId) is FlashResult.Success,
+            )
+            withTimeout(10_000L) {
+                while (serverNetwork!!.activeSessions.value.isEmpty()) delay(25)
             }
         }
     }

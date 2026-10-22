@@ -75,12 +75,24 @@ public class WsTransferServer(
         get() = serverSocket?.isClosed == false
 
     @Synchronized
-    public fun start(): Int {
+    public fun start(): Int = start(preferredPort = PREFERRED_PORT)
+
+    /**
+     * Binds [preferredPort] and falls back to a kernel-chosen port when it is busy, which is the
+     * behaviour [start] has always had with [PREFERRED_PORT].
+     *
+     * The requested port used to be dropped on the floor: `FlashNetwork.start(listenPort)` passes one
+     * and this server ignored it, so `start(0)` on the network always came back on [PREFERRED_PORT]
+     * (2026-10-22 review F8). A caller that asks for a specific port now gets it, and `0` still
+     * means "any free port". Production asks for `0`/the preferred port, so nothing changes for it.
+     */
+    @Synchronized
+    public fun start(preferredPort: Int): Int {
         if (isRunning) return listenPort
         val socket = runCatching {
             ServerSocket().apply {
                 reuseAddress = true
-                bind(InetSocketAddress(PREFERRED_PORT))
+                bind(InetSocketAddress(preferredPort))
             }
         }.getOrElse { ServerSocket(0) }
         serverSocket = socket
