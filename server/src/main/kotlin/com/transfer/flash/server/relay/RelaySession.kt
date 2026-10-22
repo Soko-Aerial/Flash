@@ -112,6 +112,10 @@ class RelaySession(
     @Volatile
     var rateBucket: TokenBucket? = null
 
+    /** Bytes this sender may make the hub emit (RLY-02); charged per delivered copy by the router. */
+    @Volatile
+    var byteBucket: TokenBucket? = null
+
     // ---- outbound ----
 
     private val outbound = Channel<String>(outboundCapacity)
@@ -191,6 +195,20 @@ class RelaySession(
         }
         true
     }
+
+    /**
+     * Takes the drain baton and marks the session `draining` as ONE step under the gate (RLY-03). Done in two steps outside it,
+     * a live frame handed over between the compare-and-set and the flag write would reach the device before older mailbox rows.
+     * Returns false when a drain already runs.
+     */
+    fun beginDrain(): Boolean = synchronized(gate) {
+        if (!drainRunning.compareAndSet(false, true)) return false
+        draining = true
+        true
+    }
+
+    /** The drain flags read as one unit (tests): `drainRunning` must imply `draining` at every gate boundary. */
+    internal fun drainFlags(): Pair<Boolean, Boolean> = synchronized(gate) { drainRunning.get() to draining }
 
     /** Releases the drain baton without finishing (the drain coroutine was cancelled). */
     fun abortDrain() {

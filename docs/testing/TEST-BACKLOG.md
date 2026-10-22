@@ -6053,7 +6053,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-09 — One sender cannot flood a large group (RLY-02)
 - **Setup:** a group of 100 members, all online; one member scripted to send 64 KiB frames at 60 frames/s.
 - **Steps:** run it for 30 s; watch the hub's egress and CPU.
-- **Pass:** the hub answers `ERR_RATE_LIMIT` on the byte budget before its uplink saturates and the other members stay responsive. Today: no byte budget exists. **Source:** RLY-02. **Status:** TODO
+- **Pass:** the hub answers `ERR_RATE_LIMIT` on the byte budget before its uplink saturates and the other members stay responsive. Today: no byte budget exists. **Source:** RLY-02. **Status:** AUTOMATED PASS 2026-10-22 (`RelayByteBudgetTest`; the real 100-member flood with a measured uplink is still owed)
 
 ### SRVHUB-10 — A hub restart during a transfer costs one sign-in, not many (CLI-01, CLI-02)
 - **Setup:** a device uploading a multi-chunk hub file while the 15 s presence poll and a directory sync run.
@@ -6063,7 +6063,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-11 — `/health` answers while the hub is busy (OPS-01)
 - **Setup:** a full directory sync of 20,000 members plus a hub file transfer.
 - **Steps:** hit `/health` and `/health/detail` ten times a second during it.
-- **Pass:** every answer is under 1 s (the Docker `HEALTHCHECK` does not time out). Today: blocking pool calls with a 5 s `busy_timeout` behind them. **Source:** OPS-01. **Status:** TODO
+- **Pass:** every answer is under 1 s (the Docker `HEALTHCHECK` does not time out). Today: blocking pool calls with a 5 s `busy_timeout` behind them. **Source:** OPS-01. **Status:** AUTOMATED PASS 2026-10-22 (`CachedMailboxStatsTest`; `/health` under a real 20,000-member sync is still owed)
 
 ### SRVHUB-12 — A recipient reading an unfinished blob gets a retryable answer (FL-01)
 - **Setup:** create a file, upload some chunks but do not `complete`; then `GET /api/v1/files/{id}/chunks/0` as a **recipient** (not the sender) and as the sender.

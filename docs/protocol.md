@@ -1311,6 +1311,7 @@ is relayed only for a member (`ERR_NOT_MEMBER` otherwise).
 | Frame / payload | 256 KiB / 64 KiB | `ERR_TOO_LARGE` (a WebSocket frame above the engine limit closes the connection) |
 | Open connections, per IP | 5000 / 100 | `ERR_RATE_LIMIT`, close, before the handshake |
 | Frames per session | 60/s, burst 120 | `ERR_RATE_LIMIT`; after 200 rejected frames the session is closed |
+| Bytes a sender makes the hub emit (RLY-02) | 2 MiB/s, burst 8 MiB (payload length x copies: 1 for a 1:1 message, one per other member for a group message; a frame above the burst is capped at it) | `Ack REJECTED` with `ERR_RATE_LIMIT` for that message id; counts toward the 200 rejected frames; metric outcome `byte_limited` |
 | Outbound queue per session | 256 frames, 10 s send timeout | the session is closed (`slow_consumer`), its messages go to the mailbox |
 | Unacknowledged live messages per session | 256 | further messages go through the mailbox |
 | Mailbox per recipient | 1000 rows / 50 MiB | `QUOTA_EXCEEDED` |

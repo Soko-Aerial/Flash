@@ -18125,3 +18125,19 @@ Plan item 10 (RLY-02, RLY-03, OPS-01, CLI-02, CLI-03, FL-01).
 
 ### Next AI
 Item 10: start with CLI-02 (narrow bearer mutex plus `HttpTimeout`), then CLI-03 (bounded response reads).
+
+
+## 2026-10-22 - Server internals audit, Step 10A - Relay byte budget, drain hand-off, cached mailbox stats (RLY-02, RLY-03, OPS-01; SRVHUB-09, SRVHUB-11)
+
+### Worked on
+Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (RLY-02, RLY-03, OPS-01).
+
+### Changed
+- RLY-02: `RelayPolicy.senderBytesPerSecond` (2 MiB/s) and `senderByteBurst` (8 MiB) feed a per-session `byteBucket`. `RelayFrameRouter.withinByteBudget` charges a message its payload length times the copies the hub is about to emit (1 for a 1:1 message, one per other member for a group message) before anything is routed; over budget the sender gets `Ack REJECTED` with `ERR_RATE_LIMIT` for that message id, `relay_rate_limit_hits` and `relay_messages{outcome="byte_limited"}` count it, and a sender that keeps flooding is closed by the existing abuse counter. A single frame larger than the burst is capped at the burst, so it is never unsendable. Not built: the audit's optional recipient cap (`ERR_TOO_MANY_RECIPIENTS`) - it needs a new error code and the byte bucket already bounds the cost.
+- RLY-03: `RelaySession.beginDrain()` takes the drain baton and sets `draining` as ONE step under the hand-off gate; `startDrainIfIdle` uses it. Before, the compare-and-set and the flag write were two steps and a live frame handed over in between reached the device ahead of older mailbox rows.
+- OPS-01: `CachedMailboxStats` wraps the database-backed `MailboxStats` for the metrics scrape, `/health/detail` and the console overview: the first snapshot is taken at start-up, a read of a snapshot older than 5 s returns the old numbers at once and starts ONE background refresh, and a failed refresh keeps the last numbers. `HubServices` and the default `FlashServerEngine` wiring use it; the in-memory `*Total` counters pass straight through.
+- Tests: `RelayByteBudgetTest` (9: a group flood refused by bytes although the frame bucket allowed it; small group messages unaffected; an oversize frame capped at the burst; the limit is per sender; a flooder is closed; a direct message is charged only its own size; the bucket's cost and refill; `beginDrain` flags; a 300,000-iteration check that the baton is never held without `draining` at a gate boundary), `CachedMailboxStatsTest` (5). **Mutations:** byte check disabled plus an unsynchronised `beginDrain` failed 6 of 9 including the stress test; reading through the database again failed 4 of 5; all restored.
+- Not changed: the stats are up to about 5 s old by design.
+
+### Remaining
+The other item-10 parts, then device verification.
