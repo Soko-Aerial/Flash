@@ -1,5 +1,11 @@
 # Current Handoff
 
+## 2026-10-22 (DEPLOYED) - server internals audit plan is running on the `myserver` test hub
+
+- **Deployed** the build of `6861ac61` (all 10 plan items) to `~/flash-hub` on `myserver`; `/health` ok, container healthy, no migration errors. Rollback: `app.prev` (code) and `data.bak` (data) in `~/flash-hub`. Still NOT pushed and NOT device-verified.
+- **Next:** run `SRVHUB-01..13` (`docs/testing/TEST-BACKLOG.md`) against this hub with a phone/console. **Before 2026-11-18** issue a longer hub delegation (`keytool delegate --valid-days 33` or more): the startup warning says the current one (27 days left) cuts new device certificates short.
+- **Deploy notes:** `data/` is root-owned (use `sudo` for the backup); pack the build as one `.tgz` rather than `scp -r`; the owner's `!` prompt is PowerShell 5.1. Details: `logs/progress.md` 2026-10-22 deployment entry.
+
 ## 2026-10-21 (server internals audit, implementation steps 1-10 of 10) - built and tested, NOT device-verified
 
 - **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
