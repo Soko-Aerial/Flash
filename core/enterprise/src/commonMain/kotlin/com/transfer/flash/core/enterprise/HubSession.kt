@@ -28,7 +28,6 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -41,6 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 
 /** Supplies the bearer for authenticated REST calls; [forceRefresh] drops a token the hub just refused. */
@@ -162,7 +162,11 @@ public class HubSession(
                 current.hubUrl == creds.hubUrl && now < current.expiresAtMs - EXPIRY_MARGIN_MS
             if (usable && (!forceRefresh || generation != seen)) return@withLock current!!.token
             cached = null
-            authenticate(creds)?.also { cached = it; generation++ }?.token
+            // CLI-02: the sign-in is two network round-trips under the mutex. The shared client has request timeouts, but a client
+            // handed in without them must not be able to hold every hub call on the device behind one silent hub.
+            val signedIn = withTimeoutOrNull(NETWORK_BUDGET_MS) { authenticate(creds) }
+            if (signedIn == null && _authFailure.value == null) _authFailure.value = HubAuthFailure.UNREACHABLE
+            signedIn?.also { cached = it; generation++ }?.token
         }
     }
 
@@ -186,7 +190,7 @@ public class HubSession(
                 contentType(ContentType.Application.Json)
                 setBody(HubRestCodec.encode(request))
             }
-            response.status to response.bodyAsText()
+            response.status to response.boundedText()
         }.getOrElse {
             _authFailure.value = HubAuthFailure.UNREACHABLE
             return null
@@ -210,7 +214,7 @@ public class HubSession(
     private suspend fun fetchChallenge(base: String, creds: EnrollmentCredentials): AuthChallengeResponse? {
         val reply = runSuspendCatching {
             val response = httpClient.get("$base${HubContract.PATH_AUTH_CHALLENGE}")
-            response.status to response.bodyAsText()
+            response.status to response.boundedText()
         }.getOrElse {
             _authFailure.value = HubAuthFailure.UNREACHABLE
             return null
@@ -237,7 +241,10 @@ public class HubSession(
      */
     public suspend fun renew(): EnrollmentOutcome = withContext(ioDispatcher) {
         val creds = credentials() ?: return@withContext EnrollmentOutcome.Failed(EnrollFailureReason.INVITE_REJECTED, "not enrolled")
-        val outcome = mutex.withLock { renewLocked(creds) }
+        val outcome = mutex.withLock {
+            // CLI-02: bounded like the sign-in; a hub that never answers is "unreachable", not a held lock.
+            withTimeoutOrNull(NETWORK_BUDGET_MS) { renewLocked(creds) } ?: EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, "timeout")
+        }
         _renewalFailure.value = (outcome as? EnrollmentOutcome.Failed)?.reason
         if (outcome is EnrollmentOutcome.Enrolled) cached = null
         outcome
@@ -276,7 +283,7 @@ public class HubSession(
                 contentType(ContentType.Application.Json)
                 setBody(HubRestCodec.encode(request))
             }
-            response.status to response.bodyAsText()
+            response.status to response.boundedText()
         }.getOrElse { return EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, it::class.simpleName.orEmpty()) }
         if (reply.first != HttpStatusCode.OK) {
             return EnrollmentOutcome.Failed(EnterpriseEnrollmentClient.mapHttpFailure(reply.first, reply.second), "HTTP ${reply.first.value}")
@@ -341,7 +348,7 @@ public class HubSession(
                 val response = httpClient.post("$base${HubContract.PATH_DEVICE_UNENROLL}") {
                     header(HubContract.HEADER_AUTHORIZATION, HubContract.BEARER_PREFIX + token)
                 }
-                response.status to response.bodyAsText()
+                response.status to response.boundedText()
             }.getOrElse { return@withContext UnenrollOutcome.UNREACHABLE }
             when {
                 reply.first == HttpStatusCode.OK -> {
@@ -366,7 +373,7 @@ public class HubSession(
         val base = baseUrlFor(creds) ?: return@withContext null
         val reply = runSuspendCatching {
             val response = httpClient.get("$base${HubContract.PATH_REVOCATIONS}")
-            response.status to response.bodyAsText()
+            response.status to response.boundedText()
         }.getOrNull() ?: return@withContext null
         if (reply.first != HttpStatusCode.OK) return@withContext null
         val list = HubRestCodec.decodeOrNull<RevocationList>(reply.second) ?: return@withContext null
@@ -388,11 +395,14 @@ public class HubSession(
         }
     }
 
-    private companion object {
+    internal companion object {
         /** A token is renewed this long before the hub's TTL ends, so a request never races the expiry. */
         const val EXPIRY_MARGIN_MS: Long = 30_000L
 
         /** Upper bound of the jitter before the first re-authentication after a refused token (AUTH-01). */
         const val REAUTH_JITTER_MAX_MS: Long = 30_000L
+
+        /** The most a sign-in or a renewal (two round-trips) may hold the session lock, whatever the HTTP client does (CLI-02). */
+        const val NETWORK_BUDGET_MS: Long = 45_000L
     }
 }

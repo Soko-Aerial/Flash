@@ -18141,3 +18141,18 @@ Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11
 
 ### Remaining
 The other item-10 parts, then device verification.
+
+
+## 2026-10-22 - Server internals audit, Step 10B - Bounded sign-in and bounded response reads (CLI-02, CLI-03; SRVHUB-10)
+
+### Worked on
+Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (CLI-02, CLI-03).
+
+### Changed
+- CLI-02: the audit's premise was partly stale - `EnterpriseEnrollmentClient.createDefaultClient()` already installs `HttpTimeout` (10 s connect, 20 s request and socket), and both hosts build `EnterpriseHub` with it. What was missing was a guarantee for a client handed in without one. `HubSession.bearer()` and `renew()` now run the network part under `withTimeoutOrNull(NETWORK_BUDGET_MS = 45 s)` (two round-trips at 20 s plus margin): a sign-in that runs out of time is `HubAuthFailure.UNREACHABLE`, a renewal is `EnrollFailureReason.UNREACHABLE`, the lock is released and the next call tries again. The mutex stays (single-flight is the CLI-01 guarantee) rather than being narrowed, because every call inside it is now bounded.
+- CLI-03: new `boundedText(maxBytes)` (`BoundedBody.kt`) reads at most `maxBytes + 1` bytes into a buffer that grows on demand; a body that is too large comes back still too large, so the codec's existing guard refuses it, but the rest is never read. Used at all eight `bodyAsText()` sites: `HubSession` (5), `EnterpriseEnrollmentClient`, `RealHubAnnouncementsApi` (64 KiB) and `EnterpriseDirectoryClient` (2 MiB, `MAX_DIRECTORY_SYNC_BODY_BYTES`, for the sync and people pages).
+- Tests (`HubSessionTest`, 4 new): a hub that never answers `/auth/verify` is `UNREACHABLE` at exactly the budget on virtual time and the next call signs in; a renewal that never gets an answer is `UNREACHABLE` and keeps the old certificate; a 200,000-byte body is cut at 64 KiB + 1, a small one is read whole, a directory page may be larger up to its own limit; a 500,000-byte challenge is `REJECTED`. `FakeHub` gained `hangingPaths`. **Mutation:** the read limit raised to 4x failed the read test; restored.
+- Not changed: `HubFileTransfers`/`RealHubFilesApi` already read bounded (`readBounded`).
+
+### Remaining
+The other item-10 parts, then device verification.

@@ -7,10 +7,12 @@ import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.rest.HubRestCodec
 import com.transfer.flash.core.security.enterprise.MemoryEnterpriseTrustStore
+import io.ktor.client.request.get
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -206,6 +208,64 @@ class HubSessionTest {
         assertEquals(EnrollFailureReason.UNREACHABLE, assertIs<EnrollmentOutcome.Failed>(s.renew()).reason)
         assertEquals(EnrollFailureReason.UNREACHABLE, s.renewalFailure.value)
         assertEquals(10L, store.credentials.value?.deviceCert?.serial)
+    }
+
+    // ---- CLI-02: a silent hub cannot hold the session -----------------------------------------------------------
+
+    @Test
+    fun aHubThatNeverAnswersTheSignInIsUnreachableAfterTheBudgetNotForEver() = runTest {
+        enrolled()
+        scriptAuth()
+        hub.hangingPaths += FakeHub.VERIFY
+        val s = HubSession(
+            hub.client(), { store.credentials.value }, device, store, StandardTestDispatcher(testScheduler),
+            clock = { now }, reauthJitterMs = { 0L },
+        )
+        val before = testScheduler.currentTime
+        assertNull(s.bearer(false), "no token from a hub that never answers")
+        assertEquals(HubAuthFailure.UNREACHABLE, s.authFailure.value)
+        assertEquals(HubSession.NETWORK_BUDGET_MS, testScheduler.currentTime - before, "gave up at the budget")
+
+        // The lock was released: once the hub answers, the next call signs in normally.
+        hub.hangingPaths.clear()
+        assertEquals("tok-1", s.bearer(false))
+        assertNull(s.authFailure.value)
+    }
+
+    @Test
+    fun aRenewalThatNeverGetsAnAnswerIsUnreachableAndReleasesTheLock() = runTest {
+        enrolled(validTo = TestOrg.T0 + 12 * TestOrg.HOUR)
+        scriptRenew(serial = 11, validTo = TestOrg.T0 + 30 * TestOrg.DAY)
+        hub.hangingPaths += HubContract.PATH_ENROLL_RENEW
+        val s = HubSession(
+            hub.client(), { store.credentials.value }, device, store, StandardTestDispatcher(testScheduler),
+            clock = { now }, reauthJitterMs = { 0L },
+        )
+        assertEquals(EnrollFailureReason.UNREACHABLE, assertIs<EnrollmentOutcome.Failed>(s.renew()).reason)
+        assertEquals(10L, store.credentials.value?.deviceCert?.serial)
+    }
+
+    // ---- CLI-03: a response is never read past its limit --------------------------------------------------------
+
+    @Test
+    fun aBodyOverTheLimitIsCutOneByteAfterItAndASmallOneIsReadWhole() = runTest {
+        hub.respond("GET", "/big", HttpStatusCode.OK, "x".repeat(200_000))
+        hub.respond("GET", "/small", HttpStatusCode.OK, "{\"a\":1}")
+        val client = hub.client()
+        val big = client.get("https://hub.example.test/big").boundedText()
+        assertEquals(HubContract.MAX_REST_BODY_BYTES + 1, big.length, "stopped one byte past the 64 KiB limit")
+        assertEquals("{\"a\":1}", client.get("https://hub.example.test/small").boundedText())
+        val sync = client.get("https://hub.example.test/big").boundedText(HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES)
+        assertEquals(200_000, sync.length, "a directory page may be larger, up to its own limit")
+    }
+
+    @Test
+    fun anOversizedChallengeIsRefusedAsRejectedNotAllocated() = runTest {
+        enrolled()
+        hub.respond("GET", FakeHub.CHALLENGE, HttpStatusCode.OK, "x".repeat(500_000))
+        val s = session()
+        assertNull(s.bearer(false))
+        assertEquals(HubAuthFailure.REJECTED, s.authFailure.value)
     }
 
     // ---- unenrol and revocations ---------------------------------------------------------------------------------

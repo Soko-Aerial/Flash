@@ -23,7 +23,6 @@ import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -97,7 +96,7 @@ public class EnterpriseEnrollmentClient(
                 contentType(ContentType.Application.Json)
                 setBody(HubRestCodec.encode(request))
             }
-            response.status to response.bodyAsText()
+            response.status to response.boundedText()
         }.getOrElse { return@withContext EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, it::class.simpleName.orEmpty()) }
 
         val (status, body) = reply

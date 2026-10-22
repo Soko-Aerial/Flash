@@ -155,6 +155,9 @@ class FakeHub {
     var online: Boolean = true
     val routes = mutableMapOf<String, (RecordedRequest) -> Pair<HttpStatusCode, String>>()
 
+    /** Paths that accept the request and then never answer (a hub that holds the connection open). */
+    val hangingPaths = mutableSetOf<String>()
+
     fun on(method: String, path: String, handler: (RecordedRequest) -> Pair<HttpStatusCode, String>) {
         routes["$method $path"] = handler
     }
@@ -175,6 +178,7 @@ class FakeHub {
             val text = (data.body as? TextContent)?.text.orEmpty()
             val request = RecordedRequest(data.method.value, data.url.encodedPath, data.headers["Authorization"], text)
             hub.requests += request
+            if (request.path in hub.hangingPaths) kotlinx.coroutines.awaitCancellation()
             val handler = hub.routes["${request.method} ${request.path}"]
             val (status, body) = handler?.invoke(request) ?: (HttpStatusCode.NotFound to HubRestCodec.encode(ErrorBody(HubErrorCodes.ERR_NOT_FOUND)))
             return HttpResponseData(

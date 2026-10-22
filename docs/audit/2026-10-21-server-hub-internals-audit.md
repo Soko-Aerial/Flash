@@ -35,8 +35,8 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **RLY-03** | Low | `:server` relay | `draining` is set outside the hand-off gate, so a live frame can be delivered in the instant before a drain starts (ordering). | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **CLI-01** | Low | `:core:enterprise` | A 401 refresh is not single-flight: *M* concurrent 401s cause *M* serialised full sign-ins, which also feeds AUTH-01. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
-| **CLI-02** | Low | `:core:enterprise` | `HubSession.bearer()` holds a mutex across two network round-trips with no client timeout: an unreachable hub stalls every hub call on the device. | OPEN |
-| **CLI-03** | Low | `:core:enterprise` | Eight hub-client call sites read `response.bodyAsText()` with no size bound; the 64 KiB `HubRestCodec.decode` guard runs afterwards. | OPEN |
+| **CLI-02** | Low | `:core:enterprise` | `HubSession.bearer()` holds a mutex across two network round-trips with no client timeout: an unreachable hub stalls every hub call on the device. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
+| **CLI-03** | Low | `:core:enterprise` | Eight hub-client call sites read `response.bodyAsText()` with no size bound; the 64 KiB `HubRestCodec.decode` guard runs afterwards. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **FL-01** | Low | `:server` files | `FileStore.access` answers `404` for a non-sender whose blob is not `READY`, so the `409 NOT_READY` in `readChunk` is unreachable for recipients and the two paths disagree. No user-visible trigger found in the current app flow. | OPEN |
 | **DOC-01** | Info | docs/code | Five places where the documentation and the code disagree (group rosters per sync 64 vs 256 — **decided: 64**, console pin limit 400 vs 409, "the registry decides role and department", "the first 2,000 people" of presence, dead `IdentityStore.setRole`/`serialsOf`). | OPEN |
 
@@ -657,7 +657,7 @@ Two concurrent 401s (the presence poll and a file upload after a hub restart, sa
 
 **Fix direction.** Install `HttpTimeout` (e.g. 15 s request, 10 s connect) on the shared client, and narrow the mutex to the cache read/write — or keep it but guarantee every network call inside is bounded.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -675,7 +675,7 @@ Two concurrent 401s (the presence poll and a file upload after a hub restart, sa
 
 **Fix direction.** Read with `response.bodyAsChannel().readRemaining(limit + 1)` or check `contentLength()` first and refuse early; a single helper beside `Reply` covers all eight sites.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -1022,3 +1022,10 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - OPS-01: `CachedMailboxStats` wraps the database-backed `MailboxStats` for the metrics scrape, `/health/detail` and the console overview: the first snapshot is taken at start-up, a read of a snapshot older than 5 s returns the old numbers at once and starts ONE background refresh, and a failed refresh keeps the last numbers. `HubServices` and the default `FlashServerEngine` wiring use it; the in-memory `*Total` counters pass straight through.
 - Tests: `RelayByteBudgetTest` (9: a group flood refused by bytes although the frame bucket allowed it; small group messages unaffected; an oversize frame capped at the burst; the limit is per sender; a flooder is closed; a direct message is charged only its own size; the bucket's cost and refill; `beginDrain` flags; a 300,000-iteration check that the baton is never held without `draining` at a gate boundary), `CachedMailboxStatsTest` (5). **Mutations:** byte check disabled plus an unsynchronised `beginDrain` failed 6 of 9 including the stress test; reading through the database again failed 4 of 5; all restored.
 - Not changed: the stats are up to about 5 s old by design.
+
+### Step 10B - Bounded sign-in and bounded response reads (CLI-02, CLI-03; SRVHUB-10): DONE, unit tested, NOT device-verified
+
+- CLI-02: the audit's premise was partly stale - `EnterpriseEnrollmentClient.createDefaultClient()` already installs `HttpTimeout` (10 s connect, 20 s request and socket), and both hosts build `EnterpriseHub` with it. What was missing was a guarantee for a client handed in without one. `HubSession.bearer()` and `renew()` now run the network part under `withTimeoutOrNull(NETWORK_BUDGET_MS = 45 s)` (two round-trips at 20 s plus margin): a sign-in that runs out of time is `HubAuthFailure.UNREACHABLE`, a renewal is `EnrollFailureReason.UNREACHABLE`, the lock is released and the next call tries again. The mutex stays (single-flight is the CLI-01 guarantee) rather than being narrowed, because every call inside it is now bounded.
+- CLI-03: new `boundedText(maxBytes)` (`BoundedBody.kt`) reads at most `maxBytes + 1` bytes into a buffer that grows on demand; a body that is too large comes back still too large, so the codec's existing guard refuses it, but the rest is never read. Used at all eight `bodyAsText()` sites: `HubSession` (5), `EnterpriseEnrollmentClient`, `RealHubAnnouncementsApi` (64 KiB) and `EnterpriseDirectoryClient` (2 MiB, `MAX_DIRECTORY_SYNC_BODY_BYTES`, for the sync and people pages).
+- Tests (`HubSessionTest`, 4 new): a hub that never answers `/auth/verify` is `UNREACHABLE` at exactly the budget on virtual time and the next call signs in; a renewal that never gets an answer is `UNREACHABLE` and keeps the old certificate; a 200,000-byte body is cut at 64 KiB + 1, a small one is read whole, a directory page may be larger up to its own limit; a 500,000-byte challenge is `REJECTED`. `FakeHub` gained `hangingPaths`. **Mutation:** the read limit raised to 4x failed the read test; restored.
+- Not changed: `HubFileTransfers`/`RealHubFilesApi` already read bounded (`readBounded`).
