@@ -5352,8 +5352,10 @@ public class RealFlashChatRepository(
             FlashLog.w("CHAT", "Group SyncPush text exceeds length cap (${message.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
             return
         }
-        // v2: the pusher is only a relay. The message counts only if its named author signed it and is
-        // an active member, and the name stored is that member's signed label (fixes F-9 for v2).
+        // v2: the pusher is only a relay. The message counts only if its named author signed it, and the name
+        // stored is that member's signed label (fixes F-9 for v2). The author may have left since — a catch-up
+        // must still deliver the history they signed before that (F35 of the 2026-10-22 review); their live
+        // frames are refused earlier, by the membership gate on the live lanes.
         var senderName: String? = message.senderName
         var groupSig: String? = null
         if (isV2Group(frame.groupId)) {

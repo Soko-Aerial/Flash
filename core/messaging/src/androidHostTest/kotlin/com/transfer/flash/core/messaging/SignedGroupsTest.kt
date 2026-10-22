@@ -489,6 +489,31 @@ class SignedGroupsTest {
     }
 
     @Test
+    fun `history a member signed before leaving still reaches a newcomer`() = runBlocking {
+        // F35 of the 2026-10-22 review: catch-up checked the author against *today's* active roster, so a message
+        // written by someone who has since left came back as "bad_signature" and the group lost its own history.
+        mesh("dev-a", "dev-b", "dev-c", "dev-d")
+        val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
+        say("dev-b", groupId, "before b left")
+        settleLong()
+
+        val left = nodes.getValue("dev-b").repo.leaveGroup(groupId)
+        assertTrue("leave must succeed: $left", left is FlashResult.Success)
+        settle()
+        assertEquals("b is a tombstone here", setOf("dev-a", "dev-c"), active("dev-a", groupId))
+
+        val added = nodes.getValue("dev-a").repo.addGroupMembers(groupId, setOf("dev-d"))
+        assertTrue("add must succeed: $added", added is FlashResult.Success)
+        settleLong()
+
+        val history = stored("dev-d", groupId, "before b left")
+        assertNotNull("the newcomer catches up through a signed relay", history)
+        assertEquals("the true author, now a former member", "dev-b", history!!.senderId)
+        assertEquals("the roster label the tombstone still carries", "Bo", history.senderName)
+        assertNotNull("and it is still a signed row", history.groupSig)
+    }
+
+    @Test
     fun `a member who leaves is a tombstone everywhere and their later messages are dropped`() = runBlocking {
         mesh("dev-a", "dev-b", "dev-c")
         val groupId = createGroup("dev-a", "Team", "dev-b", "dev-c")
