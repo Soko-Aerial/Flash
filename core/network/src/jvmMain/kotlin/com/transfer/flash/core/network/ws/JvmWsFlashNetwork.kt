@@ -182,7 +182,11 @@ public class JvmWsFlashNetwork(
             ticker = keepaliveTicker,
         )
         server = serverImpl
-        val port = runCatching { serverImpl.start() }.getOrElse {
+        // 2026-10-22 review F8: honour the requested port. `0` keeps the historical behaviour — the preferred port with
+        // an ephemeral fallback — so a caller that does not care is unchanged.
+        val port = runCatching {
+            if (listenPort > 0) serverImpl.start(listenPort) else serverImpl.start()
+        }.getOrElse {
             running.set(false)
             return@withContext FlashResult.Failure(FlashError.NetworkUnavailable("WS server start failed: ${it.message}"))
         }
