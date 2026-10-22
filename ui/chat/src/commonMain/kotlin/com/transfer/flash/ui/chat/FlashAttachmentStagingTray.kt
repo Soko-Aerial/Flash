@@ -91,10 +91,10 @@ fun FlashAttachmentStagingTray(
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space8),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            itemsIndexed(
+            items(
                 items = stagedAttachments,
-                key = { index, item -> "${item.uri}_$index" },
-            ) { _, item ->
+                key = { it.id },
+            ) { item ->
                 StagedAttachmentCard(
                     item = item,
                     onRemove = { onRemove(item) },
