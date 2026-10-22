@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -439,6 +440,10 @@ fun FlashImageTile(
     onIntrinsicRatio: ((Float) -> Unit)? = null,
 ) {
     val imageDecoder = rememberFlashImageDecoder()
+    // pointerInput(Unit) never restarts, so it must read the CURRENT callbacks: in selection mode a tap
+    // toggles the selection, and a stale one opened the viewer over it (RVW22 F30).
+    val currentOnClick by rememberUpdatedState(onClick)
+    val currentOnLongPress by rememberUpdatedState(onLongPress)
     var isPressed by remember { mutableStateOf(false) }
     val motion = FlashTheme.motion
     val scale by animateFloatAsState(
@@ -527,8 +532,8 @@ fun FlashImageTile(
                         tryAwaitRelease()
                         isPressed = false
                     },
-                    onTap = { onClick() },
-                    onLongPress = { onLongPress() },
+                    onTap = { currentOnClick() },
+                    onLongPress = { currentOnLongPress() },
                 )
             }
             // detectTapGestures is invisible to accessibility services: the tile had a described

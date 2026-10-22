@@ -383,8 +383,8 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
         peerAudioLevel = peerAudioLevel,
     )
 
-    val outerScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking, scale.value)
-    val middleScale = FlashCallRippleMath.computeMiddleGlowScale(isSpeaking, scale.value)
+    // `scale` is read only inside the graphicsLayer lambdas below: reading it here subscribed the whole block to
+    // the 60 Hz pulse for the length of the call (RVW22 F69).
     val outerAlpha = if (isSpeaking) FlashCallRippleMath.SPEAKING_ALPHA else if (state.state == FlashCallState.RINGING) FlashCallRippleMath.RESTING_ALPHA_RINGING else FlashCallRippleMath.RESTING_ALPHA_ACTIVE
     val middleAlpha = if (isSpeaking) 0.26f else if (state.state == FlashCallState.RINGING) 0.16f else 0.10f
 
@@ -396,6 +396,7 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
                     modifier = Modifier
                         .size(172.dp)
                         .graphicsLayer {
+                            val outerScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking, scale.value)
                             scaleX = outerScale
                             scaleY = outerScale
                         }
@@ -406,6 +407,7 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
                     modifier = Modifier
                         .size(144.dp)
                         .graphicsLayer {
+                            val middleScale = FlashCallRippleMath.computeMiddleGlowScale(isSpeaking, scale.value)
                             scaleX = middleScale
                             scaleY = middleScale
                         }
@@ -422,7 +424,7 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
             // Group Call: Participant Tiles Grid
             FlashGroupParticipantsGrid(
                 participants = state.participants,
-                pulseScale = scale.value,
+                pulseScale = scale,
             )
         }
         Spacer(Modifier.height(FlashSpacing.space20))
@@ -451,7 +453,7 @@ private fun FlashCallIdentityBlock(state: FlashCallUiState, session: FlashCallMe
 @Composable
 private fun FlashGroupParticipantsGrid(
     participants: List<com.transfer.flash.core.calling.model.FlashCallParticipantUi>,
-    pulseScale: Float,
+    pulseScale: State<Float>,
 ) {
     val colors = FlashTheme.colors
     val displayed = participants.take(6)
@@ -474,11 +476,12 @@ private fun FlashGroupParticipantsGrid(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             if (participant.isSpeaking) {
-                                val ringScale = FlashCallRippleMath.computeOuterGlowScale(isSpeaking = true, pulseScale)
                                 Box(
                                     modifier = Modifier
                                         .size(FlashDimensions.avatarLg + 18.dp)
                                         .graphicsLayer {
+                                            val ringScale =
+                                                FlashCallRippleMath.computeOuterGlowScale(isSpeaking = true, pulseScale.value)
                                             scaleX = ringScale
                                             scaleY = ringScale
                                         }

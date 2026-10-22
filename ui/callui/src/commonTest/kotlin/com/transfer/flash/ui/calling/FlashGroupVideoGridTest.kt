@@ -177,6 +177,14 @@ class FlashGroupVideoGridTest {
         assertFalse(healthWarningText(FlashCallHealthWarning.CPU).contains("360p"))
     }
 
+    @Test
+    fun `the compact main tile is one entry even when a peer is listed twice`() {
+        val a = FlashCallParticipantUi(peerId = "a", name = "A", state = FlashCallParticipantState.CONNECTED)
+        val b = FlashCallParticipantUi(peerId = "b", name = "B", state = FlashCallParticipantState.CONNECTED)
+        assertEquals(listOf(a), mainVideoTiles(listOf(a, b, a.copy(name = "A again")), "a"))
+        assertEquals(listOf(b), mainVideoTiles(listOf(a, b), "b"))
+    }
+
     private fun call(participants: List<FlashCallParticipantUi>) = FlashCallUiState(
         callId = "c", peerId = "g", peerName = "Group", direction = FlashCallDirection.OUTGOING,
         video = true, state = FlashCallState.ACTIVE, isGroup = true, participants = participants, compactVideo = true,
