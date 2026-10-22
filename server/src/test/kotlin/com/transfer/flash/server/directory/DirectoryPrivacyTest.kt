@@ -172,7 +172,51 @@ class DirectoryPrivacyTest {
         assertTrue(biggest < com.transfer.flash.core.hubprotocol.HubContract.MAX_DIRECTORY_SYNC_BODY_BYTES, "a full page fits the client's directory bound ($biggest bytes)")
     }
 
-    // PRIV-U04: hidden never leaks via search, counts, cursor, groups.
+    // 2026-10-22 review F2: `|` is an ordinary printable character, so the cursor must not be split on it.
+    @Test
+    fun theCursorSurvivesAVerticalBarInTheDisplayName() {
+        for (name in listOf("alice | engineering", "a|b|c", "", "x", "é|ü")) {
+            assertEquals(
+                DirectoryPrivacy.PeopleCursor(name, "dev-1"),
+                DirectoryPrivacy.decodeCursor(DirectoryPrivacy.encodeCursor(name, "dev-1")),
+                "name='$name'",
+            )
+        }
+        // A cursor written by an older hub build is still accepted (an upgrade in the middle of a page must not answer 400).
+        val legacy = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString("v1|alice|dev-1".toByteArray())
+        assertEquals(DirectoryPrivacy.PeopleCursor("alice", "dev-1"), DirectoryPrivacy.decodeCursor(legacy))
+        assertNull(DirectoryPrivacy.decodeCursor("not-base64!!"))
+        assertNull(DirectoryPrivacy.decodeCursor(null))
+    }
+
+    @Test
+    fun aDisplayNameWithAVerticalBarPagesWithoutDuplicatesOrLoops() = testApplication {
+        val w = World()
+        mount(w)
+        // A role-style name, which is exactly where a vertical bar turns up.
+        listOf("Alice | Engineering", "Alice Admin", "Bob | Ops", "Carol").forEachIndexed { i, name ->
+            w.dir.addDepartmentMember("dept-a", "dev-$i", name)
+        }
+        val alice = w.token("alice-01")
+        val expected = (w.dir.listDepartmentMembers("dept-a") + w.dir.listDepartmentMembers("dept-b"))
+            .sortedWith(compareBy({ m -> m.displayName.lowercase() }, { m -> m.deviceId })).map { m -> m.deviceId }
+        val seen = mutableListOf<String>()
+        var cursor: String? = null
+        var pages = 0
+        do {
+            val url = "/api/v1/directory/people?limit=2" + (cursor?.let { "&cursor=$it" } ?: "")
+            val page = HubRestCodec.decode<PeoplePageDto>(client.getAs(url, alice).bodyAsText())
+            seen += page.people.map { it.deviceId }
+            cursor = page.nextCursor
+            pages++
+        } while (cursor != null && pages < 20)
+
+        assertEquals(expected, seen, "each person exactly once, in order, across a name that contains |")
+        assertTrue(pages < 20, "paging terminated instead of looping on its own cursor")
+        assertTrue(seen.contains("dev-0"), "the person whose name contains | was returned")
+    }
+
+
     @Test
     fun hiddenPeopleNeverLeakThroughSearchCountsOrCursors() = testApplication {
         val w = World()
