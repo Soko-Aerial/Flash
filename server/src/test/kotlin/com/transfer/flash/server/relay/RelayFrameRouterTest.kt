@@ -206,6 +206,24 @@ class RelayFrameRouterTest {
         assertFalse(rig.pool.isConnected("bob"))
     }
 
+    @Test
+    fun spilledMessageRefusedByMailboxIncrementsDroppedCountExactlyOnce() = runBlocking<Unit> {
+        val store = mailbox(MailboxLimits(perRecipientRows = 1))
+        store.enqueue(MailboxMessage("someone", "bob", "existing", "MSG_TEXT", "{}", 1000L))
+        val initialDropped = store.droppedTotal()
+        val rig = rig(store)
+        val (alice, _) = rig.connect("alice")
+        val (bob, bobWs) = rig.connect("bob")
+
+        rig.router.processFrame(alice, send("bob", "m1"))
+        bobWs.nextOf<RelayFrame.Deliver>()
+        bob.fail("socket_died")
+
+        awaitCondition("spill completed") { store.droppedTotal() > initialDropped }
+        // F60 / ERROR-773: Must be counted exactly once, not twice
+        assertEquals(initialDropped + 1L, store.droppedTotal(), "dropped metric must be incremented exactly once per failed spill")
+    }
+
     // ---- offline / mailbox -------------------------------------------------------------------------------
 
     @Test
