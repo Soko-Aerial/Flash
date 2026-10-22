@@ -6150,3 +6150,8 @@ All four are automated-green already (§3 of the audit); each stands as the real
 ## CONSOLE-DEPT-01 / CONSOLE-REV-01 (2026-10-22)
 - **CONSOLE-DEPT-01:** after redeploy open Organization -> Departments, click a row. **Pass:** a drawer shows id, visibility, counts, administrators, members (with status badges) and groups; "Edit department" opens the edit dialog; Close leaves nothing changed; it fits a phone-width window. Source: progress 2026-10-22. Status: TODO
 - **CONSOLE-REV-01:** revoke a test device, restore it, try to connect it with its old certificate, then enrol it with a new invite. **Pass:** old certificate refused after restore; new invite works; it has no groups or admin roles until re-added; console texts say so. Source: ERROR-750. Status: TODO
+
+
+## HUBNAV-01 / HUBVOICE-01 (2026-10-22)
+- **HUBNAV-01:** desktop, enrolled: open the Hub tab, open a colleague chat from it, click Chats in the sidebar, then click a chat with a new message. **Pass:** the list pane shows the chat list (Chats highlighted), not the Hub. Also with the Hub open and no chat open. Source: ERROR-751. Status: TODO
+- **HUBVOICE-01:** a colleague (not paired) sends a voice note to a hub group and to you 1:1. **Pass:** it downloads and plays from the chat bubble with no Accept; with voice auto-download off, the badge shows Download and one tap downloads it. A file or video from the same person still waits for Accept. Source: ERROR-751. Status: TODO

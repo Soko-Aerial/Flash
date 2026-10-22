@@ -1686,7 +1686,10 @@ public class DesktopEngine(
                             mime.startsWith("video/") -> s.autoDownloadVideo
                             else -> s.autoDownloadFile
                         }
-                        shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
+                        // Voice notes follow their own setting for a verified hub colleague too (they are small and a tap per note
+                        // is not a chat); every other kind still needs a paired sender.
+                        val voiceFromColleague = mime.startsWith("audio/") && s.autoDownloadVoice && orgPeerResolver.isOrgPeer(peerId)
+                        voiceFromColleague || shouldAutoAcceptOffer(trustStoreImpl.isTrusted(FlashDeviceId(peerId)), perKind, autoAcceptIncoming)
                     },
                 ).also { it.start() }
                 // ADR-217: deleting a file's message for everyone (or while it still uploads) stops the hub upload too.

@@ -122,6 +122,27 @@ class FlashHubNavigationTest {
     }
 
     @Test
+    fun `the Chats tab tapped on the Hub replaces the stack so the Hub does not stay beside the chat`() {
+        val nav = FlashNavigationState()
+        nav.updateHubEnrolled(true)
+        nav.selectTab(FlashDestination.Hub)
+        nav.selectChatsTab("c1")
+        assertEquals(false, nav.conversationOpenedFromHub)
+        assertEquals(FlashDestination.ChatList, nav.shellTab)
+        assertEquals(FlashDestination.Conversation, nav.current.destination)
+        assertEquals("c1", nav.current.conversationId)
+        // From a chat opened out of the Hub as well.
+        nav.selectTab(FlashDestination.Hub)
+        nav.navigate(FlashDestination.Conversation, "c2")
+        nav.selectChatsTab("c2")
+        assertEquals(false, nav.conversationOpenedFromHub)
+        assertEquals(FlashDestination.ChatList, nav.shellTab)
+        nav.selectChatsTab(null)
+        assertEquals(FlashDestination.ChatList, nav.current.destination)
+        assertEquals(1, nav.stackSize)
+    }
+
+    @Test
     fun `a chat opened from the chat list is not flagged as coming from the Hub`() {
         val nav = FlashNavigationState()
         nav.updateHubEnrolled(true)

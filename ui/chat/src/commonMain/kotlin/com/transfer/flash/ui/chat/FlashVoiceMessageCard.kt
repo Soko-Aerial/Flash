@@ -245,6 +245,13 @@ fun FlashVoiceMessageCard(
     val a11yDescription = when (attachment.transferStatus) {
         FlashFileTransferStatus.NotDownloaded ->
             "Voice message, ${FlashVoiceMath.formatDuration(durationMs)}. Double-tap to download."
+        // An incoming offer waits for THIS device's tap; the badge says so (it used to look like an automatic wait).
+        FlashFileTransferStatus.AwaitingAcceptance ->
+            if (isParentOutgoing) {
+                "Voice message waiting for the recipient to accept."
+            } else {
+                "Voice message, ${FlashVoiceMath.formatDuration(durationMs)}. Double-tap to download."
+            }
         FlashFileTransferStatus.Failed ->
             "Voice message failed to download. Double-tap to retry."
         FlashFileTransferStatus.Cancelled ->
@@ -266,7 +273,8 @@ fun FlashVoiceMessageCard(
         } else if (attachment.transferStatus != FlashFileTransferStatus.Downloaded) {
             // H-18: a note that is not on this device has nothing to play. The badge shows Download / Retry / Resume, so the
             // tap asks the host to do that (it used to start a silent demo ticker and download nothing).
-            onActionClick()
+            // Our own note waiting for the recipient has nothing for this device to accept.
+            if (!(isParentOutgoing && attachment.transferStatus == FlashFileTransferStatus.AwaitingAcceptance)) onActionClick()
         } else {
             if (isPlaying || elapsedMs < durationMs) hasStarted = true
             if (!isPlaying && elapsedMs >= durationMs && durationMs > 0L) {
@@ -317,6 +325,7 @@ fun FlashVoiceMessageCard(
                 transferStatus = attachment.transferStatus,
                 isPlaying = isPlaying,
                 onTogglePlay = togglePlay,
+                outgoing = isParentOutgoing,
             )
             Spacer(modifier = Modifier.height(FlashSpacing.space4))
             FlashVoiceSpeedPill(
@@ -374,6 +383,7 @@ private fun FlashVoiceBadge(
     isPlaying: Boolean,
     onTogglePlay: () -> Unit,
     modifier: Modifier = Modifier,
+    outgoing: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -402,7 +412,10 @@ private fun FlashVoiceBadge(
         FlashFileTransferStatus.Cancelled -> FlashIcons.Close to "Voice message transfer cancelled"
         FlashFileTransferStatus.Transferring -> FlashIcons.Clock to "Downloading voice message"
         FlashFileTransferStatus.Paused -> FlashIcons.Play to "Resume downloading voice message"
-        FlashFileTransferStatus.AwaitingAcceptance -> FlashIcons.Clock to "Voice message waiting to download"
+        // Incoming: the recipient (this device) has to accept, so the badge is the Download action, as on the file card.
+        FlashFileTransferStatus.AwaitingAcceptance ->
+            if (outgoing) FlashIcons.Clock to "Voice message waiting to be accepted"
+            else FlashIcons.Download to "Download voice message"
         FlashFileTransferStatus.Downloaded ->
             if (isPlaying) FlashIcons.Pause to "Pause voice message" else FlashIcons.Play to "Play voice message"
     }

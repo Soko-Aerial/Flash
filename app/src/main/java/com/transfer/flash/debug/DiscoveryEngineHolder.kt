@@ -2015,7 +2015,8 @@ object DiscoveryEngineHolder {
             },
             peerName = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
             autoDownload = { peerId, mime ->
-                trustStore.isTrusted(peerId) && when {
+                // Voice notes follow their own setting for a verified hub colleague too; every other kind needs a paired sender.
+                (mime.startsWith("audio/") && autoDownloadVoice && orgPeerResolver.isOrgPeer(peerId)) || trustStore.isTrusted(peerId) && when {
                     mime.startsWith("audio/") -> autoDownloadVoice
                     mime.startsWith("image/") -> autoDownloadImage
                     mime.startsWith("video/") -> autoDownloadVideo

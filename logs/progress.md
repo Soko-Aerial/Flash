@@ -1,5 +1,14 @@
 # Progress Log
 
+## 2026-10-22 (latest) - Chats tab from the Hub, and hub voice notes download by themselves (ERROR-751)
+
+### Changed
+- `FlashNavigation.kt` `selectChatsTab`; `DesktopShell.kt` and `MainActivity.kt` Chats tap; `FlashVoiceMessageCard.kt` (Download badge for an incoming offer, no accept on our own note); `DesktopEngine.kt` and `DiscoveryEngineHolder.kt` hub auto-download (voice from a verified colleague).
+### Verified
+- Nav unit test, desktop and Android compile. Not run on a device.
+### Next AI
+- Voice from an unpaired colleague is now automatic: this relaxes ADR-222/D18 for audio only (owner request 2026-10-22); record it in `docs/decisions.md` if it is kept.
+
 ## 2026-10-22 (latest) - Department details drawer in the console; honest "restore device" text (ERROR-750)
 
 ### Worked on
