@@ -100,7 +100,16 @@ public object HubSealing {
 
     /**
      * Seals [body] (a chat text of kind [innerType]) for [recipientDeviceId]. Returns the payload text for a
-     * [ENVELOPE_TYPE] relay message. [crypto] signs with the device identity key.
+     * [ENVELOPE_TYPE] relay message, or null when no envelope could be built (see below). [crypto] signs with the
+     * device identity key.
+     *
+     * **Null is not "no key for this peer".** A caller reaches this method only after the directory supplied a
+     * sealing key that the recipient's identity key signed, so null means *that key cannot be used right now*: its
+     * SPKI bytes are not a P-256 public key (a modified client can publish and sign garbage, because the binding
+     * signature covers the bytes rather than validating them), or the identity key refused to sign. Both used to
+     * escape as an `InvalidKeySpecException` / platform crypto exception from the send path and crash the app
+     * (F65 of the 2026-10-22 review). Callers must treat null as "not now" — keep the message queued — and **never**
+     * fall back to sending [body] in the clear; that decision belongs to the readable-content opt-in, not here.
      */
     public fun seal(
         crypto: FlashCrypto,
@@ -111,25 +120,27 @@ public object HubSealing {
         sentAt: Long,
         innerType: String,
         body: String,
-    ): String {
+    ): String? {
         require('\n' !in innerType) { "inner type must be a single line" }
-        val ephemeral = ecP256GenerateKeyPair()
-        val key = deriveKey(
-            ecP256SharedSecret(ephemeral.privateKey, recipientSealingPublicKey),
-            ephemeral.publicKeyEncoded,
-            recipientSealingPublicKey,
-        )
-        val nonce = secureRandomBytes(NONCE_BYTES)
-        val aad = aad(senderDeviceId, recipientDeviceId, msgId, sentAt)
-        val ciphertext = aesGcmSeal(key, nonce, aad, "$innerType\n$body".encodeToByteArray())
-        val signature = crypto.sign(signedBytes(aad, ephemeral.publicKeyEncoded, nonce, ciphertext))
-        return listOf(
-            VERSION_TAG,
-            Base64.encode(ephemeral.publicKeyEncoded),
-            Base64.encode(nonce),
-            Base64.encode(ciphertext),
-            Base64.encode(signature),
-        ).joinToString(".")
+        return runCatching {
+            val ephemeral = ecP256GenerateKeyPair()
+            val key = deriveKey(
+                ecP256SharedSecret(ephemeral.privateKey, recipientSealingPublicKey),
+                ephemeral.publicKeyEncoded,
+                recipientSealingPublicKey,
+            )
+            val nonce = secureRandomBytes(NONCE_BYTES)
+            val aad = aad(senderDeviceId, recipientDeviceId, msgId, sentAt)
+            val ciphertext = aesGcmSeal(key, nonce, aad, "$innerType\n$body".encodeToByteArray())
+            val signature = crypto.sign(signedBytes(aad, ephemeral.publicKeyEncoded, nonce, ciphertext))
+            listOf(
+                VERSION_TAG,
+                Base64.encode(ephemeral.publicKeyEncoded),
+                Base64.encode(nonce),
+                Base64.encode(ciphertext),
+                Base64.encode(signature),
+            ).joinToString(".")
+        }.getOrNull()
     }
 
     /**
