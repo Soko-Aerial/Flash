@@ -7,6 +7,11 @@ import kotlin.test.assertTrue
 class PttJitterBufferTest {
     private fun packet(seq: Long): ByteArray = byteArrayOf(seq.toByte(), 0x00)
 
+    private companion object {
+        /** The top of the wire's u32 sequence space (`PttAudioFrame.seq`). */
+        const val U32_MAX = 0xFFFF_FFFFL
+    }
+
     @Test
     fun starvesUntilDepthFillThenPlaysInOrder() {
         val buffer = PttJitterBuffer(targetDepthMs = 60L)
@@ -34,6 +39,60 @@ class PttJitterBufferTest {
         val first = buffer.poll(20L)
         assertTrue(first is PttJitterBuffer.Poll.Ready)
         assertEquals(0L, first.seq)
+    }
+
+    /**
+     * RVW22 F45 (ordering half): the buffer starts at the lowest sequence it holds, so the first two
+     * packets may arrive in either order as long as both are in hand before playout begins.
+     */
+    @Test
+    fun theFirstPacketsMayArriveInTheWrongOrder() {
+        val buffer = PttJitterBuffer(targetDepthMs = 40L) // two 20 ms packets.
+        buffer.push(1L, 20L, packet(1L))
+        buffer.push(0L, 0L, packet(0L))
+
+        val first = buffer.poll(20L)
+        assertTrue(first is PttJitterBuffer.Poll.Ready)
+        assertEquals(0L, first.seq)
+        val second = buffer.poll(20L)
+        assertTrue(second is PttJitterBuffer.Poll.Ready)
+        assertEquals(1L, second.seq)
+        assertEquals(0L, buffer.stats().late)
+    }
+
+    /**
+     * RVW22 F45 (wrap half): `seq` is a u32 on the wire. 0 after 0xFFFFFFFF is the next packet, so it
+     * must play, not be counted late. Reported sequence numbers are in the buffer's unwrapped domain.
+     */
+    @Test
+    fun aSequenceThatWrapsIsTheNextPacketNotAnOldOne() {
+        val buffer = PttJitterBuffer(targetDepthMs = 20L)
+        buffer.push(U32_MAX - 1, 0L, packet(0L))
+        assertTrue(buffer.poll(20L) is PttJitterBuffer.Poll.Ready, "the first packet starts playout")
+
+        buffer.push(U32_MAX, 20L, packet(1L))
+        val last = buffer.poll(20L)
+        assertTrue(last is PttJitterBuffer.Poll.Ready)
+        assertEquals(U32_MAX, last.seq)
+
+        buffer.push(0L, 40L, packet(2L)) // the wrap: +1, not -4294967295.
+        val wrapped = buffer.poll(20L)
+        assertTrue(wrapped is PttJitterBuffer.Poll.Ready, "a wrapped sequence is the next packet, not late audio")
+        assertEquals(U32_MAX + 1, wrapped.seq)
+        assertEquals(0L, buffer.stats().late)
+        assertEquals(0L, buffer.stats().lost)
+    }
+
+    @Test
+    fun aDuplicateAcrossTheWrapIsStillADuplicate() {
+        val buffer = PttJitterBuffer(targetDepthMs = 40L)
+        buffer.push(U32_MAX, 0L, packet(1L))
+        buffer.push(0L, 20L, packet(2L)) // +1 across the wrap.
+        buffer.push(0L, 20L, packet(2L))
+
+        assertEquals(1L, buffer.stats().duplicates)
+        assertEquals(2L, buffer.stats().received)
+        assertTrue(buffer.poll(20L) is PttJitterBuffer.Poll.Ready)
     }
 
     @Test
