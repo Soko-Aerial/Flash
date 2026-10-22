@@ -74,9 +74,15 @@ public class FlashRelayClient(
         get() = hubUrlState.value
         set(value) {
             val old = hubUrlState.getAndUpdateCompat(value)
-            if (old != value && running) {
-                scope.launch { runCatching { transport.disconnect("Hub address changed") } }
-                wake.trySend(Unit)
+            if (old != value) {
+                // 2026-10-22 review F4: same discipline as stop(): the close is remembered (under the lifecycle lock) so the loop waits for it
+                // before it dials the new hub; a bare launch could finish after the new handshake and kill the fresh session (ERROR-397).
+                withRelayLock(lifecycleLock) {
+                    if (running) {
+                        pendingDisconnect = scope.launch { runCatching { transport.disconnect("Hub address changed") } }
+                        wake.trySend(Unit)
+                    }
+                }
             }
         }
 
@@ -289,6 +295,8 @@ public class FlashRelayClient(
             }
             _nextRetryAtMs.value = null
 
+            // A close that stop() or an address change started must finish first (RVW22 F4).
+            withRelayLock(lifecycleLock) { pendingDisconnect }?.join()
             val connected = transport.connect(hubUrl = url, identity = identity)
             val connectedAt = timeSource.nowMs()
             if (connected) {

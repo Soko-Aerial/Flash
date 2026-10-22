@@ -348,4 +348,18 @@ class HubSessionTest {
         hub.on("GET", HubContract.PATH_REVOCATIONS) { HttpStatusCode.OK to HubRestCodec.encode(forger.revocations(serials = setOf(10L))) }
         assertNull(session().fetchRevocations())
     }
+
+    /** RVW22 F3: credentials replaced between the caller's first read and its turn on the lock must not be signed in with. */
+    @Test
+    fun aSignInUsesTheCredentialsThatAreCurrentWhenItGetsTheLock() = runTest {
+        val old = org.credentialsFor("dev-1", device, serial = 10L)
+        val renewed = org.credentialsFor("dev-1", device, serial = 11L)
+        var reads = 0
+        scriptAuth()
+        val s = HubSession(hub.client(), { if (reads++ == 0) old else renewed }, device, store, clock = { now }, reauthJitterMs = { 0L })
+        assertEquals("tok-1", s.bearer(false))
+        val body = hub.requests.single { it.path == FakeHub.VERIFY }.body
+        assertTrue(body.contains("\"serial\":11"), "signed in with the renewed certificate: $body")
+        assertTrue(!body.contains("\"serial\":10,"), "never with the superseded serial: $body")
+    }
 }

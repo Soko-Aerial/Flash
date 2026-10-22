@@ -156,6 +156,9 @@ public class HubSession(
             if (tokenStillLooksValid) delay(reauthJitterMs().coerceIn(0L, REAUTH_JITTER_MAX_MS))
         }
         mutex.withLock {
+            // 2026-10-22 review F3: read again under the lock. A renewal that finished while this caller waited has stored a newer certificate;
+            // signing in with the serial read before the wait would be refused as superseded and flag a valid device as failed.
+            val creds = credentials() ?: return@withLock null
             val now = clock()
             val current = cached
             val usable = current != null && current.serial == creds.deviceCert.serial &&
@@ -242,8 +245,10 @@ public class HubSession(
     public suspend fun renew(): EnrollmentOutcome = withContext(ioDispatcher) {
         val creds = credentials() ?: return@withContext EnrollmentOutcome.Failed(EnrollFailureReason.INVITE_REJECTED, "not enrolled")
         val outcome = mutex.withLock {
+            // 2026-10-22 review F3: the credentials are read under the lock; a sign-in or renewal that ran first may have replaced them.
+            val lockedCreds = credentials() ?: return@withLock EnrollmentOutcome.Failed(EnrollFailureReason.INVITE_REJECTED, "not enrolled")
             // CLI-02: bounded like the sign-in; a hub that never answers is "unreachable", not a held lock.
-            val result = withTimeoutOrNull(NETWORK_BUDGET_MS) { renewLocked(creds) }
+            val result = withTimeoutOrNull(NETWORK_BUDGET_MS) { renewLocked(lockedCreds) }
                 ?: EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, "timeout")
             // 2026-10-22 review F5: the token belongs to the OLD certificate serial, so it is dropped inside the lock. Clearing it after the lock let a
             // coroutine that acquired the mutex next hand out the stale token before the write landed.

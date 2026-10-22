@@ -74,9 +74,18 @@ class ScriptedRelayTransport(private val now: () -> Long = { 0L }) : RelayTransp
 
     override suspend fun sendRaw(rawText: String): Boolean = sendResult
 
+    /** When set, [disconnect] reports DISCONNECTED at once but only finishes closing the socket when this completes (a slow close). */
+    var disconnectGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    /** Closes that finished after a newer connect had started: each one would have killed the fresh session (ERROR-397, RVW22 F4). */
+    var closesAfterReconnect: Int = 0
+
     override suspend fun disconnect(reason: String) {
+        val connectsWhenStarted = connectTimes.size
         disconnectReasons += reason
         if (_state.value != RelaySessionState.REVOKED) _state.value = RelaySessionState.DISCONNECTED
+        disconnectGate?.await()
+        if (connectTimes.size > connectsWhenStarted) closesAfterReconnect++
     }
 
     /** The hub (or the network) ends the live session. */
