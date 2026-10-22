@@ -6067,7 +6067,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 
 ### SRVHUB-12 — A recipient reading an unfinished blob gets a retryable answer (FL-01)
 - **Setup:** create a file, upload some chunks but do not `complete`; then `GET /api/v1/files/{id}/chunks/0` as a **recipient** (not the sender) and as the sender.
-- **Pass:** the recipient gets `409 NOT_READY` and the app retries instead of failing and deleting its partial download; the sender's answer is unchanged. Today: the recipient gets `404`, which the client treats as permanent. Not reachable through the app's own flow (the ticket is sent only after `complete`). **Source:** FL-01. **Status:** TODO
+- **Pass:** the recipient gets `409 NOT_READY` and the app retries instead of failing and deleting its partial download; the sender's answer is unchanged. Today: the recipient gets `404`, which the client treats as permanent. Not reachable through the app's own flow (the ticket is sent only after `complete`). **Source:** FL-01. **Status:** AUTOMATED PASS 2026-10-22 (`FileStoreTest`, `FileRoutesTest`, `E2eHubFileTransferContractTest`; a phone downloading a really unfinished file is still owed)
 
 ### SRVHUB-13 — A 300-member organisation syncs through the real client (DIR-04)
 - **Setup:** a real Ktor hub (in `:server:test`, or a local instance) with 300 enrolled members; a real `RealEnterpriseDirectoryClient` pointed at it; an `OrgDirectorySync` with a real DAO.

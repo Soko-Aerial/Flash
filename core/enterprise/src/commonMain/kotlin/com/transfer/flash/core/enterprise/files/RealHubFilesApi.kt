@@ -212,7 +212,8 @@ public class RealHubFilesApi(
                 op == Op.CREATE -> HubFileError.HubTooOld
                 else -> HubFileError.NotFound
             }
-            409 -> if (op == Op.READ) HubFileError.NotReady else HubFileError.Conflict
+            // FL-01: the hub answers 409 to a recipient of a file that is still uploading, on the status and the chunk routes.
+            409 -> if (op == Op.READ || op == Op.STATUS) HubFileError.NotReady else HubFileError.Conflict
             413 -> HubFileError.TooLarge(null)
             429 -> if (code == HubErrorCodes.ERR_QUOTA_EXCEEDED) {
                 HubFileError.HubFull

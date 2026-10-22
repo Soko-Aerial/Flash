@@ -194,9 +194,9 @@ class FileRoutesTest {
         assertEquals(HttpStatusCode.NoContent, client.putChunk("/api/v1/files/$fileId/chunks/1", senderToken, second).status)
         assertEquals(HttpStatusCode.NoContent, client.putChunk("/api/v1/files/$fileId/chunks/2", senderToken, third).status)
 
-        // 3. the recipient cannot see the upload yet
+        // 3. the recipient is told to come back (FL-01: 409, not 404)
         val early = client.getAs("/api/v1/files/$fileId", recipientToken)
-        assertEquals(HttpStatusCode.NotFound, early.status)
+        assertEquals(HttpStatusCode.Conflict, early.status)
         assertEquals(FileStates.UPLOADING, HubRestCodec.decode<FileStatusDto>(client.getAs("/api/v1/files/$fileId", senderToken).bodyAsText()).state)
 
         // 4. complete

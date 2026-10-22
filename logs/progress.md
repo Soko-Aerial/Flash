@@ -18156,3 +18156,17 @@ Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11
 
 ### Remaining
 The other item-10 parts, then device verification.
+
+
+## 2026-10-22 - Server internals audit, Step 10C - 409 NOT_READY for a recipient of an unfinished file (FL-01; SRVHUB-12)
+
+### Worked on
+Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11 (FL-01).
+
+### Changed
+- `FileStore.access()` now answers a listed recipient of a file that is still `UPLOADING` with `409 ERR_CONFLICT` ("This file is still uploading.") for both the status and the chunk routes; a cancelled or expired file stays `404`, and a stranger stays `403`. The client maps `409` on the STATUS route to `HubFileError.NotReady` as it already did on READ, so a download that starts early is `Interrupted` (partial file and resume state kept), not `Failed` with its state deleted.
+- Tests: `FileStoreTest` (the old expectations moved to 409; a cancelled upload still 404; a stranger 403), `FileRoutesTest` (HTTP 409), `E2eHubFileTransferContractTest.aRecipientOfAFileThatIsStillUploadingGetsATransientNotReadyNotNotFound` (the real client against the real routes: `NotReady`, transient, on status and on a chunk). **Mutation:** the new branch disabled failed 4 tests; restored.
+- Wire change: a recipient's early `GET /api/v1/files/{id}` and chunk read were `404`, now `409`. No shipped path sends the ticket before `complete`, so no deployed client observes it.
+
+### Remaining
+Nothing in the plan; device verification (`SRVHUB-*`) and the audit's other OPEN Low findings.

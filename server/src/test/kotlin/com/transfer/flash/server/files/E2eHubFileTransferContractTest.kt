@@ -216,6 +216,22 @@ class E2eHubFileTransferContractTest {
     }
 
     @Test
+    fun aRecipientOfAFileThatIsStillUploadingGetsATransientNotReadyNotNotFound() = testApplication {
+        mount()
+        val plain = Random(6).nextBytes(3000)
+        val id = HubFileSealing.newFileId()
+        // Every chunk is stored but `complete` never reaches the hub: the file stays UPLOADING.
+        val stuck = Flaky(api(client, "device-a"), "complete", budget = 0)
+        assertIs<HubUploadOutcome.Interrupted>(HubFileTransfers(stuck, MemoryHubFileStorage(), HubTransferPolicy(maxConsecutiveFailures = 2, baseBackoffMs = 1, maxBackoffMs = 2)).upload(upload(id, plain)))
+
+        val recipient = api(client, "device-b")
+        val status = assertIs<HubFileResult.Err>(recipient.status(hub, id)).error
+        assertEquals(HubFileError.NotReady, status)
+        assertTrue(status.transient, "a recipient that asks early keeps its partial download and retries")
+        assertEquals(HubFileError.NotReady, assertIs<HubFileResult.Err>(recipient.readChunk(hub, id, 0, 3000 + 16)).error)
+    }
+
+    @Test
     fun aCancelledUploadIsGoneForTheRecipient() = testApplication {
         mount()
         val plain = Random(5).nextBytes(4000)

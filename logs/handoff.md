@@ -1,6 +1,6 @@
 # Current Handoff
 
-## 2026-10-21 (server internals audit, implementation steps 1-9 of 10) - built and tested, NOT device-verified
+## 2026-10-21 (server internals audit, implementation steps 1-10 of 10) - built and tested, NOT device-verified
 
 - **Done:** audit §11 item 1 — directory-sync size budget (DIR-04, DIR-05, DOC-01 D-1). Details and the numbers: audit doc §12. `docs/protocol.md` "Sync page size" documents the bounds. Test additions: `DirectorySyncTransportTest`, `E2eDirectorySyncSizeTest` (mutation-checked), two `OrgDirectorySyncTest` cases; green with the existing `GroupRosterSyncTest`, `OrganizationDirectorySyncTest`, `:core:enterprise` JVM + Android host.
 - **Step 2 done too:** ANN-01 — announcement writes run in `BEGIN IMMEDIATE` transactions (`AnnouncementStoreConcurrencyTest`, mutation-checked; audit §12). Test-harness trap: race tests need a WAL file database with a pool > 1 (`ServerDatabase.inMemory()` has one connection).
@@ -11,8 +11,9 @@
 - **Step 7 done too:** AUTH-01 + CLI-01 - `/auth/verify` is limited per device id (burst 5, 1 per 5 s) behind a per-address ceiling (added, not in the spec), the client signs in once for concurrent 401s and jitters its first re-auth 0..30 s after a refused live token (`AuthVerifyRateLimitTest`, `HubSessionTest`, mutation-checked). Deployment doc states ~200 devices behind one address and the `FLASH_TRUSTED_PROXIES` requirement.
 - **Step 8 done too:** DIR-01 - the people-paging cursor is applied inside the store before the cut (and the lookahead row is no longer lost at limit 500); plus a defect the new test found: a full 500-person page (~75 KiB) was refused by the client's 64 KiB decode bound, so presence would have failed past ~400 people (`DirectoryPrivacyTest`, `DirectoryPrivacyClientTest`, mutation-checked).
 - **Step 9 done too:** DIR-02 + DIR-03 - a sync tells a removal only to those who could see the entity (the tombstone stores the department and its hidden flag, directory migration 4), a tombstone is dropped when its entity returns, and the client applies removals before listed rows (`DirectoryTombstoneTest`, `OrgDirectorySyncTest`, mutation-checked).
-- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. Item 10 (six small items) is NOT started.
-- **Recommended next task:** item 10 (RLY-02, RLY-03, OPS-01, CLI-02, CLI-03, FL-01), one commit each if they are independent.
+- **Step 10 done too (three commits, 10A/10B/10C):** RLY-02 a per-sender byte budget on relay fan-out (`byte_limited`), RLY-03 the drain baton and `draining` taken as one step under the gate, OPS-01 `CachedMailboxStats` (stats never block a caller), CLI-02 a 45 s budget on the sign-in and renewal under the session lock, CLI-03 `boundedText` at all eight `bodyAsText()` sites, FL-01 `409` (not `404`) for a recipient of a file still uploading. All mutation-checked; not device-verified.
+- **Rule for what follows:** one commit per plan item (§11), each with tests, backlog status and a §12 log entry. The plan (items 1-10) is implemented; what is left is device verification.
+- **Recommended next task:** deploy the hub to a test server and run `SRVHUB-01..13` from `docs/testing/TEST-BACKLOG.md`; the remaining OPEN Low findings of the audit are not in the plan.
 - **Wire change to remember:** `DirectorySyncDto.rostersTruncated` (default false) and the client now asks `limit = 200`. A hub older than this build still answers (it just caps at 500 rows and may exceed 2 MiB only if its rows are huge).
 
 ## 2026-10-21 (server & hub audit, decisions) - DOCS ONLY, NOT implemented
