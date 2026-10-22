@@ -1,5 +1,167 @@
 # Error Log
 
+
+## ERROR-759 — RVW22 CRITICAL/HIGH findings checked and found NOT to be defects (F6, F23, F32)
+
+### Date
+2026-10-22
+
+### Area
+Comprehensive review 2026-10-22 (`docs/audit/2026-10-22-comprehensive-brutal-code-review.md`)
+
+### Result
+- **F6 (draft state leaks across conversations):** both hosts wrap the conversation in `key(nav.current.conversationId ?: selectedChatConversationId)` (`DesktopShell.kt` ~1767, `MainActivity.kt` ~2572), so the composer state is remounted per conversation. No change.
+- **F23 (missing BLUETOOTH_SCAN check):** `AndroidRadioGatewayController.checkNearbyPermissions()` already requires CONNECT and SCAN on API >= 31 and the UI mapper reports `PERMISSION_MISSING`; `BluetoothPermissions.mandatory` documents that SCAN only improves latency. No change.
+- **F32 (stale video scaling mode):** `FlashCallVideoSurface.android.kt` uses a constant `SCALE_ASPECT_FIT` since the ERROR-748 fix. No change.
+
+### Status
+RESOLVED (no defect). Reopen if a device shows otherwise.
+
+
+## ERROR-758 — Re-admitted group member is refused the group secret forever (RVW22 F11)
+
+### Date
+2026-10-22
+
+### Area
+Group membership / secret handover (`RealFlashChatRepository.handleInboundGsSecretRequest`)
+
+### Symptoms (by reading the code, not reproduced)
+Part 2 of F11: `handleInboundGsSecretRequest` refuses a peer whose id is in `removedIds` of ANY stored rotation, so a member who was removed and later admitted again can never fetch a secret. Part 1 (a removed member could read what a later epoch protects) is NOT a documented guarantee: the group secret authenticates membership, message encryption is parked as FO-27.
+
+### Why no fix yet
+`GroupMemberEntity` has no re-admission epoch (`joinedAt` timestamp, `membershipVersion` cert sequence, `isActive`), and rotations carry `newEpoch`/`receivedAtMs` only. A correct rule is "refuse only if the removal is newer than the member's current admission", which needs a recorded admission epoch. That is a data-model/protocol decision (re-admission after removal is possible: `getPendingJoinRequests` marks `isPreviouslyRemoved`).
+
+### Owner question
+Record the group epoch at which a member was (re-)admitted, and compare it with the epoch of each rotation naming them? Or keep refusing, and have a re-admission always rotate the secret first?
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt` (`handleInboundGsSecretRequest`)
+- `docs/audit/2026-10-22-comprehensive-brutal-code-review.md` F11
+
+### Status
+OPEN
+
+
+## ERROR-757 — Chat UI: stale callbacks, event floods and a file card that did not download (RVW22 F10, F29, F30, F31)
+
+### Date
+2026-10-22
+
+### Area
+`:ui:platform-shims` (Android video), `:ui:chat`
+
+### Root cause and fix
+- F10 `FlashVideoSurface.android.kt`: the old `DisposableEffect(uri)` stopped the view and cleared its reference while the same `VideoView` stayed on screen, and the listeners captured the first `isPlaying`/`isMuted`/callbacks. Now `key(uri)` rebuilds the view, listeners read `rememberUpdatedState` values, `onRelease` clears refs only for the current view.
+- F29 a tap on a not-downloaded or failed/paused file card called `onOpenAttachment(null, ...)`. New `flashFileTapAction` (`FlashFileTapAction.kt`): Failed/Paused -> Resume, NotDownloaded -> Accept, no local uri -> Nothing, video -> PlayVideo, else Open. Unit-tested and mutation-checked.
+- F30 `FlashImageTile` read `onClick`/`onLongPress` once inside `pointerInput(Unit)`, so selection mode kept the first lambdas; now `rememberUpdatedState`.
+- F31 `FlashSwipeToReply` launched a coroutine per drag event and captured the first `onReply`; now one collector over a conflated channel (`null` = settle) and `rememberUpdatedState(onReply)`.
+
+### Verification
+Unit tests for F29; F10/F30/F31 compile only (`:ui:platform-shims:compileAndroidMain`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`). Device checks `RVW22H-09..12`.
+
+### Status
+OPEN (until the device checks)
+
+
+## ERROR-756 — Discovery and radio: a failed or hung resolve was a permanent ghost; Bluetooth EOF was never seen (RVW22 F20, F21, F22)
+
+### Date
+2026-10-22
+
+### Area
+`:core:discovery` (NSD legacy resolve, Android < 34), `:core:radio` (RFCOMM)
+
+### Root cause and fix
+- F20/F21 `NsdResolveQueue` only logged `onResolveFailed`, so the service stayed `monitored` forever, and a resolve that neither resolved nor failed held the single in-flight slot for ever. Now a 6 s per-attempt timeout (`resolveSeq`, daemon `ScheduledExecutor`), `onFailed(serviceName, errorCode)`, and `NsdTransport` demotes the named service and retries it (`MonitorEvents.onResolveFailed`). The failure path is unit-tested and mutation-checked; the timeout itself is not (NsdServiceInfo stubs), device check only.
+- F22 `RfcommLink.read` used `available()` polling and could not see the end of the stream. New `BlockingStreamReader` (daemon pump thread, conflated channel, 0 on timeout, -1 on EOF, IOException surfaced), 4 host tests, mutation-checked.
+
+### Status
+OPEN (until `RVW22H-04`, `RVW22H-05`)
+
+
+## ERROR-755 — Calling: a finished 1:1 call cleared a group call's overlay; severe heat ignored Data Saver; call-screen draw-phase cost (RVW22 F24, F25, F33, F69, F70)
+
+### Date
+2026-10-22
+
+### Area
+`:core:calling`, `:ui:callui`
+
+### Root cause and fix
+- F24 the 2 s overlay clear after a 1:1 call ran even when a group session had started meanwhile; now only when both sessions are null. Test in `CallCoordinatorGroupEndTest`.
+- F25 `CallHealthMonitor` SEVERE branch set `receiveCap = 1` regardless of Data Saver; now `if (dataSaver) 0 else 1`. Test in `CallHealthMonitorTest`.
+- F33 `tiles.single()` could crash on a duplicate participant; `mainVideoTiles(present, main)` takes one tile per peer.
+- F69/F70 the call screen read `scale.value` in the body (whole-screen recomposition at 60 fps) and drew the speaker ring through a recomposing modifier; reads moved into `graphicsLayer` lambdas, ring drawn in `drawWithCache`.
+
+### Status
+OPEN (until the device checks `RVW22H-06..08`)
+
+
+## ERROR-754 — PTT: negative clock on JVM, floor collision, self/untrusted recipients, reordered control frames, playout stall, buzz (RVW22 F7, F8, F9, F26, F27, F28, F71)
+
+### Date
+2026-10-22
+
+### Area
+`:core:ptt` (common + Android `PttPlayout`)
+
+### Root cause and fix
+- F7 JVM monotonic clock could be negative, so heartbeats were rejected; `anchoredElapsedMs` gives a positive clock (`PttClockTest`).
+- F8 a listener that heard two Starts in the collision window stayed on the loser; `reduceListening` RemoteStart now follows the lower-id claim.
+- F9 `startTalk` now excludes self and untrusted devices from the recipients.
+- F28 control frames ran in unordered coroutines (Stop could overtake Start); one ordered `controlInbox` channel with `processControlFrame`.
+- F71 every audio packet spawned a coroutine; a `@Volatile lastAudioPacketMs` is consumed by `tickLoop` instead (test: received audio keeps the listening session past the heartbeat timeout). Also fixed a flaky test, `a Stop that arrives right behind its Start never leaves the listener stuck`.
+- F26 Android `PttPlayout.stop()` now pauses and flushes the AudioTrack before `join(1000)` (no unit test, Android only).
+- F27 concealment repeated the last frame unattenuated; now half, quarter, then silence after `MAX_CONCEALED_PACKETS = 2` (`PttPlayoutCoreTest`).
+
+### Status
+OPEN (until `RVW22H-01..03`)
+
+
+## ERROR-753 — Swarm and hub file transfer: black-holed piece requests, chunk-count overflow, reserved names, leaking streams (RVW22 F5, F13, F15, F16, F17)
+
+### Date
+2026-10-22
+
+### Area
+swarm serving, hub files, file naming and stream selection (see the commits for the exact files)
+
+### Root cause and fix
+- F5 `ServePolicy` dropped an over-budget piece request silently so the requester waited for ever; it answers BUSY now.
+- F13 a finished upload whose key was unusable crashed with an uninitialised property; it now fails the transfer cleanly.
+- F15 `HubFileLayout.of()` could overflow into a negative chunk count; rejected.
+- F16 Windows reserved names (`CON`, `NUL`, `COM1`, `CLOCK$`...) were re-created by truncating a longer name; checked after truncation.
+- F17 `selectStreamSession`: a targeted transfer stream no longer falls back to an arbitrary peer when the named peer has no session.
+
+### Status
+OPEN (until the device checks; see backlog `RVW22H-` and the unit tests named in the commits)
+
+
+## ERROR-752 — Hub and group messaging correctness: sealed messages dropped, admin demotion, credentials race, relay connect races, outbox to removed members, mailbox resend swallowed (RVW22 F1, F2, F3, F4, F12, F14, F18, F19)
+
+### Date
+2026-10-22
+
+### Area
+`:core:messaging` (`HubChatBridge`, `GroupSignatureRules`, `RealFlashChatRepository`), `:core:enterprise` (`HubSession`, `FlashRelayClient`, `KtorRelayTransport`), `:server` (`MailboxQueue`)
+
+### Root cause and fix
+- F1 a sealed hub message that could not be opened yet (key not ready) was purged as REJECTED; now RETRY_LATER keeps it.
+- F2 a plain member could demote an admin or replace a key through a group cert; `checkCert` refuses it.
+- F3 `HubSession.bearer()/renew()` used credentials read outside the lock; now re-read under the lock.
+- F4 `pendingDisconnect` is awaited before dialling a new hub (ERROR-397 recurrence).
+- F14 `KtorRelayTransport.connect` answered true on CONNECTING and opened a second socket on AUTHENTICATING; one connect at a time.
+- F18 a displaced session's in-flight messages are spilled at once.
+- F12 `drainGroupMessage` wrote to removed members and the row waited on their acknowledgement; inactive members are skipped and the row retires (DELIVERED if anyone received it, FAILED if nobody did). Test `a member removed after the send is not written to again...`, mutation-checked. (The inbound side already checks `isActiveGroupMember`.)
+- F19 `MailboxQueue.insert` swallowed a resend of an expired, not yet swept row as a duplicate; expired/undeliverable rows are deleted first.
+
+### Verification
+Unit tests and a mutation check per fix. `:core:messaging` `testAndroidHostTest` 658 tests, 1 failure: `delete for everyone sends direct action only for the local author` (a `delay(100)` timing flake, also fails with my change stashed; passed in the earlier targeted run). Not device-verified.
+
+### Status
+OPEN (until `RVW22H-13..15`)
+
 ## ERROR-751 — Chats tab from the Hub kept the Hub on screen; a hub voice note needed Accept in Transfers
 
 ### Date
