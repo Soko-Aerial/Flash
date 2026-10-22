@@ -11,7 +11,6 @@ import android.os.Build
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashProbe
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.UUID
@@ -304,25 +303,14 @@ internal class RfcommLink(private val socket: BluetoothSocket, override val desc
     @Volatile
     private var closed = false
 
-    // BluetoothSocket streams have no read timeout: poll available() so a read can give up and honour cancellation.
-    override suspend fun read(buffer: ByteArray, timeoutMs: Long): Int = withContext(Dispatchers.IO) {
-        val deadline = System.nanoTime() + timeoutMs * 1_000_000
-        try {
-            var result = 0
-            while (true) {
-                if (closed) {
-                    result = -1
-                    break
-                }
-                val n = input.available()
-                if (n > 0) {
-                    result = input.read(buffer, 0, minOf(n, buffer.size))
-                    break
-                }
-                if (System.nanoTime() >= deadline) break
-                delay(15)
-            }
-            result
+    // BluetoothSocket streams have no read timeout and available() cannot tell a quiet peer from a gone one, so
+    // a pump thread blocks in read() (RVW22 F22): the timeout is on the hand-over, and close() wakes the pump.
+    private val reader = BlockingStreamReader(input)
+
+    override suspend fun read(buffer: ByteArray, timeoutMs: Long): Int {
+        if (closed) return -1
+        return try {
+            reader.read(buffer, timeoutMs)
         } catch (e: IOException) {
             if (closed) -1 else throw LinkException("Bluetooth read failed: ${e.message}", e)
         }
