@@ -11746,4 +11746,55 @@ None relevant — the defects were found by reading the code, not by a failing r
 ### Status
 FIXED IN CODE 2026-10-19, unit-tested and mutation-checked. Device checks HUBR-11, ANN-14, ANN-15 owed.
 
+## ERROR-741 - A cached-stats test asserted an asynchronous refresh the instant its reader returned
 
+### Date
+2026-10-22
+
+### Area
+`:server` observability tests (`CachedMailboxStatsTest`) / test correctness
+
+### Symptoms
+One full `:server:test` run (650 tests) failed on a test that passes when the class is run alone:
+
+```text
+CachedMailboxStatsTest > aStaleReadReturnsTheOldNumbersAtOnceWhileOneRefreshRuns FAILED
+java.lang.AssertionError: exactly one refresh was started, not twenty expected:<2> but was:<1>
+    at com.transfer.flash.server.observability.CachedMailboxStatsTest.aStaleReadReturnsTheOldNumbersAtOnceWhileOneRefreshRuns(CachedMailboxStatsTest.kt:60)
+```
+
+### Environment
+- Windows 10/11 PC, JVM 21, Gradle build through `tools\flash-gradle.cmd` (the shared build lock)
+- `:server:test` as part of `:server:test :app:compileDebugKotlin :desktop:compileKotlinJvm`
+- Not device-specific
+
+### Error
+`expected:<2> but was:<1>` on `db.loads.get()`.
+
+### Root cause
+The test is a race, not a product defect. `CachedMailboxStats.current()` flips its `refreshing` flag on the caller's thread and then launches the actual
+snapshot load on the cache's own `Dispatchers.IO` scope. The test's reader thread finished its 20 reads, `join()` returned, and the assertion on
+`db.loads` (which is incremented inside the launched coroutine) ran before that coroutine had been scheduled. The counter is therefore 1 or 2 depending
+on scheduling; the intent ("one refresh, not twenty") was right, the observation point was wrong.
+
+It became visible now because the review round touched this class (F6 added the `oldestAgeMs` override) and re-ran the whole suite.
+
+### Failed attempts
+1. Re-running the class alone — passes (0.3 s run, the coroutine wins the race).
+2. Assuming a product regression from the F6 change — ruled out: F6 only adds an `oldestAgeMs` override that this test never calls (it reads
+   `queuedCount()`), and the delegate's `queuedCount()` increments the same counter either way.
+
+### Working fix
+`server/src/test/kotlin/com/transfer/flash/server/observability/CachedMailboxStatsTest.kt`: after `reader.join(…)`, poll `db.loads.get()` for up to 2 s
+until it reaches 2 (the refresh has entered the delegate), then assert it is exactly 2 and only then release the latch. The test now fails only if a
+second refresh really was started.
+
+### Verification
+`:server:test` 650 tests, 0 failures, twice (once before the mutation round, once after it).
+
+### Related files
+- `server/src/test/kotlin/com/transfer/flash/server/observability/CachedMailboxStatsTest.kt`
+- `server/src/main/kotlin/com/transfer/flash/server/observability/CachedMailboxStats.kt`
+
+### Status
+RESOLVED (test-only; the product behaviour was always correct).

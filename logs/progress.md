@@ -18191,3 +18191,50 @@ Deploying the whole §11 plan (10 items) to the documented test hub (`~/flash-hu
 
 ### Remaining
 Run `SRVHUB-01..13` against this hub; renew the delegation; owner decisions (push, F6, F7, desktop transfer persistence).
+
+## 2026-10-22 - Brutal code review, round 2 (`dde95a17..6861ac61`): F1..F8 verified and fixed
+
+### Worked on
+The owner pasted a brutal review of `dev` (`dde95a17..6861ac61`, the 10-step server/hub internals audit plus the earlier review fixes) and asked for the
+fixing agent's pass. Every finding was checked against the code first; one diagnosis (F8) was wrong and one item (F7) needed no change. Full record:
+`docs/audit/2026-10-22-brutal-code-review.md` (status block, per-finding record, mutation table). The code comments written here say
+"2026-10-22 review Fn" so they cannot be confused with the 2026-10-21 review's `Fn` numbering.
+
+### Changed
+- **F1 + ADR-223** (`server/mailbox/MailboxQueue.kt`): `usage()` (per-recipient and per-sender quota), `oldestAgeMs(deviceId)` and `oldestAgesMs(limit)`
+  filter `undeliverable_reason IS NULL`. `totals()`/`queuedCount()` deliberately still count quarantined rows (disk), and `markQuarantined()` still never
+  touches `mailbox_totals` — the triggers own it, as the review warned. 3 tests in `MailboxQuarantineTest`.
+- **F2** (`server/directory/DirectoryPrivacy.kt`): the people cursor is length-framed (`v1|<len>:<name>|<deviceId>`, UTF-8 explicit) and an unframed cursor
+  from an older hub build is still parsed, so a page in flight during an upgrade does not start answering 400. 2 tests in `DirectoryPrivacyTest`.
+- **F3** (`core/network/.../androidMain/ws/WebSocketCodec.kt`): the payload buffer is rented through `ByteArrayPool.use`, so a frame cut short by EOF or a
+  timeout gives it back (8 drops used to empty the 16 KiB bucket for the process's life). Test pins the pool identity.
+- **F4** (`core/hub-protocol/.../certs/HubAuth.kt`): `RenewalPolicy.isRenewable`/`shouldRenew` derive their windows from `cert.validTo - cert.validFrom`
+  when the caller passes none — the derivation the hub already used; an explicit window still wins. Tests: `CertChainTest` + 2 `HubSessionTest` cases.
+- **F5** (`core/enterprise/.../HubSession.kt`): `cached = null` moved inside `mutex.withLock`.
+- **F6** (`server/observability/CachedMailboxStats.kt`): `oldestAgeMs(deviceId)` answers from the snapshot (+bounded drift), never the delegate.
+- **F8** (`core/network` both hosts): the review blamed Windows ephemeral-port reuse, but `WsTransferServer.start()` took no port at all and always bound
+  `PREFERRED_PORT`, so `network.start(0)` always came back on 45822 and the retry loop the review implied could never work (tried: "got 45822 ten
+  times"). Added `start(preferredPort: Int)` (the no-argument form is unchanged, source and binary) and threaded a positive `listenPort` through
+  `WsFlashNetwork`/`JvmWsFlashNetwork`; `0` keeps the old preferred-port behaviour, so production is untouched. The redial test now asks for
+  `oldPort + n`, plus a new test that asks the kernel for a free port, requests it and dials it.
+- **F7**: no change (the review itself calls it a nit; the tombstone accumulation is protection against a non-Flash hub).
+- **Found and fixed while running the suite:** `CachedMailboxStatsTest.aStaleReadReturnsTheOldNumbersAtOnceWhileOneRefreshRuns` asserted an
+  asynchronous refresh counter the instant its reader thread returned (`expected:<2> but was:<1>`, once in a full `:server:test`). It now waits for the
+  refresh to enter the delegate and then asserts it was entered exactly once. **ERROR-741**.
+
+### Verification
+- `:server:test` 650 tests, `:core:hub-protocol:jvmTest` 124 / `testAndroidHostTest` 118, `:core:enterprise:jvmTest` 268 / `testAndroidHostTest` 159,
+  `:core:network:testAndroidHostTest` 406 / `jvmTest` 313 — all 0 failures; `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green.
+- Mutation checks (each applied, the named test failed, reverted, whole set re-run green): F1 → 3 `MailboxQuarantineTest` failures; F2 → 3
+  `DirectoryPrivacyTest` failures; F3 → the pool-identity test; F4 → `CertChainTest` + `aLongLivedCertificateIsRenewedInsideItsOwnGraceWindow`; F6 → the
+  snapshot test; F8 → the redial test **and** the new explicit-port test. **F5 has none by design** (the defect is a scheduling window no test can open
+  deterministically) — said plainly in the audit.
+- Not run: no device, no emulator, no deployment.
+
+### Remaining
+`RVW22-01..04` in `docs/testing/TEST-BACKLOG.md` (device/hub checks). An owner decision if `LanProbeServer`/`DefaultFlashNetwork.start(listenPort)`
+should honour an explicit port the same way (same latent pattern, left alone).
+
+### Next AI
+The review is closed; read the audit's §4 before picking up anything from it. The test hub still runs the `6861ac61` build, so the F1/F2 server fixes
+are not deployed yet — redeploy before running `RVW22-01/02` against it.

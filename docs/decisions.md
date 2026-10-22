@@ -6514,3 +6514,36 @@ shared one per-IP bucket (AUTH-01); and a console edit cleared an announcement's
 ### Revisit when
 An organisation needs role changes without a new invite (that would make role a registry attribute everywhere), or measurements show
 200 members per page is the wrong size for a slow link.
+
+## ADR-223 - A quarantined mailbox row does not consume a device's quota, but it does consume disk
+
+### Decision
+`MailboxQueue.usage()` (the per-recipient and per-sender quota check behind `ERR_QUOTA_EXCEEDED`), `oldestAgeMs(deviceId)` and `oldestAgesMs(limit)`
+ignore rows whose `undeliverable_reason` is set. `totals()`/`queuedCount()` — the global disk budget — keep counting them until the 7-day TTL sweep
+deletes them, and `markQuarantined()` never writes `mailbox_totals` (the `mailbox_totals_ai`/`mailbox_totals_ad` triggers own that number; a manual
+decrement is counted a second time when the row is later deleted).
+
+So "how much can this device still receive" excludes rows the device will never receive, while "how much disk are these envelopes using" stays true.
+
+### Context
+ADR-222 decision 4 quarantines an unopenable sealed row instead of letting it drain the mailbox for ever, and tells the sender `DROPPED`. The row
+correctly stays on disk, but the per-device quota still counted it. A hub whose `data.key` was replaced — or a sender flooding undecryptable
+envelopes — could therefore fill a device's 1,000-row / 50 MB allowance with rows that can never be delivered, locking that device out of its own
+mailbox for the whole TTL with no way to clear it (2026-10-22 review F1, SEC-01).
+
+### Alternatives considered
+- Delete the row when it is quarantined: rejected — the TTL sweep and the `DROPPED` accounting already own the lifecycle, and deleting on the relay
+  thread turns one bad row into a write burst.
+- Keep counting quarantined rows and shorten the TTL: rejected, it changes the retention promise for every mailbox to fix one case.
+- Stop draining a device that has unreadable rows (ADR-222's rejected alternative): rejected there, not revisited.
+
+### Consequences
+- A device that already has quarantined rows can receive again as soon as it rejoins; the unreadable rows still age out at their own time.
+- The disk totals can exceed what `usage()` reports. That is intentional, and both the KDoc and the tests say so, so nobody "fixes" it back.
+- An attacker can still make a hub store 50 MB of undeliverable envelopes per device for up to 7 days. That is the same disk cost as delivering them,
+  which is why the global budget was never the problem.
+
+### Revisit when
+A hub reports disk pressure from quarantined rows (the lever is then the TTL or the per-device envelope cap), or a client can show a device its own
+quarantined rows and clear them.
+
