@@ -2,6 +2,7 @@ package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.perf.ByteArrayPool
+import com.transfer.flash.core.common.perf.use
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
@@ -360,20 +361,18 @@ public object WebSocketCodec {
         val length = header.length.toInt()
         val maskKey = if (header.masked) readFully(input, 4) else null
         val payload = if (length <= ByteArrayPool.SIZE_32KB) {
-            val pooled = ByteArrayPool.acquire(length)
-            readFullyInto(input, pooled, 0, length)
-            if (maskKey != null) {
-                for (index in 0 until length) {
-                    pooled[index] = (pooled[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+            // The buffer goes back to the pool in a `finally`: a frame cut short (EOF or timeout mid-payload, i.e. every unexpected
+            // disconnect) used to leak it, and eight such drops emptied the pool for good (2026-10-22 review F3). The copy is taken
+            // inside the block because nothing outside this file releases a received payload.
+            ByteArrayPool.use(length) { pooled ->
+                readFullyInto(input, pooled, 0, length)
+                if (maskKey != null) {
+                    for (index in 0 until length) {
+                        pooled[index] = (pooled[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+                    }
                 }
+                pooled.copyOf(length)
             }
-            // Always hand the caller an exact COPY and give the pooled buffer back. Returning the pooled array itself when its
-            // size happened to equal the frame length (16 KiB / 32 KiB, the sizes a slow link adapts down to) let it escape
-            // the pool for good: nothing outside this file releases a received payload, so eight such frames emptied the pool
-            // (brutal-review F9). One extra copy of a small frame is cheaper than the allocation churn the pool exists to stop.
-            val exact = pooled.copyOf(length)
-            ByteArrayPool.release(pooled)
-            exact
         } else {
             val buffer = ByteArray(length)
             readFullyInto(input, buffer, 0, length)
