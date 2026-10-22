@@ -18170,3 +18170,24 @@ Plan item 10 of `docs/audit/2026-10-21-server-hub-internals-audit.md` section 11
 
 ### Remaining
 Nothing in the plan; device verification (`SRVHUB-*`) and the audit's other OPEN Low findings.
+
+
+## 2026-10-22 - Server internals audit deployed to the test hub on `myserver` (build of `6861ac61`)
+
+### Worked on
+Deploying the whole §11 plan (10 items) to the documented test hub (`~/flash-hub`, compose project `flash-hub`, insecure test profile).
+
+### Changed
+- Built `:server:installDist` on the PC, packed it as one `.tgz` (47 MB; a recursive `scp` of 57 jars was too slow), unpacked into `app.new` on the server (57 jars), stopped the hub, copied `data` to `data.bak` with `sudo` (the files belong to root, the container's user), swapped `app` for `app.new`, kept the old code in `app.prev`, and ran `docker compose up -d --force-recreate hub`. The owner ran the commands; the agent's own ssh deploy was refused by the permission classifier and was not retried.
+- Rollback kept: `app.prev` (code) and `data.bak` (data, copied while the hub was stopped).
+
+### Verification
+- `GET /health` -> `{"status":"ok"}`; `docker compose ps` -> `flash-hub-hub-1 Up (healthy)`, tunnel unchanged (up 2 days). The log shows the delegate key and delegation loaded and the engine started; no migration failure or exception. The only ERROR lines are the expected dev-mode root-key banner.
+- NOT done: any `SRVHUB-01..13` check (they need a phone or the console).
+
+### Findings
+- The new CERT-01 startup warning fired: the test hub's delegation (#1) has 27 days left, shorter than a device certificate (30 days) plus the renewal grace (3 days), so certificates are cut short at the delegation's end (about 2026-11-18). Issue a longer delegation (`keytool delegate --valid-days N`, N at least 33) before then.
+- Deploy trap: `data/` is root-owned, so a plain `cp -a data` as the ssh user fails; the owner's `!` prompt is PowerShell 5.1 (no `&&`, no bash `$(...)`).
+
+### Remaining
+Run `SRVHUB-01..13` against this hub; renew the delegation; owner decisions (push, F6, F7, desktop transfer persistence).
