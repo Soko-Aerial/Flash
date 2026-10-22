@@ -168,4 +168,39 @@ class FlashCallShareTest {
         h.onStart(source, ShareQuality.LOWER, true)
         assertEquals(Triple(source, ShareQuality.LOWER, true), seen)
     }
+
+    // ---- safe source listing (F52)
+
+    @Test
+    fun `safeListSources returns sources on success`() = kotlinx.coroutines.runBlocking {
+        val expected = listOf(ShareSource(1L, "Screen", ShareSourceKind.SCREEN))
+        val h = FlashCallShareHost(listSources = { expected }, usesSystemPicker = false, onStart = { _, _, _ -> }, onStop = {})
+        assertEquals(expected, safeListSources(h))
+    }
+
+    @Test
+    fun `safeListSources catches non-cancellation exceptions and returns empty list`() = kotlinx.coroutines.runBlocking {
+        val h = FlashCallShareHost(
+            listSources = { throw IllegalStateException("Platform screen capture denied") },
+            usesSystemPicker = false,
+            onStart = { _, _, _ -> },
+            onStop = {},
+        )
+        assertEquals(emptyList(), safeListSources(h))
+    }
+
+    @Test
+    fun `safeListSources rethrows cancellation exception`() {
+        val h = FlashCallShareHost(
+            listSources = { throw kotlinx.coroutines.CancellationException("Job cancelled") },
+            usesSystemPicker = false,
+            onStart = { _, _, _ -> },
+            onStop = {},
+        )
+        kotlin.test.assertFailsWith<kotlinx.coroutines.CancellationException> {
+            kotlinx.coroutines.runBlocking {
+                safeListSources(h)
+            }
+        }
+    }
 }
