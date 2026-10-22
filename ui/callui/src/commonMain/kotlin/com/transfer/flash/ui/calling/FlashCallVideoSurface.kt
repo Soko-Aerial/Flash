@@ -41,3 +41,27 @@ internal enum class CallVideoFit {
     /** Letterbox inside the box — the corner PiP, where cropping would hide the face. */
     Fit,
 }
+
+/**
+ * The size the picture is drawn at inside a [boxWidth] x [boxHeight] box, for a frame of [frameWidth] x [frameHeight] (already turned
+ * upright). The box is the limit; the result never exceeds it and is centred by the caller.
+ *
+ * Why this exists (ERROR-748): on Android the renderer view fills whatever box it is given and the renderer then CROPS the frame to
+ * that box's aspect ratio, so `SCALE_ASPECT_FIT` alone never letterboxed anything: a desktop screen (16:9) shown on a portrait phone
+ * lost most of its width. The view is therefore sized to the picture, and the box around it supplies the bars.
+ *
+ * [CallVideoFit.Fit] always shows the whole picture. [CallVideoFit.Balanced] fills the box (cropping the excess) when the picture and
+ * the box have the same orientation, and shows the whole picture when they differ. An unknown frame size (no frame yet) fills the box.
+ */
+internal fun callVideoSize(fit: CallVideoFit, frameWidth: Int, frameHeight: Int, boxWidth: Int, boxHeight: Int): Pair<Int, Int> {
+    if (frameWidth <= 0 || frameHeight <= 0 || boxWidth <= 0 || boxHeight <= 0) return boxWidth to boxHeight
+    val sameOrientation = (frameWidth >= frameHeight) == (boxWidth >= boxHeight)
+    if (fit == CallVideoFit.Balanced && sameOrientation) return boxWidth to boxHeight
+    // Integer arithmetic: a floating-point scale could land a pixel over the box.
+    val limitedByWidth = boxWidth.toLong() * frameHeight <= boxHeight.toLong() * frameWidth
+    return if (limitedByWidth) {
+        boxWidth to (boxWidth.toLong() * frameHeight / frameWidth).toInt().coerceAtLeast(1)
+    } else {
+        (boxHeight.toLong() * frameWidth / frameHeight).toInt().coerceAtLeast(1) to boxHeight
+    }
+}

@@ -1,5 +1,34 @@
 # Error Log
 
+## ERROR-748 — A desktop screen share on the phone was cropped (about half of it missing) instead of fitted
+
+### Date
+2026-10-22
+
+### Area
+Calls / screen share, Android renderer (`ui/callui/.../FlashCallVideoSurface.android.kt`, ADR-102)
+
+### Symptoms
+Owner: the desktop's shared screen on the phone "should fit, not stretch, and about half of the screen is not displayed".
+
+### Root cause (by reading the code; NOT yet reproduced on a device)
+The call screen already asked for `CallVideoFit.Fit` while somebody presents (`videoFitFor`), but on Android that only set `SCALE_ASPECT_FIT` on a `SurfaceViewRenderer` that Compose measures `EXACTLY` to the whole box (`fillMaxSize`). WebRTC's renderer then takes the view's size as the layout aspect ratio and crops the frame to it, so the scaling type has no effect: a 16:9 desktop screen in a portrait box lost most of its width. The same applied to the `Balanced` camera mode in a box of the other orientation. The desktop actual had its own whole-picture logic, so only Android was affected.
+
+### Working fix
+The renderer is told nothing new; the VIEW is sized to the picture. `FlashCallVideoSurface.android.kt` learns each frame's upright size from `RendererCommon.RendererEvents`, and a `Layout` measures the view with `callVideoSize(fit, frame, box)` (new, pure, in `FlashCallVideoSurface.kt`): `Fit` always shows the whole picture, `Balanced` fills the box only when picture and box share an orientation, an unknown frame fills the box. The bars are black and appear only once a frame exists. Side effect: the small self-preview in the corner (`Fit`) now letterboxes instead of cropping to its 3:4 box, as its documentation always said.
+
+### Verification
+`FlashCallVideoSizeTest` 6 tests green, mutation-checked (a rule that always fills fails 4 of 6, restored); `:ui:callui:compileAndroidMain`, `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` green. NOT device-verified: `SHARE-FIT-01` in the test backlog.
+
+### Related files
+- `ui/callui/src/androidMain/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSurface.android.kt`
+- `ui/callui/src/commonMain/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSurface.kt` (`callVideoSize`)
+- `ui/callui/src/commonTest/kotlin/com/transfer/flash/ui/calling/FlashCallVideoSizeTest.kt`
+
+### Status
+RESOLVED in code (unit-tested); OPEN until `SHARE-FIT-01` passes on a phone.
+
+
 ## ERROR-747 — Console: "Set up confirmation on this browser" cut a recovery code to 8 characters and never offered a recovery-code mode
 
 ### Date
