@@ -292,6 +292,21 @@ class MailboxQueueTest {
     }
 
     @Test
+    fun aResendOfAnExpiredButUnsweptRowIsQueuedAgainNotSwallowedAsADuplicate() = runTest {
+        // RVW22 F19: the expired row was still in the table until the sweeper ran, so the sender's resend answered
+        // "duplicate of seq N" while no recipient could ever fetch seq N; the sweep then deleted it for good.
+        val q = queue(limits = MailboxLimits(ttlMs = 10_000))
+        val first = assertIs<EnqueueResult.Queued>(q.enqueue(msg("again")))
+        now.addAndGet(10_000) // expired, sweeper has not run
+        assertEquals(0, q.fetchPage("bob", 0, 10).size)
+
+        val second = assertIs<EnqueueResult.Queued>(q.enqueue(msg("again")), "the resend must be queued, not a duplicate")
+        assertTrue(second.seq > first.seq)
+        assertEquals(listOf("again"), q.fetchPage("bob", 0, 10).map { it.msgId })
+        assertEquals(emptyList(), q.deleteExpired(100), "nothing expired is left for the sweeper to lose it with")
+    }
+
+    @Test
     fun aClientCanNeverExtendTheLifetimeAndNonsenseTtlOverridesAreIgnored() = runTest {
         val q = queue(limits = MailboxLimits(ttlMs = 60_000))
         q.enqueue(msg("max"), ttlOverrideMs = Long.MAX_VALUE) // would overflow now + ttl in the old code
