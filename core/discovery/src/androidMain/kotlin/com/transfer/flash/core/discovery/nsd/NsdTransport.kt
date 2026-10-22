@@ -114,6 +114,13 @@ public interface MonitorEvents {
 
     public fun onRegistrationFailed(errorCode: Int)
 
+    /**
+     * A legacy (API < 34) one-shot resolve of [serviceName] failed or timed out. Unlike
+     * [onRegistrationFailed] it names the service: the resolve queue reuses one events instance for
+     * every service (RVW22 F20).
+     */
+    public fun onResolveFailed(serviceName: String, errorCode: Int) {}
+
     public fun onUnregistered()
 }
 
@@ -460,6 +467,7 @@ public class RealNsdManagerBridge(
             resolveQueue ?: NsdResolveQueue(
                 nsdManager = nsdManager,
                 tag = tag,
+                onFailed = { serviceName, errorCode -> events.onResolveFailed(serviceName, errorCode) },
                 onResolvedCallback = { resolved ->
                     mapResolved(resolved)?.let(events::onUpdated)
                 },
@@ -1159,6 +1167,18 @@ public class NsdTransport(
                 if (monitoredServices[monitoredName] != true) return@launch
                 monitoredServices[monitoredName] = false
                 retryMonitorSoon(monitoredName)
+            }
+        }
+
+        override fun onResolveFailed(serviceName: String, errorCode: Int) {
+            logWarn("Service resolve failed name=$serviceName error=$errorCode")
+            scope?.launch(lane) {
+                // Same rule as a registration failure: demote only a service we still believe is
+                // monitored, so the fast retry (and then the heartbeat) resolves it again instead of
+                // the peer staying an invisible ghost.
+                if (monitoredServices[serviceName] != true) return@launch
+                monitoredServices[serviceName] = false
+                retryMonitorSoon(serviceName)
             }
         }
 

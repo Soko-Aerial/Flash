@@ -238,6 +238,11 @@ class NsdTransportLogicTest {
             requireNotNull(monitorEventsByName[name]) { "no monitor for $name" }
                 .onRegistrationFailed(errorCode)
 
+        /** Legacy one-shot resolve failure, which names the service it belongs to. */
+        fun fireResolveFailed(name: String, errorCode: Int) =
+            requireNotNull(monitorEventsByName.values.firstOrNull()) { "no monitor" }
+                .onResolveFailed(name, errorCode)
+
         /** The framework dropped our advertisement (mDNS daemon restart, OEM freeze). */
         fun fireAdvertiseUnregistered() =
             requireNotNull(advertiseEventsRef) { "not advertising" }.onUnregistered()
@@ -1269,6 +1274,35 @@ class NsdTransportLogicTest {
 
         assertEquals(2, bridge.monitorRequests.size)
         assertEquals("Flash Peer", bridge.monitorRequests.last().serviceName)
+        runBlocking { transport.stop() }
+    }
+
+    @Test
+    fun failedLegacyResolve_demotesTheNamedService_andRetriesIt() {
+        // RVW22 F20: on API < 34 the resolve queue reports a failure for a service, which used to be
+        // only logged, leaving the name "monitored" and the peer a permanent ghost. The queue shares
+        // one events instance across services, so the failure must carry its own name.
+        val ticker = ManualTicker()
+        val bridge = FakeBridge()
+        val transport = newTransport(
+            apiLevel = 30,
+            directory = StandardEndpointDirectory(),
+            bridge = bridge,
+            monitorRetryMs = 600L,
+            monitorRetrySleep = ticker.sleep,
+        )
+        runBlocking { transport.startBrowsing() }
+
+        bridge.fireServiceFound("Flash First")
+        bridge.fireServiceFound("Flash Second")
+        assertEquals(2, bridge.monitorRequests.size)
+
+        // The FIRST service's events instance is the one a shared queue would hold.
+        bridge.fireResolveFailed("Flash Second", errorCode = 3)
+        ticker.tick()
+
+        assertEquals(3, bridge.monitorRequests.size)
+        assertEquals("Flash Second", bridge.monitorRequests.last().serviceName)
         runBlocking { transport.stop() }
     }
 
