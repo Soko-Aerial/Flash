@@ -158,6 +158,51 @@ class CallQualityGovernorTest {
     }
 
     @Test
+    fun `a step down holds recovery off for the cooldown`() {
+        var now = 10_000L
+        val governor = CallQualityGovernor(recoveryCooldownMs = 8_000L, nowMs = { now })
+
+        repeat(2) { governor.onSample(jittery()) }
+        assertEquals(VideoConcession.REDUCED_BITRATE, governor.level)
+
+        // A clean window inside the cooldown earns nothing...
+        repeat(CallQualityGovernor.RECOVER_AFTER_SAMPLES) {
+            now += 1_000L
+            assertNull(governor.onSample(clean()), "the cooldown is not over")
+        }
+        assertEquals(VideoConcession.REDUCED_BITRATE, governor.level)
+
+        // ...and once it is over the same evidence is enough.
+        now += 8_000L
+        assertEquals(VideoConcession.FULL, governor.onSample(clean()))
+    }
+
+    /**
+     * RVW22 F43: the wall clock steps backwards (an NTP correction, or the user setting the time). The
+     * elapsed time since the last step is then negative, which must read as "still cooling down", not as
+     * "the cooldown expired an hour ago" — otherwise one clock step undoes the protection that exists
+     * to stop the picture strobing.
+     */
+    @Test
+    fun `a backwards clock step does not bypass the recovery cooldown`() {
+        var now = 10_000L
+        val governor = CallQualityGovernor(recoveryCooldownMs = 8_000L, nowMs = { now })
+
+        repeat(2) { governor.onSample(jittery()) }
+        assertEquals(VideoConcession.REDUCED_BITRATE, governor.level)
+
+        now -= 60_000L
+        repeat(CallQualityGovernor.RECOVER_AFTER_SAMPLES + 3) {
+            assertNull(governor.onSample(clean()), "a clock step must not enable recovery")
+        }
+        assertEquals(VideoConcession.REDUCED_BITRATE, governor.level)
+
+        // When the clock is past the cooldown again, recovery resumes normally.
+        now = 10_000L + 8_000L
+        assertEquals(VideoConcession.FULL, governor.onSample(clean()))
+    }
+
+    @Test
     fun `reset returns to full with no accumulated evidence`() {
         val governor = CallQualityGovernor()
         repeat(20) { governor.onSample(jittery()) }
