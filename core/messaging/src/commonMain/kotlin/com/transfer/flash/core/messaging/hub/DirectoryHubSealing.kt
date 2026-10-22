@@ -93,6 +93,9 @@ public class DirectoryHubSealing(
         val sender = lookup(senderDeviceId)?.subjectPublicKey?.let { runCatching { Base64.decode(it) }.getOrNull() } ?: return null
         return HubSealing.open(key, sender, senderDeviceId, localDeviceId, msgId, sentAt, payload)
     }
+
+    override suspend fun openFailureMayClear(senderDeviceId: String): Boolean =
+        runCatching { ownKey() == null || lookup(senderDeviceId)?.subjectPublicKey == null }.getOrDefault(true)
 }
 
 private fun String.normalisedFingerprint(): String = filter { it.isLetterOrDigit() }.uppercase()

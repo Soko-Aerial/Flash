@@ -102,6 +102,13 @@ public interface HubSealingPort {
 
     /** The opened content, or null when anything about the envelope does not verify. */
     public suspend fun open(senderDeviceId: String, msgId: String, sentAt: Long, payload: String): com.transfer.flash.core.security.enterprise.UnsealedPayload?
+
+    /**
+     * True when a null from [open] for [senderDeviceId] may be a passing condition (this device has no sealing key loaded yet,
+     * or the sender's key is not in the directory right now) rather than a verdict on the message. The bridge then keeps the
+     * message for the next delivery instead of acknowledging it, which would make the hub delete it (RVW22 F1).
+     */
+    public suspend fun openFailureMayClear(senderDeviceId: String): Boolean = false
 }
 
 /** What happened to one hub delivery, for tests and counters. */
@@ -429,7 +436,7 @@ public class HubChatBridge(
             val opened = sealing?.open(d.from, d.id, d.sentAt, d.payload)
             if (opened == null) {
                 // A sender the directory cannot be asked about right now is not a forgery: keep it for the next delivery.
-                if (sealing != null && standing(d.from) == HubPeerStanding.UNAVAILABLE) return HubInboundOutcome.RETRY_LATER
+                if (sealing != null && (standing(d.from) == HubPeerStanding.UNAVAILABLE || sealing.openFailureMayClear(d.from))) return HubInboundOutcome.RETRY_LATER
                 _droppedUnverified.update { it + 1 }
                 return reject(d, "sealed message did not verify")
             }

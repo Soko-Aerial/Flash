@@ -550,4 +550,41 @@ class GroupSignatureRulesTest {
     fun aSignedMessageCannotBeReplayedIntoAnotherGroup() {
         assertFalse(verify(signed(), groupId = "g2-other"))
     }
+
+    // RVW22 F2: a plain member who may add people must not be able to rewrite an admin, the founder or a known key.
+
+    @Test
+    fun f2AMemberWhoMayAddCannotDemoteAnAdmin() {
+        val c = charter()
+        val adminLookup: (String) -> ByteArray? = { id -> if (id == "mal") mal.publicKey else null }
+        val memberLookup: (String) -> ByteArray? = { id -> if (id == "bea") bea.publicKey else null }
+        val existingAdmin = cert(c, subject = "mal", key = mal, role = MemberCert.ROLE_ADMIN)
+        val demote = GroupSigning(bea).issueCert(c.groupId, "mal", mal.publicKey, "Mal", MemberCert.ROLE_MEMBER, 2L, "op-demote", true, "bea")
+        assertEquals(
+            "issuer-privilege",
+            rules.checkCert(c, demote, existingAdmin.subjectKey, adminLookup, membersMayAdd = true, memberLookup = memberLookup),
+        )
+    }
+
+    @Test
+    fun f2AMemberWhoMayAddCannotReplaceTheKeyOfAKnownMember() {
+        val c = charter()
+        val memberLookup: (String) -> ByteArray? = { id -> if (id == "bea") bea.publicKey else null }
+        val existing = cert(c, subject = "mal", key = mal)
+        val swap = GroupSigning(bea).issueCert(c.groupId, "mal", bea.publicKey, "Mal", MemberCert.ROLE_MEMBER, 2L, "op-swap", true, "bea")
+        assertEquals(
+            "issuer-privilege",
+            rules.checkCert(c, swap, existing.subjectKey, membersMayAdd = true, memberLookup = memberLookup),
+        )
+    }
+
+    @Test
+    fun f2AMemberWhoMayAddStillAddsANewMember() {
+        val c = charter()
+        val memberLookup: (String) -> ByteArray? = { id -> if (id == "bea") bea.publicKey else null }
+        pins["new"] = mal.fingerprintHex()
+        paired += "new"
+        val add = GroupSigning(bea).issueCert(c.groupId, "new", mal.publicKey, "New", MemberCert.ROLE_MEMBER, 1L, "op-add", true, "bea")
+        assertNull(rules.checkCert(c, add, null, membersMayAdd = true, memberLookup = memberLookup))
+    }
 }

@@ -96,6 +96,11 @@ internal class GroupSignatureRules(
         // A regular member can only add an active non-admin member
         if (memberIssued) {
             if (cert.role != MemberCert.ROLE_MEMBER || !cert.active) return "issuer-privilege"
+            // RVW22 F2: a member's cert is never about the founder, an admin, or a key already held for the subject
+            // (that would be a demotion or a key replacement, which only the owner or an admin may do).
+            if (cert.subjectId == charter.ownerId) return "issuer-privilege"
+            if (adminLookup != null && adminLookup(cert.subjectId) != null) return "issuer-privilege"
+            if (knownKey != null && knownKey != cert.subjectKey) return "issuer-privilege"
         }
 
         val subjectKey = GroupCanonical.decode(cert.subjectKey)?.takeIf { it.isNotEmpty() } ?: return "subject-key"
