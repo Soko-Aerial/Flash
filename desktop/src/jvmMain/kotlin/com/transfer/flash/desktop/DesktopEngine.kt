@@ -2098,9 +2098,7 @@ public class DesktopEngine(
     /** One stream channel per channel id, riding the live session with the peer. */
     private suspend fun sessionChannel(channelId: Int, peerDeviceId: String?): StreamChannel? {
         val network = networkImpl ?: return null
-        val peerId = peerDeviceId?.let { FlashDeviceId(it) }
-        val session = (peerId?.let { network.activeSessions.value[it] }
-            ?: network.activeSessions.value.values.firstOrNull()) ?: return null
+        val session = selectStreamSession(network.activeSessions.value, peerDeviceId) ?: return null
         val resolvedPeerId = peerDeviceId ?: session.peerDeviceId.value
         val sessionKey = trustStore.getSessionKey(FlashDeviceId(resolvedPeerId))
 
@@ -2474,3 +2472,14 @@ public class DesktopEngine(
     /** The WebSocket port the boot bound (0 until it has), for tests that check a close released it. */
     internal val boundPort: Int get() = advertisedPort
 }
+
+/**
+ * The live session a stream channel rides. A NAMED peer without a session gets nothing (RVW22 F17): falling back to any
+ * connected peer sent data sealed for one device over another device's socket. Only an unnamed channel may take the first.
+ */
+internal fun <S> selectStreamSession(active: Map<FlashDeviceId, S>, peerDeviceId: String?): S? =
+    if (peerDeviceId == null) {
+        active.values.firstOrNull()
+    } else {
+        active[FlashDeviceId(peerDeviceId)]
+    }

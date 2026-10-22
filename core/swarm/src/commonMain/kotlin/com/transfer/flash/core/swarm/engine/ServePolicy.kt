@@ -162,14 +162,27 @@ public class ServePolicy(
 
             // Unseeded pieces take priority; reject duplicated pieces with ELSEWHERE
             val toServe = ArrayList<Int>()
+            val overBudget = ArrayList<Int>()
             for (p in unseeded) {
                 if (byteBudget >= pieceSize) {
                     toServe.add(p)
                     byteBudget -= pieceSize
+                } else {
+                    overBudget.add(p)
                 }
             }
 
             val rejectedParts = ArrayList<ServeEvaluation.Accepted.RejectedPart>()
+            // RVW22 F5: a piece we could serve but have no budget for is answered BUSY; staying silent left it charged to the requester's window.
+            if (overBudget.isNotEmpty()) {
+                rejectedParts.add(
+                    ServeEvaluation.Accepted.RejectedPart(
+                        reason = SwarmRejectReason.BUSY,
+                        retryAfterMs = 1_000L,
+                        pieces = overBudget,
+                    )
+                )
+            }
             if (unseeded.isEmpty()) {
                 val stillElsewhere = ArrayList<Int>()
                 for (p in elsewhere) {
@@ -207,15 +220,24 @@ public class ServePolicy(
 
         // 9. Non-origin serving: accept pieces within requester byte budget
         val toServe = ArrayList<Int>()
+        val overBudget = ArrayList<Int>()
         for (p in heldPieces) {
             if (byteBudget >= pieceSize) {
                 toServe.add(p)
                 byteBudget -= pieceSize
+            } else {
+                overBudget.add(p)
             }
         }
 
+        // RVW22 F5: every held piece is either served or answered BUSY, never dropped without a word.
         return ServeEvaluation.Accepted(
             piecesToServe = toServe,
+            rejectedPieces = if (overBudget.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(ServeEvaluation.Accepted.RejectedPart(reason = SwarmRejectReason.BUSY, retryAfterMs = 1_000L, pieces = overBudget))
+            },
         )
     }
 }

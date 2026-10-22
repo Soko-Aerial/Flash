@@ -129,6 +129,14 @@ class FlashPathSanitizerTest {
     }
 
     @Test
+    fun rvw22F16_truncationThatLeavesADeviceNameIsStillGuarded() {
+        val result = FlashPathSanitizer.sanitize("con" + " ".repeat(130) + "xyz.txt")
+        assertFalse(FlashPathSanitizer.isReservedDeviceName(result), "result must not name a device: '$result'")
+        assertTrue(result.endsWith(".txt"))
+        assertFalse(FlashPathSanitizer.isReservedDeviceName(FlashPathSanitizer.sanitize("clock$")))
+    }
+
+    @Test
     fun reservedDeviceNames_allForms() {
         val names = listOf(
             "CON", "PRN", "AUX", "NUL", "COM0", "COM1", "COM9", "LPT0", "LPT1", "LPT9",
