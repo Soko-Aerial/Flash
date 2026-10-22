@@ -83,6 +83,27 @@ class CallStatusBookTest {
         assertNull(book.apply("p", status(reaction = FlashCallReactionKind.LIKE, seq = 6)), "the dropped number is spent")
     }
 
+    /**
+     * RVW22 F57: the clock steps backwards. `now - last` is then negative, and reading that as "not yet a
+     * full gap" would drop every reaction from that peer until the clock caught up — a frozen screen, not
+     * a flood. A negative gap is no evidence of a flood, so the reaction is shown and the window re-anchors.
+     */
+    @Test
+    fun `a backwards clock step does not freeze a peer's reactions`() {
+        assertNotNull(book.apply("p", status(reaction = FlashCallReactionKind.LIKE, seq = 1)))
+
+        now -= 60_000L
+        val afterStep = book.apply("p", status(reaction = FlashCallReactionKind.LOVE, seq = 2))
+        assertNotNull(afterStep, "a clock step must not swallow the reaction")
+        assertEquals(FlashCallReactionKind.LOVE, afterStep.kind)
+
+        // The window re-anchored at the new time, so the flood rule still applies from there.
+        now += 1
+        assertNull(book.apply("p", status(reaction = FlashCallReactionKind.WOW, seq = 3)))
+        now += CallStatusBook.MIN_REACTION_GAP_MS
+        assertNotNull(book.apply("p", status(reaction = FlashCallReactionKind.WOW, seq = 4)))
+    }
+
     @Test
     fun `reactions expire and the list is capped`() {
         repeat(12) { i ->

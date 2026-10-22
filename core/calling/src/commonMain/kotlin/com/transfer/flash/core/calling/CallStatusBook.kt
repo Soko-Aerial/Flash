@@ -84,7 +84,9 @@ internal class CallStatusBook(
                 next = next.copy(lastSeq = next.lastSeq + (peerId to status.reactionSeq))
                 val now = clock()
                 val last = cur.lastAt[peerId]
-                if (last == null || now - last >= MIN_REACTION_GAP_MS) {
+                // RVW22 F57: a backwards clock step must not freeze a peer's reactions. `now < last` is
+                // "no evidence of a flood", not "a flood", so it is allowed and re-anchors the window.
+                if (last == null || now < last || now - last >= MIN_REACTION_GAP_MS) {
                     val withReaction = next.addReaction(peerId, kind, now)
                     shown = withReaction.reactions.last()
                     next = withReaction.copy(lastAt = withReaction.lastAt + (peerId to now))
