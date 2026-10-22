@@ -1,5 +1,24 @@
 # Progress Log
 
+
+## 2026-10-22 (latest) - Comprehensive review: all CRITICAL and HIGH findings handled on `dev` (RVW22H, ERROR-752..759)
+
+### Worked on
+The CRITICAL and HIGH findings F1..F33 plus the performance HIGHs F69..F71 of `docs/audit/2026-10-22-comprehensive-brutal-code-review.md`, fixed directly on `dev` in small commits (so the five stream branches `agent/rvw22-*` can rebase); the medium and low findings belong to those agents.
+
+### Changed (commits, newest last)
+`5ce1b407` F1 F2, `d30a8171` F3 F4, `c3d5128b` F13 F14 F18, `8ae825cf` F5 F15 F16 F17, `afa132d5` F7 F8 F9 F28 F71, `9d427c3e` F26 F27, `00a0842d` F24 F25, `35e4b6b4` F20 F21, `697c072c` F22, `03f0497d` F29 F30 F31 F33 F69 F70, `28cb0ae4` F10, `f3385069` F19, `081b1ddb` F12. Details per defect group: ERROR-752..757.
+
+### Not changed on purpose
+- F6, F23, F32: checked against the current code, not defects (ERROR-759).
+- F11 part 2 (re-admitted member refused the secret) needs a data-model decision (ERROR-758, OPEN); part 1 is not a documented guarantee.
+
+### Verified
+Unit test plus mutation check for each fix, except where a fix has no testable seam (F10/F30/F31/F69/F70 compile-only; F26 Android-only; the NSD resolve timeout). `:core:messaging` testAndroidHostTest 658 run, 1 failed (`delete for everyone sends direct action only for the local author`, a timing flake that also fails on a tree without my change); `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` green after the UI changes. NOT device-verified; NOT pushed.
+
+### Next AI
+Device checks `RVW22H-01..15` in `docs/testing/TEST-BACKLOG.md`; owner decision on ERROR-758; later review the five agents' branches when asked. The flaky `delete for everyone...` test should get a wait-for-condition instead of `delay(100)`.
+
 ## 2026-10-22 (latest) - Chats tab from the Hub, and hub voice notes download by themselves (ERROR-751)
 
 ### Changed

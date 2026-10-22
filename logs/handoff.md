@@ -1,5 +1,15 @@
 # Current Handoff
 
+
+## 2026-10-22 (comprehensive review, CRITICAL/HIGH) - F1..F33, F69..F71 handled on `dev`, unit-tested and mutation-checked, NOT device-verified, NOT pushed
+
+- **Read:** `docs/audit/2026-10-22-comprehensive-brutal-code-review.md`; per-group records ERROR-752..759 in `logs/errors.md`; progress entry of the same date.
+- **Done:** 13 commits `5ce1b407`..`081b1ddb` on `dev` (hub/group messaging, transfer/swarm, PTT, calling, discovery, radio, chat UI, server mailbox). F6, F23, F32 are not defects (ERROR-759).
+- **Open decision:** ERROR-758 (F11): re-admitted group member refused the group secret; needs a recorded admission epoch or a rotate-on-readmit rule. No code written.
+- **Other agents:** streams A..E (worktrees `E:\FlashWork\rvw22-*`, branches `agent/rvw22-*`) fix MEDIUM/LOW findings and write logs only under `logs/streams/<stream>/`; they must rebase on `dev`. My reserved numbers were ERROR-752..759 and the `RVW22H-` backlog prefix.
+- **Known flake:** `RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author` (timing, fails without these changes too).
+- **Owed:** `RVW22H-01..15` device checks; redeploy the test hub with `tools\hub-test-server\deploy.ps1` (owner) for the `MailboxQueue` change; nothing was pushed.
+
 ## 2026-10-22 (brutal code review, round 2) - F1..F8 fixed on `dev`, unit-tested and mutation-checked, NOT device-verified, NOT deployed
 
 - **Read:** `docs/audit/2026-10-22-brutal-code-review.md` (status block at the top, per-finding record, mutation table). Five real defects fixed (F1

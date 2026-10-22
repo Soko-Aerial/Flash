@@ -6155,3 +6155,23 @@ All four are automated-green already (§3 of the audit); each stands as the real
 ## HUBNAV-01 / HUBVOICE-01 (2026-10-22)
 - **HUBNAV-01:** desktop, enrolled: open the Hub tab, open a colleague chat from it, click Chats in the sidebar, then click a chat with a new message. **Pass:** the list pane shows the chat list (Chats highlighted), not the Hub. Also with the Hub open and no chat open. Source: ERROR-751. Status: TODO
 - **HUBVOICE-01:** a colleague (not paired) sends a voice note to a hub group and to you 1:1. **Pass:** it downloads and plays from the chat bubble with no Accept; with voice auto-download off, the badge shows Download and one tap downloads it. A file or video from the same person still waits for Accept. Source: ERROR-751. Status: TODO
+
+## RVW22H-01..15 (2026-10-22) - comprehensive review, CRITICAL/HIGH fixes
+
+All **Status: TODO**. Source: ERROR-752..758 and `docs/audit/2026-10-22-comprehensive-brutal-code-review.md`.
+
+- **RVW22H-01 (PTT floor and recipients, F8 F9 F28):** three devices (two phones, one Windows) in one trusted group; two talk at nearly the same time, then stop. **Pass:** every listener ends on the same talker (the lower id), nobody is left "listening" after both stop, and logcat/log shows no audio sent to the local device or to an untrusted peer.
+- **RVW22H-02 (PTT Windows clock, F7 F71):** Windows desktop receives a 30 s PTT burst. **Pass:** the session is not dropped by the heartbeat timeout while audio keeps arriving, and CPU stays calm (no per-packet burst).
+- **RVW22H-03 (PTT playout, F26 F27):** Android phone listening; drop the Wi-Fi for 1-2 s mid-talk, then let PTT end. **Pass:** the gap fades to silence (no 50 Hz buzz) and ending PTT does not stall other PTT/UI actions for about a second.
+- **RVW22H-04 (NSD legacy resolve, F20 F21):** Android 12 or older (API < 34), browse next to a peer that is switched off mid-resolve and one that restarts. **Pass:** log shows `NSD resolve timed out` or `resolve failed` followed by a retry; other peers still appear; the restarted peer comes back within about a minute.
+- **RVW22H-05 (Bluetooth radio EOF, F22):** connected radio, switch it off. **Pass:** the link state goes to lost/waiting within a few seconds instead of staying Connected and silent; reconnect works.
+- **RVW22H-06 (1:1 then group call overlay, F24):** end a 1:1 call and within 2 s start or join a group call. **Pass:** the group call UI stays; it is not cleared by the old call's teardown.
+- **RVW22H-07 (Data Saver with heat, F25):** Data Saver on, a video call on a hot phone (or forced severe thermal state in a test build). **Pass:** incoming video is NOT decoded (receive cap 0), audio continues.
+- **RVW22H-08 (call and group-video perf, F33 F69 F70):** profile a 4-person group video call for 60 s (Android Studio profiler or `dumpsys gfxinfo`). **Pass:** the call screen does not recompose per frame while a speaker pulses, janky frames are not worse than before, two entries for one peer show one main tile and no crash.
+- **RVW22H-09 (file card tap, F29):** receive a file offer that is not downloaded; tap it. **Pass:** it downloads (Accept) and does not open an empty viewer; a Failed/Paused card resumes; a finished video plays.
+- **RVW22H-10 (image grid selection, F30):** long-press an image in a grid, then tap other images. **Pass:** each tap toggles selection, a tap outside selection mode opens the viewer.
+- **RVW22H-11 (swipe to reply, F31):** swipe a bubble to reply many times, quickly, in different chats. **Pass:** the reply targets the swiped message, the bubble always settles back to the centre, no stutter.
+- **RVW22H-12 (video viewer URI change, F10):** open a video, go to the next video in the viewer. **Pass:** the new video loads and plays, controls (play, seek, mute) act on it.
+- **RVW22H-13 (removed member and the outbox, F12):** in a group, send while a member is offline, remove that member, then bring them online. **Pass:** the member receives nothing new, the message does not stay "sending" for 24 h, it ends as Delivered (others got it).
+- **RVW22H-14 (mailbox resend, F19, after redeploy):** hub: a recipient offline until a mailbox row expires without being swept, the sender resends. **Pass:** the resend is queued and delivered once the recipient connects.
+- **RVW22H-15 (hub reconnects, F1 F3 F4 F14 F18):** enrolled phone switches hubs/URL and toggles Wi-Fi while messages are in flight. **Pass:** no message is lost or duplicated, a sealed message that arrives before its key is kept and shown later, only one relay socket is open at a time (log shows one connect).
