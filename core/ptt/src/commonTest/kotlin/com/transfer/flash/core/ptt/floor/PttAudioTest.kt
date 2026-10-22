@@ -137,9 +137,14 @@ class PttJitterBufferTest {
         assertEquals(1L, buffer.stats().late)
     }
 
+    /**
+     * RVW22 F46: overflow sheds the newest packet, never the one the next tick must return. Dropping the
+     * earliest turned an over-full buffer into an immediate concealed slot — a gap at the head of the
+     * stream, exactly where nobody can afford one.
+     */
     @Test
-    fun overflowDropsOldest() {
-        val buffer = PttJitterBuffer(targetDepthMs = 1000L, maxPackets = 3)
+    fun overflowDropsTheNewestSoTheNextPollStillPlays() {
+        val buffer = PttJitterBuffer(targetDepthMs = 60L, maxPackets = 3)
         buffer.push(0L, 0L, packet(0L))
         buffer.push(1L, 20L, packet(1L))
         buffer.push(2L, 40L, packet(2L))
@@ -147,6 +152,14 @@ class PttJitterBufferTest {
 
         assertEquals(1L, buffer.stats().droppedOverflow)
         assertEquals(3, buffer.stats().depthPackets)
+
+        // The head of the stream is intact: 0, 1, 2 play in order and the discarded packet was 3.
+        listOf(0L, 1L, 2L).forEach { expected ->
+            val poll = buffer.poll(20L)
+            assertTrue(poll is PttJitterBuffer.Poll.Ready, "seq $expected must still play, got $poll")
+            assertEquals(expected, poll.seq)
+        }
+        assertEquals(0L, buffer.stats().lost)
     }
 
     @Test

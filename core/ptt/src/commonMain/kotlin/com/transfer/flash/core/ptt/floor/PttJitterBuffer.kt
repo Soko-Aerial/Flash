@@ -16,6 +16,9 @@ package com.transfer.flash.core.ptt.floor
  * `seq` values reported by [Poll] are in that unwrapped domain, which only ever matters for the
  * comparisons a consumer makes between two of them.
  *
+ * Overflow keeps the head of the stream: when more than [maxPackets] packets are queued, the
+ * newest arrival is dropped, never the packet the next [poll] must return (RVW22 F46).
+ *
  * Threading contract: NOT synchronized. All [push]/[poll]/[stats]/[reset] calls must
  * happen on ONE thread — the engine funnels network pushes through the playout thread's
  * drop-oldest channel, so late audio is shed before it ever reaches this buffer.
@@ -72,7 +75,10 @@ public class PttJitterBuffer(
         val newest = newestSeq
         if (newest == null || unwrapped > newest) newestSeq = unwrapped
         if (queue.size > maxPackets) {
-            queue.remove(queue.firstKey())
+            // RVW22 F46: drop the newest packet, never the one about to play. Removing the earliest
+            // guarantees concealment on the very next tick (an audible gap the listener hears now);
+            // the newest packet is the one that has waited least and that no tick has been promised.
+            queue.remove(queue.lastKey())
             droppedOverflow++
         }
     }
