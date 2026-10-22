@@ -716,7 +716,15 @@ public class RelayFrameRouter(
         session.inFlight.clear()
         if (session.isOpen) session.fail(reason.ifBlank { "disconnected" }, CloseReason.Codes.NORMAL)
         if (pending.isNotEmpty()) {
-            scope.launch { spill(session.deviceId, pending) }
+            scope.launch {
+                try {
+                    spill(session.deviceId, pending)
+                } finally {
+                    session.dispose()
+                }
+            }
+        } else {
+            session.dispose()
         }
     }
 
