@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -169,20 +170,43 @@ fun FlashMessageBubble(
 
     // H-17: while messages are being selected a tap on an attachment toggles the selection like a tap on text does. Before, a photo
     // opened the viewer and a file card ran its action, so a message with an attachment could not be picked.
+    val currentOnSelectToggle by rememberUpdatedState(onSelectToggle)
+    val currentOnImageClick by rememberUpdatedState(onImageClick)
+    val currentOnFileClick by rememberUpdatedState(onFileClick)
+    val currentOnAcceptOffer by rememberUpdatedState(onAcceptOffer)
+    val currentOnDeclineOffer by rememberUpdatedState(onDeclineOffer)
+    val currentOnPauseTransfer by rememberUpdatedState(onPauseTransfer)
+    val currentOnResumeTransfer by rememberUpdatedState(onResumeTransfer)
+    val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
+
     val imageClick: (Int, com.transfer.flash.core.messaging.model.FlashImageAttachmentUi) -> Unit =
-        if (inSelectionMode) { _, _ -> onSelectToggle() } else onImageClick
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _, _ -> currentOnSelectToggle() } else { i, img -> currentOnImageClick(i, img) }
+        }
     val fileClick: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onFileClick
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnFileClick(f) }
+        }
     val acceptOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onAcceptOffer
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnAcceptOffer(f) }
+        }
     val declineOffer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onDeclineOffer
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnDeclineOffer(f) }
+        }
     val pauseTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onPauseTransfer
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnPauseTransfer(f) }
+        }
     val resumeTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onResumeTransfer
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnResumeTransfer(f) }
+        }
     val cancelTransfer: (com.transfer.flash.core.messaging.model.FlashFileAttachmentUi) -> Unit =
-        if (inSelectionMode) { _ -> onSelectToggle() } else onCancelTransfer
+        remember(inSelectionMode) {
+            if (inSelectionMode) { _ -> currentOnSelectToggle() } else { f -> currentOnCancelTransfer(f) }
+        }
 
     Column(
         modifier = modifier.fillMaxWidth(),
