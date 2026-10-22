@@ -136,6 +136,8 @@ class HubFileSealingTest {
         val plainChunk = full - HubFileSealing.TAG_BYTES
         assertNull(HubFileLayout.of(0))
         assertNull(HubFileLayout.of(-1))
+        assertNull(HubFileLayout.of(Long.MAX_VALUE), "RVW22 F15: the chunk count must not wrap negative")
+        assertNull(HubFileLayout.of(Long.MAX_VALUE - plainChunk + 2))
         assertNull(HubFileLayout.of(10, cipherChunkBytes = HubFileSealing.TAG_BYTES))
         assertNull(HubFileLayout.of(10, cipherChunkBytes = full + 1))
         assertEquals(1, HubFileLayout.of(1)!!.chunkCount)

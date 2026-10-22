@@ -106,8 +106,9 @@ public class HubFileLayout private constructor(
             if (plainBytes <= 0L) return null
             if (cipherChunkBytes !in (HubFileSealing.TAG_BYTES + 1)..HubContract.MAX_CHUNK_BYTES) return null
             val plainChunk = (cipherChunkBytes - HubFileSealing.TAG_BYTES).toLong()
+            // RVW22 F15: compare before adding; plainBytes + plainChunk - 1 wrapped to a negative count near Long.MAX_VALUE.
+            if (plainBytes > plainChunk * HubContract.MAX_FILE_CHUNKS) return null
             val count = (plainBytes + plainChunk - 1) / plainChunk
-            if (count > HubContract.MAX_FILE_CHUNKS) return null
             return HubFileLayout(plainBytes, cipherChunkBytes, count.toInt())
         }
     }

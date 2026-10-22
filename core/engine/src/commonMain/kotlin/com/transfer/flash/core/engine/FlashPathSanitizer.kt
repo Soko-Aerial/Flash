@@ -15,7 +15,7 @@ public object FlashPathSanitizer {
      * 1-9, because older builds and several libraries reject them; the superscript digits are listed by Microsoft too.
      */
     private val WINDOWS_RESERVED_NAMES = buildSet {
-        add("CON"); add("PRN"); add("AUX"); add("NUL"); add("CONIN$"); add("CONOUT$")
+        add("CON"); add("PRN"); add("AUX"); add("NUL"); add("CONIN$"); add("CONOUT$"); add("CLOCK$")
         for (device in listOf("COM", "LPT")) {
             for (digit in "0123456789") add("$device$digit")
             for (digit in "¹²³") add("$device$digit")
@@ -48,7 +48,9 @@ public object FlashPathSanitizer {
         val replaced = replaceLoneSurrogates(component.replace(ILLEGAL_CHARS_REGEX, "_")).trimEnd('.', ' ')
         if (replaced.isBlank() || replaced == "." || replaced == "..") return fallback
 
-        val safe = if (isReservedDeviceName(replaced)) "_$replaced" else replaced
+        // RVW22 F16: test the name that will really be used. Truncation can cut "con<spaces>xyz.txt" down to "con.txt".
+        val cut = truncatePreservingExtension(replaced)
+        val safe = if (isReservedDeviceName(cut)) "_$cut" else cut
         return truncatePreservingExtension(safe)
     }
 

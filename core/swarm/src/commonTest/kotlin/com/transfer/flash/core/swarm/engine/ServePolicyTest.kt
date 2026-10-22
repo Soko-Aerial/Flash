@@ -115,6 +115,48 @@ class ServePolicyTest {
         assertEquals(60_000L, rej.retryAfterMs)
     }
 
+    private fun evaluate(isOrigin: Boolean, outstanding: Long, pieces: List<Int>) = policy.evaluateRequest(
+        peerId = "peerA",
+        requestedPieces = pieces,
+        pieceSize = 65536,
+        isAllowed = true,
+        contentKnown = true,
+        isTombstoned = false,
+        servingEnabled = true,
+        isOrigin = isOrigin,
+        isCallActive = false,
+        profile = SwarmProfile.MEDIUM,
+        activeRequesters = emptySet(),
+        currentOutstandingBytes = outstanding,
+        localHoldsPiece = { true },
+        copiesCount = { 0 },
+        pendingCount = { 0 },
+    )
+
+    @Test
+    fun `rvw22 F5 - pieces that do not fit the remaining byte budget are answered BUSY, not dropped`() {
+        // 1 MiB cap, 1 MiB - 96 KiB outstanding: room for exactly one 64 KiB piece.
+        val outstanding = 1024 * 1024L - 96 * 1024L
+        for (origin in listOf(false, true)) {
+            val acc = assertIs<ServeEvaluation.Accepted>(evaluate(origin, outstanding, listOf(0, 1, 2)))
+            val covered = acc.piecesToServe + acc.rejectedPieces.flatMap { it.pieces }
+            assertEquals(listOf(0, 1, 2), covered.sorted(), "origin=$origin: every requested piece is served or rejected")
+            assertEquals(1, acc.piecesToServe.size, "origin=$origin")
+            assertTrue(acc.rejectedPieces.all { it.reason == SwarmRejectReason.BUSY }, "origin=$origin")
+        }
+    }
+
+    @Test
+    fun `rvw22 F5 - a budget smaller than one piece rejects the whole request BUSY`() {
+        val outstanding = 1024 * 1024L - 32 * 1024L
+        for (origin in listOf(false, true)) {
+            val acc = assertIs<ServeEvaluation.Accepted>(evaluate(origin, outstanding, listOf(0, 1)))
+            assertTrue(acc.piecesToServe.isEmpty(), "origin=$origin")
+            assertEquals(listOf(0, 1), acc.rejectedPieces.single().pieces, "origin=$origin")
+            assertEquals(SwarmRejectReason.BUSY, acc.rejectedPieces.single().reason, "origin=$origin")
+        }
+    }
+
     @Test
     fun `origin offer policy serves unseeded pieces and rejects duplicated with ELSEWHERE`() {
         // Piece 0: unseeded (copies=0, pending=0)
