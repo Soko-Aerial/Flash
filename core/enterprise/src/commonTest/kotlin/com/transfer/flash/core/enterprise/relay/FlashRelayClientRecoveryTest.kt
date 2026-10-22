@@ -105,6 +105,27 @@ class FlashRelayClientRecoveryTest {
     }
 
     @Test
+    fun anAddressChangeDoesNotDialTheNewHubBeforeTheOldSessionIsClosed() = runTest {
+        val rig = Rig(this)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        rig.transport.disconnectGate = gate
+        rig.client.start()
+        runCurrent()
+        rig.client.hubUrl = "wss://hub-b.example.test/flash-relay"
+        runCurrent()
+        advanceTimeBy(5_000L)
+        runCurrent()
+        assertEquals(1, rig.transport.connectUrls.size, "the new hub is dialled only after the old close finished: ${rig.transport.connectUrls}")
+        gate.complete(Unit)
+        runCurrent()
+        advanceTimeBy(5_000L)
+        runCurrent()
+        assertEquals("wss://hub-b.example.test/flash-relay", rig.transport.connectUrls.last())
+        assertEquals(0, rig.transport.closesAfterReconnect, "the old close must not run after the new handshake")
+        rig.client.stop()
+    }
+
+    @Test
     fun changingTheHubAddressDropsTheSessionAndConnectsToTheNewHub() = runTest {
         val rig = Rig(this)
         rig.client.start()
