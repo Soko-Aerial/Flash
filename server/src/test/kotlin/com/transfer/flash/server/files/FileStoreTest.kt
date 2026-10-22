@@ -251,11 +251,30 @@ class FileStoreTest {
         ok(store.create(sender, request))
         ok(store.putChunk(sender, request.fileId, 0, chunk(), null))
 
-        assertEquals(HubErrorCodes.ERR_NOT_FOUND, refused(store.status(recipient, request.fileId)).code)
-        assertEquals(HubErrorCodes.ERR_NOT_FOUND, refused(store.readChunk(recipient, request.fileId, 0)).code)
+        // FL-01: "come back later" (409), not "no such file" (404), so the recipient's client keeps its partial download.
+        assertEquals(HubErrorCodes.ERR_CONFLICT, refused(store.status(recipient, request.fileId)).code)
+        assertEquals(HubErrorCodes.ERR_CONFLICT, refused(store.readChunk(recipient, request.fileId, 0)).code)
 
         // The sender still sees the upload.
         assertEquals(FileStates.UPLOADING, (ok(store.status(sender, request.fileId)) as FileStatusDto).state)
+    }
+
+    @Test
+    fun aRecipientOfACancelledUploadStillGetsNotFound() {
+        val request = createRequest()
+        ok(store.create(sender, request))
+        ok(store.putChunk(sender, request.fileId, 0, chunk(), null))
+        ok(store.cancel(sender, request.fileId))
+
+        assertEquals(HubErrorCodes.ERR_NOT_FOUND, refused(store.status(recipient, request.fileId)).code)
+        assertEquals(HubErrorCodes.ERR_NOT_FOUND, refused(store.readChunk(recipient, request.fileId, 0)).code)
+    }
+
+    @Test
+    fun aStrangerToAnUploadingFileIsForbiddenNotToldItExists() {
+        val request = createRequest()
+        ok(store.create(sender, request))
+        assertEquals(HubErrorCodes.ERR_FORBIDDEN, refused(store.status("stranger", request.fileId)).code)
     }
 
     @Test
@@ -528,7 +547,7 @@ class FileStoreTest {
         assertEquals(2048L, stats.uploadingBytes)
         assertEquals(listOf(sender), stats.devices.map { it.deviceId })
 
-        // An upload in progress is not visible to the recipient.
-        assertEquals(HubErrorCodes.ERR_NOT_FOUND, refused(store.status(recipient, id(2))).code)
+        // An upload in progress is not readable by the recipient yet (FL-01: "not ready", not "not found").
+        assertEquals(HubErrorCodes.ERR_CONFLICT, refused(store.status(recipient, id(2))).code)
     }
 }

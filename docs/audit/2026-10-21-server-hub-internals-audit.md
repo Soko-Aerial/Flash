@@ -37,7 +37,7 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **CLI-01** | Low | `:core:enterprise` | A 401 refresh is not single-flight: *M* concurrent 401s cause *M* serialised full sign-ins, which also feeds AUTH-01. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
 | **CLI-02** | Low | `:core:enterprise` | `HubSession.bearer()` holds a mutex across two network round-trips with no client timeout: an unreachable hub stalls every hub call on the device. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **CLI-03** | Low | `:core:enterprise` | Eight hub-client call sites read `response.bodyAsText()` with no size bound; the 64 KiB `HubRestCodec.decode` guard runs afterwards. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
-| **FL-01** | Low | `:server` files | `FileStore.access` answers `404` for a non-sender whose blob is not `READY`, so the `409 NOT_READY` in `readChunk` is unreachable for recipients and the two paths disagree. No user-visible trigger found in the current app flow. | OPEN |
+| **FL-01** | Low | `:server` files | `FileStore.access` answers `404` for a non-sender whose blob is not `READY`, so the `409 NOT_READY` in `readChunk` is unreachable for recipients and the two paths disagree. No user-visible trigger found in the current app flow. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **DOC-01** | Info | docs/code | Five places where the documentation and the code disagree (group rosters per sync 64 vs 256 — **decided: 64**, console pin limit 400 vs 409, "the registry decides role and department", "the first 2,000 people" of presence, dead `IdentityStore.setRole`/`serialsOf`). | OPEN |
 
 Candidates that were checked and **rejected** are listed in §2.3. The two most likely to be re-filed by a future reviewer are recorded there by name: "expired announcements stay visible for ever" (the store filters `expires_at` on every read, and the client also filters with `FlashHubMath.isLive`) and "a multi-page sync loses deletions" (the client takes the version from the *first* page, so a later tombstone is reported on the next sync).
@@ -709,7 +709,7 @@ The client maps 404 to the non-transient `NotFound` and `fail()` deletes the par
 
 **Fix direction.** Make the states distinguishable to a recipient: answer `409 NOT_READY` (retryable) for `UPLOADING`, `404` only for `EXPIRED`/missing. One line in `access()`, plus a client rule that `NOT_READY` is transient.
 
-**Status:** OPEN. Not reproduced.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -927,7 +927,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 **DONE 2026-10-21** |
 | 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 **DONE 2026-10-21** |
 | 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 **DONE 2026-10-21** |
-| 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 |
+| 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 **DONE 2026-10-22** |
 
 Items 1–3 are the ones I would do before any hub is put in front of real users; item 1 alone decides whether the offline-trust feature works at all above ~110 people.
 
@@ -1029,3 +1029,9 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - CLI-03: new `boundedText(maxBytes)` (`BoundedBody.kt`) reads at most `maxBytes + 1` bytes into a buffer that grows on demand; a body that is too large comes back still too large, so the codec's existing guard refuses it, but the rest is never read. Used at all eight `bodyAsText()` sites: `HubSession` (5), `EnterpriseEnrollmentClient`, `RealHubAnnouncementsApi` (64 KiB) and `EnterpriseDirectoryClient` (2 MiB, `MAX_DIRECTORY_SYNC_BODY_BYTES`, for the sync and people pages).
 - Tests (`HubSessionTest`, 4 new): a hub that never answers `/auth/verify` is `UNREACHABLE` at exactly the budget on virtual time and the next call signs in; a renewal that never gets an answer is `UNREACHABLE` and keeps the old certificate; a 200,000-byte body is cut at 64 KiB + 1, a small one is read whole, a directory page may be larger up to its own limit; a 500,000-byte challenge is `REJECTED`. `FakeHub` gained `hangingPaths`. **Mutation:** the read limit raised to 4x failed the read test; restored.
 - Not changed: `HubFileTransfers`/`RealHubFilesApi` already read bounded (`readBounded`).
+
+### Step 10C - 409 NOT_READY for a recipient of an unfinished file (FL-01; SRVHUB-12): DONE, unit tested, NOT device-verified
+
+- `FileStore.access()` now answers a listed recipient of a file that is still `UPLOADING` with `409 ERR_CONFLICT` ("This file is still uploading.") for both the status and the chunk routes; a cancelled or expired file stays `404`, and a stranger stays `403`. The client maps `409` on the STATUS route to `HubFileError.NotReady` as it already did on READ, so a download that starts early is `Interrupted` (partial file and resume state kept), not `Failed` with its state deleted.
+- Tests: `FileStoreTest` (the old expectations moved to 409; a cancelled upload still 404; a stranger 403), `FileRoutesTest` (HTTP 409), `E2eHubFileTransferContractTest.aRecipientOfAFileThatIsStillUploadingGetsATransientNotReadyNotNotFound` (the real client against the real routes: `NotReady`, transient, on status and on a chunk). **Mutation:** the new branch disabled failed 4 tests; restored.
+- Wire change: a recipient's early `GET /api/v1/files/{id}` and chunk read were `404`, now `409`. No shipped path sends the ticket before `complete`, so no deployed client observes it.

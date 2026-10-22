@@ -543,6 +543,11 @@ class FileStore(
             }
         }
         if (!isSender) {
+            // FL-01: a listed recipient of a file that is still arriving is told to come back (409, transient on the client);
+            // only a file that is gone (cancelled, expired) is a 404, which the client treats as final and cleans up after.
+            if (blob.state == FileStates.UPLOADING) {
+                return FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_READY)
+            }
             if (blob.state != FileStates.READY) {
                 return FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
             }

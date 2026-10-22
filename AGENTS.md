@@ -917,14 +917,7 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Hub/server audit decisions (2026-10-21): RECORDED, NOT IMPLEMENTED.** The owner answered the five questions of
-`docs/audit/2026-10-21-server-hub-internals-audit.md` §8 and asked for them to be written down only; **ADR-222** in `docs/decisions.md`
-is the authority. In one line each: 64 group rosters per sync with a 2 MiB body bound and byte-budget paging for `/directory/sync`;
-device certificates **30 days and adjustable** (`FLASH_DEVICE_CERT_VALIDITY_DAYS`); a department move takes effect **immediately**
-(registry-derived principal + bearer revoke + relay kick); an unopenable sealed mailbox row is **quarantined** and its sender told
-`DROPPED`; `/auth/verify` is limited **per device**; an announcement edit **keeps** its expiry (`clearExpiry` clears it). The audit's
-§11 is the ordered implementation plan (item 1 = DIR-04, the 64 KiB sync-body defect that stops offline org trust above ~110 people).
-No hub code has been changed; do not describe any of this as available, and do not update `docs/protocol.md` before the code lands.
+**Hub/server internals audit (2026-10-21/22): the whole §11 plan (10 items) is IMPLEMENTED, unit-tested and mutation-checked, NOT deployed, NOT device-verified.** The owner's answers to §8 are **ADR-222** in `docs/decisions.md`; the work is in `dev` as one commit per item (sync body budget and paging, announcement transactions and expiry tri-state, 30-day adjustable device certificates, registry-derived principal, mailbox quarantine, per-device `/auth/verify` limit with a single-flight client refresh, people paging, tombstone hygiene, relay byte budget, cached mailbox stats, bounded client reads, `409` for an early recipient). The per-item log is §12 of `docs/audit/2026-10-21-server-hub-internals-audit.md`; device checks `SRVHUB-01..13` in `docs/testing/TEST-BACKLOG.md`; `docs/protocol.md` describes the new wire behaviour. The audit's other OPEN Low findings are not part of the plan.
 
 **Cancel/error/resume audit (2026-10-20, docs only, branch `agent/A-cancel`): NO code changed, nothing built, nothing device-verified.**
 `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` traces every cancel/decline/pause/resume/timeout path for 1:1, swarm,
