@@ -31,9 +31,9 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | FIXED 2026-10-21 (step 9; automated tests, not device-verified) |
 | **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
 | **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
-| **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | OPEN |
-| **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | OPEN |
-| **RLY-03** | Low | `:server` relay | `draining` is set outside the hand-off gate, so a live frame can be delivered in the instant before a drain starts (ordering). | OPEN |
+| **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
+| **OPS-01** | Low | `:server` observability | `MailboxStats` runs blocking JDBC on the caller's thread and is called from request handlers and the metrics scrape. | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
+| **RLY-03** | Low | `:server` relay | `draining` is set outside the hand-off gate, so a live frame can be delivered in the instant before a drain starts (ordering). | FIXED 2026-10-22 (step 10; automated tests, not device-verified) |
 | **CLI-01** | Low | `:core:enterprise` | A 401 refresh is not single-flight: *M* concurrent 401s cause *M* serialised full sign-ins, which also feeds AUTH-01. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
 | **CLI-02** | Low | `:core:enterprise` | `HubSession.bearer()` holds a mutex across two network round-trips with no client timeout: an unreachable hub stalls every hub call on the device. | OPEN |
 | **CLI-03** | Low | `:core:enterprise` | Eight hub-client call sites read `response.bodyAsText()` with no size bound; the 64 KiB `HubRestCodec.decode` guard runs afterwards. | OPEN |
@@ -565,7 +565,7 @@ val outcomes = coroutineScope { recipients.map { member -> async { gate.withPerm
 
 **Test that would catch it.** A test that sends one 64 KiB frame to a 100-member group twice per second and asserts the byte limiter refuses the flood with `ERR_RATE_LIMIT` (while the frame limiter alone would allow it).
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -584,7 +584,7 @@ val outcomes = coroutineScope { recipients.map { member -> async { gate.withPerm
 
 **Fix direction.** Make the stats functions `suspend` and wrap them in `database.io`, or cache the totals (`mailbox_totals` is already a counter table) behind a short-lived snapshot so a scrape never touches the pool.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -612,7 +612,7 @@ Between the CAS and the write, another sender's `handOffLive` can read `draining
 
 **Fix direction.** Set `draining = true` inside `synchronized(gate)` (take the batch under the lock: CAS + flag + launch decision), then launch outside it.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-22 (step 10; see section 12).
 
 ---
 
@@ -1014,3 +1014,11 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - DIR-03: `registerMember` and both `createDepartment` overloads clear the tombstone of an entity that exists again (memory and table), and `getSyncChanges` also ignores a tombstone older than the entity's current row (`tombstoneIsStale`), e.g. one restored from an old backup. The client (`OrgDirectorySync`) now applies a page's removals before its listed departments and members and un-removes an id it then sees verified, so an id both removed and listed is present, whichever hub sent it.
 - Tests: `DirectoryTombstoneTest` (10: outsider vs admin vs department member for a hidden department's removed member; a head of the hidden department; a deleted hidden department; a deleted visible department; the department of a removal surviving a restart; a removed device registered again; the cleared tombstone surviving a restart; a department created again; a stale tombstone ignored; migration 4 on a schema-3 database), `DirectoryPrivacyTest` migration assertion now follows `MIGRATIONS.size`, `OrgDirectorySyncTest` `DIR-03 a device that a page both lists and removes is kept`. **Mutations:** visibility check made always true failed 3 tests; clearing disabled and the stale check disabled failed 4; the client change reverted failed the client test; all restored.
 - Known and not changed: a member who moves from a visible department to a hidden one leaves outsiders with a stale cached row (the move is not a removal); a separate, older behaviour, outside DIR-02.
+
+### Step 10A - Relay byte budget, drain hand-off, cached mailbox stats (RLY-02, RLY-03, OPS-01; SRVHUB-09, SRVHUB-11): DONE, unit tested, NOT device-verified
+
+- RLY-02: `RelayPolicy.senderBytesPerSecond` (2 MiB/s) and `senderByteBurst` (8 MiB) feed a per-session `byteBucket`. `RelayFrameRouter.withinByteBudget` charges a message its payload length times the copies the hub is about to emit (1 for a 1:1 message, one per other member for a group message) before anything is routed; over budget the sender gets `Ack REJECTED` with `ERR_RATE_LIMIT` for that message id, `relay_rate_limit_hits` and `relay_messages{outcome="byte_limited"}` count it, and a sender that keeps flooding is closed by the existing abuse counter. A single frame larger than the burst is capped at the burst, so it is never unsendable. Not built: the audit's optional recipient cap (`ERR_TOO_MANY_RECIPIENTS`) - it needs a new error code and the byte bucket already bounds the cost.
+- RLY-03: `RelaySession.beginDrain()` takes the drain baton and sets `draining` as ONE step under the hand-off gate; `startDrainIfIdle` uses it. Before, the compare-and-set and the flag write were two steps and a live frame handed over in between reached the device ahead of older mailbox rows.
+- OPS-01: `CachedMailboxStats` wraps the database-backed `MailboxStats` for the metrics scrape, `/health/detail` and the console overview: the first snapshot is taken at start-up, a read of a snapshot older than 5 s returns the old numbers at once and starts ONE background refresh, and a failed refresh keeps the last numbers. `HubServices` and the default `FlashServerEngine` wiring use it; the in-memory `*Total` counters pass straight through.
+- Tests: `RelayByteBudgetTest` (9: a group flood refused by bytes although the frame bucket allowed it; small group messages unaffected; an oversize frame capped at the burst; the limit is per sender; a flooder is closed; a direct message is charged only its own size; the bucket's cost and refill; `beginDrain` flags; a 300,000-iteration check that the baton is never held without `draining` at a gate boundary), `CachedMailboxStatsTest` (5). **Mutations:** byte check disabled plus an unsynchronised `beginDrain` failed 6 of 9 including the stress test; reading through the database again failed 4 of 5; all restored.
+- Not changed: the stats are up to about 5 s old by design.

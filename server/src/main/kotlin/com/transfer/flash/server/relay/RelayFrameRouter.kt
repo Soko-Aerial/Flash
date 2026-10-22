@@ -119,6 +119,7 @@ public class RelayFrameRouter(
     public fun register(session: RelaySession): RelaySession? {
         session.onClosed = { s, reason -> sessionEnded(s, reason) }
         session.rateBucket = TokenBucket(policy.frameBurst, policy.framesPerSecond)
+        session.byteBucket = TokenBucket(policy.senderByteBurst, policy.senderBytesPerSecond.toDouble())
         return connectionPool.register(session)
     }
 
@@ -219,8 +220,24 @@ public class RelayFrameRouter(
             handleGroupSend(origin, send, group)
             return
         }
+        if (!withinByteBudget(origin, send, send.to, copies = 1)) return
         val kind = routeOne(origin.deviceId, send.to, send.id, send.type, send.sentAt, send.payload, group = null)
         offerFrame(origin, ackFor(kind, send.id, send.to))
+    }
+
+    /**
+     * RLY-02: charges the sender's byte bucket the payload size times the copies the hub is about to emit. Over budget, nothing is
+     * routed: the sender gets `REJECTED` with `ERR_RATE_LIMIT` for this message id, the refusal is counted, and a session that keeps
+     * flooding is closed by [noteRefusal] like any other abusive sender.
+     */
+    private suspend fun withinByteBudget(origin: RelaySession, send: RelayFrame.Send, to: String, copies: Int): Boolean {
+        val bucket = origin.byteBucket ?: return true
+        if (bucket.tryTake(send.payload.length.toLong() * copies.coerceAtLeast(1))) return true
+        metrics.inc(RelayMetrics.RATE_LIMIT_HITS)
+        metrics.inc(RelayMetrics.MESSAGES, 1, "outcome" to "byte_limited")
+        offerFrame(origin, RelayFrame.Ack(id = send.id, to = to, status = AckStatus.REJECTED, ts = clock(), reason = HubErrorCodes.ERR_RATE_LIMIT))
+        noteRefusal(origin)
+        return false
     }
 
     /** REL-14: one `FLASH_RELAY{group}` becomes one delivery per member, and ONE aggregate `FLASH_ACK` to the sender. */
@@ -236,6 +253,7 @@ public class RelayFrameRouter(
             return
         }
         val recipients = members.filter { it != origin.deviceId }
+        if (!withinByteBudget(origin, send, groupId, copies = recipients.size)) return
         val gate = Semaphore(policy.groupFanoutConcurrency)
         val outcomes = coroutineScope {
             recipients.map { member ->
@@ -450,8 +468,7 @@ public class RelayFrameRouter(
 
     private fun startDrainIfIdle(session: RelaySession) {
         if (!session.isOpen) return
-        if (session.drainRunning.compareAndSet(false, true)) {
-            session.draining = true
+        if (session.beginDrain()) {
             scope.launch { runDrain(session) }
         }
     }

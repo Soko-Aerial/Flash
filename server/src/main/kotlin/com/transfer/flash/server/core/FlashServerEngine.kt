@@ -101,7 +101,7 @@ public class FlashServerEngine(
     public val groupMembership: GroupMembershipView = DirectoryGroupMembership(directory),
     public val metrics: RelayMetrics = RelayMetrics(),
     /** Queue depth and age numbers for `/health/detail` and `/metrics`; defaults to the mailbox when it reports them. */
-    public val mailboxStats: MailboxStats = (mailboxQueue as? MailboxStats) ?: MailboxStats.Empty,
+    public val mailboxStats: MailboxStats = (mailboxQueue as? MailboxStats)?.let { com.transfer.flash.server.observability.CachedMailboxStats(it) } ?: MailboxStats.Empty,
     /** When set the engine probes it for `/health`, vacuums it after sweeps, and checkpoints and closes it on [stop]. */
     public val database: ServerDatabase? = null,
     public val announcements: AnnouncementStore? = null,

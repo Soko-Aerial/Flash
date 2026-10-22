@@ -27,6 +27,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *   heartbeat; a session that does not answer within [pongTimeoutMs] is closed and its messages go to the mailbox).
  * @property sessionExpirySkewMs a session is closed with `ERR_EXPIRED` this long after its certificate or delegation ends.
  * @property groupFanoutConcurrency members handled concurrently when a group message is fanned out.
+ * @property senderBytesPerSecond / [senderByteBurst] per-session byte bucket on what one sender makes the hub emit (RLY-02, ADR-222):
+ *   a message is charged its payload size times the number of copies (one for a 1:1 message, one per other member for a group
+ *   message), capped at the burst so one frame is never unsendable. The frame bucket alone allowed 60 frames/s of 64 KiB to a
+ *   large group, hundreds of megabits per second from one account.
  */
 data class RelayPolicy(
     val handshakeTimeoutMs: Long = HubContract.HANDSHAKE_TIMEOUT_MS,
@@ -43,6 +47,8 @@ data class RelayPolicy(
     val pingPeriodMs: Long = 15_000L,
     val pongTimeoutMs: Long = 30_000L,
     val groupFanoutConcurrency: Int = 16,
+    val senderBytesPerSecond: Int = 2 * 1024 * 1024,
+    val senderByteBurst: Int = 8 * 1024 * 1024,
     /** How long past the end of its certificate (or the hub's delegation) a session may live: the clock skew the handshake tolerates (REV-05). */
     val sessionExpirySkewMs: Long = 60_000L,
 ) {
@@ -55,6 +61,7 @@ data class RelayPolicy(
         require(maxInFlightPerSession >= 0) { "maxInFlightPerSession must not be negative" }
         require(drainPageSize in 1..1000) { "drainPageSize must be 1..1000" }
         require(groupFanoutConcurrency > 0) { "groupFanoutConcurrency must be positive" }
+        require(senderBytesPerSecond > 0 && senderByteBurst > 0) { "the sender byte limit must be positive" }
     }
 }
 
@@ -68,13 +75,17 @@ class TokenBucket(
     private var lastNanos: Long = nanoClock()
 
     /** Takes one token; false when the bucket is empty. */
-    fun tryTake(): Boolean {
+    fun tryTake(): Boolean = tryTake(1L)
+
+    /** Takes [cost] tokens (at most the capacity, so one oversize request can still be served from a full bucket); false when short. */
+    fun tryTake(cost: Long): Boolean {
         val now = nanoClock()
         val elapsedSeconds = (now - lastNanos) / 1_000_000_000.0
         lastNanos = now
         tokens = minOf(capacity.toDouble(), tokens + elapsedSeconds * refillPerSecond)
-        if (tokens < 1.0) return false
-        tokens -= 1.0
+        val needed = cost.coerceIn(1L, capacity.toLong()).toDouble()
+        if (tokens < needed) return false
+        tokens -= needed
         return true
     }
 }

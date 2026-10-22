@@ -290,6 +290,8 @@ class HubServices private constructor(
                 metrics = metrics,
                 secrets = dataSecrets,
             )
+            // OPS-01: scrapes and the console overview read a short-lived snapshot, never the pool, on their own thread.
+            val mailboxStatsView = com.transfer.flash.server.observability.CachedMailboxStats(mailbox, clock = clock)
 
             var revocations: SqliteRevocationService? = null
             var challengeAuth: ChallengeResponseAuth? = null
@@ -377,7 +379,7 @@ class HubServices private constructor(
                 bearerTokens = bearerTokens,
                 revocationService = revService ?: com.transfer.flash.server.auth.RevocationService.None,
                 metrics = metrics,
-                mailboxStats = mailbox,
+                mailboxStats = mailboxStatsView,
                 database = db,
                 delegationDaysRemaining = { delegations.daysLeft() },
                 managementGuard = com.transfer.flash.server.observability.DefaultManagementGuard(token = config.managementToken),
@@ -400,7 +402,7 @@ class HubServices private constructor(
                             revocations = revService,
                             bearerTokens = bearerTokens,
                             delegations = delegations,
-                            mailboxStats = mailbox,
+                            mailboxStats = mailboxStatsView,
                             limits = limits,
                             clock = clock,
                             metrics = metrics,
