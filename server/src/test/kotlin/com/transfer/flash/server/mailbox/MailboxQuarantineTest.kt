@@ -112,8 +112,10 @@ class MailboxQuarantineTest {
         now.addAndGet(MailboxLimits.DEFAULT_TTL_MS + 1_000)
         val removed = q.deleteExpired(100)
 
-        assertEquals(6, removed.size)
-        assertEquals(0, count(db, "1 = 1"))
+        // F39 / ERROR-775: Only deliverable rows are returned to emit EXPIRED events; quarantined rows were already DROPPED
+        assertEquals(3, removed.size, "quarantined rows must not be returned for EXPIRED notifications")
+        assertEquals(listOf("good1", "good2", "good3"), removed.map { it.msgId })
+        assertEquals(0, count(db, "1 = 1"), "quarantined rows must still be removed from disk when expired")
     }
 
     @Test
