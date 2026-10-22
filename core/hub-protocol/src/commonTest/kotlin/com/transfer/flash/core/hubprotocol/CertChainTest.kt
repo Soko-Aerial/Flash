@@ -217,4 +217,18 @@ class CertChainTest {
         assertTrue(RenewalPolicy.shouldRenew(leaf, T0 + 6 * DAY))
         assertFalse(RenewalPolicy.shouldRenew(leaf, T0 + 5 * DAY))
     }
+
+    @Test
+    fun renewalWindowGrowsWithTheCertificatesOwnLifetime() {
+        // F4: the client used a hardcoded 24 h / 72 h window while the hub derives both from the lifetime, so a 365-day certificate
+        // (18.25 days of grace) was abandoned locally before the hub would have refused it.
+        val leaf = FakeSigs.device(validFrom = T0, validTo = T0 + 365 * DAY)
+        assertFalse(RenewalPolicy.shouldRenew(leaf, T0 + 300 * DAY))
+        assertTrue(RenewalPolicy.shouldRenew(leaf, T0 + 330 * DAY), "inside the 36.5-day early window")
+        assertTrue(RenewalPolicy.isRenewable(leaf, T0 + 365 * DAY + 10 * DAY))
+        assertTrue(RenewalPolicy.isRenewable(leaf, T0 + 365 * DAY + 18 * DAY))
+        assertFalse(RenewalPolicy.isRenewable(leaf, T0 + 365 * DAY + 19 * DAY), "past the 18.25-day grace")
+        // An explicit window still wins, which is how the hub's configured overrides keep their meaning.
+        assertFalse(RenewalPolicy.isRenewable(leaf, T0 + 365 * DAY + 4 * DAY, earlyWindowMs = DAY, graceMs = 3 * DAY))
+    }
 }

@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /** CLI-01 / CLI-09: bearer session, renewal, unenrol and revocation fetch against a scripted hub. */
 class HubSessionTest {
@@ -162,6 +163,32 @@ class HubSessionTest {
         assertEquals(fresh, store.credentials.value)
         assertEquals("Acme Hub", fresh.hubName)
         assertNull(s.renewalFailure.value)
+    }
+
+    @Test
+    fun aLongLivedCertificateIsRenewedInsideItsOwnGraceWindow() = runTest {
+        // A ~380-day lifetime: the grace is a twentieth of it (about 19 days), far wider than the old 72-hour default. F4: the
+        // client refused locally ("outside renewal window") and never asked, so a device back from leave a few days late was
+        // locked out of its hub although the hub would have renewed it.
+        //
+        // The certificate may not outlive the delegation that signed it (`checkChain` LEAF_OUTSIDE_DELEGATION), and the
+        // test organisation's delegation ends at T0 + 400 days, so the expired leaf ends at 380 and the renewed one at 400.
+        enrolled(validTo = TestOrg.T0 + 380 * TestOrg.DAY)
+        now = TestOrg.T0 + 385 * TestOrg.DAY // expired 5 days ago, inside the ~19-day grace
+        scriptRenew(serial = 11, validTo = TestOrg.T0 + 400 * TestOrg.DAY)
+
+        val outcome = session().renew()
+
+        assertEquals(11L, assertIs<EnrollmentOutcome.Enrolled>(outcome).credentials.deviceCert.serial)
+        assertEquals(11L, store.credentials.value?.deviceCert?.serial)
+    }
+
+    @Test
+    fun aLongLivedCertificateStartsRenewingWellBeforeItsLastDay() = runTest {
+        enrolled(validTo = TestOrg.T0 + 365 * TestOrg.DAY)
+        now = TestOrg.T0 + 360 * TestOrg.DAY // five days left: outside the old 24 h window, inside the certificate's own tenth
+
+        assertTrue(store.credentials.value!!.needsRenewalAt(now), "a 365-day certificate starts renewing 36.5 days early")
     }
 
     @Test

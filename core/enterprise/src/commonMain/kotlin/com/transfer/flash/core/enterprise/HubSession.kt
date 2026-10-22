@@ -243,10 +243,14 @@ public class HubSession(
         val creds = credentials() ?: return@withContext EnrollmentOutcome.Failed(EnrollFailureReason.INVITE_REJECTED, "not enrolled")
         val outcome = mutex.withLock {
             // CLI-02: bounded like the sign-in; a hub that never answers is "unreachable", not a held lock.
-            withTimeoutOrNull(NETWORK_BUDGET_MS) { renewLocked(creds) } ?: EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, "timeout")
+            val result = withTimeoutOrNull(NETWORK_BUDGET_MS) { renewLocked(creds) }
+                ?: EnrollmentOutcome.Failed(EnrollFailureReason.UNREACHABLE, "timeout")
+            // 2026-10-22 review F5: the token belongs to the OLD certificate serial, so it is dropped inside the lock. Clearing it after the lock let a
+            // coroutine that acquired the mutex next hand out the stale token before the write landed.
+            if (result is EnrollmentOutcome.Enrolled) cached = null
+            result
         }
         _renewalFailure.value = (outcome as? EnrollmentOutcome.Failed)?.reason
-        if (outcome is EnrollmentOutcome.Enrolled) cached = null
         outcome
     }
 
