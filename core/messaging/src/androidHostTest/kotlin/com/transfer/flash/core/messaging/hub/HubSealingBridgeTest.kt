@@ -168,4 +168,35 @@ class HubSealingBridgeTest {
         assertTrue("nothing readable may be sent instead", relay.sent.isEmpty())
         assertNotNull(forged)
     }
+
+    /** RVW22 F1: a message that cannot be opened for a passing reason is kept, not acknowledged (the hub deletes on ack). */
+    private fun deliverWith(sealing: DirectoryHubSealing, sent: FakeHubRelay.Sent): Triple<HubInboundOutcome, Sink, FakeHubRelay> {
+        val relay = FakeHubRelay()
+        val sink = Sink()
+        val outcome = runBlocking {
+            HubChatBridge(
+                localDeviceId = "bob", port = relay, contentViaHub = { false }, sealing = sealing,
+                standing = { HubPeerStanding.MEMBER },
+            ).handleInbound(HubInbound("alice", sent.id, sent.type, sent.sentAt, sent.payload), sink)
+        }
+        return Triple(outcome, sink, relay)
+    }
+
+    @Test
+    fun `a sealed message is kept and not acknowledged while this device has no sealing key yet`() {
+        val sealing = DirectoryHubSealing(bob.crypto, "bob", { null }) { mapOf("alice" to alice.directoryEntry())[it] }
+        val (outcome, sink, relay) = deliverWith(sealing, sealOnce())
+        assertEquals(HubInboundOutcome.RETRY_LATER, outcome)
+        assertTrue(sink.frames.isEmpty())
+        assertTrue("the hub must not be told to delete it", relay.recvAcks.isEmpty())
+    }
+
+    @Test
+    fun `a sealed message is kept and not acknowledged while the directory has no entry for the sender`() {
+        val sealing = DirectoryHubSealing(bob.crypto, "bob", { bob.sealingKey }) { null }
+        val (outcome, sink, relay) = deliverWith(sealing, sealOnce())
+        assertEquals(HubInboundOutcome.RETRY_LATER, outcome)
+        assertTrue(sink.frames.isEmpty())
+        assertTrue("the hub must not be told to delete it", relay.recvAcks.isEmpty())
+    }
 }
