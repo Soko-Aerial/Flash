@@ -339,7 +339,32 @@ public object PttFloorMachine {
                     PttFloorEffect.NotifyEnded(PttEndReason.CALL_STARTED, state.holderName),
                 ),
             )
-            // A second floor claim while busy is ignored (no preemption in v1).
+            // Two devices pressed at once. The talkers settle it by id (the higher one yields), so a listener that heard the
+            // loser first must follow the winner, or it stays deaf once the loser's Stop arrives (RVW22 F8). Later claims
+            // outside the collision window are ignored (no preemption in v1).
+            is PttFloorEvent.RemoteStart ->
+                if (
+                    event.sessionId != state.sessionId && event.holderId < state.holderId &&
+                    (event.nowMs - state.startedAtMs).coerceAtLeast(0L) <= config.collisionWindowMs
+                ) {
+                    PttTransition(
+                        PttFloorState.Listening(
+                            sessionId = event.sessionId,
+                            holderId = event.holderId,
+                            holderName = event.holderName,
+                            startedAtMs = event.nowMs,
+                            lastActivityMs = event.nowMs,
+                            sampleRateHz = event.sampleRateHz,
+                            packetMs = event.packetMs,
+                        ),
+                        listOf(
+                            PttFloorEffect.StopPlayout(state.sessionId, PttEndReason.REMOTE_STOP),
+                            PttFloorEffect.StartPlayout(event.sessionId, event.holderName, event.sampleRateHz, event.packetMs),
+                        ),
+                    )
+                } else {
+                    PttTransition(state, emptyList())
+                }
             else -> PttTransition(state, emptyList())
         }
     }

@@ -81,6 +81,30 @@ public class PttSessionEngine(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val commandMutex = Mutex()
 
+    /**
+     * Inbound control frames, handled one at a time in arrival order (RVW22 F28). A coroutine per frame let a Stop overtake
+     * the Start sent just before it (it found Idle and was ignored), which left the receiver listening to silence.
+     */
+    private val controlInbox = Channel<Pair<String, PttSessionFrame>>(Channel.UNLIMITED)
+
+    init {
+        scope.launch {
+            for ((peerId, frame) in controlInbox) {
+                try {
+                    processControlFrame(peerId, frame)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    FlashLog.w(TAG, "PTT control frame failed: ${e::class.simpleName}")
+                }
+            }
+        }
+    }
+
+    /** Wall-clock of the newest accepted audio packet; read by the tick loop, so a packet costs no coroutine (RVW22 F71). */
+    @Volatile
+    private var lastAudioPacketMs: Long = 0L
+
     @Volatile
     private var floor: PttFloorState = PttFloorState.Idle
 
@@ -247,14 +271,18 @@ public class PttSessionEngine(
 
     /** Inbound session control frame (already decoded). Safe from any thread. */
     public fun onControlFrame(peerId: String, frame: PttSessionFrame) {
-        scope.launch {
+        controlInbox.trySend(peerId to frame)
+    }
+
+    private suspend fun processControlFrame(peerId: String, frame: PttSessionFrame) {
+        run {
             if (frame.from != peerId) {
                 FlashLog.w(TAG, "PTT session frame dropped: claimed from=${frame.from} != transport peer=$peerId")
-                return@launch
+                return
             }
             if (!isTrustedPeer(peerId)) {
                 FlashLog.w(TAG, "PTT session frame dropped: untrusted peer=$peerId")
-                return@launch
+                return
             }
             val now = nowMs()
             val self = localId()
@@ -262,7 +290,7 @@ public class PttSessionEngine(
                 is PttSessionFrame.Start -> {
                     if (isCallActive() || voiceNoteLeaseId != null) {
                         FlashLog.i(TAG, "PTT start ignored while local audio path is busy peer=$peerId")
-                        return@launch
+                        return
                     }
                     dispatchIo(
                         PttFloorEvent.RemoteStart(
@@ -337,17 +365,7 @@ public class PttSessionEngine(
         val frame = PttAudioFrame.decodeExpectedSize(data, expectedBytes) ?: return
         if (frame.sessionId != listening.sessionId || peerId != listening.holderId) return
         val accepted = playout?.offer(frame.seq, frame.captureTsMs, frame.pcm) == true
-        if (accepted) {
-            scope.launch {
-                dispatch(
-                    PttFloorEvent.RemoteActivity(
-                        sessionId = frame.sessionId,
-                        peerId = peerId,
-                        nowMs = nowMs(),
-                    ),
-                )
-            }
-        }
+        if (accepted) lastAudioPacketMs = nowMs()
     }
 
     override public fun onInboundBinary(peerId: String?, data: ByteArray): Boolean {
@@ -418,6 +436,7 @@ public class PttSessionEngine(
         floor = PttFloorState.Idle
         _state.value = PttFloorState.Idle
         _stats.value = null
+        controlInbox.close()
         scope.cancel()
     }
 
@@ -471,7 +490,9 @@ public class PttSessionEngine(
     }
 
     private suspend fun startTalk(sessionId: String) {
-        val freshMembers = snapshotMembers()
+        // RVW22 F9: the same filter as sendPing(): never the microphone to this device itself or to a peer that is not trusted.
+        val self = localId()
+        val freshMembers = snapshotMembers().filter { it != self && isTrustedPeer(it) }
         if (freshMembers.isEmpty()) {
             // Lost a membership race between press and execution: unwind quietly.
             processLocked(PttFloorEvent.LocalStopPress)
@@ -650,6 +671,13 @@ public class PttSessionEngine(
     private suspend fun CoroutineScope.tickLoop(key: SessionJobKey) {
         while (isActive && sessionJobKey == key) {
             delay(TICK_MS)
+            if (key.role == PttRole.LISTENER) {
+                val last = lastAudioPacketMs
+                val listening = floor as? PttFloorState.Listening
+                if (listening != null && listening.sessionId == key.sessionId && last >= listening.startedAtMs) {
+                    dispatchIo(PttFloorEvent.RemoteActivity(listening.sessionId, listening.holderId, last))
+                }
+            }
             dispatchIo(PttFloorEvent.Tick(nowMs()))
         }
     }

@@ -17,6 +17,35 @@ class PttFloorMachineTest {
         event: PttFloorEvent,
     ): PttTransition = PttFloorMachine.reduce(state, event, config)
 
+    // RVW22 F8: a listener follows the winner of a simultaneous press.
+
+    @Test
+    fun listenerSwitchesToTheLowerIdWhenItsClaimArrivesInsideTheCollisionWindow() {
+        val heardLoserFirst = PttFloorState.Listening("sB", "B", "Bea", 1000L, 1000L)
+        val t = reduce(heardLoserFirst, PttFloorEvent.RemoteStart("sA", "A", "Ann", 1005L))
+
+        assertEquals(PttFloorState.Listening("sA", "A", "Ann", 1005L, 1005L), t.state)
+        assertEquals(
+            listOf(
+                PttFloorEffect.StopPlayout("sB", PttEndReason.REMOTE_STOP),
+                PttFloorEffect.StartPlayout("sA", "Ann", 16000, 20),
+            ),
+            t.effects,
+        )
+        // The loser's Stop, arriving afterwards, no longer ends what the listener is hearing.
+        val after = reduce(t.state, PttFloorEvent.RemoteStop("sB", "B"))
+        assertEquals(t.state, after.state)
+        assertTrue(after.effects.isEmpty())
+    }
+
+    @Test
+    fun listenerKeepsTheCurrentTalkerForAHigherIdOrALateClaim() {
+        val listening = PttFloorState.Listening("sA", "A", "Ann", 1000L, 1000L)
+        assertEquals(listening, reduce(listening, PttFloorEvent.RemoteStart("sB", "B", "Bea", 1005L)).state)
+        val b = PttFloorState.Listening("sB", "B", "Bea", 1000L, 1000L)
+        assertEquals(b, reduce(b, PttFloorEvent.RemoteStart("sA", "A", "Ann", 1000L + 1_501L)).state)
+    }
+
     // Idle.
 
     @Test
