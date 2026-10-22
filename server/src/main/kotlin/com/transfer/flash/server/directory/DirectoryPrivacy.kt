@@ -7,7 +7,8 @@ import java.util.concurrent.ConcurrentHashMap
  * Plan A2 helpers that do not belong in [OrganizationDirectory]: opaque cursor
  * codec, query bounds, and the per-device miss limiter for the single lookup.
  *
- * Cursor shape (opaque to clients): Base64url of `v1|<foldedName>|<deviceId>`.
+ * Cursor shape (opaque to clients): Base64url of `v1|<length>:<foldedName>|<deviceId>`
+ * (the name is length-prefixed because it may contain `|`; 2026-10-22 review F2).
  * A malformed cursor is a 400, never a 500. Search ranking never leaks hidden
  * people: outsiders simply get zero rows with an identical page shape.
  */
@@ -27,20 +28,63 @@ object DirectoryPrivacy {
         return folded
     }
 
+    /**
+     * Opaque people cursor. The folded display name is LENGTH-PREFIXED inside the payload: a display name may legitimately
+     * contain `|` ("Alice | Engineering"), and splitting on `|` cut such a name in half, so the next page started before the
+     * row it was meant to follow — the same person came back on every page and a client that follows the cursor never
+     * finished (2026-10-22 review F2).
+     */
     fun encodeCursor(foldedName: String, deviceId: String): String =
-        Base64.getUrlEncoder().withoutPadding().encodeToString("v1|$foldedName|$deviceId".toByteArray())
+        Base64.getUrlEncoder().withoutPadding()
+            .encodeToString("v1|${foldedName.length}:$foldedName|$deviceId".toByteArray(Charsets.UTF_8))
 
     data class PeopleCursor(val foldedName: String, val deviceId: String)
 
+    /**
+     * Decodes [encodeCursor]'s output; a malformed cursor is null (the route answers 400).
+     *
+     * A cursor written by an older hub build (`v1|name|deviceId`, unframed) is still accepted, so a page in flight when the hub
+     * is upgraded does not suddenly fail. Ambiguity there is unavoidable — that unframed shape is exactly the defect.
+     */
     fun decodeCursor(raw: String?): PeopleCursor? {
         if (raw.isNullOrBlank()) return null
         return runCatching {
-            val decoded = String(Base64.getUrlDecoder().decode(raw))
-            val parts = decoded.split("|", limit = 3)
-            if (parts.size != 3 || parts[0] != "v1") return null
-            if (parts[2].isBlank() || parts[2].length > 128) return null
-            PeopleCursor(parts[1], parts[2])
+            val decoded = String(Base64.getUrlDecoder().decode(raw), Charsets.UTF_8)
+            if (!decoded.startsWith(CURSOR_TAG)) return null
+            val rest = decoded.removePrefix(CURSOR_TAG)
+            if (looksFramed(rest)) parseFramed(rest) else parseLegacy(decoded)
         }.getOrNull()
+    }
+
+    private const val CURSOR_TAG = "v1|"
+
+    /** `<digits>:` at the start: the framing [encodeCursor] writes. */
+    private fun looksFramed(rest: String): Boolean {
+        val colon = rest.indexOf(':')
+        if (colon <= 0 || colon > 9) return false
+        return rest.substring(0, colon).all { it in '0'..'9' }
+    }
+
+    private fun parseFramed(rest: String): PeopleCursor? {
+        val colon = rest.indexOf(':')
+        val length = rest.substring(0, colon).toIntOrNull() ?: return null
+        val start = colon + 1
+        if (length < 0 || start + length >= rest.length) return null
+        if (rest[start + length] != '|') return null
+        val name = rest.substring(start, start + length)
+        val deviceId = rest.substring(start + length + 1)
+        return valid(name, deviceId)
+    }
+
+    private fun parseLegacy(decoded: String): PeopleCursor? {
+        val parts = decoded.split("|", limit = 3)
+        if (parts.size != 3 || parts[0] != "v1") return null
+        return valid(parts[1], parts[2])
+    }
+
+    private fun valid(name: String, deviceId: String): PeopleCursor? {
+        if (deviceId.isBlank() || deviceId.length > 128) return null
+        return PeopleCursor(name, deviceId)
     }
 
     /**
