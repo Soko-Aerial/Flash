@@ -6129,3 +6129,11 @@ All four are automated-green already (§3 of the audit); each stands as the real
 - **Pass:** the first submit turns the box into "Recovery code" with the "needs a recovery code" message (no 8-character cut); the pasted code stays whole, the browser is registered, the action then asks for confirmation normally; Security shows one fewer recovery code. The link "Use a recovery code instead" / "Use the authenticator app instead" switches the box both ways.
 - **Source:** ERROR-747.
 - **Status:** TODO
+
+
+### SHARE-FIT-01 — A desktop screen share fits the phone whole (ERROR-748)
+- **Setup:** a phone (Android) and the Windows desktop app in a video call; this build on the phone.
+- **Steps:** the desktop shares a full screen (16:9) or a window. Watch on the phone in portrait, then rotate to landscape; also end the share and check the normal camera picture; open the corner self-preview.
+- **Pass:** in portrait the whole desktop picture is visible, centred, with black bars above and below and nothing cut off at the sides (title bar and taskbar both visible); in landscape the whole picture is visible with the correct proportions (circles are round); the camera picture of the other side still fills the screen when its orientation matches; no flicker or wrong size when the share starts and stops; the corner preview shows the whole camera picture with bars instead of a cropped one.
+- **Source:** ERROR-748, ADR-102.
+- **Status:** TODO

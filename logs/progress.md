@@ -18258,3 +18258,8 @@ Redeploy the test hub (`tools\hub-test-server\deploy.ps1`) to ship the rename; u
 ## 2026-10-22 - Console key dialog: recovery codes fit and the dialog switches to recovery mode (ERROR-747)
 
 Owner report: adding an administrator to a department "does not take the authenticator" and a pasted recovery code was cut short. The hub was right to refuse an authenticator code (the account already has a key); the dialog's single box was limited to 8 characters (a recovery code is 11) and did not offer recovery mode. `keydialog.js` now holds 32 characters, has the sign-in page's toggle, and switches to recovery mode on `ERR_SIGNER_EXISTS`. Admin UI tests 83/83; browser check owed (`CONSOLE-KEY-01`). Redeploy with `tools\hub-test-server\deploy.ps1`. If the recovery codes are lost, the hub has a break-glass `admin-recovery --username X` command (resets password and authenticator, issues new codes).
+
+
+## 2026-10-22 - Android: a desktop screen share is fitted whole instead of cropped (ERROR-748)
+
+Owner: the desktop screen share on the phone is stretched and about half is not shown. The call screen already requested `Fit` for a presentation, but the Android `SurfaceViewRenderer` fills its exact box and crops the frame to its aspect, so `SCALE_ASPECT_FIT` did nothing. Fix: the view is now sized to the picture (`callVideoSize`, frame size from `RendererEvents`), bars are black. Unit-tested and mutation-checked; compiles on Android and desktop; NOT device-verified (`SHARE-FIT-01`). The corner self-preview now letterboxes too. Cause found by reading, not reproduced.
