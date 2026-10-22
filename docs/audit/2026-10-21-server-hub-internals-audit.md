@@ -27,8 +27,8 @@ Eighteen findings: **one high** (DIR-04, found while answering §8.1 — the cli
 | **ANN-01** | Medium | `:server` announcements | Announcement writes run on an autocommit connection: `nextSeq` can hand two rows the **same** `seq` (a delta-feed item is then skipped by clients), `expectedSeq` is a TOCTOU check (silent lost update), and the pin limit and `clientRequestId` idempotency are racy. | FIXED 2026-10-21 (step 2; automated tests, not device-verified) |
 | **DEV-01** | Medium | `:server` identity | Moving a device to another department in the console changes nothing on the wire until the device's certificate is **renewed** (certificates live 7 days, renewed in the last day). The live session keeps the old department for relay, announcement and directory scoping, and the console reports the move as done. | FIXED 2026-10-21 (step 5; automated tests, not device-verified) |
 | **ANN-02** | Medium-low | `:server` announcements | A console edit silently **removes an announcement's expiry**: the edit form never sends `expiresAtMs` and the store treats `null` as "clear". An announcement that should have expired stays live for ever. | FIXED 2026-10-21 (step 3; automated tests, not device-verified) |
-| **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | OPEN |
-| **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | OPEN |
+| **DIR-02** | Medium-low | `:server` directory | Tombstones are not privacy-filtered in `/directory/sync`: the device ids of removed members of a **hidden** department reach every syncing device. `docs/protocol.md` promises the opposite. | FIXED 2026-10-21 (step 9; automated tests, not device-verified) |
+| **DIR-03** | Medium-low | `:server` directory | A tombstone is never cleared when an entity comes back: a device id that is revoked and later re-enrolled is deleted by every peer on every sync, for ever. | FIXED 2026-10-21 (step 9; automated tests, not device-verified) |
 | **DIR-05** | Medium-low | `:server` + `:core:enterprise` | The last sync page carries "the full current set" of group rosters and the client **replaces** its stored set with what arrived, but the server silently truncates the list at `MAX_ROSTERS_PER_SYNC` (and skips groups above 200 members). A device in more groups than the cap deletes the rosters of groups it is still in, and cannot tell that apart from having left them. Unreachable at 256 groups today; reachable at the protocol's 64. | FIXED 2026-10-21 (step 1; automated tests, not device-verified) |
 | **AUTH-01** | Low | `:server` + deployment | Bearers are memory-only, and `/auth/challenge` + `/auth/verify` share **one per-IP bucket** (burst 30, then 1/s). After a hub restart, an office behind one NAT with more than ~15 devices cannot sign them all in for minutes. | FIXED 2026-10-21 (step 7; automated tests, not device-verified) |
 | **RLY-02** | Low | `:server` relay | Group fan-out is limited by **frames**, never by bytes: 60 frames/s × 64 KiB payload × up to 256 members is a per-sender egress amplifier. | OPEN |
@@ -358,7 +358,7 @@ val removedMembers = if (isFullResync) emptyList() else tombstones.values
 
 **Test that would catch it.** Sync as an outsider after a hidden-department member is removed: `removedDeviceIds` must not contain that id; sync as an org admin: it must.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 9; see section 12).
 
 ---
 
@@ -397,7 +397,7 @@ for (removedId in dto.removedDeviceIds) {
 
 **Test that would catch it.** Server test: register → remove → register the same id → the next sync lists it in `members` and **not** in `removedDeviceIds`. Client test: a page that carries id X in both must end with X present.
 
-**Status:** OPEN.
+**Status:** FIXED 2026-10-21 (step 9; see section 12).
 
 ---
 
@@ -926,7 +926,7 @@ Ordered by payoff per unit of risk. Each item names the findings/tests it closes
 | 6 | **Mailbox quarantine**: schema column, skip-with-LIMIT, `DROPPED` to the origin, metric | RLY-01, §8.3 | SRVHUB-02 **DONE 2026-10-21** |
 | 7 | **`/auth/verify` per-device bucket** + client single-flight refresh + jitter + deployment doc | AUTH-01, CLI-01, §8.4 | SRVHUB-08, 10 **DONE 2026-10-21** |
 | 8 | **People paging cursor in the store** | DIR-01 | SRVHUB-01 **DONE 2026-10-21** |
-| 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 |
+| 9 | **Tombstone hygiene**: privacy filter on `removedDeviceIds`, clear a tombstone when the entity returns | DIR-02, DIR-03 | SRVHUB-06, 07 **DONE 2026-10-21** |
 | 10 | **Small correctness/ops**: byte budget on relay fan-out (RLY-02), `draining` inside the gate (RLY-03), `MailboxStats` off the caller's thread (OPS-01), one-shot client refresh with timeouts (CLI-02), bounded response reads (CLI-03), `409 NOT_READY` for recipients (FL-01) | Low findings | SRVHUB-09..12 |
 
 Items 1–3 are the ones I would do before any hub is put in front of real users; item 1 alone decides whether the offline-trust feature works at all above ~110 people.
@@ -1006,3 +1006,11 @@ Items 1–3 are the ones I would do before any hub is put in front of real users
 - Tests: `DirectoryPrivacyTest.followingTheCursorWalksTheWholeDirectoryExactlyOnce` (1,203 people with repeated display names so page boundaries fall inside runs of equal names; limits 500, 100 and 7; the union equals an independently sorted list, no repeats, no gaps), `DirectoryPrivacyClientTest.aFullPageOfFiveHundredPeopleDecodes`. **Mutations:** cursor filter made always true failed the walk test; client decode back to the 64 KiB bound failed the client test; both restored.
 - The people route limiter (burst 30, then 1 per 2 s) is unchanged; presence uses at most 4 pages per round.
 - Full-suite note: `E2eRelayContractTest.aReconnectStormLeavesExactlyOneLiveSession` failed once under whole-suite load and passed when rerun alone (known load flake, unrelated to this step).
+
+### Step 9 - Tombstone hygiene (DIR-02, DIR-03; SRVHUB-06, SRVHUB-07): DONE, unit tested, NOT device-verified
+
+- Directory migration 4: `directory_tombstone.entity_dept` and `entity_hidden`. A tombstone now records, when it is written, the department of the removed entity (a department tombstone: itself) and whether that department was hidden. Old rows read as "no department", so they stay visible exactly as before.
+- DIR-02: `getSyncChanges` keeps a removal from anyone who could not see the entity: `tombstoneVisibleTo` mirrors `canListMember` (org admin, the removed device itself, the entity's own department, an administrator of that department, no department, otherwise the department must not be hidden, using the stored flag when the department row is gone). Org admins are untouched (the audit's fix direction).
+- DIR-03: `registerMember` and both `createDepartment` overloads clear the tombstone of an entity that exists again (memory and table), and `getSyncChanges` also ignores a tombstone older than the entity's current row (`tombstoneIsStale`), e.g. one restored from an old backup. The client (`OrgDirectorySync`) now applies a page's removals before its listed departments and members and un-removes an id it then sees verified, so an id both removed and listed is present, whichever hub sent it.
+- Tests: `DirectoryTombstoneTest` (10: outsider vs admin vs department member for a hidden department's removed member; a head of the hidden department; a deleted hidden department; a deleted visible department; the department of a removal surviving a restart; a removed device registered again; the cleared tombstone surviving a restart; a department created again; a stale tombstone ignored; migration 4 on a schema-3 database), `DirectoryPrivacyTest` migration assertion now follows `MIGRATIONS.size`, `OrgDirectorySyncTest` `DIR-03 a device that a page both lists and removes is kept`. **Mutations:** visibility check made always true failed 3 tests; clearing disabled and the stale check disabled failed 4; the client change reverted failed the client test; all restored.
+- Known and not changed: a member who moves from a visible department to a hidden one leaves outsiders with a stale cached row (the move is not a removal); a separate, older behaviour, outside DIR-02.

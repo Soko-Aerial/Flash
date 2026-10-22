@@ -1613,6 +1613,8 @@ cannot be signed, a signing failure, or no roster signer) the last page says `ro
 it still has that is missing from the answer until that roster's own `validUntilMs` (DIR-05); absent means false, so an older hub reads as complete.
 Groups above 200 members are skipped and counted (`rostersSkippedTooLarge`): "not supported offline".
 
+**Removals in a sync (DIR-02, DIR-03, ADR-222).** `removedDeviceIds` and `removedDepartmentIds` follow the same visibility as the rows they retire: a removal is told to an organisation admin, to the removed device itself, to a member of the entity's department, to an administrator of that department, to anyone when the entity had no department, and otherwise only when its department was not hidden. The hub stores the department and its hidden flag with each tombstone (directory migration 4), so the answer holds after the member row or the whole department is gone. Old tombstones (no department recorded) stay visible to all, as before. A tombstone is dropped when its entity returns (a device registered again, a department created again), and a sync never reports a removal for an id whose current row is newer than the tombstone. A client applies a page's removals first and its listed members after, so an id that is both removed and listed is present.
+
 **Sync page size (DIR-04, ADR-222).** A device asks for `limit = 200` members (`HubContract.DIRECTORY_SYNC_PAGE_LIMIT`; a signed member row is about
 600 bytes, so a page is about 115 KB). The hub ends a page at `limit` rows OR when the encoded members reach
 `DIRECTORY_SYNC_MEMBER_BUDGET_BYTES` (1 MiB), whichever comes first, and always takes at least one row so the cursor advances. The client decodes this

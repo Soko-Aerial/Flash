@@ -6038,12 +6038,12 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-06 — A hidden department's removed member does not leak (DIR-02)
 - **Setup:** a hidden department with one member; a second device outside it.
 - **Steps:** remove the member (revoke or delete); let the outsider's app run a `/directory/sync`; inspect its response (or the app's People list).
-- **Pass:** the outsider's `removedDeviceIds` and `removedDepartmentIds` carry neither the device id nor the department id; an org admin's sync does. **Source:** DIR-02. **Status:** TODO
+- **Pass:** the outsider's `removedDeviceIds` and `removedDepartmentIds` carry neither the device id nor the department id; an org admin's sync does. **Source:** DIR-02. **Status:** AUTOMATED PASS 2026-10-21 (`DirectoryTombstoneTest`; the real two-device run is still owed)
 
 ### SRVHUB-07 — A re-enrolled device appears in the directory again (DIR-03)
 - **Setup:** device X enrolled; note it in a peer's People list.
 - **Steps:** revoke X, unrevoke it, enrol it again with an invite (same device id); let the peer sync twice.
-- **Pass:** X is listed in both syncs and is never deleted from the peer's directory; `removedDeviceIds` no longer names it. Today: it is deleted on every sync. **Source:** DIR-03. **Status:** TODO
+- **Pass:** X is listed in both syncs and is never deleted from the peer's directory; `removedDeviceIds` no longer names it. Today: it is deleted on every sync. **Source:** DIR-03. **Status:** AUTOMATED PASS 2026-10-21 (`DirectoryTombstoneTest`, `OrgDirectorySyncTest` DIR-03; the real revoke / unrevoke / re-enrol run is still owed)
 
 ### SRVHUB-08 — A hub restart does not lock out an office (AUTH-01)
 - **Setup:** 50 devices behind one NAT/reverse proxy (or a load test that signs in 50 times from one address).

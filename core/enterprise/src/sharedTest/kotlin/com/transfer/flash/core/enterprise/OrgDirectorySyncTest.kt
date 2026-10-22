@@ -1131,6 +1131,39 @@ class OrgDirectorySyncTest {
     }
 
     @Test
+    fun `DIR-03 a device that a page both lists and removes is kept`() = runBlocking {
+        val fakeApi = FakeDirectorySyncApi()
+        val dao = FakeOrgDirectoryDao()
+        val sync = OrgDirectorySync(fakeApi, dao, { creds }, verifier, this, { nowMs })
+        val (sBack, _) = createStatement(deviceId = "dev-back", serial = 3)
+        dao.upsertMembers(listOf(
+            OrgDirectoryMemberEntity(
+                deviceId = "dev-back", displayName = "Back", displayNameFolded = "back", departmentId = "dept-1", role = "member",
+                subjectPublicKeyFingerprint = "FP_BACK", statementBytes = byteArrayOf(2), statementSerial = 1L,
+                statementIssuedAtMs = nowMs - 1000L, statementDelegationSerial = 1L, lastSyncedAtMs = nowMs - 1000L,
+            ),
+        ))
+        fakeApi.pages.add(DirectorySyncPageResult.Success(
+            DirectorySyncDto(
+                directoryEpoch = "epoch-1",
+                version = 20L,
+                fromVersion = 10L,
+                fullResync = false,
+                nextCursor = null,
+                serverTimeMs = nowMs,
+                delegationChain = listOf(testOrg.delegation()),
+                members = listOf(DirectoryMemberSyncDto("dev-back", "Back Again", "dept-1", statement = sBack)),
+                removedDeviceIds = listOf("dev-back"),
+            ),
+        ))
+
+        val outcome = sync.syncOnce()
+        assertTrue(outcome is OrgSyncOutcome.Success)
+        assertEquals(0, outcome.membersRemoved)
+        assertEquals("Back Again", dao.findMemberByDeviceId("dev-back")?.displayName, "listed on the page, so present")
+    }
+
+    @Test
     fun `ORGT-U09 rate limit 429 records backoff and honors retry-after header`() = runBlocking {
         val fakeApi = FakeDirectorySyncApi()
         val dao = FakeOrgDirectoryDao()
