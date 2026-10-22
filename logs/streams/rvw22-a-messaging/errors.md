@@ -2,33 +2,35 @@
 
 Source: `docs/audit/2026-10-22-comprehensive-brutal-code-review.md`, stream A findings
 (F34, F35, F36, F37, F54, F55, F65, F66). ERROR range 760..769, prefix `R22A-`.
-All five entries below are **RESOLVED in unit tests on the branch, NOT device-verified**.
+All six ERROR entries below are **RESOLVED in unit tests on the branch, NOT
+device-verified**. Two findings are deliberately not fixed; their long form — the
+audit's words, the code, the patch a fix would be, and the decision it needs — is in
+`deferred-and-residual.md`, together with the corrections to two earlier summaries.
 
-Not entered as ERRORs, and why (details in `../../audit/…` and the stream report):
+Not entered as ERRORs, and why:
 
-- **F35** — a removed group member can backdate `sentAt` because the roster has no
-  removal time. Real, but nothing to fix safely yet: `GroupMemberEntity` carries
-  `joinedAt`, `membershipVersion`, `operationId` and an `isActive` tombstone, but
-  **no removal timestamp**. `membershipVersion` is a certificate `seq` on the v2
-  roster paths and plain wall-clock `now` on the legacy write
-  (`RealFlashChatRepository:2342`), so it cannot order a message against a removal;
-  and neither `MemberCert` nor `GroupCharter` carries `issuedAt`. Any check would
-  compare against a value the removed device supplies. **DEFERRED on an owner
-  decision** (signed removal timestamp + schema column). Note `dev` `081b1ddb`
-  (RVW22 F12) now filters *future* sends with `isActive`, which is the right check
-  for who gets a message — it does not help with a message already stamped before
-  the removal, which is F35's case.
-- **F55** — "the radio path bypasses receipt handling". Not a defect: radio
-  delivery is a link-layer cryptographic ACK (`RadioChatEngine.queueAckFrame`,
-  `_deliveryReceipts`), not a chat `DeliveryReceipt`, and `RadioChatBridge.sendDirect`
-  accepts only `TextMessage`, so no receipt or reaction path can exist there.
-  **NOT-A-BUG.**
-- **F66** — `HubFileKey` / `GroupSecret` are not zeroed. Real, but there is no safe
-  owner for `clear()`: `GroupSecret` instances are cached in `RoomGroupSecretStore`
-  and reused for proofs, and `HubFileKey` is re-decoded from `keyText` per step by
-  `HubFileTransfers`/`HubFileBinding` (an owner-edited file) and shared by live
-  transfers. Zeroing one copy would break a running transfer or a proof, not
-  shorten the secret's life. **DEFERRED.**
+- **F55 — DEFERRED, not a bug-by-design (corrected).** The audit's claim is that
+  `transportSink` falls back to the hub but never to the radio, so a radio-only peer
+  never receives read receipts or reactions. That is confirmed
+  (`RealFlashChatRepository.kt:698-707`, with `DeliveryReceipt` at `:6008`,
+  `ReadReceipt` at `:1889`, `ReactionFrame` at `:6697`). What is genuinely covered is
+  *delivery*, by the radio link-layer cryptographic ACK (`RadioChatEngine.queueAckFrame`,
+  `_deliveryReceipts`); read state and reactions are not. The audit's one-line fix
+  cannot be applied because `RadioChatBridge.sendDirect` takes a concrete
+  `MessageWireFrame.TextMessage` and the radio port has no frame-kind field — it needs
+  a radio wire-format addition or a documented "radio is text-only" decision.
+  **DEFERRED on an owner decision**, see `deferred-and-residual.md` §2.
+- **F66 — DEFERRED.** `HubFileKey` / `GroupSecret` are not zeroed. Real, but there is
+  no single owner for `clear()`: `GroupSecret` is consumed by the proof, rotation and
+  handover paths (each with its own copy — `toByteArray()`/`fromBytes()` copy), and
+  `HubFileKey` is decoded fresh from the stored text at every step
+  (`HubFileTransfers.kt:243`, `:257`, `:493`; `HubFileBinding.kt:487`) and held for
+  the life of a resumable transfer. Zeroing one instance would break a live transfer
+  rather than shorten the secret's life, and the Base64 `String` round trips cannot be
+  zeroed at all. **DEFERRED**, see `deferred-and-residual.md` §3. (An earlier note
+  said the secrets were cached in `RoomGroupSecretStore`; they are not — that store
+  re-decodes per call.)
+
 
 ---
 
@@ -322,3 +324,80 @@ fall-through and failed the bridge test. Server sealing e2e
 ### Status
 RESOLVED (unit-tested at three levels + server e2e; no by-hand device test is
 possible without a modified client — see `backlog-additions.md` `R22A-65`)
+
+---
+
+## ERROR-765 — A former member's signed history was dropped on catch-up (R22A-35, F35)
+
+### Date
+2026-10-22
+
+### Area
+Groups / signed groups (`:core:messaging` `SignedGroups`, `RealFlashChatRepository`)
+
+### Symptoms
+A device that caught up on a group after a member had left was missing that member's
+messages. The group's own history silently lost the part written by whoever had
+gone; no error was shown to the user.
+
+### Environment
+Two or more devices, v2 signed group (`gs1`), catch-up through a member
+(`GroupWireFrame.SyncPush`). Reproduced in `:core:messaging` host tests.
+
+### Error
+No exception. The evidence probe recorded it as a signature failure, which is what
+made it look like a security refusal:
+
+```text
+group.sync.drop  group=… from=… reason=bad_signature author=… hasOffer=false
+CHAT: SECURITY: group SyncPush message dropped, no valid signature (…)
+```
+
+### Root cause
+`SignedGroups.verifiedAuthorLabel` looked the author up with
+`members.member(groupId, authorId)?.takeIf { it.isActive }`. A member who leaves or is
+removed stays as a **tombstone** row (`isActive = false`, key and cert retained), so
+the lookup returned null and the caller (`handleSyncPush`, `RealFlashChatRepository`
+~5360) reported `bad_signature` and dropped a message whose signature was perfectly
+valid. The active requirement was redundant on every live lane — each of those gates
+membership itself *before* the signature check (`isActiveGroupMember` /
+`isActiveTrustedMember` / `isRemovedHere`) — and destructive only on catch-up, which
+has no other per-author gate.
+
+### Failed attempts
+None; the defect was confirmed by reading the call sites and then reproduced with a
+test that adds a newcomer after a member has left.
+
+### Working fix
+`verifiedAuthorLabel` now accepts a tombstoned row and verifies the signature against
+the certified key the tombstone still carries; an author with no row at all is still
+refused, and a bad signature is still refused. KDoc rewritten to say that the method
+answers *who wrote this*, not *who may speak now*, and names the residual below. The
+comment at the SyncPush call site was corrected to match.
+
+### Verification
+`SignedGroupsTest`: *history a member signed before leaving still reaches a
+newcomer* — dev-b speaks, leaves, dev-d is added, and dev-d receives dev-b's message
+with the tombstone's roster label and its signature. Mutation: restoring
+`takeIf { it.isActive }` fails that test and **only** that test, while
+*a member who leaves is a tombstone everywhere and their later messages are dropped*
+keeps passing — the proof that live enforcement is independent of this lookup.
+`:core:messaging:jvmTest` 367 and `:core:messaging:testAndroidHostTest` 666 green.
+
+### Residual (needs an owner decision)
+The catch-up lane trusts the holder it asked, so a current member could relay a
+former member's *late* message into another device's history; without a removal time
+the receiver cannot tell when it was written. `GroupMemberEntity` has `joinedAt` and a
+`membershipVersion` that is a certificate `seq` on v2 paths but wall-clock `now` on the
+legacy write (`RealFlashChatRepository:2342`, removal at `:2593`), and neither
+`MemberCert` nor `GroupCharter` carries a removal/issue time. Closing it needs a signed
+removal time on the roster plus a schema column — its own plan, written up in
+`deferred-and-residual.md` §1.
+
+### Related files
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/SignedGroups.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/SignedGroupsTest.kt`
+
+### Status
+RESOLVED (unit-tested; device check `R22A-35` owed)

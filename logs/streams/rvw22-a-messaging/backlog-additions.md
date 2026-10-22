@@ -65,6 +65,28 @@ not a link).
 
 ---
 
+### R22A-35 — A newcomer gets the history a member wrote before leaving (ERROR-765)
+
+**Setup:** three phones (or two plus a spare), a v2 signed group with A (owner),
+B and C. A fourth device D is available to join later.
+**Steps:**
+1. B sends two messages that A and C receive; wait for the delivered ticks.
+2. B leaves the group (or A removes it).
+3. A adds D to the group and waits for the catch-up to finish.
+4. On D, scroll to the start of the conversation.
+5. On A and C, confirm B is shown as a former member, not as a member.
+6. From B, try to send another message to the group.
+**Pass:** D shows B's two messages with B's name and a signature-backed state (no
+"unverified" marker); B's third message never appears on A, C or D.
+`adb logcat -s CHAT | grep group.sync.drop` shows **no** `bad_signature` line naming
+B's author id for steps 1-3.
+**Fail:** D is missing B's earlier messages, or B's later message lands anywhere.
+**Source:** ERROR-765 / F35 (`18bd6275`), residual in
+`deferred-and-residual.md` §1.
+**Status:** TODO
+
+---
+
 ### R22A-37 — An empty-plaintext frame round-trips (ERROR-762)
 
 **Setup:** none by hand — a 28-byte frame (12-byte nonce + 16-byte tag) can only be
@@ -105,8 +127,27 @@ plaintext-fallback rule is not silently lost.
 
 ---
 
-### R22A-F35 / R22A-F66 — not owed as tests
+### R22A-F55 / R22A-F66 — owed only after the decision
 
-F35 (a removed group member backdates `sentAt`) and F66 (key material not zeroed) are
-**DEFERRED** on the data model / an owner decision, not on a test. No test can pass
-before the fix exists; see `errors.md` and the stream report.
+Neither is a code bug to test; both are **DEFERRED** on an owner decision, so the
+test is written now and stays blocked until the fix exists. Details:
+`deferred-and-residual.md` §2 and §3.
+
+**R22A-F55 — read state and reactions reach a radio-only peer.**
+*Setup:* two phones paired over the Bluetooth radio link only, no LAN and no hub.
+*Steps:* send a text over the radio; open it on the receiver; react to it there; return
+to the sender and look at the bubble and the reaction row.
+*Pass:* the sender's bubble shows the read state and the reaction, and the radio log
+shows a control frame (not a text message) carrying them.
+*Fail:* the sender stays at delivered, or the reaction never appears — which is
+today's behaviour, hence the deferral.
+*Source:* F55. **Status:** BLOCKED (needs the radio wire-format decision).
+
+**R22A-F66 — key material is erased after use.**
+*Not a device test.* The acceptance criterion for whichever option the owner picks:
+a test that captures every `ByteArray` a `GroupSecret`/`HubFileKey` was constructed
+from (including `toByteArray()`/`key`/`noncePrefix` copies and the Base64 text) and
+proves each is zeroed after the last use, **or** a `docs/security.md` row stating the
+limitation explicitly if the owner chooses to accept it.
+*Source:* F66. **Status:** BLOCKED (needs the decision: `clear()` only, copy/String
+reduction plus `clear()`, or documented acceptance).
