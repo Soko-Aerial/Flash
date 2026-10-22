@@ -196,6 +196,19 @@ class HubFileTransfersTest {
     }
 
     @Test
+    fun aFinishedUploadRecordWithAnUnreadableKeyFailsInsteadOfCrashing() = runTest {
+        val id = HubFileSealing.newFileId()
+        assertIs<HubUploadOutcome.Done>(sender().upload(request(id)))
+        val stored = HubFileStateCodec.decodeUpload(senderDisk.readState(HubTransferDirection.UPLOAD, id)!!)!!
+        val damaged = UploadState(
+            stored.fileId, stored.hubUrl, "hfk1.AAAA", stored.toDeviceId, stored.groupId, stored.nameHint, stored.plainBytes,
+            stored.cipherChunkBytes, stored.chunkCount, stored.cipherSha256, stored.created, stored.completed, stored.expiresAtMs, stored.done,
+        )
+        senderDisk.writeState(HubTransferDirection.UPLOAD, id, HubFileStateCodec.encode(damaged))
+        assertIs<HubUploadOutcome.Failed>(engine(senderApi, senderDisk).upload(request(id)))
+    }
+
+    @Test
     fun anUploadIsNotResumedAgainstAnotherHub() = runTest {
         val id = HubFileSealing.newFileId()
         senderApi.offline = true

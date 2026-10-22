@@ -30,6 +30,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,6 +112,27 @@ class RelayHandshakeContractTest {
 
         t.disconnect()
         scope.cancel()
+    }
+
+    /** RVW22 F14: a second connect() during the first one's handshake waits for it; it is not told "true" early. */
+    @Test
+    fun twoOverlappingConnectsShareOneSessionAndNeitherReturnsBeforeItIsUp() = testApplication {
+        val fixture = HubTestFixture()
+        val engine = hub(fixture)
+        val alice = fixture.enrol("alice")
+        val t = transport(wsClient())
+        val identity = fixture.identity(alice)
+
+        val results = withContext(Dispatchers.Default) {
+            (1..3).map { async { t.connect("http://localhost", identity) to t.state.value } }.awaitAll()
+        }
+
+        results.forEach { (ok, stateWhenItReturned) ->
+            assertTrue(ok, "every caller sees the one successful session: ${t.lastFailure}")
+            assertEquals(RelaySessionState.CONNECTED, stateWhenItReturned, "no caller returns true while the handshake is still running")
+        }
+        assertTrue(engine.connectionPool.isConnected("alice"))
+        t.disconnect()
     }
 
     @Test
