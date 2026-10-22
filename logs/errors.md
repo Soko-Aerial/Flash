@@ -1,5 +1,32 @@
 # Error Log
 
+## ERROR-750 — The console said a restored device "can use the hub again", but it cannot (restore only unblocks the identity)
+
+### Date
+2026-10-22
+
+### Area
+Hub admin console / device revoke and restore (documentation and UI text defect; no server behaviour changed)
+
+### Symptoms
+Owner asked how restoring a revoked device works. The console promised "Restoring it lets it connect again with the same identity" and "{name} can use the hub again."
+
+### Root cause (found by reading code, not by running a hub)
+`SqliteRevocationService.revokeDevice` revokes the device id AND every certificate serial ever issued to it and sets the registry status to REVOKED.
+`unrevokeDevice` removes only the DEVICE revocation entry and sets the status to UNENROLLED; the old serials stay revoked. `OrganizationDirectory.removeDevice`
+(run on revoke) already deleted the directory membership, member statement, group memberships, pending requests, pre-authorisations and any group/department admin roles; none of it comes back.
+`IdentityStore.enroll` lets an UNENROLLED device enrol again only with a NEW invite, taking department and role from that invite.
+
+### Fix
+Console strings `devices.revoked.note`, `devices.unrevoke.done`, `devices.revoke.effect` now say a restored device must enrol again with a new invite and that groups and roles are not restored.
+`devices.revoke.effectMany` still says "until you restore them" (plural text was left as is).
+
+### Verification
+`node --test admin-ui-tests/*.test.mjs` 83 pass (strings guard). Not checked against a running hub.
+
+### Status
+OPEN until the owner restores a revoked test device and confirms the sequence (CONSOLE-REV-01).
+
 ## ERROR-749 — A finished download could stay "Downloading"/"Verifying" in Transfers and in the notification
 
 ### Date
