@@ -115,6 +115,9 @@ fun FlashVideoPlayer(
                 errorMessage = err
                 isPlaying = false
             },
+            onSeekHandled = {
+                seekToTarget = FlashVideoPlayerMath.onSeekHandled()
+            },
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -173,13 +176,12 @@ fun FlashVideoPlayer(
                     .clickable(
                         role = Role.Button,
                         onClick = {
-                            if (isCompleted) {
-                                isCompleted = false
-                                seekToTarget = 0L
-                                isPlaying = true
-                            } else {
-                                isPlaying = !isPlaying
+                            val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
+                            isCompleted = res.isCompleted
+                            if (res.seekToTarget != null) {
+                                seekToTarget = res.seekToTarget
                             }
+                            isPlaying = res.isPlaying
                         },
                     ),
             ) {
@@ -291,13 +293,12 @@ fun FlashVideoPlayer(
                                     .clickable(
                                         role = Role.Button,
                                         onClick = {
-                                            if (isCompleted) {
-                                                isCompleted = false
-                                                seekToTarget = 0L
-                                                isPlaying = true
-                                            } else {
-                                                isPlaying = !isPlaying
+                                            val res = FlashVideoPlayerMath.onPlayClick(isCompleted, isPlaying)
+                                            isCompleted = res.isCompleted
+                                            if (res.seekToTarget != null) {
+                                                seekToTarget = res.seekToTarget
                                             }
+                                            isPlaying = res.isPlaying
                                         },
                                     ),
                             ) {
@@ -332,4 +333,26 @@ internal fun formatVideoDuration(ms: Long): String {
     } else {
         "$minutes:${seconds.toString().padStart(2, '0')}"
     }
+}
+
+public object FlashVideoPlayerMath {
+    public data class PlayClickResult(
+        val isCompleted: Boolean,
+        val seekToTarget: Long?,
+        val isPlaying: Boolean,
+    )
+
+    public fun onPlayClick(isCompleted: Boolean, isPlaying: Boolean): PlayClickResult {
+        return if (isCompleted) {
+            PlayClickResult(isCompleted = false, seekToTarget = 0L, isPlaying = true)
+        } else {
+            PlayClickResult(isCompleted = false, seekToTarget = null, isPlaying = !isPlaying)
+        }
+    }
+
+    /**
+     * Clears seekToTarget once handled by the platform video surface, so subsequent replay
+     * clicks (which also target 0L) trigger a state transition and re-execute LaunchedEffect(seekToMs).
+     */
+    public fun onSeekHandled(): Long? = null
 }
