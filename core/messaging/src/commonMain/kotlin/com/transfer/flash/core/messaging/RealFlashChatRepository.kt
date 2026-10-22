@@ -118,6 +118,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
 import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.MessagePinDao
+import com.transfer.flash.core.persistence.db.MessageTextMarkers
 import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
 import com.transfer.flash.core.persistence.db.dao.HubFileDao
 import com.transfer.flash.core.persistence.db.entity.HubFileEntity
@@ -6594,7 +6595,10 @@ public class RealFlashChatRepository(
             val messageHits = ArrayList<FlashMessageSearchHitUi>()
             val fileHits = ArrayList<FlashFileSearchHitUi>()
             for (row in rows) {
-                val textMatches = FlashSearchText.contains(row.text, trimmed)
+                // The SQL already excludes marker rows from the text match; this keeps one out of a text
+                // hit when it was returned because its FILE NAME matched, which is how a voice note is
+                // still found. Without it the snippet would be the raw `vmsg:...` blob (F36).
+                val textMatches = FlashSearchText.contains(row.text, trimmed) && !isInternalMarkerText(row.text)
                 val fileName = row.attachmentName?.takeIf { it.isNotBlank() }
                 val nameMatches = fileName != null && FlashSearchText.contains(fileName, trimmed)
                 if (!textMatches && !nameMatches) continue
@@ -7289,6 +7293,15 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * True when a row's `text` is one of the internal markers rather than something a person wrote: a voice
+     * note's waveform or a call event ([MessageTextMarkers]). Such a row's text is never searchable content —
+     * its digits match ordinary queries and the blob would be shown as the snippet (F36 of the 2026-10-22
+     * review) — while the row itself stays findable through its attachment name and in its own conversation.
+     */
+    private fun isInternalMarkerText(text: String?): Boolean =
+        text != null && (text.startsWith(VOICE_META_PREFIX) || text.startsWith(CALL_META_PREFIX))
+
+    /**
      * Chat-list preview line for a raw `text` column value, or null when there is nothing to show.
      *
      * Rows whose text is a metadata marker have no human-readable body, so they get a label —
@@ -7405,7 +7418,8 @@ public class RealFlashChatRepository(
         )
 
         // Namespaced marker stored in a voice row's text column: "vmsg:<durationMs>:<csv amplitudes>".
-        const val VOICE_META_PREFIX = "vmsg:"
+        // Defined in [MessageTextMarkers] so the search queries that must ignore it share one definition.
+        const val VOICE_META_PREFIX = MessageTextMarkers.VOICE
         /** Longest file name a catch-up label carries. */
         const val SYNC_LABEL_NAME_MAX = 80
 
@@ -7428,7 +7442,7 @@ public class RealFlashChatRepository(
         /** How far into this device's future a signed message's own `sentAt` may be and still be stored as signed. */
         const val SIGNED_SENT_AT_SKEW_TOLERANCE_MS = 5 * 60_000L
         // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
-        const val CALL_META_PREFIX = "cmsg:"
+        const val CALL_META_PREFIX = MessageTextMarkers.CALL
         // Upper bound on full-history search hits scanned per query (#12); collapsed to conversations.
         const val SEARCH_RESULT_LIMIT = 200
         // Outbox retry policy (#21): back off exponentially from this base, capped at the max,
