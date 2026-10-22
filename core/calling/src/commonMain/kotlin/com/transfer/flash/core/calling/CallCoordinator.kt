@@ -635,9 +635,9 @@ public class CallCoordinator(
                     _activeCall.value = ended.state.value
                     scope.launch {
                         kotlinx.coroutines.delay(2_000L)
-                        // A new call may have started within the window; only clear
-                        // if no live session replaced the ended one.
-                        if (currentSession == null) _activeCall.value = null
+                        // A new call (1:1 or group) may have started within the window; only
+                        // clear if no live session replaced the ended one (RVW22 F24).
+                        if (currentSession == null && currentGroupSession == null) _activeCall.value = null
                     }
                 }
             },
