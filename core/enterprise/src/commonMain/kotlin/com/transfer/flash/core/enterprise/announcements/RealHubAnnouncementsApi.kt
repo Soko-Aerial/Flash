@@ -26,7 +26,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
+import com.transfer.flash.core.enterprise.boundedText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
@@ -58,7 +58,7 @@ public class RealHubAnnouncementsApi(
     private suspend fun execute(hubUrl: String, send: suspend (baseUrl: String, bearer: String?) -> HttpResponse): FlashResult<Reply> =
         // The credentials pin the hub's host (CLI-01): never send the device bearer to a different host, and never over
         // cleartext unless the (debug-only) opt-in allows it. [HubRestExecutor] holds that rule for every device API.
-        when (val outcome = executor.call(hubUrl, send) { response -> Reply(response, response.bodyAsText()) }) {
+        when (val outcome = executor.call(hubUrl, send) { response -> Reply(response, response.boundedText()) }) {
             is HubRestExecutor.Outcome.Reply -> FlashResult.Success(outcome.value)
             HubRestExecutor.Outcome.NotThisHub -> FlashResult.Failure(
                 HubAnnouncementError.Server("This is not the hub this device is enrolled with.").toFlashError(),

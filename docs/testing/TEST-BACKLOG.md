@@ -6058,7 +6058,7 @@ Most of these are cheapest as JVM tests in `:server:test`, not as phone tests. E
 ### SRVHUB-10 — A hub restart during a transfer costs one sign-in, not many (CLI-01, CLI-02)
 - **Setup:** a device uploading a multi-chunk hub file while the 15 s presence poll and a directory sync run.
 - **Steps:** restart the hub mid-upload.
-- **Pass:** one `POST /auth/verify` per device (check the hub log), the upload resumes within seconds, and no screen freezes without an error. Today: one sign-in per concurrent 401, serialised, and the mutex is held across the network calls. **Source:** CLI-01/CLI-02. **Status:** PARTIAL 2026-10-21 (single-flight refresh and jitter built and unit-tested in `HubSessionTest`; the narrow bearer mutex of CLI-02 is step 10; a real hub restart is still owed)
+- **Pass:** one `POST /auth/verify` per device (check the hub log), the upload resumes within seconds, and no screen freezes without an error. Today: one sign-in per concurrent 401, serialised, and the mutex is held across the network calls. **Source:** CLI-01/CLI-02. **Status:** PARTIAL 2026-10-22 (single-flight refresh and jitter, and a bounded sign-in, unit-tested in `HubSessionTest`; a real hub restart during a transfer is still owed)
 
 ### SRVHUB-11 — `/health` answers while the hub is busy (OPS-01)
 - **Setup:** a full directory sync of 20,000 members plus a hub file transfer.
