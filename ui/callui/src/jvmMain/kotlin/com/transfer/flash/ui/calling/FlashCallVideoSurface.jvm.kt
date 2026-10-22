@@ -68,6 +68,7 @@ import kotlin.math.roundToInt
  * in, drawn, dropped, source and output size, average conversion time) for device-test runs.
  */
 @Composable
+@Suppress("UNUSED_PARAMETER") // zOrderMediaOverlay is required by common expect declaration for Android SurfaceView layering; unused on desktop Canvas renderer
 internal actual fun FlashCallVideoSurface(
     track: VideoStreamTrack?,
     fit: CallVideoFit,
