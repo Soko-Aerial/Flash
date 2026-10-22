@@ -2817,6 +2817,48 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `a member removed after the send is not written to again and does not hold the row open`() = runBlocking {
+        // RVW22 F12: the group drain sent to every PENDING delivery, including a member that had since been removed
+        // or had left, and the row then waited for that member's acknowledgement until the give-up budget ran out.
+        val memberDao = FakeGroupMemberDao()
+        val deliveryDao = FakeGroupDeliveryDao()
+        val outboxDao = FakeOutboxDao()
+        val messageDao = FakeMessageDao()
+        val framesTo = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val repository = newRepository(
+            messageDao = messageDao,
+            outboxDao = outboxDao,
+            groupMemberDao = memberDao,
+            groupDeliveryDao = deliveryDao,
+            trustedPeers = setOf("peer-a", "peer-b"),
+            groupSink = { target, frame ->
+                if (frame is GroupWireFrame.Message) framesTo.add(target)
+                true
+            },
+        )
+        val groupId = (repository.createGroup("Team", setOf("peer-a", "peer-b")) as FlashResult.Success).value
+        repository.openConversation(groupId)
+        repository.sendText("hello team")
+        kotlinx.coroutines.withTimeout(5_000) { while (framesTo.size < 2) kotlinx.coroutines.delay(10) }
+        val messageId = outboxDao.queue.keys.single()
+
+        // peer-b is removed while its delivery is still pending; peer-a acknowledges.
+        memberDao.upsert(memberDao.members.getValue(groupId to "peer-b").copy(isActive = false))
+        framesTo.clear()
+        repository.onInboundGroupWireFrame(
+            "peer-a",
+            GroupWireFrame.Receipt(groupId, messageId, "peer-a", System.currentTimeMillis()),
+        )
+        kotlinx.coroutines.withTimeout(5_000) { while (outboxDao.queue.isNotEmpty()) kotlinx.coroutines.delay(10) }
+        repository.notifyPeerSessionUp("peer-b")
+        kotlinx.coroutines.delay(200)
+
+        assertTrue("nothing is written to the removed member again, got $framesTo", framesTo.none { it == "peer-b" })
+        assertEquals("the row retires without the removed member's acknowledgement", 0, outboxDao.queue.size)
+        assertEquals("DELIVERED", messageDao.messages.getValue(messageId).status)
+    }
+
+    @Test
     fun `a session-up pass that pushes a row's deadline out does not lose the retry`() = runBlocking {
         // Chat/group sync audit, step 5 (found by a flaking desktop test). The drain loop kept ONE deadline, the
         // earliest. A session-up pass that resent the row moved its deadline later, the older one fired with

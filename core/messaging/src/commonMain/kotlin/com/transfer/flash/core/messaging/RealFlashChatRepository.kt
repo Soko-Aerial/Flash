@@ -6391,9 +6391,27 @@ public class RealFlashChatRepository(
             outboxDao.delete(item.localId)
             return null
         }
-        val pending = deliveries.pendingForMessage(item.localId)
-        if (pending.isEmpty()) {
+        val allPending = deliveries.pendingForMessage(item.localId)
+        if (allPending.isEmpty()) {
             messageDao.updateStatusIfUnacknowledged(item.localId, "DELIVERED")
+            outboxDao.delete(item.localId)
+            return null
+        }
+        // A member removed (or who left) after this message was queued is no longer a recipient: nothing is sent to
+        // it, and the row must not wait for an acknowledgement that can never come (RVW22 F12). Only an explicit
+        // tombstone excludes a member; a row this device has no member record for is still sent to, as before.
+        val roster = groupMemberDao
+        val pending = if (roster == null) {
+            allPending
+        } else {
+            allPending.filter { roster.member(message.conversationId, it.memberId)?.isActive != false }
+        }
+        if (pending.isEmpty()) {
+            if (deliveries.deliveredCount(item.localId) == 0) {
+                messageDao.updateStatusIfUnacknowledged(item.localId, "FAILED")
+            } else {
+                messageDao.updateStatusIfUnacknowledged(item.localId, "DELIVERED")
+            }
             outboxDao.delete(item.localId)
             return null
         }
