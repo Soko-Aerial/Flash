@@ -20,6 +20,7 @@ import com.transfer.flash.core.ptt.protocol.PttSessionCodec
 import com.transfer.flash.core.ptt.protocol.PttSessionFrame
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -73,6 +74,13 @@ public class PttSessionEngine(
     private val audioRateHz: () -> Int,
     private val audio: PttAudioPlatform = platformPttAudio(),
     private val elapsedRealtimeMs: () -> Long = ::pttElapsedRealtimeMs,
+    /**
+     * Where [dispatchIo] runs every floor reduction. A seam, not a policy: production keeps
+     * [Dispatchers.IO], and a test replaces it with a lane it can release one step at a time, which
+     * is the only way to prove that two presses queued behind the lock are judged one by one
+     * (RVW22 F44).
+     */
+    private val commandLane: CoroutineDispatcher = Dispatchers.IO,
 ) : FlashPtt {
     private data class OutPacket(val sessionId: String, val pcm: ByteArray, val captureTsMs: Long)
 
@@ -181,21 +189,16 @@ public class PttSessionEngine(
      * the toggle itself runs async. Debouncing lives with the caller.
      */
     override public fun onPttButton(): PttPressOutcome {
-        if (isCallActive()) {
-            FlashLog.w(TAG, "PTT press refused: call active")
-            return PttPressOutcome.CALL_ACTIVE
-        }
-        if (voiceNoteLeaseId != null) {
-            FlashLog.w(TAG, "PTT press refused: voice note active")
-            scope.launch { _notices.emit("Voice recording in progress — PTT unavailable") }
-            return PttPressOutcome.VOICE_NOTE_ACTIVE
+        hardPressRefusal()?.let { outcome ->
+            FlashLog.w(TAG, "PTT press refused: ${outcome.label()}")
+            outcome.notice()?.let { message -> scope.launch { _notices.emit(message) } }
+            return outcome
         }
         if (floor is PttFloorState.Idle) {
-            if (snapshotMembers().isEmpty()) return PttPressOutcome.NO_PEERS
-            if (!hasMicPermission()) {
-                FlashLog.w(TAG, "PTT press refused: no mic permission")
-                scope.launch { _notices.emit("Microphone permission is needed to talk") }
-                return PttPressOutcome.NO_MIC
+            startRefusal()?.let { outcome ->
+                FlashLog.w(TAG, "PTT press refused: ${outcome.label()}")
+                outcome.notice()?.let { message -> scope.launch { _notices.emit(message) } }
+                return outcome
             }
             val refused = voiceNoteGate.withLock {
                 when {
@@ -224,6 +227,37 @@ public class PttSessionEngine(
             }
         }
         return PttPressOutcome.ACCEPTED
+    }
+
+    /**
+     * Why a press can never touch the floor, whatever the state: a call and a voice-note recording
+     * both own the microphone outright (ADR-026, ADR-032).
+     */
+    private fun hardPressRefusal(): PttPressOutcome? = when {
+        isCallActive() -> PttPressOutcome.CALL_ACTIVE
+        voiceNoteLeaseId != null -> PttPressOutcome.VOICE_NOTE_ACTIVE
+        else -> null
+    }
+
+    /** Why a press cannot open a session (Idle → Talking). Re-checked under the lock — see [processLocked]. */
+    private fun startRefusal(): PttPressOutcome? = when {
+        snapshotMembers().isEmpty() -> PttPressOutcome.NO_PEERS
+        !hasMicPermission() -> PttPressOutcome.NO_MIC
+        else -> null
+    }
+
+    private fun PttPressOutcome.label(): String = when (this) {
+        PttPressOutcome.ACCEPTED -> "accepted"
+        PttPressOutcome.NO_PEERS -> "no peers"
+        PttPressOutcome.NO_MIC -> "no mic permission"
+        PttPressOutcome.CALL_ACTIVE -> "call active"
+        PttPressOutcome.VOICE_NOTE_ACTIVE -> "voice note active"
+    }
+
+    private fun PttPressOutcome.notice(): String? = when (this) {
+        PttPressOutcome.NO_MIC -> "Microphone permission is needed to talk"
+        PttPressOutcome.VOICE_NOTE_ACTIVE -> "Voice recording in progress — PTT unavailable"
+        else -> null
     }
 
     override public fun sendPing(): Boolean {
@@ -445,11 +479,12 @@ public class PttSessionEngine(
     }
 
     private suspend fun dispatchIo(event: PttFloorEvent) {
-        withContext(Dispatchers.IO) { dispatch(event) }
+        withContext(commandLane) { dispatch(event) }
     }
 
     /** commandMutex must be held; internal effects recurse here without trying to re-lock it. */
     private suspend fun processLocked(event: PttFloorEvent) {
+        if (event is PttFloorEvent.LocalPress && floor is PttFloorState.Idle && refuseQueuedPressLocked()) return
         val transition = PttFloorMachine.reduce(floor, event)
         floor = transition.state
         _state.value = transition.state
@@ -458,6 +493,31 @@ public class PttSessionEngine(
         // An internal failure may have recursively reduced to a newer state. Only the innermost,
         // still-current transition owns the loop set; never restart jobs for an abandoned state.
         if (floor == transition.state) syncJobs(transition.state)
+    }
+
+    /**
+     * A press is judged when the button goes down ([onPttButton]), but it is applied here, under the
+     * command lock, behind every press already queued. Two quick taps while the floor is up both skip
+     * the start checks at press time; the first toggles the floor back to Idle, and the second then
+     * arrives here against Idle — starting a session with the microphone permission and the peer list
+     * never re-checked (RVW22 F44). Re-run the same two refusals under the lock.
+     *
+     * A press that would only *stop* a live session is not affected: this runs only against Idle, and
+     * debouncing it would swallow the deliberate toggle-to-stop.
+     *
+     * @return true when the press was dropped; a notice has been emitted.
+     */
+    private suspend fun refuseQueuedPressLocked(): Boolean {
+        val outcome = hardPressRefusal() ?: startRefusal() ?: return false
+        FlashLog.w(TAG, "PTT press refused under the floor: ${outcome.label()}")
+        // The host is not watching this path (the press already returned ACCEPTED), so the user is
+        // told here instead — the same sentences onPttButton's callers show.
+        val notice = when (outcome) {
+            PttPressOutcome.NO_PEERS -> "No paired devices online"
+            else -> outcome.notice()
+        }
+        notice?.let { _notices.emit(it) }
+        return true
     }
 
     private suspend fun executeLocked(transition: PttTransition) {

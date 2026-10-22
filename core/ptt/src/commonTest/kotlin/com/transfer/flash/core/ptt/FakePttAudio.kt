@@ -17,6 +17,32 @@ internal class Recorder<T> {
 }
 
 /**
+ * A [kotlinx.coroutines.CoroutineDispatcher] that queues every task until the test runs them, one lane
+ * at a time. The engine's command lane is real concurrency in production (`Dispatchers.IO`); a test
+ * that must prove something about presses *queued behind the lock* cannot rely on thread timing, so it
+ * asks for a lane it releases by hand (RVW22 F44).
+ */
+internal class ManualDispatcher : kotlinx.coroutines.CoroutineDispatcher() {
+    private val lock = PttLock()
+    private val tasks = mutableListOf<Runnable>()
+
+    /** Tasks waiting to run. */
+    val pending: Int get() = lock.withLock { tasks.size }
+
+    override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) {
+        lock.withLock { tasks += block }
+    }
+
+    /** Runs everything queued (including what those tasks queue), on the calling thread. */
+    fun drain() {
+        while (true) {
+            val next = lock.withLock { tasks.removeFirstOrNull() } ?: return
+            next.run()
+        }
+    }
+}
+
+/**
  * A [PttAudioPlatform] that opens no hardware. Every device it hands out is kept in [captures] /
  * [playouts], and [events] is one ordered log across the devices and the test's transport fakes, so a
  * test can assert ordering (for example "Start frame sent before packets are enabled").
