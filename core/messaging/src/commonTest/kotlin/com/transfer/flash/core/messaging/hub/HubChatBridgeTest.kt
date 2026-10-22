@@ -16,6 +16,7 @@ import com.transfer.flash.core.enterprise.EnterpriseJoinResult
 import com.transfer.flash.core.enterprise.HubDirectoryApi
 import com.transfer.flash.core.enterprise.HubPeerDirectory
 import com.transfer.flash.core.enterprise.HubPeerStanding
+import com.transfer.flash.core.security.enterprise.HubSealing
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -310,6 +311,24 @@ class HubChatBridgeTest {
         assertTrue(b.sendDirect("alice", "m-10", 1L, frame))
         assertEquals(HubChatBridge.CHAT_FRAME, relay.sent.single().type)
         assertFalse(b.canCarry("stranger"), "a hub send to someone outside the directory could only fail")
+    }
+
+    @Test
+    fun anUnusableSealingKeyKeepsTheMessageQueuedEvenWhenReadableContentIsAllowed() = runTest {
+        // F65 of the 2026-10-22 review: AVAILABLE with no envelope used to fall through to the readable send, so a
+        // message the user chose to seal went to the hub as plaintext.
+        val sealing = ScriptedHubSealing(HubSealingStatus.AVAILABLE, sealUnavailable = true)
+        val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER), content = true, sealing = sealing)
+        val frame = MessageWireFrame.TextMessage("m-11", "alice", "me", "Me", "secret", 1L)
+
+        assertFalse(b.sendDirect("alice", "m-11", 1L, frame), "nothing is sent while the key cannot seal")
+        assertTrue(relay.sent.isEmpty(), "and never as readable text, despite the opt-in being on")
+
+        // When the directory serves a usable key again the same message goes out sealed, never readable.
+        sealing.sealUnavailable = false
+        assertTrue(b.sendDirect("alice", "m-11", 1L, frame))
+        assertEquals(HubSealing.ENVELOPE_TYPE, relay.sent.single().type)
+        assertTrue(relay.sent.single().payload.contains("\n"), "the body travelled inside the envelope")
     }
 
     @Test

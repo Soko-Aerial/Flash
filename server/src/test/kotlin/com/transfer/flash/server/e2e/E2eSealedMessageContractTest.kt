@@ -58,7 +58,7 @@ class E2eSealedMessageContractTest {
         Base64.getDecoder().decode(viewer.client.directory.fetchDepartmentMembers(hub.url, "eng").ok().first { it.deviceId == deviceId }.subjectPublicKey)
 
     private fun sealedEnvelope(sender: Party, recipient: String, recipientKey: ByteArray, id: String, text: String, sentAt: Long = System.currentTimeMillis()): FlashEnvelope {
-        val payload = HubSealing.seal(sender.device.crypto, sender.device.id, recipient, recipientKey, id, sentAt, "MSG_TEXT", text)
+        val payload = requireNotNull(HubSealing.seal(sender.device.crypto, sender.device.id, recipient, recipientKey, id, sentAt, "MSG_TEXT", text))
         return FlashEnvelope(id = id, type = HubSealing.ENVELOPE_TYPE, payloadJson = payload, senderId = sender.device.id, sentAt = sentAt)
     }
 
@@ -134,7 +134,7 @@ class E2eSealedMessageContractTest {
         val sentAt = System.currentTimeMillis()
 
         // C seals to B "as dev-a": the identity signature is C's, and the hub stamps the real sender on the frame.
-        val payload = HubSealing.seal(c.device.crypto, "dev-a", "dev-b", key, "forged-1", sentAt, "MSG_TEXT", "pay me")
+        val payload = requireNotNull(HubSealing.seal(c.device.crypto, "dev-a", "dev-b", key, "forged-1", sentAt, "MSG_TEXT", "pay me"))
         val raw = """{"t":"FLASH_RELAY","to":"dev-b","from":"dev-a","senderId":"dev-a","id":"forged-1","type":"SEALED_V1","sentAt":$sentAt,"payload":"$payload"}"""
         assertTrue(c.device.client.relay.transport.sendRaw(raw))
         val d = assertNotNull(awaitItem(b.device.received) { it.id == "forged-1" })

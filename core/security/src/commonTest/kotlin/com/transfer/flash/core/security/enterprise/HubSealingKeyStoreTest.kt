@@ -23,7 +23,7 @@ class HubSealingKeyStoreTest {
         assertContentEquals(key.publicKeyEncoded, restored.publicKeyEncoded)
         // The restored private half really is the same key: something sealed to the public key opens with it.
         val sender = SoftwareFlashCrypto()
-        val payload = HubSealing.seal(sender, "a", "b", key.publicKeyEncoded, "m", 1L, "T", "body")
+        val payload = assertNotNull(HubSealing.seal(sender, "a", "b", key.publicKeyEncoded, "m", 1L, "T", "body"))
         val opened = assertNotNull(HubSealing.open(restored, sender.identityPublicKeyEncoded, "a", "b", "m", 1L, payload))
         assertEquals("body", opened.body)
     }
