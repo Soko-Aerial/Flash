@@ -48,7 +48,7 @@ class PttSessionEngineSessionTest {
     private fun newEngine(): PttSessionEngine = PttSessionEngine(
         localId = { LOCAL_ID },
         localName = { LOCAL_NAME },
-        isTrustedPeer = { true },
+        isTrustedPeer = { it != "untrusted-peer" },
         snapshotMembers = { members },
         sendControl = { peerId, text ->
             sentControl.add(peerId to text)
@@ -139,6 +139,20 @@ class PttSessionEngineSessionTest {
             assertEquals(listOf(1_000L, 1_020L), frames.map { it.second.captureTsMs })
             assertEquals(talking.sessionId, frames.first().second.sessionId)
             assertContentEquals(pcm(1), frames.first().second.pcm)
+        }
+    }
+
+    @Test
+    fun `a press never sends the microphone to this device itself or to an untrusted peer`() = runTest {
+        members = listOf(LOCAL_ID, PEER, "untrusted-peer")
+        withEngine { engine ->
+            assertEquals(PttPressOutcome.ACCEPTED, engine.onPttButton())
+            awaitUntil("capture packets enabled") { audio.captures.snapshot().firstOrNull()?.packetsEnabled == true }
+            audio.captures.snapshot().single().emit(pcm(1), captureTsMs = 1_000L)
+            awaitUntil("audio sent") { sentAudio.snapshot().isNotEmpty() }
+
+            val recipients = (controlFrames().map { it.first } + sentAudio.snapshot().map { it.first }).toSet()
+            assertEquals(setOf(PEER), recipients, "only the trusted peer hears the session")
         }
     }
 
@@ -279,6 +293,24 @@ class PttSessionEngineSessionTest {
     }
 
     @Test
+    fun `a Stop that arrives right behind its Start never leaves the listener stuck`() = runTest {
+        withEngine { engine ->
+            repeat(40) { i ->
+                val id = "quick-$i"
+                assertTrue(engine.onInboundText(PEER, start(sessionId = id)))
+                assertTrue(engine.onInboundText(PEER, PttSessionCodec.encode(PttSessionFrame.Stop(id, PEER, 1L))))
+            }
+            // Idle between two pairs is not the end: wait until every Start has been worked off.
+            awaitUntil("every quick session ended") {
+                audio.playouts.snapshot().size >= 40 && engine.state.value is PttFloorState.Idle
+            }
+            // Settle: a late Start must not have been applied after its Stop.
+            delay(300)
+            assertIs<PttFloorState.Idle>(engine.state.value)
+        }
+    }
+
+    @Test
     fun `a low-rate Start opens playout at 8 kHz and 60 ms`() = runTest {
         withEngine { engine ->
             assertTrue(engine.onInboundText(PEER, start(rateHz = 8_000, packetMs = 60)))
@@ -309,6 +341,24 @@ class PttSessionEngineSessionTest {
             assertEquals(3L, offered.seq)
             assertEquals(60L, offered.captureTsMs)
             assertContentEquals(pcm(3), offered.pcm)
+        }
+    }
+
+    /** RVW22 F71: audio alone keeps a listen alive (no heartbeat is sent here), though a packet no longer launches a coroutine. */
+    @Test
+    fun `received audio keeps the listening session past the heartbeat timeout`() = runTest {
+        withEngine { engine ->
+            listenTo(engine)
+            withContext(Dispatchers.Default) {
+                var seq = 0L
+                val until = System.nanoTime() + 6_500_000_000L
+                while (System.nanoTime() < until) {
+                    engine.onInboundBinary(PEER, PttAudioFrame.encode(PttAudioFrame(SESSION, seq, seq * 20, pcm(3))))
+                    seq++
+                    delay(20)
+                }
+            }
+            assertIs<PttFloorState.Listening>(engine.state.value)
         }
     }
 
