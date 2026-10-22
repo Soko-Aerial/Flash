@@ -89,7 +89,8 @@ internal enum class LinkHealth { GOOD, NEUTRAL, BAD }
 /**
  * Decides when to trade video away for voice, and when to give it back (D8).
  *
- * Pure: no WebRTC, no clock, no coroutines. [FlashCallSession] feeds it one sample a second off
+ * Pure: no WebRTC, no coroutines, and the only clock it sees is the injected [nowMs] (the default reads
+ * 0, which means "no recovery cooldown"). [FlashCallSession] feeds it one sample a second off
  * the existing `getStats()` loop and applies whatever rung it returns, which makes the entire
  * policy — thresholds, hysteresis, ladder ordering — testable on the JVM instead of on a phone
  * over a hotspot.
@@ -144,7 +145,11 @@ internal class CallQualityGovernor(
             return stepTo(next)
         }
         val elapsed = nowMs() - lastStepAtMs
-        val inCooldown = lastStepAtMs != 0L && elapsed in 1 until recoveryCooldownMs
+        // RVW22 F43: a wall clock that stepped backwards produces a negative elapsed, which used to read
+        // as "long past the cooldown". Until the clock catches up, the step just taken must keep its
+        // cooldown — the alternative is exactly the strobing the cooldown exists to prevent. (elapsed == 0
+        // still means "no evidence of movement", as before: a clock that does not advance never blocks.)
+        val inCooldown = lastStepAtMs != 0L && (elapsed < 0L || elapsed in 1 until recoveryCooldownMs)
         if (goodStreak >= recoverAfter && !inCooldown) {
             val next = level.gentler ?: return null
             return stepTo(next)
