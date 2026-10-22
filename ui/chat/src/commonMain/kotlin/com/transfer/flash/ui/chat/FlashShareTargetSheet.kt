@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import com.transfer.flash.core.messaging.model.FlashMessageUi
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
@@ -110,6 +111,53 @@ object FlashShareTargetMath {
             current + id
         } else {
             current
+        }
+    }
+
+    /**
+     * Builds a forward payload from multiple selected messages, collecting all non-blank text
+     * and ready media/file/voice attachments. Returns null if nothing is forwardable.
+     */
+    fun buildMultiForwardPayload(selectedMessages: List<FlashMessageUi>): FlashSharePayloadUi? {
+        val selectedTexts = selectedMessages
+            .map { it.text }
+            .filter { it.isNotBlank() }
+        val items = mutableListOf<FlashShareItemUi>()
+        selectedMessages.forEach { msg ->
+            msg.images.forEach { img ->
+                img.uri?.let { uri ->
+                    items.add(FlashShareItemUi(uri = uri, name = "Image", mimeType = img.mimeType))
+                }
+            }
+            msg.fileAttachments.forEach { file ->
+                file.localUri?.let { uri ->
+                    items.add(
+                        FlashShareItemUi(
+                            uri = uri,
+                            name = file.name,
+                            sizeBytes = file.sizeBytes,
+                            mimeType = file.mimeType,
+                        ),
+                    )
+                }
+            }
+            msg.voiceAttachments.forEach { voice ->
+                voice.uri?.let { uri ->
+                    items.add(FlashShareItemUi(uri = uri, name = "Voice message", mimeType = voice.mimeType))
+                }
+            }
+        }
+        val text = if (selectedTexts.isNotEmpty()) selectedTexts.joinToString("\n") else null
+        if (items.isEmpty() && text == null) return null
+        return FlashSharePayloadUi(items = items, text = text)
+    }
+
+    /** Returns true if any selected message had an attachment that was not ready/downloaded. */
+    fun hasUnforwardableAttachments(selectedMessages: List<FlashMessageUi>): Boolean {
+        return selectedMessages.any { msg ->
+            msg.images.any { it.uri == null } ||
+                msg.fileAttachments.any { it.localUri == null } ||
+                msg.voiceAttachments.any { it.uri == null }
         }
     }
 
