@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import com.transfer.flash.core.persistence.db.MessageTextMarkers
 import com.transfer.flash.core.persistence.db.entity.MessageEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -135,6 +136,11 @@ public interface MessageDao {
         size: Long,
     ): Int
 
+    /**
+     * Unconditional status write. **Not for delivery transitions**: a receipt handler that uses this can walk
+     * a `READ` row back to `DELIVERED` (F34 of the 2026-10-22 review), so delivery paths must use
+     * [updateStatusIfUnacknowledged] (or [markReadUpTo] for reads). Kept for tests and for seeding a row.
+     */
     @Query("UPDATE messages SET status = :status WHERE localId = :localId")
     public suspend fun updateStatus(localId: String, status: String)
 
@@ -224,14 +230,18 @@ public interface MessageDao {
      * `text` **or the attachment file name** across ALL conversations, newest first. Attachment
      * names are part of the searchable content (SEARCH-01): a file is often the only thing a
      * person remembers, and a query such as "Budget" must find `Budget_Q4.pdf` even when the
-     * message body says nothing about it. Tombstoned rows are excluded. Voice-meta marker rows
-     * (`vmsg:` blobs) never match real queries, so no extra filter is needed.
+     * message body says nothing about it. Tombstoned rows are excluded. Rows whose `text` is an
+     * internal marker ([MessageTextMarkers]) are excluded from the text match: their content is a
+     * waveform or a call record, so ordinary digits in a query matched them and the raw blob leaked
+     * into the snippet (F36 of the 2026-10-22 review). Such a row is still found by its file name
+     * (a voice note is a real attachment), and nothing else about the row changes.
      * Uses ESCAPE '\' so % and _ can be searched literally (EDGE-14). A NULL attachmentName is
      * simply not a match (SQL three-valued logic), so plain text-only rows behave as before.
      */
     @Query(
         "SELECT * FROM messages WHERE deletedAt IS NULL AND (" +
-            "text LIKE '%' || :query || '%' ESCAPE '\\' OR " +
+            "(text NOT LIKE '" + MessageTextMarkers.VOICE + "%' AND text NOT LIKE '" + MessageTextMarkers.CALL + "%' " +
+            "AND text LIKE '%' || :query || '%' ESCAPE '\\') OR " +
             "attachmentName LIKE '%' || :query || '%' ESCAPE '\\'" +
             ") ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )
@@ -240,12 +250,14 @@ public interface MessageDao {
     /**
      * In-conversation content search: case-insensitive substring match over message
      * `text` or the attachment file name within a specific conversation, newest first.
-     * Tombstoned rows are excluded. Uses ESCAPE '\' so % and _ can be searched literally
-     * (EDGE-14).
+     * Tombstoned rows are excluded, and internal marker rows never match by their `text`
+     * ([MessageTextMarkers]); see [searchMessages]. Uses ESCAPE '\' so % and _ can be searched
+     * literally (EDGE-14).
      */
     @Query(
         "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
-            "AND (text LIKE '%' || :query || '%' ESCAPE '\\' OR " +
+            "AND ((text NOT LIKE '" + MessageTextMarkers.VOICE + "%' AND text NOT LIKE '" + MessageTextMarkers.CALL + "%' " +
+            "AND text LIKE '%' || :query || '%' ESCAPE '\\') OR " +
             "attachmentName LIKE '%' || :query || '%' ESCAPE '\\') " +
             "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
     )

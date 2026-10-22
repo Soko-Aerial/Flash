@@ -7,6 +7,7 @@ import com.transfer.flash.core.messaging.GroupTransportSink
 import com.transfer.flash.core.messaging.model.FlashMemberRole
 import com.transfer.flash.core.messaging.protocol.GroupWireFrame
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.persistence.db.MessageTextMarkers
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
 import com.transfer.flash.core.persistence.db.dao.ConversationUnread
@@ -176,11 +177,17 @@ class RealFlashChatRepositoryTest {
             flow.value = messages.values.filter { it.deletedAt == null }.sortedByDescending { it.sentAt }
         }
 
+        /** Mirrors the SQL text filter: an internal marker row (`vmsg:`/`cmsg:`) never matches by `text` (F36). */
+        private fun textMatches(row: MessageEntity, query: String): Boolean =
+            !row.text.startsWith(MessageTextMarkers.VOICE) &&
+                !row.text.startsWith(MessageTextMarkers.CALL) &&
+                row.text.contains(query, ignoreCase = true)
+
         override suspend fun searchMessages(query: String, limit: Int): List<MessageEntity> =
             messages.values
                 .filter {
                     it.deletedAt == null &&
-                        (it.text.contains(query, ignoreCase = true) ||
+                        (textMatches(it, query) ||
                             it.attachmentName?.contains(query, ignoreCase = true) == true)
                 }
                 .sortedByDescending { it.sentAt }
@@ -194,7 +201,7 @@ class RealFlashChatRepositoryTest {
             messages.values
                 .filter {
                     it.conversationId == conversationId && it.deletedAt == null &&
-                        (it.text.contains(query, ignoreCase = true) ||
+                        (textMatches(it, query) ||
                             it.attachmentName?.contains(query, ignoreCase = true) == true)
                 }
                 .sortedByDescending { it.sentAt }
