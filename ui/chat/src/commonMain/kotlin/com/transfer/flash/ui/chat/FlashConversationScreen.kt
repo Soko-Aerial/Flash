@@ -648,19 +648,25 @@ fun FlashConversationScreen(
                                 selectedMessageIds = emptySet()
                             },
                             onForward = {
-                                val selectedTexts = localMessages
-                                    .filter { it.id in selectedMessageIds }
-                                    .map { it.text }
-                                    .filter { it.isNotBlank() }
-                                if (selectedTexts.isEmpty()) {
-                                    showMessage("Nothing to forward")
+                                val selected = localMessages.filter { it.id in selectedMessageIds }
+                                val payload = FlashShareTargetMath.buildMultiForwardPayload(selected)
+                                if (payload == null) {
+                                    if (FlashShareTargetMath.hasUnforwardableAttachments(selected)) {
+                                        showMessage("Selected attachments are not downloaded yet")
+                                    } else {
+                                        showMessage("Nothing to forward")
+                                    }
                                 } else {
-                                    val text = selectedTexts.joinToString("\n")
-                                    val payload = FlashSharePayloadUi(text = text)
                                     if (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty()) {
                                         pendingForwardPayload = payload
                                     } else {
-                                        onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
+                                        val text = payload.text
+                                        if (text != null) {
+                                            onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
+                                        } else if (payload.items.isNotEmpty()) {
+                                            val first = payload.items.first()
+                                            onShareImage(first.uri, first.mimeType)
+                                        }
                                     }
                                 }
                                 selectedMessageIds = emptySet()
