@@ -122,6 +122,24 @@ class FlashChatSearchHitsTest {
     }
 
     @Test
+    fun `the Links scope finds a message by its second link too`() {
+        // F54 of the 2026-10-22 review: both links in one message are link matches, not only the first.
+        val messages = listOf(
+            message("m1", "read https://first.example/a and https://second.example/b"),
+            message("m2", "no links in this one"),
+        )
+
+        assertEquals(
+            listOf("m1"),
+            FlashChatSearchHits.hits(messages, "second.example", FlashSearchScope.Links).map { it.messageId },
+        )
+        assertEquals(
+            listOf("m1"),
+            FlashChatSearchHits.hits(messages, "first.example", FlashSearchScope.Links).map { it.messageId },
+        )
+    }
+
+    @Test
     fun `a link-scoped search with a non-URL query returns nothing`() {
         val messages = listOf(message("m1", "join at https://meet.example.com/abc123"))
 

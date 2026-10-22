@@ -65,6 +65,25 @@ class FlashSearchTextTest {
     }
 
     @Test
+    fun `matchesLink examines every link, not only the first`() {
+        // F54 of the 2026-10-22 review: the Links scope dropped a message whose SECOND link matched.
+        val text = "read https://first.example/a and https://second.example/b."
+        assertTrue(FlashSearchText.matchesLink(text, "second.example"), "the second link is a link too")
+        assertTrue(FlashSearchText.matchesLink(text, "FIRST.example"), "and so is the first")
+        assertTrue(FlashSearchText.matchesLink(text, "second.example/b"), "punctuation is trimmed from the tail only")
+        assertFalse(FlashSearchText.matchesLink(text, "read"), "prose between links is still not a link match")
+        assertFalse(FlashSearchText.matchesLink(text, "third.example"))
+    }
+
+    @Test
+    fun `firstUrl still returns the first link when there are several`() {
+        assertEquals(
+            "https://first.example/a",
+            FlashSearchText.firstUrl("read https://first.example/a and https://second.example/b."),
+        )
+    }
+
+    @Test
     fun `media mime classification covers images and videos only`() {
         assertTrue(FlashSearchText.isMediaMime("image/jpeg"))
         assertTrue(FlashSearchText.isMediaMime("video/mp4"))
