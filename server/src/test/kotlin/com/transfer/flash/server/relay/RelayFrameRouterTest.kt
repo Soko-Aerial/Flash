@@ -696,6 +696,18 @@ class RelayFrameRouterTest {
     }
 
     @Test
+    fun sessionEndedCallsDisposeAndCancelsSessionScope() = runBlocking<Unit> {
+        val rig = rig()
+        val (alice, _) = rig.connect("alice")
+        assertFalse(alice.isDisposed, "session should be active initially")
+
+        rig.router.sessionEnded(alice, "disconnected")
+
+        awaitCondition("session scope disposed") { alice.isDisposed }
+        assertTrue(alice.isDisposed, "session.dispose() must be called when session ends (F78)")
+    }
+
+    @Test
     fun kickByDeviceIdSendsTheReasonAndCloses() = runBlocking<Unit> {
         val rig = rig(mailbox())
         val (dave, daveWs) = rig.connect("dave")
