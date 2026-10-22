@@ -734,7 +734,9 @@ public class RelayFrameRouter(
             if (result.isStored) {
                 metrics.inc(RelayMetrics.MAILBOX_EVENTS, 1, "event" to "spilled")
             } else {
-                mailboxQueue.noteDropped()
+                // F60 / ERROR-773: Do not call mailboxQueue.noteDropped() here because
+                // mailboxQueue.enqueue already increments the dropped counter and metric
+                // for non-stored outcomes (QuotaExceeded, Failed).
                 notifyDropped(flight.origin, deviceId, msgId)
             }
         }
