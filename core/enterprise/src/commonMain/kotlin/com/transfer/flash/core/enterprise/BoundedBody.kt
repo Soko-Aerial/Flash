@@ -27,6 +27,9 @@ internal suspend fun HttpResponse.boundedText(maxBytes: Int = HubContract.MAX_RE
         if (n < 0) break
         filled += n
     }
+    if (filled >= limit) {
+        channel.cancel(null)
+    }
     return buffer.decodeToString(0, filled)
 }
 
