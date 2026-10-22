@@ -5,12 +5,13 @@ import { h, mount } from '../dom.js';
 import { t } from '../i18n.js';
 import { api } from '../app.js';
 import { formatNumber, shortId, slugify } from '../format.js';
-import { pageHeader, button, badge, banner, emptyState, textInput, selectInput, field, withBusy, timeEl, tabs, skeleton, errorState, mono } from '../ui/widgets.js';
+import { pageHeader, button, badge, banner, emptyState, textInput, selectInput, field, withBusy, timeEl, tabs, skeleton, errorState, mono, dl } from '../ui/widgets.js';
 import { createTable } from '../ui/table.js';
 import { openDialog, openDrawer, confirmDialog } from '../ui/dialog.js';
 import { toast, toastError } from '../ui/toast.js';
 import { setActiveTable } from '../shortcuts.js';
 import { devicePicker, loadDeviceNames, deviceLabel } from './devicepicker.js';
+import { statusBadge } from './devices.js';
 import { session } from '../state.js';
 import { icon } from '../icons.js';
 import { iconButton } from '../ui/widgets.js';
@@ -97,7 +98,7 @@ export function mountOrganization(container, ctx) {
       ariaLabel: t('org.dept.table'),
       rowId: (d) => d.id,
       rowLabel: (d) => d.name,
-      onOpen: (d) => editDepartment(d),
+      onOpen: (d) => openDepartment(d),
       columns: [
         { key: 'name', label: t('org.col.name'), primary: true, render: (d) => h('span', { class: 'cell-stack' }, h('span', { class: 'cell-title', text: d.name }), h('span', { class: 'cell-sub mono', text: d.id })) },
         { key: 'hidden', label: t('org.dept.hidden'), className: 'hide-sm', render: (d) => (d.hidden ? badge(t('org.vis.HIDDEN'), 'accent') : h('span', { class: 'muted', text: '—' })) },
@@ -109,6 +110,69 @@ export function mountOrganization(container, ctx) {
     table.update({ rows: departments });
     tableHost.appendChild(table.el);
     setActiveTable(table);
+  }
+
+  /**
+   * What a row click shows: the department as it is now (summary, administrators, the devices that carry it, its groups).
+   * Changing anything is one click further (Edit), so reading a department never risks changing it.
+   */
+  function openDepartment(dept) {
+    const body = h('div', { class: 'stack' });
+    const edit = button({ label: t('org.dept.details.edit'), icon: 'edit', variant: 'primary' });
+    const drawer = openDrawer({
+      title: dept.name,
+      body,
+      actions: [button({ label: t('common.close'), variant: 'ghost', on: { click: () => drawer.close() } }), edit],
+    });
+    edit.addEventListener('click', () => {
+      drawer.close();
+      editDepartment(dept);
+    });
+
+    const deptGroups = groups.filter((g) => g.departmentId === dept.id);
+    const summary = dl([
+      [t('org.dept.details.id'), mono(dept.id)],
+      [t('org.dept.details.visibility'), dept.hidden ? badge(t('org.vis.HIDDEN'), 'accent') : badge(t('org.vis.LISTED'), 'neutral')],
+      [t('org.col.members'), formatNumber(dept.memberCount)],
+      [t('org.col.groups'), formatNumber(dept.groupCount)],
+    ]);
+    const admins = dept.adminDeviceIds.length
+      ? h('ul', { class: 'compact-list' }, dept.adminDeviceIds.map((id) => h('li', { text: deviceLabel(names, id) })))
+      : h('p', { class: 'muted small', text: t('org.noAdmins') });
+    const groupList = deptGroups.length
+      ? h(
+          'ul',
+          { class: 'compact-list' },
+          deptGroups.map((g) =>
+            h('li', {}, h('span', { text: g.name }), ' ', joinModeBadge(g.joinMode), ' ', h('span', { class: 'muted small', text: t('org.dept.details.groupMembers', { n: formatNumber(g.memberDeviceIds.length) }) })),
+          ),
+        )
+      : h('p', { class: 'muted small', text: t('org.dept.details.noGroups') });
+    const membersHost = h('div', { 'aria-live': 'polite' }, skeleton('table', 3));
+    mount(body, summary, h('h3', { class: 'subhead', text: t('org.dept.admins') }), admins, h('h3', { class: 'subhead', text: t('org.dept.members') }), membersHost, h('h3', { class: 'subhead', text: t('org.dept.details.groups') }), groupList);
+
+    api
+      .get('/devices', { query: { department: dept.id, limit: 500 } })
+      .then((rows) => {
+        if (stopped) return;
+        if (!rows.length) return mount(membersHost, h('p', { class: 'muted small', text: t('org.dept.members.none') }));
+        const sorted = [...rows].sort((a, b) => (a.name || a.deviceId).localeCompare(b.name || b.deviceId));
+        const revoked = sorted.filter((d) => d.status === 'REVOKED').length;
+        return mount(
+          membersHost,
+          h(
+            'ul',
+            { class: 'compact-list' },
+            sorted.map((d) =>
+              h('li', {}, h('span', { text: d.name || shortId(d.deviceId) }), ' ', statusBadge(d.status), ' ', h('span', { class: 'muted small', text: t('role.' + d.role) }), ' ', d.online ? h('span', { class: 'online' }, h('span', { class: 'dot', 'aria-hidden': 'true' }), t('devices.online')) : d.lastSeenAt ? timeEl(d.lastSeenAt) : null),
+            ),
+          ),
+          revoked ? h('p', { class: 'muted small', text: t('org.dept.details.revokedNote', { n: formatNumber(revoked) }) }) : null,
+        );
+      })
+      .catch((e) => {
+        if (!stopped) mount(membersHost, banner({ tone: 'bad', text: e.message || t('error.generic') }));
+      });
   }
 
   function editDepartment(dept) {

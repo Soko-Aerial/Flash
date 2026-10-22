@@ -6145,3 +6145,8 @@ All four are automated-green already (§3 of the audit); each stands as the real
 - **Also report:** whether the sender's row for the group file (step 2) still says "Sending 100%" after all members have it (known, by design; see ERROR-749).
 - **Source:** ERROR-749.
 - **Status:** TODO
+
+
+## CONSOLE-DEPT-01 / CONSOLE-REV-01 (2026-10-22)
+- **CONSOLE-DEPT-01:** after redeploy open Organization -> Departments, click a row. **Pass:** a drawer shows id, visibility, counts, administrators, members (with status badges) and groups; "Edit department" opens the edit dialog; Close leaves nothing changed; it fits a phone-width window. Source: progress 2026-10-22. Status: TODO
+- **CONSOLE-REV-01:** revoke a test device, restore it, try to connect it with its old certificate, then enrol it with a new invite. **Pass:** old certificate refused after restore; new invite works; it has no groups or admin roles until re-added; console texts say so. Source: ERROR-750. Status: TODO

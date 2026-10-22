@@ -1,5 +1,20 @@
 # Progress Log
 
+## 2026-10-22 (latest) - Department details drawer in the console; honest "restore device" text (ERROR-750)
+
+### Worked on
+- Organization -> Departments: a row click now opens a read-only details drawer (id, hidden/listed, member and group counts, administrators by name, the devices carrying the department with status/role/last seen loaded from `GET /devices?department=<id>`, the department's groups) with an "Edit department" button that opens the old edit dialog. Before, a row click went straight to the edit dialog.
+- Answered "how does restoring a revoked device work" from the code: restore only lifts the block on the identity (status UNENROLLED). Old certificates stay revoked, groups/roles removed at revoke are not restored, the device must enrol again with a NEW invite. The console text claimed otherwise; fixed (ERROR-750).
+
+### Changed
+- `server/src/main/resources/admin-ui/js/views/organization.js` (`openDepartment`), `js/strings/en.js` (`org.dept.details.*`, three devices.* texts).
+
+### Verified
+- `node --test admin-ui-tests/*.test.mjs`: 83 pass. Not seen in a browser, not run against a hub.
+
+### Next AI
+- The test hub needs a redeploy (owner runs `powershell -File tools\hub-test-server\deploy.ps1`) to show the console change. Device checks CONSOLE-DEPT-01, CONSOLE-REV-01.
+
 ## 2026-10-22 (latest) - Finished downloads that stayed "not finished" in Transfers and the notification (ERROR-749)
 
 ### Worked on
