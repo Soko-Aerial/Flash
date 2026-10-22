@@ -25,6 +25,9 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -101,9 +104,17 @@ public class KtorRelayTransport(
     }
 
     override suspend fun connect(hubUrl: String, identity: RelayIdentity): Boolean = withContext(ioDispatcher) {
-        if (_state.value == RelaySessionState.CONNECTED || _state.value == RelaySessionState.CONNECTING) {
-            return@withContext true
-        }
+        // 2026-10-22 review F14: one connect at a time. A second caller waits for the first attempt's result instead of being told
+        // "true" while the handshake is still running, and never opens a second socket during AUTHENTICATING.
+        connectLock.withLock { connectLocked(hubUrl, identity) }
+    }
+
+    private val connectLock = Mutex()
+
+    private suspend fun connectLocked(hubUrl: String, identity: RelayIdentity): Boolean = withContext(ioDispatcher) {
+        if (_state.value == RelaySessionState.CONNECTED) return@withContext true
+        // A caller that gave up (cancelled) leaves its attempt running: end it before starting the next one.
+        connectionJob?.takeIf { it.isActive }?.cancelAndJoin()
 
         val welcomeDeferred = CompletableDeferred<Boolean>()
         val url = normalizeRelayUrl(hubUrl)

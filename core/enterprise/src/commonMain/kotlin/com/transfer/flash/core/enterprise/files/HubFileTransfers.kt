@@ -238,7 +238,11 @@ public class HubFileTransfers(
             if (stored != null && (stored.toDeviceId != request.toDeviceId || stored.groupId != request.groupId)) {
                 return fail(HubFileError.Conflict)
             }
-            if (stored?.completed == true) return HubUploadOutcome.Done(ticketOf(stored))
+            if (stored?.completed == true) {
+                // RVW22 F13: a finished record with a key that no longer decodes has no ticket to give; the lateinit key is not set yet.
+                if (HubFileKey.decode(stored.keyText) == null) return fail(HubFileError.LocalStorage("state"))
+                return HubUploadOutcome.Done(ticketOf(stored))
+            }
 
             val size = runCatching { source.size }.getOrDefault(-1L)
             if (size < 0L) return fail(HubFileError.LocalStorage("read"))

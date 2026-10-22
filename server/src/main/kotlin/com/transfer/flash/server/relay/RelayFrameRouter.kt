@@ -120,7 +120,11 @@ public class RelayFrameRouter(
         session.onClosed = { s, reason -> sessionEnded(s, reason) }
         session.rateBucket = TokenBucket(policy.frameBurst, policy.framesPerSecond)
         session.byteBucket = TokenBucket(policy.senderByteBurst, policy.senderBytesPerSecond.toDouble())
-        return connectionPool.register(session)
+        val displaced = connectionPool.register(session)
+        // 2026-10-22 review F18: the displaced socket may take up to the send timeout to close. Its unacknowledged messages move to the
+        // mailbox now, so the new connection replays them in order instead of live frames overtaking them and a late spill replaying them again.
+        if (displaced != null && displaced !== session) spillInFlight(displaced)
+        return displaced
     }
 
     // =====================================================================================================
@@ -714,12 +718,22 @@ public class RelayFrameRouter(
         session.expiryJob?.cancel()
         connectionPool.unregister(session)
         metrics.inc(RelayMetrics.SESSIONS_CLOSED, 1, "reason" to reasonLabel(reason))
-        val pending = session.inFlight.entries.map { it.key to it.value }.sortedBy { it.second.handedAtNanos }
-        session.inFlight.clear()
+        val pending = takeInFlight(session)
         if (session.isOpen) session.fail(reason.ifBlank { "disconnected" }, CloseReason.Codes.NORMAL)
         if (pending.isNotEmpty()) {
             scope.launch { spill(session.deviceId, pending) }
         }
+    }
+
+    private fun takeInFlight(session: RelaySession): List<Pair<String, InFlight>> {
+        val pending = session.inFlight.entries.map { it.key to it.value }.sortedBy { it.second.handedAtNanos }
+        session.inFlight.clear()
+        return pending
+    }
+
+    private fun spillInFlight(session: RelaySession) {
+        val pending = takeInFlight(session)
+        if (pending.isNotEmpty()) scope.launch { spill(session.deviceId, pending) }
     }
 
     private suspend fun spill(deviceId: String, pending: List<Pair<String, InFlight>>) {

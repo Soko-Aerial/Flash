@@ -206,6 +206,24 @@ class RelayFrameRouterTest {
         assertFalse(rig.pool.isConnected("bob"))
     }
 
+    /** RVW22 F18: a reconnect must not wait for the displaced socket to time out before its unacknowledged messages come back. */
+    @Test
+    fun aReconnectGetsTheDisplacedSessionsUnacknowledgedMessagesAtOnce() = runBlocking<Unit> {
+        val store = mailbox()
+        val rig = rig(store)
+        val (alice, _) = rig.connect("alice")
+        // The first bob connection never reads, so closing it would take the whole send timeout.
+        val (_, _) = rig.connect("bob", outgoingCapacity = 0)
+
+        rig.router.processFrame(alice, send("bob", "m1"))
+        rig.router.processFrame(alice, send("bob", "m2"))
+
+        val (_, bob2Ws) = rig.connect("bob")
+        val first = bob2Ws.nextOf<RelayFrame.Deliver>(timeoutMs = 3_000L)
+        val second = bob2Ws.nextOf<RelayFrame.Deliver>(timeoutMs = 3_000L)
+        assertEquals(listOf("m1", "m2"), listOf(first.id, second.id), "in the order they were handed over")
+    }
+
     // ---- offline / mailbox -------------------------------------------------------------------------------
 
     @Test
