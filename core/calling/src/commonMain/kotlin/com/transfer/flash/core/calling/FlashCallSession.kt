@@ -456,15 +456,44 @@ public class FlashCallSession(
     /** INCOMING call: local user declined. */
     public suspend fun decline() {
         if (_state.value.state != FlashCallState.RINGING) return
-        sendFrame(CallWireFrame.Decline(callId = callId, from = localDeviceId))
-        end(FlashCallEndReason.NORMAL, notifyPeer = false)
+        try {
+            sendTeardownFrame(CallWireFrame.Decline(callId = callId, from = localDeviceId))
+        } finally {
+            // RVW22 F42: the local teardown is not a consequence of the frame getting out. A signaling
+            // send that throws (the socket died under the call) must leave this device hung up, not
+            // ringing with no way to answer.
+            end(FlashCallEndReason.NORMAL, notifyPeer = false)
+        }
     }
 
     /** Either side: hang up an in-progress call. */
     public suspend fun hangUp() {
         if (_state.value.state == FlashCallState.ENDED) return
-        sendFrame(CallWireFrame.Hangup(callId = callId, from = localDeviceId))
-        end(FlashCallEndReason.NORMAL, notifyPeer = false)
+        try {
+            sendTeardownFrame(CallWireFrame.Hangup(callId = callId, from = localDeviceId))
+        } finally {
+            // RVW22 F42: same rule as decline() — no timer rescues a hangup, so a thrown send would
+            // otherwise strand the user on the call screen for good.
+            end(FlashCallEndReason.NORMAL, notifyPeer = false)
+        }
+    }
+
+    /**
+     * Sends a frame whose only job is to tell the peer, without letting a transport failure escape into
+     * the caller's teardown path (RVW22 F42). Callers run their local cleanup in a `finally`, so a
+     * [CancellationException] is rethrown after that cleanup rather than swallowed.
+     */
+    private suspend fun sendTeardownFrame(frame: CallWireFrame) {
+        try {
+            sendFrame(frame)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.w(
+                "CALL",
+                "teardown frame ${frame::class.simpleName} not sent call=$callId: ${t.message}",
+            )
+        }
     }
 
     /**
@@ -2253,7 +2282,18 @@ public class FlashCallSession(
         // Native teardown hops to the media thread: end() is routinely called from UI
         // callbacks and pool timer jobs. Async is safe — ended=true already guards every
         // path, and releaseMedia is idempotent (a racing startMedia unwinds itself).
-        scope.launch(callMediaDispatcher) { releaseMedia() }
+        scope.launch(callMediaDispatcher) {
+            try {
+                releaseMedia()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                // RVW22 F42: a native release that throws is logged rather than left to the scope's
+                // uncaught-exception handler — an unhandled launch failure takes the process down, and
+                // the user has already been told the call ended.
+                FlashLog.e("CALL", "releaseMedia failed call=$callId", t)
+            }
+        }
         if (notifyPeer) {
             scope.launch {
                 sendFrame(CallWireFrame.Hangup(callId = callId, from = localDeviceId))
