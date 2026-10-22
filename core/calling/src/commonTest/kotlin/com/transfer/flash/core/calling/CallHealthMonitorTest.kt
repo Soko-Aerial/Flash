@@ -45,6 +45,15 @@ class CallHealthMonitorTest {
     }
 
     @Test
+    fun `severe heat does not turn video back on for a user who chose Data Saver`() {
+        val m = CallHealthMonitor().apply { dataSaver = true }
+        val v = m.update(0, FlashThermalStatus.SEVERE, null, false)
+        assertEquals(0, v.receiveCap)
+        assertEquals(FlashCallHealthWarning.HOT, v.warning)
+        assertFalse(v.acceptNew)
+    }
+
+    @Test
     fun `cpu must stay high for thirty seconds, and a dip resets it`() {
         val m = CallHealthMonitor(cpuThresholdPercent = 40.0, cpuSustainMs = 30_000)
         assertNull(m.update(0, FlashThermalStatus.NONE, 55.0, false).warning)

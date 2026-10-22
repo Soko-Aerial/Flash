@@ -79,6 +79,26 @@ class CallCoordinatorGroupEndTest {
     }
 
     @Test
+    fun `the overlay clear of a finished 1_1 call does not wipe a group call that started inside its window`() = runTest {
+        // RVW22 F24: the 2 s clear only checked for a 1:1 session, so it closed a group call's overlay.
+        val c = coordinator()
+        assertTrue(
+            c.onInboundText(host, CallFrameCodec.encode(CallWireFrame.Invite("solo-1", host, "Host", false))),
+        )
+        runCurrent()
+        assertTrue(c.onInboundText(host, CallFrameCodec.encode(CallWireFrame.Hangup("solo-1", host))))
+        runCurrent()
+
+        assertTrue(c.onInboundText(host, invite("group-call-1")))
+        runCurrent()
+        assertEquals("group-call-1", c.activeCall.value?.callId)
+
+        advanceTimeBy(3_000L)
+        runCurrent()
+        assertEquals("the group call's overlay is still there", "group-call-1", c.activeCall.value?.callId)
+    }
+
+    @Test
     fun `an unanswered group call stops ringing by itself and the overlay clears`() = runTest {
         val c = coordinator()
         assertTrue(c.onInboundText(host, invite("call-1")))

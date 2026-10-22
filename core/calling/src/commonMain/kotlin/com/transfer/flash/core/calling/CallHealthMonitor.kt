@@ -70,7 +70,8 @@ internal class CallHealthMonitor(
             return Verdict(
                 warning = FlashCallHealthWarning.HOT,
                 struggling = true,
-                receiveCap = 1,
+                // Data Saver means no video is received at all: a hot phone must not start decoding one.
+                receiveCap = if (dataSaver) 0 else 1,
                 acceptNew = false,
                 showingFewer = true,
             )
