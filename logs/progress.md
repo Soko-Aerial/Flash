@@ -18238,3 +18238,18 @@ should honour an explicit port the same way (same latent pattern, left alone).
 ### Next AI
 The review is closed; read the audit's §4 before picking up anything from it. The test hub still runs the `6861ac61` build, so the F1/F2 server fixes
 are not deployed yet — redeploy before running `RVW22-01/02` against it.
+
+
+## 2026-10-22 - Hub console blank page: a content blocker blocked fingerprint.js (ERROR-746)
+
+### Worked on
+The owner opened the test hub's console on Edge and Firefox and got a blank page (`fingerprint.js: net::ERR_BLOCKED_BY_CLIENT`).
+
+### Changed
+- `admin-ui/js/fingerprint.js` -> `identicon.js` (two imports and one test import updated); new guard test `admin-ui-tests/asset-names.test.mjs`. Details and cause: `logs/errors.md` ERROR-746.
+
+### Verification
+`node --test server/admin-ui-tests/*.test.mjs` 83/83. Not tried in a browser with a blocker: `CONSOLE-BLK-01` in `docs/testing/TEST-BACKLOG.md`.
+
+### Remaining
+Redeploy the test hub (`tools\hub-test-server\deploy.ps1`) to ship the rename; until then allow the hub host in the blocker.

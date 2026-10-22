@@ -1,5 +1,37 @@
 # Error Log
 
+## ERROR-746 — The hub console was a blank page: a content blocker blocked `fingerprint.js`
+
+### Date
+2026-10-22
+
+### Area
+Hub admin console (`server/src/main/resources/admin-ui`) / browser content blockers
+
+### Symptoms
+Blank page on Edge and Firefox at `http://127.0.0.1:8444/admin/ui/`. Console: `admin/ui/js/fingerprint.js: Failed to load resource: net::ERR_BLOCKED_BY_CLIENT` and `Loading failed for the module ... fingerprint.js` (from `devices.js`).
+
+### Root cause
+A browser content blocker (uBlock Origin / EasyPrivacy style lists block URLs named `fingerprint.js`, the name of browser-fingerprinting scripts) refused the request. The file is a harmless identicon drawer, but `devices.js` and `security.js` import it as an ES module, and one failed module import fails the whole import graph, so the app never rendered. The CSP message in the same log (`inline script ... script-src 'self'`, `sandbox eval code`) comes from a browser extension, not from the console page.
+
+### Failed attempts
+None. The cause was read from the error text (`ERR_BLOCKED_BY_CLIENT` is raised by the browser, never by the server).
+
+### Working fix
+Renamed `js/fingerprint.js` to `js/identicon.js` (exports unchanged), updated the two imports and `admin-ui-tests/pure.test.mjs`, and added `admin-ui-tests/asset-names.test.mjs`, which fails if any console file name contains a word content blockers match (fingerprint, analytics, tracker, telemetry, beacon, advert...). Needs a redeploy of the test hub to take effect; a user can also allow `127.0.0.1` / the hub host in the blocker.
+
+### Verification
+`node --test server/admin-ui-tests/*.test.mjs`: 83 passed (82 before plus the new name guard). NOT checked in a browser with a blocker: owed, backlog `CONSOLE-BLK-01`.
+
+### Related files
+- `server/src/main/resources/admin-ui/js/identicon.js` (was `fingerprint.js`)
+- `server/src/main/resources/admin-ui/js/views/devices.js`, `views/security.js`
+- `server/admin-ui-tests/asset-names.test.mjs`
+
+### Status
+RESOLVED in code (unit-tested); OPEN until the console is opened with a content blocker on after the redeploy.
+
+
 ## ERROR-743 — "Online, not connected" after moving to another Wi-Fi: the redial loop kept dialing the old network and blocked the planner
 
 ### Date

@@ -5,7 +5,7 @@ import { h, mount } from '../dom.js';
 import { t } from '../i18n.js';
 import { api, guarded, events } from '../app.js';
 import { formatNumber, formatDateTime, groupText, shortId } from '../format.js';
-import { renderFingerprint } from '../fingerprint.js';
+import { renderFingerprint } from '../identicon.js';
 import { renderQr } from '../qr.js';
 import * as keys from '../stepup-key.js';
 import { session } from '../state.js';
