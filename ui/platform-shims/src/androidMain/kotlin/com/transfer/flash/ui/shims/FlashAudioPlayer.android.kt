@@ -6,15 +6,25 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
 public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? {
     val context = LocalContext.current
-    return remember(context, uri) {
+    val player = remember(context, uri) {
         if (uri != null) AndroidAudioPlayer(context, uri) else null
     }
+    // The shim owns the native handle, so it also owns the teardown: a bubble that leaves the
+    // composition (a new uri, a recycled list row, leaving the screen) must never keep a prepared
+    // MediaPlayer alive. Both current callers release it themselves as well
+    // (`FlashVoiceMessageCard`, `FlashSharedContentSheet`); `release()` clears the handle, so the
+    // second call is a no-op rather than a double release.
+    DisposableEffect(player) {
+        onDispose { player?.release() }
+    }
+    return player
 }
 
 /**
