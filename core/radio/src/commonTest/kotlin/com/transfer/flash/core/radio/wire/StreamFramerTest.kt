@@ -38,4 +38,17 @@ class StreamFramerTest {
     fun encoderRefusesOversizePayload() {
         assertFailsWith<IllegalArgumentException> { StreamFramer.encode(ByteArray(StreamFramer.MAX_PAYLOAD + 1)) }
     }
+
+    @Test
+    fun aSliceWhoseEndOverflowsAnIntIsRefused() {
+        val d = StreamFrameDecoder()
+        // `offset + length` wrapped negative, the guard passed, and the failure surfaced later as an
+        // ArrayIndexOutOfBounds out of copyOfRange rather than as the documented "bad slice".
+        val failure = assertFailsWith<IllegalArgumentException> {
+            d.feed(byteArrayOf(1, 2, 3, 4), offset = 1, length = Int.MAX_VALUE)
+        }
+        assertEquals("bad slice", failure.message)
+        assertEquals(0, d.buffered)
+        assertTrue(!d.failed)
+    }
 }

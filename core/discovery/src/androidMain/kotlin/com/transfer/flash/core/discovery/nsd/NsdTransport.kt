@@ -341,7 +341,17 @@ public class RealNsdManagerBridge(
         }
         return runCatching {
             nsdManager.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, listener)
-        }.onFailure { Log.w(tag, "Failed to initiate NSD registration", it) }
+        }.onFailure { error ->
+            Log.w(tag, "Failed to initiate NSD registration", error)
+            // The call threw, so NsdManager never accepted this listener: `unregisterService` on a
+            // listener it does not know throws IllegalArgumentException("listener not registered"),
+            // and a stale reference here also made the next advertise() try to release it and the
+            // transport believe an advertisement was live. The assignment cannot simply move after
+            // the call, either — a registration that fails asynchronously (onRegistrationFailed) IS
+            // accepted by the framework and must stay releasable until that callback arrives, so the
+            // listener is published before the call and withdrawn only when the call itself failed.
+            if (advertiseListener === listener) advertiseListener = null
+        }
             .isSuccess
     }
 

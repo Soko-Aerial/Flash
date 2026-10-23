@@ -166,7 +166,12 @@ internal object JvmImageDecoder : FlashImageDecoder {
                     val markerPrefix = input.read()
                     if (markerPrefix == -1) break
                     if (markerPrefix != 0xFF) continue
-                    val marker = input.read()
+                    // ITU T.81 B.1.1.2: a marker may be preceded by any number of 0xFF fill bytes.
+                    // Reading only one of them made the second 0xFF of "FF FF E1" look like the marker,
+                    // so the real marker byte became the segment length's high byte and an APP1 EXIF
+                    // block behind fill bytes was skipped as a bogus 57 KB segment.
+                    var marker = input.read()
+                    while (marker == 0xFF) marker = input.read()
                     if (marker == -1 || marker == 0xDA || marker == 0xD9) break // SOS or EOI
                     val lenHigh = input.read()
                     val lenLow = input.read()

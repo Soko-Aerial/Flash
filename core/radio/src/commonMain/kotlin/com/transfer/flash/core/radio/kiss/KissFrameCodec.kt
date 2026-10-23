@@ -184,7 +184,10 @@ public class KissStreamDecoder(private val maxFrameBytes: Int = DEFAULT_MAX_FRAM
 
     /** Feeds [data] (or the slice [offset] until [offset]+[length]) and returns the frames it completed, in order. */
     public fun feed(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): List<KissFrame> {
-        require(offset >= 0 && length >= 0 && offset + length <= data.size) { "bad slice" }
+        // `offset + length` overflows Int for a huge length (MAX_VALUE + 1 wraps to MIN_VALUE), which
+        // made the sum look small enough and let the guard through; the subtraction form cannot
+        // overflow because length is non-negative and data.size is at most MAX_VALUE.
+        require(offset >= 0 && length >= 0 && offset <= data.size - length) { "bad slice" }
         var out: MutableList<KissFrame>? = null
         stats = stats.copy(bytesIn = stats.bytesIn + length)
         for (k in offset until offset + length) {

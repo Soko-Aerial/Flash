@@ -161,6 +161,15 @@ public class AndroidRadioDiscovery(
             addAction(BluetoothDevice.ACTION_FOUND)
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
         }
+        // Deliberately no export flag, and adding RECEIVER_NOT_EXPORTED here would BREAK discovery:
+        // these are system broadcasts and the Android 14+ flag requirement exempts a receiver that
+        // listens only for them ("Exception for receivers that receive only system broadcasts",
+        // https://developer.android.com/about/versions/14/behavior-changes-14). They come from the
+        // highly privileged Bluetooth app, which the broadcasts guide says a NOT_EXPORTED receiver
+        // does not hear — "To receive all system broadcasts, including broadcasts from highly
+        // privileged apps, flag your receiver with RECEIVER_EXPORTED"
+        // (https://developer.android.com/develop/background-work/background-tasks/broadcasts).
+        // Both checked 2026-10-23; see the review 2026-10-22 F61 record (NOT-A-BUG).
         context.registerReceiver(receiver, filter)
 
         try {
@@ -249,6 +258,9 @@ public class AndroidRadioDiscovery(
         }
 
         val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        // System broadcast from the highly privileged Bluetooth app: same rule as the discovery
+        // receiver above — no flag is required, and RECEIVER_NOT_EXPORTED would stop the pairing
+        // result from arriving at all. See the review 2026-10-22 F61 record.
         context.registerReceiver(bondReceiver, filter)
 
         try {
