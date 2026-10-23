@@ -39,7 +39,9 @@ public class StreamFrameDecoder {
 
     /** Appends [data] and returns every payload completed by it, in order. */
     public fun feed(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): List<ByteArray> {
-        require(offset >= 0 && length >= 0 && offset + length <= data.size) { "bad slice" }
+        // Same overflow as the KISS decoder: `offset + length` wraps for a huge length, so the guard
+        // passed and the failure surfaced from copyOfRange instead of here.
+        require(offset >= 0 && length >= 0 && offset <= data.size - length) { "bad slice" }
         if (failed) return emptyList()
         buf += data.copyOfRange(offset, offset + length)
         val out = ArrayList<ByteArray>(2)

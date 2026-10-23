@@ -4,6 +4,7 @@ import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -201,6 +202,19 @@ class KissFrameCodecTest {
             assertEquals(cmd, frames[0].command)
             assertContentEquals(payload, frames[0].data)
         }
+    }
+
+    @Test
+    fun aSliceWhoseEndOverflowsAnIntIsRefused() {
+        val dec = KissStreamDecoder()
+        // `offset + length` wraps to Int.MIN_VALUE, so `offset + length <= data.size` was true and the
+        // whole guard was bypassed: the call reported success while consuming nothing (and it still
+        // added Int.MAX_VALUE to the byte counter).
+        val failure = assertFailsWith<IllegalArgumentException> {
+            dec.feed(bytes(0xC0, 0x00, 0x41, 0xC0), offset = 1, length = Int.MAX_VALUE)
+        }
+        assertEquals("bad slice", failure.message)
+        assertEquals(0L, dec.statistics.bytesIn)
     }
 
     @Test
