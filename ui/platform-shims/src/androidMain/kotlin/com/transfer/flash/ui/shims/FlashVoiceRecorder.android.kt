@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import java.io.File
@@ -13,7 +14,15 @@ import java.io.File
 @Composable
 public actual fun rememberFlashVoiceRecorder(): FlashVoiceRecorder {
     val context = LocalContext.current
-    return remember(context) { AndroidVoiceRecorder(context) }
+    val recorder = remember(context) { AndroidVoiceRecorder(context) }
+    // Same rule as the player: the shim owns the encoder, so it releases it when the composer leaves
+    // the composition (a recording in progress is discarded, exactly like the screen's own dispose
+    // already does). `cancel()` is idempotent — it nulls the handle first — so the two paths cannot
+    // double-release the native MediaRecorder.
+    DisposableEffect(recorder) {
+        onDispose { recorder.cancel() }
+    }
+    return recorder
 }
 
 /**
