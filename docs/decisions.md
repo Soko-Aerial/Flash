@@ -6547,3 +6547,21 @@ mailbox for the whole TTL with no way to clear it (2026-10-22 review F1, SEC-01)
 A hub reports disk pressure from quarantined rows (the lever is then the TTL or the per-device envelope cap), or a client can show a device its own
 quarantined rows and clear them.
 
+
+## ADR-224 - The published library pairs: `FlashPairing` and `FlashEngine.pairing`
+
+### Decision
+`Flash.create()` builds a pairing coordinator and exposes it as `FlashEngine.pairing: FlashPairing?`. `FlashPairingCoordinator` moves to `core:security` `commonMain`; `FlashPairing` is the small UI-free interface hosts hold.
+
+### Context
+A watch app built on the published library could discover and connect but not pair: `FLASH_PAIR` frames were dropped because the library passed no `pairingHandler`, and the driver existed only in desktop code and the app's private coordinator. The third party had to patch `core-engine`.
+
+### Alternatives considered
+- Copy the app's `PairingCoordinator` into the library: a third copy of the protocol driver, rejected. The app's is UI-typed.
+- Leave the class in `jvmMain` and add an Android twin: duplicates the protocol.
+
+### Why this
+One driver for desktop, Android and library hosts. The class used only `ConcurrentHashMap` and `javaClass`, which `SyncMap` and `::class` replace. The single pending-pair slot became per peer so two `beginPair` calls cannot overwrite each other.
+
+### Revisit when
+The app's private `PairingCoordinator` is folded onto `FlashPairing` (not done; the app is untouched). The interface is beta API and may change.

@@ -933,7 +933,7 @@ Five owner questions are in the audit's section 7; device checks `CNCL-01..CNCL-
 
 **Release 2.1.0 (2026-10-20): prepared for the apps only (Android `versionName 2.1.0` / `versionCode 4`, Windows `Flash-2.1.0.msi`/`.exe`);
 unit tests and `assembleRelease` green, NOT device-verified, NOT uploaded or tagged.** The hub, the server, the radio gateway and the
-JitPack library (`2.1.0-beta.2`, tag `v2.1.0-beta.2`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.
+JitPack library (`2.1.0-beta.3`, tag `v2.1.0-beta.3`) are experimental and excluded. v2.0.0-beta was debug-signed, so its installs must be uninstalled once.
 Release checks `REL-01..REL-07` in `docs/testing/TEST-BACKLOG.md`; steps in `docs/release-build.md`; notes in `CHANGELOG.md`.
 
 **Cancel/error/resume fixes (2026-10-21, ADR-219; branch `agent/A-cancel`, worktree `E:/FlashWork/A-cancel`): unit-tested, NOT device-verified, NOT merged into `dev`.** The audit `docs/audit/2026-10-20-cancel-error-resume-notification-audit.md` (19 defects) is fixed for B-01..B-07, B-09, B-10, B-12, B-16 and part of B-14: a cancelled send cannot be retried from its bubble (`FlashFileTransferStatus.Cancelled` is new), late control frames cannot rewrite a finished row, Android's dataSync timeout pauses a 1:1 transfer instead of cancelling it, a group file's origin has no notification Cancel, `FlashTransfer.canRetry` is the one Retry predicate, `TransferFailureText.displayReason` words the stored control tokens. Not fixed: B-08, B-11/F-01, B-13, B-15, B-19. Device checks `CNCL-01..14` in `docs/testing/TEST-BACKLOG.md`.

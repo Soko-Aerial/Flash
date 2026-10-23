@@ -6,6 +6,7 @@ import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.persistence.settings.FlashSettingsDataStore
 import com.transfer.flash.core.ptt.FlashPtt
+import com.transfer.flash.core.security.pairing.FlashPairing
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
@@ -33,6 +34,7 @@ public class AndroidFlashEngine(
     ) -> FlashPtt)? = null,
     onUpdateFriendlyName: ((String) -> Boolean)? = null,
     swarmFactory: ((FlashSwarmConfig) -> FlashSwarm)? = null,
+    pairing: FlashPairing? = null,
 ) : DefaultFlashEngine(
     chats = chats,
     transfers = transfers,
@@ -43,6 +45,7 @@ public class AndroidFlashEngine(
     pttFactory = pttFactory,
     onUpdateFriendlyName = onUpdateFriendlyName,
     swarmFactory = swarmFactory,
+    pairing = pairing,
 ), java.io.Closeable
 
 /**
@@ -63,6 +66,7 @@ public fun DefaultFlashEngine(
     ) -> FlashPtt)? = null,
     onUpdateFriendlyName: ((String) -> Boolean)? = null,
     swarmFactory: ((FlashSwarmConfig) -> FlashSwarm)? = null,
+    pairing: FlashPairing? = null,
 ): AndroidFlashEngine = AndroidFlashEngine(
     chats = chats,
     transfers = transfers,
@@ -74,6 +78,7 @@ public fun DefaultFlashEngine(
     pttFactory = pttFactory,
     onUpdateFriendlyName = onUpdateFriendlyName,
     swarmFactory = swarmFactory,
+    pairing = pairing,
 )
 
 /**

@@ -47,6 +47,7 @@ import com.transfer.flash.core.network.tls.TofuPinVerifier
 import com.transfer.flash.core.network.tls.TransportSecurityUnavailableException
 import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
+import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
@@ -222,6 +223,7 @@ private class Wiring(
      */
     @Volatile private var facade: FlashEngine? = null
     @Volatile private var trustStoreRef: FlashTrustStore? = null
+    @Volatile private var pairingRef: FlashPairingCoordinator? = null
 
     /** Presence sharing (PC4, ADR-046); the text router hands it every FLASH_PRES frame. */
     @Volatile private var presenceRef: PresenceExchange? = null
@@ -616,6 +618,33 @@ private class Wiring(
             },
         )
         presenceChat = chatImpl
+        // Pairing (`FlashEngine.pairing`): the same coordinator the desktop runs, so a library consumer (a watch, a
+        // headless device) can pair without copying the app's private driver. Its session-up hello and the inbound
+        // `FLASH_PAIR` frames are wired below; before this, those frames fell through the router and were dropped.
+        val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
+        val pairingCoordinator = FlashPairingCoordinator(
+            localFingerprintHex = FlashFingerprint.formatHexGroups(FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded)),
+            localDeviceId = localId,
+            localName = identity.friendlyName,
+            localModel = identity.deviceModel,
+            ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
+            trustStore = trustStore,
+            scope = scope,
+            // Non-blocking by contract: beginPair is called from a UI thread, and a blocking socket write there throws
+            // NetworkOnMainThreadException, which closes the session the handshake needs. The boolean is reachability.
+            sendToPeer = { peerId, text ->
+                val session = networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                if (session != null) {
+                    session.connection.sendTextAsync(text)
+                    true
+                } else {
+                    false
+                }
+            },
+            crypto = crypto,
+            ephemeralKeyPair = ephemeralKeyPair,
+        )
+        this.pairingRef = pairingCoordinator
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
             receivePipeline.cancelSession(transferId)
             openHandles.remove(transferId)?.let { handle -> runCatching { handle.close() } }
@@ -720,6 +749,7 @@ private class Wiring(
                             peerDeviceId = session.peerDeviceId.value,
                             chatRepository = chatImpl,
                             onSignalingRestored = { pid -> facade?.onCallSignalingRestored(pid) },
+                            onPairingHello = { pid -> pairingRef?.onSessionUp(pid) },
                         )
                         // Restart sends the peer's last disconnect killed. Byte-accurate resume
                         // already existed and nothing called it (ERROR-035).
@@ -857,6 +887,7 @@ private class Wiring(
                     true
                 }
             },
+            pairing = pairingCoordinator,
             swarmFactory = { swarmConfig ->
                 val groupGate = chatImpl.groupGate
                 val groupContext = com.transfer.flash.core.engine.swarm.MessagingSwarmGroupContext(
@@ -920,6 +951,7 @@ private class Wiring(
             presenceHandler = { pid, txt -> presenceRef?.onInboundText(pid, txt) == true },
             modeHandler = { pid, txt -> modeRef?.onInboundText(pid, txt) == true },
             pttProvider = { facade?.ptt },
+            pairingHandler = { pid, txt -> pairingRef?.onInbound(pid, txt) },
             sessionKeyLookup = { pid -> trustStoreRef?.getSessionKey(FlashDeviceId(pid)) },
             chatRepository = chatImpl,
             transferRepository = transferImpl,

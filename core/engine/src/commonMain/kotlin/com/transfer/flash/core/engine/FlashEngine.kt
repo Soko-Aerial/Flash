@@ -6,6 +6,7 @@ import com.transfer.flash.core.engine.concurrent.PlatformLock
 import com.transfer.flash.core.messaging.FlashChatRepository
 import com.transfer.flash.core.network.FlashNetwork
 import com.transfer.flash.core.ptt.FlashPtt
+import com.transfer.flash.core.security.pairing.FlashPairing
 import com.transfer.flash.core.security.trust.FlashTrustStore
 import com.transfer.flash.core.swarm.api.FlashSwarm
 import com.transfer.flash.core.swarm.api.FlashSwarmConfig
@@ -44,6 +45,17 @@ public interface FlashEngine : FlashBaseEngine {
 
     /** Cryptographic trust store tracking verified and paired devices. */
     override val trustStore: FlashTrustStore
+
+    /**
+     * Pairing with another device, or null when this engine has none (a headless node, or a platform factory that
+     * does not pair).
+     *
+     * [Flash.create] on Android provides it. The engine owns the wire side — it announces this device's identity on
+     * every new session and routes the inbound `FLASH_PAIR` frames — so a host only calls
+     * [FlashPairing.beginPair], shows [FlashPairing.pairing]'s code, and calls [FlashPairing.acceptLocal] or
+     * [FlashPairing.declineLocal]. Nothing in it needs a screen, so a watch or a headless device can drive it.
+     */
+    public val pairing: FlashPairing? get() = null
 
     /**
      * The attached push-to-talk engine, or null when none is attached.
@@ -157,6 +169,7 @@ public open class DefaultFlashEngine(
     ) -> FlashPtt)? = null,
     private val onUpdateFriendlyName: ((String) -> Boolean)? = null,
     private val swarmFactory: ((FlashSwarmConfig) -> FlashSwarm)? = null,
+    override val pairing: FlashPairing? = null,
 ) : FlashEngine {
     private val closeLock = PlatformLock()
     private var isClosed = false
