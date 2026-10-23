@@ -353,9 +353,19 @@ public class HubChatBridge(
             setWaiting(to, HubWaitReason.IDENTITY_MISMATCH)
             return false
         }
-        val sealed = if (status == HubSealingStatus.AVAILABLE) sealing?.seal(to, id, sentAt, innerType, body) else null
+        if (status == HubSealingStatus.AVAILABLE) {
+            // F65 of the 2026-10-22 review: the directory key verified its binding signature but could not produce an
+            // envelope (unusable SPKI bytes, or signing failed). That is "cannot seal now", NOT "the peer has no
+            // sealing key": the readable-content opt-in below is about a peer that never published one, so falling
+            // through to it would put a message this user chose to seal on the hub in plaintext. Keep it queued.
+            val sealed = sealing?.seal(to, id, sentAt, innerType, body)
+            if (sealed == null) {
+                FlashLog.w("HUB", "sealing key unusable, not sending readable id=${id.take(8)}")
+                return false
+            }
+            return port.send(to, id, HubSealing.ENVELOPE_TYPE, sentAt, sealed)
+        }
         return when {
-            sealed != null -> port.send(to, id, HubSealing.ENVELOPE_TYPE, sentAt, sealed)
             contentViaHub() -> port.send(to, id, innerType, sentAt, body)
             else -> {
                 FlashLog.i("HUB", "readable content not allowed via hub, not sending id=$id")

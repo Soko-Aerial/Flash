@@ -127,7 +127,7 @@ class E2eHostSealingLifecycleTest {
 
         val secret = "quarterly-numbers-0451"
         val sentAt = System.currentTimeMillis()
-        val payload = HubSealing.seal(a.crypto, "dev-a", "dev-b", servedKey, "m-1", sentAt, "MSG_TEXT", secret)
+        val payload = requireNotNull(HubSealing.seal(a.crypto, "dev-a", "dev-b", servedKey, "m-1", sentAt, "MSG_TEXT", secret))
         assertTrue(a.client.relay.sendEnvelope("dev-b", FlashEnvelope(id = "m-1", type = HubSealing.ENVELOPE_TYPE, payloadJson = payload, senderId = "dev-a", sentAt = sentAt)))
         val delivered = assertNotNull(awaitItem(b.received) { it.id == "m-1" })
         val aIdentity = Base64.getDecoder().decode(b.directoryEntry("dev-a")!!.subjectPublicKey)

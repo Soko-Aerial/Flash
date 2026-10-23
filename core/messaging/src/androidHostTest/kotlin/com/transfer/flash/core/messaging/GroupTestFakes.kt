@@ -1,5 +1,6 @@
 package com.transfer.flash.core.messaging
 
+import com.transfer.flash.core.persistence.db.MessageTextMarkers
 import com.transfer.flash.core.persistence.db.dao.ConversationDao
 import com.transfer.flash.core.persistence.db.dao.ConversationPreview
 import com.transfer.flash.core.persistence.db.dao.ConversationUnread
@@ -190,8 +191,14 @@ internal class InMemoryMessageDao : MessageDao {
         publish()
     }
 
+    /** Mirrors the SQL text filter: an internal marker row (`vmsg:`/`cmsg:`) never matches by `text` (F36). */
+    private fun textMatches(row: MessageEntity, query: String): Boolean =
+        !row.text.startsWith(MessageTextMarkers.VOICE) &&
+            !row.text.startsWith(MessageTextMarkers.CALL) &&
+            row.text.contains(query, ignoreCase = true)
+
     override suspend fun searchMessages(query: String, limit: Int): List<MessageEntity> =
-        messages.values.filter { it.deletedAt == null && it.text.contains(query, ignoreCase = true) }.take(limit)
+        messages.values.filter { it.deletedAt == null && textMatches(it, query) }.take(limit)
 
     override suspend fun searchConversationMessages(
         conversationId: String,
@@ -199,7 +206,7 @@ internal class InMemoryMessageDao : MessageDao {
         limit: Int,
     ): List<MessageEntity> =
         messages.values.filter {
-            it.conversationId == conversationId && it.deletedAt == null && it.text.contains(query, ignoreCase = true)
+            it.conversationId == conversationId && it.deletedAt == null && textMatches(it, query)
         }.take(limit)
 }
 

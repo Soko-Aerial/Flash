@@ -16,11 +16,18 @@ import com.transfer.flash.core.security.enterprise.UnsealedPayload
  * A stand-in for [DirectoryHubSealing] in hub file tests (ADR-216): the envelope is the inner type and the body on two
  * lines, readable to the test, and the status is scripted. The real sealing is proven by `HubSealingBridgeTest`.
  */
-class ScriptedHubSealing(var status: HubSealingStatus = HubSealingStatus.AVAILABLE) : HubSealingPort {
+class ScriptedHubSealing(
+    var status: HubSealingStatus = HubSealingStatus.AVAILABLE,
+    /**
+     * When true, [statusFor] still answers AVAILABLE but [seal] returns null: the directory published a key whose
+     * binding signature verifies yet which cannot produce an envelope (F65 of the 2026-10-22 review).
+     */
+    var sealUnavailable: Boolean = false,
+) : HubSealingPort {
     override suspend fun canSealFor(recipientDeviceId: String): Boolean = status == HubSealingStatus.AVAILABLE
     override suspend fun statusFor(recipientDeviceId: String): HubSealingStatus = status
     override suspend fun seal(recipientDeviceId: String, msgId: String, sentAt: Long, innerType: String, body: String): String? =
-        if (status == HubSealingStatus.AVAILABLE) "$innerType\n$body" else null
+        if (status == HubSealingStatus.AVAILABLE && !sealUnavailable) "$innerType\n$body" else null
 
     override suspend fun open(senderDeviceId: String, msgId: String, sentAt: Long, payload: String): UnsealedPayload? {
         val cut = payload.indexOf('\n').takeIf { it > 0 } ?: return null
