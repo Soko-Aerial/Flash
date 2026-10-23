@@ -438,15 +438,13 @@ public class RelayFrameRouter(
         if (convId.isBlank()) return
 
         val members = groups.membersOf(convId)
-        if (members != null) {
-            if (sender !in members) {
-                offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_NOT_MEMBER, MESSAGE_NOT_MEMBER))
-                return
-            }
-            for (memberId in members) if (memberId != sender) offerEphemeral(memberId, forwarded)
+        if (members == null || sender !in members) {
+            // F64 / ERROR-774: The same answer whether the group does not exist or the sender
+            // is not in it: no membership oracle / group enumeration oracle (matching handleGroupSend).
+            offerFrame(origin, RelayFrame.Error(HubErrorCodes.ERR_NOT_MEMBER, MESSAGE_NOT_MEMBER))
             return
         }
-        offerEphemeral(convId, forwarded)
+        for (memberId in members) if (memberId != sender) offerEphemeral(memberId, forwarded)
     }
 
     private fun offerEphemeral(deviceId: String, text: String) {
@@ -721,7 +719,15 @@ public class RelayFrameRouter(
         val pending = takeInFlight(session)
         if (session.isOpen) session.fail(reason.ifBlank { "disconnected" }, CloseReason.Codes.NORMAL)
         if (pending.isNotEmpty()) {
-            scope.launch { spill(session.deviceId, pending) }
+            scope.launch {
+                try {
+                    spill(session.deviceId, pending)
+                } finally {
+                    session.dispose()
+                }
+            }
+        } else {
+            session.dispose()
         }
     }
 
@@ -748,7 +754,9 @@ public class RelayFrameRouter(
             if (result.isStored) {
                 metrics.inc(RelayMetrics.MAILBOX_EVENTS, 1, "event" to "spilled")
             } else {
-                mailboxQueue.noteDropped()
+                // F60 / ERROR-773: Do not call mailboxQueue.noteDropped() here because
+                // mailboxQueue.enqueue already increments the dropped counter and metric
+                // for non-stored outcomes (QuotaExceeded, Failed).
                 notifyDropped(flight.origin, deviceId, msgId)
             }
         }

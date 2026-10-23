@@ -440,4 +440,65 @@ class HubFileTransfersTest {
         // One record for the start, one after create, one per chunk, one for completion.
         assertEquals(1 + 1 + 21 + 1, senderDisk.stateWrites)
     }
+
+    private class FlakySource(
+        private val delegate: HubFileSource,
+        var failOnRead: ((offset: Long, length: Int) -> Throwable?)? = null,
+    ) : HubFileSource {
+        override val size: Long get() = delegate.size
+        override fun read(offset: Long, length: Int): ByteArray {
+            failOnRead?.invoke(offset, length)?.let { throw it }
+            return delegate.read(offset, length)
+        }
+    }
+
+    @Test
+    fun transientDiskReadErrorDuringUploadDoesNotCancelRemoteUploadAndCanResume() = runTest {
+        val id = HubFileSealing.newFileId()
+        var readCount = 0
+        val flakySource = FlakySource(ByteArrayHubFileSource(plain)) { offset, _ ->
+            readCount++
+            // Initial hashSource reads all 21 chunks. Fail on chunk 10 during the upload phase (readCount > 21).
+            if (readCount > 21 && offset >= 10 * 48) Exception("transient disk read error") else null
+        }
+        val uploadReq = HubUploadRequest(
+            hubUrl = hub, fileId = id, source = flakySource, toDeviceId = "dev-b",
+            maxFileBytes = server.maxFileBytes, cipherChunkBytes = chunk,
+        )
+        val outcome = sender().upload(uploadReq)
+        val interrupted = assertIs<HubUploadOutcome.Interrupted>(outcome)
+        assertEquals("read", (interrupted.error as HubFileError.LocalStorage).what)
+        assertTrue(interrupted.error.transient, "local storage read error must be marked transient (F38)")
+        assertTrue(server.files.containsKey(id), "the remote upload must not be cancelled on transient read error")
+        assertEquals(FileStates.UPLOADING, server.files.getValue(id).state)
+        assertTrue(senderDisk.stateIds(HubTransferDirection.UPLOAD).contains(id), "local state must be preserved")
+
+        // Transient issue resolves; resume upload
+        flakySource.failOnRead = null
+        val resumed = assertIs<HubUploadOutcome.Done>(sender().upload(uploadReq))
+        assertContentEquals(plain, downloaded(resumed.ticket))
+    }
+
+    private class FileNotFoundException(message: String) : Exception(message)
+
+    @Test
+    fun permanentDiskReadErrorCancelsRemoteUpload() = runTest {
+        val id = HubFileSealing.newFileId()
+        var readCount = 0
+        val flakySource = FlakySource(ByteArrayHubFileSource(plain)) { offset, _ ->
+            readCount++
+            // Fail during chunk upload phase with permanent missing file error
+            if (readCount > 21 && offset >= 10 * 48) FileNotFoundException("source file missing") else null
+        }
+        val uploadReq = HubUploadRequest(
+            hubUrl = hub, fileId = id, source = flakySource, toDeviceId = "dev-b",
+            maxFileBytes = server.maxFileBytes, cipherChunkBytes = chunk,
+        )
+        val outcome = sender().upload(uploadReq)
+        val failed = assertIs<HubUploadOutcome.Failed>(outcome)
+        assertEquals("read", (failed.error as HubFileError.LocalStorage).what)
+        assertFalse(failed.error.transient, "missing file must be permanent error (F38)")
+        assertFalse(server.files.containsKey(id), "the remote upload must be cancelled on permanent read error")
+        assertTrue(senderDisk.stateIds(HubTransferDirection.UPLOAD).isEmpty(), "local state must be removed")
+    }
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
@@ -280,6 +281,9 @@ class RelaySession(
             onClosed?.invoke(this, reason)
         }
     }
+
+    /** True once [dispose] has cancelled the per-session scope. */
+    val isDisposed: Boolean get() = !scope.isActive
 
     /** Releases the per-session scope when the session has ended. */
     fun dispose() {

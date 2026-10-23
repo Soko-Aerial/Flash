@@ -224,6 +224,24 @@ class RelayFrameRouterTest {
         assertEquals(listOf("m1", "m2"), listOf(first.id, second.id), "in the order they were handed over")
     }
 
+    @Test
+    fun spilledMessageRefusedByMailboxIncrementsDroppedCountExactlyOnce() = runBlocking<Unit> {
+        val store = mailbox(MailboxLimits(perRecipientRows = 1))
+        store.enqueue(MailboxMessage("someone", "bob", "existing", "MSG_TEXT", "{}", 1000L))
+        val initialDropped = store.droppedTotal()
+        val rig = rig(store)
+        val (alice, _) = rig.connect("alice")
+        val (bob, bobWs) = rig.connect("bob")
+
+        rig.router.processFrame(alice, send("bob", "m1"))
+        bobWs.nextOf<RelayFrame.Deliver>()
+        bob.fail("socket_died")
+
+        awaitCondition("spill completed") { store.droppedTotal() > initialDropped }
+        // F60 / ERROR-773: Must be counted exactly once, not twice
+        assertEquals(initialDropped + 1L, store.droppedTotal(), "dropped metric must be incremented exactly once per failed spill")
+    }
+
     // ---- offline / mailbox -------------------------------------------------------------------------------
 
     @Test
@@ -572,6 +590,26 @@ class RelayFrameRouterTest {
         assertEquals(emptyList(), bobWs.drainNow(), "SEC-02: nothing reached the group")
     }
 
+    @Test
+    fun groupMetaAnswersErrNotMemberIdenticallyForNonMemberAndMissingGroup() = runBlocking<Unit> {
+        val rig = rig(directory = directoryWithGroup())
+        val (mallory, malloryWs) = rig.connect("mallory")
+
+        // 1. Existing group where mallory is not a member
+        rig.router.processFrame(mallory, RelayFrameCodec.encode(RelayFrame.Meta(action = RelayFrame.Meta.ACTION_TYPING, conversationId = "grp-dev")))
+        val existingGroupErr = malloryWs.nextOf<RelayFrame.Error>()
+        assertEquals(HubErrorCodes.ERR_NOT_MEMBER, existingGroupErr.code)
+
+        // 2. Non-existent group
+        rig.router.processFrame(mallory, RelayFrameCodec.encode(RelayFrame.Meta(action = RelayFrame.Meta.ACTION_TYPING, conversationId = "grp-nonexistent")))
+        val missingGroupErr = malloryWs.nextOf<RelayFrame.Error>()
+        assertEquals(HubErrorCodes.ERR_NOT_MEMBER, missingGroupErr.code)
+
+        // F64 / ERROR-774: Both cases must be indistinguishable to the sender (same code, same message)
+        assertEquals(existingGroupErr.code, missingGroupErr.code)
+        assertEquals(existingGroupErr.message, missingGroupErr.message)
+    }
+
     // ---- group relay (REL-14) ------------------------------------------------------------------------------
 
     @Test
@@ -673,6 +711,18 @@ class RelayFrameRouterTest {
         val (carol, carolWs) = rig.connect("carol")
         rig.router.processFrame(carol, send("bob", "m1"))
         assertIs<RelayFrame.Revoked>(carolWs.nextOf<RelayFrame.Revoked>())
+    }
+
+    @Test
+    fun sessionEndedCallsDisposeAndCancelsSessionScope() = runBlocking<Unit> {
+        val rig = rig()
+        val (alice, _) = rig.connect("alice")
+        assertFalse(alice.isDisposed, "session should be active initially")
+
+        rig.router.sessionEnded(alice, "disconnected")
+
+        awaitCondition("session scope disposed") { alice.isDisposed }
+        assertTrue(alice.isDisposed, "session.dispose() must be called when session ends (F78)")
     }
 
     @Test

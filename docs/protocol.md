@@ -1298,7 +1298,7 @@ does not exist: both answer identically), `ERR_PROTOCOL`; `QUOTA_EXCEEDED` + `re
 
 **Group send.** `FLASH_RELAY {group: "<id>", to: "", ...}`: the sender must be a member (the hub checks the directory); each member except the sender
 gets `FLASH_DELIVER` with `group` set and `from` = the sender; there is ONE aggregate `FLASH_ACK` (`to` = group id). `FLASH_META` with a group
-is relayed only for a member (`ERR_NOT_MEMBER` otherwise).
+is relayed only for a member (`ERR_NOT_MEMBER` otherwise; missing group and non-member answer identically, no membership oracle).
 
 **Frames a client must never send** (hub-originated): `FLASH_ACK`, `FLASH_DELIVER`, `FLASH_QUEUE_STATE`, `FLASH_KICK`, `FLASH_REVOKED`,
 `FLASH_HUB_CHALLENGE`, `FLASH_HUB_WELCOME`: the hub answers `FLASH_ERROR ERR_PROTOCOL` ("Unexpected frame.") and does not forward them.

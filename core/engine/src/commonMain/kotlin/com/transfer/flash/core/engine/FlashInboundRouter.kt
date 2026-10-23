@@ -713,7 +713,9 @@ public object FlashInboundRouter {
                 event.frame
             }
             host.secureReply(ChunkFrame.serialize(completeReply))
-            host.onCompleted?.invoke(event, host.peerDeviceId)
+            // F56 / ERROR-772: onCompleted must receive the corrected completion with verified=false on MISMATCH / failure
+            val completionEvent = if (failed) ReceiveEvent.Completed(completeReply) else event
+            host.onCompleted?.invoke(completionEvent, host.peerDeviceId)
         } finally {
             // Untrack even if anything above threw (a throwing assemble used to leave the id tracked).
             host.incomingOwners?.remove(transferId)
