@@ -15,6 +15,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 import kotlin.time.TimeSource
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
@@ -41,12 +42,24 @@ class PttSessionEngineSessionTest {
     @Volatile
     private var controlDelivered: Boolean = true
 
+    @Volatile
+    private var micAllowed: Boolean = true
+
     private val audio = FakePttAudio()
     private val sentControl = Recorder<Pair<String, String>>()
     private val sentAudio = Recorder<Pair<String, ByteArray>>()
 
-    private fun newEngine(): PttSessionEngine = PttSessionEngine(
-        localId = { LOCAL_ID },
+    /**
+     * @param lane where floor reductions run; a [ManualDispatcher] lets a test hold presses behind the
+     *   command lock on purpose (RVW22 F44). Production uses the default.
+     * @param deviceId what [PttSessionEngine.localId] answers; null models a host with no identity yet
+     *   (RVW22 F59).
+     */
+    private fun newEngine(
+        lane: CoroutineDispatcher = Dispatchers.IO,
+        deviceId: String? = LOCAL_ID,
+    ): PttSessionEngine = PttSessionEngine(
+        localId = { deviceId },
         localName = { LOCAL_NAME },
         isTrustedPeer = { it != "untrusted-peer" },
         snapshotMembers = { members },
@@ -56,11 +69,12 @@ class PttSessionEngineSessionTest {
             controlDelivered
         },
         sendAudio = { peerId, bytes -> sentAudio.add(peerId to bytes) },
-        hasMicPermission = { true },
+        hasMicPermission = { micAllowed },
         isCallActive = { false },
         audioRateHz = { 16_000 },
         audio = audio,
         elapsedRealtimeMs = ::clockMs,
+        commandLane = lane,
     )
 
     // A real, strictly positive monotonic clock: the wire codecs reject a zero timestamp, and the
@@ -92,8 +106,10 @@ class PttSessionEngineSessionTest {
         return notices
     }
 
-    private suspend fun withEngine(block: suspend (PttSessionEngine) -> Unit) {
-        val engine = newEngine()
+    private suspend fun withEngine(
+        engine: PttSessionEngine = newEngine(),
+        block: suspend (PttSessionEngine) -> Unit,
+    ) {
         try {
             block(engine)
         } finally {
@@ -139,6 +155,74 @@ class PttSessionEngineSessionTest {
             assertEquals(listOf(1_000L, 1_020L), frames.map { it.second.captureTsMs })
             assertEquals(talking.sessionId, frames.first().second.sessionId)
             assertContentEquals(pcm(1), frames.first().second.pcm)
+        }
+    }
+
+    /**
+     * RVW22 F44: two taps land while the floor is up. Each looks like "stop" when the button goes down,
+     * so neither runs the start checks; the first one stops the session, and the second then reaches the
+     * command lane with the floor back at Idle. Before the fix it opened a second capture and announced
+     * a new session, with the microphone permission and the peer list never re-checked.
+     *
+     * The lane is manual because that race is otherwise decided by thread timing.
+     */
+    @Test
+    fun `a press queued behind a stop cannot open a session with the microphone switched off`() = runTest {
+        val lane = ManualDispatcher()
+        withEngine(newEngine(lane = lane)) { engine ->
+            val notices = collectNotices(engine)
+
+            // 1. The first press opens the floor.
+            assertEquals(PttPressOutcome.ACCEPTED, engine.onPttButton())
+            awaitUntil("the press reached the command lane") { lane.pending == 1 }
+            lane.drain()
+            awaitUntil("talking") { engine.state.value is PttFloorState.Talking }
+            assertEquals(1, audio.captures.size)
+
+            // 2. Two more taps while the floor is up: a stop, then a press that would start again.
+            assertEquals(PttPressOutcome.ACCEPTED, engine.onPttButton())
+            awaitUntil("the stop queued") { lane.pending == 1 }
+            assertEquals(PttPressOutcome.ACCEPTED, engine.onPttButton())
+            awaitUntil("the second tap queued") { lane.pending == 2 }
+
+            // 3. The user revoked the microphone in Settings while those taps waited.
+            micAllowed = false
+
+            // 4. The lane runs: the stop lands, and the leftover press must be refused, not started.
+            lane.drain()
+            awaitUntil("idle again") { engine.state.value == PttFloorState.Idle }
+            assertEquals(1, audio.captures.size, "the queued press must not open a second capture")
+            assertEquals(1, sentFrames<PttSessionFrame.Start>().size, "nor announce a new session")
+            awaitUntil("the refusal is explained") {
+                notices.snapshot().any { it.contains("Microphone permission") }
+            }
+        }
+    }
+
+    /**
+     * RVW22 F59: the floor settles a collision by comparing the two `holderId`s, so a device with no id
+     * would never yield and both talkers would keep transmitting. There is also nothing to name in the
+     * Start frame. The press is refused with the answer the user already knows, and nothing is opened.
+     */
+    @Test
+    fun `a press without a local device id is refused`() = runTest {
+        withEngine(newEngine(deviceId = null)) { engine ->
+            assertEquals(PttPressOutcome.NO_PEERS, engine.onPttButton())
+            assertEquals(PttFloorState.Idle, engine.state.value)
+            assertTrue(audio.captures.snapshot().isEmpty(), "no capture without an identity")
+            assertTrue(sentControl.snapshot().isEmpty(), "and nothing on the wire")
+            assertFalse(engine.sendPing(), "a ping with no sender is not sent either")
+        }
+    }
+
+    /** The same for a blank id: the host answered, but with nothing usable. */
+    @Test
+    fun `a blank local device id is refused too`() = runTest {
+        withEngine(newEngine(deviceId = "   ")) { engine ->
+            assertEquals(PttPressOutcome.NO_PEERS, engine.onPttButton())
+            assertEquals(PttFloorState.Idle, engine.state.value)
+            assertTrue(audio.captures.snapshot().isEmpty())
+            assertFalse(engine.sendPing())
         }
     }
 
@@ -190,6 +274,8 @@ class PttSessionEngineSessionTest {
 
             assertIs<PttFloorState.Idle>(engine.state.value)
             assertTrue(sentFrames<PttSessionFrame.Start>().isEmpty(), "no Start frame for a session that never captured")
+            // RVW22 F58: and no Stop either — the members never heard of this session.
+            assertTrue(sentFrames<PttSessionFrame.Stop>().isEmpty(), "no Stop frame for a session nobody was told about")
         }
     }
 

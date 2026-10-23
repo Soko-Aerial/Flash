@@ -32,6 +32,10 @@ class FlashCallSessionTest {
     private fun TestScope.newSession(
         direction: FlashCallDirection,
         video: Boolean = false,
+        sendFrame: suspend (CallWireFrame) -> Boolean = { frame ->
+            sent += frame
+            true
+        },
     ): FlashCallSession = FlashCallSession(
         callId = callId,
         peerId = peerId,
@@ -41,10 +45,7 @@ class FlashCallSessionTest {
         localDeviceId = "me-0001",
         localName = "Me",
         scope = this,
-        sendFrame = { frame ->
-            sent += frame
-            true
-        },
+        sendFrame = sendFrame,
     )
 
     /**
@@ -299,6 +300,56 @@ class FlashCallSessionTest {
 
         assertFalse(session.accept())
         assertTrue(sent.isEmpty())
+    }
+
+    // ------------------------------------------------------------------
+    // RVW22 F42: local teardown never depends on the frame getting out
+    // ------------------------------------------------------------------
+
+    /**
+     * A hangup whose frame cannot be sent must still hang up locally. Before F42 the send was awaited
+     * before `end(...)`, so a socket that died with the call threw out of `hangUp()` and the user stayed
+     * on the call screen — with no timer left to rescue them (the dial/connect timeouts are cancelled by
+     * then, and they have already pressed the only button that ends the call).
+     */
+    @Test
+    fun hangUp_endsTheCallWhenTheFrameSendThrows() = runTest {
+        val session = newSession(
+            FlashCallDirection.OUTGOING,
+            sendFrame = { throw IllegalStateException("socket closed") },
+        )
+        session.setStateForTesting(FlashCallState.ACTIVE)
+
+        session.hangUp()
+
+        assertEquals(FlashCallState.ENDED, session.state.value.state)
+        assertEquals(FlashCallEndReason.NORMAL, session.state.value.endReason)
+    }
+
+    /** Same invariant on the ringing side: a failed Decline still stops this device ringing. */
+    @Test
+    fun decline_stopsRingingWhenTheFrameSendThrows() = runTest {
+        val session = newSession(
+            FlashCallDirection.INCOMING,
+            sendFrame = { throw IllegalStateException("socket closed") },
+        )
+
+        session.decline()
+
+        assertEquals(FlashCallState.ENDED, session.state.value.state)
+        assertEquals(FlashCallEndReason.NORMAL, session.state.value.endReason)
+    }
+
+    /** The ordinary path is unchanged: the frame still goes out before the teardown. */
+    @Test
+    fun hangUp_stillSendsTheHangupFrameWhenTheTransportWorks() = runTest {
+        val session = newSession(FlashCallDirection.OUTGOING)
+        session.setStateForTesting(FlashCallState.ACTIVE)
+
+        session.hangUp()
+
+        assertTrue(sent.single() is CallWireFrame.Hangup)
+        assertEquals(FlashCallState.ENDED, session.state.value.state)
     }
 
     // ------------------------------------------------------------------
