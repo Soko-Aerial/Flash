@@ -189,14 +189,14 @@ class FlashImageDecoderJvmTest {
         assertNotSame(first, second)
     }
 
-    @Test
-    fun `exif orientation is read correctly from jpeg headers`() {
-        val nonJpeg = writePng("plain.png", 100, 100)
-        assertEquals(1, JvmImageDecoder.readExifOrientation(nonJpeg.absolutePath))
-
-        // Construct minimal JPEG with EXIF orientation = 6 (rotate 90 CW)
-        val jpegBytes = byteArrayOf(
+    /**
+     * A minimal JPEG whose APP1 segment carries one EXIF orientation entry, optionally preceded by
+     * [fillBytes] `0xFF` fill bytes. ITU T.81 B.1.1.2 allows any number of them before a marker.
+     */
+    private fun exifJpeg(name: String, orientation: Int, fillBytes: Int = 0): File {
+        val bytes = byteArrayOf(
             0xFF.toByte(), 0xD8.toByte(), // SOI
+        ) + ByteArray(fillBytes) { 0xFF.toByte() } + byteArrayOf(
             0xFF.toByte(), 0xE1.toByte(), // APP1
             0x00.toByte(), 0x22.toByte(), // segment length: 34 bytes (including 2 length bytes)
             'E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0x00.toByte(), 0x00.toByte(),
@@ -206,12 +206,28 @@ class FlashImageDecoderJvmTest {
             0x12.toByte(), 0x01.toByte(), // Tag 0x0112 (Orientation)
             0x03.toByte(), 0x00.toByte(), // Type SHORT
             0x01.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Count 1
-            0x06.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Value 6 (90 CW)
+            orientation.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Value (6 = 90 CW)
             0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), // Next IFD
             0xFF.toByte(), 0xD9.toByte(), // EOI
         )
-        val exifJpeg = File(tempDir, "portrait.jpg").apply { writeBytes(jpegBytes) }
-        assertEquals(6, JvmImageDecoder.readExifOrientation(exifJpeg.absolutePath))
+        return File(tempDir, name).apply { writeBytes(bytes) }
+    }
+
+    @Test
+    fun `exif orientation is read correctly from jpeg headers`() {
+        val nonJpeg = writePng("plain.png", 100, 100)
+        assertEquals(1, JvmImageDecoder.readExifOrientation(nonJpeg.absolutePath))
+
+        // Construct minimal JPEG with EXIF orientation = 6 (rotate 90 CW)
+        assertEquals(6, JvmImageDecoder.readExifOrientation(exifJpeg("portrait.jpg", 6).absolutePath))
+    }
+
+    @Test
+    fun `exif orientation is read behind jpeg fill bytes`() {
+        // Fill bytes are legal and encoders emit them. The marker loop used to take the second 0xFF of
+        // "FF FF FF FF E1" as the marker, so 0xE1 became the length high byte: the APP1 block was
+        // skipped as a 57 600-byte blob and the photo came out sideways.
+        assertEquals(6, JvmImageDecoder.readExifOrientation(exifJpeg("filled.jpg", 6, fillBytes = 3).absolutePath))
     }
 
     @Test
