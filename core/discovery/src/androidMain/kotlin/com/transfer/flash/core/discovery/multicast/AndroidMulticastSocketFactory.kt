@@ -56,10 +56,16 @@ public class AndroidMulticastSocketFactory(
     }
 
     /**
-     * Mirrors `NsdTransport`'s rule: below API 34 the app must hold an explicit multicast lock, and
-     * from 34 the framework manages it. Kept identical on purpose — an unconditional lock is a
-     * battery cost with no benefit on modern devices, and `NsdTransportLogicTest` pins the threshold
-     * for the NSD path.
+     * Below API 34 the app must hold an explicit Wi-Fi multicast lock, so it is taken here.
+     *
+     * From 34 this path still skips it, on the theory that the T-extensions 7+ framework manages
+     * multicast reception. That is NO LONGER what `NsdTransport` does — its rule was changed after a
+     * field report that a backgrounded FGS with the screen off receives no mDNS without the explicit
+     * lock, and it now takes the lock on every API level (`NsdApiThresholds.SDK_MULTICAST_LOCK_NOT_NEEDED`
+     * records why). Whether the DR2 beacon in this transport needs the same is an open measurement:
+     * `DISC-07` in `docs/testing/TEST-BACKLOG.md` is the device check that decides it, together with
+     * the battery cost the owner has to weigh. Do not "fix" this on theory — a lock held for a whole
+     * discovery session costs battery on every phone.
      */
     private fun acquireMulticastLockIfNeeded() {
         if (apiLevel >= SDK_MULTICAST_LOCK_NOT_NEEDED) return
