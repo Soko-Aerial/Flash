@@ -143,4 +143,68 @@ class FlashShareTargetMathTest {
         selected = FlashShareTargetMath.toggleSelection(selected, "2", maxLimit = 3)
         assertEquals(setOf("1", "3"), selected)
     }
+
+    // ---- F49: Multi-select forward payload builder
+
+    private fun testMsg(
+        id: String,
+        text: String = "",
+        images: List<com.transfer.flash.core.messaging.model.FlashImageAttachmentUi> = emptyList(),
+        files: List<com.transfer.flash.core.messaging.model.FlashFileAttachmentUi> = emptyList(),
+        voice: List<com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi> = emptyList(),
+    ) = com.transfer.flash.core.messaging.model.FlashMessageUi(
+        id = id,
+        senderName = "User",
+        senderInitials = "U",
+        timeLabel = "12:00",
+        text = text,
+        isMine = true,
+        images = images,
+        fileAttachments = files,
+        voiceAttachments = voice,
+    )
+
+    @Test
+    fun `buildMultiForwardPayload includes text and attachment items from multiple messages`() {
+        val msg1 = testMsg(id = "1", text = "Hello world")
+        val msg2 = testMsg(
+            id = "2",
+            images = listOf(com.transfer.flash.core.messaging.model.FlashImageAttachmentUi(id = "img1", uri = "file:///img.jpg", mimeType = "image/jpeg")),
+        )
+        val msg3 = testMsg(
+            id = "3",
+            files = listOf(com.transfer.flash.core.messaging.model.FlashFileAttachmentUi(id = "f1", name = "doc.pdf", sizeBytes = 4096L, mimeType = "application/pdf", localUri = "file:///doc.pdf")),
+            voice = listOf(com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi(id = "v1", uri = "file:///voice.aac", mimeType = "audio/aac")),
+        )
+
+        val payload = FlashShareTargetMath.buildMultiForwardPayload(listOf(msg1, msg2, msg3))
+        kotlin.test.assertNotNull(payload)
+        assertEquals("Hello world", payload.text)
+        assertEquals(3, payload.items.size)
+        assertEquals("file:///img.jpg", payload.items[0].uri)
+        assertEquals("file:///doc.pdf", payload.items[1].uri)
+        assertEquals("file:///voice.aac", payload.items[2].uri)
+    }
+
+    @Test
+    fun `buildMultiForwardPayload returns null for empty or blank messages`() {
+        val emptyMsg = testMsg(id = "1", text = "   ")
+        kotlin.test.assertNull(FlashShareTargetMath.buildMultiForwardPayload(listOf(emptyMsg)))
+        kotlin.test.assertNull(FlashShareTargetMath.buildMultiForwardPayload(emptyList()))
+    }
+
+    @Test
+    fun `hasUnforwardableAttachments flags undownloaded attachments`() {
+        val ready = testMsg(
+            id = "1",
+            files = listOf(com.transfer.flash.core.messaging.model.FlashFileAttachmentUi(id = "f1", name = "doc.pdf", sizeBytes = 4096L, localUri = "file:///doc.pdf")),
+        )
+        val notReady = testMsg(
+            id = "2",
+            files = listOf(com.transfer.flash.core.messaging.model.FlashFileAttachmentUi(id = "f2", name = "inbound.pdf", sizeBytes = 4096L, localUri = null)),
+        )
+
+        kotlin.test.assertFalse(FlashShareTargetMath.hasUnforwardableAttachments(listOf(ready)))
+        assertTrue(FlashShareTargetMath.hasUnforwardableAttachments(listOf(ready, notReady)))
+    }
 }

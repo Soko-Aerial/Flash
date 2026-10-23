@@ -21,6 +21,7 @@ public actual fun FlashVideoSurface(
     seekToMs: Long?,
     onPlaybackStateChanged: (durationMs: Long, positionMs: Long, isCompleted: Boolean) -> Unit,
     onError: (String) -> Unit,
+    onSeekHandled: () -> Unit,
     modifier: Modifier,
 ) {
     val videoViewRef = remember { arrayOf<VideoView?>(null) }
@@ -30,6 +31,7 @@ public actual fun FlashVideoSurface(
     val currentIsMuted by rememberUpdatedState(isMuted)
     val currentOnPlaybackStateChanged by rememberUpdatedState(onPlaybackStateChanged)
     val currentOnError by rememberUpdatedState(onError)
+    val currentOnSeekHandled by rememberUpdatedState(onSeekHandled)
 
     // Handle seek
     LaunchedEffect(seekToMs) {
@@ -37,6 +39,7 @@ public actual fun FlashVideoSurface(
         val vv = videoViewRef[0] ?: return@LaunchedEffect
         if (isPreparedRef[0]) {
             vv.seekTo(seek.toInt())
+            currentOnSeekHandled()
         }
     }
 
