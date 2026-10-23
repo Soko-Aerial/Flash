@@ -189,6 +189,14 @@ public class PttSessionEngine(
      * the toggle itself runs async. Debouncing lives with the caller.
      */
     override public fun onPttButton(): PttPressOutcome {
+        // RVW22 F59: the floor's collision tie-break compares this device's id with the other talker's
+        // (`holderId`), so a press with no id cannot be resolved: both sides would keep the floor and
+        // transmit over each other. There is nothing to talk to yet either, so this is the NO_PEERS
+        // answer the user already knows.
+        if (!hasLocalId()) {
+            FlashLog.w(TAG, "PTT press refused: no local device id yet")
+            return PttPressOutcome.NO_PEERS
+        }
         hardPressRefusal()?.let { outcome ->
             FlashLog.w(TAG, "PTT press refused: ${outcome.label()}")
             outcome.notice()?.let { message -> scope.launch { _notices.emit(message) } }
@@ -239,8 +247,12 @@ public class PttSessionEngine(
         else -> null
     }
 
+    /** This device's id, when the host has one: the floor cannot resolve a collision without it (RVW22 F59). */
+    private fun hasLocalId(): Boolean = !localId().isNullOrBlank()
+
     /** Why a press cannot open a session (Idle → Talking). Re-checked under the lock — see [processLocked]. */
     private fun startRefusal(): PttPressOutcome? = when {
+        !hasLocalId() -> PttPressOutcome.NO_PEERS
         snapshotMembers().isEmpty() -> PttPressOutcome.NO_PEERS
         !hasMicPermission() -> PttPressOutcome.NO_MIC
         else -> null
@@ -261,7 +273,9 @@ public class PttSessionEngine(
     }
 
     override public fun sendPing(): Boolean {
-        val self = localId() ?: return false
+        // A blank id is no id: the ping would be labelled with nothing and every receiver would drop it
+        // as a frame claiming a sender that is not the transport peer (RVW22 F59).
+        val self = localId()?.takeIf { it.isNotBlank() } ?: return false
         val recipients = snapshotMembers().filter { it != self && isTrustedPeer(it) }
         if (recipients.isEmpty()) return false
         val ping = PttFrameCodec.encode(
@@ -582,7 +596,7 @@ public class PttSessionEngine(
             is PttCaptureStart.Started -> {
                 sessionRateHz = started.actualRateHz
                 sessionPacketMs = started.actualPacketMs
-                val self = localId()
+                val self = localId()?.takeIf { it.isNotBlank() }
                 if (self == null) {
                     FlashLog.w(TAG, "Talking with no local id — ending")
                     processLocked(PttFloorEvent.LocalStopPress)
