@@ -247,6 +247,8 @@ class PttSessionEngineSessionTest {
 
             assertIs<PttFloorState.Idle>(engine.state.value)
             assertTrue(sentFrames<PttSessionFrame.Start>().isEmpty(), "no Start frame for a session that never captured")
+            // RVW22 F58: and no Stop either — the members never heard of this session.
+            assertTrue(sentFrames<PttSessionFrame.Stop>().isEmpty(), "no Stop frame for a session nobody was told about")
         }
     }
 
