@@ -8,51 +8,43 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.CancellableContinuation
-import kotlinx.coroutines.suspendCancellableCoroutine
 
 /**
  * `ContextCompat.checkSelfPermission` + `ActivityResultContracts.RequestPermission()`, which is the
  * pair `FlashConversationScreen` already used. The behaviour visible to the user is unchanged: the
  * same system dialog, raised at the same moment, with the same two outcomes.
+ *
+ * What did change is what happens around it: the launcher has one callback and no request id, so it
+ * serves one request at a time. [PermissionRequestArbiter] queues concurrent requests instead of
+ * letting the second one overwrite the first caller's continuation.
  */
 @Composable
 public actual fun rememberFlashPermissionRequester(): FlashPermissionRequester {
     val context = LocalContext.current
     // A plain holder, NOT `mutableStateOf`: parking a continuation is not UI state, and writing it
     // through the snapshot system would invalidate this composition on every permission request.
-    val pending = remember { PendingPermissionRequest() }
+    val requests = remember { PermissionRequestArbiter() }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        val continuation = pending.continuation
-        pending.continuation = null
-        if (continuation != null && continuation.isActive) {
-            continuation.resumeWith(Result.success(granted))
-        }
+        requests.onResult(granted)
     }
-    return remember(context, launcher) {
+    return remember(context, launcher, requests) {
         object : FlashPermissionRequester {
             override fun isGranted(permission: FlashPermission): Boolean =
                 ContextCompat.checkSelfPermission(context, permission.manifestName) ==
                     PackageManager.PERMISSION_GRANTED
 
-            override suspend fun ensureGranted(permission: FlashPermission): Boolean {
-                if (isGranted(permission)) return true
-                return suspendCancellableCoroutine { continuation ->
-                    pending.continuation = continuation
-                    // If the caller's scope dies while the dialog is up — the screen is left, or the
-                    // Activity is recreated — drop the reference so the launcher callback resumes
-                    // nothing. The caller is cancelled either way; this only stops a stale
-                    // continuation being held past its scope.
-                    continuation.invokeOnCancellation { pending.continuation = null }
-                    launcher.launch(permission.manifestName)
-                }
-            }
+            override suspend fun ensureGranted(permission: FlashPermission): Boolean =
+                requests.ensure(
+                    permission = permission.manifestName,
+                    // Re-read per attempt: an earlier dialog, or a grant made in Settings while this
+                    // request was queued, must not raise a second dialog.
+                    isGranted = { name ->
+                        ContextCompat.checkSelfPermission(context, name) == PackageManager.PERMISSION_GRANTED
+                    },
+                    launch = { name -> launcher.launch(name) },
+                )
         }
     }
-}
-
-private class PendingPermissionRequest {
-    var continuation: CancellableContinuation<Boolean>? = null
 }
 
 /**
