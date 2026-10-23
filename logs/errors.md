@@ -1,5 +1,32 @@
 # Error Log
 
+## ERROR-810 — Desktop: error messages and the "verify this device" card were painted behind the chats (owner report)
+
+### Date
+2026-10-23
+
+### Area
+Desktop shell z-order (`desktop/.../DesktopShell.kt`)
+
+### Symptoms
+On Windows, an error (a snackbar) sometimes appeared behind the interface, and verifying a device from a group while not on the Nearby tab showed the pairing card behind the chats, where it could not be reached.
+
+### Root cause
+`SnackbarHost` and `FlashPairingDialog` (an inline full-size box, not a dialog layer) were emitted BEFORE the sidebar / panes / bottom nav in the shell's `Box`, and Compose paints siblings in emission order, so the layout was painted over them. The comment above the snackbar said "Last sibling", which was not true. The pairing card is deliberately not shown on the Nearby tab (the screen has its own), which is why it only went missing elsewhere. The sheets and `FlashConfirmHost` dialogs are real dialog layers and were not affected. Found by reading the code; not reproduced on a device.
+
+### Fix
+Both are now the last siblings of the shell: above the layout, the push-to-talk card and the call screen; the snackbar is the very last. Known limit: a snackbar posted while a sheet (a real dialog layer) is open is still drawn under that sheet's layer, by design of the layer.
+
+### Verification
+`:desktop:compileKotlinJvm` green. No unit test is possible (scene layers and paint order cannot be observed in an offscreen render, see the desktop-overlays note). Device check `DESKTOP-ZORDER-01`.
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopShell.kt`
+
+### Status
+OPEN (until the device check)
+
+
 
 ## ERROR-759 — RVW22 CRITICAL/HIGH findings checked and found NOT to be defects (F6, F23, F32)
 

@@ -1,5 +1,15 @@
 # Progress Log
 
+## 2026-10-23 (latest) - Desktop: errors and the verify card were painted behind the chats (ERROR-810)
+
+### Changed
+`DesktopShell.kt`: the snackbar host and the pairing card moved from before the layout to the end of the shell, so they paint above the panes and the call screen.
+### Verified
+`:desktop:compileKotlinJvm`. Not run on a device.
+### Next AI
+Check the same ordering in other shells if a similar report comes: any inline full-size overlay emitted before the layout is hidden by it.
+
+
 
 ## 2026-10-22 (latest) - Comprehensive review: all CRITICAL and HIGH findings handled on `dev` (RVW22H, ERROR-752..759)
 

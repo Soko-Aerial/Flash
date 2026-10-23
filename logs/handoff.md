@@ -1,5 +1,10 @@
 # Current Handoff
 
+## 2026-10-23 - Desktop z-order fix (ERROR-810), compile-checked, not device-verified, not committed until the next commit says so
+
+- `DesktopShell.kt`: snackbar host and pairing card are now the last siblings. Device check `DESKTOP-ZORDER-01`.
+
+
 
 ## 2026-10-22 (comprehensive review, CRITICAL/HIGH) - F1..F33, F69..F71 handled on `dev`, unit-tested and mutation-checked, NOT device-verified, NOT pushed
 
