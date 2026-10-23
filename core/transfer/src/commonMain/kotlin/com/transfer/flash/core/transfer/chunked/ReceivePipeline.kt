@@ -327,7 +327,10 @@ public class ReceivePipeline(
             events.add(buildComplete(session, frame.transferId))
             return events
         }
-        return if (newlyMarked && session.pending.size >= ackEvery) {
+        // F41 / ERROR-771: A duplicate / retransmitted chunk must be ACKed immediately so
+        // the sender does not stall until its retry timeout. Progress, bytes, and done-set
+        // are not double-counted (newlyMarked is false, doneBytes unchanged).
+        return if (!newlyMarked || session.pending.size >= ackEvery) {
             listOf(buildAck(session, frame.transferId))
         } else {
             emptyList()

@@ -118,8 +118,7 @@ public sealed interface HubFileError {
     }
 
     /** The file could not be read, or written, on this device. [what] names the operation for the log, never a path. */
-    public data class LocalStorage(public val what: String) : HubFileError {
-        override val transient: Boolean = false
+    public data class LocalStorage(public val what: String, override val transient: Boolean = false) : HubFileError {
     }
 
     /** The exact user-facing sentence (`docs/plans/HUB-FILES-PLAN.md` section 6), as a [FlashError.Domain]. */

@@ -112,20 +112,46 @@ class ReceivePipelineTest {
     }
 
     @Test
-    fun `duplicate chunk idempotent - still acked but never rewritten`() {
+    fun `duplicate chunk idempotent - still acked immediately but never rewritten`() {
         val sink = RecordingSink()
         val pipeline = ReceivePipeline(sink)
         pipeline.onFrame(ChunkFrame.serialize(startFrame()))
 
         val frame = chunkFrames()[0]
         assertTrue(pipeline.onFrame(ChunkFrame.serialize(frame)).isEmpty())
-        assertTrue(pipeline.onFrame(ChunkFrame.serialize(frame)).isEmpty())
+        val dupEvents = pipeline.onFrame(ChunkFrame.serialize(frame))
+        val ack = dupEvents.filterIsInstance<ReceiveEvent.AckBatchReady>().single()
+        assertEquals(listOf(0), ack.frame.indexes)
         assertEquals(1, sink.writes)
         assertEquals(listOf(0), sink.indexesWritten)
 
-        val ack = pipeline.flushPendingAck() as ReceiveEvent.AckBatchReady
+        assertNull(pipeline.flushPendingAck(), "pending cleared by immediate duplicate ack")
+    }
+
+    @Test
+    fun `retransmitted duplicate chunk emits immediate ack without double counting progress or done-set`() {
+        val sink = RecordingSink()
+        val pipeline = ReceivePipeline(sink, ackEvery = 32)
+        val start = startFrame()
+        pipeline.onFrame(ChunkFrame.serialize(start))
+
+        val frames = chunkFrames()
+        // Send chunk 0: not yet acked because ackEvery = 32
+        val firstEvents = pipeline.onFrame(ChunkFrame.serialize(frames[0]))
+        assertTrue(firstEvents.isEmpty())
+        assertEquals(chunkSize.toLong(), pipeline.doneBytes(start.transferId))
+        assertEquals(listOf(0), pipeline.doneIndexes(start.transferId))
+
+        // Retransmit chunk 0: must emit immediate ACK
+        val dupEvents = pipeline.onFrame(ChunkFrame.serialize(frames[0]))
+        val ack = dupEvents.filterIsInstance<ReceiveEvent.AckBatchReady>().single()
         assertEquals(listOf(0), ack.frame.indexes)
-        assertNull(pipeline.flushPendingAck(), "pending cleared after flush")
+
+        // Progress, doneBytes, and doneIndexes must NOT be double-counted
+        assertEquals(chunkSize.toLong(), pipeline.doneBytes(start.transferId))
+        assertEquals(listOf(0), pipeline.doneIndexes(start.transferId))
+        assertEquals(1, sink.writes)
+        assertEquals(listOf(0), sink.indexesWritten)
     }
 
     @Test

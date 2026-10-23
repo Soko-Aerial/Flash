@@ -69,6 +69,16 @@ public class OkioRandomAccessSinkHandle(
 
     private val handle: FileHandle = fileSystem.openReadWrite(path)
 
+    init {
+        // F40 / ERROR-770: When overwriting an existing file that is larger than the incoming
+        // transfer, truncate stale trailing bytes to avoid hash mismatch (MISMATCH).
+        // ERROR-067: Do NOT resize when existing size <= expectedTotalBytes, because expanding
+        // via okio.FileHandle.resize() allocates a contiguous ByteArray on ART heap causing OOM.
+        if (handle.size() > expectedTotalBytes) {
+            handle.resize(expectedTotalBytes)
+        }
+    }
+
     private val lock = PlatformLock()
 
     @Volatile

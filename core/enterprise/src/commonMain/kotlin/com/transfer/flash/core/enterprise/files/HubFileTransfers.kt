@@ -340,9 +340,9 @@ public class HubFileTransfers(
 
                 for (index in 0 until layout.chunkCount) {
                     if (state.done[index]) continue
-                    val cipher = when (val sealed = sealedChunk(index)) {
+                    val cipher = when (val sealed = retrying { sealedChunk(index) }) {
                         is HubFileResult.Ok -> sealed.value
-                        is HubFileResult.Err -> return fail(sealed.error)
+                        is HubFileResult.Err -> return if (sealed.error.transient) interrupted(sealed.error) else fail(sealed.error)
                     }
                     val chunkSha = HubFileHasher().also { it.update(cipher) }.digestHex()
                     when (val put = retrying { api.putChunk(request.hubUrl, fileId, index, cipher, chunkSha) }) {
@@ -451,10 +451,23 @@ public class HubFileTransfers(
         private suspend fun sealedChunk(index: Int): HubFileResult<ByteArray> = io { sealedChunkBlocking(index) }
 
         private fun sealedChunkBlocking(index: Int): HubFileResult<ByteArray> {
-            val plain = runCatching { source.read(layout.plainOffset(index), layout.plainLength(index)) }.getOrNull()
-                ?: return HubFileResult.Err(HubFileError.LocalStorage("read"))
+            val plain = try {
+                source.read(layout.plainOffset(index), layout.plainLength(index))
+            } catch (e: Throwable) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                val transient = isTransientRead(e)
+                return HubFileResult.Err(HubFileError.LocalStorage("read", transient = transient))
+            }
             if (plain.size != layout.plainLength(index)) return HubFileResult.Err(HubFileError.SourceChanged)
             return HubFileResult.Ok(HubFileSealing.sealChunk(key, fileId, layout, index, plain))
+        }
+
+        private fun isTransientRead(e: Throwable): Boolean {
+            val name = e::class.simpleName ?: ""
+            if (name == "FileNotFoundException" || name == "NoSuchFileException" || name == "EOFException") return false
+            if (e.message?.contains("shorter than expected") == true) return false
+            if (e is IllegalArgumentException || e is IndexOutOfBoundsException || e is IllegalStateException) return false
+            return true
         }
 
         private suspend fun save(): HubFileError? = runSuspendCatching {
@@ -471,7 +484,7 @@ public class HubFileTransfers(
 
         private suspend fun fail(error: HubFileError): HubUploadOutcome {
             // A refused upload the hub already holds is withdrawn now instead of waiting for the 24 h sweep.
-            if (::state.isInitialized && state.created && !state.completed && error != HubFileError.Conflict) {
+            if (::state.isInitialized && state.created && !state.completed && error != HubFileError.Conflict && !error.transient) {
                 timed { api.cancel(request.hubUrl, fileId) }
             }
             runSuspendCatching { io { storage.deleteState(HubTransferDirection.UPLOAD, fileId) } }

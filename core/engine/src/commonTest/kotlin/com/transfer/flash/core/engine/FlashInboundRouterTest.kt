@@ -627,6 +627,8 @@ class FlashInboundRouterTest {
             runToCompletion(f, "t-bad", FakeHandle(), file.path)
             val complete = f.replied().filterIsInstance<ChunkFrame.Complete>().single()
             assertFalse(complete.verified)
+            val completedEvent = f.completedEvents.single()
+            assertFalse(completedEvent.frame.verified, "onCompleted hook must receive verified=false on MISMATCH (F56)")
             assertEquals(FlashTransferState.Failed, f.row("t-bad").state)
             assertFalse(file.exists(), "the damaged file is deleted")
             assertFalse("t-bad" in f.pipeline.activeTransferIds(), "MISMATCH drops the pipeline session")
@@ -856,6 +858,7 @@ class FlashInboundRouterTest {
         val xfer = mutableListOf<String>()
         val replies = mutableListOf<ByteArray>()
         val progress = mutableListOf<Pair<String, Long>>()
+        val completedEvents = mutableListOf<ReceiveEvent.Completed>()
 
         var replyFails = false
         var sessionHook: ((ChunkFrame.FileStart, String?) -> Unit)? = null
@@ -922,7 +925,10 @@ class FlashInboundRouterTest {
                 progressHook?.invoke(tid, bytesDone)
             },
             onRejected = rejectedHook?.let { h -> { e: ReceiveEvent.Rejected, p: String? -> h(e, p) } },
-            onCompleted = { e, _ -> log += "completed:${e.frame.transferId}" },
+            onCompleted = { e, _ ->
+                log += "completed:${e.frame.transferId}"
+                completedEvents += e
+            },
             onSessionStarted = { frame, pid ->
                 log += "session:${frame.transferId}:$pid"
                 sessionHook?.invoke(frame, pid)

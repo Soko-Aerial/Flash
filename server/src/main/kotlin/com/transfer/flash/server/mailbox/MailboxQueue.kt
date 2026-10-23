@@ -392,26 +392,36 @@ class MailboxQueue(
         val now = clock()
         val rows = database.ioTransaction { conn ->
             val found = conn.prepareStatement(
-                "SELECT seq, origin_device_id, target_device_id, msg_id FROM mailbox_envelopes WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
+                "SELECT seq, origin_device_id, target_device_id, msg_id, undeliverable_reason FROM mailbox_envelopes WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
             ).use { stmt ->
                 stmt.setLong(1, now)
                 stmt.setInt(2, limit.coerceIn(1, 5000))
                 stmt.executeQuery().use { rs ->
-                    val list = ArrayList<Pair<Long, ExpiredRow>>()
-                    while (rs.next()) list.add(rs.getLong(1) to ExpiredRow(rs.getString(2), rs.getString(3), rs.getString(4)))
+                    val list = ArrayList<Triple<Long, ExpiredRow, Boolean>>()
+                    while (rs.next()) {
+                        val seq = rs.getLong(1)
+                        val origin = rs.getString(2)
+                        val target = rs.getString(3)
+                        val msgId = rs.getString(4)
+                        val isQuarantined = rs.getString(5) != null
+                        list.add(Triple(seq, ExpiredRow(origin, target, msgId), isQuarantined))
+                    }
                     list
                 }
             }
             if (found.isNotEmpty()) {
                 conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ?").use { stmt ->
-                    for ((seq, _) in found) {
+                    for ((seq, _, _) in found) {
                         stmt.setLong(1, seq)
                         stmt.addBatch()
                     }
                     stmt.executeBatch()
                 }
             }
-            found.map { it.second }
+            // F39 / ERROR-775: Quarantined rows are deleted from disk by their own rule (ADR-223),
+            // but must not be returned to emit an EXPIRED event because they were already reported
+            // as DROPPED when quarantined (RLY-01, ADR-222).
+            found.filter { !it.third }.map { it.second }
         }
         if (rows.isNotEmpty()) {
             expired.addAndGet(rows.size.toLong())
