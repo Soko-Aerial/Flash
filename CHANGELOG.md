@@ -8,12 +8,20 @@ Unless an entry says *device-verified*, it was built, unit-tested and compiled, 
 laptops**. The only things the owner has device-verified so far are pairing, chat, 1:1 calls, file transfers and upgrading an
 install that has v1 pairings (2026-09-23, `logs/handoff.md`).
 
+## Library `2.1.0-beta.3` - 2026-10-23 (JitPack tag `v2.1.0-beta.3`, not an app release)
+
+- **Added: `FlashEngine.pairing`.** `Flash.create()` now builds a pairing coordinator and routes `FLASH_PAIR` frames to it, so a host
+  built on the published library can pair without patching `core-engine` (reported by a Wear OS watch app). The UI-free `FlashPairing`
+  interface offers `beginPair`, `pairing`, `acceptLocal`, `declineLocal`, `trustedPeers`, `messages` and `revoke`.
+- `FlashPairingCoordinator` moved from `core:security` `jvmMain` to `commonMain` (same package); its pending-pair intent is now kept
+  per peer instead of one slot. Unit-tested; **not device-verified** (`PAIRLIB-01` in `docs/testing/TEST-BACKLOG.md`).
+
 ## [2.1.0] - 2026-10-20
 
 First official release since `v2.0.0-beta`. Android `versionName 2.1.0` / `versionCode 4`, Windows installers `Flash-2.1.0.msi` and
 `Flash-2.1.0.exe`. Source: 337 commits on `dev` since `v2.0.0-beta`.
 
-**This release covers the apps.** The library (`core-*`, `ui-*`) is published separately to JitPack as the beta tag `v2.1.0-beta.2`; the Flash Hub server and the
+**This release covers the apps.** The library (`core-*`, `ui-*`) is published separately to JitPack as the beta tag `v2.1.0-beta.3`; the Flash Hub server and the
 radio gateway are **not** part of this release and stay experimental; see "Experimental" below.
 
 ### Upgrading from v2.0.0-beta
@@ -111,7 +119,7 @@ These are in the apps but unfinished and not device-verified. Do not rely on the
   section; leave it alone unless you run a hub.
 - **Radio gateway (beta)** (Settings, Network): Bluetooth/serial link to a packet radio. Radios have not been tested end to end;
   radio audio is not built.
-- **Library publishing** (JitPack `core-*` / `ui-*` modules): published as the beta tag `v2.1.0-beta.2` (`v2.1.0-beta.1` predates the hub, swarm and search work).
+- **Library publishing** (JitPack `core-*` / `ui-*` modules): published as the beta tag `v2.1.0-beta.3` (`v2.1.0-beta.1` predates the hub, swarm and search work).
 
 ### Known issues and not verified
 

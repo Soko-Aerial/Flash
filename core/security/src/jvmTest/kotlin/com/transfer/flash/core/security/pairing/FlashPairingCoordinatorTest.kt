@@ -168,6 +168,29 @@ class FlashPairingCoordinatorTest {
     }
 
     @Test
+    fun aHostThatOnlyHoldsTheFlashPairingInterface_canCompleteAPairing() = runBlocking {
+        // The library's embedding surface (`FlashEngine.pairing`, Flash Watch): a host sees only FlashPairing and
+        // never feeds frames in. Pins that begin / code / accept / trusted-peers is the whole flow.
+        val pair = Pair()
+        val initiator: FlashPairing = pair.a
+        val responder: FlashPairing = pair.b
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+
+        initiator.beginPair(ID_B, "Harness B")
+        waitUntil("the responder sees the request") { responder.pairing.value?.phase == PairingPhase.RequestReceived }
+        assertEquals(initiator.pairing.value?.numericCode, responder.pairing.value?.numericCode)
+
+        responder.acceptLocal()
+        waitUntil("both publish the other as trusted") {
+            initiator.trustedPeers.value.any { it.id == ID_B } && responder.trustedPeers.value.any { it.id == ID_A }
+        }
+
+        initiator.revoke(ID_B)
+        assertTrue(initiator.trustedPeers.value.none { it.id == ID_B }, "revoke removes the peer from the published list")
+    }
+
+    @Test
     fun aRenamedDevice_asksToPairUnderItsNewName() = runBlocking {
         // Chat/group sync audit, step 5: the coordinator captured its name at construction, so a renamed
         // desktop kept introducing itself under the old one in every pairing request.

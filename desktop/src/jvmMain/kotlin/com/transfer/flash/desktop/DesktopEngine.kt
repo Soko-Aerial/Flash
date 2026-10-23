@@ -317,7 +317,7 @@ public class DesktopEngine(
      * `sendToPeer` mirrors the app host's contract: non-blocking, returns false when there is no
      * live session (the coordinator uses that for its "couldn't reach" feedback).
      */
-    public val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
+    override val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
         localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
             com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
         ),

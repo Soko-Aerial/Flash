@@ -51,11 +51,11 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.2")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
 }
 ```
 
-The install snippet targets the `v2.1.0-beta.2` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
+The install snippet targets the `v2.1.0-beta.3` tag; what changed since `v2.0.0-beta` is in [CHANGELOG.md](CHANGELOG.md). See [Published modules](#published-modules) if
 you want only the lightweight transport pieces without the encrypted database.
 
 ## Quick start
@@ -107,6 +107,33 @@ suspend fun sendFirstFileToAnyPeer(context: Context, fileUri: String, fileSize: 
 | `autoAcceptIncoming` | `false` | `true` = accept inbound offers automatically; `false` (default) = gate each with `engine.transfers.acceptIncoming(id)` / `declineIncoming(id)`. |
 | `receivedFilesPath` (Android also accepts the legacy `receivedFilesDir: File`) | `null` | Directory for received files; defaults to app-internal storage. |
 
+
+### Pairing (`engine.pairing`)
+
+Devices that are discovered and connected are not trusted until they are paired. `engine.pairing`
+(a `FlashPairing`, available since `2.1.0-beta.3`) runs the same commit-then-reveal pairing the Flash apps
+use, over the `FLASH_PAIR` frames `Flash.create()` already routes. It has no UI; a phone, a watch or a
+desktop host draws its own:
+
+```kotlin
+val pairing = engine.pairing ?: error("this engine has no pairing")
+
+// Initiator: ask a discovered peer to pair. Both devices then show the same 6-digit code.
+pairing.beginPair(peerId = peer.deviceId.value, peerName = peer.device.friendlyName)
+
+// Observe the pairing in progress (null when idle) and draw the code from it.
+pairing.pairing.collect { ui -> /* ui?.numericCode, ui?.peerName, ui?.phase */ }
+
+// Both users confirm the codes match, then:
+pairing.acceptLocal()      // or pairing.declineLocal()
+
+pairing.trustedPeers       // StateFlow<List<FlashTrustedPeer>>
+pairing.messages           // SharedFlow<String>: short sentences to show the user
+pairing.revoke(peerId)     // forget a pairing
+```
+
+`beginPair` is safe to call from the main thread; it never blocks on the socket.
+
 ## Lifecycle
 
 `Flash.create(...)` owns a shared `CoroutineScope` plus the network, discovery, and
@@ -155,8 +182,8 @@ service declared in your own manifest. So you depend on `core-calling` directly:
 
 ```kotlin
 dependencies {
-    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.2")
-    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta.2")   // optional in-call screen
+    implementation("com.github.Kali452345.Flash:core-calling:v2.1.0-beta.3")
+    implementation("com.github.Kali452345.Flash:ui-callui:v2.1.0-beta.3")   // optional in-call screen
 }
 ```
 
@@ -454,7 +481,7 @@ for a JVM build — so the dependency line is identical on both platforms:
 // Desktop app/build.gradle.kts  (plugins { kotlin("jvm") })
 dependencies {
     // Same umbrella coordinate as the Android snippet above:
-    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.2")
+    implementation("com.github.Kali452345.Flash:core-engine:v2.1.0-beta.3")
 }
 ```
 

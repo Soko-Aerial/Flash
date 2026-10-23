@@ -2,12 +2,13 @@
 
 package com.transfer.flash.core.security.pairing
 
+import com.transfer.flash.core.common.concurrent.SyncMap
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.security.crypto.FlashCrypto
 import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.trust.FlashTrustStore
-import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -37,26 +38,61 @@ public data class FlashTrustedPeer(
 )
 
 /**
- * The JVM-side pairing driver: the SAME [DefaultFlashPairingProtocol] and the same `FLASH_PAIR`
- * wire framing the phone runs, so a desktop pairs with a phone with no phone-side change.
+ * The pairing surface an app embeds, with no UI attached (Flash Watch, a headless node, a custom screen).
  *
- * ## Why this lives here (moved 2026-09-14)
+ * Reach it through `FlashEngine.pairing`. It carries the whole user-visible flow as data:
  *
- * It was `:desktop`'s `DesktopPairingCoordinator`. It moved into `:core:security`'s `jvmMain` — next
- * to the protocol it drives — for two reasons:
+ * 1. [beginPair] on a discovered device the engine already has a session with.
+ * 2. [pairing] shows the comparison code ([FlashPairingCoordinator.PairingUi.numericCode]) and the phase. Both
+ *    devices show the same six digits; the user checks they match.
+ * 3. The responder calls [acceptLocal] (or [declineLocal]); the initiator's confirm is sent by the engine.
+ * 4. [trustedPeers] changes when the pairing completes, and [messages] carries short status lines
+ *    ("Connecting to X…", "Paired with X.").
  *
- * 1. **The interop harness must exercise THIS code, not a copy.** The harness is the CLI gate for
- *    the hardware ladder; if it drove its own responder, "pairing passes in the harness" would prove
- *    nothing about the desktop app the human actually tests. That is the same "a gate that cannot
- *    see what the product sees is not a gate" rule that put the multicast transport into the harness
- *    the same day.
- * 2. **It was about to become the third copy of the same wire codec.** The app keeps its own
- *    (`:app`'s `PairingFraming` is `internal`, so `:desktop` could not import it); a harness copy
- *    would have been the third. One codec, in one place, is what makes a mismatch impossible.
+ * The engine owns the wire side (`FLASH_PAIR` frames and the hello on every session-up edge); a host never feeds
+ * frames in.
+ */
+public interface FlashPairing {
+    /** This device's identity fingerprint, as it is shown next to a peer's when verifying by eye. */
+    public val localFingerprintHex: String
+
+    /** The pairing in flight, or null when idle. */
+    public val pairing: StateFlow<FlashPairingCoordinator.PairingUi?>
+
+    /** Paired peers; emits again whenever trust changes. */
+    public val trustedPeers: StateFlow<List<FlashTrustedPeer>>
+
+    /** Short, user-facing status lines. A collector that is not running misses them. */
+    public val messages: SharedFlow<String>
+
+    /**
+     * Initiator: the user chose to pair with [peerId]. Never blocks on the network. [onNeedRetry] is called with
+     * a sentence when the peer never answered.
+     */
+    public fun beginPair(peerId: String, peerName: String, onNeedRetry: (String) -> Unit = {})
+
+    /** Responder: the displayed code matches. */
+    public fun acceptLocal()
+
+    /** Decline an active request, or dismiss a finished one. */
+    public fun declineLocal()
+
+    /** Forget a paired peer. */
+    public fun revoke(peerId: String)
+}
+
+/**
+ * The pairing driver shared by every host: the SAME [DefaultFlashPairingProtocol] and the same `FLASH_PAIR`
+ * wire framing on the phone, the watch and the desktop, so each pairs with the others with no change on either side.
  *
- * `jvmMain` rather than `commonMain` because both consumers are JVM (the desktop app and the
- * harness) and this file uses `ConcurrentHashMap`. Hoisting a `commonMain` version so the Android
- * host can drop its twin is a follow-up, not a prerequisite.
+ * ## Why this lives here
+ *
+ * It was `:desktop`'s `DesktopPairingCoordinator`, then `:core:security`'s `jvmMain` (2026-09-14) so the interop
+ * harness exercised the code the desktop app runs rather than a copy. It is now `commonMain` so
+ * `Flash.create()` on Android can drive pairing too: before, an app built on the published library could discover
+ * and connect to a device but could not pair, because only the Flash app itself carried a private pairing
+ * driver (`FLASH_PAIR` frames fell through the engine's router). The Flash Android app still keeps its own twin
+ * (`:app`'s `PairingCoordinator`, which maps to its Compose UI types); it is not touched by this move.
  *
  * ## Behaviour the hosts rely on
  *
@@ -70,7 +106,7 @@ public data class FlashTrustedPeer(
  *   [pendingPair] plus a bounded fingerprint poll, exactly as the app twin does.
  */
 public class FlashPairingCoordinator(
-    public val localFingerprintHex: String,
+    override val localFingerprintHex: String,
     private val localDeviceId: String,
     localName: String,
     private val localModel: String,
@@ -80,7 +116,7 @@ public class FlashPairingCoordinator(
     private val sendToPeer: (peerId: String, text: String) -> Boolean,
     private val crypto: FlashCrypto? = null,
     private val ephemeralKeyPair: FlashEcKeyPair? = null,
-) {
+) : FlashPairing {
 
     /** UI snapshot for a pairing pane; null when no pairing is in flight. */
     public data class PairingUi(
@@ -91,7 +127,7 @@ public class FlashPairingCoordinator(
     )
 
     private val _pairing = MutableStateFlow<PairingUi?>(null)
-    public val pairing: StateFlow<PairingUi?> = _pairing.asStateFlow()
+    override val pairing: StateFlow<PairingUi?> = _pairing.asStateFlow()
 
     /**
      * Trusted peers, as an observable flow.
@@ -103,19 +139,19 @@ public class FlashPairingCoordinator(
      * coordinator is the only place that knows when trust changed.
      */
     private val _trustedPeers = MutableStateFlow(loadTrusted())
-    public val trustedPeers: StateFlow<List<FlashTrustedPeer>> = _trustedPeers.asStateFlow()
+    override val trustedPeers: StateFlow<List<FlashTrustedPeer>> = _trustedPeers.asStateFlow()
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = MESSAGE_BUFFER)
-    public val messages: SharedFlow<String> = _messages.asSharedFlow()
+    override val messages: SharedFlow<String> = _messages.asSharedFlow()
 
     /** peerId -> fingerprint hex, learned from FLASH_PAIR hellos (an initiator needs it). */
-    private val fingerprints = ConcurrentHashMap<String, String>()
+    private val fingerprints = SyncMap<String, String>()
 
     /** peerId -> pairing protocol version from its hello (1 when it advertises none). */
-    private val peerVersions = ConcurrentHashMap<String, Int>()
+    private val peerVersions = SyncMap<String, Int>()
 
-    private val pendingLock = Any()
-    private var pendingPair: Pair<String, String>? = null
+    /** peerId -> name of a pair the user asked for before that peer's hello arrived. Removal is the atomic claim. */
+    private val pendingPairs = SyncMap<String, String>()
 
     /** The name a pairing request carries. Changed only by [updateLocalName]; read when a protocol is built. */
     @Volatile
@@ -157,11 +193,9 @@ public class FlashPairingCoordinator(
                 // that raced the initiator's own session) left the initiator permanently unable to
                 // pair, with `Still can't reach … then Pair again` as its only feedback, forever.
                 if (inbound.request) sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex))
-                val pending = synchronized(pendingLock) {
-                    pendingPair?.takeIf { it.first == peerId }?.also { pendingPair = null }
-                }
-                if (pending != null) {
-                    scope.launch { beginIfPeerSupportsV2(pending.first, pending.second, inbound.fingerprintHex) }
+                val pendingName = pendingPairs.remove(peerId)
+                if (pendingName != null) {
+                    scope.launch { beginIfPeerSupportsV2(peerId, pendingName, inbound.fingerprintHex) }
                 }
             }
             is PairingWireCodec.Inbound.Frame -> scope.launch { protocol.onFrame(inbound.frame) }
@@ -170,13 +204,13 @@ public class FlashPairingCoordinator(
     }
 
     /** Initiator: the user picked Pair on [peerId]. Needs the peer's fingerprint (from its hello). */
-    public fun beginPair(peerId: String, peerName: String, onNeedRetry: (String) -> Unit = {}) {
+    override fun beginPair(peerId: String, peerName: String, onNeedRetry: (String) -> Unit) {
         val known = fingerprints[peerId]
         if (known != null) {
             scope.launch { beginIfPeerSupportsV2(peerId, peerName, known) }
             return
         }
-        synchronized(pendingLock) { pendingPair = peerId to peerName }
+        pendingPairs[peerId] = peerName
         val delivered = sendToPeer(peerId, PairingWireCodec.encodeHello(localFingerprintHex, request = true))
         _messages.tryEmit(if (delivered) "Connecting to $peerName…" else "Couldn't reach $peerName.")
         scope.launch {
@@ -196,9 +230,7 @@ public class FlashPairingCoordinator(
                 }
                 delay(FINGERPRINT_POLL_MS)
             }
-            val claimed = synchronized(pendingLock) {
-                (pendingPair?.first == peerId).also { if (it) pendingPair = null }
-            }
+            val claimed = pendingPairs.remove(peerId) != null
             if (!claimed) return@launch
             val fp = arrived ?: fingerprints[peerId]
             if (fp != null) beginIfPeerSupportsV2(peerId, peerName, fp)
@@ -219,19 +251,19 @@ public class FlashPairingCoordinator(
     }
 
     /** Responder accepted the displayed code match. */
-    public fun acceptLocal() {
+    override fun acceptLocal() {
         scope.launch { protocol.respondAccept() }
     }
 
     /** Decline an active request, or dismiss a terminal dialog — back to a clean slate. */
-    public fun declineLocal() {
+    override fun declineLocal() {
         scope.launch {
             protocol.respondDecline()
             resetProtocol()
         }
     }
 
-    /** Forget a trusted peer (persisted via the trust store). */
+    /** One-tap pairing for a peer whose key a directory already verified; records the same local trust. */
     public fun pairVerifiedColleague(peerId: String, name: String): Boolean {
         val r = trustStore.trustPeer(FlashDeviceId(peerId), name)
         if (r !is com.transfer.flash.core.common.result.FlashResult.Success) return false
@@ -240,7 +272,8 @@ public class FlashPairingCoordinator(
         return true
     }
 
-    public fun revoke(peerId: String) {
+    /** Forget a trusted peer (persisted via the trust store). */
+    override fun revoke(peerId: String) {
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()
     }
@@ -305,7 +338,7 @@ public class FlashPairingCoordinator(
             is FlashPairingEvent.Expired,
             is FlashPairingEvent.Failed -> {
                 val detail = (event as? FlashPairingEvent.Failed)?.reason?.let(::failureMessage)
-                _messages.tryEmit(detail ?: "Pairing ended (${event.javaClass.simpleName}).")
+                _messages.tryEmit(detail ?: "Pairing ended (${event::class.simpleName}).")
                 scope.launch {
                     delay(TERMINAL_LINGER_MS)
                     resetProtocol()
