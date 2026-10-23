@@ -2306,18 +2306,6 @@ public fun DesktopShell(
             },
     ) {
 
-        // Last sibling, so a pairing message is never painted under the layout — the same reasoning
-        // as `FlashConversationScreen`'s host. `tabBottomInset` lifts it clear of the hanging bottom
-        // nav in the compact layout; in two-pane there is no nav and the inset is zero.
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = tabBottomInset),
-            contentAlignment = Alignment.BottomCenter,
-        ) {
-            SnackbarHost(hostState = snackbarHostState)
-        }
-
         // Rename this device. `DesktopIdentityStore.updateFriendlyName` has always worked and
         // persisted; the row that would call it was wired to nothing, so every desktop install was
         // named "Flash Desktop" forever.
@@ -2548,18 +2536,6 @@ public fun DesktopShell(
             )
         }
 
-        if (nav.current.destination != FlashDestination.NearbyDevices) {
-            nearby.pairingRequest?.let { request ->
-                FlashPairingDialog(
-                    request = request,
-                    phase = nearby.pairingPhase,
-                    secondsLeft = nearby.pairingSecondsLeft,
-                    onAccept = { engine.pairing.acceptLocal() },
-                    onDecline = { engine.pairing.declineLocal() },
-                    onDismiss = { engine.pairing.declineLocal() },
-                )
-            }
-        }
         if (twoPane) {
             // Expanded: sidebar on the left edge, list+detail in the remainder.
             Row(Modifier.fillMaxSize()) {
@@ -2692,6 +2668,34 @@ public fun DesktopShell(
                     )
                 },
             )
+        }
+
+        // RVW22 (owner report, desktop): these two used to be emitted BEFORE the layout, and Compose paints siblings in
+        // emission order, so an error message and the "verify this device" pairing card were painted behind the sidebar
+        // and the chat panes, out of reach (the pairing card is not shown on the Nearby tab, where it is part of the
+        // screen). They are the LAST siblings now: above the layout, the push-to-talk card and the call screen.
+        // The pairing card sits below the snackbar so a message can still be read while it is open.
+        if (nav.current.destination != FlashDestination.NearbyDevices) {
+            nearby.pairingRequest?.let { request ->
+                FlashPairingDialog(
+                    request = request,
+                    phase = nearby.pairingPhase,
+                    secondsLeft = nearby.pairingSecondsLeft,
+                    onAccept = { engine.pairing.acceptLocal() },
+                    onDecline = { engine.pairing.declineLocal() },
+                    onDismiss = { engine.pairing.declineLocal() },
+                )
+            }
+        }
+        // `tabBottomInset` lifts the snackbar clear of the hanging bottom nav in the compact layout; in two-pane there
+        // is no nav and the inset is zero.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = tabBottomInset),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            SnackbarHost(hostState = snackbarHostState)
         }
     }
 }
