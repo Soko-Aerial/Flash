@@ -253,9 +253,31 @@ class PttFloorMachineTest {
         )
     }
 
+    /**
+     * RVW22 F58: the capture device failed before the session was announced. Nobody received a Start, so
+     * the teardown must not put a Stop for an unknown session on the wire.
+     */
     @Test
-    fun micDeniedReleasesFloor() {
+    fun micDeniedBeforeAnnounceReleasesTheFloorWithoutSendingStop() {
         val t = reduce(PttFloorState.Talking("s1", 1000L), PttFloorEvent.MicDenied)
+
+        assertEquals(PttFloorState.Idle, t.state)
+        assertEquals(
+            listOf(
+                PttFloorEffect.StopCapture("s1"),
+                PttFloorEffect.NotifyEnded(PttEndReason.MIC_DENIED, null),
+            ),
+            t.effects,
+        )
+    }
+
+    /** The announced session is the ordinary case: its members must still be told it ended. */
+    @Test
+    fun micDeniedAfterAnnounceTellsTheMembers() {
+        val t = reduce(
+            PttFloorState.Talking("s1", 1000L, announced = true),
+            PttFloorEvent.MicDenied,
+        )
 
         assertEquals(PttFloorState.Idle, t.state)
         assertEquals(

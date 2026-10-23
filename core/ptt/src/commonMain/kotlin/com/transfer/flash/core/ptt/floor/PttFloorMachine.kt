@@ -15,6 +15,8 @@ package com.transfer.flash.core.ptt.floor
  *   stale stop cannot tear another device's transmission down).
  * - A busy floor denies: pressing while TALKING (elsewhere) or LISTENING notifies busy.
  * - Receiver cancel (`LocalStopPress` while LISTENING) tears down locally + sends `leave`.
+ * - A talk session whose `Start` reached nobody (`Talking.announced == false`) is torn down locally with
+ *   no wire `stop`: nobody was told the session existed (RVW22 F58).
  * - `Tick` drives the 60 s burst cap (45 s warning) and the 5 s orphan timeout; user-
  *   initiated ends emit no [PttFloorEffect.NotifyEnded] (the user already knows).
  */
@@ -239,11 +241,15 @@ public object PttFloorMachine {
             )
             is PttFloorEvent.MicDenied -> PttTransition(
                 PttFloorState.Idle,
-                listOf(
-                    PttFloorEffect.StopCapture(state.sessionId),
-                    PttFloorEffect.SendStop(state.sessionId),
-                    PttFloorEffect.NotifyEnded(PttEndReason.MIC_DENIED, null),
-                ),
+                buildList {
+                    add(PttFloorEffect.StopCapture(state.sessionId))
+                    // RVW22 F58: `announced` is exactly "some member received the Start". A capture
+                    // device that fails before that has told nobody about the session, so a Stop would
+                    // be a frame for a session no peer ever heard of (the engine never sets `announced`
+                    // early: StartAnnounced is reduced under the same command lock as this event).
+                    if (state.announced) add(PttFloorEffect.SendStop(state.sessionId))
+                    add(PttFloorEffect.NotifyEnded(PttEndReason.MIC_DENIED, null))
+                },
             )
             is PttFloorEvent.RemoteStart ->
                 if (
