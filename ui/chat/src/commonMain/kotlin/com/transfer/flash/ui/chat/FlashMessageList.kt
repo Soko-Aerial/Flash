@@ -178,7 +178,8 @@ fun FlashMessageList(
             contentPadding = contentPadding,
             reverseLayout = true,
         ) {
-        if (peerTypingName != null) {
+        val typingName = peerTypingName
+        if (FlashChatScrollMath.hasTypingBubble(typingName) && typingName != null) {
             item(key = "flash_typing_bubble", contentType = "typingBubble") {
                 Box(
                     modifier = Modifier
@@ -186,7 +187,7 @@ fun FlashMessageList(
                         .padding(bottom = FlashSpacing.space8),
                     contentAlignment = Alignment.CenterStart,
                 ) {
-                    FlashTypingBubble(peerName = peerTypingName)
+                    FlashTypingBubble(peerName = typingName)
                 }
             }
         }
@@ -425,6 +426,18 @@ object FlashChatScrollMath {
 
     fun pillLabel(count: Int): String =
         "$count new message${if (count == 1) "" else "s"}"
+
+    /** Whether the typing indicator bubble is prepended to the reversed messages list. */
+    fun hasTypingBubble(peerTypingName: String?): Boolean = peerTypingName != null
+
+    /** Offset added to message indices in LazyColumn to account for extra prepended items (such as the typing bubble). */
+    fun messageListIndexOffset(hasTypingBubble: Boolean): Int = if (hasTypingBubble) 1 else 0
+
+    /** The target index in LazyColumn when scrolling to a message in the reversed list. */
+    fun targetScrollIndex(messageIndexInReversedList: Int, hasTypingBubble: Boolean): Int =
+        if (messageIndexInReversedList >= 0) {
+            messageIndexInReversedList + messageListIndexOffset(hasTypingBubble)
+        } else -1
 }
 
 internal fun shouldAnimateMessageEnter(

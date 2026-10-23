@@ -90,4 +90,27 @@ class FlashChatScrollLogicTest {
         assertEquals("2 new messages", FlashChatScrollMath.pillLabel(2))
         assertEquals("12 new messages", FlashChatScrollMath.pillLabel(12))
     }
+
+    // ---- F48: jumpToMessage scroll index with prepended typing bubble
+
+    @Test
+    fun `hasTypingBubble follows peer typing name presence`() {
+        assertFalse(FlashChatScrollMath.hasTypingBubble(null))
+        assertTrue(FlashChatScrollMath.hasTypingBubble("Alice"))
+    }
+
+    @Test
+    fun `targetScrollIndex offsets by 1 only when typing bubble is present`() {
+        // Without typing bubble, index is untouched
+        assertEquals(0, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = 0, hasTypingBubble = false))
+        assertEquals(5, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = 5, hasTypingBubble = false))
+
+        // With typing bubble prepended at index 0, every message shifts down by 1
+        assertEquals(1, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = 0, hasTypingBubble = true))
+        assertEquals(6, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = 5, hasTypingBubble = true))
+
+        // Negative index (message not found) remains -1 regardless of typing bubble
+        assertEquals(-1, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = -1, hasTypingBubble = false))
+        assertEquals(-1, FlashChatScrollMath.targetScrollIndex(messageIndexInReversedList = -1, hasTypingBubble = true))
+    }
 }

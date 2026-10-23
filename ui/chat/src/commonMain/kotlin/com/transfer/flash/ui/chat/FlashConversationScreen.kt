@@ -578,14 +578,23 @@ fun FlashConversationScreen(
         }
     }
 
+    val currentPeerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
+        state.header.typingMemberNames.firstOrNull()
+            ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null
+    } else null
+
     fun jumpToMessage(targetId: String) {
         val targetIndex = localMessages.asReversed().indexOfFirst { it.id == targetId }
-        if (targetIndex >= 0) {
+        val scrollIndex = FlashChatScrollMath.targetScrollIndex(
+            messageIndexInReversedList = targetIndex,
+            hasTypingBubble = FlashChatScrollMath.hasTypingBubble(currentPeerTypingName),
+        )
+        if (scrollIndex >= 0) {
             coroutineScope.launch {
                 if (motion.reduceMotion) {
-                    listState.scrollToItem(targetIndex)
+                    listState.scrollToItem(scrollIndex)
                 } else {
-                    listState.animateScrollToItem(targetIndex)
+                    listState.animateScrollToItem(scrollIndex)
                 }
                 highlightedMessageId = targetId
             }
@@ -639,19 +648,25 @@ fun FlashConversationScreen(
                                 selectedMessageIds = emptySet()
                             },
                             onForward = {
-                                val selectedTexts = localMessages
-                                    .filter { it.id in selectedMessageIds }
-                                    .map { it.text }
-                                    .filter { it.isNotBlank() }
-                                if (selectedTexts.isEmpty()) {
-                                    showMessage("Nothing to forward")
+                                val selected = localMessages.filter { it.id in selectedMessageIds }
+                                val payload = FlashShareTargetMath.buildMultiForwardPayload(selected)
+                                if (payload == null) {
+                                    if (FlashShareTargetMath.hasUnforwardableAttachments(selected)) {
+                                        showMessage("Selected attachments are not downloaded yet")
+                                    } else {
+                                        showMessage("Nothing to forward")
+                                    }
                                 } else {
-                                    val text = selectedTexts.joinToString("\n")
-                                    val payload = FlashSharePayloadUi(text = text)
                                     if (forwardRecipients.isNotEmpty() || forwardRecentChats.isNotEmpty() || forwardPairedDevices.isNotEmpty()) {
                                         pendingForwardPayload = payload
                                     } else {
-                                        onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
+                                        val text = payload.text
+                                        if (text != null) {
+                                            onShareText?.invoke(text) ?: showMessage("Sharing isn't available here")
+                                        } else if (payload.items.isNotEmpty()) {
+                                            val first = payload.items.first()
+                                            onShareImage(first.uri, first.mimeType)
+                                        }
                                     }
                                 }
                                 selectedMessageIds = emptySet()
@@ -916,10 +931,7 @@ fun FlashConversationScreen(
                 stagedAttachments = stagedAttachments,
                 placeholderText = FlashStagingMath.composerPlaceholder(stagedAttachments.size),
                 onRemoveStagedAttachment = { item ->
-                    val index = stagedAttachments.indexOf(item)
-                    if (index >= 0) {
-                        stagedAttachments = stagedAttachments.filterIndexed { i, _ -> i != index }
-                    }
+                    stagedAttachments = stagedAttachments.filter { it.id != item.id }
                 },
                 onSend = {
                     val text = draft.trim()
@@ -1080,10 +1092,7 @@ fun FlashConversationScreen(
                 onRetryMessage = onRetryMessage,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
-                peerTypingName = if (state.header.presence != FlashPeerPresence.Offline) {
-                    state.header.typingMemberNames.firstOrNull()
-                        ?: if (state.header.presence == FlashPeerPresence.Typing) state.header.title else null
-                } else null,
+                peerTypingName = currentPeerTypingName,
                 listState = listState,
                 showSenderHeaders = state.header.isGroup,
                 searchQuery = if (isSearchActive) searchQuery else null,

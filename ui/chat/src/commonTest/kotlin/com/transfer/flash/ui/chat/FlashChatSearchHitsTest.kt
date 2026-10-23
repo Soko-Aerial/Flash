@@ -58,6 +58,18 @@ class FlashChatSearchHitsTest {
     }
 
     @Test
+    fun `buildHighlightedMessageText creates annotated string with highlighted background spans`() {
+        val text = "Hello world, hello friends"
+        val highlighted = buildHighlightedMessageText(text, "hello", androidx.compose.ui.graphics.Color.Yellow)
+        assertEquals(text, highlighted.text)
+        assertEquals(2, highlighted.spanStyles.size)
+        assertEquals(0, highlighted.spanStyles[0].start)
+        assertEquals(5, highlighted.spanStyles[0].end)
+        assertEquals(13, highlighted.spanStyles[1].start)
+        assertEquals(18, highlighted.spanStyles[1].end)
+    }
+
+    @Test
     fun `a file-only match is reported as a File hit named after the file`() {
         val messages = listOf(message("m1", "here it is", files = listOf("Budget_Q4.pdf")))
 
