@@ -199,6 +199,33 @@ class PttSessionEngineSessionTest {
         }
     }
 
+    /**
+     * RVW22 F59: the floor settles a collision by comparing the two `holderId`s, so a device with no id
+     * would never yield and both talkers would keep transmitting. There is also nothing to name in the
+     * Start frame. The press is refused with the answer the user already knows, and nothing is opened.
+     */
+    @Test
+    fun `a press without a local device id is refused`() = runTest {
+        withEngine(newEngine(deviceId = null)) { engine ->
+            assertEquals(PttPressOutcome.NO_PEERS, engine.onPttButton())
+            assertEquals(PttFloorState.Idle, engine.state.value)
+            assertTrue(audio.captures.snapshot().isEmpty(), "no capture without an identity")
+            assertTrue(sentControl.snapshot().isEmpty(), "and nothing on the wire")
+            assertFalse(engine.sendPing(), "a ping with no sender is not sent either")
+        }
+    }
+
+    /** The same for a blank id: the host answered, but with nothing usable. */
+    @Test
+    fun `a blank local device id is refused too`() = runTest {
+        withEngine(newEngine(deviceId = "   ")) { engine ->
+            assertEquals(PttPressOutcome.NO_PEERS, engine.onPttButton())
+            assertEquals(PttFloorState.Idle, engine.state.value)
+            assertTrue(audio.captures.snapshot().isEmpty())
+            assertFalse(engine.sendPing())
+        }
+    }
+
     @Test
     fun `a press never sends the microphone to this device itself or to an untrusted peer`() = runTest {
         members = listOf(LOCAL_ID, PEER, "untrusted-peer")
