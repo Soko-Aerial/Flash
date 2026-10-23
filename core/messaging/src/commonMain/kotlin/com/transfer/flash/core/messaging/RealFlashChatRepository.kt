@@ -118,6 +118,7 @@ import com.transfer.flash.core.persistence.db.dao.GroupRotationDao
 import com.transfer.flash.core.persistence.db.dao.GroupSettingsDao
 import com.transfer.flash.core.persistence.db.dao.MessageDao
 import com.transfer.flash.core.persistence.db.dao.MessagePinDao
+import com.transfer.flash.core.persistence.db.MessageTextMarkers
 import com.transfer.flash.core.persistence.db.dao.HubAnnouncementDao
 import com.transfer.flash.core.persistence.db.dao.HubFileDao
 import com.transfer.flash.core.persistence.db.entity.HubFileEntity
@@ -654,7 +655,9 @@ public class RealFlashChatRepository(
                         state = "DELIVERED",
                     ),
                 )
-                messageDao.updateStatus(messageId, "DELIVERED")
+                // Same guard as the LAN/hub receipt (F34 of the 2026-10-22 review): a delayed radio ACK
+                // must not walk an acknowledged row back to DELIVERED.
+                messageDao.updateStatusIfUnacknowledged(messageId, "DELIVERED")
                 outboxDao.delete(messageId)
             },
             onMessageFailed = { messageId ->
@@ -5349,8 +5352,10 @@ public class RealFlashChatRepository(
             FlashLog.w("CHAT", "Group SyncPush text exceeds length cap (${message.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
             return
         }
-        // v2: the pusher is only a relay. The message counts only if its named author signed it and is
-        // an active member, and the name stored is that member's signed label (fixes F-9 for v2).
+        // v2: the pusher is only a relay. The message counts only if its named author signed it, and the name
+        // stored is that member's signed label (fixes F-9 for v2). The author may have left since — a catch-up
+        // must still deliver the history they signed before that (F35 of the 2026-10-22 review); their live
+        // frames are refused earlier, by the membership gate on the live lanes.
         var senderName: String? = message.senderName
         var groupSig: String? = null
         if (isV2Group(frame.groupId)) {
@@ -6020,7 +6025,11 @@ public class RealFlashChatRepository(
                         state = "DELIVERED",
                     ),
                 )
-                messageDao.updateStatus(frame.messageId, "DELIVERED")
+                // Guarded, never unconditional: a `ReadReceipt` (which this peer may have sent for the
+                // same message just before, or a later one that overtook this frame) sets READ, and an
+                // unconditional write would walk the bubble's ticks backwards to DELIVERED. ERROR-031's
+                // guard also allows FAILED -> DELIVERED, which is right: the peer proved it has it.
+                messageDao.updateStatusIfUnacknowledged(frame.messageId, "DELIVERED")
                 // ERROR-031: this is the outbox row's commit point. The drain keeps the row alive
                 // through a successful socket write precisely so that a frame the kernel accepted
                 // but the peer never got is resent; the receipt is the only proof the peer actually
@@ -6588,7 +6597,10 @@ public class RealFlashChatRepository(
             val messageHits = ArrayList<FlashMessageSearchHitUi>()
             val fileHits = ArrayList<FlashFileSearchHitUi>()
             for (row in rows) {
-                val textMatches = FlashSearchText.contains(row.text, trimmed)
+                // The SQL already excludes marker rows from the text match; this keeps one out of a text
+                // hit when it was returned because its FILE NAME matched, which is how a voice note is
+                // still found. Without it the snippet would be the raw `vmsg:...` blob (F36).
+                val textMatches = FlashSearchText.contains(row.text, trimmed) && !isInternalMarkerText(row.text)
                 val fileName = row.attachmentName?.takeIf { it.isNotBlank() }
                 val nameMatches = fileName != null && FlashSearchText.contains(fileName, trimmed)
                 if (!textMatches && !nameMatches) continue
@@ -7283,6 +7295,15 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * True when a row's `text` is one of the internal markers rather than something a person wrote: a voice
+     * note's waveform or a call event ([MessageTextMarkers]). Such a row's text is never searchable content —
+     * its digits match ordinary queries and the blob would be shown as the snippet (F36 of the 2026-10-22
+     * review) — while the row itself stays findable through its attachment name and in its own conversation.
+     */
+    private fun isInternalMarkerText(text: String?): Boolean =
+        text != null && (text.startsWith(VOICE_META_PREFIX) || text.startsWith(CALL_META_PREFIX))
+
+    /**
      * Chat-list preview line for a raw `text` column value, or null when there is nothing to show.
      *
      * Rows whose text is a metadata marker have no human-readable body, so they get a label —
@@ -7399,7 +7420,8 @@ public class RealFlashChatRepository(
         )
 
         // Namespaced marker stored in a voice row's text column: "vmsg:<durationMs>:<csv amplitudes>".
-        const val VOICE_META_PREFIX = "vmsg:"
+        // Defined in [MessageTextMarkers] so the search queries that must ignore it share one definition.
+        const val VOICE_META_PREFIX = MessageTextMarkers.VOICE
         /** Longest file name a catch-up label carries. */
         const val SYNC_LABEL_NAME_MAX = 80
 
@@ -7422,7 +7444,7 @@ public class RealFlashChatRepository(
         /** How far into this device's future a signed message's own `sentAt` may be and still be stored as signed. */
         const val SIGNED_SENT_AT_SKEW_TOLERANCE_MS = 5 * 60_000L
         // Namespaced marker stored in a call row's text column: "cmsg:<KIND>:<video 0|1>:<durationMs>".
-        const val CALL_META_PREFIX = "cmsg:"
+        const val CALL_META_PREFIX = MessageTextMarkers.CALL
         // Upper bound on full-history search hits scanned per query (#12); collapsed to conversations.
         const val SEARCH_RESULT_LIMIT = 200
         // Outbox retry policy (#21): back off exponentially from this base, capped at the max,

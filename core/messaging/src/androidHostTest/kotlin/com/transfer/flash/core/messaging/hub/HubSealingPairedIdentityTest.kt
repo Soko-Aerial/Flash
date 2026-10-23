@@ -102,6 +102,22 @@ class HubSealingPairedIdentityTest {
     }
 
     @Test
+    fun `a signed but unusable sealing key is available yet seals nothing`() = runBlocking {
+        // F65 of the 2026-10-22 review: the binding signature covers the key's BYTES; it does not check that they are
+        // a P-256 point, so a modified client can publish garbage that verifies. Sealing must answer null — the bridge
+        // then keeps the message queued — instead of throwing out of ecP256SharedSecret.
+        val garbage = ByteArray(65) { 0x42 }
+        val entry = bob.entry().copy(
+            sealingPublicKey = Base64.encode(garbage),
+            sealingSignature = Base64.encode(bob.crypto.sign(HubSealingKeyPair.bindingBytes("bob", garbage))),
+        )
+        val s = sealingFor({ entry }, null)
+
+        assertEquals("the directory really did serve a correctly signed key", HubSealingStatus.AVAILABLE, s.statusFor("bob"))
+        assertNull("and yet no envelope can be built", s.seal("bob", "m1", 1L, "chat", "secret"))
+    }
+
+    @Test
     fun `a sealed message from a swapped identity is not opened`() = runBlocking {
         val sealedByImpostor = DirectoryHubSealing(
             crypto = impostor.crypto, localDeviceId = "bob", ownKey = { impostor.sealingKey },

@@ -27,7 +27,9 @@ class HubSealingTest {
         senderId: String = "dev-a",
         recipientId: String = "dev-b",
         to: ByteArray = recipientKey.publicKeyEncoded,
-    ): String = HubSealing.seal(sender, senderId, recipientId, to, msgId, sentAt, "CHAT_FRAME", body)
+    ): String = requireNotNull(
+        HubSealing.seal(sender, senderId, recipientId, to, msgId, sentAt, "CHAT_FRAME", body),
+    ) { "sealing a well-formed key must produce an envelope" }
 
     private fun open(
         payload: String,
@@ -91,8 +93,10 @@ class HubSealingTest {
     @Test
     fun aPayloadSignedByAnotherDeviceIsRejected() {
         val impostor = SoftwareFlashCrypto()
-        val forged = HubSealing.seal(
-            impostor, "dev-a", "dev-b", recipientKey.publicKeyEncoded, "m-1", 1_700_000_000_000L, "CHAT_FRAME", "x",
+        val forged = requireNotNull(
+            HubSealing.seal(
+                impostor, "dev-a", "dev-b", recipientKey.publicKeyEncoded, "m-1", 1_700_000_000_000L, "CHAT_FRAME", "x",
+            ),
         )
         // The hub itself can encrypt to the recipient's PUBLIC key; it cannot sign as dev-a.
         assertNull(open(forged))
@@ -102,6 +106,21 @@ class HubSealingTest {
     @Test
     fun aDifferentRecipientKeyCannotOpen() {
         assertNull(open(seal(), key = HubSealingKeyPair.generate()))
+    }
+
+    @Test
+    fun anUnusableRecipientKeyReturnsNullInsteadOfThrowing() {
+        // F65 of the 2026-10-22 review: the recipient's published key travels through the directory, and a modified
+        // client can publish bytes its own identity key signed that are not a P-256 point. Sending used to die in
+        // ecP256SharedSecret; now it answers null, which the bridge reads as "keep it queued".
+        assertNull(
+            HubSealing.seal(sender, "dev-a", "dev-b", ByteArray(65) { 0x42 }, "m-1", 1_700_000_000_000L, "CHAT_FRAME", "x"),
+            "a mangled uncompressed point must not produce an envelope or throw",
+        )
+        assertNull(
+            HubSealing.seal(sender, "dev-a", "dev-b", ByteArray(0), "m-1", 1_700_000_000_000L, "CHAT_FRAME", "x"),
+            "an empty key must not either",
+        )
     }
 
     @Test

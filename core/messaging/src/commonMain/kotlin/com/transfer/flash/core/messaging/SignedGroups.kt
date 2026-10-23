@@ -1042,7 +1042,16 @@ internal class SignedGroups(
 
     /**
      * The signed label of [authorId] when [signature] is a valid signature by that member's key over
-     * this message, otherwise null. The author must be an active member of the stored, verified roster.
+     * this message, otherwise null. The author must be a member of the stored, verified roster — **or a former
+     * member whose row is now a tombstone**: a message they signed while they were still in the group stays
+     * readable after they leave, otherwise catch-up drops the group's own history (F35 of the 2026-10-22
+     * review). A tombstone keeps the certified key, which is what the signature is checked against.
+     *
+     * This says nothing about whether [authorId] may speak *now*: every live path checks membership itself
+     * before calling this (`isActiveGroupMember` / `isActiveTrustedMember` / `isRemovedHere`), so a removed
+     * member's new frame is still refused there. The catch-up lane has no such gate per author — it trusts the
+     * holder it asked — so the residual is that a current member could relay a former member's late message
+     * into history; bounding that needs a signed removal time, which the roster does not carry yet.
      */
     suspend fun verifiedAuthorLabel(
         groupId: String,
@@ -1054,7 +1063,7 @@ internal class SignedGroups(
         text: String,
         signature: String?,
     ): String? {
-        val row = members.member(groupId, authorId)?.takeIf { it.isActive } ?: return null
+        val row = members.member(groupId, authorId) ?: return null
         val key = row.subjectKey ?: return null
         val ok = rules.verifyMessage(key, groupId, messageId, authorId, sentAt, replyToId, replyPreview, text, signature)
         return if (ok) row.displayName else null

@@ -84,6 +84,9 @@ public class DirectoryHubSealing(
     override suspend fun seal(recipientDeviceId: String, msgId: String, sentAt: Long, innerType: String, body: String): String? {
         if (statusFor(recipientDeviceId) != HubSealingStatus.AVAILABLE) return null
         val recipient = verified(recipientDeviceId) ?: return null
+        // A published key can be unusable even though its binding signature verifies (the signature covers the
+        // bytes, it does not validate them as a P-256 point), so this null means "cannot seal now" and the bridge
+        // keeps the message queued rather than sending it readable (F65 of the 2026-10-22 review).
         return HubSealing.seal(crypto, localDeviceId, recipientDeviceId, recipient.sealingKey, msgId, sentAt, innerType, body)
     }
 

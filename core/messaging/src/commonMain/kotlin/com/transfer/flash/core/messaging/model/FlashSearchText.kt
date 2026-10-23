@@ -45,18 +45,31 @@ public object FlashSearchText {
 
     private val URL_REGEX = Regex("""(?:https?|flash)://[^\s<>"']+""", RegexOption.IGNORE_CASE)
 
+    /**
+     * Every link in [text], lazily and in order, each with trailing punctuation trimmed: a sentence ends
+     * `https://example.com/a.` and the full stop is not part of the URL.
+     */
+    private fun links(text: String): Sequence<String> =
+        URL_REGEX.findAll(text).map { match ->
+            match.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}')
+        }
+
     /** First link in [text] (http, https or a `flash://` invite), trailing punctuation trimmed. */
     public fun firstUrl(text: String?): String? {
-        val match = text?.let { URL_REGEX.find(it) } ?: return null
-        return match.value.trimEnd('.', ',', ';', ':', '!', '?', ')', ']', '}')
+        if (text.isNullOrEmpty()) return null
+        return links(text).firstOrNull()
     }
 
-    /** True when [query] occurs inside a link in [text] — the Links scope only shows link matches. */
+    /**
+     * True when [query] occurs inside **any** link in [text] — the Links scope only shows link matches.
+     *
+     * Every link is examined, not just the first (F54 of the 2026-10-22 review): "read https://a.example and
+     * https://b.example" is one message with two links, and searching for `b.example` found nothing before.
+     */
     public fun matchesLink(text: String?, query: String): Boolean {
         val q = query.trim()
         if (q.isEmpty() || text.isNullOrEmpty()) return false
-        val url = firstUrl(text) ?: return false
-        return url.contains(q, ignoreCase = true)
+        return links(text).any { it.contains(q, ignoreCase = true) }
     }
 
     /** Images and videos: shown under the Media scope, rendered with the media grammar. */
