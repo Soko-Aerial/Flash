@@ -148,6 +148,19 @@ kotlin {
             implementation(libs.androidx.compose.ui.graphics)
             implementation(libs.androidx.compose.material3)
             implementation("androidx.compose.foundation:foundation")
+            // The next four have ZERO references anywhere in `ui/chat/src` — verified by grep, not
+            // assumed. They are kept, not dropped, for the reason `:ui:theme` kept its own two:
+            // removing a dependency from a published POM changes what every 1.2.0 consumer of
+            // `ui-chat` resolves at runtime, and that is a release decision rather than part of
+            // converting a module (R1). Recorded in the phase log so a cleanup phase can drop all
+            // four together.
+            //
+            // `ui-tooling-preview` in particular became dead in THIS commit: Phase 19 left it
+            // referenced by 29 files, and the CMP annotation above replaced every one of them.
+            implementation(libs.androidx.compose.ui.tooling.preview)
+            implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.core.ktx)
+            implementation(libs.androidx.lifecycle.runtime.ktx)
         }
 
         // All 31 suites moved here from `src/test/java` and were converted from JUnit 4 assertions
