@@ -29,8 +29,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 @Composable
 public actual fun rememberFlashImageDecoder(): FlashImageDecoder {
-    val context = LocalContext.current
-    return remember(context) { AndroidImageDecoder(context) }
+    val appContext = LocalContext.current.applicationContext
+    return remember(appContext) { AndroidImageDecoder(appContext) }
 }
 
 private class AndroidImageDecoder(private val context: Context) : FlashImageDecoder {
@@ -195,6 +195,13 @@ internal object FlashMediaDecoder {
     ): ImageBitmap? {
         val localFile = resolveLocalFile(source)
         if (localFile != null) {
+            val orientation = runCatching {
+                ExifInterface(localFile.absolutePath).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(localFile.absolutePath, bounds)
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -202,22 +209,25 @@ internal object FlashMediaDecoder {
             val options = BitmapFactory.Options().apply {
                 if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
             }
-            // BOLT: step sample size and fallback to RGB_565 on decode failure/OOM to prevent infinite while-loop thread spin and reduce heap allocation
             var bitmap: Bitmap? = null
+            var caughtOom = false
             while (bitmap == null && sample <= 32) {
                 options.inSampleSize = sample
+                caughtOom = false
                 try {
                     bitmap = BitmapFactory.decodeFile(localFile.absolutePath, options)
                 } catch (oom: OutOfMemoryError) {
+                    caughtOom = true
                     bitmap = null
                 }
                 if (bitmap == null) {
+                    if (!caughtOom) break // invalid payload: do not retry spin (OPT-O05-09)
                     sample *= 2
                     options.inPreferredConfig = Bitmap.Config.RGB_565
                 }
             }
             if (bitmap == null) return null
-            return applyExifRotation(context, source, bitmap, localFile).asImageBitmap()
+            return applyExifRotation(orientation, bitmap).asImageBitmap()
         }
 
         // For content:// URIs, prefer ParcelFileDescriptor for direct seekable native decoding
@@ -228,6 +238,15 @@ internal object FlashMediaDecoder {
                 pfd = runCatching { context.contentResolver.openFileDescriptor(uri, "r") }.getOrNull()
                 val fd = pfd?.fileDescriptor
                 if (fd != null) {
+                    val orientation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        runCatching {
+                            ExifInterface(fd).getAttributeInt(
+                                ExifInterface.TAG_ORIENTATION,
+                                ExifInterface.ORIENTATION_NORMAL,
+                            )
+                        }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+                    } else ExifInterface.ORIENTATION_NORMAL
+
                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     BitmapFactory.decodeFileDescriptor(fd, null, bounds)
                     if (bounds.outWidth > 0 && bounds.outHeight > 0) {
@@ -236,20 +255,24 @@ internal object FlashMediaDecoder {
                             if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
                         }
                         var bitmap: Bitmap? = null
+                        var caughtOom = false
                         while (bitmap == null && sample <= 32) {
                             options.inSampleSize = sample
+                            caughtOom = false
                             try {
                                 bitmap = BitmapFactory.decodeFileDescriptor(fd, null, options)
                             } catch (oom: OutOfMemoryError) {
+                                caughtOom = true
                                 bitmap = null
                             }
                             if (bitmap == null) {
+                                if (!caughtOom) break // invalid payload: do not retry spin (OPT-O05-09)
                                 sample *= 2
                                 options.inPreferredConfig = Bitmap.Config.RGB_565
                             }
                         }
                         if (bitmap != null) {
-                            return applyExifRotation(context, source, bitmap, null, fd).asImageBitmap()
+                            return applyExifRotation(orientation, bitmap).asImageBitmap()
                         }
                     }
                 }
@@ -259,6 +282,15 @@ internal object FlashMediaDecoder {
         }
 
         // Fallback: Buffered stream decoding with progressive sample backoff
+        var orientation = ExifInterface.ORIENTATION_NORMAL
+        openStream(context, source)?.use { stream ->
+            orientation = runCatching {
+                ExifInterface(stream).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL,
+                )
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+        }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         openStream(context, source)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
@@ -267,20 +299,24 @@ internal object FlashMediaDecoder {
             if (lowColorDepth) inPreferredConfig = Bitmap.Config.RGB_565
         }
         var bitmap: Bitmap? = null
+        var caughtOom = false
         while (bitmap == null && sample <= 32) {
             options.inSampleSize = sample
+            caughtOom = false
             bitmap = try {
                 openStream(context, source)?.use { BitmapFactory.decodeStream(it, null, options) }
             } catch (oom: OutOfMemoryError) {
+                caughtOom = true
                 null
             }
             if (bitmap == null) {
+                if (!caughtOom) break // invalid payload: do not retry spin (OPT-O05-09)
                 sample *= 2
                 options.inPreferredConfig = Bitmap.Config.RGB_565
             }
         }
         if (bitmap == null) return null
-        return applyExifRotation(context, source, bitmap).asImageBitmap()
+        return applyExifRotation(orientation, bitmap).asImageBitmap()
     }
 
     /**
@@ -381,33 +417,12 @@ internal object FlashMediaDecoder {
      * EXIF orientation, applied by re-drawing through a [Matrix]. Failure to *read* the tag leaves
      * the bitmap alone rather than guessing — a missing tag and an unreadable one both mean
      * "no rotation information", and rotating on a guess is worse than not rotating.
+     * Reuses parsed orientation directly without re-opening files or streams (OPT-O05-04).
      */
     private fun applyExifRotation(
-        context: Context,
-        source: String,
+        orientation: Int,
         bitmap: Bitmap,
-        file: File? = null,
-        fd: java.io.FileDescriptor? = null,
     ): Bitmap {
-        val orientation = runCatching {
-            when {
-                file != null -> ExifInterface(file.absolutePath).getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL,
-                )
-                fd != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N -> ExifInterface(fd).getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL,
-                )
-                else -> openStream(context, source)?.use { stream ->
-                    ExifInterface(stream).getAttributeInt(
-                        ExifInterface.TAG_ORIENTATION,
-                        ExifInterface.ORIENTATION_NORMAL,
-                    )
-                } ?: ExifInterface.ORIENTATION_NORMAL
-            }
-        }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
-
         if (orientation == ExifInterface.ORIENTATION_NORMAL || orientation == ExifInterface.ORIENTATION_UNDEFINED) {
             return bitmap
         }

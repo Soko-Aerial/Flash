@@ -45,6 +45,20 @@ internal object JvmImageDecoder : FlashImageDecoder {
             size > MAX_CACHED
     }
 
+    /**
+     * O02-08: Clears the in-memory thumbnail cache on memory trim or window idle/minimization.
+     */
+    fun clear() {
+        synchronized(cache) {
+            cache.clear()
+        }
+    }
+
+    /** Returns current number of memoized images in the cache. */
+    fun cachedCount(): Int = synchronized(cache) {
+        cache.size
+    }
+
     override fun decode(
         source: String?,
         isVideo: Boolean,
@@ -82,9 +96,14 @@ internal object JvmImageDecoder : FlashImageDecoder {
         computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
     ): ImageBitmap? {
         val stream = openStream(source) ?: return null
+        var orientation = 1
         val buffered = stream.use { raw ->
             val input = ImageIO.createImageInputStream(raw) ?: return null
             input.use {
+                // O05-04: Parse EXIF orientation directly from the ImageInputStream before decode,
+                // seeking back to 0. Eliminates the secondary full-file stream open and header scan.
+                orientation = parseExifFromStream(it)
+                it.seek(0)
                 val reader = ImageIO.getImageReaders(it).let { readers ->
                     if (readers.hasNext()) readers.next() else null
                 } ?: return null
@@ -104,7 +123,6 @@ internal object JvmImageDecoder : FlashImageDecoder {
             }
         } ?: return null
 
-        val orientation = readExifOrientation(source)
         val rotated = if (orientation > 1) rotateImage(buffered, orientation) else buffered
         return rotated.toComposeImageBitmap()
     }
@@ -153,63 +171,55 @@ internal object JvmImageDecoder : FlashImageDecoder {
     }
 
     /**
+     * Extracts EXIF orientation (1..8) from an [javax.imageio.stream.ImageInputStream] without loading the entire image.
+     */
+    private fun parseExifFromStream(input: javax.imageio.stream.ImageInputStream): Int = runCatching {
+        if (input.read() != 0xFF || input.read() != 0xD8) return@runCatching 1
+        while (true) {
+            val markerPrefix = input.read()
+            if (markerPrefix == -1) break
+            if (markerPrefix != 0xFF) continue
+            var marker = input.read()
+            while (marker == 0xFF) marker = input.read()
+            if (marker == -1 || marker == 0xDA || marker == 0xD9) break // SOS or EOI
+            val lenHigh = input.read()
+            val lenLow = input.read()
+            if (lenHigh == -1 || lenLow == -1) break
+            val segmentLength = ((lenHigh and 0xFF) shl 8) or (lenLow and 0xFF)
+            if (segmentLength < 2) break
+            val dataLength = segmentLength - 2
+
+            if (marker == 0xE1 && dataLength >= 14) { // APP1 Exif marker
+                val data = ByteArray(dataLength)
+                var readTotal = 0
+                while (readTotal < dataLength) {
+                    val count = input.read(data, readTotal, dataLength - readTotal)
+                    if (count <= 0) break
+                    readTotal += count
+                }
+                if (readTotal == dataLength &&
+                    data[0] == 'E'.code.toByte() && data[1] == 'x'.code.toByte() &&
+                    data[2] == 'i'.code.toByte() && data[3] == 'f'.code.toByte() &&
+                    data[4] == 0.toByte() && data[5] == 0.toByte()
+                ) {
+                    return@runCatching parseTiffOrientation(data, 6)
+                }
+            } else {
+                input.seek(input.streamPosition + dataLength)
+            }
+        }
+        1
+    }.getOrDefault(1)
+
+    /**
      * Extracts EXIF orientation (1..8) from a JPEG file without loading the entire image.
      * Returns 1 (normal orientation) if absent, non-JPEG, or unreadable.
      */
     internal fun readExifOrientation(source: String): Int {
         val stream = openStream(source) ?: return 1
-        return stream.use { input ->
-            runCatching {
-                // Must start with SOI marker: 0xFF, 0xD8
-                if (input.read() != 0xFF || input.read() != 0xD8) return@runCatching 1
-                while (true) {
-                    val markerPrefix = input.read()
-                    if (markerPrefix == -1) break
-                    if (markerPrefix != 0xFF) continue
-                    // ITU T.81 B.1.1.2: a marker may be preceded by any number of 0xFF fill bytes.
-                    // Reading only one of them made the second 0xFF of "FF FF E1" look like the marker,
-                    // so the real marker byte became the segment length's high byte and an APP1 EXIF
-                    // block behind fill bytes was skipped as a bogus 57 KB segment.
-                    var marker = input.read()
-                    while (marker == 0xFF) marker = input.read()
-                    if (marker == -1 || marker == 0xDA || marker == 0xD9) break // SOS or EOI
-                    val lenHigh = input.read()
-                    val lenLow = input.read()
-                    if (lenHigh == -1 || lenLow == -1) break
-                    val segmentLength = ((lenHigh and 0xFF) shl 8) or (lenLow and 0xFF)
-                    if (segmentLength < 2) break
-                    val dataLength = segmentLength - 2
-
-                    if (marker == 0xE1 && dataLength >= 14) { // APP1 Exif marker
-                        val data = ByteArray(dataLength)
-                        var readTotal = 0
-                        while (readTotal < dataLength) {
-                            val count = input.read(data, readTotal, dataLength - readTotal)
-                            if (count <= 0) break
-                            readTotal += count
-                        }
-                        if (readTotal == dataLength &&
-                            data[0] == 'E'.code.toByte() && data[1] == 'x'.code.toByte() &&
-                            data[2] == 'i'.code.toByte() && data[3] == 'f'.code.toByte() &&
-                            data[4] == 0.toByte() && data[5] == 0.toByte()
-                        ) {
-                            return@runCatching parseTiffOrientation(data, 6)
-                        }
-                    } else {
-                        var toSkip = dataLength.toLong()
-                        while (toSkip > 0) {
-                            val skipped = input.skip(toSkip)
-                            if (skipped <= 0) {
-                                if (input.read() == -1) break
-                                toSkip--
-                            } else {
-                                toSkip -= skipped
-                            }
-                        }
-                    }
-                }
-                1
-            }.getOrDefault(1)
+        return stream.use { raw ->
+            val input = ImageIO.createImageInputStream(raw) ?: return@use 1
+            input.use { parseExifFromStream(it) }
         }
     }
 
