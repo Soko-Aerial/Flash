@@ -203,13 +203,11 @@ compose.desktop {
         )
 
         // OPT-O19-04: tune JVM flags for Compose Desktop 60 FPS frame budget and lower native thread memory
-        // OPT-O19-05: -Xshare:auto enables AppCDS if an archive is present
         jvmArgs += listOf(
             "-Xss512k",
             "-XX:MaxGCPauseMillis=20",
             "-XX:+UseStringDeduplication",
-            "-XX:+ExitOnOutOfMemoryError",
-            "-Xshare:auto"
+            "-XX:+ExitOnOutOfMemoryError"
         )
 
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
@@ -224,7 +222,11 @@ compose.desktop {
             vendor = "Flash"
             modules(
                 "java.sql",
+                "java.naming",
                 "jdk.unsupported",
+                "java.management",
+                "java.instrument",
+                "jdk.crypto.cryptoki",
             )
             // jdk.crypto.mscapi exists only in a Windows JDK; jlink on Linux fails with "Module not found" if it is
             // listed (Linux plan L0). A package is built on its own OS, so the host decides.
