@@ -592,8 +592,8 @@ The integrator keeps this table current; a stream's own fragment holds its detai
 
 | Stream | Worktree | Batch 1 | Batch 2 | Batch 3 | Merged (`git log --oneline -1`) | Gate | Device checks owed |
 |---|---|---|---|---|---|---|---|
-| A build | `opt-build` | ☐ | ☐ | ☐ | | | PERF-A01 (APK size), PERF-A02 (cold start) |
-| D data | `opt-data` | ☐ | ☐ | ☐ | | | PERF-D01 (unread latency), PERF-D02 (chat list) |
+| A build | `opt-build` | ☑ | ☑ | ☑ | `0cc10902` (merge `4da12c9c`) | **PASS** — gate 1 204 s (2,138 tests), gate 2 490 s (1,526 tests, 2 known); 21 of 25 findings kept, 5 reverted (ADR-231, see §2 of `logs/streams/build/INTEGRATOR-REVIEW.md`) | PERF-A01..A07 (A05/A06 already PASS) |
+| D data | `opt-data` | ☐ | ☐ | ☐ | | | PERF-D01 (unread latency), PERF-D02 (chat list); **first step: PERF-A07** (the two `delay()`-based `RealFlashChatRepositoryTest` cases, ERROR-873) |
 | T transfer | `opt-transfer` | ☐ | ☐ | ☐ | | | PERF-T01 (send a 2 GB file), PERF-T02 (resume) |
 | U ui | `opt-ui` | ☐ | ☐ | ☐ | | | PERF-U01 (scroll during transfer) |
 | N net | `opt-net` | ☐ | ☐ | ☐ | | | PERF-N01 (transfer under lock change) |
@@ -621,7 +621,28 @@ Two things the blocks do not repeat:
 - **The base is `dev` at the commit this plan was committed in.** If `dev` has moved since, `git merge dev` before
   batch 1 (never rebase).
 
+**Rules learned from Wave 0 (2026-10-30, ADR-231) — they apply to every block below:**
+
+1. **Both halves of any before/after must be forced, and the command line goes in the log.** Stream A reported a 13 %
+   gate win by comparing an unforced run (almost everything up-to-date) with the plan's forced baseline; the same
+   command was really 70 % slower (ERROR-872). For a wall-clock evidence run use
+   `--rerun-tasks --no-build-cache` (forced runs only *write* the build cache — 112 s on gate 1 — and reuse nothing).
+2. **`maxParallelForks` is 1 for every `Test` task now** (`:server:test` keeps its own 4). Do not raise it to make a
+   number look better: two forks for the Robolectric host suites was 114 s faster and flaked two
+   `RealFlashChatRepositoryTest` cases (ERROR-873). `PERF-A07` is the fix, and it is Stream D's first step.
+3. **A stream may not change what ships** (ABI splits, installer contents, published POMs, jlink modules) and may not
+   narrow a keep rule whose comment records a past crash. Those are owner decisions with a named check: propose them
+   with numbers, do not merge them (ADR-231 rules 1-2).
+4. **"It exists" is not "it works".** A hand-written baseline profile, a flag that turns out to be the JVM default
+   (`-Xshare:auto`), or a benchmark module with no build type to run against is not a finding closed. Say what was
+   executed; `OPT-O19-05`, `OPT-O01-03`, `OPT-O28-01` are open for exactly this reason.
+
+
 ### 11.A — build
+
+**DONE 2026-10-30 — do not hand this block out again.** The stream ran, the integrator reviewed and merged it
+(`0cc10902`): 21 of 25 findings kept, 5 reverted with reasons. Outcome: §9 A "Status 2026-10-30", ADR-231, and
+`logs/streams/build/INTEGRATOR-REVIEW.md`. Build-file requests from other streams now go to the integrator.
 
 ```text
 You are the BUILD (A) stream of the Flash performance-optimization programme.
@@ -699,6 +720,13 @@ YOU MUST NOT TOUCH: ui/**, server/**, core/transfer, core/swarm, any build.gradl
 (write logs/streams/data/).
 
 DO IN THIS ORDER
+Step 0 (added by the integrator after Wave 0, ERROR-873 / PERF-A07): `RealFlashChatRepositoryTest` has two cases that
+synchronise with `delay(20)`/`delay(100)` and read an empty list when the machine is loaded - "pins are stored per
+conversation, newest first, and survive closing and reopening the chat" (~line 522) and "delete for everyone sends
+direct action only for the local author" (~line 3436). You own this file. Replace the sleeps with an explicit wait on
+`conversationState.value` (or collect the flow) in your first commit, then run the suite 10 times while a heavy task
+(`:server:test`) is running. Until that is done nobody may raise `maxParallelForks` above 1, which costs every stream
+114 s per gate-2 run.
 Batch 1: O06-01 index messages(conversationId, readAt) + rewrite observeUnreadCounts; O06-05 the five missing indexes;
 O04-02 the N+1 queries in the chat-list combine; O25-04 cache the decodeReactorIds regex; O02-06 + O06-04 desktop
 opener PRAGMAs (it runs non-WAL/synchronous=FULL);
