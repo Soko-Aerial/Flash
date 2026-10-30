@@ -518,24 +518,32 @@ public class AnnouncementStore(
         val safeLimit = limit.coerceIn(1, 100)
         val safeBefore = before ?: Long.MAX_VALUE
 
-        // Visibility constraint applied strictly in SQL
+        // Visibility constraint applied strictly in SQL. Department ids are bound parameters, never spliced into the text
+        // (SEC-D16-01): the clause strings below hold only literals and `?`.
+        val visibilityParams = ArrayList<String>()
         val visibilityClause = when {
             isOrgAdmin -> "1=1"
             callerDeptId.isNullOrBlank() -> "a.scope = 'org'"
-            else -> "(a.scope = 'org' OR (a.scope = 'department' AND a.department_id = '${escapeSql(callerDeptId)}'))"
+            else -> {
+                visibilityParams.add(callerDeptId)
+                "(a.scope = 'org' OR (a.scope = 'department' AND a.department_id = ?))"
+            }
         }
 
         // Optional filter constraint from query params
+        val filterParams = ArrayList<String>()
         val filterClause = when {
             scope == "org" -> "a.scope = 'org'"
             scope == "department" && !departmentId.isNullOrBlank() -> {
                 if (!isOrgAdmin && departmentId != callerDeptId) {
                     return@withConnection AnnouncementSearchResponseDto() // Caller asking for another department -> empty
                 }
-                "a.scope = 'department' AND a.department_id = '${escapeSql(departmentId)}'"
+                filterParams.add(departmentId)
+                "a.scope = 'department' AND a.department_id = ?"
             }
             else -> "1=1"
         }
+        val clauseParams = visibilityParams + filterParams
 
         val trimmedQuery = query?.trim().orEmpty()
         val items = ArrayList<AnnouncementItemDto>()
@@ -566,7 +574,8 @@ public class AnnouncementStore(
                         stmt.setString(1, ftsQuery)
                         stmt.setLong(2, nowMs)
                         stmt.setLong(3, safeBefore)
-                        stmt.setInt(4, safeLimit)
+                        clauseParams.forEachIndexed { i, value -> stmt.setString(4 + i, value) }
+                        stmt.setInt(4 + clauseParams.size, safeLimit)
                         stmt.executeQuery().use { rs ->
                             while (rs.next()) items.add(readItem(rs))
                         }
@@ -597,7 +606,8 @@ public class AnnouncementStore(
                     stmt.setString(2, likeParam)
                     stmt.setLong(3, nowMs)
                     stmt.setLong(4, safeBefore)
-                    stmt.setInt(5, safeLimit)
+                    clauseParams.forEachIndexed { i, value -> stmt.setString(5 + i, value) }
+                    stmt.setInt(5 + clauseParams.size, safeLimit)
                     stmt.executeQuery().use { rs ->
                         while (rs.next()) items.add(readItem(rs))
                     }
@@ -619,7 +629,8 @@ public class AnnouncementStore(
             conn.prepareStatement(sql).use { stmt ->
                 stmt.setLong(1, nowMs)
                 stmt.setLong(2, safeBefore)
-                stmt.setInt(3, safeLimit)
+                clauseParams.forEachIndexed { i, value -> stmt.setString(3 + i, value) }
+                stmt.setInt(3 + clauseParams.size, safeLimit)
                 stmt.executeQuery().use { rs ->
                     while (rs.next()) items.add(readItem(rs))
                 }
@@ -888,10 +899,6 @@ public class AnnouncementStore(
         return input.replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
-    }
-
-    private fun escapeSql(input: String): String {
-        return input.replace("'", "''")
     }
 
     public companion object {

@@ -305,10 +305,24 @@ private fun headerStatusLabel(state: FlashChatHeaderUiState): String? {
         // UI-030b / owner decision P3: a live session reads "Connected"; seen without one, "Online".
         FlashPeerPresence.Online -> "Connected"
         FlashPeerPresence.Reachable -> "Online"
+        // ADR-228: no Wi-Fi, but the radio can carry a text. Never "Offline" over a path that works.
+        FlashPeerPresence.RadioOnly -> FlashCopyPresence.RADIO_ONLY
         FlashPeerPresence.Offline -> "Offline"
         FlashPeerPresence.Connecting -> "Connecting…"
         FlashPeerPresence.Typing -> "typing…"
     }
+}
+
+/**
+ * ADR-228 copy for the one new presence state. Kept next to the other header strings so the Android and
+ * desktop shells cannot drift; a test asserts the exact sentence ([FlashChatHeaderMathTest]).
+ */
+object FlashCopyPresence {
+    /**
+     * Short enough for the header line, and it does not promise an answer: a station cannot be polled, so
+     * this says the text can go out, not that anyone is listening.
+     */
+    const val RADIO_ONLY: String = "Radio only · texts go over the air"
 }
 
 @Composable
@@ -396,6 +410,8 @@ private fun FlashNetworkTransport.iconSpec(): FlashIconSpec? = when (this) {
     FlashNetworkTransport.Lan -> FlashIcons.Wifi
     FlashNetworkTransport.WifiDirect -> FlashIcons.WifiDirect
     FlashNetworkTransport.Relay -> FlashIcons.Relay
+    // ADR-228: a radio-only peer shows the Bluetooth mark, the same one the Radio screen uses.
+    FlashNetworkTransport.Radio -> FlashIcons.Bluetooth
     FlashNetworkTransport.Unknown -> null
 }
 

@@ -71,6 +71,24 @@ internal object DesktopPaths {
         return file
     }
 
+    /**
+     * Makes the state folder readable by its owner only where the file system has POSIX permissions (Linux, macOS), so
+     * another user of a shared workstation cannot list or read the identity, database, settings and logs inside it
+     * (SEC-D12-03). On Windows the folder inherits the user profile's ACL, which already excludes other users.
+     */
+    fun restrictToOwner(dir: File) {
+        try {
+            java.nio.file.Files.setPosixFilePermissions(
+                dir.toPath(),
+                java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"),
+            )
+        } catch (_: UnsupportedOperationException) {
+            // Not a POSIX file system.
+        } catch (_: java.io.IOException) {
+            // Best effort: the folder may belong to someone else or be on a read-only mount.
+        }
+    }
+
     private fun isLinux(osName: String): Boolean = osName.startsWith("Linux", ignoreCase = true)
 
     /** XDG: an unset, empty or relative value is ignored and the default used. */

@@ -26,6 +26,12 @@ dist/
 keystore.properties
 *.jks
 *.keystore
+# SEC-D22-02: private keys and certificates with keys, wherever they land.
+*.pem
+*.key
+*.p12
+*.pfx
+*.pk8
 # PC0 and later device measurement dumps (tools/pc0); summaries go to logs/experiments.md
 measurements/
 

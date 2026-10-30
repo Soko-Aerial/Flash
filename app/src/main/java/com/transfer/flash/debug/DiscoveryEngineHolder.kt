@@ -71,6 +71,7 @@ import com.transfer.flash.core.security.crypto.FlashFingerprint
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.enterprise.EnterpriseTrustStore
+import com.transfer.flash.core.engine.FlashPathSanitizer
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
 import com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore
 import com.transfer.flash.core.enterprise.EnterpriseHub
@@ -761,6 +762,8 @@ object DiscoveryEngineHolder {
         val trustStore = AndroidPreferencesTrustStore(appContext)
         val crypto = KeystoreFlashCrypto(appContext)
         cryptoRef = crypto
+        // SEC-D02-02: the key an unsolicited inbound connection presented, kept for the pairing check only.
+        val observedPeerPins = com.transfer.flash.core.security.trust.ObservedPeerPins()
         val tlsOptions = requireTransportSecurity(
             onAttemptFailed = { attempt, error -> Log.w(TAG_WS, "TLS setup attempt $attempt failed: ${error.message}") },
         ) {
@@ -774,6 +777,7 @@ object DiscoveryEngineHolder {
                 // ERROR-077: never accept or pin this phone's own key under a peer's id.
                 ownFingerprintHex = java.security.MessageDigest.getInstance("SHA-256")
                     .digest(ownCertificate.publicKey.encoded).joinToString("") { "%02X".format(it) },
+                observeInbound = observedPeerPins::observe,
             )
             TlsOptions(
                 pinVerifier = pinVerifier,
@@ -943,8 +947,9 @@ object DiscoveryEngineHolder {
                 val canonicalRoot = receivedDir.canonicalFile
                 val destDir = File(canonicalRoot, safeId).canonicalFile
                 val dest = File(destDir, safeRelativePath).canonicalFile
-                // SENTINEL: Path traversal guard — canonical containment under destDir
-                require(dest.path.startsWith(destDir.path + File.separator)) {
+                // SENTINEL: Path traversal guard — canonical containment under the root, then under destDir (SEC-D07-01)
+                require(destDir.path.startsWith(canonicalRoot.path + File.separator) &&
+                    dest.path.startsWith(destDir.path + File.separator)) {
                     "Path traversal escape detected for transferId=${start.transferId}, fileName=${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
@@ -1357,6 +1362,9 @@ object DiscoveryEngineHolder {
             // presence source when the two devices are on different networks, so a hub-only chat used
             // to show Offline even while its messages were relaying normally.
             hubOnlinePeerIds = hub.hubOnlinePeerIds,
+            // ADR-228: a peer with a radio key and a connected gateway reads "Radio only" instead of
+            // Offline. Presentation only; the outbox still decides the path.
+            radioOnlyPeerIds = radioPort?.radioPeerIds ?: kotlinx.coroutines.flow.emptyFlow(),
             // A conversationId is the peer's device UUID; resolve it to the paired friendly name so
             // the chat list / header show the real name instead of the raw id. Falls back to org snapshot display name.
             peerNameResolver = { id -> trustStore.getTrustedPeers()[FlashDeviceId(id)] ?: orgPeerResolver.displayName(id) },
@@ -1437,7 +1445,15 @@ object DiscoveryEngineHolder {
                 // PC3 dial on demand: a message to a peer that is seen but not connected dials first
                 // (≤ 1 s) instead of waiting for the next sweep. Receipts and typing never wait.
                 if (wireFrame is MessageWireFrame.TextMessage) {
-                    autoConnector?.ensureSession(targetDeviceId)
+                    // ADR-228 / ERROR-869: no LAN dial for a peer only the radio can reach — it cannot
+                    // succeed while the peer is off Wi-Fi, and it cost a second on every outbox pass
+                    // before the radio step ran. A peer discovery sees right now still gets the dial:
+                    // the LAN path is faster, and the radio is the fallback, never the preference.
+                    val radioCanCarry = radioPort?.isRadioReachable(targetDeviceId) == true
+                    val seenNow = targetDeviceId in presence.reachablePeerIds.value
+                    if (!radioCanCarry || seenNow) {
+                        autoConnector?.ensureSession(targetDeviceId)
+                    }
                 }
                 val session = networkImpl.activeSessions.value[FlashDeviceId(targetDeviceId)] as? WsSession
                 if (session == null) {
@@ -1581,6 +1597,7 @@ object DiscoveryEngineHolder {
             localModel = identity.deviceModel,
             ephemeralPublicKey = ephemeralPublicKey,
             trustStore = trustStore,
+            observedPeerPin = observedPeerPins::get,
             scope = appScope,
             sendToPeer = { peerId, text ->
                 // MUST be non-blocking: beginPair is invoked from the UI (main) dispatcher, and a
@@ -2207,7 +2224,8 @@ object DiscoveryEngineHolder {
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
                     route != null -> networkImpl.connectManual(d.host, d.port, route.deviceId)
                         .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
-                    else -> networkImpl.connectManual(d.host, d.port)
+                    // SEC-D10-01: an unnamed automatic dial (gateway probe, subnet sweep) never writes a first-use pin.
+                    else -> networkImpl.connectManual(d.host, d.port, null, recordFirstUse = false)
                 }
             },
             // Hotspot host auto-probe: tethered clients cannot discover the host via NSD because
@@ -2821,55 +2839,13 @@ object DiscoveryEngineHolder {
     fun receivedFilesRoot(context: Context): File =
         File(context.applicationContext.getExternalFilesDir(null), RECEIVED_FILES_DIRECTORY)
 
-    private val ILLEGAL_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]")
-    private val WINDOWS_RESERVED_NAMES = setOf(
-        "CON", "PRN", "AUX", "NUL",
-        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-    )
-
+    // The shared sanitizer (SEC-D04-01): this file used to carry an older private copy without the bidi/zero-width,
+    // Unicode-aware length and reserved-name rules, so Android accepted names the desktop refused.
     /** Strips anything that could escape the intended directory (path-traversal guard, AGENTS.md §19). */
-    private fun sanitizePathComponent(raw: String): String {
-        val replaced = raw.replace(ILLEGAL_CHARS_REGEX, "_").trimEnd('.', ' ')
-        if (replaced.isBlank() || replaced == "." || replaced == "..") return "unnamed"
+    private fun sanitizePathComponent(raw: String): String = FlashPathSanitizer.sanitize(raw)
 
-        val dotIdx = replaced.indexOf('.')
-        val baseName = if (dotIdx != -1) replaced.substring(0, dotIdx) else replaced
-        val safeBase = if (baseName.uppercase() in WINDOWS_RESERVED_NAMES) "_$replaced" else replaced
-
-        return truncatePreservingExtension(safeBase, 120)
-    }
-
-    private fun truncatePreservingExtension(name: String, maxLen: Int): String {
-        if (name.length <= maxLen) return name
-        val lastDot = name.lastIndexOf('.')
-        if (lastDot > 0 && lastDot < name.length - 1 && (name.length - lastDot) <= 16) {
-            val ext = name.substring(lastDot)
-            val maxBaseLen = maxOf(1, maxLen - ext.length)
-            return name.substring(0, maxBaseLen) + ext
-        }
-        return name.take(maxLen)
-    }
-
-    /**
-     * Sanitizes a relative file path (potentially with subdirectories from a folder transfer)
-     * while strictly guarding against path traversal (AGENTS.md §19).
-     * Replaces any forbidden characters per component and strips any '.' or '..' segments.
-     */
-    private fun sanitizeRelativePath(raw: String): String {
-        val normalized = raw.replace('\\', '/').trim().trimStart('/')
-        val segments = normalized.split('/').filter { it.isNotEmpty() }
-        if (segments.isEmpty()) return "unnamed"
-        val safeSegments = mutableListOf<String>()
-        for (seg in segments) {
-            if (seg == "." || seg == "..") continue
-            val sanitized = sanitizePathComponent(seg)
-            if (sanitized.isNotBlank() && sanitized != "." && sanitized != "..") {
-                safeSegments.add(sanitized)
-            }
-        }
-        return if (safeSegments.isEmpty()) "unnamed" else safeSegments.joinToString(File.separator)
-    }
+    /** A relative path from a folder transfer, sanitised per component, joined with this platform's separator. */
+    private fun sanitizeRelativePath(raw: String): String = FlashPathSanitizer.sanitizeRelativePath(raw, File.separator)
 
     /**
      * Best-effort MIME from a file name extension, used to render an inbound attachment bubble as

@@ -11,7 +11,9 @@ import com.transfer.flash.core.common.logging.FlashLog
  * - If [deviceId] has a recorded pin in [lookupPin], compares in constant time against [fingerprintHex].
  *   Returns true on match, false on mismatch (hard fail-closed against key change / MITM).
  * - If [deviceId] has no recorded pin yet (first connection): records the presented [fingerprintHex]
- *   via [recordPin] and returns true (Trust On First Use).
+ *   via [recordPin] and returns true (Trust On First Use). Only a connection **this device dialled** records
+ *   (SEC-D02-02): an unsolicited inbound connection goes through [verifyWithoutRecording], which compares
+ *   against an existing pin but writes nothing, so a stranger cannot pre-seed a key under a contact's id.
  *
  * ## This device's own key ([ownFingerprintHex], ERROR-077)
  * A peer presenting this device's own identity key is this device (a dial that reached itself) or a copy of
@@ -25,12 +27,21 @@ public class TofuPinVerifier(
     private val recordPin: ((deviceId: String, fingerprintHex: String) -> Unit)? = null,
     /** SHA-256 of this device's own identity SPKI, hex; null disables the own-key rule. */
     ownFingerprintHex: String? = null,
+    /** Told the key of an unsolicited inbound first contact, which is accepted but never recorded as a pin. */
+    private val observeInbound: ((deviceId: String, fingerprintHex: String) -> Unit)? = null,
 ) : FlashPinVerifier {
 
     private val ownFingerprint: String? =
         ownFingerprintHex?.let { FlashPinVerifier.normalize(it) }?.takeIf { it.isNotEmpty() }
 
-    override fun isPinned(deviceId: String, fingerprintHex: String): Boolean {
+    override fun isPinned(deviceId: String, fingerprintHex: String): Boolean =
+        check(deviceId, fingerprintHex, record = true)
+
+    /** Inbound identity check (SEC-D02-02): a first contact is accepted but never written to the trust store. */
+    override fun verifyWithoutRecording(deviceId: String, fingerprintHex: String): Boolean =
+        check(deviceId, fingerprintHex, record = false)
+
+    private fun check(deviceId: String, fingerprintHex: String, record: Boolean): Boolean {
         val presented = FlashPinVerifier.normalize(fingerprintHex)
         if (presented.isEmpty()) return false
         val own = ownFingerprint
@@ -46,7 +57,7 @@ public class TofuPinVerifier(
 
         return if (known.isNullOrBlank()) {
             // First connect: trust on first use and record the pin
-            recordPin?.invoke(deviceId, presented)
+            if (record) recordPin?.invoke(deviceId, presented) else observeInbound?.invoke(deviceId, presented)
             true
         } else {
             constantTimeEquals(known, presented)

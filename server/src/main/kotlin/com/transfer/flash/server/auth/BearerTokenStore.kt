@@ -30,6 +30,12 @@ class BearerTokenStore(
 
     /** Issues a token for [principal]; returns the token and its absolute expiry. */
     fun issue(principal: HubPrincipal, nowMs: Long = System.currentTimeMillis()): Pair<String, Long> {
+        // SEC-D14-03: a device keeps at most MAX_TOKENS_PER_DEVICE live tokens; a noisy client replaces its own oldest ones
+        // instead of pushing other devices' sessions out when the store is full.
+        val own = entries.entries.filter { it.value.principal.deviceId == principal.deviceId }
+        if (own.size >= MAX_TOKENS_PER_DEVICE) {
+            own.sortedBy { it.value.expiresAt }.take(own.size - MAX_TOKENS_PER_DEVICE + 1).forEach { entries.remove(it.key) }
+        }
         if (entries.size >= maxTokens) purgeExpired(nowMs)
         if (entries.size >= maxTokens) {
             // Still full of live tokens: drop the oldest-expiring ones instead of refusing a legitimate device.
@@ -67,6 +73,10 @@ class BearerTokenStore(
     }
 
     val size: Int get() = entries.size
+
+    private companion object {
+        const val MAX_TOKENS_PER_DEVICE = 8
+    }
 
     private fun hash(token: String): String {
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(token.encodeToByteArray())

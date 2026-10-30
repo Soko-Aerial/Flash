@@ -56,4 +56,19 @@ public interface RadioGatewayController {
 
     /** Requests runtime Nearby devices permission at point of use. */
     public fun requestNearbyDevicesPermission()
+
+    /**
+     * State of the radio voice link (HTCommander-style audio: hear the radio, hold to talk). Hosts without voice keep
+     * the default, which reports `available = false` so the screen shows no voice card.
+     */
+    public val voice: StateFlow<RadioVoiceUiState> get() = NoRadioVoice
+
+    /** Opens (true) or closes (false) the audio link to the remembered radio and plays what it receives. */
+    public fun setVoiceListening(on: Boolean) {}
+
+    /** Hold-to-talk: true while the button is held. Refused while the radio is receiving. */
+    public fun voicePushToTalk(down: Boolean) {}
+
+    /** Asks the system for the microphone permission (the host owns the launcher). */
+    public fun requestMicrophonePermission() {}
 }

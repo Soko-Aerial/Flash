@@ -133,6 +133,11 @@ public fun FlashCallScreen(
     val ended = state.state == FlashCallState.ENDED
     var panel by remember { mutableStateOf<CallPanel?>(null) }
     var mirrorSelf by remember { mutableStateOf(false) }
+    // UI-050h: how far a shared screen is magnified, held here rather than in the surface so both layouts (1:1 and group)
+    // share one value and a recomposed tile keeps it. A new presentation, a different presenter or the end of the call
+    // starts at 1x again: nobody wants to be dropped into somebody else's slide at 3x.
+    val presentationZoom = remember { FlashVideoZoomState() }
+    LaunchedEffect(state.callId, state.presenterId, ended) { presentationZoom.reset() }
     // A panel left open over a call that just ended would sit on a dead screen.
     LaunchedEffect(ended) { if (ended) panel = null }
     // The picker closes by itself once the share has started (a second tap would take over from ourselves).
@@ -166,6 +171,7 @@ public fun FlashCallScreen(
                     session = session,
                     onVideoFocus = onVideoFocus,
                     modifier = Modifier.fillMaxSize(),
+                    presentationZoom = presentationZoom,
                 )
             } else {
                 FlashCallVideoSurfaces(
@@ -173,6 +179,7 @@ public fun FlashCallScreen(
                     session = session,
                     mirrorSelf = mirrorSelf,
                     peerVerified = peerVerified,
+                    presentationZoom = presentationZoom,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -531,6 +538,8 @@ private fun FlashCallVideoSurfaces(
     session: FlashCallMedia?,
     mirrorSelf: Boolean,
     peerVerified: Boolean,
+    /** UI-050h: the magnification of the presentation; null when this host offers no zooming. */
+    presentationZoom: FlashVideoZoomState? = null,
     modifier: Modifier = Modifier,
 ) {
     var pipIsLocal by remember { mutableStateOf(false) }
@@ -541,19 +550,27 @@ private fun FlashCallVideoSurfaces(
     // main tile.
     val remoteShown = !state.dataSaver && !state.peerCameraOff
     val swapped = pipIsLocal && remoteShown
+    // ADR-102: the other device is presenting, so the main picture is a screen (letterboxed, never cropped).
+    val presenting = state.presenterId != null && remoteShown
+    // A tap swaps the pictures, except when there is no remote picture to swap with.
+    val swapOnTap = Modifier
+        .fillMaxSize()
+        .clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+        ) { if (remoteShown) pipIsLocal = !pipIsLocal }
 
     Box(modifier = modifier) {
-        FlashCallVideoSurface(
+        // UI-050h: a shared screen can be pinched and dragged; the camera picture never can. It stays the same surface
+        // instance in every case (see FlashZoomableVideoSurface), so a share starting, ending or being swapped in cannot
+        // rebuild the renderer underneath. It is the tap-to-swap target exactly as before: the gesture overlay only
+        // consumes once a pinch or drag passes touch slop, so a plain tap still reaches this modifier.
+        FlashZoomableVideoSurface(
             track = if (swapped) localTrack else remoteTrack,
-            // ADR-102: a presentation is letterboxed, never cropped (text at the edges must stay readable).
-            fit = if (swapped) CallVideoFit.Balanced else videoFitFor(state.presenterId != null && remoteShown),
+            fit = if (swapped) CallVideoFit.Balanced else videoFitFor(presenting),
             mirror = swapped && mirrorSelf,
-            modifier = Modifier
-                .fillMaxSize()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { if (remoteShown) pipIsLocal = !pipIsLocal },
+            zoom = if (presenting && !swapped) presentationZoom else null,
+            modifier = swapOnTap,
         )
 
         if (!remoteShown) {

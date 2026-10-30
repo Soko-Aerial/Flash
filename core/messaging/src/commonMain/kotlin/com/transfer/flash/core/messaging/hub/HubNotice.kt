@@ -15,6 +15,8 @@ public data class HubDropCounts(
     public val unverified: Int = 0,
     /** Readable hub messages refused because "Messages through the hub" is off. */
     public val readableOff: Int = 0,
+    /** Deliveries refused as older than the hub's retention: a replay of an envelope this device no longer knew (SEC-D15-02). */
+    public val stale: Int = 0,
 )
 
 /**

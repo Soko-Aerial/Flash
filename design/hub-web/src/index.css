@@ -1,0 +1,408 @@
+@import "tailwindcss";
+
+/* ============================================================================
+   Flash Hub tab redesign — web mock
+   Tokens are copied from the Compose sources, file path given per block:
+
+   - colours:  ui/theme/.../theme/FlashColors.kt        (FlashColors.light()/dark())
+   - type:     ui/theme/.../theme/FlashTypography.kt    (12 text styles)
+   - shapes:   ui/theme/.../theme/FlashShapes.kt + FlashHubMotion.kt (HubShapes)
+   - spacing:  ui/theme/.../theme/FlashSpacing.kt, FlashDimensions.kt
+   - bottom nav: ui/chat/.../shell/FlashBottomNav.kt     (UI-046 hanging bar)
+   - desktop rail: ui/chat/.../adaptive/FlashNavigationRail.kt
+
+   Spelling: 1dp ≈ 1px here. Every colour is written once per theme below; no
+   component hard-codes a colour. Theme classes land on each app frame so dark
+   and light can sit side by side on the review page.
+   ========================================================================= */
+
+/* ---------- App colours (FlashColors) — one class per theme, per frame ----- */
+
+.theme-dark {
+  --app-bg: #07080A;              /* void                → backgroundApp  */
+  --bg-page: #101218;             /* backgroundChat      → list page bg   */
+  --surface: #181C26;             /* surface1            → backgroundSurface, sheet */
+  --surface-sub: #101218;         /* surface0            → backgroundSurfaceSubtle */
+  --surface-str: #222836;         /* surface2            → backgroundSurfaceStrong */
+  --surface-3: #2C3244;           /* surface3                             */
+  --line: #222836;                /* borderSubtle (hairline)              */
+  --line-2: #2C3244;              /* borderDefault                        */
+  --line-3: #454C5C;              /* borderStrong                         */
+  --text: #F5F6F8;                /* textPrimary   (graphite50)           */
+  --text-2: #A8B0C0;              /* textSecondary (graphite300)          */
+  --text-3: #6E778A;              /* textTertiary  (graphite500)          */
+  --on-accent: #042F2B;           /* textOnAccent  (pulse900)             */
+  --link: #4ECCBE;                /* textLink      (pulse300)             */
+  --error: #F87171;               /* textError     (error400)             */
+  --ok: #4ADE80;                  /* textSuccess   (success400)           */
+  --online: #4ADE80;              /* statusOnline                         */
+  --offline: #6E778A;             /* statusOffline                        */
+  --spark: #FFB84D;               /* statusTransfer, accentSecondary      */
+  --accent: #1FB8A6;              /* accentPrimary (pulse400)             */
+  --accent-dim: rgba(31, 184, 166, 0.14);   /* accent 14%  (rail tab)      */
+  --accent-16: rgba(31, 184, 166, 0.16);    /* accent 16%  (nav chip)      */
+  --accent-35: rgba(31, 184, 166, 0.35);    /* accent 35%  (medallion ring)*/
+  --accent-a22: rgba(31, 184, 166, 0.22);
+  --accent-a08: rgba(31, 184, 166, 0.08);
+  --accent-a12: rgba(31, 184, 166, 0.12);
+  --scrim: rgba(0, 0, 0, 0.60);   /* scrimDark                            */
+  --field: #222836;               /* composerInputBackground              */
+  --input-fg: #F5F6F8;
+  --shadow-nav: 0 8px 24px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --shadow-window: 0 24px 80px rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+
+.theme-light {
+  --app-bg: #F5F6F8;              /* graphite50   → backgroundApp         */
+  --bg-page: #EBEDF2;             /* backgroundChat                       */
+  --surface: #FFFFFF;             /* surface       → backgroundSurface    */
+  --surface-sub: #F5F6F8;
+  --surface-str: #D8DCE4;
+  --surface-3: #D8DCE4;
+  --line: #EBEDF2;                /* borderSubtle */
+  --line-2: #D8DCE4;              /* borderDefault */
+  --line-3: #A8B0C0;              /* graphite300  */
+  --text: #171A22;                /* graphite900  */
+  --text-2: #454C5C;              /* graphite700  */
+  --text-3: #6E778A;              /* graphite500  */
+  --on-accent: #FFFFFF;           /* textOnAccent */
+  --link: #0A7A70;                /* textLink     (pulse600)              */
+  --error: #D64545;               /* error500     */
+  --ok: #1A9B52;                  /* success500   */
+  --online: #1A9B52;
+  --offline: #6E778A;
+  --spark: #E8950A;
+  --accent: #0D9488;              /* pulse500     */
+  --accent-dim: rgba(13, 148, 136, 0.14);
+  --accent-16: rgba(13, 148, 136, 0.16);
+  --accent-35: rgba(13, 148, 136, 0.35);
+  --accent-a22: rgba(13, 148, 136, 0.22);
+  --accent-a08: rgba(13, 148, 136, 0.08);
+  --accent-a12: rgba(13, 148, 136, 0.12);
+  --scrim: rgba(0, 0, 0, 0.40);   /* scrimLight */
+  --field: #EBEDF2;
+  --input-fg: #171A22;
+  --shadow-nav: 0 6px 18px rgba(23, 26, 34, 0.16), 0 2px 6px rgba(23, 26, 34, 0.10);
+  --shadow-window: 0 24px 80px rgba(23, 26, 34, 0.18);
+  color-scheme: light;
+}
+
+/* Avatar palette (FlashColors.avatarPalette*) — backgrounds + matching text. */
+.pulse-avatar { background: #085F58; color: #C8F0EA; }  /* dark pair 0 */
+.cyan-avatar  { background: #006970; color: #D4F5F8; }  /* dark pair 1 */
+.violet-avatar{ background: #553BD8; color: #EDE8FF; }  /* dark pair 2 */
+.spark-avatar { background: #9A6200; color: #FFF0D6; }  /* dark pair 3 */
+.ok-avatar    { background: #0F6B38; color: #D4F5E0; }  /* dark pair 4 */
+
+.theme-light .pulse-avatar { background: #9FE0D6; color: #042F2B; }
+.theme-light .cyan-avatar  { background: #A8E8EF; color: #002124; }
+.theme-light .violet-avatar{ background: #D4CBFF; color: #1A114D; }
+.theme-light .spark-avatar { background: #FFE0A8; color: #4A3000; }
+.theme-light .ok-avatar    { background: #A8E8C0; color: #002213; }
+
+/* ---------- FlashTypography — 1px ≈ 1sp ---------------------------------- */
+
+.t-display { font: 600 24px/32px var(--font-app); letter-spacing: -0.2px; }
+.t-h1      { font: 600 20px/28px var(--font-app); }
+.t-h2      { font: 600 18px/24px var(--font-app); }  /* headingMedium, top bars */
+.t-h3      { font: 600 16px/20px var(--font-app); }
+.t-body    { font: 400 16px/22px var(--font-app); }
+.t-body-s  { font: 600 16px/22px var(--font-app); }
+.t-cap     { font: 400 14px/20px var(--font-app); }
+.t-cap-s   { font: 600 14px/20px var(--font-app); }
+.t-meta    { font: 400 12px/16px var(--font-app); }
+.t-meta-s  { font: 600 12px/16px var(--font-app); }
+.t-num     { font: 400 12px/16px var(--font-app); font-variant-numeric: tabular-nums; }
+
+/* ---------- Base ---------------------------------------------------------- */
+
+* { box-sizing: border-box; min-width: 0; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: #181B22;
+  font-family: var(--font-app, system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased;
+}
+
+button { background: none; border: none; padding: 0; font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible { outline: 2px solid var(--accent, #1FB8A6); outline-offset: 2px; }
+
+button[disabled] { opacity: 0.55; cursor: default; }
+
+/* Hyphen as a wise review-page note */
+.mono-note { font: 400 12px/18px ui-monospace, monospace; color: #8a93a6; }
+
+/* ---------- Review page (this chrome is NOT the app design) --------------- */
+
+.Page {
+  min-height: 100%;
+  display: flex; flex-direction: column; gap: 20px;
+  padding: 24px 28px 40px;
+}
+.Page-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
+.Page-headline { display: flex; align-items: center; gap: 10px; color: #E8ECF2; }
+.Page-headline .t-h2 { color: #F2F4F8; }
+.Page-caption { color: #98A1B3; max-width: 560px; }
+.Page-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+
+.PillGroup { display: flex; border: 1px solid #3A4050; border-radius: 999px; overflow: hidden; background: #20242e; }
+.PillGroup-label { font: 600 11px/12px system-ui, sans-serif; color: #98A1B3; letter-spacing: 0.4px; text-transform: uppercase; align-self: center; padding: 0 10px 0 12px; }
+.Pill { padding: 7px 12px; font: 500 12px/16px system-ui, sans-serif; color: #AEB7C6; white-space: nowrap; transition: background 140ms, color 140ms; }
+.Pill:hover { background: #2a2f3c; color: #d9dee8; }
+.Pill.is-on { background: #1FB8A6; color: #042F2B; font-weight: 700; }
+
+.Stage { flex: 1; display: flex; align-items: flex-start; justify-content: center; gap: 36px; flex-wrap: wrap; }
+
+/* ---------- Device frames -------------------------------------------------- */
+
+.Phone {
+  width: 412px; padding: 12px; border-radius: 44px;
+  background: #000; box-shadow: var(--shadow-window), inset 0 0 0 2px #2c3244;
+  flex: none;
+}
+.Phone-screen {
+  position: relative; overflow: hidden;
+  height: 820px; border-radius: 32px;
+  background: var(--app-bg); color: var(--text);
+  display: flex; flex-direction: column;
+  font-family: Roboto, "Segoe UI", system-ui, sans-serif;
+  --font-app: Roboto, "Segoe UI", system-ui, sans-serif;
+}
+.Desk {
+  position: relative;
+  width: min(1200px, 100%); flex: none;
+  border-radius: 14px; overflow: hidden;
+  background: var(--app-bg); color: var(--text); box-shadow: var(--shadow-window);
+  border: 1px solid #3A4050;
+  height: 780px;
+  display: flex; flex-direction: column;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  --font-app: "Segoe UI", system-ui, sans-serif;
+}
+
+/* Fake phone status bar (2dp of credibility, 12 lines of CSS) */
+.FStatus { height: 28px; display: flex; align-items: flex-end; justify-content: space-between; padding: 0 24px 4px; color: var(--text); flex: none; background: var(--surface); }
+.FStatus-meta { display: flex; gap: 5px; align-items: center; }
+
+/* ---------- Phone bottom nav (FlashBottomNav, UI-046 "hanging bar") ------- */
+
+.NavSpace { height: 80px; flex: none; }  /* content inset: 60 + 12 + 8 */
+.FNav {
+  position: absolute; left: 16px; right: 16px; bottom: 12px; height: 60px;
+  border-radius: 999px; background: var(--surface);
+  border: 1px solid var(--line); box-shadow: var(--shadow-nav);
+  padding: 0 4px; display: flex;
+}
+.NavCell {
+  flex: 1; position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
+.NavChip { position: absolute; top: 8px; height: 44px; border-radius: 999px; background: var(--accent-16); transition: left 220ms cubic-bezier(0.2, 0.9, 0.25, 1.05); }
+.NavCell > .NavIcon { color: var(--text-2); transition: color 160ms; position: relative; }
+.NavCell.is-on > .NavIcon { color: var(--accent); }
+.NavLabel { font: 400 14px/20px var(--font-app); color: var(--text-2); }
+.NavCell.is-on .NavLabel { font-weight: 600; color: var(--accent); }
+.NavBadge {
+  position: absolute; top: 9px; translate: 10px 0;
+  min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px;
+  background: var(--accent); color: var(--on-accent);
+  font: 700 9px/17px var(--font-app); text-align: center;
+}
+
+/* ---------- Rail (FlashNavigationRail, desktop, width 68dp) --------------- */
+
+.Rail { width: 68px; flex: none; display: flex; flex-direction: column; align-items: center; padding: 12px 0; background: var(--surface); gap: 16px; }
+.RailMedallion {
+  width: 44px; height: 44px; flex: none; border-radius: 12px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent-a22), var(--accent-a08));
+  border: 1px solid var(--accent-35);
+}
+.RailMedallion > span { width: 28px; height: 28px; border-radius: 999px; background: var(--accent-a12); display: grid; place-items: center; color: var(--accent); }
+.RailTabs { flex: 1; display: flex; flex-direction: column; gap: 8px; width: 100%; align-items: center; }
+.RailTab { width: 100%; height: 48px; position: relative; display: grid; place-items: center; }
+.RailTab-ind { display: none; }
+.RailTab.is-on .RailTab-ind { display: block; position: absolute; left: 0; top: 13px; width: 3px; height: 22px; border-radius: 0 2px 2px 0; background: var(--accent); }
+.RailTab-icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; color: var(--text-2); transition: background 140ms, color 160ms; position: relative; }
+.RailTab:hover .RailTab-icon { background: var(--surface-str); color: var(--text); }
+.RailTab.is-on .RailTab-icon { background: var(--accent-dim); color: var(--accent); }
+.RailTab-badge {
+  position: absolute; top: 1px; right: 1px; min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--accent); color: var(--on-accent);
+  font: 700 9px/16px var(--font-app); text-align: center;
+}
+.RailProfile { width: 36px; height: 36px; border-radius: 999px; background: var(--surface-str); color: var(--text); display: grid; place-items: center; font: 700 14px var(--font-app); }
+
+/* Desktop panes */
+.Desk-body { flex: 1; display: flex; height: 100%; }
+.RailRule { width: 1px; flex: none; background: var(--line); height: 100%; }
+.Pane-list { width: 47%; min-width: 480px; flex: none; display: flex; flex-direction: column; background: var(--app-bg); border-right: 1px solid var(--line); }
+.Pane-detail { flex: 1; display: flex; flex-direction: column; background: var(--app-bg); min-width: 300px; overflow-y: auto; }
+
+/* ---------- Top bars (FlashChatListTopBar / FlashHubTopBar) ---------------- */
+
+.TopBar { height: 56px; flex: none; display: flex; align-items: center; background: var(--surface); padding: 0 4px; gap: 2px; }
+.TopBar-title { flex: 1; padding-left: 12px; }
+.IconBtn { width: 48px; height: 48px; flex: none; display: grid; place-items: center; border-radius: 999px; color: var(--text); position: relative; }
+.IconBtn:hover { background: var(--surface-str); }
+.IconBtn .NavBadge { top: 4px; right: 4px; translate: 0 0; }
+.Phone .TopBar { border-bottom: 1px solid var(--line); }
+
+/* Search field state of the top bar */
+.SelectedRow { flex: 1; display: flex; align-items: center; gap: 8px; background: var(--field); border: 1px solid var(--line); border-radius: 12px; padding: 0 12px; height: 40px; margin: 0 4px; }
+.SelectedRow-input { flex: 1; border: none; outline: none; background: none; color: var(--input-fg); font: 400 16px/22px var(--font-app); }
+.SelectedRow-input::placeholder { color: var(--text-3); }
+
+/* ---------- Hub content ----------------------------------------------------- */
+
+.HubBody { flex: 1; overflow-y: auto; background: var(--bg-page); min-height: 0; display: flex; flex-direction: column; }
+.Hub-scroll { max-width: 640px; margin: 0 auto; padding: 0 16px 24px; }
+
+/* Org row — replaces the old hero. One calm line, nothing animated. */
+.OrgRow { display: flex; align-items: center; gap: 12px; padding: 14px 16px 12px; }
+.OrgMark { width: 44px; height: 44px; flex: none; border-radius: 13px; background: var(--accent-dim); color: var(--accent); font: 700 17px var(--font-app); letter-spacing: 0.4px; display: grid; place-items: center; }
+.OrgLine1 { display: flex; align-items: center; gap: 8px; }
+.OrgDot { width: 9px; height: 9px; flex: none; border-radius: 999px; background: var(--online); }
+.OrgDot.is-offline { background: var(--offline); }
+.OrgCounts { color: var(--text-3); }
+
+/* Status strip: tinted surface, icon + one sentence (never colour alone) */
+.Strip { display: flex; gap: 10px; align-items: center; border-radius: 12px; padding: 9px 12px; margin: 0 16px 4px; }
+.Strip-neutral { background: var(--surface-str); color: var(--text-2); }
+.Strip-caution { background: var(--accent-dim); color: var(--text-2); }
+.Strip-sentence { font: 400 13px/18px var(--font-app); }
+
+/* Segment tabs: text on a hairline, 3dp capsule underline that glides (HubShapes) */
+.SegTrack { display: flex; gap: 24px; padding: 6px 16px 0; position: relative; border-bottom: 1px solid var(--line); background: var(--bg-page); }
+.SegTrack-wrap { background: var(--bg-page); position: sticky; top: 0; z-index: 2; }
+.Seg { position: relative; padding: 10px 2px 11px; color: var(--text-2); display: flex; align-items: center; gap: 7px; }
+.Seg.is-on { color: var(--text); }
+.Seg-underline { position: absolute; bottom: -1px; height: 3px; border-radius: 999px; background: var(--accent); transition: left 180ms ease-out, width 180ms ease-out; }
+.Seg-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--accent); margin-left: -2px; }
+
+/* Cards (HubShapes.card = 16dp, hairline border) */
+.Card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; }
+.Card.is-pinned { border-color: var(--accent-35); }
+
+.NewsCard { display: flex; flex-direction: column; gap: 7px; cursor: pointer; }
+.NewsCard:hover { border-color: var(--line-2); }
+.NewsCard-top { display: flex; align-items: center; gap: 8px; }
+.NewsTitle { color: var(--text); }
+.NewsHead { color: var(--text-2); }
+.NewsFoot { display: flex; align-items: center; gap: 8px; color: var(--text-3); }
+.UnreadDot { width: 8px; height: 8px; border-radius: 999px; background: var(--accent); flex: none; }
+.NewsBody { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Chips (HubShapes.chip = 6dp) */
+.Chip { padding: 3px 8px; border-radius: 6px; background: var(--surface-str); color: var(--text-2); font: 500 11px/14px var(--font-app); white-space: nowrap; }
+.Chip-accent { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.ChipPinned { display: inline-flex; gap: 5px; align-items: center; }
+.SectionLabel { display: flex; align-items: center; gap: 10px; padding: 18px 2px 8px; color: var(--text-3); font: 600 11px/14px var(--font-app); letter-spacing: 0.9px; text-transform: uppercase; }
+.SectionLabel::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
+/* People */
+.FilterChips { display: flex; gap: 8px; overflow-x: auto; padding: 12px 16px 4px; scrollbar-width: none; }
+.FilterChips::-webkit-scrollbar { display: none; }
+.FilterChip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--text-2); font: 500 13px/18px var(--font-app); white-space: nowrap; background: var(--surface); }
+.FilterChip:hover { border-color: var(--line-3); color: var(--text); }
+.FilterChip.is-on { background: var(--accent-dim); border-color: var(--accent-35); color: var(--accent); font-weight: 600; }
+
+.PersonRow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 16px; text-align: left; min-height: 64px; border-radius: 14px; }
+.PersonRow:hover { background: var(--surface); }
+.PersonRow.is-sel { background: var(--surface); }
+.PersonName { color: var(--text); display: flex; align-items: center; gap: 6px; }
+.PersonSub { color: var(--text-3); font: 400 12px/16px var(--font-app); }
+.Presence { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--text-3); font: 400 12px/16px var(--font-app); }
+.PDot { width: 9px; height: 9px; border-radius: 999px; }
+.PDot-on { background: var(--online); }
+.PDot-off { background: transparent; border: 2px solid var(--offline); }
+.PDot-unknown { background: var(--offline); opacity: 0.5; }
+
+.Avatar { width: 44px; height: 44px; flex: none; border-radius: 999px; display: grid; place-items: center; font: 700 15px var(--font-app); }
+.Avatar-sm { width: 24px; height: 24px; font: 700 9px var(--font-app); }
+.Avatar-lg { width: 64px; height: 64px; font-size: 22px; letter-spacing: 0.5px; }
+
+/* Groups */
+.GroupRow { display: flex; align-items: center; gap: 12px; padding: 9px 16px; min-height: 60px; border-radius: 14px; }
+.GroupName { color: var(--text); }
+.GroupSub { color: var(--text-3); font: 400 12px/16px var(--font-app); }
+.BtnText { display: inline-flex; align-items: center; gap: 8px; color: var(--accent); font: 600 14px/20px var(--font-app); padding: 8px 10px; border-radius: 8px; }
+.BtnText:hover { background: var(--accent-dim); }
+
+/* Buttons (FlashShapes.button = 12dp, min touch 48dp) */
+.Btn { height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; font: 600 16px/22px var(--font-app); }
+.Btn-primary { background: var(--accent); color: var(--on-accent); }
+.Btn-primary:hover { filter: brightness(1.06); }
+.Btn-quiet { border: 1px solid var(--line-2); color: var(--text); }
+.Btn-quiet:hover { background: var(--surface-str); }
+
+/* Empty states + notices */
+.Empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 48px 32px; }
+.Empty-title { color: var(--text); font-weight: 600; }
+.Empty-body { color: var(--text-3); }
+
+.Notice { padding: 24px 16px 0; max-width: 640px; margin: 0 auto; }
+.NoticeCard { margin-top: 16px; }
+.NoticeCard-title { color: var(--text); font-weight: 600; }
+
+/* Skeleton (flashShimmer style, no spinner) */
+.SkelRow { display: flex; gap: 12px; align-items: center; padding: 10px 16px; }
+.Skel { border-radius: 8px; background: linear-gradient(100deg, var(--surface-str) 40%, var(--surface-3) 50%, var(--surface-str) 60%); background-size: 200% 100%; animation: shimmer 1.3s infinite linear; }
+@keyframes shimmer { from { background-position: 130% 0; } to { background-position: -70% 0; } }
+
+/* Sheets & scrim (phone); panes reuse the same components on desktop */
+.Scrim { position: absolute; inset: 0; background: var(--scrim); z-index: 30; display: flex; align-items: flex-end; animation: fadeIn 160ms ease-out; }
+.Sheet { width: 100%; max-height: 82%; overflow-y: auto; background: var(--surface); border-radius: 24px 24px 0 0; animation: sheetUp 220ms cubic-bezier(0.2, 0.9, 0.25, 1.05); }
+@keyframes sheetUp { from { transform: translateY(48px); opacity: 0; } }
+@keyframes fadeIn { from { opacity: 0; } }
+
+/* Person detail (sheet body / desktop pane share classes) */
+.PersonHero { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 20px 20px 0; }
+.Reach { display: flex; align-items: center; gap: 9px; border-radius: 12px; padding: 10px 12px; margin: 14px 20px 0; font: 500 13px/18px var(--font-app); }
+.Reach-lan { background: var(--accent-dim); color: var(--text-2); }    /* calm info wash */
+.Reach-hub { background: var(--accent-dim); color: var(--text-2); }
+.Reach-off { background: var(--surface-str); color: var(--text-3); }
+.PersonActions { display: flex; gap: 10px; padding: 16px 20px 4px; }
+.PersonActions .Btn { flex: 1; }
+.Honesty { padding: 10px 20px 20px; color: var(--text-3); font: 400 12px/17px var(--font-app); display: flex; gap: 8px; }
+
+/* Announcement reader */
+.Reader { padding: 20px 20px 24px; display: flex; flex-direction: column; gap: 12px; }
+.Reader p { margin: 0; color: var(--text-2); font: 400 15px/24px var(--font-app); white-space: pre-wrap; }
+
+/* Composer */
+.Composer { padding: 20px; display: flex; flex-direction: column; gap: 10px; }
+.ComposerField { background: var(--field); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; color: var(--input-fg); }
+.ComposerField input, .ComposerField textarea { width: 100%; border: none; background: none; outline: none; color: var(--input-fg); font: 400 15px/22px var(--font-app); resize: vertical; min-height: 96px; }
+.ComposerField input { min-height: 0; }
+
+/* Search results */
+.SearchIntro { color: var(--text-3); padding: 4px 16px 10px; }
+.SearchRow { display: flex; gap: 10px; align-items: center; width: 100%; padding: 8px 16px; text-align: left; min-height: 52px; }
+
+/* ---------- Other tabs (kept light — the Hub is the design here) ---------- */
+
+.ChatRow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 0 16px; min-height: 72px; text-align: left; border-radius: 14px; }
+.ChatRow:hover { background: var(--surface); }
+.ChatPrev { min-width: 0; }
+.ChatPrev > div:first-child { color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.Tick { color: var(--text-3); margin-left: 6px; }
+
+.SetRow { display: flex; align-items: center; gap: 12px; width: 100%; padding: 14px 16px; text-align: left; border-radius: 14px; }
+.SetRow:hover { background: var(--surface); }
+.Switch { width: 42px; height: 26px; flex: none; border-radius: 999px; background: var(--surface-str); position: relative; }
+.Switch.is-on { background: var(--accent); }
+.Switch > span { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 999px; background: #fff; transition: left 140ms; }
+.Switch.is-on > span { left: 19px; background: var(--on-accent); }
+
+.XferRow { display: flex; gap: 12px; align-items: center; padding: 10px 16px; }
+.Bar { height: 6px; border-radius: 999px; background: var(--surface-str); overflow: hidden; }
+.Bar > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+
+/* Motion: the mock has no looping decoration and only small transitions.
+   Class-Free reduced-motion honouring: */
+@media (prefers-reduced-motion: reduce) {
+  .NavChip, .Seg-underline, .Skel { transition: none !important; animation: none !important; }
+  .Sheet, .Scrim { animation: none !important; }
+}

@@ -38,21 +38,22 @@ public object FlashTextFraming {
         return (listOf(prefix) + encodedPairs).joinToString(separator = " ")
     }
 
+    /**
+     * Parses `PREFIX key=value ...`. A key that appears twice makes the whole frame unreadable (`null`): a map would
+     * silently keep the last one, so a sender could hide a second value behind the one a reviewer or signer saw
+     * (SEC-D04-04). No Flash encoder repeats a key.
+     */
     public fun parseFields(text: String, expectedPrefix: String): Map<String, String>? {
         val parts = text.trim().split(' ')
         if (parts.firstOrNull() != expectedPrefix) return null
 
-        return parts.drop(1)
-            .mapNotNull { part ->
-                val separator = part.indexOf('=')
-                if (separator <= 0) {
-                    null
-                } else {
-                    val key = part.substring(0, separator)
-                    val rawValue = part.substring(separator + 1)
-                    key to unescape(rawValue)
-                }
-            }
-            .toMap()
+        val fields = LinkedHashMap<String, String>()
+        for (part in parts.drop(1)) {
+            val separator = part.indexOf('=')
+            if (separator <= 0) continue
+            val key = part.substring(0, separator)
+            if (fields.put(key, unescape(part.substring(separator + 1))) != null) return null
+        }
+        return fields
     }
 }

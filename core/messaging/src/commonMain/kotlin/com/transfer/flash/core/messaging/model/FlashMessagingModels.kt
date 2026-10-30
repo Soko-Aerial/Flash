@@ -38,6 +38,12 @@ public enum class FlashNetworkTransport {
     Lan,
     WifiDirect,
     Relay,
+
+    /**
+     * A hardware radio link (ADR-228): the peer is reachable only through this device's KISS TNC gateway,
+     * so text can go out but nothing else can. The header badge reads "Radio" instead of "No link".
+     */
+    Radio,
     Unknown,
 }
 
@@ -294,6 +300,11 @@ public data class FlashMessageUi(
     val daySeparator: String? = null,
     /** Non-null when this row is a call log entry instead of a text/attachment message. */
     val callEvent: FlashCallEventUi? = null,
+    /**
+     * ADR-227: how this outgoing message stands on the hardware radio (transmitted, waiting for the acknowledgement,
+     * delivered, or the refusal sentence). Null for every message that did not go by radio.
+     */
+    val radioNote: com.transfer.flash.core.messaging.radio.RadioDeliveryNote? = null,
 )
 
 @Immutable
@@ -524,6 +535,10 @@ public enum class FlashSelfMembership { Active, Left, Removed }
 public data class FlashConversationUiState(
     val header: FlashChatHeaderUiState,
     val messages: List<FlashMessageUi>,
+    /** Device-local outbound radio choice for this direct conversation. */
+    val radioPolicy: com.transfer.flash.core.common.model.FlashRadioPolicy = com.transfer.flash.core.common.model.FlashRadioPolicy.AUTO,
+    /** True only when an attachment has no LAN or sealed hub-file route and radio is the remaining route. */
+    val radioOnlyForAttachments: Boolean = false,
     /** Persisted unsent composer text for this conversation (#9), restored when the screen opens. */
     val draftText: String = "",
     /** Message ids pinned on this device in this conversation, newest pin first (device-local, never sent to a peer). */

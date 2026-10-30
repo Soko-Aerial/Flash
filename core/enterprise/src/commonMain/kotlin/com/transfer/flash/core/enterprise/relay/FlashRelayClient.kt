@@ -7,6 +7,7 @@ import com.transfer.flash.core.common.protocol.FlashEnvelope
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.core.hubprotocol.relay.RelayLimits
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,12 @@ public class FlashRelayClient(
         }
 
     public val state: StateFlow<RelaySessionState> = transport.state
+
+    /** The limits the hub announced in its WELCOME; null before the first one (SEC-D15-02). */
+    public val limits: StateFlow<RelayLimits?> = transport.limits
+
+    /** How far this device's clock is ahead of the hub's, or null when unknown (SEC-D15-02). */
+    public val serverTimeOffsetMs: StateFlow<Long?> = transport.serverTimeOffsetMs
 
     /** The latest failure of this client's connection (transport failures and keep-alive timeouts); null while healthy. */
     private val _failure = MutableStateFlow<RelayFailure?>(null)

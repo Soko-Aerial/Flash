@@ -1,6 +1,6 @@
 # Component Research & Design Document — Radio Gateway (UI-070..UI-074)
 
-**Status:** DESIGNED (2026-10-16)  
+**Status:** DESIGNED (2026-10-16) · **visual redesign v2 IMPLEMENTED 2026-10-28** (see “Redesign v2” at the end; the behaviour sections below still hold)  
 **Component IDs:**  
 - **UI-070**: Radio gateway settings entry, checklist, and overview  
 - **UI-071**: Find my radio: candidate detection, live nearby scan list, in-app pairing  
@@ -252,3 +252,94 @@ Every state presents **one plain sentence** and **one actionable next step**:
 ## What Makes This Flash?
 
 Flash is not a generic consumer chat app or an ad-hoc clone of APRS tools. The Radio Gateway interface embodies Flash's tactical core: high contrast, zero unnecessary visual noise, complete transparency about what the radio is doing, strict enforcement of regulatory authorization before encryption, and an uncompromising safety guarantee that hardware RF transmitters are never keyed silently.
+
+---
+
+## Redesign v2 — “one station plate, then calm rows” (2026-10-28, IMPLEMENTED)
+
+### Why
+
+The owner reported the page “looks weird”. Reading the implementation explained it: the screen was **eight
+outlined boxes stacked** (master switch, status, permission, candidate, remembered radio, voice, checklist,
+find/scan, then security, modes, tests), every one the same `backgroundSurface` fill with the same 1 dp
+`borderDefault`, every one titled with `headingMedium` — no hierarchy at all, so the page read like a
+wireframe form. On top of that:
+
+- status dots and permission/warning colours were **hardcoded** (`0xFF3FB950`, `0xFFD29922`, `0xFFF85149`,
+  `0xFFF0883E`) instead of the theme’s status tokens, so they clashed with the palette;
+- the controls were **stock Material**: `Switch` (twice), `AlertDialog` (twice), `OutlinedTextField`,
+  `CircularProgressIndicator`, `TextButton`;
+- the dialogs used raw `AlertDialog`, which on Compose Desktop renders through `DialogWindow` — the
+  separate native window that `FlashSheetHost`’s KDoc records as the “sheets open somewhere else” bug;
+- the desktop layout was **two columns of very unequal length** (left long, right short) inside a 1100 dp
+  cap, so a wide window showed a large empty area, and the 56 dp title bar with a back chevron duplicated
+  the shell’s own navigation;
+- the same facts were said three times (title, switch subtitle, status sentence) and the voice card sat
+  between the remembered radio and the scan list, pushing “Find my radio” below the fold.
+
+### The rule the redesign follows
+
+> Borders and fills are **information**, not decoration. A thing is a box only when it is (a) the station
+> itself or (b) something that needs an answer right now. Everything else is a section label and rows.
+
+So the page now uses the **Hub tab’s language** (UI-058) rather than inventing a second one: `HubShapes`
+(16 dp card, 12 dp control, 6 dp chip), `hubCapsStyle()` section labels with a hairline running to the edge,
+`hubRuleBelow` hairlines, `FlashHubSwitch`, `FlashHubButton`, `FlashHubTextAction`, `FlashHubChip`,
+`HubLiveDot`, `HubTone` (so every colour is a token: `textSuccess`, `accentSecondary`, `textError`,
+`accentPrimary`) and `hubClickable` for the Flash press response. No new primitives, no second visual system.
+
+### Layout
+
+One column at **every** size, capped at **720 dp and centred** (`widthIn(max = 720.dp)` on the list itself,
+header content capped the same way). This replaces both the old phone stack and the old two-column desktop
+split: no lopsided column and no 1100 dp cap leaving a void. Rows breathe (20 dp between sections, 16 dp page
+padding), which is what makes the page look “designed” instead of stacked.
+
+Order, top to bottom:
+
+1. **Header** — back chevron + “Radio gateway (beta)” (the chevron stays on desktop too: the demo host uses
+   it to leave the page; the shell’s own navigation is untouched).
+2. **Station plate** (`FlashRadioStationBlock`) — the *only* hero: a mark in the state’s tone, the radio’s
+   name (or “No radio set up yet”), the live state dot and sentence, the next step, and the master switch at
+   the right edge of the same row. When the gateway is on, the plate carries a 1 dp tone-tinted edge and a
+   `hubHeroBrush` wash; when it is off it is a flat `backgroundSurfaceSubtle`. Reconnect appears here (as a
+   quiet `FlashHubButton`) because it is the one action a broken link needs.
+3. **Permission banner** / **candidate banner** — full-width *strips* (tone wash + hairline under), never
+   boxes: the two things that genuinely need an answer. The candidate strip holds “Use this radio” plus a
+   “Different radio” text action.
+4. **This link** — plain fact rows (radio, address, profile, callsign) with a `Forget` action row. Replaces
+   the old “Connected radio” card.
+5. **Set up your radio** — the three readiness steps as numbered rows (no card), shown while nothing is set
+   up, and while the gateway is off (so the page is never blank).
+6. **Nearby radios** — the scan action sits in the section header (“Scan for radios” / “Stop (12 s)”), the
+   discovered devices are rows with a category chip and a `Pair` / `Use this radio` action, and the battery
+   note is one tertiary line at the end.
+7. **Security profile** — two selection rows with a ring mark, subtitle and the `Authorised` /
+   `Required for military` chip. Profile M still routes to the authorisation sheet when not yet authorised.
+8. **Operational mode** — selection rows with `Active` / `Coming later` chips.
+9. **Radio voice** — the same content (listen switch, phase sentence, level bar, hold-to-talk, callsign
+   note) as section rows instead of a card.
+10. **Radio diagnostics** — a single row: “Send a test message” with a `Send` text action and, when the
+    button is unavailable, the existing “needs a live link” sentence as tertiary text.
+
+### Dialogs
+
+Both keep their exact behaviour and validation; the frame changes from `AlertDialog` to the house
+`FlashConfirmHost` seam (real M3 dialog on Android, in-window overlay on desktop — no separate native
+window), with a Flash text field (hairline box, `composerInputBackground` fill) and `FlashHubSwitch` for the
+acknowledgement. The RF-transmission warning uses the theme’s `accentSecondary` instead of `0xFFF0883E`.
+
+### What did **not** change
+
+Every `RadioGatewayController` call, every state field, every sentence in `FlashRadioCopy`, the
+`FlashRadioAction` table (RADUI-U04), the authorisation and transmit-warning gates, and the plan’s
+constraints (`FlashBackHandler`, `stopScan()` + `setVoiceListening(false)` on dispose, the `bottomInset`
+padding). `FlashRadioMath` is untouched, so all its unit tests still describe the page’s behaviour. This was
+purely visual, as the owner asked.
+
+### Verification
+
+`:ui:chat:compileKotlinJvm` (and the Android host compile) plus the radio tests in `:ui:chat:jvmTest`
+(`FlashRadioNoDeadActionsTest`, `FlashRadioCopyA11ySourceTest`, `FlashRadioMathTest`,
+`RadioGatewayUiMapperTest`, `FlashRadioSettingsEntryTest`). **Not device-verified**: `RADUI-DEV01` in
+`docs/testing/TEST-BACKLOG.md` covers the phone and desktop walk-through.

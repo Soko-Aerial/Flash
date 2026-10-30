@@ -4401,6 +4401,39 @@ Smallest wire change that old builds survive; cost control where the cost is (en
 EXP-024 / SHARE-04 measure CPU and legibility (replace the ladder); the first Android presenter is built; a pending MediaProjection / Wayland result
 differs from the assumptions in SCREEN-SHARE-DESIGN.md; the closed-window behaviour (SHARE-10) is known.
 
+### Amendment 2026-10-24 - the Android presenter, and a magnifier for the receivers (built, unit-tested, not device-verified)
+
+The owner asked for the last two missing pieces: presenting from an Android phone, and reading a shared screen on a small display.
+Neither changes the wire, so both are additions to this ADR rather than new ones.
+
+1. **Android presents through the vendored fork, not through `ScreenCaptureProvider`'s own capturer.** `WebRtc.peerConnectionFactory`,
+   `rootEglBase` and `applicationContext` are `internal` to `:webrtc-kmp`, so a new `AndroidScreenCapture.open(...)` lives in the fork's
+   `androidMain` beside the existing `DesktopScreenCapture`, and `AndroidScreenCaptureProvider` in `:core:calling` androidMain adapts it to
+   the same `ScreenCaptureProvider` the desktop implements. Reason: one seam, one ladder, one session code path; the alternative (making the
+   fork's internals public) would widen its API for every consumer.
+2. **The app supplies what only an app can, through a host seam.** `AndroidScreenCaptureHost` (consent via an Activity result, and the
+   `mediaProjection` foreground service) is installed by `MainActivity`; `supported` is true exactly when a host is installed, so an Android
+   host that never installed one (a test, a future library consumer) reports "cannot present" instead of failing at the tap. Cannot be done in
+   `:core:calling` because both halves are Activity/Service work.
+3. **A revoked projection is `SourceLost`, not a frozen picture.** The `MediaProjection.Callback` the fork registers is the app's, so
+   `AndroidCaptureHandle.revoked` becomes `ScreenShareRun.Check.SOURCE_LOST` in the existing watchdog and the session calls
+   `stopShare(ShareStopReason.SOURCE_LOST)`. Without this, a status-bar-chip stop or a locked screen is invisible once the first frame has
+   arrived (the no-frame watchdog only fires before it), and the share would keep "running" with a dead track. The notice sentence became
+   "The shared screen or window went away, so sharing stopped", because it no longer describes only a closed window.
+4. **Zoom is a receiver-side magnifier (UI-050h), and only for a presentation.** `FlashVideoZoomMath` (pure, unit-tested) holds a scale of
+   1x-5x and a pan of -1..1 per axis; `FlashCallVideoSurface` multiplies the picture it already fitted and offsets it inside the clipped box, so
+   nothing is renegotiated, the presenter never learns about it, and a device that does not zoom sees what it saw before. A camera picture is
+   never zoomable. Pan is a fraction rather than pixels because only the surface knows how much of the box the picture really covers (a
+   letterboxed axis has none). One zoom per call screen, reset when the presentation starts, changes presenter or ends.
+5. **The desktop conversion follows the zoom.** `DesktopVideoSink.outputSize` multiplies its target by the zoom (up to the frame's own size),
+   because otherwise magnifying would only enlarge a tile-sized Skia image.
+
+Consequences: `AndroidScreenCapture` is a fork modification (MODIFICATIONS.md); `:app` gained `FlashScreenCaptureService` and the
+`FOREGROUND_SERVICE_MEDIA_PROJECTION` permission; a phone can now be a presenter, so `SHARE-18` is unblocked. Android still cannot present from
+a **voice** call, cannot pick a single **window** (the system dialog offers the whole screen or one app), and does not track
+`onCapturedContentResize` (the shipped capturer has none), so a single-app share is letterboxed inside the full-screen virtual display. All of
+it is device-unverified: `SHARE-MOB-01`...`08`, `SHARE-ZOOM-01`...`06`.
+
 ## ADR-101 - Bluetooth/radio link: layers, seam and session-layer recommendation (2026-10-09) - PROPOSED
 
 ### Decision
@@ -6102,6 +6135,8 @@ AES-256-GCM nonce reuse under the same key results in complete loss of confident
 
 ## ADR-210 — Recommendation to Drop Modes 3 and 5 (Walkie-Talkie Bridge) from Plan R
 
+> **Partly SUPERSEDED 2026-10-23 by ADR-225.** The voice part of this recommendation rested on the radio needing Hands-Free and VOX keying. HTCommander's source shows an audio RFCOMM channel that keys the radio by itself, and the owner asked for it. The rest (no chat-over-voice bridge, no unattended transmission) still stands.
+
 ### Status
 ACCEPTED by the owner 2026-10-18 ("drop mode 3 and 5"; recommendation of stream R-audio after the BT-R10 spike). Modes 3 and 5 are removed from Plan R. The idea is parked as FO-28 in `docs/FUTURE-OPTIMIZATION.md`.
 
@@ -6565,3 +6600,336 @@ One driver for desktop, Android and library hosts. The class used only `Concurre
 
 ### Revisit when
 The app's private `PairingCoordinator` is folded onto `FlashPairing` (not done; the app is untouched). The interface is beta API and may change.
+
+
+## ADR-225 - Radio voice: hear and talk through the handheld over its vendor audio channel (supersedes the voice part of ADR-210 / FO-28)
+
+### Decision
+Flash gets a **radio voice** feature on Android: a foreground-only audio link to the remembered radio on the vendor RFCOMM service
+`39144315-32fa-40db-85ed-fbfeba2d86e6`, playing what the radio receives and sending the microphone while a button is held. It is
+separate from the KISS data link and from Flash chat and push-to-talk (nothing is bridged). Design and wire format: `docs/network/RADIO-AUDIO.md`.
+
+### Context
+The owner asked (2026-10-23) for the app to be configured like HTCommander so that audio can be received and transmitted, and to move
+on to data transfer only if that works. ADR-210 / FO-28 dropped radio voice because it assumed the radio audio needs Bluetooth Hands-Free
+and a keying mechanism (VOX). HTCommander's source shows the opposite: the audio is SBC in `0x7E` frames on a vendor RFCOMM channel and
+sending audio frames keys the radio. ADR-210's cost argument no longer holds, and the owner decided.
+
+### Alternatives considered
+- Keep voice dropped (ADR-210): rejected by the owner's request.
+- Hands-Free profile / SCO audio: not what these radios use for this path; no keying.
+- Bridge Flash push-to-talk into the radio: rejected for now; an unattended or chat-triggered transmission has regulatory weight
+  (ADR-210's valid concern). Only an explicit hold-to-talk on the radio card transmits.
+- Depend on an SBC library: none for Kotlin Multiplatform that suits; HTCommander's Apache-2.0 Dart codec was ported (attribution in `NOTICE`),
+  and checked by round-trip SNR (45.8 dB at bitpool 18, 61.3 dB at bitpool 40).
+
+### Consequences
+- A new KMP-common audio package in `:core:radio` (framing, SBC, receiver, transmitter, session) with sans-IO tests, plus Android audio I/O.
+- The `lastGoodChannel` cache in `AndroidBluetoothCatalog` was keyed by address only and would have sent the audio link to the serial
+  channel; it is now keyed by address and service, and `openRadioLink` has `probeFixedChannels`.
+- Voice goes out clear (the Profile A regime). The card tells the operator to identify with a callsign; this is not a licence check.
+- Not built: background voice (no foreground service type for it), group/PTT bridging, a tuned bitpool.
+- **Amended 2026-10-23: desktop voice is built** (Windows): the audio channel has no COM port, so it is a Winsock `AF_BTH` RFCOMM client socket to the vendor service UUID (`WindowsRfcomm`, `ws2_32` via JNA, 64-bit JVM only), speaker and microphone through Java Sound (`JvmRadioPcmOutput/Input`), the same `RadioAudioSession` as Android, hosted by `DesktopRadioVoice` in `DesktopRadioGatewayController`. `RadioDeviceDiscovery` gained `supportsAudioLink` / `openAudioLink` (default: unsupported), so the voice card appears only where a host can open the channel.
+
+### Revisit when
+The first device test (`RADVOICE-*`) says whether the audio channel coexists with the KISS link, whether SDP finds the service, and how
+speech sounds at bitpool 18.
+
+
+## ADR-226 - Security audit 2026-10-22: what was fixed first, what was refuted, what waits for the owner
+
+### Decision
+Remediation of `docs/audit/security-2026-10-22` starts with the findings that were verified against the code and decisions of the day. Each finding keeps its status in the ledger (`FIXED-IN-CODE`, `ALREADY-FIXED`, `REFUTED`, `ACCEPTED-RISK`, `DEFERRED`, `OPEN`). The audit is a lead list, not a spec: a finding that contradicts an owner decision is not implemented.
+
+- **SEC-D02-01 (Critical).** `TofuX509TrustManager` (JVM and Android) accepts a peer only when `chain[0]` matches the pin. A handshake proves possession of the leaf key only, so a pinned certificate appended behind an attacker's own leaf proved nothing.
+- **SEC-D02-02 and SEC-D10-01.** An unsolicited inbound connection, and an automatic dial that names no device (gateway probe, subnet sweep: `connectManual(..., recordFirstUse = false)`), are accepted but write no first-use pin. A user-typed IP and every dial that names a device are unchanged (ADR-040). The pairing check still needs the key TLS saw, so `ObservedPeerPins` (`:core:security`) keeps it in memory for the life of the process and `peerIdentityPin` falls back to it. It is never persisted and never grants trust; pairing decides that.
+- **SEC-D05-01.** A direct LAN `TextMessage` from a sender that is neither paired nor a verified organisation colleague is dropped (`PeerTrustPolicy.mayChat`, probe `org.gate.deny reason=text_not_trusted`). The hub and radio bridges vet their senders themselves and call the handler with `vetSender = false`.
+- **SEC-D07-01 / SEC-D07-03 / SEC-D13-01 / SEC-D11-01 / SEC-D16-01.** Desktop and Android receive containment checks the canonical root, then the transfer folder, then the file; inbound auto-accept needs a paired peer; desktop chat log lines carry a length, never the text; `ACTION_OPEN_FILE` on the exported `MainActivity` opens only a real file under the received-files root (no `content://` or `file://` strings); announcement search binds every value.
+- **SEC-D04-01.** `SpoofingCharacters` (`:core:common`) lists the bidi and invisible characters. The file-name sanitizer replaces them, the hub-file codec refuses names containing them, and a chat sender name is stripped of them. Zero-width joiner and non-joiner stay (emoji sequences, Persian). Message text is not filtered. The Android receiver's private copy of the sanitizer was replaced by the shared `FlashPathSanitizer`.
+
+### Refuted or already handled
+- **SEC-D08-01** contradicts owner decision O-5 (every active v2 member receives and serves group files). Not implemented.
+- **SEC-D06-01** was fixed by RVW22 F2 (`5ce1b407`), which landed after the audited commit.
+- **SEC-D05-02** concerns legacy groups, whose forgeable membership is accepted (ERROR-082). v2 groups already verify the author.
+
+### Deferred (owner or device decision needed)
+- **SEC-D03-01** makes the initiator confirm the code too. That changes the pairing flow the owner device-verified on 2026-09-23.
+- **SEC-D07-05** would drop plaintext binary frames when a session key exists. Several binary senders (swarm, PTT audio, `WsSession.send`) were not shown to encrypt, so a blanket drop could break them. Needs a sender survey plus device checks.
+- **SEC-D01-01, SEC-D27-01**, and the Medium/Low list are not started.
+
+### Addendum 2026-10-23, second tranche (Medium and Low)
+Fixed in code, unit-tested, not device-verified (device checks `SECAUD-16..21`):
+- **Wire and codecs.** A repeated key makes a text frame unreadable (D04-04); a reaction emoji is capped at 64 characters, long ZWJ family emoji still fit (D04-02); pooled 16/32 KiB buffers are wiped on release (D04-03). CR/LF escaping (D04-05) is NOT done: frames are WebSocket messages, and `%0A` would show up in multi-line text on older peers; it needs an owner call.
+- **Messaging.** A delivery receipt retires a message only if this device sent it and the receipt comes from the peer it went to (D05-04); a direct typing indicator needs the same standing as chat and must name its transport peer (D05-03).
+- **Pairing and pins (found while verifying).** Tranche 1 stopped inbound first contact from writing a pin, but nothing wrote it afterwards, so a device paired over an inbound connection had trust and no pin (two desktop group tests failed: "its security key could not be verified"). Both pairing coordinators now save the key the code covered (`observedPeerPin`) when the pairing is confirmed and no pin exists.
+- **Invites.** Address hints are dialed only when they are private-LAN IPv4 (10/8, 172.16/12, 192.168/16, 100.64/10) or `.local` names with a port from 1024 up (`AddressHint`, D10-03).
+- **Desktop.** The single-instance IPC needs a per-run token kept in an owner-only `app.port`; lines and path counts are bounded; the state directory is owner-only on POSIX (D12-01, D12-03 in part). UNC paths (D12-02) and log permissions are not changed.
+- **Android.** Swarm pieces and received files are excluded from cloud backup and device transfer (D13-02); the pin-widget action is handled in debuggable builds only (D11-04).
+- **Network.** `HandshakeAdmission`: at most 64 handshakes in flight and 16 per remote host (D24-01).
+- **Hub.** At most 8 live bearer tokens per device (D14-03); a sender may hold at most half of one recipient's mailbox once quotas are production-sized (D15-01); step-up challenges are bound to the console session (D17-01); directory miss limiters are bounded (D16-02).
+- **Build and repository.** `mavenLocal()` only serves group `com.transfer.flash` (D21-01); the CI token is read-only (D21-03); key and certificate extensions are git-ignored (D22-02); the deployment guide warns against tokens on the command line (D18-01).
+
+Still open and needing the owner: D27-01 (hub-signed directory), D20-01 (frame direction in the AAD, wire change), D04-05 (CR/LF escaping).
+
+### Addendum 2026-10-23, owner decisions on the open list
+The owner answered the list above:
+- **SEC-D03-01 and SEC-D03-06 — do them.** The initiator is now a consenting side too: after the code exists it enters `AwaitingLocalDecision` (the phase only the responder used), the dialog shows Accept/Decline plus "Accept only if <peer> shows the same code.", `PAIR_CONFIRM` is sent only once BOTH sides have accepted (no wire change: the initiator's accept is the confirm), and a PAIR_ACCEPT that arrives before the local user accepts is held rather than reported. Unit-tested both orders, mutation-checked (removing the "local accepted" condition fails the full-handshake test), device check `SECAUD-22` owed. This deliberately changes the pairing flow device-verified on 2026-09-23.
+- **SEC-D07-05 and SEC-D01-01 — deferred to future optimisation** (`docs/FUTURE-OPTIMIZATION.md`).
+- **SEC-D11-02 (FLAG_SECURE) and SEC-D11-06 (release log stripping) — left as they are** by owner decision; recorded in the ledger, not implemented.
+- **SEC-D26-01, SEC-D21-02 and SEC-D15-02 — do them** (next in this tranche).
+- **SEC-D27-01, SEC-D20-01 and SEC-D04-05 — explained to the owner, not implemented yet.**
+
+### Addendum 2026-10-23, SEC-D15-02 (hub relay replay)
+The recipient is the only side that can tell a replay from a fresh message, so the fix is there, and it needed no counter on the wire:
+the hub already knows how long it keeps an undelivered message, so it announces that (`FLASH_HUB_WELCOME.limits.mailboxTtlMs`, optional;
+a hub that predates it sends nothing and the client assumes 7 days) and `HubChatBridge` refuses and acknowledges a delivery older than the
+announced retention plus `HubContract.MESSAGE_AGE_GRACE_MS` (5 min), counting it in `droppedStale` and showing that count in the connection
+details. The sender's `sentAt` is inside the `SEALED_V1` AAD, so a hub cannot move it without the envelope failing to open.
+
+- The rule bounds the PAST only. A message that is genuinely fresh is refused only when the sender's clock is days off, so the sending side
+  measures the difference to the hub's announced time at the handshake and, past the grace, stamps with the hub's clock instead.
+- A `sentAt` of 0 is not judged (a very old peer).
+- Rejected, not retried: an old envelope that never becomes acceptable would otherwise be redelivered for ever.
+- A per-sender counter (a ratchet) would close the remaining "replay inside the window of a message whose id is gone", and is a wire
+  change; it is the reason the finding keeps a note instead of being closed outright.
+- Tested in `HubChatBridgeTest` (fresh, edge, default window, zero stamp, sender clock, counter), `MessageFreshnessTest` (the DTO default and
+  an older hub's WELCOME) and `RelayHandshakeContractTest` (a real hub announces its configured retention). Three mutations caught: dropping
+  the age rule, dropping the default window, dropping the sender clock correction. Device check `SECAUD-25`.
+
+### Revisit when
+The device checks `SECAUD-01..15` have been run, or when a deferred item is picked up.
+
+## ADR-227 - The radio is an optional per-chat fallback, not a transport (radio data, 2026-10-28)
+
+### Status
+ACCEPTED (owner, 2026-10-28: "the transfer should choose per chat ... the radio is also not a primary transport its optional").
+Recommendation and runbook: `docs/plans/RADIO-DATA-INTEGRATION.md`.
+
+### Decision
+1. The hardware radio (KISS TNC over Bluetooth SPP) is a **fallback message path**, not a transport: it is absent from
+   `CompositeDiscovery`, `ConnectionPlanner` and the session registry, it carries no presence, and `FlashTransportType.BLUETOOTH`
+   is not used for routing.
+2. The send path stays LAN -> hub -> radio (`RealFlashChatRepository.sendDirectViaPaths`), and the radio step runs only for a
+   peer that is paired (so a 32-byte session key exists) and radio-reachable.
+3. **Per-chat consent** is stored on the conversation row, `conversations.radioPolicy`: `AUTO` (radio may carry this chat when no
+   other path exists; default) or `NEVER` (never transmitted by radio). `PREFER` (radio before LAN) is deliberately not shipped:
+   it would make chats slow and occupy a shared half-duplex channel for no benefit; a one-off "send this one by radio" action is
+   the right tool if it is ever needed.
+4. Delivery is honest in the UI: a radio message shows "waiting for acknowledgement" until the cryptographic ACK returns, then
+   "delivered"; a failure shows the engine's sentence, never a silent "sent".
+5. Three gates must all be open before anything is transmitted: the global gateway switch (off by default), the operator
+   authorisation for encrypted traffic (Profile M), and the per-chat policy. Attachments are refused with a sentence and never
+   queued.
+
+### Context
+Radio voice was device-verified on 2026-10-28, which is why the radio is now a real feature rather than a spike. The data engine
+(`RadioChatEngine`, ACK-based delivery, four priority lanes) was already built and wired (ADR-213), but nothing in the UI showed
+that a message went by radio or whether it was acknowledged, so a healthy radio chat was indistinguishable from a LAN chat that
+never delivered. The channel is 1200 baud Bell 202 (~80 B/s of goodput), half-duplex, shared by everyone in range, and a data
+frame keys the transmitter for about 2 s; files, calls and presence chatter are therefore excluded.
+
+### Alternatives considered
+- **Radio as a first-class transport** (planner, presence, sessions): rejected. There is no discovery or handshake on the TNC, and
+  presence/typing traffic would occupy the channel permanently.
+- **A separate radio chat screen**: rejected. Two histories for one person, and no way to answer a radio message from the thread.
+- **Global-only policy** (a single "use radio" switch): rejected. The per-chat choice is what the owner asked for, and it is the
+  only way to keep a sensitive chat off the air while another chat still reaches a patrol.
+- **`PREFER` mode**: not shipped (see 3).
+
+### What this changes
+- `FlashMessageUi.radioNote`, rendered under an outgoing bubble (built 2026-10-28).
+- Probes `radio.tx.text`, `radio.tx.ack`, `radio.tx.fail`, `radio.rx.text`, `radio.rx.ack` (built 2026-10-28).
+- `conversations.radioPolicy` (Room schema step 21, `AUTO`/`NEVER`), read by the repository through a host-supplied predicate —
+  **planned, not built yet** (see `docs/plans/RADIO-DATA-INTEGRATION.md` section 7).
+- The per-chat toggle in the peer details sheet, disabled with a reason while the gateway is off — **planned, not built yet**.
+
+### Revisit when
+The two-radio test (`RADCHAT-DEV01`) passes and telemetry/position (phase 2 of the plan) is designed, or when a `PREFER` use case
+appears from real field use.
+
+### Amendment 2026-10-28 (from the first hardware run and both logs, ERROR-869)
+1. **Profile M is required for radio chat; Profile A is refused with a sentence.** Profile A frames are signed clear text, and a
+   Flash station verifies them with `RadioSession.ingestSigned`, which needs the sender's identity public key in
+   `addBroadcastSender`. No host registers one, and a Flash pairing stores only the key's **fingerprint**, so a signed frame from a
+   paired peer is always dropped as `SIGNED_NOT_ENABLED`, silently and without an ACK. The two-radio run showed exactly that:
+   ten such drops on the desktop after the phone restarted back to the default Profile A. Saying "Radio chat needs the encrypted
+   profile (Profile M)" is better than putting frames on the air that no Flash station can read. Making Profile A work would
+   require storing each peer's identity public key at pairing time (not built).
+2. **A retry is the same frame, never a re-encode.** The receiver names an inbound text `rad-<first counter>`; a re-encoded retry
+   is therefore a new message, and the first run stored one text three times. `RadioChatEngine` now keeps a sent message's
+   encoded frames (bounded, five minutes) and resends them byte for byte, so the receiver's `peer:firstCounter` dedup keeps one
+   message and only re-acks it.
+3. **Radio retry pacing is not LAN pacing.** A measured radio ACK took 3.8 to 9.4 s; the outbox ladder's first steps are 1.4 s and
+   2.6 s. A radio-carried message is now re-armed after `RADIO_RESEND_MS` (25 s), and the ACK deletes the row long before that.
+4. **The send path says which path it took.** `radio.path` (`sent`, `refused`, `no_bridge`, `not_reachable`) is emitted whenever
+   the radio is the last path, so a message that never touches the radio is no longer invisible in a log.
+
+
+### Amendment 2, 2026-10-28 (the second hardware run; ERROR-869 round 2)
+
+1. **No hidden attempt budget in the radio bridge.** The bridge's five-attempt cap was spent on "radio not connected" during a
+   two-minute link outage and left the message refused for ever, while other messages went through (phone log: `1b5fe2e0`
+   refused at 11:07:11-11:08:14, then again at 11:09:14 and 11:10:14 while `b5817d1c` and `ae5a8af8` were delivered). A link that
+   is down is not the message's failure: it is not counted, `NotConnected` from the engine gives the count back, a success clears
+   it, and the cap is gone. The outbox's wall-clock give-up budget (30 min) is the only give-up rule, exactly as ERROR-026 decided
+   for the LAN ladder.
+2. **Every refusal says why.** `radio.send.fail` carries a machine reason (`gateway_off`, `not_connected`, `too_long`,
+   `attachment`, `authorisation`, `unreachable`, `failed`) and the attempt number. `radio.path` gained `gateway` and `connected`, so
+   a `not_reachable` reads as "no pairing key for that peer here" (`gateway=true connected=true`) rather than "radio down".
+3. **A 1:1 text says which path it took, or that none did.** `chat.path` (`lan`, `hub`, `radio`, `radio_refused`, `none`) is
+   emitted once per attempt. The second run's desktop sends produced no line at all, and with the old probes that was
+   indistinguishable from a stale build, a message never leaving the outbox, or a LAN sink claiming success.
+4. **Radio does not become a presence source.** A peer we can only reach by radio still shows Offline; the proposal for a
+   presentation-only "Radio only" state (and the desktop dial hardening around it) is written in
+   `docs/network/PRESENCE-CONNECTIONS-PLAN.md` (section "2026-10-28") and is **not built**.
+   **Superseded later the same day by ADR-228:** the presentation state and the dial skip are built; the radio is still not a
+   presence source, a planner input or a trust claim.
+
+### Amendment 3, 2026-10-29 — per-chat consent and attachment refusal implemented
+
+1. `conversations.radioPolicy` is now Room schema **21**, defaults to `AUTO`, and is exposed only for direct chats as the
+   device-local **Radio fallback** setting (`Automatic` / `Never`). `NEVER` prevents only outbound radio transmission from this
+   device; it does not reject an inbound radio text from the peer.
+2. A chat set to `NEVER` is not presented locally as `Radio only`: that state would promise a fallback the operator has disabled.
+   LAN and hub routing remain eligible exactly as before.
+3. Attachments are refused at the picker only if radio is genuinely the remaining delivery option: the peer is radio-only **and**
+   `HubFileRoute` is not `READY`. A hub that can merely carry text is not sufficient evidence, while a sealed hub-file route is.
+   The repository repeats the check at send time and leaves a visible failed attachment row if the route changes after selection.
+4. The policy and refusal need the two-station device check `RADCHAT-POLICY-01`. The explicit operator **Stop sending** action for
+   an unacknowledged radio text and telemetry/position remain separate unfinished work.
+5. **Built 2026-10-30:** an outgoing message with a radio note that is neither delivered nor a permanent refusal offers
+   **Stop sending**. It deletes only that message's durable outbox row and marks the local retry stopped; it cannot withdraw a
+   transmitted frame, so a cryptographic ACK already in flight still becomes Delivered. `RADCHAT-STOP-01` remains device-owed.
+
+---
+
+## ADR-228 — "Radio only" is a presentation state, and a radio-carryable peer skips the LAN dial (2026-10-28)
+
+### Status
+ACCEPTED (implemented, unit-tested, **NOT device-verified**). Amends ADR-227 (radio data) and closes P-1, P-3 and P-2.1 of the
+2026-10-28 proposal in `docs/network/PRESENCE-CONNECTIONS-PLAN.md`. Design note: `docs/ui/chat-screen.md` (UI-004 / UI-030).
+
+### Context
+The 2026-10-28 two-radio run produced a contradiction the owner asked about directly ("the online and connection how should we do
+it"): texts went both ways by radio (ACKed 3.4 s and 3.5 s later) while the desktop's chat header could only say **Offline**,
+because presence is the LAN session set. Worse, every outbox pass first spent `AutoConnector.ensureSession` (~1 s) on a dial that
+could not succeed with the peer's Wi-Fi off, and then went to the radio.
+
+### Decision
+1. **One more presence state, ranked last.** `FlashPeerPresence.RadioOnly` is shown when all three hold: no session, no hub
+   session and no discovery sighting with the peer; this device holds a radio pairing key for it
+   (`RadioPairingAdapter.isPairedForRadio`); and this device's radio gateway is `CONNECTED`. It is fed by a new
+   `RadioOutboxPort.radioPeerIds` flow (default empty, so other implementations are unaffected), which both hosts pass into
+   `RealFlashChatRepository` as `radioOnlyPeerIds`; `PresenceHold.withRadioOnly` subtracts every stronger set, so a stale
+   emission can only under-claim.
+2. **It is presentation only.** It does not touch `PeerTrustPolicy`, presence sharing, typing, calls, files, group fan-out or the
+   planner, and nothing on the send path reads it. The radio stays an optional per-chat fallback (ADR-227). Copy says what is
+   true — "Radio only · texts go over the air" — never "online", because a station cannot be polled.
+3. **A radio-carryable peer skips the on-demand LAN dial — unless discovery sees it right now.** Both hosts' transport sinks call
+   `ensureSession` only when the radio cannot carry the target **or** the target is in `presence.reachablePeerIds`, because a live
+   sighting means a ~1 s dial can win and the LAN is faster: the radio stays the fallback, never the preference. The 5 s sweep still
+   dials the Wi-Fi path, and a real session still wins the next message, so nothing is permanently downgraded.
+4. **The header stops claiming a transport it does not have.** `FlashNetworkTransport.Radio` (badge "Radio", Bluetooth glyph) is
+   stamped by `directLinkUi` for that state, and the connection banner maps it to calm, non-blocking `Reachable` with the radio
+   wording. The presence dot keeps the ring shape (still no session) in `accentSecondary`.
+5. **The waiting sentence names the measured window** ("usually a few seconds", 3.4–3.5 s measured; resend pacing 25 s).
+
+### Alternatives considered
+- **Radio as a presence source** (report "I can hear you" between stations): rejected — a station cannot be polled, so it would be
+  wrong most of the time, and ADR-227 already rejected radio in discovery, the planner and presence sharing.
+- **Reusing `Reachable`** (seen without a session) for radio: rejected. It would label the peer "Online · connects when you send",
+  which is exactly the false promise the owner reported, and it would hide which path a send actually takes.
+- **Not skipping the dial** and only fixing the label: rejected. It leaves a second of latency per message on the one path that
+  works, and it makes the retry ladder look stuck.
+- **Adding a per-peer "one dial in flight" rule**: not needed. `ConnectionPlanner` already marks a device in flight while a dial
+  runs; the 21 dials in 9.5 min in the log are 4 remembered endpoints rotated under rule 7 backoff (30 s doubling to 10 min),
+  which is the designed behaviour, and expiries already log (`Remembered route expired peer=…`). Rule 6 requires 5 failures and
+  7 days, so no route expires inside a session — documented here so the next reader does not "fix" it again.
+
+### Consequences
+- The owner sees "Radio only" instead of Offline while a text can still go out, and the desktop's sends no longer pay a second for
+  a doomed dial.
+- Two new enum values (`FlashPeerPresence.RadioOnly`, `FlashNetworkTransport.Radio`) are a source-breaking change for any
+  external exhaustive `when`; the library is beta (ADR-103) and every in-repo site was updated.
+- Still missing: the per-chat consent switch (Room step 21, ADR-227 §7), the refusal sentence in the UI, and telemetry/position.
+
+### Revisit when
+`RADCHAT-DEV05` passes on two radios, or if a peer that was radio-only comes back on Wi-Fi and the header lags (the set is
+recomputed on gateway status / engine changes, not on every trust-store edit).
+
+---
+
+## ADR-229 — A hub mailbox deposit is not a delivery, so the radio is tried before it (2026-10-28)
+
+### Status
+ACCEPTED (implemented, unit-tested, **NOT device-verified**). Amends the path order ADR-227 introduced and fixes the reason the
+desktop's texts never reached the radio in the 2026-10-28 two-radio run (ERROR-869 round 3).
+
+### Context
+The owner reported that Android→desktop radio texting worked while **desktop→Android did not**, although the desktop receives
+Android's texts and its ACKs reach the phone ("it shows delivered on the android"). The desktop log shows a healthy radio link and
+both directions at the frame level:
+
+```text
+12:15:52.709 I/PROBE: radio.link.up link=COM15_@115200 attempt=1
+12:19:06.919 I/PROBE: radio.rx.text peer=adb2d87d bytes=2 duplicate=false signed=false
+12:19:06.923 I/PROBE: radio.tx.ack  peer=adb2d87d
+12:19:27.757 I/PROBE: chat.path peer=adb2d87d message=e624c8e2 path=hub
+12:19:28.748 I/PROBE: chat.path peer=adb2d87d message=e624c8e2 path=hub
+```
+
+`path=hub` twice per message is the outbox retrying down the hub path. `sendDirectViaPaths` asked
+`HubChatBridge.canCarry(target)` — relay usable **and** the directory lists the peer — and that returned true, so the hub took the
+message and the radio step below it was never reached. `canCarry` does not mean "will deliver now": it also covers the hub's
+**mailbox**, which is exactly what it does for an enrolled colleague who holds no live relay session. The message therefore sat in a
+server mailbox while the radio link was up and idle, and the sender had no way to tell the two apart (no hub verdict was ever logged).
+
+### Decision
+1. **Path order for one direct text** (LAN unchanged, `HUB_FALLBACK_GRACE_MS` unchanged):
+
+   | # | Path | Condition |
+   |---|---|---|
+   | 1 | LAN session | a live session exists and the write succeeded |
+   | 2 | hub, immediate | `canCarry(target)` **and** the hub reports the peer online (it holds a relay session for it) |
+   | 3 | radio | this device holds the peer's radio key and the gateway is connected |
+   | 4 | hub, mailbox | `canCarry(target)`; the peer collects it when it next connects |
+
+   Only a *live* hub session outranks the radio. A mailbox also loses to the radio because the radio is an immediate path (measured
+   ACK 3.4–9.4 s) while a mailbox is a promise.
+2. **"Online at the hub" comes from `EnterpriseHub.hubOnlinePeerIds`**, the same `StateFlow` the header already reads. The repository
+   keeps a synchronous mirror (`hubOnlineNow`, fed by a collector) and reads a `StateFlow` directly when it is given one, so path
+   selection never waits for a collector and can never pick a path from a half-initialised set.
+3. **A permanently refused radio frame still stops the message.** `RadioChatBridge` marks too-long, attachment, unconfirmed-Profile-M
+   and unreachable refusals as failures, and the mailbox is *not* used for those (`RadioDeliveryNote.isFailure`). A temporary refusal
+   (link down, gateway off) does fall through to the mailbox — the message is better held than dropped.
+4. **No message is left only on a silent radio.** If the radio carried a message once already and no ACK has come back, the next
+   attempt also deposits it in the hub mailbox. Receivers de-duplicate by message id, so a peer that did hear the first frame stores
+   it once. This is the safety net for a peer whose radio is off or out of range while the hub can still hold the text.
+5. **The log says which of the four happened.** `chat.path` gained `hub_mailbox` (deposit after a temporary refusal); `hub.ack` records
+   the hub's own verdict per message (`DELIVERED`, `HELD`, `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED`); `hub.online`
+   records what the presence poll answered (`read` / `unreadable` + count). Before this, "held in a mailbox" and "delivered" were
+   indistinguishable, which is what made the run unreadable.
+
+### Alternatives considered
+- **Radio before the hub in every case**: rejected. A colleague on another network is a normal hub case; the radio would cap their
+  chat at the air rate and could not even reach them if the stations are out of range.
+- **Require a hub delivery receipt before considering a hub send done** (timer-driven fallback to the radio): rejected for now. It
+  needs another timeout to tune and would duplicate ordinary hub traffic; the presence answer is already the fact we want ("does it
+  hold a session for this peer"), it is cheap, and it is the same set the UI shows.
+- **Drop `canCarry`'s mailbox behaviour for radio-capable peers**: rejected. A peer with a radio key is not always listening; the
+  mailbox is the only path that survives that.
+- **Make "Saved for later" visible on the bubble instead**: kept as a consequence (step 5), not as the fix. A note under a message
+  does not make it arrive.
+
+### Consequences
+- Desktop (and any host) texts to a colleague the hub cannot deliver to now go over the radio instead of into a mailbox, which is the
+  behaviour the owner asked for with two radios on the desk.
+- A hub peer that is online is still carried by the hub, and a hub-only colleague (no radio key) is unchanged: step 4 is the old
+  behaviour.
+- A radio text is now sent even when the peer's radio is off, whenever the hub has no session for it. The deposit on the second
+  attempt bounds that to one 25 s window before the text is also held for later.
+- `chat.path`, `hub.ack` and `hub.online` are new probe vocabulary; `docs/testing/PROBES.md` lists them.
+
+### Revisit when
+`RADCHAT-DEV06` passes on two radios with the hub unreachable, or if hub users report texts arriving by radio when the hub was merely
+a poll behind (the presence list is refreshed every `HubPresenceDefaults.POLL_MS`).

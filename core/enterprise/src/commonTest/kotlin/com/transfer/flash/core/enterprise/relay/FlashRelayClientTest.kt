@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class FlashRelayClientTest {
@@ -64,6 +65,22 @@ class FlashRelayClientTest {
         fun setState(s: RelaySessionState) {
             _state.value = s
         }
+    }
+
+    @Test
+    fun testTheAnnouncedLimitsAndClockOffsetReachTheCaller() = runTest {
+        val transport = FakeRelayTransport()
+        transport.setState(RelaySessionState.CONNECTED)
+        val client = FlashRelayClient(
+            deviceId = "dev-alice-001",
+            friendlyName = "Alice",
+            hubUrl = "ws://127.0.0.1:8443/flash-relay",
+            transport = transport,
+            timeSource = FakeTimeSource(10000L),
+        )
+        // A transport that announces nothing reports null, which is what the bridge's default window is for (SEC-D15-02).
+        assertNull(client.limits.value)
+        assertEquals(null, client.serverTimeOffsetMs.value)
     }
 
     @Test

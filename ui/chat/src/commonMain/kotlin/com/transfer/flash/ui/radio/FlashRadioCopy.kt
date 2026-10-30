@@ -22,6 +22,21 @@ public object FlashRadioCopy {
     public const val MASTER_SWITCH_SUBTITLE: String =
         "Use a handheld transceiver as an off-grid packet radio modem over VHF/UHF frequencies"
 
+    /** The station plate's headline before any radio is remembered (redesign v2). */
+    public const val STATION_NO_RADIO: String = "No radio set up yet"
+
+    // --- Section labels and fact rows (redesign v2) -------------------------------------------------------
+    public const val SECTION_LINK: String = "This link"
+    public const val FACT_RADIO: String = "Radio"
+    public const val FACT_ADDRESS: String = "Address"
+    public const val FACT_PROFILE: String = "Profile"
+    public const val FACT_CALLSIGN: String = "Callsign"
+    public const val FACT_NONE: String = "Not set"
+    public const val PROFILE_M_SHORT: String = "M · Encrypted"
+    public const val PROFILE_A_SHORT: String = "A · Signed cleartext"
+    public const val ACTION_SEND: String = "Send"
+    public const val ACTION_AUTHORISE: String = "Authorise"
+
     // --- Hardware Readiness Checklist --------------------------------------------------------------------
     public const val CHECKLIST_TITLE: String = "Is your radio ready?"
     public const val CHECKLIST_SUBTITLE: String = "Complete these three steps before connecting:"
@@ -48,12 +63,16 @@ public object FlashRadioCopy {
     public const val ACTION_SCAN_RADIOS: String = "Scan for radios"
     public fun actionStopScan(seconds: Int): String = "Stop ($seconds s)"
     public const val ACTION_PAIR: String = "Pair"
+    public const val ACTION_USE_RADIO: String = "Use this radio"
     public const val STATUS_PAIRING_IN_PROGRESS: String = "Pairing…"
     public const val ACTION_OPEN_BT_SETTINGS: String = "Open Bluetooth settings"
     public const val ACTION_CHECK_AGAIN: String = "Check again"
     public const val SCAN_NO_DEVICES: String =
         "No nearby devices found yet. Make sure your radio is powered on and discoverable."
     public const val SCAN_BATTERY_NOTE: String = "Scanning uses extra battery and slows active links."
+
+    /** Signal strength of a discovered device, shown next to its category chip. */
+    public fun signalHint(rssi: Int): String = "$rssi dBm"
 
     // Device Category Badges
     public const val BADGE_KNOWN_RADIO: String = "RADIO"
@@ -131,6 +150,9 @@ public object FlashRadioCopy {
         "AES-256-GCM encryption with rotating station tags. Requires frequency authorization."
     public const val PROFILE_M_RECOMMENDED_BADGE: String = "Required for military"
 
+    /** Shown on the Profile M row until the authorisation sheet has been confirmed (redesign v2: a badge, not a card). */
+    public const val PROFILE_M_NEEDS_AUTH_BADGE: String = "Authorisation needed"
+
     public const val PROFILE_A_TITLE: String = "Profile A (Signed cleartext)"
     public const val PROFILE_A_SUBTITLE: String =
         "Plaintext AX.25 frames with digital signatures and callsign identification for amateur bands."
@@ -185,6 +207,12 @@ public object FlashRadioCopy {
     public const val ACTION_TRANSMIT_NOW: String = "Transmit now"
     public const val ACTION_CANCEL_TRANSMIT: String = "Cancel"
 
+    // --- Chat Delivery Line (ADR-227, radio data) --------------------------------------------------------
+    public const val CHAT_RADIO_WAITING: String =
+        "Radio · sent, waiting for acknowledgement (usually a few seconds)"
+    public const val CHAT_RADIO_DELIVERED: String = "Radio · delivered"
+    public const val CHAT_RADIO_NOT_CONNECTED: String = "Radio · not connected, held in the outbox"
+
     // --- Point of Use Permissions ------------------------------------------------------------------------
     public const val PERMISSION_CARD_TITLE: String = "Permission required"
     public const val PERMISSION_REASON_TEXT: String =
@@ -195,10 +223,12 @@ public object FlashRadioCopy {
     public const val A11Y_BACK: String = "Navigate back"
     public const val A11Y_CLOSE: String = "Close dialog"
     public const val A11Y_MASTER_SWITCH: String = "Radio gateway master toggle"
+    public const val A11Y_START_SCAN: String = "Scan for nearby radios"
     public const val A11Y_STOP_SCAN: String = "Stop scanning for radios"
     public const val A11Y_FORGET_RADIO: String = "Forget remembered radio"
     public const val A11Y_RECONNECT_RADIO: String = "Reconnect to radio"
     public fun a11yPairDevice(name: String): String = "Pair with $name"
+    public fun a11yUseDevice(name: String): String = "Use $name as the radio"
     public const val A11Y_SELECT_PROFILE_M: String = "Select Profile M encrypted"
     public const val A11Y_SELECT_PROFILE_A: String = "Select Profile A cleartext"
     public fun a11ySelectMode(name: String): String = "Select $name"

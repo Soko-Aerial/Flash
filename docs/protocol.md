@@ -1254,7 +1254,7 @@ client                                   hub
 - Before WELCOME the hub accepts only a HELLO (16 KiB max); a silent client gets `ERR_HANDSHAKE_TIMEOUT` and a close at 10 s; a client that
   never completes the handshake can send no application frame. If no authenticator is configured the hub refuses every connection (fail closed).
 - `HubPrincipal {deviceId, role, departmentId, certSerial}` in WELCOME is the identity the hub stamped on the session; `limits` carries
-  `maxFrameBytes`, `maxPayloadBytes`.
+  `maxFrameBytes`, `maxPayloadBytes` and `mailboxTtlMs` (see "Message freshness" below).
 
 ### Relay frames after WELCOME
 
@@ -1318,7 +1318,21 @@ is relayed only for a member (`ERR_NOT_MEMBER` otherwise; missing group and non-
 | Mailbox per sender | 5000 rows / 100 MiB | `QUOTA_EXCEEDED` |
 | Mailbox global | 1,000,000 rows / 5 GiB | `QUOTA_EXCEEDED` |
 | Mailbox TTL | 7 days (`ServerConfig.mailboxTtlDays`) | expiry + `QUEUE_STATE EXPIRED` |
-| Client `sentAt` | clamped to +-5 min of the hub clock for ordering | never used for expiry |
+| Client `sentAt` | clamped to +-5 min of the hub clock for storage | never used for expiry; it IS the field a recipient's freshness window reads |
+
+**Message freshness (SEC-D15-02).** The relay has no counter, so replay protection rests on the recipient's `msgId` dedupe — which
+only covers ids the recipient still stores. Once a chat is cleared, a rogue hub (or a recorded capture replayed by it) could deliver an old
+envelope that would look new. Two members answer that:
+
+- `FLASH_HUB_WELCOME.limits.mailboxTtlMs` — how long THIS hub keeps an undelivered message (`ServerConfig.mailboxTtlDays`). Optional:
+  a hub that predates it sends nothing and a recipient then assumes `HubContract.DEFAULT_MAILBOX_TTL_MS` (7 days). An older client ignores it.
+- the sender's `sentAt`, which is authenticated (inside the `SEALED_V1` AAD), so the hub cannot move it without the envelope failing to open.
+
+A recipient refuses and acknowledges a delivery whose `sentAt` is older than the announced retention plus
+`HubContract.MESSAGE_AGE_GRACE_MS` (5 min), counting it in `HubChatBridge.droppedStale`. Nothing the hub may still legitimately hold is that
+old, so only a replay is refused. A `sentAt` of 0 (a very old peer) is not judged. A sender whose own clock differs from the hub's by more
+than the grace stamps with the hub's time instead (the handshake measures the difference), so a badly set clock cannot get every message
+refused. The rule bounds the past only: a fresh message from a sender whose clock runs ahead is accepted.
 
 **Revocation of a live connection.** A device revoked by certificate serial OR by device id is refused at the handshake (`ERR_REVOKED`), is
 checked again before every inbound frame, and is cut at once when an admin revokes it (`FLASH_REVOKED`, then close).

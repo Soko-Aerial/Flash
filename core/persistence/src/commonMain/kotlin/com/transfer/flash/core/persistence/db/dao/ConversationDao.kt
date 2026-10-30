@@ -27,6 +27,9 @@ public interface ConversationDao {
     @Query("UPDATE conversations SET muted = :muted WHERE id = :id")
     public suspend fun setMuted(id: String, muted: Boolean)
 
+    @Query("UPDATE conversations SET radioPolicy = :radioPolicy WHERE id = :id AND isGroup = 0")
+    public suspend fun setRadioPolicy(id: String, radioPolicy: String)
+
     @Query("UPDATE conversations SET lastReadCursor = :cursor WHERE id = :id")
     public suspend fun updateLastReadCursor(id: String, cursor: String)
 

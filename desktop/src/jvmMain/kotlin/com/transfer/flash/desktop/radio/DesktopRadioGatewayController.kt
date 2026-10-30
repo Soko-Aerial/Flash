@@ -30,6 +30,7 @@ import com.transfer.flash.ui.radio.RadioGatewayMode
 import com.transfer.flash.ui.radio.RadioGatewayUiState
 import com.transfer.flash.ui.radio.RadioGatewayUiMapper
 import com.transfer.flash.ui.radio.RadioSecurityProfile
+import com.transfer.flash.ui.radio.RadioVoiceUiState
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -95,6 +96,12 @@ public class DesktopRadioGatewayController(
     private var managerStateJob: Job? = null
     private var scanCountdownJob: Job? = null
 
+    private var activeDiscovery: RadioDeviceDiscovery? = null
+    private var voiceEngine: DesktopRadioVoice? = null
+    private var voiceMirrorJob: Job? = null
+    private val _voice = MutableStateFlow(RadioVoiceUiState())
+    override val voice: StateFlow<RadioVoiceUiState> = _voice.asStateFlow()
+
     private var isSendingTestMsg: Boolean = false
     private var testMsgSuccess: Boolean? = null
     private var selectedGatewayMode: RadioGatewayMode = RadioGatewayMode.FIELD_COMPANION
@@ -115,6 +122,8 @@ public class DesktopRadioGatewayController(
         activeManager?.let { return it }
 
         val discovery = discoveryFactory()
+        activeDiscovery = discovery
+        _voice.update { it.copy(available = discovery.supportsAudioLink) }
         val remStore = rememberedStoreFactory()
         val authStore = authorisationStoreFactory()
 
@@ -188,9 +197,12 @@ public class DesktopRadioGatewayController(
                 mgr?.disable()
             }
             stopScanCountdown()
+            closeVoice()
             managerStateJob?.cancel()
             managerStateJob = null
             activeManager = null
+            activeDiscovery = null
+            _voice.value = RadioVoiceUiState()
             onManagerChanged?.invoke(null)
 
             _uiState.update {
@@ -250,7 +262,7 @@ public class DesktopRadioGatewayController(
     override fun pair(id: String) {
         val mgr = activeManager ?: return
         val device = RadioGatewayUiMapper.deviceForId(mgr.state.value, id) ?: return
-        scope.launch { mgr.pair(device) }
+        scope.launch { mgr.chooseRadio(device) }
     }
 
     override fun reconnect() {
@@ -335,6 +347,37 @@ public class DesktopRadioGatewayController(
                 }
             }
         }
+    }
+
+    override fun setVoiceListening(on: Boolean) {
+        if (!on) {
+            voiceEngine?.setListening(false)
+            return
+        }
+        val discovery = activeDiscovery ?: return
+        if (!discovery.supportsAudioLink) return
+        val engine = voiceEngine ?: DesktopRadioVoice(
+            scope = scope,
+            openLink = {
+                val radio = activeManager?.state?.value?.rememberedRadio
+                if (radio == null) null else discovery.openAudioLink(radio)
+            },
+        ).also { created ->
+            voiceEngine = created
+            voiceMirrorJob = scope.launch { created.state.collect { _voice.value = it } }
+        }
+        engine.setListening(true)
+    }
+
+    override fun voicePushToTalk(down: Boolean) {
+        voiceEngine?.pushToTalk(down)
+    }
+
+    private fun closeVoice() {
+        voiceEngine?.close()
+        voiceMirrorJob?.cancel()
+        voiceMirrorJob = null
+        voiceEngine = null
     }
 
     override fun requestNearbyDevicesPermission() {

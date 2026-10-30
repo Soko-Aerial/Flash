@@ -42,6 +42,8 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-25 | Remote wipe of a lost company phone; presence "out of office" status; file drop to a department over the hub | 2026-10-14 | IDEA |
 | FO-26 | Per-department audit view for department heads; heads revoke leavers in their department | 2026-10-14 | IDEA (roadmap questions 7/8, ADR-136) |
 | FO-27 | Group message encryption (a per-group message key, end to end, also on the hub relay path); announcements and hub groups could then be sealed | 2026-10-14 | IDEA (owner asked to record it; needs an ADR and a design before any code) |
+| FO-29 | Refuse plaintext binary frames once the session holds a key (SEC-D07-05; `FlashTransfer.isEncrypted` is set but not enforced) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
+| FO-30 | Linux key vault: passphrase-derived master key instead of the fallback `vault.key` file next to the encrypted data (SEC-D01-01) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
 
 ---
 
@@ -420,7 +422,37 @@ Listed in the table above. None is scheduled. Notes for whoever picks one up:
 - **FO-25:** remote wipe needs a command channel and a cooperating client; out of office needs presence privacy rules; file drop needs department-scoped inbox rules.
 - **FO-26:** audit view scoped to a department; revocation rights for heads need an ADR-136 amendment.
 
+## FO-29 — No plaintext fallback for binary frames (SEC-D07-05)
+
+**Status:** POSTPONED 2026-10-23 by owner decision (ADR-226 addendum). Audit: `docs/audit/security-2026-10-22/D07-inbound-routing-and-transfers.md`.
+
+**The problem.** A binary frame on a session that holds a session key may still arrive as plaintext, and the router accepts it
+(`FlashInboundRouter:360`). Two consequences: traffic can be forced back to plaintext by whoever sits on the path, and
+`FlashTransfer.isEncrypted` (shown in the UI) is a property of the session, not a fact about this frame.
+
+**What the fix needs first.** A survey of every binary sender: swarm (`:core:swarm`), PTT audio and `WsSession.send`. Only the
+senders that always encrypt may take part in a "a key exists ⇒ plaintext binary is refused" rule without breaking anything; the
+rest either start encrypting or are listed as exceptions with a reason.
+
+**Revisit when:** the sender survey exists and there are two phones to check the swarm and PTT paths on a session with a key.
+
+## FO-30 — Linux key vault passphrase (SEC-D01-01)
+
+**Status:** POSTPONED 2026-10-23 by owner decision (ADR-226 addendum). Audit:
+`docs/audit/security-2026-10-22/D01-key-storage.md`.
+
+**The problem.** When D-Bus Secret Service is absent, `KeyFileVault` stores the master key in `vault.key` next to the encrypted
+identity key and database. Anyone who copies the folder gets everything; the encryption only defeats a partial copy.
+
+**Sketch of a fix.** On first start without a Secret Service, ask for a passphrase, derive the master key (Argon2id) and keep it
+in memory for the session; a "remember on this machine" option may still write a file, clearly labelled. Needs a wrong-passphrase
+path, a change/recover story and a decision on what happens when the vault is opened by an unattended service (PTT daemon).
+
+**Revisit when:** the Linux target becomes real work (FO-11) — it currently only has `LNX-*` device checks and L0 done.
+
 ## FO-28 - Radio walkie-talkie voice bridge (old radio Modes 3 and 5)
+
+> **Partly SUPERSEDED 2026-10-23 (ADR-225):** hearing and talking through the radio's own audio channel is now built (`docs/network/RADIO-AUDIO.md`, device checks owed). The *bridge* (Flash chat/PTT <-> radio audio) described below is still not built and still needs an owner decision.
 
 **Status:** PARKED. Dropped from Plan R by the owner on 2026-10-18 (ADR-210 ACCEPTED). Do not start unasked.
 

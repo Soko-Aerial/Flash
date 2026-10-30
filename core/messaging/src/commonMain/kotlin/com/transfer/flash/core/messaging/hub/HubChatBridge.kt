@@ -14,6 +14,7 @@ import com.transfer.flash.core.messaging.protocol.HubFileFrame
 import com.transfer.flash.core.messaging.protocol.HubFileFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
 import com.transfer.flash.core.enterprise.HubPeerStanding
+import com.transfer.flash.core.hubprotocol.HubContract
 import com.transfer.flash.core.security.enterprise.HubSealing
 import com.transfer.flash.core.security.enterprise.HubSealingPin
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,6 +148,32 @@ public enum class HubWaitReason {
 @FlashInternalApi
 public data class HubDeliveryNote(public val failed: Boolean, public val text: String)
 
+/**
+ * How old a hub delivery may be before the recipient refuses it (SEC-D15-02).
+ *
+ * The relay wire has no counter, so replay protection rested entirely on the recipient's own `msgId` dedupe: once a chat
+ * is cleared, a rogue hub (or a replayed capture) could re-deliver an old envelope and the client would accept it as new.
+ * A sender's `sentAt` is authenticated (`HubSealing` binds it into the AAD, so a hub can not move it without the
+ * envelope failing to open) and the hub says how long it keeps undelivered mail ([RelayLimits.mailboxTtlMs]), so anything
+ * older than that retention plus a grace cannot still be legitimately queued.
+ *
+ * Limits of the rule, on purpose:
+ * - it only bounds the PAST. A sender whose clock runs behind is accepted for as long as the window allows; a message
+ *   that is genuinely fresh is refused only if the sender's clock is days off.
+ * - `sentAt` of 0 or less (a very old peer) is not judged at all.
+ * - `replay` is NOT used: the hub sets it, so only the authenticated timestamp is worth reading.
+ */
+@FlashInternalApi
+public object HubFreshness {
+
+    /** The largest age accepted from a hub that announced [announcedTtlMs] (0 = it announced nothing). */
+    public fun limitMs(announcedTtlMs: Long): Long =
+        (if (announcedTtlMs > 0L) announcedTtlMs else HubContract.DEFAULT_MAILBOX_TTL_MS) + HubContract.MESSAGE_AGE_GRACE_MS
+
+    /** True when [sentAt] is further in the past than [limitMs] allows at [nowMs]. */
+    public fun isStale(sentAt: Long, nowMs: Long, limitMs: Long): Boolean = sentAt > 0L && nowMs - sentAt > limitMs
+}
+
 /** Friendly sentences for the hub's verdicts (no protocol words, AGENTS.md section 22). */
 @FlashInternalApi
 public object HubDeliveryText {
@@ -213,8 +240,15 @@ public class HubChatBridge(
      */
     public val droppedUnverified: StateFlow<Int> = _droppedUnverified.asStateFlow()
 
-    private val _waiting = MutableStateFlow<Map<String, HubWaitReason>>(emptyMap())
+    private val _droppedStale = MutableStateFlow(0)
 
+    /**
+     * Deliveries refused as too old for the hub's announced retention (SEC-D15-02): a replayed envelope whose message id
+     * was no longer known. Shown as a count in the connection details, like [droppedUnverified].
+     */
+    public val droppedStale: StateFlow<Int> = _droppedStale.asStateFlow()
+
+    private val _waiting = MutableStateFlow<Map<String, HubWaitReason>>(emptyMap())
     /** Per colleague: why content for them is held back from the hub right now. Updated by [canCarry]. */
     public val waiting: StateFlow<Map<String, HubWaitReason>> = _waiting.asStateFlow()
 
@@ -315,7 +349,19 @@ public class HubChatBridge(
             is MessageWireFrame.DeleteForEveryone -> DirectMessageActionCodec.encode(frame)
             else -> ChatTextFrameCodec.encode(frame) ?: return false
         }
-        return sendPayload(to, id, sentAt, CHAT_FRAME, body, seal = true)
+        return sendPayload(to, id, sendTime(sentAt), CHAT_FRAME, body, seal = true)
+    }
+
+    /**
+     * The `sentAt` this device should stamp a hub message with (SEC-D15-02). A recipient refuses a delivery older than
+     * the hub's retention, so a sender whose clock is days off would have every message refused. When the handshake
+     * measured a difference of more than [HubContract.MESSAGE_AGE_GRACE_MS], the reading is moved onto the hub's clock;
+     * smaller differences are left alone (they are inside the grace anyway and the local time stays the sender's).
+     */
+    private fun sendTime(sentAt: Long): Long {
+        val offset = port.serverTimeOffsetMs ?: return sentAt
+        if (offset > -HubContract.MESSAGE_AGE_GRACE_MS && offset < HubContract.MESSAGE_AGE_GRACE_MS) return sentAt
+        return sentAt + offset
     }
 
     /**
@@ -323,7 +369,7 @@ public class HubChatBridge(
      * open, ADR-123): they travel readable, and only when the user opted in to readable content.
      */
     public suspend fun sendGroup(to: String, id: String, sentAt: Long, frame: GroupWireFrame): Boolean =
-        sendPayload(to, id, sentAt, GROUP_FRAME, GroupFrameCodec.encode(frame), seal = false)
+        sendPayload(to, id, sendTime(sentAt), GROUP_FRAME, GroupFrameCodec.encode(frame), seal = false)
 
     /**
      * Sends a hub file's ticket to [to], sealed (inner type [HUB_FILE]). Never readable: false when the ticket cannot be
@@ -335,8 +381,10 @@ public class HubChatBridge(
             FlashLog.i("HUB", "file ticket not sealable now, kept id=${id.take(8)}")
             return false
         }
-        val sealed = sealing.seal(to, id, sentAt, HUB_FILE, HubFileFrameCodec.encode(frame)) ?: return false
-        return port.send(to, id, HubSealing.ENVELOPE_TYPE, sentAt, sealed)
+        // The stamped value must be the one the envelope is sealed over, or opening fails.
+        val stamp = sendTime(sentAt)
+        val sealed = sealing.seal(to, id, stamp, HUB_FILE, HubFileFrameCodec.encode(frame)) ?: return false
+        return port.send(to, id, HubSealing.ENVELOPE_TYPE, stamp, sealed)
     }
 
     private suspend fun sendPayload(to: String, id: String, sentAt: Long, innerType: String, body: String, seal: Boolean): Boolean {
@@ -438,7 +486,19 @@ public class HubChatBridge(
             }
         }
 
-        // 2. Content: sealed, or readable only when the user opted in.
+        // 2. Freshness (SEC-D15-02). The dedupe above only knows ids this device still remembers: once a chat is
+        // cleared, a rogue hub can replay an old envelope and it would look new. The sender's `sentAt` is inside the
+        // sealed AAD, so the hub cannot move it without the envelope failing to open, and nothing the hub may still
+        // hold is older than its own announced retention. This bound therefore holds for sealed deliveries; a
+        // READABLE one (the user's explicit opt-in, and group frames) has no AAD binding its `sentAt`, so against a
+        // lying hub it only bounds what the hub is willing to claim — the trust model for readable content already
+        // accepts that the hub can read and alter it.
+        if (HubFreshness.isStale(d.sentAt, timeSource.nowMs(), HubFreshness.limitMs(port.mailboxTtlMs))) {
+            _droppedStale.update { it + 1 }
+            return reject(d, "delivery is older than the hub's retention")
+        }
+
+        // 3. Content: sealed, or readable only when the user opted in.
         val innerType: String
         val body: String
         val sealed = d.type == HubSealing.ENVELOPE_TYPE
@@ -461,7 +521,7 @@ public class HubChatBridge(
             body = d.payload
         }
 
-        // 3. Decode and route. The author named inside the frame must be the authenticated sender.
+        // 4. Decode and route. The author named inside the frame must be the authenticated sender.
         return runCatching { route(d, innerType, body, sealed, sink) }.getOrElse { e ->
             if (e is kotlinx.coroutines.CancellationException) throw e
             FlashLog.w("HUB", "inbound id=${d.id} not stored: ${e::class.simpleName}")

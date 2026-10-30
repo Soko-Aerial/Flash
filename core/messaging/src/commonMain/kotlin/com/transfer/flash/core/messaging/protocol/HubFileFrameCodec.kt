@@ -3,6 +3,7 @@
 package com.transfer.flash.core.messaging.protocol
 
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.common.text.SpoofingCharacters
 import com.transfer.flash.core.enterprise.files.HubFileTicket
 import com.transfer.flash.core.hubprotocol.rest.HubFileIds
 import com.transfer.flash.core.security.enterprise.HubFileKey
@@ -164,7 +165,7 @@ public object HubFileFrameCodec {
         name.isNotBlank() &&
             name.length <= MAX_NAME_CHARS &&
             name.trim() != "." && name.trim() != ".." &&
-            name.none { it == '/' || it == '\\' || it.isISOControl() }
+            name.none { it == '/' || it == '\\' || it.isISOControl() || SpoofingCharacters.isSpoofing(it) }
 
     private const val DEFAULT_MIME = "application/octet-stream"
 }

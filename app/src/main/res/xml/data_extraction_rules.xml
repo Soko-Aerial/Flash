@@ -22,6 +22,8 @@
         <exclude domain="device_database" path="." />
         <exclude domain="external" path="." />
         <exclude domain="file" path="logs" />
+        <exclude domain="file" path="swarm" />
+        <exclude domain="file" path="FlashReceived" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="." />
@@ -29,5 +31,7 @@
         <exclude domain="device_sharedpref" path="." />
         <exclude domain="device_database" path="." />
         <exclude domain="file" path="logs" />
+        <exclude domain="file" path="swarm" />
+        <exclude domain="file" path="FlashReceived" />
     </device-transfer>
 </data-extraction-rules>

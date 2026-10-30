@@ -174,7 +174,11 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
      */
     @OptIn(FlashInternalApi::class)
     @SuppressLint("MissingPermission") // checked at the top through missingPermissions()
-    public fun openRadioLink(address: String, uuid: String = SPP_UUID_TEXT): ByteLink {
+    public fun openRadioLink(
+        address: String,
+        uuid: String = SPP_UUID_TEXT,
+        probeFixedChannels: Boolean = true,
+    ): ByteLink {
         val a = adapter ?: throw LinkException("this device has no Bluetooth")
         val missing = missingPermissions()
         if (missing.isNotEmpty()) {
@@ -195,7 +199,8 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
         }
 
         val id = UUID.fromString(uuid)
-        val key = address.uppercase()
+        // Keyed by service too: the audio channel and the serial channel of one radio are different RFCOMM channels.
+        val key = "${address.uppercase()}/${uuid.lowercase()}"
         val deadline = System.currentTimeMillis() + RADIO_CONNECT_BUDGET_MS
         var lastError: Exception? = null
         var ranOutOfTime = false
@@ -243,7 +248,7 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
         }
 
         try {
-            val cached = lastGoodChannel[key]
+            val cached = if (probeFixedChannels) lastGoodChannel[key] else null
             if (cached != null) {
                 attempt("insecure-ch$cached") { insecureChannel(cached) }?.let {
                     return RfcommLink(it, "rfcomm $address ch$cached")
@@ -258,6 +263,7 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
             }
 
             for (channel in 1..12) {
+                if (!probeFixedChannels) break // a fixed channel would answer for the serial service, not this one
                 if (channel == cached) continue // already tried above
                 attempt("insecure-ch$channel") { insecureChannel(channel) }?.let {
                     lastGoodChannel[key] = channel
@@ -265,7 +271,7 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
                 }
             }
 
-            attempt("secure-ch1") {
+            if (probeFixedChannels) attempt("secure-ch1") {
                 val m = device.javaClass.getMethod("createRfcommSocket", Int::class.javaPrimitiveType)
                 m.invoke(device, 1) as BluetoothSocket
             }?.let { return RfcommLink(it, "rfcomm $address secure-ch1") }
@@ -283,8 +289,15 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
         )
     }
 
+    /**
+     * The radio's audio channel (HTCommander's "BS AOC"): the vendor service, found by SDP only. Fixed-channel probing is
+     * off because channel 1 is the serial control channel and would be opened by mistake. See `docs/network/RADIO-AUDIO.md`.
+     */
+    public fun openRadioAudioLink(address: String): ByteLink =
+        openRadioLink(address, RadioServiceIdentity.VENDOR_SERVICE_UUID, probeFixedChannels = false)
+
     private companion object {
-        /** The RFCOMM channel that last carried a link, per address, so a reconnect skips the 1..12 probe. */
+        /** The RFCOMM channel that last carried a link, per address and service, so a reconnect skips the 1..12 probe. */
         val lastGoodChannel: ConcurrentHashMap<String, Int> = ConcurrentHashMap()
 
         /** Pause between attempts, so the radio can reset its RFCOMM state. */

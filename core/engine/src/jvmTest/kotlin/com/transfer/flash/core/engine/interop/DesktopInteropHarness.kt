@@ -187,10 +187,12 @@ public object DesktopInteropHarness {
          * plaintext, which production can no longer do, and a gate that exercises a different transport
          * from the product proves nothing about it. Pairing v2 binds to the pins recorded here.
          */
+        private val observedPeerPins = com.transfer.flash.core.security.trust.ObservedPeerPins()
         private val tlsOptions = TlsOptions(
             pinVerifier = TofuPinVerifier(
                 lookupPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
                 recordPin = { peerId, pin -> trustStore.savePin(FlashDeviceId(peerId), pin) },
+                observeInbound = observedPeerPins::observe,
             ),
             keyManagers = FlashCertMaker.createKeyManagers(
                 (crypto as PersistedFlashCrypto).javaKeyPair(),
@@ -257,6 +259,7 @@ public object DesktopInteropHarness {
             localModel = "desktop",
             ephemeralPublicKey = crypto.generateEphemeralEcdhKeyPair().publicKeyEncoded,
             trustStore = trustStore,
+            observedPeerPin = observedPeerPins::get,
             scope = scope,
             sendToPeer = { peerId, text ->
                 val session = network.activeSessions.value[FlashDeviceId(peerId)] as? WsSession

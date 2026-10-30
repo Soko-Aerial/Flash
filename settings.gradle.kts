@@ -23,7 +23,9 @@ dependencyResolutionManagement {
         // published `com.transfer.flash:*` tree. Harmless to every other module: local
         // publications only shadow a dependency if a version collides AND the cache prefers the
         // local one, and Gradle checks mavenLocal first only for coordinates that exist there.
-        mavenLocal()
+        // SEC-D21-01: only Flash's own group may come from the local Maven repository, so a stray artifact planted
+        // there cannot shadow a third-party dependency.
+        mavenLocal { content { includeGroup("com.transfer.flash") } }
         google()
         mavenCentral()
         maven { url = uri("https://maven-central.storage-download.googleapis.com/maven2/") }

@@ -14,6 +14,8 @@ public data class ConversationEntity(
     val isGroup: Boolean,
     val pinned: Boolean = false,
     val muted: Boolean = false,
+    /** Device-local permission for this direct chat to use radio as a fallback. */
+    val radioPolicy: String = "AUTO",
     val archived: Boolean = false,
     val sortOrder: Long = 0L,
     val lastReadCursor: String? = null,

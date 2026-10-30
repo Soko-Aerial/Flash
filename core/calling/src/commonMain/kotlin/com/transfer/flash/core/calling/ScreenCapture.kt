@@ -20,6 +20,13 @@ public interface ScreenCaptureHandle {
     /** Frames delivered so far. */
     public val frameCount: Long
 
+    /**
+     * True when the capture was ended outside the app (Android 15's status-bar chip, the screen locked, another app
+     * taking the projection). The platform delivers no further frames; the session stops presenting with
+     * [ShareStopReason.SOURCE_LOST]. Always false on a platform that cannot take a capture away.
+     */
+    public val revoked: Boolean get() = false
+
     /** Milliseconds since the latest frame, or null before the first one. */
     public fun lastFrameAgeMs(): Long?
 
@@ -51,7 +58,8 @@ public interface ScreenCaptureProvider {
     public suspend fun open(source: ShareSource, fps: Int, maxWidth: Int, maxHeight: Int): ScreenCaptureHandle
 }
 
-/** The provider for this platform: the desktop capturer on the JVM, none on Android yet (ADR-102). */
+/** The provider for this platform: the desktop capturer on the JVM, MediaProjection on Android (once a host installed
+ * [AndroidScreenCaptureSupport]'s consent flow), none where the platform cannot present. */
 internal expect fun defaultScreenCaptureProvider(): ScreenCaptureProvider
 
 /** A provider that cannot present. */

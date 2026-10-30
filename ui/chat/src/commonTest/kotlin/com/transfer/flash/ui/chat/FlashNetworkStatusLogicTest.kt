@@ -131,7 +131,36 @@ class FlashNetworkStatusLogicTest {
         assertEquals("LAN", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.Lan))
         assertEquals("Wi-Fi Direct", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.WifiDirect))
         assertEquals("Relay", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.Relay))
+        assertEquals("Radio", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.Radio))
         assertEquals("No link", FlashNetworkStatusMath.transportLabel(FlashNetworkTransport.Unknown))
+    }
+
+    @Test
+    fun `a radio-only peer is calm and reachable, never offline`() {
+        // ADR-228: the header says "Radio only" and the peer is not counted as nobody-reachable, or
+        // resolveHealth's peerCount==0 branch would say "Searching for devices…" over a working path.
+        val health = FlashNetworkStatusMath.resolveHealth(
+            transport = FlashNetworkTransport.Radio,
+            peerPresence = FlashPeerPresence.RadioOnly,
+            peerCount = 1,
+        )
+        assertEquals(FlashConnectionHealth.Reachable, health)
+        assertEquals(FlashNetworkBannerSeverity.Calm, FlashNetworkStatusMath.bannerSeverity(health))
+        assertFalse(FlashNetworkStatusMath.isBlockingState(health))
+        assertEquals(
+            "Radio only · texts go over the air",
+            FlashNetworkStatusMath.healthLabel(health, FlashNetworkTransport.Radio),
+        )
+        // The sighting wording must not leak onto the radio path.
+        assertTrue(
+            FlashNetworkStatusMath.healthLabel(health, FlashNetworkTransport.Radio)
+                .contains("Radio only"),
+        )
+    }
+
+    @Test
+    fun `the radio glyph is the Bluetooth mark, not the generic device`() {
+        assertEquals(FlashIcons.Bluetooth, FlashNetworkStatusMath.transportIconSpec(FlashNetworkTransport.Radio))
     }
 
     // --- Blocking + severity mapping ---

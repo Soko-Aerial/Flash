@@ -3,6 +3,7 @@
 package com.transfer.flash.core.messaging.protocol
 
 import com.transfer.flash.core.common.protocol.FlashTextFraming
+import com.transfer.flash.core.common.text.SpoofingCharacters
 
 /**
  * Text codec for the direct-chat frame family: `FLASH_MSG` / `FLASH_RCPT` / `FLASH_READ` /
@@ -40,6 +41,8 @@ public object ChatTextFrameCodec {
     public const val READ_PREFIX: String = "FLASH_READ"
     public const val REACT_PREFIX: String = "FLASH_REACT"
     public const val TYPING_PREFIX: String = "FLASH_TYPING"
+    /** Longest reaction accepted from the wire (UTF-16 units); a ZWJ family sequence is about 11 (SEC-D04-02). */
+    public const val MAX_EMOJI_CHARS: Int = 64
 
     public sealed interface DecodeResult {
         public data class Frame(val frame: MessageWireFrame) : DecodeResult
@@ -125,7 +128,7 @@ public object ChatTextFrameCodec {
                     localId = f["localId"] ?: return DecodeResult.RecognizedButInvalid,
                     conversationId = f["conversationId"] ?: "",
                     senderId = f["senderId"] ?: "",
-                    senderName = f["senderName"] ?: "Peer",
+                    senderName = f["senderName"]?.let(SpoofingCharacters::strip) ?: "Peer",
                     sentAt = f["sentAt"]?.toLongOrNull() ?: nowMs,
                     text = f["text"] ?: "",
                     // Reply/quote metadata (#8); blank fields (non-reply / legacy peer) → null.
@@ -160,7 +163,7 @@ public object ChatTextFrameCodec {
                     messageId = f["messageId"] ?: return DecodeResult.RecognizedButInvalid,
                     conversationId = f["conversationId"] ?: "",
                     memberId = f["memberId"] ?: return DecodeResult.RecognizedButInvalid,
-                    emoji = f["emoji"] ?: return DecodeResult.RecognizedButInvalid,
+                    emoji = f["emoji"]?.takeIf { it.length <= MAX_EMOJI_CHARS } ?: return DecodeResult.RecognizedButInvalid,
                     isAdded = f["isAdded"]?.toBooleanStrictOrNull() ?: true,
                 ),
             )

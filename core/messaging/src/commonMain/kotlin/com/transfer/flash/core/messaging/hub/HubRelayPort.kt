@@ -42,6 +42,17 @@ public interface HubRelayPort {
      */
     public val connected: Flow<Boolean>? get() = null
 
+    /**
+     * How long the connected hub keeps an undelivered message (SEC-D15-02), as the hub announced it in its WELCOME;
+     * 0 when it announced nothing (an older hub, or not connected). The bridge refuses a delivery older than this
+     * plus [com.transfer.flash.core.hubprotocol.HubContract.MESSAGE_AGE_GRACE_MS], so a replayed envelope cannot pass
+     * as new once the chat that held its id is gone.
+     */
+    public val mailboxTtlMs: Long get() = 0L
+
+    /** How far this device's clock is ahead of the hub's (SEC-D15-02), or null when unknown. */
+    public val serverTimeOffsetMs: Long? get() = null
+
     /** Hands one message to the hub. True means the frame was written to the hub socket, not that anyone got it. */
     public suspend fun send(to: String, id: String, type: String, sentAt: Long, payload: String): Boolean
 
@@ -118,6 +129,10 @@ public class FlashRelayHubPort(
 ) : HubRelayPort {
 
     override val usable: Boolean get() = enrolled() && client.state.value.canSend
+
+    override val mailboxTtlMs: Long get() = client.limits.value?.mailboxTtlMs ?: 0L
+
+    override val serverTimeOffsetMs: Long? get() = client.serverTimeOffsetMs.value
 
     override val deliveries: Flow<HubInbound> = client.incomingDeliveries.mapNotNull {
         HubInbound(it.from, it.id, it.type, it.sentAt, it.payload, it.group)

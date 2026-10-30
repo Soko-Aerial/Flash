@@ -5,6 +5,7 @@ package com.transfer.flash.core.enterprise
 import com.transfer.flash.core.enterprise.files.HubFilesApi
 import com.transfer.flash.core.enterprise.files.RealHubFilesApi
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.result.runSuspendCatching
@@ -232,6 +233,13 @@ public class EnterpriseHub(
             } else {
                 val ids = hubOnlineDeviceIds(directory, credentials.hubUrl)
                 if (ids != null && ids != hubOnline.value) hubOnline.value = ids
+                // ADR-229: path selection now prefers the radio over a mailbox deposit, so a log has to show
+                // whether the hub named anybody online at all (it does not say so anywhere else).
+                FlashProbe.emit(
+                    "hub.online",
+                    "result" to if (ids == null) "unreadable" else "read",
+                    "count" to (ids?.size ?: hubOnline.value.size),
+                )
             }
             delay(hubPresencePollMs)
         }

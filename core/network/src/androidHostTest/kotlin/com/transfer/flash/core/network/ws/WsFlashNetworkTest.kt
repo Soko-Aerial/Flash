@@ -630,9 +630,9 @@ class WsFlashNetworkTest {
             val hostId = "device-host-fresh"
             val clientId = "device-client-fresh"
 
-            // Same epoch as the connection's own clock — the connection stamps inbound frames with
-            // System.currentTimeMillis(), so only an offset from that reading is meaningful.
-            var fakeNow = System.currentTimeMillis()
+            // Same epoch as the connection's own clock — inbound frames are stamped with the monotonic
+            // clock (SEC-D26-01), so only an offset from that reading is meaningful.
+            var fakeNow = com.transfer.flash.core.network.ws.monotonicNowMs()
             serverNetwork = WsFlashNetwork(
                 context = null,
                 localDeviceId = hostId,

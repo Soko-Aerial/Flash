@@ -130,6 +130,8 @@ fun FlashConversationScreen(
     onToggleReaction: (messageId: String, emoji: String) -> Unit = { _, _ -> },
     /** Broadcast the local user's typing state for the live typing indicator (#11). */
     onTypingChanged: (Boolean) -> Unit = {},
+    /** Persists the direct chat's outbound radio-fallback choice. */
+    onSetRadioPolicy: (com.transfer.flash.core.common.model.FlashRadioPolicy) -> Unit = {},
     onAttachmentClick: () -> Unit,
     onSendFile: (uri: String, displayName: String, size: Long) -> Unit = { _, _, _ -> },
     /** Local-only tombstone used by the existing Delete action and multi-select toolbar. */
@@ -184,6 +186,8 @@ fun FlashConversationScreen(
      * host routes it to [FlashChatRepository.retryMessage]. Default no-op keeps previews inert.
      */
     onRetryMessage: (messageId: String) -> Unit = {},
+    /** Stop retrying one text that is awaiting a radio acknowledgement. */
+    onStopRadioRetry: (messageId: String) -> Unit = {},
     /** Pause an active attachment transfer. */
     onPauseTransfer: (transferId: String) -> Unit = {},
     /** Resume a paused attachment transfer. */
@@ -554,7 +558,10 @@ fun FlashConversationScreen(
         peerPresence = state.header.presence,
         peerCount = when (state.header.presence) {
             FlashPeerPresence.Online, FlashPeerPresence.Typing, FlashPeerPresence.Connecting,
-            FlashPeerPresence.Reachable -> 1
+            FlashPeerPresence.Reachable,
+            // ADR-228: no session, but the peer is not "nobody reachable" either — a text still goes out,
+            // so counting 0 would make the banner say "Searching for devices…" over a working path.
+            FlashPeerPresence.RadioOnly -> 1
             else -> 0
         },
     )
@@ -923,7 +930,12 @@ fun FlashConversationScreen(
                     }
                 },
                 onAttachmentClick = {
-                    showAttachmentSheet = true
+                    if (state.radioOnlyForAttachments) {
+                        // The engine's own sentence, so the composer and the bubble cannot drift apart.
+                        showMessage(com.transfer.flash.core.messaging.radio.RadioDeliveryNote.REFUSAL_ATTACHMENT)
+                    } else {
+                        showAttachmentSheet = true
+                    }
                 },
                 isAttachmentExpanded = showAttachmentSheet,
                 replyingTo = replyingToMessage,
@@ -1090,6 +1102,7 @@ fun FlashConversationScreen(
                     }
                 },
                 onRetryMessage = onRetryMessage,
+                onStopRadioRetry = onStopRadioRetry,
                 onOpenMessageInfo = if (messageInfoOffered) { msg -> messageInfoId = msg.id } else null,
                 highlightedMessageId = highlightedMessageId,
                 peerTypingName = currentPeerTypingName,
@@ -1176,6 +1189,13 @@ fun FlashConversationScreen(
             },
             onPin = { setPinned(msg.id, !FlashPinnedMessageMath.isPinnedIn(msg.id, pinnedMessageIds)) },
             isPinned = FlashPinnedMessageMath.isPinnedIn(msg.id, pinnedMessageIds),
+            onStopRadioRetry = if (
+                msg.isMine && msg.radioNote?.isDelivered == false && msg.radioNote?.isFailure == false
+            ) {
+                { onStopRadioRetry(msg.id) }
+            } else {
+                null
+            },
             onDelete = {
                 onDeleteMessage(setOf(msg.id))
                 focusedMessage = null
@@ -1443,6 +1463,8 @@ fun FlashConversationScreen(
             isTrusted = isPeerTrusted,
             onRevokeTrust = onRevokePeerTrust,
             onOpenSharedContent = { showSharedContent = true },
+            radioPolicy = state.radioPolicy,
+            onSetRadioPolicy = onSetRadioPolicy,
         )
     }
 

@@ -3,6 +3,7 @@
 package com.transfer.flash.core.messaging
 
 import com.transfer.flash.core.common.result.FlashResult
+import com.transfer.flash.core.common.model.FlashRadioPolicy
 import com.transfer.flash.core.messaging.group.GroupLocalPreferences
 import com.transfer.flash.core.messaging.model.FlashChatListUiState
 import com.transfer.flash.core.messaging.model.FlashChatSearchResultsUi
@@ -41,6 +42,9 @@ public interface FlashChatRepository {
      * Re-inserts the message into the outbox with attempts reset and now as createdAt.
      */
     public fun retryMessage(localId: String) {}
+
+    /** Stops an unacknowledged radio retry for this message. A later ACK for an already-sent frame still wins. */
+    public fun stopRadioRetry(localId: String) {}
 
     /**
      * Starts or returns an existing 1:1 conversation with a company colleague [deviceId] (Plan B, ADR-134).
@@ -538,6 +542,9 @@ public interface FlashChatRepository {
 
     /** Mute or unmute the selected conversations. */
     public fun setConversationsMuted(ids: Set<String>, muted: Boolean) {}
+
+    /** Persist this direct chat's outbound radio-fallback choice. */
+    public fun setRadioPolicy(conversationId: String, policy: FlashRadioPolicy) {}
 
     /** Mark one conversation unread by clearing its read cursor. */
     public fun markConversationUnread(conversationId: String) {}

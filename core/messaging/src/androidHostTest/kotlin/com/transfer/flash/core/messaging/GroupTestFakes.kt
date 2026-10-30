@@ -239,6 +239,13 @@ internal class InMemoryConversationDao : ConversationDao {
         conversations[id]?.let { conversations[id] = it.copy(muted = muted); publish() }
     }
 
+    override suspend fun setRadioPolicy(id: String, radioPolicy: String) {
+        conversations[id]?.takeIf { !it.isGroup }?.let {
+            conversations[id] = it.copy(radioPolicy = radioPolicy)
+            publish()
+        }
+    }
+
     override suspend fun updateLastReadCursor(id: String, cursor: String) {
         conversations[id]?.let { conversations[id] = it.copy(lastReadCursor = cursor); publish() }
     }

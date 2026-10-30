@@ -247,6 +247,9 @@ public class DesktopEngine(
     }
 
     private val trustStoreImpl = DesktopTrustStore(stateDir)
+
+    /** SEC-D02-02: the key an unsolicited inbound connection presented, kept for the pairing check only. */
+    private val observedPeerPins = com.transfer.flash.core.security.trust.ObservedPeerPins()
     public val enterpriseTrustStore: EnterpriseTrustStore =
         JvmFileEnterpriseTrustStore(stateDir)
 
@@ -327,6 +330,7 @@ public class DesktopEngine(
         // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
         ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
         trustStore = trustStoreImpl,
+        observedPeerPin = observedPeerPins::get,
         scope = scope,
         sendToPeer = { peerId, text ->
             val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
@@ -1225,6 +1229,7 @@ public class DesktopEngine(
                 // ERROR-077: never accept or pin this PC's own key under a peer's id.
                 ownFingerprintHex = java.security.MessageDigest.getInstance("SHA-256")
                     .digest(keyPair.public.encoded).joinToString("") { "%02X".format(it) },
+                observeInbound = observedPeerPins::observe,
             )
             TlsOptions(
                 pinVerifier = pinVerifier,
@@ -1521,6 +1526,9 @@ public class DesktopEngine(
                 // presence source when the two devices are on different networks, so a hub-only chat used
                 // to show Offline even while its messages were relaying normally.
                 hubOnlinePeerIds = hub.hubOnlinePeerIds,
+                // ADR-228: a peer with a radio key and a connected gateway reads "Radio only" instead
+                // of Offline. Presentation only; the outbox still decides the path.
+                radioOnlyPeerIds = radioPort?.radioPeerIds ?: kotlinx.coroutines.flow.emptyFlow(),
                 peerNameResolver = { id ->
                     trustStore.getTrustedPeers()[FlashDeviceId(id)]
                         ?: orgPeerResolver.displayName(id)
@@ -1576,7 +1584,15 @@ public class DesktopEngine(
                     // PC3 dial on demand: a message to a peer that is seen but not connected dials
                     // first (≤ 1 s). Receipts and typing never wait.
                     if (wireFrame is MessageWireFrame.TextMessage) {
-                        autoConnector?.ensureSession(targetDeviceId)
+                        // ADR-228 / ERROR-869: no LAN dial for a peer only the radio can reach — it
+                        // cannot succeed while the peer is off Wi-Fi, and it cost a second on every
+                        // outbox pass before the radio step ran. A peer discovery sees right now still
+                        // gets the dial: the LAN path is faster, and the radio is the fallback.
+                        val radioCanCarry = radioPort?.isRadioReachable(targetDeviceId) == true
+                        val seenNow = targetDeviceId in presence.reachablePeerIds.value
+                        if (!radioCanCarry || seenNow) {
+                            autoConnector?.ensureSession(targetDeviceId)
+                        }
                     }
                     sendChatFrame(network, targetDeviceId, wireFrame)
                 },
@@ -1618,11 +1634,11 @@ public class DesktopEngine(
                     }
                 },
                 onInboundTextMessage = { conversationId, senderName, text ->
-                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.take(120)}")
+                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.length} chars") // never the text (SEC-D13-01)
                     onInboundMessageNotification?.invoke(conversationId, senderName, text, null)
                 },
                 onInboundTextMessageWithGroupTitle = { conversationId, senderName, text, groupTitle ->
-                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"} (group $groupTitle): ${text.take(120)}")
+                    FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"} (group $groupTitle): ${text.length} chars")
                     onInboundMessageNotification?.invoke(conversationId, senderName, text, groupTitle)
                 },
                 onInboundAttachment = { conversationId, senderName, fileName, mimeType ->
@@ -1809,8 +1825,10 @@ public class DesktopEngine(
                 val safeId = sanitize(start.transferId)
                 val destDir = File(canonicalRoot, safeId).canonicalFile
                 val dest = File(destDir, safeRelativePath).canonicalFile
-                // Same containment discipline as the production composition (Sentinel).
-                require(dest.path.startsWith(destDir.path + File.separator)) {
+                // Same containment discipline as the production composition (Sentinel). The transfer folder is checked
+                // against the ROOT too (SEC-D07-01): a symlink or junction named like the transfer id would otherwise
+                // make destDir (and so dest) resolve outside the save folder and still pass the destDir test.
+                require(isContainedInReceivedRoot(canonicalRoot, destDir, dest)) {
                     "path traversal escape: ${start.fileName}"
                 }
                 dest.parentFile?.mkdirs()
@@ -1948,7 +1966,8 @@ public class DesktopEngine(
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
                     route != null -> network.connectManual(d.host, d.port, route.deviceId)
                         .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
-                    else -> network.connectManual(d.host, d.port)
+                    // SEC-D10-01: an unnamed automatic dial (gateway probe, subnet sweep) never writes a first-use pin.
+                    else -> network.connectManual(d.host, d.port, null, recordFirstUse = false)
                 }
             },
             // DR3: hosts that answered the subnet sweep; each is dialed once (no device named, like a

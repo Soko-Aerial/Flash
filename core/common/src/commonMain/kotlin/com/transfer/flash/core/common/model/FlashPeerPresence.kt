@@ -21,4 +21,14 @@ public enum class FlashPeerPresence {
      * dials on demand. Shown as a ring labelled "Online".
      */
     Reachable,
+
+    /**
+     * No session and no discovery sighting, but this device holds a radio pairing key for the peer and
+     * its radio gateway is connected, so a 1:1 text could go out over the air (ADR-228).
+     *
+     * Presentation only. A station cannot be polled, so this is "we are able to transmit to them", never
+     * "they are listening"; it is not a trust claim, it is not shared as presence, and it is never used
+     * for calls, files, typing or group fan-out. Shown as a ring labelled "Radio only".
+     */
+    RadioOnly,
 }

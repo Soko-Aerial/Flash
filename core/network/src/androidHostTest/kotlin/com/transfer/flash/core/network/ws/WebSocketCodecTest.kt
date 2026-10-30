@@ -115,15 +115,19 @@ class WebSocketCodecTest {
     fun `a pool sized frame goes back to the pool and the caller gets a copy (F9)`() {
         for (size in listOf(com.transfer.flash.core.common.perf.ByteArrayPool.SIZE_16KB, com.transfer.flash.core.common.perf.ByteArrayPool.SIZE_32KB)) {
             com.transfer.flash.core.common.perf.ByteArrayPool.clear()
+            // Exactly one buffer of this size waits in the pool, so the codec has to rent THIS array for the frame.
+            val rented = com.transfer.flash.core.common.perf.ByteArrayPool.acquire(size)
+            com.transfer.flash.core.common.perf.ByteArrayPool.release(rented)
             val payload = ByteArray(size) { ((it * 31) + 7).toByte() }
             val output = ByteArrayOutputStream()
             WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_BINARY, payload, masked = false)
 
             val message = WebSocketCodec.readMessage(ByteArrayInputStream(output.toByteArray())) as WebSocketCodec.Message.Binary
 
-            // The buffer the codec read into was released; it still holds the frame's bytes, so the next acquire gets it back.
+            // The buffer the codec read into was released, so the next acquire gets it back, and it was wiped (SEC-D04-03).
             val reused = com.transfer.flash.core.common.perf.ByteArrayPool.acquire(size)
-            assertArrayEquals("size $size: the pooled buffer came back", payload, reused)
+            assertTrue("size $size: the pooled buffer came back", reused === rented)
+            assertArrayEquals("size $size: nothing of the frame is left in the pooled buffer", ByteArray(size), reused)
             assertTrue("size $size: the caller's payload must not be the pooled array", message.data !== reused)
             assertArrayEquals(payload, message.data)
             com.transfer.flash.core.common.perf.ByteArrayPool.release(reused)

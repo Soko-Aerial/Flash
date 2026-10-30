@@ -31,6 +31,36 @@ class ChatTextFrameCodecTest {
     }
 
     @Test
+    fun `a sender name loses bidi overrides and zero-width characters but keeps its letters`() {
+        val frame = MessageWireFrame.TextMessage(
+            localId = "l1",
+            conversationId = "c1",
+            senderId = "s1",
+            senderName = "Al​ice‮",
+            text = "hi",
+            sentAt = 123L,
+        )
+        val decoded = ChatTextFrameCodec.decode(ChatTextFrameCodec.encode(frame)!!, NOW, PEER)
+        val back = (decoded as ChatTextFrameCodec.DecodeResult.Frame).frame as MessageWireFrame.TextMessage
+        assertEquals("Alice", back.senderName)
+        assertEquals("hi", back.text)
+    }
+
+    @Test
+    fun `a reaction longer than the cap is invalid and a long family emoji is kept`() {
+        // SEC-D04-02
+        val family = "👨‍👩‍👧‍👦"
+        val ok = ChatTextFrameCodec.decode(
+            "FLASH_REACT messageId=m memberId=p emoji=$family isAdded=true", NOW, PEER,
+        )
+        assertEquals(family, ((ok as ChatTextFrameCodec.DecodeResult.Frame).frame as MessageWireFrame.ReactionFrame).emoji)
+        assertEquals(
+            ChatTextFrameCodec.DecodeResult.RecognizedButInvalid,
+            ChatTextFrameCodec.decode("FLASH_REACT messageId=m memberId=p emoji=${"x".repeat(65)}", NOW, PEER),
+        )
+    }
+
+    @Test
     fun `blank reply fields decode as null for legacy peers`() {
         val frame = MessageWireFrame.TextMessage(
             localId = "l1",

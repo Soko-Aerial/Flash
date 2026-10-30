@@ -167,6 +167,56 @@ class PresenceHoldTest {
         collector.cancel()
     }
 
+    @Test
+    fun `radio-only is the last resort and yields to every stronger claim`() = runBlocking {
+        // ADR-228: no session, no sighting, no hub socket — but a radio key and a live gateway, so a text
+        // can still go out. Every other source has already taken the peer out of this set; this also proves
+        // the sets stay disjoint while the inputs churn.
+        val sessions = MutableStateFlow(emptySet<String>())
+        val discovered = MutableStateFlow(emptySet<String>())
+        val reported = MutableStateFlow(emptySet<String>())
+        val radio = MutableStateFlow(setOf("peer"))
+        val seen = Collections.synchronizedList(mutableListOf<PresenceSnapshot>())
+        val collector = launch {
+            sessions.withReconnectGrace(HOLD_MS)
+                .withReachable(discovered)
+                .withHubOnline(reported)
+                .withRadioOnly(radio)
+                .collect { seen.add(it) }
+        }
+
+        awaitUntil(seen) { it.radioOnly == setOf("peer") }
+
+        // A discovery sighting gets first claim: a send tries the LAN first, so the header must not
+        // promise the slower path.
+        discovered.value = setOf("peer")
+        awaitUntil(seen) { it.reachable == setOf("peer") && it.radioOnly.isEmpty() }
+        discovered.value = emptySet()
+
+        // A live session outranks it.
+        sessions.value = setOf("peer")
+        awaitUntil(seen) { it.online == setOf("peer") && it.radioOnly.isEmpty() }
+
+        // So does the reconnect grace after the session drops.
+        sessions.value = emptySet()
+        awaitUntil(seen) { it.connecting == setOf("peer") && it.radioOnly.isEmpty() }
+        awaitUntil(seen) { it.connecting.isEmpty() && it.radioOnly == setOf("peer") }
+
+        // The gateway going down takes the claim away with it.
+        radio.value = emptySet()
+        awaitUntil(seen) { it.radioOnly.isEmpty() }
+
+        synchronized(seen) {
+            seen.forEach {
+                assertTrue("disjoint: $it", (it.radioOnly intersect it.online).isEmpty())
+                assertTrue("disjoint: $it", (it.radioOnly intersect it.connecting).isEmpty())
+                assertTrue("disjoint: $it", (it.radioOnly intersect it.reachable).isEmpty())
+                assertTrue("disjoint: $it", (it.radioOnly intersect it.hubOnline).isEmpty())
+            }
+        }
+        collector.cancel()
+    }
+
     /** Polls the collected snapshots until the newest one satisfies [condition]. */
     private suspend fun awaitUntil(
         seen: List<PresenceSnapshot>,

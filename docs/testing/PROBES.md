@@ -84,6 +84,17 @@ Rules (AGENTS.md section 24 applies in full):
 | `radio.link.up` | `KissTncDriver` (`:core:network`, radio spike, BT-00) | the byte link to the TNC opened | `link` (port or RFCOMM description, no key material), `attempt` |
 | `radio.link.down` | same | the link ended or failed | `reason`, `kissOk` (frames decoded so far), `garbage`, `badEscape`, `oversize` (KISS decoder counters) |
 | `radio.tnc.params` | same | KISS parameters were sent after connect (only when configured) | `txDelayMs`, `p`, `slotMs`, `tailMs`, `fullDuplex` |
+| `radio.tx.text` | `RadioChatEngine` (`:core:radio`, radio data, ADR-227) | a chat text was keyed and the driver confirmed the transmit | `peer` (8), `segments`, `bytes`, `lane` (`text`, `emergency`), `retry` (`true` when the outbox re-sent a message the radio already keyed, so the same counters went back on the air, ERROR-869) |
+| `radio.tx.ack` | same | the cryptographic acknowledgement for a received text was keyed and confirmed | `peer` (8) |
+| `radio.tx.fail` | same | a text could not be transmitted | `peer` (8), `reason` (`link_down`, `queue_full`) |
+| `radio.rx.text` | same | a chat text was received, authenticated and reassembled (emitted before dedup so a repeat is visible) | `peer` (8), `bytes`, `duplicate`, `signed` |
+| `radio.rx.ack` | same | a cryptographic acknowledgement matched an outstanding message | `peer` (8), `message` (8), `rttMs` |
+| `radio.rx.dropped` | same | an inbound frame was decoded but not accepted (the design is zero response on air, so this line is the only trace) | `reason` (`NOT_FLASH`, `UNKNOWN_SENDER`, `AUTH_FAILED`, `REPLAY`, `TOO_OLD`, `SIGNED_NOT_ENABLED`, `MALFORMED`, `BAD_SEGMENT`) |
+| `radio.path` | `RealFlashChatRepository` (`:core:messaging`, ERROR-869) | a 1:1 text reached the radio step of the send path - the LAN, and the hub's immediate path, did not take it. Emitted on every such attempt, including the ones that never key the transmitter, which is how a silent "nothing happened" is told apart from a transmit | `peer` (8), `message` (8), `result` (`sent`, `refused`, `no_bridge`, `not_reachable`), `gateway`, `connected` (only for `refused`/`not_reachable`: a peer with no radio pairing key here reads `not_reachable gateway=true connected=true`) |
+| `radio.send.fail` | `RadioChatBridge` (`:core:messaging`, ERROR-869) | the radio step ran and did not key the transmitter; says why, which `radio.path result=refused` cannot | `message` (8), `reason` (`gateway_off`, `not_connected`, `too_long`, `attachment`, `authorisation`, `unreachable`, `failed`), `attempt` |
+| `chat.path` | `RealFlashChatRepository` (`:core:messaging`, ERROR-869) | one 1:1 text finished the send path: which path carried it, or that none did. One line per attempt, so a message that never leaves the device is visible at all | `peer` (8), `message` (8), `path` (`lan`, `hub`, `radio`, `radio_refused`, `hub_mailbox`, `none`) |
+| `hub.online` | `EnterpriseHub.pollHubPresence` (`:core:enterprise`, ADR-229) | the hub's presence poll answered (or could not be read), which is what decides whether a hub send is a delivery or a mailbox deposit | `result` (`read`, `unreadable`), `count` |
+| `hub.ack` | `RealFlashChatRepository.onHubAck` (`:core:messaging`, ADR-229) | the hub's own verdict on a message it took; before this "held in a mailbox" and "delivered" looked identical in a log | `peer` (8), `message` (8), `kind` (`DELIVERED`, `HELD`, `UNDELIVERABLE`, `QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED`) |
 
 ### Offline Organization Trust probes (Plan B)
 

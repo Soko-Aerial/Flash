@@ -59,6 +59,8 @@ class StepUpChallenge(
     /** The phone that must approve as well (ADR-131), or null when this challenge needs only the browser key. */
     val approverDeviceId: String? = null,
     @Volatile var approved: Boolean = false,
+    /** The console session that asked for it (SEC-D17-01); a proof made in one session is useless in another. */
+    val sessionId: String = "",
 ) {
     fun isExpired(nowMs: Long = System.currentTimeMillis()): Boolean = nowMs >= expiresAtMs
 
@@ -112,7 +114,7 @@ class StepUpAuth(
      * Opens a challenge for [action] on [target]. Refused when [action] is not a step-up action, or the administrator has no
      * usable enrolled device (they must enrol one in the Flash app first).
      */
-    fun createChallenge(adminUsername: String, action: String, target: String): Created {
+    fun createChallenge(adminUsername: String, action: String, target: String, sessionId: String = ""): Created {
         if (action !in StepUpActions.ALL) return Created.Refused("ERR_BAD_ACTION", "Unknown action")
         val needsBrowserKey = action !in StepUpActions.WITHOUT_BROWSER_KEY
         val approverId = admins.approverOf(adminUsername)
@@ -150,6 +152,7 @@ class StepUpAuth(
             // A challenge that does not use the browser key is verified by the phone alone: nothing else will ever sign it.
             verified = !needsBrowserKey,
             approverDeviceId = approver?.id,
+            sessionId = sessionId,
         )
         challenges[challenge.challengeId] = challenge
         return Created.Ok(challenge)
@@ -219,12 +222,13 @@ class StepUpAuth(
      * Authorises one action: the challenge must be verified, unexpired, made for exactly this admin, [action] and
      * [target]. It is consumed whether or not the match holds, so a proof can not be tried against several actions.
      */
-    fun authorize(challengeId: String, adminUsername: String, action: String, target: String): Boolean {
+    fun authorize(challengeId: String, adminUsername: String, action: String, target: String, sessionId: String = ""): Boolean {
         val challenge = challenges.remove(challengeId) ?: return false
         if (challenge.isExpired(clock())) return false
         return challenge.verified &&
             (!challenge.approvalRequired || challenge.approved) &&
             challenge.adminUsername == adminUsername &&
+            challenge.sessionId == sessionId &&
             challenge.action == action &&
             challenge.target == target.take(256)
     }

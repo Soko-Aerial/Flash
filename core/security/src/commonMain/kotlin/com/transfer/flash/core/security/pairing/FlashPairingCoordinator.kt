@@ -116,6 +116,8 @@ public class FlashPairingCoordinator(
     private val sendToPeer: (peerId: String, text: String) -> Boolean,
     private val crypto: FlashCrypto? = null,
     private val ephemeralKeyPair: FlashEcKeyPair? = null,
+    /** The key an unpinned inbound connection presented (see [ObservedPeerPins]); consulted when there is no pin. */
+    private val observedPeerPin: (peerId: String) -> String? = { null },
 ) : FlashPairing {
 
     /** UI snapshot for a pairing pane; null when no pairing is in flight. */
@@ -314,6 +316,11 @@ public class FlashPairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    // The code covered this key (peerIdentityPin), so a finished pairing is what turns the key an inbound
+                    // connection presented into a pin (SEC-D02-02: inbound first contact is no longer pinned on its own).
+                    if (trustStore.getPin(FlashDeviceId(peerId)) == null) {
+                        observedPeerPin(peerId)?.let { trustStore.savePin(FlashDeviceId(peerId), it) }
+                    }
                     // v2 completion: the code covered the TLS-pinned identities and the ephemeral keys.
                     trustStore.markVerified(FlashDeviceId(peerId))
                     val peerPubKey = event.ephemeralPubKey.takeIf { it.isNotEmpty() }
@@ -401,7 +408,7 @@ public class FlashPairingCoordinator(
         localModel = localModel,
         ephemeralPublicKeyProvider = { ephemeralPublicKey },
         // ADR-042: the pairing must cover the key TLS pinned for this peer on this connection.
-        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) ?: observedPeerPin(peerId) },
         sendFrame = { frame ->
             protocol.session.value.peerDeviceId?.let { peerId ->
                 sendToPeer(peerId, PairingWireCodec.encode(frame))

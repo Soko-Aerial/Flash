@@ -92,6 +92,19 @@ class StepUpAuthTest {
     }
 
     @Test
+    fun aProofMadeInOneConsoleSessionIsRefusedInAnother() {
+        // SEC-D17-01
+        val r = realm()
+        val s = stepUp(r)
+        val c = assertIs<StepUpAuth.Created.Ok>(s.createChallenge("boss", "device.revoke", "dev-victim", "session-a")).challenge
+        assertTrue(s.verify(c.challengeId, sign(r.deviceKey, c)))
+        assertFalse(s.authorize(c.challengeId, "boss", "device.revoke", "dev-victim", "session-b"))
+        val again = assertIs<StepUpAuth.Created.Ok>(s.createChallenge("boss", "device.revoke", "dev-victim", "session-a")).challenge
+        assertTrue(s.verify(again.challengeId, sign(r.deviceKey, again)))
+        assertTrue(s.authorize(again.challengeId, "boss", "device.revoke", "dev-victim", "session-a"))
+    }
+
+    @Test
     fun aSignatureForOneChallengeDoesNotVerifyAnother() {
         val r = realm()
         val s = stepUp(r)

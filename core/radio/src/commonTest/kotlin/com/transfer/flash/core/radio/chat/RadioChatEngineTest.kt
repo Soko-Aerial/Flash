@@ -1,5 +1,9 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.radio.chat
 
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.time.FlashTimeSource
 import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
 import com.transfer.flash.core.radio.connect.InMemoryRadioAuthorisationStore
@@ -12,6 +16,7 @@ import com.transfer.flash.core.radio.driver.PersistentRadioStore
 import com.transfer.flash.core.radio.driver.TncLinkState
 import com.transfer.flash.core.radio.driver.TxPacingPolicy
 import com.transfer.flash.core.radio.kiss.Ax25Address
+import com.transfer.flash.core.radio.kiss.Ax25DecodeResult
 import com.transfer.flash.core.radio.kiss.Ax25FrameCodec
 import com.transfer.flash.core.radio.kiss.Ax25Role
 import com.transfer.flash.core.radio.sim.FakeAirChannel
@@ -392,7 +397,7 @@ class RadioChatEngineTest {
     }
 
     @Test
-    fun radchatU08_profileATransparency_operatorCallsignAppearsOnAir() = runTest {
+    fun radchatU08_profileARefusedBecauseAFlashStationCannotVerifySignedFrames() = runTest {
         val airChannel = FakeAirChannel()
         air = airChannel
 
@@ -410,21 +415,164 @@ class RadioChatEngineTest {
 
         a.engine.setProfile(RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED)
 
-        // Clear text message under Profile A
-        val testText = "CQ CQ DE W1AW TEST"
-        a.engine.sendText("station-b", "msg-clear", testText, 8000L)
+        // ERROR-869 (2026-10-28): a Flash peer drops a signed frame as SIGNED_NOT_ENABLED, because
+        // `RadioSession.ingestSigned` needs the sender's public key and a pairing stores only its fingerprint.
+        // Profile A therefore cannot carry chat, and saying so beats putting frames on the air that nobody
+        // reads (the desktop dropped ten of them on 2026-10-28 and the sender never learned).
+        val outcome = a.engine.sendText("station-b", "msg-clear", "CQ CQ DE W1AW TEST", 8000L)
+        assertIs<RadioChatSendOutcome.RefusedAuthorization>(outcome)
+        assertTrue(outcome.reason.contains("Profile M"))
+        assertTrue(a.fakeTnc.transmitted.isEmpty(), "nothing may be put on the air in Profile A")
+    }
 
-        // Examine transmitted AX.25 frame
+    @Test
+    fun radchatU12_aRetryResendsTheSameFrameSoThePeerKeepsOneMessage() = runTest {
+        val airChannel = FakeAirChannel()
+        air = airChannel
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
         withTimeout(3000) {
-            while (a.fakeTnc.transmitted.isEmpty()) delay(20)
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
         }
 
-        val frameBytes = a.fakeTnc.transmitted.first()
-        val decoded = Ax25FrameCodec.decode(frameBytes)
-        assertIs<com.transfer.flash.core.radio.kiss.Ax25DecodeResult.Ok>(decoded)
+        val inboundList = mutableListOf<RadioChatInbound>()
+        val collectorJob = backgroundScope.launch {
+            b.engine.inboundMessages.collect { inboundList.add(it) }
+        }
 
-        // Profile A: source callsign is set to the operator callsign W1AW
-        assertEquals("W1AW", decoded.frame.source.callsign)
+        val first = a.engine.sendText("station-b", "msg-retry", "Radio retry test", 1000L)
+        assertIs<RadioChatSendOutcome.SentWaitingAck>(first)
+        withTimeout(3000) {
+            while (inboundList.isEmpty()) delay(20)
+        }
+        val firstFrames = a.fakeTnc.transmitted.toList()
+
+        // The outbox re-arms a radio send: same message id again, before the ACK had a chance to arrive.
+        val second = a.engine.sendText("station-b", "msg-retry", "Radio retry test", 1000L)
+        assertIs<RadioChatSendOutcome.SentWaitingAck>(second)
+
+        withTimeout(3000) {
+            while (a.fakeTnc.transmitted.size <= firstFrames.size) delay(20)
+        }
+        delay(100)
+
+        // Byte-identical frames, and the receiver keeps one message: the station names a message after its
+        // first counter, so a retry may not re-encode itself with a new one (the 2026-10-28 run created one
+        // row per retry because it did).
+        assertEquals(
+            firstFrames.first().toList(),
+            a.fakeTnc.transmitted[firstFrames.size].toList(),
+            "a retry must put the same AX.25 frame back on the air",
+        )
+        assertEquals(1, inboundList.size, "one message must stay one message however often it is retried")
+
+        collectorJob.cancel()
+    }
+
+    @Test
+    fun radchatU13_aRetransmissionIsAcknowledgedAgain() = runTest {
+        // ERROR-870: the sender re-sends the same frame exactly when its ACK was lost. The receiver's anti-replay
+        // window sees the counter again, so without an explicit re-ACK the message retried for the whole outbox
+        // window and then failed, even though the peer had it. This is the half radchatU12 did not cover.
+        val airChannel = FakeAirChannel()
+        air = airChannel
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        val inboundList = mutableListOf<RadioChatInbound>()
+        val collectorJob = backgroundScope.launch {
+            b.engine.inboundMessages.collect { inboundList.add(it) }
+        }
+
+        assertIs<RadioChatSendOutcome.SentWaitingAck>(
+            a.engine.sendText("station-b", "msg-reack", "Re-ack test", 1000L),
+        )
+        val firstReceipt = withTimeout(3000) { a.engine.deliveryReceipts.first() }
+        assertEquals("msg-reack", firstReceipt.messageId)
+
+        // The retransmission the outbox sends when that ACK never arrived.
+        assertIs<RadioChatSendOutcome.SentWaitingAck>(
+            a.engine.sendText("station-b", "msg-reack", "Re-ack test", 1000L),
+        )
+        val secondReceipt = withTimeout(3000) { a.engine.deliveryReceipts.first() }
+        assertEquals("msg-reack", secondReceipt.messageId)
+        assertEquals("station-b", secondReceipt.recipientDeviceId)
+        assertEquals(1, inboundList.size, "a retransmission must not become a second bubble")
+
+        collectorJob.cancel()
+    }
+
+    @Test
+    fun radchatU14_aRetransmittedSegmentOfAnIncompleteMessageIsNotAcknowledged() = runTest {
+        // The other half of ERROR-870: re-ACK a retry only when the message really arrived. A duplicate of a
+        // segment whose message never completed must stay silent, or the sender would drop the rest.
+        val airChannel = FakeAirChannel()
+        air = airChannel
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        val longText = "Segment-Payload-Test-".repeat(25)
+        val encoded = a.session.encode("station-b", RadioKind.TEXT, longText.encodeToByteArray(), 5000L)
+        assertIs<com.transfer.flash.core.radio.wire.RadioEncode.Frames>(encoded)
+        val frames = encoded.frames
+        assertTrue(frames.size > 1, "this test needs a segmented message")
+
+        // Only the first segment arrives: the message cannot complete, so nothing may be acknowledged.
+        val firstAx25 = Ax25FrameCodec.encodeUi(
+            destination = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0),
+            source = a.session.stationLabel("station-b", 5000L),
+            info = frames.first(),
+            pid = 0xF0,
+            role = Ax25Role.COMMAND,
+        )
+        b.fakeTnc.injectRaw(com.transfer.flash.core.radio.kiss.KissFrameCodec.encodeData(firstAx25))
+        delay(200)
+
+        // The same segment again, as a retry: still no ACK.
+        b.fakeTnc.injectRaw(com.transfer.flash.core.radio.kiss.KissFrameCodec.encodeData(firstAx25))
+        delay(200)
+
+        val acks = b.fakeTnc.transmitted.count { ax25 ->
+            val info = (Ax25FrameCodec.decode(ax25) as? Ax25DecodeResult.Ok)?.frame?.info ?: return@count false
+            info.size >= RadioWire.HEADER_SIZE && (info[1].toInt() and 0x0F) == RadioKind.ACK.code
+        }
+        assertEquals(0, acks, "an incomplete message must never be acknowledged as delivered")
     }
 
     @Test
@@ -586,5 +734,45 @@ class RadioChatEngineTest {
         assertTrue(b.fakeTnc.transmitted.isEmpty(), "No ACK should be sent when a segment is missing")
 
         job.cancel()
+    }
+
+    @Test
+    fun radchatU05_aRoundTripLeavesReadableProbesOnBothStations() = runTest {
+        val airChannel = FakeAirChannel()
+        air = airChannel
+
+        val lines = mutableListOf<String>()
+        FlashLog.installSink(FlashLogSink { _, tag, message, _ -> if (tag == "PROBE") lines += message })
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        val b = buildStation("station-b", backgroundScope, airChannel)
+        rigA = a
+        rigB = b
+
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        b.pairingAdapter.registerPeer(b.session, "station-a")
+
+        a.driver.start()
+        b.driver.start()
+
+        withTimeout(3000) {
+            while (!a.engine.isConnected || !b.engine.isConnected) delay(20)
+        }
+
+        assertIs<RadioChatSendOutcome.SentWaitingAck>(
+            a.engine.sendText("station-b", "msg-probe", "radio test 1", 1000L),
+        )
+        withTimeout(3000) { b.engine.inboundMessages.first() }
+        withTimeout(3000) { a.engine.deliveryReceipts.first() }
+
+        // A transmitted, then got the acknowledgement; B received and answered. Ids are shortened to 8 characters.
+        assertTrue(lines.any { it.startsWith("radio.tx.text peer=station-") }, "missing radio.tx.text: $lines")
+        assertTrue(lines.any { it.startsWith("radio.rx.ack peer=station-") }, "missing radio.rx.ack: $lines")
+        assertTrue(lines.any { it.startsWith("radio.rx.text peer=station-") }, "missing radio.rx.text: $lines")
+        assertTrue(lines.any { it.startsWith("radio.tx.ack peer=station-") }, "missing radio.tx.ack: $lines")
+        // The probe vocabulary must never carry message content.
+        assertTrue(lines.none { it.contains("radio test 1") }, "a probe leaked message text: $lines")
+
+        FlashLog.installSink(FlashLogSink { _, _, _, _ -> })
     }
 }

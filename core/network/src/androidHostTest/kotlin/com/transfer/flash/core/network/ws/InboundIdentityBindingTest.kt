@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,19 +137,31 @@ class InboundIdentityBindingTest {
     }
 
     @Test(timeout = 20_000L)
-    fun `first contact from an unknown device is pinned (TOFU), then enforced`() = runBlocking {
+    fun `first inbound contact from an unknown device is admitted but never pinned (SEC-D02-02)`() = runBlocking {
         val victim = victim()
         val port = start(victim)
 
         val newcomer = dialer(contactIdentity, claimedId = "device-new")
         start(newcomer)
         assertTrue(newcomer.connectManual("127.0.0.1", port, victimId) is FlashResult.Success)
-        assertEquals("first contact records the key", fingerprint(contactIdentity), victimPins["device-new"])
+        assertNull("an unsolicited inbound key must not be recorded", victimPins["device-new"])
+    }
 
-        // A different key now claiming the same id is refused.
-        val impostor = dialer(attackerIdentity, claimedId = "device-new")
-        start(impostor)
-        val outcome = impostor.connectManual("127.0.0.1", port, victimId)
-        assertTrue("a second key for a pinned id must be refused: $outcome", outcome is FlashResult.Failure)
+    @Test(timeout = 20_000L)
+    fun `a stranger who claimed a contact's id first leaves no pin that blocks the real contact (SEC-D02-02)`() = runBlocking {
+        val victim = victim()
+        val port = start(victim)
+
+        val squatter = dialer(attackerIdentity, claimedId = contactId)
+        start(squatter)
+        assertTrue(squatter.connectManual("127.0.0.1", port, victimId) is FlashResult.Success)
+        assertNull(victimPins[contactId])
+        squatter.stop()
+        repeat(40) { if (victim.activeSessions.value.isNotEmpty()) delay(50) }
+
+        val contact = dialer(contactIdentity, claimedId = contactId)
+        start(contact)
+        val outcome = contact.connectManual("127.0.0.1", port, victimId)
+        assertTrue("the real contact must still be able to connect: $outcome", outcome is FlashResult.Success)
     }
 }

@@ -17,17 +17,17 @@ import javax.net.ssl.X509ExtendedTrustManager
  * and RFC 7469 §2.4 (https://datatracker.ietf.org/doc/html/rfc7469#section-2.4): a pin survives
  * certificate reissue and cannot be defeated by algorithm misinterpretation.
  *
- * ## Accept rule (documented choice)
- * ACCEPT iff **any** certificate in the presented chain pins — leaf preferred, chain fallback
- * tolerated. OWASP recommends leaf pinning as the primary target; the any-of-chain fallback keeps
- * handshakes working when a platform keystore wraps the identity key in an intermediate/root
- * cert whose SPKI is what was actually pinned. In practice Flash chains are single self-signed
- * leaves, so leaf-first ordering means the fallback path is never exercised on-device.
+ * ## Accept rule (SEC-D02-01, 2026-10-23)
+ * ACCEPT iff the **leaf** certificate (`chain[0]`) pins. Only the leaf is proven by the handshake:
+ * the peer demonstrates possession of the leaf's private key in `CertificateVerify`, while the other
+ * chain entries are bytes the peer merely sent. Accepting a pin match on any other entry let an
+ * attacker present `[attackerLeaf, victimCert]` and be accepted as the victim. Flash chains are
+ * single self-signed leaves, so nothing legitimate depends on the old chain fallback.
  *
  * ## Fail-closed behaviour
  * - empty/null chain ⇒ [CertificateException]
  * - no expected device id, or a presented key with unusable encoding ⇒ [CertificateException]
- * - nothing in the chain matches a pin ⇒ [CertificateException] AND [onKeyChanged] invoked
+ * - the leaf does not match a pin ⇒ [CertificateException] AND [onKeyChanged] invoked
  *   **exactly once** with the presented leaf fingerprint before the exception propagates.
  *
  * The manager cannot distinguish "wrong key" from "no record yet" — only the consumer-side trust
@@ -96,12 +96,9 @@ internal class TofuX509TrustManager(
             throw rejected(role, leafFp, "no expected device id — pin evaluation impossible")
         }
 
-        val pinned = chain.any { cert ->
-            val fp = fingerprintHexOrNull(cert)
-            fp != null && pinVerifier.isPinned(deviceId, fp)
-        }
-        if (!pinned) {
-            throw rejected(role, leafFp, "no chain certificate matches the pin for device '$deviceId'")
+        // Leaf only (SEC-D02-01): later chain entries are not proven by the handshake.
+        if (!pinVerifier.isPinned(deviceId, leafFp)) {
+            throw rejected(role, leafFp, "the leaf certificate does not match the pin for device '$deviceId'")
         }
     }
 

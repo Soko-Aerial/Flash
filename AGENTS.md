@@ -917,6 +917,69 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Radio page redesign v2 (2026-10-28, visual only): BUILT, unit-tested and seen on screen in the desktop demo, NOT
+device-verified, NOT committed.** The owner's "the radio page looks weird" is fixed by replacing eight equal outlined cards with the
+Hub tab's language: one station plate (radio name, state dot + sentence, next step, master switch on the same row), two attention
+strips that only appear when permission or a candidate needs an answer, then small-caps sections of hairline rows (This link facts +
+Forget, readiness steps, Nearby radios with the scan pill in the section header, Security profile and Operational mode as
+ring/title/chip/subtitle rows, Radio diagnostics as one row + Send). Colours are `HubTone` tokens (no hardcoded hex left), both
+sheets go through `FlashConfirmHost` (no separate native window on Windows), and the layout is one 720 dp centred column at every
+size instead of a lopsided two-column desktop split. **Wiring untouched**: same controller calls, same sentences, same
+`FlashRadioMath` decisions, both source-scanning tests green; `:ui:chat:jvmTest --tests "*Radio*"` 43/43. Design record:
+`docs/ui/radio-gateway.md` "Redesign v2"; device check `RADUI-DEV01`. Next: the `docs/plans/RADIO-DATA-INTEGRATION.md` decisions
+(per-chat `radioPolicy` = Room step 21, the attachment-refusal sentence that is still log-only, telemetry/position).
+
+**Radio data round 4, "a mailbox is not a delivery" (2026-10-28, ADR-229): BUILT and unit-tested on both hosts, NOT
+device-verified, NOT committed.** The owner's "the delivery works but the desktop cant send" was never Bluetooth: the desktop log
+shows `radio.link.up link=COM15_@115200` and texts arriving with ACKs both ways, while the desktop's *own* texts logged
+`chat.path path=hub` twice each and never `path=radio`. `HubChatBridge.canCarry` (relay usable + directory lists the peer) was enough
+to send through the hub and return, but it also covers the hub's **mailbox**, which is not a delivery. New order: LAN → hub only when
+the hub reports the peer online → radio → hub mailbox last (ADR-229); a permanent radio refusal still stops the message, a temporary
+one falls through, and a radio-carried message with no ACK is also deposited on the retry so a peer with its radio off is not
+stranded. New probes `chat.path path=hub_mailbox`, `hub.ack kind=…`, `hub.online result=/count=`. New doc
+`docs/network/RADIO-BLUETOOTH-CHANNELS.md` answers the owner's Android-vs-Windows question: two RFCOMM services exist at once (SPP =
+command protocol or KISS per the radio's own menu; vendor = SBC audio), Android opens both sockets itself, Windows opens the
+OS-created outgoing COM port for data and a Winsock RFCOMM socket for audio. Device check `RADCHAT-DEV06`.
+
+**Radio data round 3, "Radio only" + no doomed dial (2026-10-28, ADR-228): BUILT and unit-tested on both hosts, NOT
+device-verified, NOT committed.** The owner asked for the online/connection proposal to be implemented: a chat header can now read
+**"Radio only · texts go over the air"** (ring dot in `accentSecondary`, transport badge "Radio", calm non-blocking banner) when the
+peer has no session and no sighting but a radio pairing key exists here and the gateway is connected — a presentation state ranked
+last, never a presence source, planner input or trust claim (ADR-227/ADR-228). Both hosts also skip the ~1 s on-demand LAN dial when
+the radio can carry the peer and discovery does not see it right now (a live sighting still gets the dial; the LAN is faster). Two of the five proposed hardening items were already true (one dial in flight per peer in
+`ConnectionPlanner`; route expiry logging, which needs 5 failures **and** 7 days) and are documented as such so they are not "fixed"
+again. Design: `docs/ui/chat-screen.md` UI-004/UI-030; record: `docs/network/PRESENCE-CONNECTIONS-PLAN.md` "Built 2026-10-28"; device
+checks `RADCHAT-DEV05` (new) plus the re-run of `RADCHAT-DEV04`/`RADCHAT-DEV03` in `docs/testing/TEST-BACKLOG.md`. Still not built:
+the per-chat switch (Room step 21 `conversations.radioPolicy`), the attachment refusal sentence in the UI, telemetry/position.
+
+**Flash Hub tab redesign web mock (2026-10-25, second attempt): BUILT, type-checked, production-built and screenshot-verified
+in 12 page/state/viewport combinations, NOT looked at by a person in a browser, NOT committed, not part of Gradle.** The first
+attempt (the "Atlas" five-screen prototype) was **REJECTED by the owner**: it ignored the desktop sidebar and the Android
+bottom nav, used an invented amber visual language, and had far too much information "where the hub is a simple thing" (see the
+SUPERSEDED banner in `docs/ui/hub-web-atlas-prototype.md`). The replacement in `design/hub-web/` is the **Hub tab inside the
+real Flash shells on one review page** — Android's hanging bottom-nav capsule (UI-046) and the desktop 68dp rail side by side,
+using tokens/type/shapes/icons copied file-by-file from the Compose sources (Pulse teal, `FlashTypography`, `HubShapes`,
+`flash_ic_*.xml` path data, the Kotlin avatar hash), with the redesign simplifyings: three segments (News · People · Groups;
+departments are filter chips inside People), no hero card (one calm org row), calm rows, withheld presence hidden entirely
+(D2), and the same `FlashHubCopy.kt` sentences. States: Fresh, Offline·cached, Never synced (+Retry → skeleton → Fresh),
+Removed, Not enrolled (Transfers returns). Details: bottom sheet on the phone, right detail pane on desktop.
+Record: `docs/ui/hub-web-redesign-2026-10-25.md`; run: `cd design/hub-web; npm install; npm run dev` → `:5180`.
+Next: owner reviews in the browser; only after approval `FlashHubScreen.kt` (UI-058) is restyled to match, copying structure
+and geometry (not pixels), then `docs/ui/flash-hub-tab.md` is consolidated. Manual checks `HUBWEB-01..09` in
+`docs/testing/TEST-BACKLOG.md`.
+
+**Android screen presenter + pinch-to-zoom (2026-10-24, ADR-102 amendment): BUILT and unit-tested, NOT device-verified, NOT committed.**
+Android can finally present: `MediaProjection` consent (API 34+ app-or-screen choice) -> `mediaProjection` foreground service ->
+`ScreenCapturerAndroid` through a new `AndroidScreenCapture` in the vendored webrtc fork, behind the existing `ScreenCaptureProvider`; a
+revocation (status-bar chip, locked screen) becomes `Check.SOURCE_LOST` and stops the share instead of freezing. Receivers can pinch into a
+shared screen (1x-5x, drag to pan, "Fit to screen" chip, UI-050h) — receiver-side only, never on a camera picture, never renegotiating. Design:
+`docs/calling/SCREEN-SHARE-DESIGN.md` §8/§10/§11 and `docs/ui/calling-ui.md` UI-050g/UI-050h; platform facts with URLs:
+`docs/android-platform-notes.md` (2026-10-24); fork change: `third_party/webrtc-kmp/MODIFICATIONS.md`. Device checks
+`SHARE-MOB-01..08` and `SHARE-ZOOM-01..06` in `docs/testing/TEST-BACKLOG.md`; `SHARE-18` is unblocked. Not built on purpose: presenting in a
+voice call, picking a single window on Android, `onCapturedContentResize` tracking.
+
+**Radio voice (2026-10-23, ADR-225): hear and talk through the handheld over its vendor audio RFCOMM channel (SBC, as HTCommander does); built and unit-tested, NOT device-verified, NOT committed.** Android only: a Listen switch, level bar and hold-to-talk on the Radio screen; talking is refused while the radio is receiving and goes out as clear audio (the card reminds the operator to give a callsign). Design, wire format and the open hardware questions: `docs/network/RADIO-AUDIO.md`; device checks `RADVOICE-01..08` in `docs/testing/TEST-BACKLOG.md`. ADR-210 / FO-28 are partly superseded. Data-transfer work waits for the first RADVOICE results.
+
 **Brutal code review, round 2 (2026-10-22): F1..F8 verified, six defects fixed on `dev`, unit-tested and mutation-checked, NOT device-verified, NOT deployed.** Record: `docs/audit/2026-10-22-brutal-code-review.md`. Fixed: quarantined mailbox rows no longer consume a device's quota (F1, **ADR-223**; disk totals still count them), the people cursor is length-framed so a `|` in a display name cannot loop the pages (F2), a frame cut short returns its pooled buffer (F3), the client derives its renewal window from the certificate's lifetime like the hub does (F4), `cached = null` happens inside the session lock (F5), and the cached mailbox stats answer `oldestAgeMs(deviceId)` from the snapshot (F6). F7 needed nothing; **F8's diagnosis was wrong** — the WS host ignored the requested port and always bound 45822, so `start(preferredPort)` now exists and the redial test asks for a real new port. Device checks `RVW22-01..04` in `docs/testing/TEST-BACKLOG.md`. Note the 2026-10-21 review uses the same F-numbers for different findings.
 
 **Hub/server internals audit (2026-10-21/22): the whole §11 plan (10 items) is IMPLEMENTED, unit-tested and mutation-checked, NOT deployed, NOT device-verified.** The owner's answers to §8 are **ADR-222** in `docs/decisions.md`; the work is in `dev` as one commit per item (sync body budget and paging, announcement transactions and expiry tri-state, 30-day adjustable device certificates, registry-derived principal, mailbox quarantine, per-device `/auth/verify` limit with a single-flight client refresh, people paging, tombstone hygiene, relay byte budget, cached mailbox stats, bounded client reads, `409` for an early recipient). The per-item log is §12 of `docs/audit/2026-10-21-server-hub-internals-audit.md`; device checks `SRVHUB-01..13` in `docs/testing/TEST-BACKLOG.md`; `docs/protocol.md` describes the new wire behaviour. The audit's other OPEN Low findings are not part of the plan.

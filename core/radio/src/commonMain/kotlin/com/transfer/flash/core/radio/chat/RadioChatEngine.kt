@@ -9,7 +9,6 @@ import com.transfer.flash.core.common.time.SystemTimeSource
 import com.transfer.flash.core.radio.connect.AuthorisationConfirmation
 import com.transfer.flash.core.radio.connect.RadioAuthorisationGate
 import com.transfer.flash.core.radio.connect.RadioAuthorisationStore
-import com.transfer.flash.core.radio.connect.RadioCallsign
 import com.transfer.flash.core.radio.connect.RadioSecurityProfile
 import com.transfer.flash.core.radio.driver.KissTncDriver
 import com.transfer.flash.core.radio.driver.TncLinkState
@@ -50,13 +49,14 @@ import kotlinx.coroutines.sync.withLock
  * Implements Plan R rules:
  * - Rule 3a: Text payloads only, segmented up to 3,008 bytes (16 segments * 188 bytes); longer refused.
  * - Rule 3c: Delivery state 'sent by radio, waiting' when driver confirms transmit;
- *            'delivered' ONLY when cryptographic ACK returns.
+ *            'delivered' ONLY when cryptographic ACK returns. A retransmitted frame is re-ACKed (ERROR-870).
  * - Rule 3d: Inbound frames authenticated/decrypted, replay-checked, deduplicated, and reassembled;
  *            unknown tags and failed auth are silently dropped and counted in probes (zero response on air).
  * - Rule 3e: Multi-lane priority dispatch: EMERGENCY > TEXT > ACK > LOCATION.
  * - Rule 3f: Gateway off/disconnected: refused with NotConnected ('radio not connected').
- * - Rule 4 (Task 4): Profile M (only ciphertext leaves, gated by authorization confirmation) vs
- *                    Profile A (signed clear text with operator callsign in AX.25 address).
+ * - Rule 4 (Task 4): Profile M (only ciphertext leaves, gated by authorization confirmation) is the only profile
+ *                    chat can use. Profile A (signed clear text) is refused, because a Flash station cannot verify
+ *                    it yet and would drop it without an ACK (ERROR-869).
  */
 public class RadioChatEngine(
     public val localDeviceId: String,
@@ -109,6 +109,27 @@ public class RadioChatEngine(
 
     private val pendingAcks = HashMap<Long, PendingOutbound>()
     private val pendingMutex = Mutex()
+
+    /**
+     * One transmit's encoded frames, kept so a retry puts the SAME counters back on the air.
+     *
+     * ERROR-869 (2026-10-28, two radios): the receiving station names an inbound text `rad-<first counter>`,
+     * so re-encoding a retry (a fresh counter) made the same message a NEW row on the other station — one
+     * text arrived as three bubbles. A retry therefore re-sends the identical frame.
+     *
+     * That only helps if the receiver still answers it: the replay window sees the counter again, so
+     * `RadioSession` reports `RadioIngest.Duplicate` instead of dropping it silently, and this engine re-ACKs
+     * the message (ERROR-870). Without that, a lost ACK left the message "sent by radio, waiting" until the
+     * outbox gave up, while the peer had it all along.
+     */
+    private class SentFrames(
+        val frames: List<ByteArray>,
+        val firstCounter: Long,
+        val bytes: Int,
+        val atMs: Long,
+    )
+
+    private val lastSentFrames = LinkedHashMap<String, SentFrames>()
 
     private class PriorityTask(
         val priority: RadioChatPriority,
@@ -163,6 +184,18 @@ public class RadioChatEngine(
         return session.hasPeer(peerId) || pairingAdapter.registerPeer(session, peerId)
     }
 
+    /**
+     * Peer ids this device can seal to right now: a Flash pairing that holds a 32-byte session key,
+     * which is what a radio frame's directional keys derive from (ADR-228).
+     *
+     * Deliberately ignores the gateway: the caller decides whether a link is up. Presentation only —
+     * the header's "Radio only" state reads it, and nothing on the send path depends on it.
+     */
+    public fun radioPairedPeerIds(): Set<String> {
+        val adapter = pairingAdapter ?: return emptySet()
+        return adapter.trustedPeerIds().filterTo(HashSet()) { adapter.isPairedForRadio(it) }
+    }
+
     private var lastPeerSyncMs: Long = Long.MIN_VALUE
     private val syncedPeers = HashSet<String>()
 
@@ -210,10 +243,20 @@ public class RadioChatEngine(
             return RadioChatSendOutcome.RefusedAuthorization("Profile M unconfirmed: ${e.message}")
         }
 
-        // ERROR-684: Profile A puts the operator callsign on the air; never send as NOCALL.
-        val callsign = RadioCallsign.normalise(auth?.operatorCallsign)?.let { Ax25Address.parseOrNull(it) }
-        if (profile == RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED && callsign == null) {
-            return RadioChatSendOutcome.RefusedAuthorization("Enter your callsign in the radio gateway settings first")
+        // ERROR-869 (2026-10-28, two radios): Profile A is signed CLEAR text, and a Flash station cannot verify
+        // it — `RadioSession.ingestSigned` needs the sender's identity public key registered with
+        // `addBroadcastSender`, and a Flash pairing stores only that key's fingerprint. The receiver therefore
+        // drops such a frame as `SIGNED_NOT_ENABLED`, silently, with no ACK, and the sender's bubble says
+        // "waiting for acknowledgement" for ever (that is exactly what the desktop did on 2026-10-28 after the
+        // phone restarted back to the default profile). Refuse here, where the operator can read why.
+        //
+        // Named explicitly because the profile - not the authorisation - is what blocks the send: an operator
+        // who taps "Confirm radio use" while the radio sits on Profile A would otherwise loop on this sentence.
+        if (profile != RadioSecurityProfile.PROFILE_M_ENCRYPTED) {
+            return RadioChatSendOutcome.RefusedAuthorization(
+                "This radio is on Profile A (signed clear text), which Flash cannot deliver. " +
+                    "Switch the radio to Profile M (encrypted) on the Radio screen, then send again.",
+            )
         }
 
         val textBytes = text.encodeToByteArray()
@@ -223,73 +266,100 @@ public class RadioChatEngine(
         }
 
         val nowMs = timeSource.nowMs()
-        val destAddr: Ax25Address
-        val srcAddr: Ax25Address
-        val encodeResult: RadioEncode
+        // ERROR-869: a retry is the same frame again, not a re-encoded one (see [SentFrames]).
+        val repeat = pendingMutex.withLock {
+            lastSentFrames[messageId]?.takeIf { it.bytes == textBytes.size && nowMs - it.atMs <= FRAME_REUSE_MS }
+        }
+        val ax25Frames: List<ByteArray>
+        val firstCounter: Long
+        if (repeat != null) {
+            ax25Frames = repeat.frames
+            firstCounter = repeat.firstCounter
+        } else {
+            val destAddr: Ax25Address
+            val srcAddr: Ax25Address
+            val encodeResult: RadioEncode
 
-        sessionMutex.withLock {
-            when (profile) {
-                RadioSecurityProfile.PROFILE_M_ENCRYPTED -> {
-                    encodeResult = session.encode(recipientId, RadioKind.TEXT, textBytes, nowMs)
-                    destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
-                    srcAddr = session.stationLabel(recipientId, nowMs)
+            sessionMutex.withLock {
+                // Profile A is refused above, so only the encrypted profile reaches the encoder.
+                encodeResult = session.encode(recipientId, RadioKind.TEXT, textBytes, nowMs)
+                destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
+                srcAddr = session.stationLabel(recipientId, nowMs)
+            }
+
+            when (encodeResult) {
+                is RadioEncode.Refused -> {
+                    return RadioChatSendOutcome.Failed("Radio encoding refused: ${encodeResult.reason}")
                 }
-                RadioSecurityProfile.PROFILE_A_PLAINTEXT_SIGNED -> {
-                    encodeResult = session.encodeSigned(RadioKind.TEXT, textBytes, nowMs)
-                    destAddr = Ax25Address.parseOrNull("FLASH") ?: Ax25Address("FLASH", 0)
-                    srcAddr = checkNotNull(callsign)
+                is RadioEncode.Frames -> {
+                    ax25Frames = encodeResult.frames.map { infoBytes ->
+                        Ax25FrameCodec.encodeUi(
+                            destination = destAddr,
+                            source = srcAddr,
+                            info = infoBytes,
+                            pid = 0xF0,
+                            role = Ax25Role.COMMAND,
+                        )
+                    }
+                    firstCounter = encodeResult.firstCounter
                 }
             }
         }
 
-        when (encodeResult) {
-            is RadioEncode.Refused -> {
-                return RadioChatSendOutcome.Failed("Radio encoding refused: ${encodeResult.reason}")
-            }
-            is RadioEncode.Frames -> {
-                val ax25Frames = encodeResult.frames.map { infoBytes ->
-                    Ax25FrameCodec.encodeUi(
-                        destination = destAddr,
-                        source = srcAddr,
-                        info = infoBytes,
-                        pid = 0xF0,
-                        role = Ax25Role.COMMAND,
-                    )
-                }
+        val priority = if (emergency) RadioChatPriority.EMERGENCY else RadioChatPriority.TEXT
+        val deferred = CompletableDeferred<TxResult>()
 
-                val priority = if (emergency) RadioChatPriority.EMERGENCY else RadioChatPriority.TEXT
-                val deferred = CompletableDeferred<TxResult>()
+        val task = PriorityTask(
+            priority = priority,
+            ax25Frames = ax25Frames,
+            label = if (emergency) "emg-$messageId" else "txt-$messageId",
+            firstCounter = firstCounter,
+            onCompleted = { deferred.complete(it) },
+        )
 
-                val task = PriorityTask(
-                    priority = priority,
-                    ax25Frames = ax25Frames,
-                    label = if (emergency) "emg-$messageId" else "txt-$messageId",
-                    firstCounter = encodeResult.firstCounter,
-                    onCompleted = { deferred.complete(it) },
-                )
+        if (priority == RadioChatPriority.EMERGENCY) {
+            laneEmergency.send(task)
+        } else {
+            laneText.send(task)
+        }
 
-                if (priority == RadioChatPriority.EMERGENCY) {
-                    laneEmergency.send(task)
-                } else {
-                    laneText.send(task)
-                }
-
-                val txOutcome = deferred.await()
-                return when (txOutcome) {
-                    is TxResult.Sent -> {
-                        pendingMutex.withLock {
-                            pendingAcks[encodeResult.firstCounter] = PendingOutbound(messageId, recipientId, sentAtMs)
-                        }
-                        RadioChatSendOutcome.SentWaitingAck(encodeResult.firstCounter)
+        val txOutcome = deferred.await()
+        return when (txOutcome) {
+            is TxResult.Sent -> {
+                pendingMutex.withLock {
+                    pendingAcks[firstCounter] = PendingOutbound(messageId, recipientId, sentAtMs)
+                    lastSentFrames[messageId] = SentFrames(ax25Frames, firstCounter, textBytes.size, nowMs)
+                    while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
+                        val oldest = lastSentFrames.keys.firstOrNull() ?: break
+                        lastSentFrames.remove(oldest)
                     }
+                }
+                FlashProbe.emit(
+                    "radio.tx.text",
+                    "peer" to FlashProbe.short(recipientId),
+                    "segments" to ax25Frames.size,
+                    "bytes" to textBytes.size,
+                    "lane" to if (emergency) "emergency" else "text",
+                    "retry" to (repeat != null),
+                )
+                RadioChatSendOutcome.SentWaitingAck(firstCounter)
+            }
                     is TxResult.LinkDown -> {
+                        FlashProbe.emit(
+                            "radio.tx.fail",
+                            "peer" to FlashProbe.short(recipientId),
+                            "reason" to "link_down",
+                        )
                         RadioChatSendOutcome.NotConnected("Radio link went down during transmit")
                     }
                     is TxResult.QueueFull -> {
+                        FlashProbe.emit(
+                            "radio.tx.fail",
+                            "peer" to FlashProbe.short(recipientId),
+                            "reason" to "queue_full",
+                        )
                         RadioChatSendOutcome.Failed("Radio driver transmit queue full")
                     }
-                }
-            }
         }
     }
 
@@ -394,6 +464,21 @@ public class RadioChatEngine(
                     }
                 }
             }
+            is RadioIngest.Duplicate -> {
+                // ERROR-870: the sender put this frame on the air again, which on this link means its ACK was lost.
+                // ACK it again so the message stops retrying (the outbox gives up after 30 minutes otherwise), and
+                // store nothing: the message is already here. RadioSession only reports a duplicate segment when
+                // the message completed, so an incomplete message is never acknowledged.
+                if (ingestResult.kind == RadioKind.TEXT) {
+                    queueAckFrame(ingestResult.peerId, ingestResult.firstCounter, nowMs)
+                }
+                FlashProbe.emit(
+                    "radio.rx.retransmit",
+                    "peer" to FlashProbe.short(ingestResult.peerId),
+                    "acked" to (ingestResult.kind == RadioKind.TEXT),
+                    "signed" to ingestResult.signed,
+                )
+            }
             is RadioIngest.Partial -> {
                 // Segment recorded in reassembler; awaiting remaining segments
             }
@@ -411,6 +496,12 @@ public class RadioChatEngine(
                                 pendingAcks.remove(ackedCounter)
                             }
                             if (pending != null) {
+                                FlashProbe.emit(
+                                    "radio.rx.ack",
+                                    "peer" to FlashProbe.short(ingestResult.peerId),
+                                    "message" to FlashProbe.short(pending.messageId),
+                                    "rttMs" to (nowMs - pending.sentAtMs),
+                                )
                                 _deliveryReceipts.emit(
                                     RadioChatReceipt(
                                         messageId = pending.messageId,
@@ -427,6 +518,14 @@ public class RadioChatEngine(
 
                         // Transmit cryptographic ACK back to peer in the ACK priority lane
                         queueAckFrame(ingestResult.peerId, ingestResult.firstCounter, nowMs)
+
+                        FlashProbe.emit(
+                            "radio.rx.text",
+                            "peer" to FlashProbe.short(ingestResult.peerId),
+                            "bytes" to ingestResult.body.size,
+                            "duplicate" to isDuplicate,
+                            "signed" to ingestResult.signed,
+                        )
 
                         if (!isDuplicate) {
                             dedupCache.markSeen(dedupKey)
@@ -472,7 +571,11 @@ public class RadioChatEngine(
                 ax25Frames = ax25Frames,
                 label = "ack-$firstCounter",
                 firstCounter = null,
-                onCompleted = {},
+                onCompleted = { result ->
+                    if (result is TxResult.Sent) {
+                        FlashProbe.emit("radio.tx.ack", "peer" to FlashProbe.short(peerId))
+                    }
+                },
             )
             laneAck.send(task)
         }
@@ -490,5 +593,15 @@ public class RadioChatEngine(
     private companion object {
         /** How often the paired-peer set is re-read from the trust store while frames arrive. */
         const val PEER_SYNC_INTERVAL_MS: Long = 10_000L
+
+        /**
+         * How long a sent message's encoded frames are reusable for a retry (ERROR-869). The outbox re-arms a
+         * radio send after [RADIO_RESEND_MS] (25 s) at most, so five minutes is far more than a retry needs and
+         * short enough that a stale station label never matters.
+         */
+        const val FRAME_REUSE_MS: Long = 5 * 60 * 1000L
+
+        /** Bounded: only the most recent sends keep their frames for a retry. */
+        const val MAX_REMEMBERED_FRAMES: Int = 64
     }
 }

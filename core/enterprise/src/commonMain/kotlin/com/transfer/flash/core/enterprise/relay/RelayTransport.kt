@@ -2,6 +2,7 @@ package com.transfer.flash.core.enterprise.relay
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.core.hubprotocol.relay.RelayLimits
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +36,19 @@ public interface RelayTransport {
     public val failure: StateFlow<RelayFailure?> get() = NO_FAILURE
 
     /**
+     * The limits the hub announced in its WELCOME (SEC-D15-02), null before the first successful handshake. Its
+     * `mailboxTtlMs` is what a recipient bounds message age by.
+     */
+    public val limits: StateFlow<RelayLimits?> get() = NO_LIMITS
+
+    /**
+     * How far this device's clock is ahead of the hub's, measured at the WELCOME (`serverTime - localTime`); null
+     * before the first handshake. A sender whose clock is clearly off stamps a hub message with the hub's time
+     * instead, so the recipient's age check (SEC-D15-02) never refuses days-old-looking fresh mail.
+     */
+    public val serverTimeOffsetMs: StateFlow<Long?> get() = NO_OFFSET
+
+    /**
      * Opens the WebSocket connection to [hubUrl] and runs the authenticated handshake (CHALLENGE, HELLO, WELCOME)
      * with [identity]. No identity travels in the URL.
      *
@@ -54,5 +68,7 @@ public interface RelayTransport {
 
     public companion object {
         private val NO_FAILURE: StateFlow<RelayFailure?> = MutableStateFlow(null)
+        private val NO_LIMITS: StateFlow<RelayLimits?> = MutableStateFlow(null)
+        private val NO_OFFSET: StateFlow<Long?> = MutableStateFlow(null)
     }
 }

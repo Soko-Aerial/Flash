@@ -53,6 +53,7 @@ import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.icons.FlashIcon
 import com.transfer.flash.ui.icons.FlashIcons
+import com.transfer.flash.ui.radio.FlashRadioChatMath
 import com.transfer.flash.ui.theme.FlashColors
 import com.transfer.flash.ui.theme.FlashDimensions
 import com.transfer.flash.ui.theme.FlashHaptic
@@ -163,6 +164,8 @@ fun FlashMessageBubble(
      * ERROR-089: tapping a failed delivery status icon retries delivery via [FlashChatRepository.retryMessage].
      */
     onRetryMessage: ((String) -> Unit)? = null,
+    /** Visible control under an outgoing radio note that has not yet been acknowledged. */
+    onStopRadioRetry: (() -> Unit)? = null,
     /** UI-054 (O-14): join action triggered from an inline group invite card. */
     onJoinInvite: ((String) -> Unit)? = null,
 ) {
@@ -236,6 +239,7 @@ fun FlashMessageBubble(
                 searchQuery = searchQuery,
                 onOpenMessageInfo = onOpenMessageInfo,
                 onRetryMessage = onRetryMessage,
+                onStopRadioRetry = onStopRadioRetry,
                 onJoinInvite = onJoinInvite,
             )
         } else {
@@ -263,6 +267,7 @@ fun FlashMessageBubble(
                     searchQuery = searchQuery,
                     onOpenMessageInfo = onOpenMessageInfo,
                     onRetryMessage = onRetryMessage,
+                    onStopRadioRetry = onStopRadioRetry,
                     onJoinInvite = onJoinInvite,
                 )
             }
@@ -300,6 +305,7 @@ private fun FlashMessageBubbleUltraLow(
     searchQuery: String?,
     onOpenMessageInfo: (() -> Unit)?,
     onRetryMessage: ((String) -> Unit)? = null,
+    onStopRadioRetry: (() -> Unit)? = null,
     onJoinInvite: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
@@ -449,6 +455,7 @@ private fun FlashMessageBubbleUltraLow(
                 deliveryStatus = deliveryStatus,
                 onRetryMessage = onRetryMessage,
             )
+            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
         }
     }
 }
@@ -459,6 +466,7 @@ private fun FlashMessageTimestampRowUltraLow(
     modifier: Modifier = Modifier,
     deliveryStatus: (@Composable () -> Unit)? = null,
     onRetryMessage: ((String) -> Unit)? = null,
+    onStopRadioRetry: (() -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
@@ -512,6 +520,7 @@ private fun FlashBubbleSurface(
     searchQuery: String?,
     onOpenMessageInfo: (() -> Unit)?,
     onRetryMessage: ((String) -> Unit)? = null,
+    onStopRadioRetry: (() -> Unit)? = null,
     onJoinInvite: ((String) -> Unit)? = null,
 ) {
     val colors = FlashTheme.colors
@@ -724,6 +733,56 @@ private fun FlashBubbleSurface(
                 onOpenMessageInfo = onOpenMessageInfo,
                 onRetryMessage = onRetryMessage,
             )
+            FlashRadioDeliveryLine(message = message, onStopRadioRetry = onStopRadioRetry)
+        }
+    }
+}
+
+/**
+ * ADR-227: the radio delivery line under an outgoing message ("waiting for acknowledgement", "delivered", or the
+ * engine's refusal sentence). Absent for every message that did not travel by radio, so a LAN/hub chat looks
+ * exactly as before.
+ */
+@Composable
+private fun FlashRadioDeliveryLine(
+    message: FlashMessageUi,
+    modifier: Modifier = Modifier,
+    onStopRadioRetry: (() -> Unit)? = null,
+) {
+    val note = message.radioNote ?: return
+    if (!message.isMine) return
+    val colors = FlashTheme.colors
+    val typography = FlashTheme.typography
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = FlashSpacing.space4),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FlashText(
+            text = FlashRadioChatMath.deliveryLine(note),
+            style = typography.metadataDefault,
+            color = if (FlashRadioChatMath.isFailure(note)) colors.textError else colors.chatTextTimestampOutgoing,
+        )
+        if (onStopRadioRetry != null && FlashRadioChatMath.canStopRetry(note)) {
+            Spacer(modifier = Modifier.width(FlashSpacing.space8))
+            Box(
+                modifier = Modifier
+                    .clip(FlashShapes.attachment)
+                    .clickable(onClick = onStopRadioRetry)
+                    .padding(horizontal = FlashSpacing.space8, vertical = FlashSpacing.space4)
+                    .semantics {
+                        role = Role.Button
+                        contentDescription = "Stop sending"
+                    },
+            ) {
+                FlashText(
+                    text = "Stop",
+                    style = typography.metadataEmphasis,
+                    color = colors.textError,
+                )
+            }
         }
     }
 }

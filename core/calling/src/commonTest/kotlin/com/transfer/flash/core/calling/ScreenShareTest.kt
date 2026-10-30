@@ -330,6 +330,8 @@ class ScreenShareTest {
         override var width: Int = 0
         override var height: Int = 0
         override var frameCount: Long = 0L
+        /** UI-050h on Android: the platform can take a capture away (the status-bar chip, a locked screen). */
+        override var revoked: Boolean = false
         var closed = 0
         override fun lastFrameAgeMs(): Long? = null
         override suspend fun sendOn(sender: RtpSender) = Unit
@@ -495,6 +497,32 @@ class ScreenShareTest {
     @Test
     fun `no capture means nothing to check`() {
         assertEquals(ScreenShareRun.Check.OK, run().check())
+    }
+
+    @Test
+    fun `a capture the platform revoked is source lost, not a slow first frame`() = runTest {
+        val provider = FakeProvider()
+        val run = run(provider)
+        run.open(ShareSource(1L, "s", ShareSourceKind.SCREEN))
+        provider.handle.revoked = true
+        // The first-frame timeout has not passed, so without the revocation this is still OK.
+        assertEquals(ScreenShareRun.Check.SOURCE_LOST, run.check())
+        now += ShareLadder.FIRST_FRAME_TIMEOUT_MS
+        assertEquals(ScreenShareRun.Check.SOURCE_LOST, run.check(), "never reported as a dead capturer")
+    }
+
+    @Test
+    fun `a revoked capture is source lost even when the height also changed`() = runTest {
+        val provider = FakeProvider()
+        val run = run(provider)
+        run.open(ShareSource(1L, "s", ShareSourceKind.SCREEN))
+        provider.handle.frameCount = 1
+        provider.handle.height = 1080
+        assertEquals(ScreenShareRun.Check.RETUNE, run.check())
+        provider.handle.revoked = true
+        provider.handle.height = 720
+        assertEquals(ScreenShareRun.Check.SOURCE_LOST, run.check(), "the revocation wins over the retune")
+        assertEquals(ScreenShareRun.Check.SOURCE_LOST, run.check())
     }
 
     @Test

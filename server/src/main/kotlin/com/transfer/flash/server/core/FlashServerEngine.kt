@@ -109,6 +109,11 @@ public class FlashServerEngine(
     public val managementGuard: ManagementGuard = DefaultManagementGuard(),
     /** Days until the delegation certificate expires (SEC-09 alarm), or null when unknown. */
     public val delegationDaysRemaining: (() -> Long?)? = null,
+    /**
+     * How long the mailbox keeps an undelivered message (`ServerConfig.mailboxTtlDays`), announced to clients in the
+     * WELCOME so they can refuse a replayed envelope (SEC-D15-02). Defaults to the shipped retention.
+     */
+    public val mailboxTtlMs: Long = config.mailboxTtlDays.toLong() * 24L * 60L * 60L * 1000L,
     /** Sweep period for expired mailbox rows. */
     public val sweepIntervalMs: Long = TtlSweeper.DEFAULT_SWEEP_INTERVAL_MS,
     private val clock: () -> Long = System::currentTimeMillis,
@@ -145,6 +150,7 @@ public class FlashServerEngine(
         metrics = metrics,
         clock = clock,
         clientAddressOf = clientAddresses::clientIp,
+        mailboxTtlMs = { mailboxTtlMs },
     )
 
     public val ttlSweeper: TtlSweeper? =

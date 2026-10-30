@@ -17,20 +17,28 @@ import com.transfer.flash.core.common.model.FlashPeerPresence
 import com.transfer.flash.ui.theme.FlashTheme
 
 /** How [FlashPresenceDot] draws a presence, or [None] when it draws nothing. */
-enum class FlashPresenceDotStyle { Solid, Ring, None }
+enum class FlashPresenceDotStyle { Solid, Ring, RingRadio, None }
 
-/** Pure mapping for UI-030b, unit-tested in `FlashPresenceDotLogicTest`. */
+/**
+ * Pure mapping for UI-030b, unit-tested in `FlashPresenceDotLogicTest`.
+ *
+ * The shape carries the meaning (WCAG 1.4.1): solid = a live session, ring = no session (seen, or
+ * reachable by radio only). The radio keeps the ring but is drawn in the radio colour, so the header
+ * never shows the same picture for a Wi-Fi sighting and an air-only peer (ADR-228).
+ */
 object FlashPresenceDotMath {
     fun style(presence: FlashPeerPresence): FlashPresenceDotStyle = when (presence) {
         FlashPeerPresence.Online, FlashPeerPresence.Typing -> FlashPresenceDotStyle.Solid
         FlashPeerPresence.Reachable -> FlashPresenceDotStyle.Ring
+        FlashPeerPresence.RadioOnly -> FlashPresenceDotStyle.RingRadio
         FlashPeerPresence.Connecting, FlashPeerPresence.Offline -> FlashPresenceDotStyle.None
     }
 
-    /** Screen-reader text; the owner's names (P3): Connected / Online. */
+    /** Screen-reader text; the owner's names (P3): Connected / Online / Radio only. */
     fun description(style: FlashPresenceDotStyle): String? = when (style) {
         FlashPresenceDotStyle.Solid -> "Connected"
         FlashPresenceDotStyle.Ring -> "Online"
+        FlashPresenceDotStyle.RingRadio -> "Radio only"
         FlashPresenceDotStyle.None -> null
     }
 
@@ -58,6 +66,9 @@ fun FlashPresenceDot(
     if (style == FlashPresenceDotStyle.None) return
     val colors = FlashTheme.colors
     val description = FlashPresenceDotMath.description(style).orEmpty()
+    // ADR-228: a radio-only peer is a ring too (no session), but in the secondary accent so it is not
+    // mistaken for a Wi-Fi sighting. Colour is never the only cue: the header/label says "Radio only".
+    val ringColor = if (style == FlashPresenceDotStyle.RingRadio) colors.accentSecondary else colors.statusOnline
     val inner = Modifier
         .clip(CircleShape)
         .let { m ->
@@ -65,7 +76,7 @@ fun FlashPresenceDot(
                 m.background(colors.statusOnline)
             } else {
                 m.background(colors.backgroundSurface)
-                    .border(FlashPresenceDotMath.RingStroke, colors.statusOnline, CircleShape)
+                    .border(FlashPresenceDotMath.RingStroke, ringColor, CircleShape)
             }
         }
     Box(

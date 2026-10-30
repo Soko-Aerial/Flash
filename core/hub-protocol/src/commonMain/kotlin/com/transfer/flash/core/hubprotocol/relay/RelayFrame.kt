@@ -262,6 +262,14 @@ public data class HubPrincipal(
 public data class RelayLimits(
     public val maxFrameBytes: Int = HubContract.MAX_FRAME_BYTES,
     public val maxPayloadBytes: Int = HubContract.MAX_PAYLOAD_BYTES,
+    /**
+     * How long this hub keeps an undelivered message in its mailbox (SEC-D15-02). A recipient treats a delivery whose
+     * authenticated `sentAt` is older than this plus [HubContract.MESSAGE_AGE_GRACE_MS] as stale: nothing that is still
+     * legitimately queued can be that old, so a replay of an old envelope is refused even when the chat was cleared.
+     * 0 or less means the hub said nothing (an older hub) and the recipient falls back to
+     * [HubContract.DEFAULT_MAILBOX_TTL_MS].
+     */
+    public val mailboxTtlMs: Long = HubContract.DEFAULT_MAILBOX_TTL_MS,
 )
 
 /**

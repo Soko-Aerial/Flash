@@ -1,17 +1,19 @@
 # Screen share in calls: design (ADR-102)
 
-Status: **IMPLEMENTED 2026-10-09 for the desktop presenter (Windows, Linux) and for receivers on every platform; unit-tested; NOT
-device-verified (`SHARE-01`...`SHARE-14`). The Android presenter is NOT built.** Investigation and reasoning that led here:
+Status: **IMPLEMENTED 2026-10-09 for the desktop presenter (Windows, Linux) and for receivers on every platform; the Android presenter was
+added 2026-10-24 (MediaProjection, foreground service, revocation). Unit-tested; NOT device-verified (`SHARE-01`...`SHARE-18`,
+`SHARE-MOB-01`...`08`, `SHARE-ZOOM-01`...`06`).** Investigation and reasoning that led here:
 `docs/calling/SCREEN-SHARE-INVESTIGATION.md`. Run report with every decision and the owner checklist:
-`docs/reports/2026-10-09-screen-share.md`. UI spec and copy: `docs/ui/calling-ui.md` section "UI-050g".
+`docs/reports/2026-10-09-screen-share.md`. UI spec and copy: `docs/ui/calling-ui.md` sections "UI-050g" and "UI-050h".
 
 Labels: **read** (in this repo), **verified** (official docs or library source), **estimate** (reasoning, not measured), **unverified**
 (needs a device).
 
 ## 1. Goal and scope
 
-A person in a 1:1 or group video call can show a screen or a window to the others. Everyone else sees it letterboxed and knows who is
-presenting. Out of scope: audio of the shared content, annotation, remote control, presenting from Android, presenting from a voice call.
+A person in a 1:1 or group video call can show a screen or a window to the others, on any platform the app runs on. Everyone else sees it
+letterboxed and knows who is presenting, and on a small screen can pinch into it (UI-050h). Out of scope: audio of the shared content,
+annotation, remote control, presenting from a voice call.
 
 ## 2. Architecture in one picture
 
@@ -137,12 +139,26 @@ First guesses, **not measurements** (`SHARE-04` replaces them). ADR-098's camera
 - **Linux**: X11 uses the same capturer. **Wayland**: the capturer is expected to open the system (xdg-desktop-portal / PipeWire) picker
   when it starts; the app then lists one synthetic entry "Choose in the system dialog" and a note in the picker. **Unverified**; the
   documentation URL that was meant to confirm it returned 404 (**not verified**). `SHARE-08`.
-- **Android (receiver only)**: nothing to do except render: the presenter's track arrives like a camera track. Renders `Fit`.
-- **Android presenter (NOT built)**: would need `MediaProjectionManager.createScreenCaptureIntent()` consent (an Activity result), a foreground
-  service with `foregroundServiceType="mediaProjection"` and the `FOREGROUND_SERVICE_MEDIA_PROJECTION` permission started before the projection
-  is used (Android 14+), a `MediaProjection.Callback` registered before capture (Android 14+), the wrapper's `ScreenCapturerController`
-  behind `ScreenCaptureProvider`, and handling of the user revoking from the status-bar chip. Each of these must be re-checked against the
-  current Android documentation (AGENTS section 13) on the day it is built; none of it was checked on 2026-10-09 because it was not built.
+- **Android (receiver)**: nothing to do except render: the presenter's track arrives like a camera track. Renders `Fit`.
+- **Android (presenter, built 2026-10-24)**: `AndroidScreenCapture.open(consent, fps, maxWidth, maxHeight, onStopped)` in the vendored fork
+  (`third_party/webrtc-kmp/.../AndroidScreenCapture.kt`) wraps `org.webrtc.ScreenCapturerAndroid` exactly as `DesktopScreenCapture` wraps
+  webrtc-java's capturer, because `WebRtc.peerConnectionFactory` is `internal` to the fork. It is reached through
+  `AndroidScreenCaptureProvider` (`:core:calling` androidMain), which delegates the two things only the app can do to
+  `AndroidScreenCaptureHost`:
+  - **consent** — `MediaProjectionManager.createScreenCaptureIntent()` launched by `MainActivity` as an Activity result. On API 34+ the intent is
+    built with `MediaProjectionConfig.createConfigForUserChoice()`, so the system dialog lets the person pick the whole screen or one app. Consent
+    is single-use: every share asks again.
+  - **the foreground service** — `FlashScreenCaptureService` with `foregroundServiceType="mediaProjection"` and the
+    `FOREGROUND_SERVICE_MEDIA_PROJECTION` permission. Order (Android's documented order, `developer.android.com/media/grow/media-projection`,
+    checked 2026-10-24): consent -> service promoted -> `getMediaProjection`/`createVirtualDisplay`. `ScreenCapturerAndroid.startCapture` does the
+    last step, so the provider waits for the promotion (3 s) and refuses to open the projection if the service was not promoted.
+  - **revocation** — a `MediaProjection.Callback` registered by the capturer (Android 14+ requires one) turns the status-bar chip, a locked screen
+    or another app taking the projection into `AndroidCaptureHandle.revoked`, which the watchdog reads as `ScreenShareRun.Check.SOURCE_LOST` and
+    the session turns into `stopShare(ShareStopReason.SOURCE_LOST)`.
+  - **the size and rate** — `ShareLadder.CAPTURE_MAX_*` (2560x1440) and `CAPTURE_FPS` (10), never larger than the real display, even numbers on
+    both sides (an odd virtual-display size is refused on some devices).
+  The capture is `isScreencast = true`, so WebRTC drops the frame rate and keeps text sharp rather than downscaling for a camera.
+
 
 ## 9. Native-resource rules (from ERROR-078 / ERROR-123)
 
@@ -158,14 +174,19 @@ First guesses, **not measurements** (`SHARE-04` replaces them). ADR-098's camera
 | Event | Result |
 |---|---|
 | Capturer cannot open | "Sharing could not start", camera restored, nothing announced |
+| Consent refused (or the dialog never answered) | "Sharing could not start"; nothing is announced and no service runs |
+| Projection service not promoted (Android) | "Sharing could not start"; the projection is never opened |
 | No frame within 5 s | share stops, "Nothing could be captured from that screen, so sharing stopped" |
+| Projection revoked by the system (Android: status-bar chip, locked screen) | share stops, "The shared screen or window went away, so sharing stopped" |
 | Another device starts later | this one stops, "<name> started sharing, so yours stopped" |
 | Call ends | capture closed before the connections, no notice |
 | A leg refuses `replaceTrack` | that leg keeps its camera picture, logged; the others show the screen |
 | Computer cannot keep up | one rung down, hint "Your computer is busy, so the picture is smaller" |
-| Shared window closed | **unverified** (`SHARE-10`) |
+| Shared window closed | **unverified** (`SHARE-10`); a window that closes without ending the capture looks like a static screen |
 
 ## 11. Not done
 
-Android presenter; group voice calls cannot present (a share needs the video kind); shared-content audio; a thumbnail preview in the picker
-(the capturer lists titles only); closed-window detection beyond the first frame; measured ladder numbers (`SHARE-04`).
+Group voice calls cannot present (a share needs the video kind); shared-content audio; a thumbnail preview in the picker (the capturer lists
+titles only); closed-window detection beyond the first frame; measured ladder numbers (`SHARE-04`). Android cannot pick a *window*: the system
+dialog offers the whole screen or one app (API 34+), never an individual window, so the picker stays one synthetic entry
+(`usesSystemPicker = true`). Nothing about the Android presenter is device-verified yet (`SHARE-18`, `SHARE-MOB-01`...`08`).

@@ -67,7 +67,7 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-028 | Group chat header | [group-ui.md](group-ui.md) | IMPLEMENTED | UI-004 |
 | UI-029 | Group member presentation | [group-ui.md](group-ui.md) | IMPLEMENTED | UI-028 |
 | UI-030 | Device / network status UI | [chat-screen.md](chat-screen.md) | IMPLEMENTED | UI-001 |
-| UI-030b | Presence states Connected / Online / Offline (PC3) | [chat-screen.md](chat-screen.md) | IMPLEMENTED (not device-verified) | UI-030, UI-003, UI-004 |
+| UI-030b | Presence states Connected / Online / Offline (PC3) | [chat-screen.md](chat-screen.md) | IMPLEMENTED (not device-verified); + **Radio only** (ADR-228, 2026-10-28, `RADCHAT-DEV05` owed) | UI-030, UI-003, UI-004 |
 | UI-031 | Encryption indicators | [chat-screen.md](chat-screen.md) | IMPLEMENTED (see L63) | UI-030 |
 | UI-032 | Device pairing flow UI | [profile-ui.md](profile-ui.md) | IMPLEMENTED | UI-001, UI-037 |
 | UI-033 | Navigation | [navigation.md](navigation.md) | IMPLEMENTED (snapshot-state stack + saver + direction-aware transitions, 2026-08-25; device verification pending) | UI-001 |
@@ -92,6 +92,8 @@ Per-component docs use [`component-doc-template.md`](component-doc-template.md).
 | UI-050d | Group video health banner and "Show fewer" (G6) | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-09-29; not device-verified) | UI-050c |
 | UI-050e | In-call control dock: state-aware icons, labels, tier-aware motion | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-10-02; unit-tested + Skia render; device checks CALLDOCK-01..05 owed) | UI-050, UI-002, UI-037 |
 | UI-050f | In-call extras: audio output list, More panel, reactions, raise hand, data saver, badges, PiP, link / verified chip | [calling-ui.md](calling-ui.md) | IMPLEMENTED (2026-10-02; unit-tested; device checks CALLX-01..12 owed; ADR-067) | UI-050e |
+| UI-050g | Screen share in calls (More-panel picker, presenter indicator, letterboxed receiver picture, take-over, notices) | [calling-ui.md](calling-ui.md) | IMPLEMENTED 2026-10-09 desktop presenter + all receivers; Android presenter added 2026-10-24 (ADR-102; unit-tested; device checks SHARE-01..19, SHARE-MOB-01..08 owed) | UI-050f, UI-050h |
+| UI-050h | Pinch-to-zoom and pan of a shared screen (receiver-side magnifier, 1x–5x, "Fit to screen" chip; never on a camera picture) | [calling-ui.md](calling-ui.md) | IMPLEMENTED 2026-10-24 (ADR-102; unit-tested `FlashVideoZoomMathTest`; device checks SHARE-ZOOM-01..06 owed) | UI-050g, UI-037 |
 | UI-051 | Message Info sheet (who has read / received / is waiting) | [message-info.md](message-info.md) | IMPLEMENTED 2026-09-30, unit-tested, device check CGS-06 owed (chat/group sync audit, TASK-MSG-INFO-1/2) | UI-015, UI-029, UI-008 |
 | UI-052 | Group catch-up progress banner | [group-ui.md](group-ui.md) (UI-052 section) | IMPLEMENTED 2026-09-30, unit-tested, device check CGS-07 owed (TASK-GRP-SYNC-2) | UI-030, UI-029 |
 | UI-053 | Group settings sheet (signed group settings + this device's preferences, invite entry point) | [group-settings.md](group-settings.md) | IMPLEMENTED 2026-10-05 (ADR-074, GM-10; unit-tested; device checks GSET-01..03 owed) | UI-029, UI-001, UI-002 |
@@ -137,15 +139,17 @@ Do not treat it as accepted premium UI.
 
 ---
 
+**Redesign v2 (2026-10-28):** UI-070..UI-074 now use the Hub tab's visual language - a station plate, attention strips that only appear when something needs an answer, small-caps sections of hairline rows, a 720 dp centred column at every window size, HubTone colours instead of hardcoded hex, and FlashConfirmHost instead of AlertDialog (no separate native window on desktop). Wiring untouched; 43 radio unit tests green; design record in `docs/ui/radio-gateway.md` 'Redesign v2' and device check `RADUI-DEV01`.
+
 ## Radio gateway (added 2026-10-16, stream R-ui; implemented against a fake controller, host wiring pending in stream R-wire)
 
 | ID | Component | Status | Doc | Owner Phase | Description |
 |---|---|---|---|---|---|
-| **UI-070** | Radio gateway settings entry & overview | DESIGNED | `docs/ui/radio-gateway.md` | Plan R §6 | Master toggle, readiness checklist, remembered radio, candidate confirmation ("Use <name>?") |
-| **UI-071** | Find my radio: discovery scan & pairing | DESIGNED | `docs/ui/radio-gateway.md` | Plan R §6 | Live Bluetooth device scan, ranking badges (VR-N76 / UV-Pro), in-app pairing button, 12s timeout |
-| **UI-072** | Security profile & authorisation sheet | DESIGNED | `docs/ui/radio-gateway.md` | Plan R §8 | Profile M (military encrypted, default) vs Profile A (civilian signed), one-time statutory authorisation modal |
-| **UI-073** | Connection status chip and details | DESIGNED | `docs/ui/radio-gateway.md` | Plan R §6 | Real-time link state chip, plain-English status sentence and actionable next step |
-| **UI-074** | Operational mode selector | DESIGNED | `docs/ui/radio-gateway.md` | Plan R §5 | Modes 1 (Field Companion), 2 (Relay), 4 (Tactical Radar), 5 (All-in-One); unbuilt modes marked "Coming later" without dead actions |
+| **UI-070** | Radio gateway settings entry & overview | IMPLEMENTED, redesign v2 2026-10-28 (`RADUI-DEV01` owed) | `docs/ui/radio-gateway.md` | Plan R §6 | Master toggle, readiness checklist, remembered radio, candidate confirmation ("Use <name>?") |
+| **UI-071** | Find my radio: discovery scan & pairing | IMPLEMENTED, redesign v2 2026-10-28 (`RADUI-DEV01` owed) | `docs/ui/radio-gateway.md` | Plan R §6 | Live Bluetooth device scan, ranking badges (VR-N76 / UV-Pro), in-app pairing button, 12s timeout |
+| **UI-072** | Security profile & authorisation sheet | IMPLEMENTED, redesign v2 2026-10-28 (`RADUI-DEV01` owed) | `docs/ui/radio-gateway.md` | Plan R §8 | Profile M (military encrypted, default) vs Profile A (civilian signed), one-time statutory authorisation modal |
+| **UI-073** | Connection status chip and details | IMPLEMENTED, redesign v2 2026-10-28 (`RADUI-DEV01` owed) | `docs/ui/radio-gateway.md` | Plan R §6 | Real-time link state chip, plain-English status sentence and actionable next step |
+| **UI-074** | Operational mode selector | IMPLEMENTED, redesign v2 2026-10-28 (`RADUI-DEV01` owed) | `docs/ui/radio-gateway.md` | Plan R §5 | Modes 1 (Field Companion), 2 (Relay), 4 (Tactical Radar), 5 (All-in-One); unbuilt modes marked "Coming later" without dead actions |
 
 ---
 

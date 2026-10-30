@@ -663,6 +663,9 @@ private fun FlashNetworkTransport.iconSpec(): FlashIconSpec? = when (this) {
     FlashNetworkTransport.Lan -> FlashIcons.Wifi
     FlashNetworkTransport.WifiDirect -> FlashIcons.WifiDirect
     FlashNetworkTransport.Relay -> FlashIcons.Relay
+    // ADR-228: group members are never radio-only (the radio carries 1:1 text only), but the enum is
+    // shared, and a Bluetooth mark is the honest glyph if that ever changes.
+    FlashNetworkTransport.Radio -> FlashIcons.Bluetooth
     FlashNetworkTransport.Unknown -> null
 }
 
@@ -691,6 +694,7 @@ private fun memberSubtitle(member: FlashGroupMemberUi): String =
             FlashNetworkTransport.Lan -> "LAN"
             FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
             FlashNetworkTransport.Relay -> "Relay"
+            FlashNetworkTransport.Radio -> "Radio"
             FlashNetworkTransport.Unknown -> "Offline"
         }
     }

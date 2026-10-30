@@ -62,6 +62,7 @@ public class WsTransferServer(
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
     private val inFlightSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val handshakeAdmission = HandshakeAdmission()
 
     @Volatile
     public var listenPort: Int = 0
@@ -112,6 +113,13 @@ public class WsTransferServer(
     private suspend fun acceptLoop(socket: ServerSocket) = withContext(Dispatchers.IO) {
         while (isActive && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrElse { break }
+            // SEC-D24-01: bound the sockets that may sit in the handshake; a refused one is closed at once.
+            val remoteHost = client.inetAddress?.hostAddress ?: "?"
+            if (!handshakeAdmission.tryAdmit(remoteHost)) {
+                WsLog.d(TAG, "WS handshake refused from=$remoteHost: too many sockets are still handshaking")
+                runCatching { client.close() }
+                continue
+            }
             inFlightSockets.add(client)
             launch {
                 var activeSocket: Socket = client
@@ -154,6 +162,7 @@ public class WsTransferServer(
                         runCatching { activeSocket.close() }
                     }
                 } finally {
+                    handshakeAdmission.release(remoteHost)
                     inFlightSockets.remove(client)
                     inFlightSockets.remove(activeSocket)
                 }

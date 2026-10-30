@@ -9,4 +9,6 @@
     <exclude domain="database" path="." />
     <exclude domain="external" path="." />
     <exclude domain="file" path="logs" />
+    <exclude domain="file" path="swarm" />
+    <exclude domain="file" path="FlashReceived" />
 </full-backup-content>

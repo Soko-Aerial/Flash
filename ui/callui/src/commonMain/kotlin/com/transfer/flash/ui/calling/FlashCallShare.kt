@@ -115,7 +115,7 @@ internal object CallShareText {
     fun notice(notice: FlashShareNotice, presenterName: String?, watcherCap: Int): String = when (notice) {
         FlashShareNotice.TAKEN_OVER ->
             if (presenterName.isNullOrBlank()) "Someone else started sharing, so yours stopped" else "$presenterName started sharing, so yours stopped"
-        FlashShareNotice.SOURCE_LOST -> "The shared window closed, so sharing stopped"
+        FlashShareNotice.SOURCE_LOST -> "The shared screen or window went away, so sharing stopped"
         FlashShareNotice.NO_FRAMES -> "Nothing could be captured from that screen, so sharing stopped"
         FlashShareNotice.FAILED -> "Sharing could not start"
         FlashShareNotice.LOWERED -> "Sharing at a lower quality to keep up"

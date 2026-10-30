@@ -127,12 +127,36 @@ class RadioSessionTest {
         val b = station("dev-b", "dev-a", replay = replay)
         val f = frames(a.session.encode("dev-b", RadioKind.TEXT, "x".encodeToByteArray(), t0))[0]
         assertIs<RadioIngest.Delivered>(b.session.ingest(f, t0))
-        val second = b.session.ingest(f, t0 + 5)
-        assertEquals(RadioDrop.REPLAY, (second as RadioIngest.Dropped).reason)
+        // ERROR-870: a repeat is still not delivered, but it is reported as a duplicate so the engine can ACK it
+        // again (a lost ACK is the only reason the sender repeats the identical frame).
+        val second = assertIs<RadioIngest.Duplicate>(b.session.ingest(f, t0 + 5))
+        assertEquals(RadioKind.TEXT, second.kind)
         // B restarts with only the persisted replay state
         val b2 = station("dev-b", "dev-a", replay = replay)
-        val third = b2.session.ingest(f, t0 + 10_000)
-        assertEquals(RadioDrop.REPLAY, (third as RadioIngest.Dropped).reason)
+        val third = assertIs<RadioIngest.Duplicate>(b2.session.ingest(f, t0 + 10_000))
+        assertEquals(second.firstCounter, third.firstCounter)
+    }
+
+    @Test
+    fun aDuplicateSegmentIsReportedOnlyWhenItsMessageCompleted() {
+        // ERROR-870: a retransmitted segment must name its message's FIRST counter (what an ACK names), and only
+        // once the whole message arrived - never for a message that is still missing a segment.
+        val a = station("dev-a", "dev-b")
+        val b = station("dev-b", "dev-a")
+        val enc = a.session.encode("dev-b", RadioKind.TEXT, bytes(500), t0)
+        assertIs<RadioEncode.Frames>(enc)
+        val fr = enc.frames
+        assertTrue(fr.size > 1, "this test needs a segmented message")
+
+        // One segment only, then its retry: silent (an incomplete message must never be acknowledged).
+        assertIs<RadioIngest.Partial>(b.session.ingest(fr[0], t0))
+        assertEquals(RadioDrop.REPLAY, (b.session.ingest(fr[0], t0 + 1) as RadioIngest.Dropped).reason)
+
+        // The rest arrives, completing the message; the retried first segment now names the message.
+        fr.drop(1).dropLast(1).forEach { assertIs<RadioIngest.Partial>(b.session.ingest(it, t0 + 2)) }
+        assertIs<RadioIngest.Delivered>(b.session.ingest(fr.last(), t0 + 2))
+        val dup = assertIs<RadioIngest.Duplicate>(b.session.ingest(fr[0], t0 + 3))
+        assertEquals(enc.firstCounter, dup.firstCounter)
     }
 
     @Test
@@ -321,7 +345,9 @@ class RadioSessionTest {
         assertTrue(got.signed)
         assertEquals("all stations", got.body.decodeToString())
         // replay and tamper
-        assertEquals(RadioDrop.REPLAY, (rx.ingest(f, t0) as RadioIngest.Dropped).reason)
+        val again = assertIs<RadioIngest.Duplicate>(rx.ingest(f, t0))
+        assertTrue(again.signed)
+        assertEquals(got.firstCounter, again.firstCounter)
         val bad = f.copyOf().also { it[14] = (it[14].toInt() xor 1).toByte() }
         assertIs<RadioIngest.Dropped>(rx.ingest(bad, t0))
     }

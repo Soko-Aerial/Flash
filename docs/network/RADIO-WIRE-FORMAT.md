@@ -189,6 +189,12 @@ per epoch false matches, and a false match only costs one failed AEAD open.
   The window is persisted per peer so a restart does not make captured frames replayable.
 - Message-level duplicate suppression (`DedupStore`, 512 keys, 1 hour) is separate: it covers the same message arriving over two
   paths (radio and LAN, or two gateways).
+- **Retransmission is acknowledged again (ERROR-870).** A sender whose ACK was lost re-sends the *identical* frame (same counters, so
+  the receiver still names it one message). The receive window therefore sees a duplicate, which must not be dropped silently: the
+  receiver answers it with the same ACK as the first time. Only a message that was actually stored is acknowledged — an unsegmented
+  frame proves reception by the window itself, and a duplicated *segment* is acknowledged only when its message already completed
+  (the receiver remembers the message's first counter by `msgId`, 64 entries). An incomplete message is never acknowledged, so a retry
+  of some received segments plus the missing one still completes normally.
 
 ## 11. Golden vector
 

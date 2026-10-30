@@ -37,10 +37,13 @@ class FlashRadioNoDeadActionsTest {
         FlashRadioAction.CANCEL_SEND_TEST_MESSAGE to emptyList(),
         FlashRadioAction.OPEN_BT_SETTINGS to listOf("openSystemBluetoothSettings"),
         FlashRadioAction.REQUEST_PERMISSION to listOf("requestNearbyDevicesPermission"),
+        FlashRadioAction.TOGGLE_VOICE_LISTEN to listOf("setVoiceListening"),
+        FlashRadioAction.VOICE_PUSH_TO_TALK to listOf("voicePushToTalk"),
+        FlashRadioAction.REQUEST_MICROPHONE_PERMISSION to listOf("requestMicrophonePermission"),
     )
 
     private fun controllerMethods(): Set<String> = RadioGatewayController::class.java.methods
-        .filter { !it.isSynthetic && it.name != "getState" && it.declaringClass == RadioGatewayController::class.java }
+        .filter { !it.isSynthetic && it.name != "getState" && it.name != "getVoice" && it.declaringClass == RadioGatewayController::class.java }
         .map { it.name }
         .toSet()
 

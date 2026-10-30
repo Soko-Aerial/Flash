@@ -2,6 +2,7 @@ package com.transfer.flash.ui.calling
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import com.shepeliev.webrtckmp.VideoStreamTrack
 
 /**
@@ -25,6 +26,13 @@ internal expect fun FlashCallVideoSurface(
     zOrderMediaOverlay: Boolean = false,
     /** Flip the picture left to right (ADR-067: the user's own preview, like a mirror). Never applied to what is sent. */
     mirror: Boolean = false,
+    /**
+     * UI-050h: magnification of the picture inside its box, 1 = the whole picture. The box stays the limit; the picture is
+     * shrunk or grown around its centre and any excess is cropped by the box.
+     */
+    zoom: Float = 1f,
+    /** UI-050h: which part of the magnified picture is in the middle, as a fraction of its travel (-1..1 per axis). */
+    pan: Offset = Offset.Zero,
 )
 
 /** How the frame fills its box. Names are neutral; each actual maps to its own scaling enum. */

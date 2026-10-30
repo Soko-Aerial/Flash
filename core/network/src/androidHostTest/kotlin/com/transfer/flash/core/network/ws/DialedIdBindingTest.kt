@@ -127,6 +127,30 @@ class DialedIdBindingTest {
     }
 
     @Test(timeout = 20_000L)
+    fun `an automatic unnamed dial connects but leaves no first-use pin behind (SEC-D10-01)`() = runBlocking {
+        serverPins[dialerId] = fingerprint(dialerIdentity)
+        val port = start(server())
+        val dialer = dialer(Recorder()).also { start(it) }
+
+        val outcome = dialer.connectManual("127.0.0.1", port, null, recordFirstUse = false)
+
+        assertTrue("the host is still reachable: $outcome", outcome is FlashResult.Success)
+        assertEquals(null, dialerPins[serverId])
+    }
+
+    @Test(timeout = 20_000L)
+    fun `an automatic unnamed dial is still refused when the id already has another pin`() = runBlocking {
+        serverPins[dialerId] = fingerprint(dialerIdentity)
+        dialerPins[serverId] = fingerprint(dialerIdentity)
+        val port = start(server())
+        val dialer = dialer(Recorder()).also { start(it) }
+
+        val outcome = dialer.connectManual("127.0.0.1", port, null, recordFirstUse = false)
+
+        assertTrue("a different key must not take over a pinned id: $outcome", outcome is FlashResult.Failure)
+    }
+
+    @Test(timeout = 20_000L)
     fun `without TLS a named dial with a different HELLO id is refused as well`() = runBlocking {
         val plainServer = WsFlashNetwork(context = null, localDeviceId = serverId, localFriendlyName = "Server")
             .also { networks += it }

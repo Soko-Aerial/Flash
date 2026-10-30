@@ -9,8 +9,8 @@ package com.transfer.flash.core.security.pairing
  * | [AwaitingPeerNonce]        | initiator | PAIR_REQUEST (with commitment) sent; waiting for R's nonce. No code yet. |
  * | [AwaitingPeerReveal]       | responder | Valid v2 request; PAIR_NONCE sent; waiting for I to open its commitment. No code yet. |
  * | [RequestReceived]          | responder | Commitment verified; code derived; consent card ready. |
- * | [AwaitingLocalDecision]    | responder | Consent card shown; decision window running. |
- * | [AwaitingPeerConfirmation] | both      | Code derived (I) / local accept given (R); waiting for ACCEPT/CONFIRM/PAIRED. |
+ * | [AwaitingLocalDecision]    | both      | Consent card shown. Responder: decision window running. Initiator (SEC-D03-01): code derived, the user must accept it too. |
+ * | [AwaitingPeerConfirmation] | both      | Local accept given; waiting for ACCEPT (I) / CONFIRM (R) / PAIRED (I). |
  * | [Confirmed]                | both      | Handshake completed; pin material available. |
  * | [DeclinedByPeer]           | initiator | Peer explicitly declined. |
  * | [Expired]                  | both      | Timeout. **Neutral**, deliberately distinct from [Failed]. |
@@ -290,8 +290,10 @@ internal object PairingSessionStateMachine {
                     initiatorNonce = localNonce,
                     responderNonce = event.nonce,
                 )
+                // SEC-D03-01: the initiator is asked to accept the code as well; PAIR_CONFIRM is only sent after that, so
+                // pressing "Accept" on one device alone no longer completes a pairing.
                 state.copy(
-                    phase = PairingPhase.AwaitingPeerConfirmation,
+                    phase = PairingPhase.AwaitingLocalDecision,
                     peerFingerprintHex = event.responderFingerprintHex,
                     peerEphemeralPublicKey = event.responderEphemeralPublicKey,
                     peerNonce = event.nonce,
@@ -323,7 +325,7 @@ internal object PairingSessionStateMachine {
                 if (state.isActive()) PairingSessionState.IDLE else state
 
             is PairingSessionEvent.PeerAccepted ->
-                if (state.phase == PairingPhase.AwaitingPeerConfirmation &&
+                if ((state.phase == PairingPhase.AwaitingPeerConfirmation || state.phase == PairingPhase.AwaitingLocalDecision) &&
                     state.isInitiator &&
                     event.requestId == state.requestId
                 ) {
@@ -334,7 +336,11 @@ internal object PairingSessionStateMachine {
 
             PairingSessionEvent.PeerDeclined ->
                 if (state.isInitiator &&
-                    (state.phase == PairingPhase.AwaitingPeerConfirmation || state.phase == PairingPhase.AwaitingPeerNonce)
+                    (
+                        state.phase == PairingPhase.AwaitingPeerConfirmation ||
+                            state.phase == PairingPhase.AwaitingPeerNonce ||
+                            state.phase == PairingPhase.AwaitingLocalDecision
+                        )
                 ) {
                     state.copy(phase = PairingPhase.DeclinedByPeer)
                 } else {

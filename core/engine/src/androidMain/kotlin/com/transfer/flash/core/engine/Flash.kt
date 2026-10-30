@@ -268,6 +268,8 @@ private class Wiring(
         this.trustStoreRef = trustStore
         val enterpriseTrustStore = com.transfer.flash.core.enterprise.AndroidPreferencesEnterpriseTrustStore(appContext)
         val crypto = KeystoreFlashCrypto(appContext)
+        // SEC-D02-02: the key an unsolicited inbound connection presented, kept for the pairing check only.
+        val observedPeerPins = com.transfer.flash.core.security.trust.ObservedPeerPins()
         // Audit S3: TLS is mandatory. No plaintext fallback — failure throws out of Flash.create.
         val tlsOptions = requireTransportSecurity(
             onAttemptFailed = { attempt, error -> Log.w(TAG, "TLS setup attempt $attempt failed: ${error.message}") },
@@ -282,6 +284,7 @@ private class Wiring(
                 // ERROR-077: never accept or pin this phone's own key under a peer's id.
                 ownFingerprintHex = java.security.MessageDigest.getInstance("SHA-256")
                     .digest(ownCertificate.publicKey.encoded).joinToString("") { "%02X".format(it) },
+                observeInbound = observedPeerPins::observe,
             )
             TlsOptions(
                 pinVerifier = pinVerifier,
@@ -480,7 +483,8 @@ private class Wiring(
                         .also { presence.onTipResult(tip, it is FlashResult.Success) }
                     route != null -> networkImpl.connectManual(d.host, d.port, route.deviceId)
                         .also { if (it !is FlashResult.Success) remembered.onDialFailed(route) }
-                    else -> networkImpl.connectManual(d.host, d.port)
+                    // SEC-D10-01: an unnamed automatic dial (gateway probe, subnet sweep) never writes a first-use pin.
+                    else -> networkImpl.connectManual(d.host, d.port, null, recordFirstUse = false)
                 }
             },
             allowed = { modes.dialFilter.value },
@@ -643,6 +647,7 @@ private class Wiring(
             },
             crypto = crypto,
             ephemeralKeyPair = ephemeralKeyPair,
+            observedPeerPin = observedPeerPins::get,
         )
         this.pairingRef = pairingCoordinator
         val cleanupInbound: (String, String) -> Unit = { transferId, reason ->
@@ -1024,7 +1029,9 @@ private class Wiring(
             },
             onOfferReceived = { frame, pid, _ ->
                 transferImpl.onIncomingOffered(frame.transferId, frame.fileId, frame.fileName, frame.totalBytes, peerLabel, pid)
-                if (config.autoAcceptIncoming) acceptOffer?.invoke(frame.transferId)
+                // FlashConfig.autoAcceptIncoming promises paired peers only (SEC-D07-03); a stranger's offer waits for the user.
+                val peerTrusted = pid?.let { trustStoreRef?.isTrusted(FlashDeviceId(it)) } == true
+                if (config.autoAcceptIncoming && peerTrusted) acceptOffer?.invoke(frame.transferId)
             },
             onRejected = { event, pid ->
                 val tid = event.transferId

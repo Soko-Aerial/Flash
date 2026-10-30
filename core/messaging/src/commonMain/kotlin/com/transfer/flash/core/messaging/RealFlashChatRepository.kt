@@ -7,6 +7,7 @@ import com.transfer.flash.core.enterprise.files.HubFileText
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.common.model.FlashRadioPolicy
 import com.transfer.flash.core.common.result.FlashError
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
@@ -145,6 +146,7 @@ import com.transfer.flash.core.persistence.db.entity.GroupHistoryStateEntity
 import com.transfer.flash.core.persistence.db.entity.GroupInviteEntity
 import com.transfer.flash.core.persistence.db.entity.GroupSyncWatermarkEntity
 import com.transfer.flash.core.persistence.db.entity.GroupJoinRequestEntity
+import com.transfer.flash.core.security.group.AddressHint
 import com.transfer.flash.core.security.group.GroupInvite
 import com.transfer.flash.core.security.group.GroupInviteCodec
 import com.transfer.flash.core.security.group.GroupSecret
@@ -190,6 +192,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -268,6 +271,14 @@ public class RealFlashChatRepository(
      * through [hubBridge] only when the hub really carries it.
      */
     private val hubOnlinePeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
+    /**
+     * ADR-228: peer ids this device could reach over the radio right now (a radio pairing key exists
+     * here and the gateway is connected). Hosts pass
+     * `radioPort.radioPeerIds`; a peer in this set with no session, no hub session and no discovery
+     * sighting is shown as [FlashPeerPresence.RadioOnly] ("Radio only"), so the header stops claiming
+     * Offline while a text can still go out. Presentation only, exactly like the two sets above.
+     */
+    private val radioOnlyPeerIds: Flow<Set<String>> = MutableStateFlow(emptySet()),
     /**
      * Resolves a peer device id to its friendly name (prod: the trust store). A conversationId is a
      * peer device id, so this turns the raw UUID we key threads by into the human name to display.
@@ -634,7 +645,8 @@ public class RealFlashChatRepository(
             port = port,
             scope = scope,
             onInboundMessage = { senderId, callsign, messageId, text, sentAtMs ->
-                onInboundWireFrame(
+                // The radio link vets its own senders (RadioChatBridge), so no LAN trust check here.
+                handleDirectFrame(
                     MessageWireFrame.TextMessage(
                         localId = messageId,
                         conversationId = senderId,
@@ -644,6 +656,7 @@ public class RealFlashChatRepository(
                         sentAt = sentAtMs,
                     ),
                     senderId,
+                    vetSender = false,
                 )
             },
             onDeliveryReceipt = { messageId, _, recipientDeviceId ->
@@ -670,10 +683,21 @@ public class RealFlashChatRepository(
     override val radioDeliveryNotes: StateFlow<Map<String, com.transfer.flash.core.messaging.radio.RadioDeliveryNote>> =
         radioBridge?.notes ?: MutableStateFlow(emptyMap())
 
+    /**
+     * Message ids the radio transmitted recently and when (ERROR-869, 2026-10-28 two-radio run). The outbox's
+     * retry ladder was tuned for a LAN socket (first step 1.4 s); a real radio ACK took 3.8-9.4 s, so the ladder
+     * re-sent every message twice or three times before the ACK could arrive. The receiver named each
+     * retransmission after its own counter, so one text became three bubbles on the other station.
+     */
+    private val radioSentAt = LinkedHashMap<String, Long>()
+    private val radioSentMutex = Mutex()
+
     /** Hub messages dropped instead of stored, as counts for the connection details (ADR-126). */
     override val hubDropped: StateFlow<HubDropCounts> =
         if (hubBridge == null) MutableStateFlow(HubDropCounts())
-        else combine(hubBridge.droppedUnverified, hubBridge.droppedPlain) { unverified, plain -> HubDropCounts(unverified, plain) }
+        else combine(hubBridge.droppedUnverified, hubBridge.droppedPlain, hubBridge.droppedStale) { unverified, plain, stale ->
+            HubDropCounts(unverified, plain, stale)
+        }
             .stateIn(scope, SharingStarted.Eagerly, HubDropCounts())
 
     /** What the hub path of a chat needs the user to know: why messages are held, and changed keys (ADR-126). */
@@ -1062,6 +1086,14 @@ public class RealFlashChatRepository(
     }
 
     /**
+     * ADR-229: [hubOnlinePeerIds] kept in a plain state, because path selection has to answer without suspending
+     * in the middle of an outbox drain. A peer in this set holds a live relay session at the hub, so a hub send
+     * now is a delivery; a peer that is merely an organisation member is a mailbox deposit and waits for its next
+     * connect (see [sendDirectViaPaths]). Kept fresh by the collector in the init block below.
+     */
+    private val hubOnlineNow = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
      * Presence as the UI shows it: [onlinePeerIds] split into Online / Connecting by a per-departure
      * grace window (ERROR-026, ERROR-031). MUST be declared above the init block below, for the
      * reason recorded on [drainMutex].
@@ -1082,6 +1114,7 @@ public class RealFlashChatRepository(
         onlinePeerIds.withReconnectGrace(OFFLINE_HOLD_MS)
             .withReachable(reachablePeerIds)
             .withHubOnline(hubOnlinePeerIds)
+            .withRadioOnly(radioOnlyPeerIds)
 
     /**
      * [attachmentProgress] at a cadence a screen can use. MUST be declared above the init block
@@ -1145,6 +1178,14 @@ public class RealFlashChatRepository(
     }
 
     init {
+        // ADR-229: keep the synchronous copy of the hub's online list fresh for path selection. Hosts pass a
+        // StateFlow, which [hubOnlineSnapshot] reads directly, so the collector only exists for any other Flow.
+        if (hubOnlinePeerIds !is StateFlow<*>) {
+            scope.launch(ioDispatcher) {
+                hubOnlinePeerIds.collect { hubOnlineNow.value = it }
+            }
+        }
+
         // GM-4: Load accepted invite group IDs to restore charter trust roots.
         scope.launch(ioDispatcher) {
             groupInviteDao?.getAll()?.forEach { entity ->
@@ -1206,6 +1247,9 @@ public class RealFlashChatRepository(
                             entity.id in peers.hubOnline -> FlashPeerPresence.Online
                             entity.id in peers.connecting -> FlashPeerPresence.Connecting
                             entity.id in peers.reachable -> FlashPeerPresence.Reachable
+                            // ADR-228: reachable by radio only. Presentation only; the row says "Radio only"
+                            // instead of nothing, because a text to this peer can still go out.
+                            entity.id in peers.radioOnly -> FlashPeerPresence.RadioOnly
                             else -> FlashPeerPresence.Offline
                         }
                     }
@@ -1316,7 +1360,7 @@ public class RealFlashChatRepository(
         // message is stored (FLASH_RECV_ACK) only AFTER the handler returned, so a crash in between means redelivery.
         if (hubBridge != null && hubRelay != null) {
             val hubSink = object : HubInboundSink {
-                override suspend fun direct(frame: MessageWireFrame, from: String) = onInboundWireFrame(frame, from)
+                override suspend fun direct(frame: MessageWireFrame, from: String) = handleDirectFrame(frame, from, vetSender = false)
                 override suspend fun group(frame: GroupWireFrame, from: String) = onInboundGroupWireFrame(from, frame)
                 override suspend fun hubFile(frame: HubFileFrame, from: String): Boolean = onInboundHubFile(frame, from)
             }
@@ -1330,7 +1374,7 @@ public class RealFlashChatRepository(
                 hubRelay.typing.collect { typing ->
                     runCatching {
                         if (!hubBridge.isSenderAllowed(typing.from)) return@runCatching
-                        onInboundWireFrame(
+                        handleDirectFrame(
                             MessageWireFrame.TypingFrame(
                                 conversationId = typing.conversationId.ifBlank { typing.from },
                                 memberId = typing.from,
@@ -1339,6 +1383,7 @@ public class RealFlashChatRepository(
                                 timestampMs = timeSource.nowMs(),
                             ),
                             typing.from,
+                            vetSender = false,
                         )
                     }
                 }
@@ -1575,9 +1620,26 @@ public class RealFlashChatRepository(
                 )
             }
 
+            // ADR-227: the hardware-radio delivery note for a message in this chat. The engine publishes one per sent
+            // message (transmitted, acknowledged, refused), and the bubble renders it as a second status line.
+            val radioNotesFlow = radioBridge?.notes
+                ?: flowOf(emptyMap<String, com.transfer.flash.core.messaging.radio.RadioDeliveryNote>())
+            val contentWithRadioNotes = combine(messageContentFlow, radioNotesFlow) { content, notes ->
+                if (notes.isEmpty()) {
+                    content
+                } else {
+                    content.copy(
+                        messages = content.messages.map { message ->
+                            val note = notes[message.id]
+                            if (note == null || note == message.radioNote) message else message.copy(radioNote = note)
+                        },
+                    )
+                }
+            }
+
             // Pins live in their own table; joined here so the 5-flow content combine above stays within its overload.
             val contentFlow = combine(
-                messageContentFlow,
+                contentWithRadioNotes,
                 messagePinDao?.observePinnedIds(conversationId) ?: flowOf(emptyList()),
             ) { content, pinnedIds -> content.copy(pinnedMessageIds = pinnedIds) }
 
@@ -1685,7 +1747,14 @@ public class RealFlashChatRepository(
                         hubNotice = hubNoticeFor(conversationId, true, false, syncAndHub.hub),
                     ) to Pair(content.newestMessageId, content.newestInboundId)
                 } else {
-                    directHeaderState(content, peers, typingByConversation, conversationId)
+                    directHeaderState(
+                        content,
+                        peers,
+                        typingByConversation,
+                        conversationId,
+                        radioPolicyNow.value[conversationId]
+                            ?: FlashRadioPolicy.fromStorage(conversationEntity?.radioPolicy),
+                    )
                         .copy(hubNotice = hubNoticeFor(conversationId, false, conversationId in peers.online, syncAndHub.hub))
                         .let { it to Pair(content.newestMessageId, content.newestInboundId) }
                 }
@@ -1802,17 +1871,30 @@ public class RealFlashChatRepository(
      * Phase A only branched it out). conversationId is the peer's device id; show the friendly
      * name, not the UUID.
      */
-    private fun directHeaderState(
+    private suspend fun directHeaderState(
         content: ConversationContent,
         peers: PresenceSnapshot,
         typingByConversation: Map<String, List<String>>,
         conversationId: String,
+        radioPolicy: FlashRadioPolicy,
     ): FlashConversationUiState {
         val title = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
-        val link = directLinkUi(conversationId, peers, typingByConversation[conversationId].orEmpty())
+        // A chat set to NEVER must not advertise a radio route it will refuse to use. This changes
+        // presentation only; it does not affect the global radio pairing state or inbound frames.
+        val effectivePeers = if (radioPolicy == FlashRadioPolicy.NEVER) {
+            peers.copy(radioOnly = peers.radioOnly - conversationId)
+        } else {
+            peers
+        }
+        val link = directLinkUi(conversationId, effectivePeers, typingByConversation[conversationId].orEmpty())
         val isColleaguePeer = !isTrustedPeer(conversationId) &&
             (orgPeerResolver?.isKnownColleague(conversationId) == true || effectiveIsOrgPeer(conversationId))
         val orgName = if (isColleaguePeer) enterpriseTrustStore?.getCredentials()?.hubName else null
+        // A live hub session is not needed for a hub file: a sealed ticket can wait in the
+        // recipient's mailbox. Only call a conversation radio-only for attachments when that
+        // dedicated file route is unavailable too.
+        val radioOnlyForAttachments = link.presence == FlashPeerPresence.RadioOnly &&
+            hubFileRoute(conversationId) != HubFileRoute.READY
         return FlashConversationUiState(
             header = FlashChatHeaderUiState(
                 title = title,
@@ -1825,6 +1907,8 @@ public class RealFlashChatRepository(
                 orgName = orgName,
             ),
             messages = content.messages,
+            radioPolicy = radioPolicy,
+            radioOnlyForAttachments = radioOnlyForAttachments,
             // Restore any unsent composer text (#9); blank when there is no saved draft.
             draftText = content.draftText,
             pinnedMessageIds = content.pinnedMessageIds,
@@ -2062,7 +2146,10 @@ public class RealFlashChatRepository(
             FlashResult.Success(invite.groupId)
         }
 
-    private suspend fun dialHintsInOrder(groupId: String, inviterId: String, hints: List<String>) {
+    private suspend fun dialHintsInOrder(groupId: String, inviterId: String, allHints: List<String>) {
+        // SEC-D10-03: an invite is text from another person; only addresses a local network can produce are dialed.
+        val hints = allHints.filter { AddressHint.isDialable(it) }
+        if (hints.size != allHints.size) FlashLog.w("GROUP", "Skipping ${allHints.size - hints.size} address hint(s) of $groupId that are not local-network addresses")
         if (hints.isEmpty()) {
             FlashLog.i("GROUP", "No address hints in invite for $groupId; waiting for discovery (M-03)")
             hintsExhausted.add(groupId)
@@ -2989,6 +3076,19 @@ public class RealFlashChatRepository(
         }
     }
 
+    override fun stopRadioRetry(localId: String) {
+        scope.launch(ioDispatcher) {
+            val message = messageDao.getByLocalId(localId) ?: return@launch
+            if (message.senderId != localDeviceId || message.deletedAt != null) return@launch
+            if (radioBridge?.stopRetry(localId) != true) return@launch
+            // This cancels only future sends. It cannot withdraw a frame already transmitted, so an ACK that races
+            // this action is still allowed to record the honest Delivered result through the normal receipt path.
+            outboxDao.delete(localId)
+            messageDao.updateStatusIfUnacknowledged(localId, "FAILED")
+            FlashProbe.emit("radio.retry.stop", "message" to FlashProbe.short(localId))
+        }
+    }
+
     /**
      * Writes a direct (1:1) outgoing text: message row, conversation upsert, draft clear and outbox
      * row in one transaction, so a process kill can never leave a PENDING row the drain cannot see.
@@ -3099,12 +3199,32 @@ public class RealFlashChatRepository(
                 FlashLog.w("CHAT", "Group attachment rejected as unsupported (F4 pending): $fileName")
                 return@launch
             }
-            // Plan R §7 / Phase R3: Photos and files cannot be sent by radio
+            // A radio-only route has no attachment transport. This is a safety net for a route
+            // that changes after the picker opened; the conversation UI blocks the picker earlier.
             val radio = radioBridge
-            if (radio != null && radio.canCarry(conversationId) && !isPeerOnline(conversationId) && hubBridge?.canCarry(conversationId) != true) {
+            val radioAllowed = radioPolicyOf(conversationId) == FlashRadioPolicy.AUTO
+            val hubCanCarryFile = hubFileRoute(conversationId) == HubFileRoute.READY
+            if (radioAllowed && radio != null && radio.canCarry(conversationId) && !isPeerOnline(conversationId) && !hubCanCarryFile) {
                 val refusal = radio.checkAttachmentRefusal(conversationId)
                 if (refusal != null) {
                     FlashLog.w("CHAT", "Attachment rejected: $refusal")
+                    messageDao.insert(
+                        MessageEntity(
+                            localId = localId,
+                            conversationId = conversationId,
+                            senderId = localDeviceId,
+                            senderName = localDisplayName,
+                            text = refusal,
+                            sentAt = now,
+                            status = "FAILED",
+                            attachmentTransferId = transferId,
+                            attachmentName = fileName,
+                            attachmentMime = mimeType,
+                            attachmentSize = sizeBytes,
+                            attachmentPath = localPath,
+                        ),
+                    )
+                    touchConversation(conversationId, now)
                     return@launch
                 }
             }
@@ -5949,11 +6069,31 @@ public class RealFlashChatRepository(
         return true
     }
 
+    /**
+     * A direct frame that arrived over the LAN (or any host path that does not vet the sender itself). A 1:1 text must
+     * come from a paired device or a verified organisation colleague (SEC-D05-01, [PeerTrustPolicy.mayChat]); the hub and
+     * radio paths vet their senders with their own rules and call [handleDirectFrame] without this check.
+     */
     public suspend fun onInboundWireFrame(frame: MessageWireFrame, transportPeerId: String? = null) {
+        handleDirectFrame(frame, transportPeerId, vetSender = true)
+    }
+
+    private suspend fun handleDirectFrame(frame: MessageWireFrame, transportPeerId: String?, vetSender: Boolean) {
         when (frame) {
             is MessageWireFrame.TextMessage -> {
                 // SENTINEL: Fail closed on claimed-author vs transport-peer mismatch
                 if (transportPeerId != null && frame.senderId != transportPeerId) return
+                if (vetSender) {
+                    val paired = isTrustedPeer(frame.senderId)
+                    val org = effectiveIsOrgPeer(frame.senderId)
+                    if (!PeerTrustPolicy.mayChat(isPaired = paired, isOrg = org)) {
+                        FlashProbe.emit("org.gate.deny", "peer" to FlashProbe.short(frame.senderId), "reason" to "text_not_trusted")
+                        return
+                    }
+                    if (org && !paired) {
+                        FlashProbe.emit("org.gate.allow", "peer" to FlashProbe.short(frame.senderId), "policy" to "mayChat", "source" to "snapshot")
+                    }
+                }
                 if (frame.text.length > GroupPolicy.MAX_MESSAGE_TEXT_LENGTH) {
                     FlashLog.w("CHAT", "Inbound 1:1 message exceeds length cap (${frame.text.length} > ${GroupPolicy.MAX_MESSAGE_TEXT_LENGTH}), dropping")
                     return
@@ -6018,6 +6158,14 @@ public class RealFlashChatRepository(
 
             is MessageWireFrame.DeliveryReceipt -> {
                 if (transportPeerId != null && frame.memberId != transportPeerId) return
+                // SEC-D05-04: only the peer a 1:1 message was sent to can acknowledge it. Without this, any connected
+                // peer that learned a message id could mark it delivered and retire its outbox row (so it was never
+                // sent to the real recipient). An unknown id changes nothing.
+                val acknowledged = messageDao.getByLocalId(frame.messageId)
+                if (acknowledged == null || acknowledged.senderId != localDeviceId || acknowledged.conversationId != frame.memberId) {
+                    FlashLog.w("CHAT", "Ignoring a delivery receipt from a device the message was not sent to")
+                    return
+                }
                 receiptDao.insert(
                     ReceiptEntity(
                         messageId = frame.messageId,
@@ -6064,6 +6212,11 @@ public class RealFlashChatRepository(
                 } else {
                     // Direct hosts historically keyed inbound typing under the transport peer rather
                     // than the wire conversation id (which names this receiver). Preserve that behavior.
+                    // SEC-D05-03: a direct LAN typing indicator is the peer's own and needs the same standing as chat.
+                    if (vetSender && transportPeerId != null) {
+                        if (frame.memberId != transportPeerId) return
+                        if (!PeerTrustPolicy.mayChat(isPaired = isTrustedPeer(transportPeerId), isOrg = effectiveIsOrgPeer(transportPeerId))) return
+                    }
                     transportPeerId ?: frame.conversationId
                 }
                 val convTyping = typingStates.getOrPut(typingConversationId) { SyncMap() }
@@ -6276,7 +6429,12 @@ public class RealFlashChatRepository(
             // receipt that clears this row.
             // Once the hub has the message the recipient's receipt can take as long as the recipient is away, so the
             // resend spacing is long instead of the retry ladder.
-            val nextAttemptAt = now + if (success && hubBridge?.isHubAccepted(item.localId) == true) HUB_RESEND_MS else backoffDelayMs(item.attempts + 1)
+            val nextAttemptAt = now + when {
+                success && hubBridge?.isHubAccepted(item.localId) == true -> HUB_RESEND_MS
+                // ERROR-869: never retry a radio send at LAN speed; one radio ACK took 9.4 s on real handhelds.
+                radioCarried(item.localId) -> RADIO_RESEND_MS
+                else -> backoffDelayMs(item.attempts + 1)
+            }
             outboxDao.rescheduleAttempt(item.localId, nextAttemptAt)
             scheduled += nextAttemptAt
         }
@@ -6976,6 +7134,25 @@ public class RealFlashChatRepository(
         clearListSelection()
     }
 
+    /**
+     * Policies chosen in this process, so a send that starts before the database write is dispatched still sees the
+     * operator's choice. [setRadioPolicy] is a plain `fun` (UI thread) and the write is asynchronous; the outbox
+     * reads the policy on its own thread, so without this a text could go out by radio just after "Never" was picked.
+     */
+    private val radioPolicyNow = MutableStateFlow<Map<String, FlashRadioPolicy>>(emptyMap())
+
+    override fun setRadioPolicy(conversationId: String, policy: FlashRadioPolicy) {
+        radioPolicyNow.update { it + (conversationId to policy) }
+        scope.launch(ioDispatcher) {
+            conversationDao.setRadioPolicy(conversationId, policy.name)
+        }
+    }
+
+    /** This chat's outbound radio policy: the in-process choice first, then the stored one. */
+    private suspend fun radioPolicyOf(conversationId: String): FlashRadioPolicy =
+        radioPolicyNow.value[conversationId]
+            ?: FlashRadioPolicy.fromStorage(conversationDao.get(conversationId)?.radioPolicy)
+
     override fun markConversationUnread(conversationId: String) {
         scope.launch(ioDispatcher) {
             conversationDao.clearLastReadCursor(conversationId)
@@ -7461,6 +7638,16 @@ public class RealFlashChatRepository(
 
         /** ADR-122: how long a LAN-sent message may go without a delivery receipt before the hub also gets it. */
         const val HUB_FALLBACK_GRACE_MS = 2_000L
+
+        /**
+         * ERROR-869: how long the outbox waits before re-sending a message the radio transmitted. A radio
+         * round trip measured 3.8-9.4 s on two handhelds (2026-10-28), so 25 s leaves room for a slow ACK and
+         * for the half-duplex channel to finish the previous frame. The ACK deletes the outbox row long before.
+         */
+        const val RADIO_RESEND_MS = 25_000L
+
+        /** Bounded memory of radio-sent ids used by [RADIO_RESEND_MS]. */
+        const val MAX_RADIO_SENT_REMEMBERED = 64
         /** Feature token for the hub roster offer frame (Plan B B4). */
         const val FEATURE_HUB_ROSTER = "hrs1"
         const val HUB_ROSTER_OP_PREFIX = "hub-roster-v"
@@ -7510,17 +7697,30 @@ public class RealFlashChatRepository(
     }
 
     /**
-     * One direct text message over the best path (ADR-122, LAN first). A live LAN session is tried first; when it
-     * fails (or there is none) the hub carries the message at once if it may (the recipient is an organisation member
-     * and the content can be sealed or the user opted in). When the LAN write succeeded the hub is only asked after
-     * [hubFallbackGraceMs] without a delivery receipt, so a healthy LAN never duplicates through the server.
-     * Receivers de-duplicate by message id, so a message that arrives twice is stored once.
+     * One direct text message over the best path (ADR-122, LAN first; ADR-229 for the radio).
+     *
+     * 1. A live LAN session carries it.
+     * 2. Otherwise the hub, but only when it can deliver *now*: it can carry the message **and** it reports the
+     *    recipient online (it holds a relay session for them).
+     * 3. Otherwise the radio, when this device holds the peer's radio key and the gateway is connected.
+     * 4. Otherwise the hub as a mailbox deposit — what the hub does for an enrolled colleague who is not
+     *    connected: the message waits there until they next are.
+     *
+     * Steps 2 and 4 are the same call; only the recipient's presence differs. Before ADR-229 a mailbox deposit
+     * counted as "sent" and came *before* the radio, so the desktop's texts to a colleague the hub was not
+     * delivering to never reached the radio at all: they sat in a mailbox nobody read while the radio link was
+     * up and idle (ERROR-869 round 3, 2026-10-28).
+     *
+     * When the LAN write succeeded the hub is only asked after [hubFallbackGraceMs] without a delivery receipt, so
+     * a healthy LAN never duplicates through the server. Receivers de-duplicate by message id, so a message that
+     * arrives twice is stored once.
      */
     private suspend fun sendDirectViaPaths(frame: MessageWireFrame.TextMessage): Boolean {
         val target = frame.conversationId
         val lanOk = lanTransportSink?.send(target, frame) == true
         val bridge = hubBridge
         if (lanOk) {
+            pathProbe(frame, target, "lan")
             bridge?.let { b ->
                 scheduleHubFallback("${frame.localId}|$target", pending = {
                     val row = messageDao.getByLocalId(frame.localId)
@@ -7533,15 +7733,133 @@ public class RealFlashChatRepository(
             }
             return true
         }
-        if (bridge != null && bridge.canCarry(target)) {
-            val hubOk = bridge.sendDirect(target, frame.localId, frame.sentAt, frame)
-            if (hubOk) return true
+
+        // Step 2: the hub right away, but only for a colleague it can deliver to at this moment. "It can carry"
+        // alone also covers a mailbox deposit, which is not a delivery.
+        val hubCanCarry = bridge != null && bridge.canCarry(target)
+        if (hubCanCarry && bridge != null && target in hubOnlineSnapshot()) {
+            if (bridge.sendDirect(target, frame.localId, frame.sentAt, frame)) {
+                pathProbe(frame, target, "hub")
+                return true
+            }
         }
+
+        // Step 3: the radio. An immediate path when it can carry: an ACK came back in 3.8-9.4 s on real handhelds.
         val radio = radioBridge
-        if (radio != null && radio.canCarry(target)) {
-            return radio.sendDirect(target, frame)
+        // The radio is an optional per-chat fallback. NEVER is intentionally outbound-only;
+        // RadioChatBridge continues to accept a peer's inbound radio messages.
+        val radioAllowed = radioPolicyOf(target) == FlashRadioPolicy.AUTO
+        val radioReachable = radio != null && radioAllowed && radio.canCarry(target)
+        // A permanent radio refusal (too long, an attachment, Profile M unconfirmed) ends the message where it is;
+        // a temporary one (link down) must still leave the hub's mailbox available below.
+        var radioRefusedForGood = false
+        if (radio != null && radioReachable) {
+            val again = radioCarried(frame.localId)
+            val sent = radio.sendDirect(target, frame)
+            radioPathProbe(frame, target, if (sent) "sent" else "refused", radio)
+            if (sent) {
+                pathProbe(frame, target, "radio")
+                // ERROR-869: a radio ACK measured 3.8-9.4 s on real handhelds, far longer than the LAN retry
+                // ladder's first step (1.4 s). Remember the message so its resend waits for the radio's pace.
+                radioSentMutex.withLock {
+                    radioSentAt[frame.localId] = timeSource.nowMs()
+                    while (radioSentAt.size > MAX_RADIO_SENT_REMEMBERED) {
+                        val oldest = radioSentAt.keys.firstOrNull() ?: break
+                        radioSentAt.remove(oldest)
+                    }
+                }
+                // ADR-229 backstop: the radio carried this message once already and no acknowledgement came back
+                // (a peer whose radio is off or out of range). Leave a copy with the hub as well — receivers
+                // de-duplicate by message id, so a peer that did hear the first frame still stores it once.
+                if (again && hubCanCarry) {
+                    bridge?.sendDirect(target, frame.localId, frame.sentAt, frame)
+                }
+                return true
+            }
+            radioRefusedForGood = radio.notes.value[frame.localId]?.isFailure == true
+        }
+
+        // Step 4: the hub's mailbox, the last resort.
+        if (!radioRefusedForGood && hubCanCarry && bridge != null) {
+            if (bridge.sendDirect(target, frame.localId, frame.sentAt, frame)) {
+                pathProbe(frame, target, if (radioReachable) "hub_mailbox" else "hub")
+                return true
+            }
+        }
+
+        // Near-silent by design, which made a desktop send that never reached the radio impossible to see in a
+        // log: one line saying the radio step was reached and why it was skipped (ERROR-869).
+        if (radio == null) {
+            FlashProbe.emit(
+                "radio.path",
+                "peer" to FlashProbe.short(target),
+                "message" to FlashProbe.short(frame.localId),
+                "result" to "no_bridge",
+            )
+            pathProbe(frame, target, "none")
+        } else if (!radioReachable) {
+            // The gateway can be up while this device still cannot key the transmitter for that peer: the
+            // peer's 32-byte pairing session key is what makes it radio-reachable (ADR-227). Two very
+            // different sentences, so the line says which one it is.
+            radioPathProbe(frame, target, "not_reachable", radio)
+            pathProbe(frame, target, "none")
+        } else {
+            // The radio was offered the frame and refused it; its own radio.path line says why.
+            pathProbe(frame, target, "radio_refused")
         }
         return false
+    }
+
+    /**
+     * ADR-229: the hub's online list right now. Hosts pass [EnterpriseHub.hubOnlinePeerIds], a `StateFlow`, so it
+     * is read straight off; the mirror covers any other [Flow] the collector is following.
+     */
+    private fun hubOnlineSnapshot(): Set<String> =
+        (hubOnlinePeerIds as? StateFlow<Set<String>>)?.value ?: hubOnlineNow.value
+
+    /**
+     * The radio step's own line: which stage stopped it. `not_reachable` with `gateway=true connected=true` is
+     * "this peer has no radio pairing key here", not "the radio is down" (ERROR-869).
+     */
+    private fun radioPathProbe(
+        frame: MessageWireFrame.TextMessage,
+        target: String,
+        result: String,
+        radio: com.transfer.flash.core.messaging.radio.RadioChatBridge,
+    ) {
+        FlashProbe.emit(
+            "radio.path",
+            "peer" to FlashProbe.short(target),
+            "message" to FlashProbe.short(frame.localId),
+            "result" to result,
+            "gateway" to radio.port.isGatewayEnabled,
+            "connected" to radio.port.isConnected,
+        )
+    }
+
+    /**
+     * Which path carried (or failed to carry) a direct text. One line per attempt, so a message that never
+     * leaves the device is visible at all: on 2026-10-28 the desktop's sends produced no radio line because the
+     * send path was taken by something earlier, and there was no way to tell which (ERROR-869).
+     */
+    private fun pathProbe(frame: MessageWireFrame.TextMessage, target: String, path: String) {
+        FlashProbe.emit(
+            "chat.path",
+            "peer" to FlashProbe.short(target),
+            "message" to FlashProbe.short(frame.localId),
+            "path" to path,
+        )
+    }
+
+    /** True when the radio carried [messageId] recently, so the outbox must not retry it at LAN speed. */
+    private suspend fun radioCarried(messageId: String): Boolean = radioSentMutex.withLock {
+        val at = radioSentAt[messageId] ?: return@withLock false
+        if (timeSource.nowMs() - at > RADIO_RESEND_MS * 4) {
+            radioSentAt.remove(messageId)
+            false
+        } else {
+            true
+        }
     }
 
     private suspend fun sendGroupViaPaths(
@@ -7582,6 +7900,15 @@ public class RealFlashChatRepository(
         val bridge = hubBridge ?: return
         val message = messageDao.getByLocalId(event.id)
         val recipient = event.to.ifBlank { message?.conversationId.orEmpty() }
+        // ADR-229: what the hub actually said, so a log can tell "delivered", "held in a mailbox" and "no verdict
+        // at all" apart. Without this the desktop's 2026-10-28 run could not explain why the phone never got the
+        // texts (ERROR-869).
+        FlashProbe.emit(
+            "hub.ack",
+            "peer" to FlashProbe.short(recipient),
+            "message" to FlashProbe.short(event.id),
+            "kind" to event.kind.name,
+        )
         bridge.onAck(event, peerNameResolver(recipient))
         if (message == null || !event.kind.isFailure) return
         if (conversationDao.get(message.conversationId)?.isGroup == true) return

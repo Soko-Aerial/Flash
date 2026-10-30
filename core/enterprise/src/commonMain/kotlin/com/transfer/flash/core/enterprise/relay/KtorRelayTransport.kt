@@ -10,6 +10,7 @@ import com.transfer.flash.core.hubprotocol.HubErrorCodes
 import com.transfer.flash.core.hubprotocol.certs.HubAuth
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
 import com.transfer.flash.core.hubprotocol.relay.RelayFrameCodec
+import com.transfer.flash.core.hubprotocol.relay.RelayLimits
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
@@ -90,6 +91,14 @@ public class KtorRelayTransport(
     private val _failure = MutableStateFlow<RelayFailure?>(null)
     override val failure: StateFlow<RelayFailure?> = _failure.asStateFlow()
 
+    private val _limits = MutableStateFlow<RelayLimits?>(null)
+
+    /** What the hub announced in its last WELCOME; cleared when an attempt starts (SEC-D15-02). */
+    override val limits: StateFlow<RelayLimits?> = _limits.asStateFlow()
+
+    private val _serverTimeOffsetMs = MutableStateFlow<Long?>(null)
+    override val serverTimeOffsetMs: StateFlow<Long?> = _serverTimeOffsetMs.asStateFlow()
+
     /** Why the last handshake failed, for tests and diagnostics (never shown to the user verbatim). */
     private val _lastFailure = MutableStateFlow<String?>(null)
     public val lastFailureFlow: StateFlow<String?> = _lastFailure.asStateFlow()
@@ -120,6 +129,9 @@ public class KtorRelayTransport(
         val url = normalizeRelayUrl(hubUrl)
         _lastFailure.value = null
         _failure.value = null
+        // Until the new hub says otherwise in its WELCOME nothing is announced; the bridge then uses the default window.
+        _limits.value = null
+        _serverTimeOffsetMs.value = null
         closing = false
         // A new attempt starts here: the REVOKED state of an earlier session no longer applies (the device may have
         // enrolled again; the hub answers a still-revoked certificate with REVOKED once more).
@@ -139,6 +151,8 @@ public class KtorRelayTransport(
                     }
 
                     _state.value = RelaySessionState.CONNECTED
+                    _limits.value = welcome.limits
+                    _serverTimeOffsetMs.value = if (welcome.serverTime > 0L) welcome.serverTime - clock() else null
                     welcomeDeferred.complete(true)
                     _incomingFrames.tryEmit(welcome)
 

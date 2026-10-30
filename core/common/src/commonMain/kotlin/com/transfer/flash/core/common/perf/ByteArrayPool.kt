@@ -55,6 +55,8 @@ public object ByteArrayPool {
      * or if the respective pool has reached [MAX_POOL_CAPACITY].
      */
     public fun release(buffer: ByteArray) {
+        // Wipe before pooling: the next caller must not be able to read the previous caller's bytes (SEC-D04-03).
+        if (buffer.size == SIZE_16KB || buffer.size == SIZE_32KB) buffer.fill(0)
         when (buffer.size) {
             SIZE_16KB -> lock.withLock {
                 if (pool16k.size < MAX_POOL_CAPACITY) {

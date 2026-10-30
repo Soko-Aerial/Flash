@@ -17,6 +17,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- ADR-102: presenting the screen in a call is a mediaProjection foreground service on Android 14+. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- C7 (calling): full-screen intent for incoming ringing calls over lock screen / heads-up banner -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -192,6 +194,13 @@
             android:name=".calling.FlashCallService"
             android:exported="false"
             android:foregroundServiceType="microphone|camera|connectedDevice" />
+
+        <!-- ADR-102 (UI-050g): the mediaProjection foreground service a screen share needs on Android 14+.
+             Started only while the person is in the app (they just tapped Share), stopped with the projection. -->
+        <service
+            android:name=".calling.FlashScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- C7 (calling): CallStyle notification action buttons (answer/decline/hang up)
              route through this receiver to the in-process CallCoordinator. -->

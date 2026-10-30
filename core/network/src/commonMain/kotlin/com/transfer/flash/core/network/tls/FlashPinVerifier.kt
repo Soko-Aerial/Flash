@@ -23,6 +23,15 @@ public fun interface FlashPinVerifier {
      */
     public fun isPinned(deviceId: String, fingerprintHex: String): Boolean
 
+    /**
+     * The check for a connection the peer opened to us (SEC-D02-02). Same answer as [isPinned] for an id that
+     * already has a pin; for an id with none, implementations must NOT record the presented key, because the
+     * caller is an unauthenticated stranger and a persisted pin would lock the real device out. The default
+     * delegates to [isPinned], which is right for verifiers that never record.
+     */
+    public fun verifyWithoutRecording(deviceId: String, fingerprintHex: String): Boolean =
+        isPinned(deviceId, fingerprintHex)
+
     public companion object {
         /** Uppercase, strip colons/spaces so any human-formatted input compares equal. */
         public fun normalize(raw: String): String =

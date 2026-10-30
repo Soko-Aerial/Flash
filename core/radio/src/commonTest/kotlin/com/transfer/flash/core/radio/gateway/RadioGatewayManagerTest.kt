@@ -22,6 +22,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
@@ -118,6 +119,106 @@ class RadioGatewayManagerTest {
         val state = manager.state.value.connectState
         assertTrue(state is RadioConnectState.ChooseFromList, "Multiple candidates must show list but was $state")
         assertEquals(2, (state as RadioConnectState.ChooseFromList).candidates.size)
+    }
+
+    // Owner report 2026-10-23: a radio already bonded in Android's settings showed a shield and no button, so
+    // "connect" did nothing. chooseRadio is the one path a list row takes, whatever state the machine is in.
+    private fun TestScope.managerFor(discovery: FakeRadioDeviceDiscovery, rememberedStore: InMemoryRememberedRadioStore) =
+        RadioGatewayManager(
+            scope = backgroundScope,
+            discovery = discovery,
+            rememberedStore = rememberedStore,
+            authorisationStore = InMemoryRadioAuthorisationStore(null),
+            driverFactory = { openLink -> KissTncDriver(scope = backgroundScope, openLink = openLink) },
+        )
+
+    @Test
+    fun radlnkU40_aBondedRadioInTheChooseListOpensWithOneTap() = runTest {
+        val dev1 = DiscoveredDevice("VR-N76", "38:D2:00:01:35:B5", isPaired = true, category = CandidateCategory.KNOWN_RADIO)
+        val dev2 = DiscoveredDevice("UV-Pro", "44:55:66:77:88:99", isPaired = true, category = CandidateCategory.KNOWN_RADIO)
+        val discovery = FakeRadioDeviceDiscovery(pairedList = mutableListOf(dev1, dev2))
+        val manager = managerFor(discovery, InMemoryRememberedRadioStore(null))
+
+        manager.enable()
+        runCurrent()
+        manager.acknowledgeChecklist()
+        runCurrent()
+        assertTrue(manager.state.value.connectState is RadioConnectState.ChooseFromList)
+        assertEquals(0, discovery.openedRadios.size, "Rule 3: nothing opens before the operator chooses")
+
+        manager.chooseRadio(dev1)
+        runCurrent()
+
+        assertEquals(1, discovery.openedRadios.size)
+        assertEquals("38:D2:00:01:35:B5", discovery.openedRadios.single().bluetoothAddress)
+        assertEquals(0, discovery.pairedAttempts.size, "A bonded radio is not paired again")
+    }
+
+    @Test
+    fun radlnkU41_aScanStartedFromTheCandidateCardDoesNotStrandTheBondedRadio() = runTest {
+        val dev = DiscoveredDevice("VR-N76", "38:D2:00:01:35:B5", isPaired = true, category = CandidateCategory.KNOWN_RADIO)
+        val discovery = FakeRadioDeviceDiscovery(pairedList = mutableListOf(dev), discoveredOnScan = listOf(dev))
+        val manager = managerFor(discovery, InMemoryRememberedRadioStore(null))
+
+        manager.enable()
+        runCurrent()
+        manager.acknowledgeChecklist()
+        runCurrent()
+        assertTrue(manager.state.value.connectState is RadioConnectState.ConfirmCandidate)
+
+        // The screen's Scan button only moves the manager's mirror; the machine stays on the candidate card.
+        manager.startScan(5_000L)
+        runCurrent()
+        assertTrue(manager.state.value.connectState is RadioConnectState.Scanning)
+
+        manager.chooseRadio(dev)
+        runCurrent()
+
+        assertEquals(1, discovery.openedRadios.size, "The tap on the bonded row must open the link")
+        assertFalse(discovery.isScanning, "Choosing a radio ends the scan")
+    }
+
+    @Test
+    fun radlnkU42_anUnbondedRadioChosenFromTheScanListIsPairedThenOpened() = runTest {
+        val dev = DiscoveredDevice("VR-N76", "38:D2:00:01:35:B5", isPaired = false, category = CandidateCategory.KNOWN_RADIO)
+        val discovery = FakeRadioDeviceDiscovery(discoveredOnScan = listOf(dev))
+        val manager = managerFor(discovery, InMemoryRememberedRadioStore(null))
+
+        manager.enable()
+        runCurrent()
+        manager.acknowledgeChecklist()
+        runCurrent()
+        manager.startScan(5_000L)
+        runCurrent()
+
+        manager.chooseRadio(dev)
+        runCurrent()
+
+        assertEquals(1, discovery.pairedAttempts.size)
+        assertEquals(1, discovery.openedRadios.size, "After pairing succeeds the link opens")
+    }
+
+    @Test
+    fun radlnkU52_aLinkThatCannotBeOpenedSaysWhyInsteadOfConnectingForEver() = runTest {
+        // Owner report 2026-10-23 (desktop): "Use this radio" seemed to do nothing. The open failure was only in the
+        // driver's retry reason, so the screen stayed on "Connecting...".
+        val dev = DiscoveredDevice("VR-N76", "38:D2:00:01:34:FD", isPaired = true, category = CandidateCategory.KNOWN_RADIO)
+        val discovery = FakeRadioDeviceDiscovery(
+            pairedList = mutableListOf(dev),
+            linkSupplier = { throw com.transfer.flash.core.radio.link.LinkException("Windows is not paired with this radio any more.") },
+        )
+        val manager = managerFor(discovery, InMemoryRememberedRadioStore(null))
+
+        manager.enable()
+        runCurrent()
+        manager.acknowledgeChecklist()
+        runCurrent()
+        manager.chooseRadio(dev)
+        runCurrent()
+
+        val state = manager.state.value
+        assertTrue(state.plainSentence.startsWith("Could not open VR-N76"), state.plainSentence)
+        assertEquals("Windows is not paired with this radio any more.", state.nextStep)
     }
 
     @Test

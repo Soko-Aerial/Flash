@@ -176,6 +176,28 @@ class AnnouncementStoreTest {
     }
 
     @Test
+    fun departmentIdsInSearchAreBoundValuesNotSqlText() {
+        store.createAnnouncement("q1", "org", null, "Company news", "Everyone reads this", "device", "a", "A", "admin")
+        store.createAnnouncement("q2", "department", "dept-eng", "Quantum plan", "Engineering only", "device", "a", "A", "admin")
+        val hostile = "dept-x' OR a.scope = 'department' OR '1'='1"
+
+        // A caller whose department id is a SQL fragment sees org announcements only, with every search shape.
+        for (query in listOf(null, "Quantum", "Company")) {
+            val result = store.searchAnnouncements(query = query, scope = null, departmentId = null, before = null, callerDeptId = hostile, isOrgAdmin = false)
+            assertTrue(result.items.none { it.title == "Quantum plan" })
+        }
+        // A hostile department filter from a non-admin is refused as "another department", not executed.
+        val filtered = store.searchAnnouncements(query = null, scope = "department", departmentId = hostile, before = null, callerDeptId = "dept-eng", isOrgAdmin = false)
+        assertEquals(0, filtered.items.size)
+        // An admin filtering by the hostile id matches nothing instead of everything.
+        val adminFiltered = store.searchAnnouncements(query = null, scope = "department", departmentId = hostile, before = null, callerDeptId = null, isOrgAdmin = true)
+        assertEquals(0, adminFiltered.items.size)
+        // The legitimate filter still works.
+        val engOnly = store.searchAnnouncements(query = null, scope = "department", departmentId = "dept-eng", before = null, callerDeptId = "dept-eng", isOrgAdmin = false)
+        assertEquals(1, engOnly.items.size)
+    }
+
+    @Test
     fun ftsSearchOperatorsDoNotThrowAndMatchWords() {
         store.createAnnouncement("s1", "org", null, "Alpha Beta", "Testing search functionality with keywords", "device", "a", "A", "admin")
 

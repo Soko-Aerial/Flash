@@ -278,6 +278,9 @@ public class RadioLinkTester(
                 }
             }
             is RadioIngest.Partial -> note("flash-rx partial ${r.received}/${r.total}")
+            is RadioIngest.Duplicate -> note(
+                "flash-rx retransmit kind=${r.kind} from=${r.peerId} counter=${r.firstCounter} (already received)",
+            )
             is RadioIngest.Dropped -> if (r.reason != RadioDrop.NOT_FLASH) {
                 note("flash-rx dropped reason=${r.reason}${r.detail?.let { " ($it)" } ?: ""}")
             }

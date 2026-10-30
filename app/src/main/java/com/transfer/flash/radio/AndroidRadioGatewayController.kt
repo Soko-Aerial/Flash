@@ -41,6 +41,7 @@ import com.transfer.flash.ui.radio.RadioGatewayMode
 import com.transfer.flash.ui.radio.RadioGatewayUiState
 import com.transfer.flash.ui.radio.RadioGatewayUiMapper
 import com.transfer.flash.ui.radio.RadioSecurityProfile
+import com.transfer.flash.ui.radio.RadioVoiceUiState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -106,6 +107,32 @@ public class AndroidRadioGatewayController(
     /** Set by the foreground Activity (it owns the permission launcher); the controller outlives Activities. */
     @Volatile
     public var permissionRequester: (() -> Unit)? = permissionRequester
+
+    /** Set by the foreground Activity (it owns the permission launcher), like [permissionRequester]. */
+    @Volatile
+    public var microphonePermissionRequester: (() -> Unit)? = null
+
+    private val voiceHelper = AndroidRadioVoice(
+        context = context,
+        scope = scope,
+        radioAddress = { _uiState.value.rememberedRadioAddress },
+        hasMicrophonePermission = {
+            ContextCompat.checkSelfPermission(context, "android.permission.RECORD_AUDIO") == PackageManager.PERMISSION_GRANTED
+        },
+        requestMicrophonePermission = { microphonePermissionRequester?.invoke() },
+    )
+
+    override val voice: StateFlow<RadioVoiceUiState> = voiceHelper.state
+
+    override fun setVoiceListening(on: Boolean) = voiceHelper.setListening(on)
+
+    override fun voicePushToTalk(down: Boolean) = voiceHelper.pushToTalk(down)
+
+    override fun requestMicrophonePermission() {
+        microphonePermissionRequester?.invoke()
+    }
+
+    public fun onMicrophonePermissionResult(granted: Boolean) = voiceHelper.onMicrophonePermissionResult(granted)
 
     private val serviceTracker = RadioServiceTracker()
 
@@ -243,6 +270,7 @@ public class AndroidRadioGatewayController(
                 }
             }
         } else {
+            voiceHelper.close()
             val mgr = activeManager
             scope.launch {
                 mgr?.disable()
@@ -316,7 +344,7 @@ public class AndroidRadioGatewayController(
     override fun pair(id: String) {
         val mgr = activeManager ?: return
         val device = RadioGatewayUiMapper.deviceForId(mgr.state.value, id) ?: return
-        scope.launch { mgr.pair(device) }
+        scope.launch { mgr.chooseRadio(device) }
     }
 
     override fun reconnect() {

@@ -87,6 +87,8 @@ class PairingCoordinator(
     private val timeSource: FlashTimeSource = SystemTimeSource,
     private val crypto: FlashCrypto? = null,
     private val ephemeralKeyPair: FlashEcKeyPair? = null,
+    /** The key an unpinned inbound connection presented (ObservedPeerPins); consulted when there is no pin. */
+    private val observedPeerPin: (peerId: String) -> String? = { null },
 ) {
     private val _pairing = MutableStateFlow<PairingUiModel?>(null)
     val pairing: StateFlow<PairingUiModel?> = _pairing.asStateFlow()
@@ -297,6 +299,11 @@ class PairingCoordinator(
                 s.peerDeviceId?.let { peerId ->
                     val name = s.peerName?.ifBlank { null } ?: peerId.take(SHORT_ID)
                     trustStore.trustPeer(FlashDeviceId(peerId), name)
+                    // The code covered this key (peerIdentityPin), so a finished pairing is what turns the key an inbound
+                    // connection presented into a pin (SEC-D02-02: inbound first contact is no longer pinned on its own).
+                    if (trustStore.getPin(FlashDeviceId(peerId)) == null) {
+                        observedPeerPin(peerId)?.let { trustStore.savePin(FlashDeviceId(peerId), it) }
+                    }
                     // v2 completion: the code covered the TLS-pinned identities and the ephemeral keys.
                     trustStore.markVerified(FlashDeviceId(peerId))
                     val peerPubKey = event.ephemeralPubKey.takeIf { it.isNotEmpty() }
@@ -415,7 +422,7 @@ class PairingCoordinator(
         localModel = localModel,
         ephemeralPublicKeyProvider = { ephemeralPublicKey },
         // ADR-042: the pairing must cover the key TLS pinned for this peer on this connection.
-        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) },
+        peerIdentityPin = { peerId -> trustStore.getPin(FlashDeviceId(peerId)) ?: observedPeerPin(peerId) },
         // The session holds a single peer at a time; route by its current peerDeviceId (set before
         // any frame is sent, since the reducer runs before sendFrame in the protocol).
         sendFrame = { frame ->
