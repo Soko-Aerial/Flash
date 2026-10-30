@@ -170,6 +170,14 @@ compose.desktop {
             "-Dskiko.fps=60"
         )
 
+        // OPT-O19-04: tune JVM flags for Compose Desktop 60 FPS frame budget and lower native thread memory
+        jvmArgs += listOf(
+            "-Xss512k",
+            "-XX:MaxGCPauseMillis=20",
+            "-XX:+UseStringDeduplication",
+            "-XX:+ExitOnOutOfMemoryError"
+        )
+
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
         // (packaging tools may not be installed). This block exists only so the entry point is
