@@ -19244,3 +19244,66 @@ Run `RADCHAT-DEV07` together with the still-owed `RADCHAT-DEV01/03/04/05/06` and
 any radio-chat claim. Nothing in this round changes the wire format: the frames on the air are identical, only the receiver's answer to
 a retransmission changed (documented in `docs/network/RADIO-WIRE-FORMAT.md` section 10).
 Committed as `ffeec334` on `dev` together with the previously uncommitted work it fixes (322 files).
+
+---
+
+## 2026-10-30 (later) — Wave 0: Stream A (build) verified and merged, five changes refused, gate re-measured
+
+### Worked on
+Reviewed `agent/opt-build` (25 commits, the build/CI/packaging stream of the optimization programme) against
+`docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §4 (file ownership), §8 (gated findings) and the code's own comments, then merged it
+into `dev` and re-established the integration gate.
+
+### Changed
+- Merged `agent/opt-build` with `--no-ff`. 21 of 25 findings kept: `org.gradle.parallel`, build cache, 4 GB daemon, `:server:test`
+  forks, CI JDK 21 + the `test` task, the `bcutil-jdk18on 1.81.1` pin (the version `dev` already resolved), notices only on
+  release, duplicate Room KSP dropped from `:app` (it has no Room annotations), `buildSrc` → `build-logic`, `StripSqliteTask`
+  (976 KB instead of 17.7 MB on the desktop classpath), Material 2 excluded from the desktop umbrella (zero
+  `androidx.compose.material.*` imports anywhere in `ui/**` or `desktop/**`), R8 log rules, desktop JVM flags, `:benchmark`
+  scaffolding, test logging.
+- **Reverted five** (`11c650a3`): `O22-01` ABI splits (breaks `tools/build-release.ps1:265`, which reads
+  `app-release-unsigned.apk`; the file the owner distributes is the universal APK anyway), `O22-04` jlink module pruning
+  (runtime-only, unverifiable here), `O22-06` narrowed WebRTC keeps (the rule documents a release-only `NoSuchMethodError`
+  and says no narrower rule is honest), `O22-07` four `:ui:chat` dependencies (`ui-chat` is published and the block says in so
+  many words why they stay), `O19-05` `-Xshare:auto` (the JVM default; no AppCDS archive, so `O01-06` is **not** closed).
+- **Corrected** (`68128d00`): `maxParallelForks` 4 → **1 for every task** (a brief try at 2 for `*AndroidHost*` flaked
+  `RealFlashChatRepositoryTest` under load — ERROR-873), `-XX:SoftRefLRUPolicyMSPerMB=50` and
+  `forkEvery=100` removed, hand-written `app/src/main/baseline-prof.txt` deleted (it was not generated; one rule cannot match
+  `RealFlashChatRepository`'s real constructor) and the R8 rule's comment corrected (the app logs through `Log.println`, so the
+  rule prunes dependency `Log.d`/`Log.v` calls only).
+
+### Verification
+Forced (`--rerun-tasks`) integration gate, same machine, one build at a time:
+
+| Gate | `dev` before | stream as delivered | `dev` after review |
+|---|---|---|---|
+| 1 (ten `jvmTest` + 2 compiles) | 275 s, 2,138 tests, 0 failed, 2 skips | 467 s | **204 s** no-cache, 316 s while filling the build cache; same counts |
+| 2 (three host suites + `:app` unit) | 535 s, 1,526 tests, 2 expected failures | 429 s | **490 s** at one fork per task; 376 s at two forks, which flaked ERROR-873 and is not adopted |
+
+`:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` green; the branch configures with `:benchmark` and `:build-logic`
+(`projects`, 1 s). Net after review: gate 1 −26 %, gate 2 −8 % (about 694 s against 810 s for the pair). The 112 s gap
+between the two gate-1 figures is build-cache *stores*: a forced run has nothing to reuse, so the cache only writes.
+`:server:test` 661/661 green at 4 forks and `:desktop:jvmTest` 243/243 green with the stripped sqlite jar.
+`:app:assembleRelease` green in 4 m 48 s, producing exactly `app-release-unsigned.apk` (52.15 MiB, the file
+`tools/build-release.ps1` reads) plus the release-only `THIRD_PARTY_NOTICES.txt`, so the revert restored the release path
+and the notices scoping works.
+
+### Problems
+- The stream's gate 1 figure (4 m 06 s) was measured **unforced**, so it compared a warm incremental build with the plan's
+  forced baseline and reported a 70 % regression as a 13 % win. Recorded as ERROR-872; both halves of a before/after must now
+  be forced and the command line pasted (ADR-231 rule 4, plan §6.3.2).
+- The stream's report lists gate commands that do not exist on this repo (`:core:crypto:jvmTest`, `:core:model:jvmTest`,
+  `:desktop:compileKotlin`, `:core:calling:testAndroidHostTest` in gate 2) yet quotes the baseline's 2,138/1,526 counts. The
+  numbers were copied from the plan rather than produced by those commands.
+
+### Remaining
+- `PERF-A03` desktop installer smoke test (`O22-02`/`O22-05`/`O19-04` are only real once the packaged app runs), `PERF-A04`
+  the owner's ABI-splits decision, `PERF-A02` regenerating the baseline profile on a device (`:benchmark` needs a `benchmark`
+  build type on `:app` first).
+- `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §9 A now carries the outcome; `logs/streams/build/INTEGRATOR-REVIEW.md` is the
+  per-finding table.
+
+### Next AI
+Hand out Stream D + T against `dev` (base now includes this merge), and tell them the gate numbers in §6.3.2 are the ones to
+hold: gate 1 ≥ 2,138 tests and ≤ ~320 s forced, gate 2 exactly 1,526 with 2 known failures. Nothing was pushed.
+

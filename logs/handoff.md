@@ -1,5 +1,26 @@
 # Current Handoff
 
+> 2026-10-30 Wave 0 merged: **Stream A (build) verified, merged into `dev`, and cut down to what it can prove.** 21 of its 25
+> findings are in; five were reverted (`11c650a3`) because they change what ships or reverse a decision written in the file they
+> edited: `O22-01` ABI splits (breaks `tools/build-release.ps1:265`, which reads `app-release-unsigned.apk`; the distributed file
+> is the universal APK anyway), `O22-04` jlink module pruning, `O22-06` narrowed WebRTC keep rules (the rule documents a
+> release-only `NoSuchMethodError` and says no narrower rule is honest), `O22-07` four `:ui:chat` dependencies (`ui-chat` is
+> published, and the block says why they stay), and `O19-05` `-Xshare:auto` (the JVM default — `O01-06` is **not** closed).
+> Four settings were corrected after measurement (`68128d00`): `maxParallelForks` 4 → **1 for every task** (two forks
+> for the Robolectric host suites measured faster but flaked `RealFlashChatRepositoryTest` under load — ERROR-873),
+> `-XX:SoftRefLRUPolicyMSPerMB=50` and `forkEvery=100` removed, and the hand-written `app/src/main/baseline-prof.txt` deleted
+> (it was not generated; one rule cannot match `RealFlashChatRepository`'s constructor) — `OPT-O01-03`/`O28-01` stay open.
+> **Forced gate on the reviewed `dev`: gate 1 = 2,138 tests, 0 failed, 2 POSIX skips, 204 s with `--no-build-cache` (275 s
+> baseline; 316 s if the run also fills the cache); gate 2 = 1,526 tests, exactly the two ERROR-106 `TransfersUiMapperTest`
+> failures, 490 s (baseline 535 s; two forks would give 376 s but flaked ERROR-873).** `:server:test` 661/661 at 4 forks,
+> `:desktop:jvmTest` 243/243 with the stripped sqlite jar. The stream's claim of a 13 % gate-1
+> win was a warm-vs-forced comparison; the truth was a
+> 70 % regression, now ERROR-872. Authority: **ADR-231**, per-finding table
+> in `logs/streams/build/INTEGRATOR-REVIEW.md`, gate numbers in the plan's §6.3.2. **Not pushed.** Next stream: D + T, off the
+> current `dev`. Owed: `PERF-A02` (regenerate the baseline profile on a device; `:benchmark` has no build type on `:app` yet),
+> `PERF-A03` (desktop installer smoke test — the only way `O22-02`/`O22-05`/`O19-04` become real), `PERF-A04` (the owner's
+> ABI-splits decision), `PERF-A05`/`PERF-A06` (`:server:test` under 4 forks; `:desktop:jvmTest` with the stripped sqlite jar).
+
 > 2026-10-30 optimization-audit split (plan only, nothing built): `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` divides the
 > 2026-10-23 audit's 211 findings into **12 directory-disjoint streams** so several agents can work at once in their own
 > `E:\FlashWork\opt-<stream>` worktrees (branches `agent/opt-<stream>` off `dev`), with per-file ownership for the modules
