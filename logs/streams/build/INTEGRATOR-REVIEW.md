@@ -29,23 +29,123 @@ Branch: `agent/opt-build` (25 commits) merged into `dev` with `--no-ff`. Base: `
 | `O27-02` | `kotlinx.coroutines.debug=off` | A test-runner property. It is **not** virtual time; the stream's label was wrong. |
 | `O27-05` | failure reporting (`showStackTraces`, `events("failed")`) | No behaviour change; useful. |
 
-## 2. Reverted or corrected (4 reverted, 4 corrected)
+## 2. Reverted or corrected (5 reverted, 4 corrected)
 
-**Reverted** in `11c650a3` (each is a release-shape change or reverses a decision written in the
-file being edited):
+These five were reverted in `11c650a3`; they were **not** judged wrong, they were judged unproven
+*here*. Each entry is what the code does, the evidence that decided it, and the one check that would
+let it back in. The general rules they produced are ADR-231.
 
-1. `O22-01` ABI splits — `tools/build-release.ps1:265` reads
-   `app/build/outputs/apk/release/app-release-unsigned.apk`, which AGP stops producing once splits
-   are on. The release path breaks, and the artifact the owner distributes (universal) stays 52 MiB,
-   so the advertised win does not reach them. → owner decision, PERF-A04.
-2. `O22-04` jlink module pruning — can only fail at runtime, in an installer nobody ran.
-3. `O22-06` narrowed WebRTC keep rules — the rule it replaced documents a release-only
-   `NoSuchMethodError` inside `PeerConnectionFactory` init and says no narrower rule is honest.
-4. `O22-07` four `:ui:chat` runtime dependencies dropped — the block says they are kept on purpose
-   because `ui-chat` is published (`publish = true`) and removing them changes what consumers
-   resolve. Reverting restores all four plus that comment.
-5. `O19-05` `-Xshare:auto` — the JVM default, with no AppCDS archive shipped. Reverted rather than
-   leave a record of a gain that does not exist; `O01-06` is therefore **not** closed.
+### 2.1 `O22-01` ABI splits — breaks the release script and can ship a stale APK
+
+What it changed: `splits { abi { isEnable = true; isUniversalApk = true; ... } }` in
+`app/build.gradle.kts`, so AGP stops writing `app-release-unsigned.apk` and writes
+`app-arm64-v8a-…`, `app-armeabi-v7a-…`, `app-x86_64-…` and `app-universal-…` instead.
+
+Evidence:
+
+- `tools/build-release.ps1:265-268` hard-codes
+  `app\build\outputs\apk\release\app-release-unsigned.apk` and then `Fail`s with
+  *"If a signingConfig was added to app/build.gradle.kts, remove it"* — a diagnosis that blames the
+  wrong thing, so whoever hits it at 2 a.m. chases a non-existent `signingConfig`.
+- Worse than a clean failure: the check is `Test-Path`, not a freshness check. On this machine after
+  the branch's split build there was still an `app-release-unsigned.apk` from **2026-10-20** beside
+  the new per-ABI files, so lines 274-293 would have zipaligned and signed that October APK and
+  shipped it as `Flash-2.1.0.apk`. A silent wrong artifact beats a crash for badness.
+- The win does not reach a user today: `isUniversalApk = true` means the file the release flow
+  packages is the universal APK, 54.63 MB — unchanged. The 17.55 MB arm64 figure only exists if the
+  distribution switches to four files, which also touches `docs/release-build.md` and the `REL-*`
+  checks.
+- Packaging shape is an owner decision, not a build stream's (plan §8; ADR-231 rule 1).
+
+Back in when: `PERF-A04` is answered and `build-release.ps1` + `docs/release-build.md` + `REL-*`
+are updated in the same change; sizes are in EXP-80.
+
+### 2.2 `O22-04` jlink module pruning — invisible to every check available here
+
+What it changed: `desktop/build.gradle.kts` `modules("java.sql", "jdk.unsupported")`, dropping
+`java.naming`, `java.management`, `java.instrument` and `jdk.crypto.cryptoki` from the packaged JRE.
+
+Evidence:
+
+- The consumers of those modules are **not in our source**: `java.lang.management`
+  (JMX/`ManagementFactory`, reached by libraries), `javax.naming` (JNDI), `java.lang.instrument`
+  (agents), the SunPKCS11 provider. A grep of our code cannot prove they are unreachable, and this
+  is the opposite of the Material 2 case (§4), where a grep *is* proof.
+- Where the tests run decides it: `:desktop:jvmTest` and `:desktop:compileKotlinJvm` execute on the
+  builder's full JDK, not on the trimmed image. `jlink` does not verify reachability either, so
+  `:desktop:packageMsi` succeeding proves only that jlink ran.
+- The failure mode is a `ClassNotFoundException`/`NoClassDefFoundError` on first touch, in an
+  installed app, at some unrelated moment.
+
+Back in when: `PERF-A03` installs the MSI, opens a chat with history, Settings, a 1:1 call and the Hub
+tab on the trimmed image. If it launches clean, the four modules return with the measurement.
+
+### 2.3 `O22-06` narrowed WebRTC keep rules — reverses a comment that records a real crash
+
+What it changed: `core/calling/consumer-rules.pro` from `-keep class org.webrtc.** { *; }` to
+`@CalledByNative`-only members plus ten named classes.
+
+Evidence (the replaced rule's own comment, which the change deleted):
+
+> The bundled WebRTC … ships **NO consumer rules of its own** (verified:
+> `io.github.webrtc-sdk:android` contains no `proguard.txt`). libwebrtc's JNI is bidirectional —
+> native C++ resolves `org.webrtc` classes, methods and fields **by name** through
+> `GetMethodID`/`GetFieldID` … R8 sees none of that … a consumer who enables minification gets a
+> release-only crash (`NoSuchMethodError` / `UnsatisfiedLinkError` inside `PeerConnectionFactory`
+> init) that never reproduces in debug. Hence the blunt keep — the reflection here is native, so
+> there is no narrower rule that is honest.
+
+- JNI also looks up names that are *not* `@CalledByNative`: `SdpObserver`, `MediaConstraints`,
+  `IceCandidate`, `SessionDescription`, `VideoCapturer`, the encoder/decoder factories,
+  `CameraEnumerator`, `DataChannel`, `Metrics`. Renaming any of them compiles, passes every unit
+  test, and breaks calls only in a minified release build.
+- It is `consumer-rules.pro`, i.e. the only `org.webrtc.**` keep in every app that consumes
+  `:core:calling`.
+- No test that runs here can see it: `:core:calling:testAndroidHostTest` runs on the JVM, never
+  through R8.
+
+Back in when: a release-signed build places a real call on a device. Unmeasured DEX bytes against
+calls breaking in release is not a trade worth taking blind.
+
+### 2.4 `O22-07` four `:ui:chat` dependencies — a recorded release decision, in a published module
+
+What it changed: removed four `implementation` entries from `ui/chat/build.gradle.kts`
+(`androidMain`).
+
+Evidence (the block's own comment, restored by the revert):
+
+> The next four have ZERO references anywhere in `ui/chat/src` — verified by grep, not assumed. They
+> are kept, not dropped, for the reason `:ui:theme` kept its own two: removing a dependency from a
+> published POM changes what every 1.2.0 consumer of `ui-chat` resolves at runtime, and that is a
+> release decision …
+
+- "Zero references" is true **and irrelevant**: they are `implementation`, so they never appeared on
+  a compile classpath, but they were on the runtime classpath transitively via `runtimeElements`. A
+  consumer that got `activity-compose`/`core-ktx`/`lifecycle-runtime-ktx` through us starts failing
+  at runtime after an upgrade, and the failure is blamed on *their* app.
+- `ui/chat/build.gradle.kts` has `maven-publish` and `publish = true`, artifactId `ui-chat`
+  (`docs/publishing/` governs POM changes; plan §8 marks this owner-gated).
+- Benefit: four classpath entries and a rounding error of build time.
+
+Back in when: a deliberate library version bump drops all four together, with the changelog entry
+that says so.
+
+### 2.5 `O19-05` `-Xshare:auto` — a claimed win that does not exist
+
+What it changed: one JVM argument in `desktop/build.gradle.kts`. The commit message also said it
+*"closes OPT-O01-06 as duplicate"*.
+
+Evidence:
+
+- `-Xshare:auto` is the JVM **default** class-data-sharing mode: it shares only if an archive is
+  present. No archive is generated (`-XX:ArchiveClassesAtExit`) or shipped, and
+  `-XX:SharedArchiveFile` is unset, so the flag changes nothing measurable.
+- That makes the *record*, not the line, the problem: merging it marks `OPT-O19-05` and `OPT-O01-06`
+  done, so nobody ever builds the archive and a later audit "discovers" it closed. A false "done"
+  costs more than a no-op.
+
+Back in when: the real version — generate a `.jsa` at packaging time, ship it, point
+`-XX:SharedArchiveFile` at it, and measure startup before/after (`O01-06`).
 
 **Corrected** in `68128d00`:
 
