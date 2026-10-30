@@ -82,7 +82,7 @@ public class Chunker {
 
         public const val MIN_CHUNK_SIZE_BYTES: Int = 16 * 1024
 
-        public const val MAX_CHUNK_SIZE_BYTES: Int = 256 * 1024
+        public const val MAX_CHUNK_SIZE_BYTES: Int = 1024 * 1024
 
         public const val DEFAULT_CHUNK_SIZE_BYTES: Int = 64 * 1024
 
