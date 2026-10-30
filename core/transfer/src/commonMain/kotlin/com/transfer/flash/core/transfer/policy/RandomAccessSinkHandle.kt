@@ -67,6 +67,15 @@ public class OkioRandomAccessSinkHandle(
     fileSystem: FileSystem = FileSystem.SYSTEM,
 ) : RandomAccessSinkHandle {
 
+    init {
+        // O23-03: Pre-allocate disk space to prevent mid-flight ENOSPC and filesystem fragmentation.
+        // Uses OS-level pre-allocation (fallocate/setLength) without allocating contiguous
+        // byte arrays on the heap (avoiding ERROR-067 with Okio's handle.resize expansion).
+        if (expectedTotalBytes > 0L) {
+            platformPreallocate(path, expectedTotalBytes)
+        }
+    }
+
     private val handle: FileHandle = fileSystem.openReadWrite(path)
 
     init {
