@@ -171,11 +171,13 @@ compose.desktop {
         )
 
         // OPT-O19-04: tune JVM flags for Compose Desktop 60 FPS frame budget and lower native thread memory
+        // OPT-O19-05: -Xshare:auto enables AppCDS if an archive is present
         jvmArgs += listOf(
             "-Xss512k",
             "-XX:MaxGCPauseMillis=20",
             "-XX:+UseStringDeduplication",
-            "-XX:+ExitOnOutOfMemoryError"
+            "-XX:+ExitOnOutOfMemoryError",
+            "-Xshare:auto"
         )
 
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
