@@ -38,7 +38,8 @@ jobs:
         # --dry-run: see docs/publishing/library-compliance-review.md addendum A1.
         # --continue: without it the first failing module hid every later one, so CI reported one
         # red test at a time (audit B5). Hardware-only tests self-skip when CI=true (set by Actions).
-        run: ./gradlew allTests testDebugUnitTest assembleDebug --continue --no-daemon --stacktrace
+        # OPT-O21-05: add `test` so standalone JVM modules like :server have their tests executed in CI.
+        run: ./gradlew allTests testDebugUnitTest test assembleDebug --continue --no-daemon --stacktrace
 
       - name: Android lint (app)
         # Lint was driven to 0 errors on 2026-09-23 (audit 4.4); this keeps it there.
