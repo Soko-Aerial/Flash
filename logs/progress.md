@@ -29,11 +29,18 @@ The owner wants several agents working at once on this PC: worktrees must live o
   *build* is what costs 3-4 GB), `E:` free ≈ 69.9 GB, `org.gradle.parallel`/`caching` still absent from
   `gradle.properties`, no ABI splits in `app/build.gradle.kts`, `logs/progress.md` ≈ 15,830 lines (why streams write
   fragments).
-- No code changed, nothing built, nothing device-verified, nothing pushed.
+- **Integration-gate baseline measured on `dev` at `54ff4737`, both commands forced with `--rerun-tasks`:**
+  command 1 (ten `jvmTest` suites + the two host compiles) `BUILD SUCCESSFUL` in **4 m 43 s**, **2,138 tests, 0
+  failed**, 2 POSIX-only skips; command 2 (three `testAndroidHostTest` suites + `:app:testDebugUnitTest`) **1,526
+  tests, 2 failed** — both the pre-existing `TransfersUiMapperTest` cases of ERROR-106. The run also proved the first
+  draft of the gate was incomplete: `RealFlashChatRepositoryTest` (the data stream's main safety net) and
+  `TransfersUiMapperTest` live in `androidHostTest`/`app/src/test` and were not being run at all, so §6.3 is now two
+  commands. `SwarmInteropTest`'s known flake did not reproduce.
+- No code changed, nothing device-verified, nothing pushed.
 
 ### Remaining
-- Pick the number of concurrent agents (plan recommends 2, allows 3), run the gate once on `dev` to fill §6.3's
-  baseline, then hand out wave 0 (build) and wave 1 (data + transfer).
+- Choose the number of concurrent agents (plan recommends 2, allows 3) and hand out wave 0 (build) then wave 1
+  (data + transfer); the gate baseline every stream checks against is now in §6.3.1.
 - The owner decisions in the plan's §12 are outstanding; each stream records `BLOCKED — owner decision` until answered.
 
 ### Next AI
