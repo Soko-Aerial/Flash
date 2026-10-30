@@ -1,3 +1,4 @@
+import com.transfer.flash.buildlogic.ThirdPartyNoticesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
@@ -12,6 +13,7 @@ plugins {
     // kotlin-compose alias in ui/* — required for any @Composable code.
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.aboutlibraries)
+    id("flash.third-party-notices")
 }
 
 kotlin {

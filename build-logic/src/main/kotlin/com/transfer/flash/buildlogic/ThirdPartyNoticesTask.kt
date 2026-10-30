@@ -1,3 +1,5 @@
+package com.transfer.flash.buildlogic
+
 import groovy.json.JsonSlurper
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
