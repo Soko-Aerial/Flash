@@ -21,7 +21,8 @@
 > `:core:messaging:jvmTest`, `:core:network:jvmTest`, `:ui:chat:jvmTest`, `:desktop:compileKotlinJvm`,
 > `:app:compileDebugKotlin`. Owed hardware check: **`RADCHAT-DEV07`** (plus the still-owed `RADCHAT-DEV01/03/04/05/06`,
 > `RADCHAT-POLICY-01`, `RADCHAT-STOP-01`, `RADVOICE-*`, `SHARE-*`, `SECAUD-*`, `RADUI-DEV01`). Everything else in the blocks below is
-> unchanged and still uncommitted before this round's commit.
+> unchanged and still uncommitted before this round's commit. **Committed as `ffeec334` on `dev`** (322 files: the previously
+> uncommitted radio/screen-share/hub-mock/audit work plus this round's fixes).
 
 > 2026-10-30 radio retry stop: **BUILT, unit-tested, NOT device-verified, NOT committed.** An outgoing message that is
 > waiting for radio acknowledgement (or held because the gateway is unavailable) now offers a visible **Stop** beside its radio
