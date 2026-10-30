@@ -7,6 +7,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
@@ -37,6 +39,17 @@ public class HostedRadioOutboxPort(
 
     override fun isRadioReachable(recipientDeviceId: String): Boolean =
         host.engine.value?.isPeerRadioReachable(recipientDeviceId) == true
+
+    /**
+     * ADR-228: the peers a text could go to on the air right now. Both inputs matter — a radio key alone is
+     * not a link, and a link alone reaches nobody — so this is the gateway's status **and** the engine's
+     * paired set, combined rather than sampled, or the header could claim "Radio only" for a station whose
+     * key is gone.
+     */
+    override val radioPeerIds: Flow<Set<String>> =
+        combine(host.status, host.engine) { status, engine ->
+            if (status == RadioChatStatus.CONNECTED) engine?.radioPairedPeerIds().orEmpty() else emptySet()
+        }.distinctUntilChanged()
 
     override suspend fun sendTextMessage(
         recipientDeviceId: String,

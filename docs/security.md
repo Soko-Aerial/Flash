@@ -198,7 +198,8 @@ no files (group attachments are paired-only in both directions), no 1:1 calls, n
 - A removed member keeps what they already received (no per-sender keys, no forward secrecy). Removal is also **eventually consistent**:
   a member that has not heard of it yet keeps sending to the removed device, and a modified removed client could read that until the
   member converges from the owner or another member.
-- Vouched members get no files in either direction.
+- ~~Vouched members get no files in either direction.~~ SUPERSEDED (owner decision O-5, ADR-070): every active v2 group member receives
+  and serves group files, paired or not. The 2026-10-22 security audit's D08-01 asked to restore the old rule and was REFUTED (ADR-226).
 - An already-established group **call** leg is not re-checked: a member removed mid-call stays connected until the call ends
   (pre-existing behaviour of call legs, unchanged by V2).
 - Deleting a v2 chat **without leaving** keeps its member rows and vouches, and a stale-row rejoin after a delete is a latent V1

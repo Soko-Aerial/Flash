@@ -194,9 +194,17 @@ public class DefaultFlashPairingProtocol(
         if (!state.isActivePhase()) {
             return FlashResult.Failure(FlashError.Unknown("Not awaiting local decision", null))
         }
+        val initiator = state.isInitiator
         reduceSession(PairingSessionEvent.LocalAccept)
         return try {
-            sendFrame(FlashPairingFrame.PairAccept(requestId))
+            if (initiator) {
+                // SEC-D03-01: the initiator accepts too, but has nothing to tell the responder with PAIR_ACCEPT; its
+                // answer is PAIR_CONFIRM, which the host sends once BOTH sides have accepted. If the responder was
+                // faster, its acceptance is reported now.
+                if (_session.value.peerAccepted) emit(FlashPairingEvent.PeerAccepted(requestId))
+            } else {
+                sendFrame(FlashPairingFrame.PairAccept(requestId))
+            }
             FlashResult.Success(Unit)
         } catch (t: Throwable) {
             FlashResult.Failure(FlashError.Unknown(t.message ?: "send failed", t))
@@ -262,7 +270,7 @@ public class DefaultFlashPairingProtocol(
                     ),
                 )
                 val after = _session.value
-                if (after.phase == PairingPhase.AwaitingPeerConfirmation && before.phase == PairingPhase.AwaitingPeerNonce) {
+                if (after.phase == PairingPhase.AwaitingLocalDecision && before.phase == PairingPhase.AwaitingPeerNonce) {
                     after.localNonce?.let { sendOrFail(FlashPairingFrame.PairReveal(frame.requestId, it)) }
                 } else {
                     emitIfNewlyFailed(before, after)
@@ -289,7 +297,9 @@ public class DefaultFlashPairingProtocol(
             }
 
             is FlashPairingFrame.PairAccept -> reduceSession(PairingSessionEvent.PeerAccepted(frame.requestId)).also {
-                if (_session.value.peerAccepted) {
+                // Reported (and PAIR_CONFIRM sent) only once the local user has accepted as well (SEC-D03-01); until
+                // then respondAccept() reports it.
+                if (_session.value.peerAccepted && _session.value.phase == PairingPhase.AwaitingPeerConfirmation) {
                     emit(FlashPairingEvent.PeerAccepted(frame.requestId))
                 }
             }

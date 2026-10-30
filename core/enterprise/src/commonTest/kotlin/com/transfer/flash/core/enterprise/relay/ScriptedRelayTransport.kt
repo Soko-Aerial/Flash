@@ -5,6 +5,7 @@ package com.transfer.flash.core.enterprise.relay
 import com.transfer.flash.core.hubprotocol.certs.DeviceCert
 import com.transfer.flash.core.hubprotocol.relay.HubPrincipal
 import com.transfer.flash.core.hubprotocol.relay.RelayFrame
+import com.transfer.flash.core.hubprotocol.relay.RelayLimits
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -37,6 +38,17 @@ class ScriptedRelayTransport(private val now: () -> Long = { 0L }) : RelayTransp
     private val deliveryChannel = Channel<RelayFrame.Deliver>(Channel.UNLIMITED)
     override val deliveries: Flow<RelayFrame.Deliver> = deliveryChannel.receiveAsFlow()
 
+    /** What the fake hub announces in its WELCOME (SEC-D15-02); and how far the local clock is ahead of it. */
+    var welcomeLimits: RelayLimits = RelayLimits()
+
+    var serverTimeOffset: Long? = null
+
+    private val _limits = MutableStateFlow<RelayLimits?>(null)
+    override val limits: StateFlow<RelayLimits?> = _limits.asStateFlow()
+
+    private val _serverTimeOffsetMs = MutableStateFlow<Long?>(null)
+    override val serverTimeOffsetMs: StateFlow<Long?> = _serverTimeOffsetMs.asStateFlow()
+
     /** Script per attempt (1-based); default is "Up". */
     var script: (attempt: Int) -> ConnectScript = { ConnectScript.Up }
 
@@ -52,11 +64,21 @@ class ScriptedRelayTransport(private val now: () -> Long = { 0L }) : RelayTransp
         connectUrls += hubUrl
         connectSerials += identity.deviceCert.serial
         _failure.value = null
+        _limits.value = null
+        _serverTimeOffsetMs.value = null
         _state.value = RelaySessionState.CONNECTING
         return when (val s = script(connectTimes.size)) {
             ConnectScript.Up -> {
                 _state.value = RelaySessionState.CONNECTED
-                frames.emit(RelayFrame.Welcome(principal = HubPrincipal(identity.deviceId, "member"), serverTime = now()))
+                _limits.value = welcomeLimits
+                _serverTimeOffsetMs.value = serverTimeOffset
+                frames.emit(
+                    RelayFrame.Welcome(
+                        principal = HubPrincipal(identity.deviceId, "member"),
+                        serverTime = now() - (serverTimeOffset ?: 0L),
+                        limits = welcomeLimits,
+                    ),
+                )
                 true
             }
             is ConnectScript.Fail -> {

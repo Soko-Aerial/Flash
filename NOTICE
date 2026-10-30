@@ -25,3 +25,8 @@ kotlinx.serialization (kotlinx-serialization-json 1.9.0)
   Licensed under the Apache License, Version 2.0. Used by :core:hub-protocol for the
   enterprise-hub wire contract (ADR-108). Licence text and NOTICE contents ship in
   THIRD_PARTY_NOTICES.txt.
+
+SBC audio codec (core/radio .../audio/sbc/)
+  Ported to Kotlin from HTCommander (Dart), https://github.com/Ylianst/HTCommander,
+  Copyright 2026 Ylian Saint-Hilaire, Apache License 2.0, which in turn follows Google's libsbc.
+  Radio audio framing and the transmit packing rules follow the same project's documentation.

@@ -94,6 +94,8 @@ fun FlashMessageList(
     onOpenMessageInfo: ((FlashMessageUi) -> Unit)? = null,
     /** ERROR-089: retry a failed outgoing message. */
     onRetryMessage: (String) -> Unit = {},
+    /** Stop an outgoing radio message that is awaiting acknowledgement. */
+    onStopRadioRetry: (String) -> Unit = {},
     /** UI-054 (O-14): join action triggered from an inline group invite card. */
     onJoinInvite: ((String) -> Unit)? = null,
 ) {
@@ -163,6 +165,7 @@ fun FlashMessageList(
     val currentOnCancelTransfer by rememberUpdatedState(onCancelTransfer)
     val currentOnOpenMessageInfo by rememberUpdatedState(onOpenMessageInfo)
     val currentOnRetryMessage by rememberUpdatedState(onRetryMessage)
+    val currentOnStopRadioRetry by rememberUpdatedState(onStopRadioRetry)
     val currentOnJoinInvite by rememberUpdatedState(onJoinInvite)
     val messageInfoOffered = onOpenMessageInfo != null
 
@@ -241,6 +244,7 @@ fun FlashMessageList(
                 val onResumeTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnResumeTransfer(currentMessage, file) } }
                 val onCancelTransferLambda = remember(message.id) { { file: com.transfer.flash.core.messaging.model.FlashFileAttachmentUi -> currentOnCancelTransfer(currentMessage, file) } }
                 val onRetryMessageLambda = remember(message.id) { { _: String -> currentOnRetryMessage(message.id) } }
+                val onStopRadioRetryLambda = remember(message.id) { { currentOnStopRadioRetry(message.id) } }
                 val onOpenMessageInfoLambda = remember(message.id) { { currentOnOpenMessageInfo?.invoke(currentMessage); Unit } }
 
                 FlashMessageBubble(
@@ -261,6 +265,7 @@ fun FlashMessageList(
                     onCancelTransfer = onCancelTransferLambda,
                     onOpenMessageInfo = if (messageInfoOffered && FlashMessageInfoMath.isAvailable(message)) onOpenMessageInfoLambda else null,
                     onRetryMessage = onRetryMessageLambda,
+                    onStopRadioRetry = onStopRadioRetryLambda,
                     onJoinInvite = currentOnJoinInvite,
                     isHighlighted = isHighlighted,
                     searchQuery = searchQuery,

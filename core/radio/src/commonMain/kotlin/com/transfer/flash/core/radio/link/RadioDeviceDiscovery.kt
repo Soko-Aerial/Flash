@@ -38,4 +38,14 @@ public interface RadioDeviceDiscovery {
      * @throws LinkException on failure with an actionable failure message.
      */
     public suspend fun openLink(remembered: RememberedRadio): ByteLink
+
+    /** True when this host can open the radio's vendor audio channel ([openAudioLink]); the voice card is shown only then. */
+    public val supportsAudioLink: Boolean get() = false
+
+    /**
+     * Opens the radio's vendor audio RFCOMM channel (HTCommander's "audio channel", ADR-225), independent of the serial
+     * link. @throws LinkException when it cannot be opened or this host has no such channel.
+     */
+    public suspend fun openAudioLink(remembered: RememberedRadio): ByteLink =
+        throw LinkException("This computer cannot open the radio's audio channel.")
 }

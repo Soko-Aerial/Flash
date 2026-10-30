@@ -1096,6 +1096,7 @@ public fun DesktopShell(
                 keyState = hubSealingKeyState,
                 unverified = hubDropped.unverified,
                 readableOff = hubDropped.readableOff,
+                stale = hubDropped.stale,
             ),
             hubRelinkableGroups = hubRelinkable,
             orgTrustState = orgTrustState,
@@ -1351,6 +1352,7 @@ public fun DesktopShell(
                 chatRepository.toggleReaction(messageId, emoji)
             },
             onTypingChanged = chatRepository::setTyping,
+            onSetRadioPolicy = { policy -> nav.current.conversationId?.let { chatRepository.setRadioPolicy(it, policy) } },
             // Voice & video calls from the conversation header (Phase 33a/33c).
             onStartCall = {
                 nav.current.conversationId?.let { id ->
@@ -1398,6 +1400,9 @@ public fun DesktopShell(
             },
             onRetryMessage = { messageId ->
                 chatRepository.retryMessage(messageId)
+            },
+            onStopRadioRetry = { messageId ->
+                chatRepository.stopRadioRetry(messageId)
             },
             onPauseTransfer = { tid ->
                 engine.transfers?.let { repo ->

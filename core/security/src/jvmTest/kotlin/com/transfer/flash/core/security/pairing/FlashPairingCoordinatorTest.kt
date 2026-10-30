@@ -69,6 +69,11 @@ class FlashPairingCoordinatorTest {
 
         override fun getPin(deviceId: FlashDeviceId): String? = pins[deviceId]
 
+        override fun savePin(deviceId: FlashDeviceId, fingerprintHex: String): FlashResult<Unit> {
+            pins[deviceId] = fingerprintHex
+            return FlashResult.Success(Unit)
+        }
+
         override fun markVerified(deviceId: FlashDeviceId): FlashResult<Unit> {
             verified += deviceId
             return FlashResult.Success(Unit)
@@ -81,6 +86,8 @@ class FlashPairingCoordinatorTest {
     private class Pair(
         fpA: String = FP_A,
         fpB: String = FP_B,
+        /** False: the connection was inbound, so no pin was stored; the key sits only in the observed table. */
+        pinned: Boolean = true,
     ) {
         val trustA = RecordingTrustStore()
         val trustB = RecordingTrustStore()
@@ -94,8 +101,10 @@ class FlashPairingCoordinatorTest {
 
         init {
             // Stand-in for the TLS handshake: each side pinned the other's real identity key.
-            trustA.pins[FlashDeviceId(ID_B)] = fpB
-            trustB.pins[FlashDeviceId(ID_A)] = fpA
+            if (pinned) {
+                trustA.pins[FlashDeviceId(ID_B)] = fpB
+                trustB.pins[FlashDeviceId(ID_A)] = fpA
+            }
             // Unconfined so the coordinators' own collectors subscribe DURING construction: a
             // MutableSharedFlow with no subscriber drops its first emission, and this test drives the
             // protocol synchronously — a dropped event would read as a protocol failure.
@@ -108,6 +117,7 @@ class FlashPairingCoordinatorTest {
                 ephemeralPublicKey = byteArrayOf(1, 2, 3),
                 trustStore = trustA,
                 scope = scope,
+                observedPeerPin = { id -> fpB.takeIf { !pinned && id == ID_B } },
                 sendToPeer = { _, text ->
                     if (deliverable) {
                         b.onInbound(ID_A, text)
@@ -125,6 +135,7 @@ class FlashPairingCoordinatorTest {
                 ephemeralPublicKey = byteArrayOf(4, 5, 6),
                 trustStore = trustB,
                 scope = scope,
+                observedPeerPin = { id -> fpA.takeIf { !pinned && id == ID_A } },
                 sendToPeer = { _, text ->
                     a.onInbound(ID_B, text)
                     true
@@ -152,7 +163,12 @@ class FlashPairingCoordinatorTest {
         assertEquals(codeA, codeB, "THE security check: both screens must show the same 6 digits")
         assertEquals(6, codeB.length, "the code is always 6 digits (`NumericComparisonCode.derive`)")
 
+        // SEC-D03-01: the initiator is asked to confirm the code too; one device's Accept alone pairs nobody.
+        assertEquals(PairingPhase.AwaitingLocalDecision, pair.a.pairing.value?.phase, "the initiator must be asked to accept as well")
         pair.b.acceptLocal()
+        delay(500)
+        assertTrue(pair.trustA.trusted.isEmpty() && pair.trustB.trusted.isEmpty(), "responder-only acceptance must not pair")
+        pair.a.acceptLocal()
 
         waitUntil("both sides must trust each other") {
             pair.trustA.trusted.containsKey(FlashDeviceId(ID_B)) &&
@@ -165,6 +181,25 @@ class FlashPairingCoordinatorTest {
         // ADR-042: a v2 pairing is recorded as verified on both sides and published as such.
         assertTrue(FlashDeviceId(ID_B) in pair.trustA.verified && FlashDeviceId(ID_A) in pair.trustB.verified)
         assertTrue(pair.a.trustedPeers.value.single { it.id == ID_B }.verified)
+    }
+
+    @Test
+    fun aPairingOverAnUnpinnedInboundConnection_pinsTheKeyTheCodeCovered() = runBlocking {
+        // SEC-D02-02: an inbound first contact is no longer pinned by TLS; finishing the pairing must pin it, or the
+        // paired device has no pin and a group that needs its verified key cannot be created.
+        val pair = Pair(pinned = false)
+        pair.a.onSessionUp(ID_B)
+        pair.b.onSessionUp(ID_A)
+        pair.a.beginPair(ID_B, "Harness B")
+        waitUntil("B must see the request") { pair.b.pairing.value?.phase == PairingPhase.RequestReceived }
+        pair.b.acceptLocal()
+        waitUntil("A must be asked to accept too") { pair.a.pairing.value?.phase == PairingPhase.AwaitingLocalDecision }
+        pair.a.acceptLocal()
+        waitUntil("both sides must trust each other") {
+            pair.trustA.trusted.containsKey(FlashDeviceId(ID_B)) && pair.trustB.trusted.containsKey(FlashDeviceId(ID_A))
+        }
+        assertEquals(FP_B, pair.trustA.pins[FlashDeviceId(ID_B)])
+        assertEquals(FP_A, pair.trustB.pins[FlashDeviceId(ID_A)])
     }
 
     @Test
@@ -182,6 +217,7 @@ class FlashPairingCoordinatorTest {
         assertEquals(initiator.pairing.value?.numericCode, responder.pairing.value?.numericCode)
 
         responder.acceptLocal()
+        initiator.acceptLocal()
         waitUntil("both publish the other as trusted") {
             initiator.trustedPeers.value.any { it.id == ID_B } && responder.trustedPeers.value.any { it.id == ID_A }
         }
@@ -271,6 +307,7 @@ class FlashPairingCoordinatorTest {
             pair.b.pairing.value?.phase == PairingPhase.RequestReceived
         }
         pair.b.acceptLocal()
+        pair.a.acceptLocal()
         waitUntil("pairing must complete") { pair.trustA.trusted.containsKey(FlashDeviceId(ID_B)) }
     }
 

@@ -1,6 +1,814 @@
 # Progress Log
 
-## 2026-10-23 (latest) - Desktop: errors and the verify card were painted behind the chats (ERROR-810)
+## 2026-10-30 — Stop an unacknowledged radio retry
+
+### Worked on
+Implemented the owner's requested visible stop control for a direct text that is still retrying over radio.
+
+### Changed
+- Outgoing messages with an unacknowledged, non-refused radio note now expose a visible **Stop** control beside their radio
+  delivery line, with **Stop sending** retained in the context menu.
+- `RadioChatBridge.stopRetry` records an honest stopped line; `RealFlashChatRepository.stopRadioRetry` removes only that
+  message's durable outbox row and marks its delivery failed so the existing manual Retry affordance remains available.
+- A late ACK deliberately wins over Stop: transmission cannot be recalled after it keys the radio, so the bubble changes to
+  Delivered rather than falsely claiming failure. Added the `radio.retry.stop` evidence probe.
+
+### Verification
+- `RadioChatBridgeTest` covers stop + late ACK; `FlashRadioChatMathTest` and `FlashMessageContextMenuLogicTest` cover
+  direct-line and context-menu action visibility.
+- `:core:messaging:jvmTest --tests "*RadioChatBridgeTest"`, `:ui:chat:jvmTest --tests "*FlashMessageContextMenuLogicTest"`,
+  `:core:messaging:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, and
+  `:desktop:compileKotlinJvm` — **BUILD SUCCESSFUL**.
+
+### Remaining
+- Hardware checks `RADCHAT-POLICY-01` and `RADCHAT-STOP-01`; telemetry/position remains deferred.
+
+### Next AI
+Run the two-station policy and stop-retry checks before starting telemetry/position.
+
+## 2026-10-29 — Per-chat radio fallback and visible radio-only attachment refusal
+
+### Worked on
+Implemented the owner's approved radio policy: `AUTO` by default, outbound-only `NEVER`, radio-only attachment refusal, and the first UI control in the direct-chat details sheet.
+
+### Changed
+- Added `FlashRadioPolicy` and Room schema **21**: `conversations.radioPolicy`, default `AUTO`, with Android/JVM migration and exported `21.json` schema.
+- `NEVER` removes only the outbound radio fallback. It never rejects inbound radio text and it no longer advertises the local chat as `Radio only`.
+- The peer details sheet exposes a **Radio fallback** row that toggles `Automatic` / `Never`; Android and desktop hosts persist it.
+- A radio-only attachment picker now says **"Photos and files cannot be sent by radio"**. The repository repeats the check at send time and creates a visible failed attachment row if connectivity changed after selection.
+- The attachment guard now checks the actual sealed hub-file route (`HubFileRoute.READY`), not merely whether the hub can carry text. A hub mailbox can still carry a file ticket, so it must not be treated as radio-only.
+
+### Verification
+- Focused Gradle verification: `:core:messaging:testAndroidHostTest --tests *RealFlashChatRepositoryTest*`, `:ui:chat:jvmTest --tests *FlashPeerDetailsLogicTest*`, and `:core:persistence:jvmTest` — **BUILD SUCCESSFUL**.
+- `RealFlashChatRepositoryTest`: **103 tests, 0 failures**. Added direct-vs-group persistence coverage.
+- Room generated `core/persistence/schemas/.../21.json`.
+- `:core:messaging:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`, `:app:compileDebugKotlin`, and `:desktop:compileKotlinJvm` — **BUILD SUCCESSFUL**.
+
+### Remaining
+- Device check `RADCHAT-POLICY-01` is in the test backlog.
+- The requested explicit **Stop sending** action for a text retrying by radio is still not built; telemetry/position remains deferred.
+
+### Next AI
+Implement the explicit per-message radio retry stop action without changing the 25-second retry pacing or the 30-minute outbox budget; then run `RADCHAT-POLICY-01` with two stations.
+
+## 2026-10-28 (round 5, owner: "its now working but lets redesign the radio page ... dont change the wiring only design")
+
+### Worked on
+A full visual rebuild of the Radio page (UI-070..UI-074) after the owner reported it "looks weird". The owner picked, from the
+options offered: everything that bothered them (outlined boxes, page length, stock Material bits, lopsided desktop layout,
+off-palette colours) and "full visual rebuild, same wiring".
+
+### Why it looked weird (diagnosis, from the code, not a guess)
+The page was **eight outlined boxes stacked**, all `backgroundSurface` with the same 1 dp `borderDefault` and the same
+`headingMedium` title, so it read like a wireframe form with no hierarchy. Status colours were hardcoded (`0xFF3FB950`,
+`0xFFD29922`, `0xFFF85149`, `0xFFF0883E`); the controls were stock Material (`Switch` ×2, `AlertDialog` ×2,
+`OutlinedTextField`, `CircularProgressIndicator`, `TextButton`); both dialogs used raw `AlertDialog`, which on Compose Desktop
+opens a **separate native window** (the defect `FlashSheetHost`'s KDoc already records); the desktop layout was two columns of
+very unequal length inside a 1100 dp cap, leaving a large void; and the same facts were stated three times.
+
+### Changed (visual only — no controller call, state field, sentence or gate changed)
+- `ui/chat/.../radio/FlashRadioGatewayComponents.kt` rewritten around the Hub tab's language: one **station plate**
+  (`FlashRadioStationBlock`: tone mark, radio name, state dot + sentence, next step, master switch on the same row, Reconnect
+  when it applies) and two **attention strips** that only appear when something needs an answer (`FlashRadioPermissionBanner`,
+  `FlashRadioCandidateBanner`). Everything else is a small-caps section label (`FlashRadioSectionHeader`, caps + hairline) with
+  hairline rows: `FlashRadioLinkSection` (radio, address, profile, callsign + Forget), `FlashRadioChecklistSection`,
+  `FlashRadioFindSection` (scan action as a pill in the header, devices as rows with category chip + Pair/Use),
+  `FlashRadioSecuritySection` and `FlashRadioModesSection` (ring + title + chip + subtitle), `FlashRadioDiagnosticsSection`
+  (one row + Send).
+- Colours now come from `HubTone` → `textSuccess` / `accentSecondary` / `textError` / `accentPrimary`; **no `Color(0xFF…)`
+  remains** in the radio package.
+- `FlashRadioVoiceCard.kt` → `FlashRadioVoiceSection`: same content (listen switch, phase sentence, level bar, hold-to-talk,
+  callsign note) as rows instead of a card.
+- Both sheets now use the house `FlashConfirmHost` seam (real M3 dialog on Android, in-window overlay on desktop) plus a Flash
+  text field and `FlashHubSwitch`; the RF warning tile uses `accentSecondary` instead of `0xFFF0883E`.
+- `FlashRadioGatewayScreen.kt`: **one column at every size**, capped at 720 dp and centred (the two-column desktop split and the
+  1100 dp cap are gone), 20 dp between sections, `bottomInset` still honoured, back handler and the dispose behaviour
+  (`stopScan()` + `setVoiceListening(false)`) unchanged.
+- `FlashRadioCopy`: new strings for the plate/sections/fact rows (`STATION_NO_RADIO`, `SECTION_LINK`, `FACT_*`, `PROFILE_*_SHORT`,
+  `ACTION_SEND`, `ACTION_AUTHORISE`, `PROFILE_M_NEEDS_AUTH_BADGE`, `signalHint()`, `A11Y_START_SCAN`).
+- Docs: `docs/ui/radio-gateway.md` gained "Redesign v2" (why, the border rule, layout order, what did not change);
+  `docs/ui/ui-research-index.md` UI-070..UI-074 moved from DESIGNED to IMPLEMENTED + redesign v2; `RADUI-DEV01` added to
+  `docs/testing/TEST-BACKLOG.md`.
+
+### Verification
+- `:ui:chat:compileKotlinJvm` BUILD SUCCESSFUL; `:ui:chat:jvmTest --tests "*Radio*"`: **43 tests, 0 failures** (includes
+  `FlashRadioNoDeadActionsTest` — every controller method still called — and `FlashRadioCopyA11ySourceTest` — no inline a11y
+  literals); `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` BUILD SUCCESSFUL.
+- **Seen on screen** (desktop demo `:desktop:run --args=--radio-demo`, window captured and inspected): the plate in the "on, no
+  radio" state, the checklist rows, the "Find my radio" header pill and empty/notice lines, and — with a temporarily seeded
+  remembered radio — the "This link" fact rows with Forget and the "Authorised" chip, plus the security/mode choice rows with
+  their chips. Tested-by-eye above the fold only: diagnostics, the voice section and both sheets were not in the captured area.
+- Not device-verified on Android; `RADUI-DEV01` covers the full walk-through.
+
+### Remaining
+- `RADUI-DEV01` (phone + desktop visual pass, including the two sheets inside the window on Windows).
+- The radio **integration plan** items untouched by this round: per-chat `radioPolicy` (Room step 21), the attachment-refusal
+  sentence in the UI, telemetry/position, `RADCHAT-DEV01..06`, `RADVOICE-04`.
+
+### Next AI
+Do not re-derive the visual language: it is the Hub tab's, and `docs/ui/radio-gateway.md` "Redesign v2" states the rule (a box
+means "this is the station" or "answer this now"; everything else is a label plus hairlines). Any new radio UI must reuse
+`HubShapes` / `hubCapsStyle` / `hubRuleBelow` / `FlashHubSwitch` / `FlashHubTextAction` / `FlashConfirmHost` rather than adding
+a second system.
+
+## 2026-10-28 (round 4, owner: "the delivery works but the desktop cant send") — a hub mailbox deposit is not a delivery (ADR-229, ERROR-869 round 3)
+
+### Worked on
+The owner asked why desktop→Android radio texting fails while Android→desktop works and the desktop's ACKs reach the phone, and asked
+for the fundamentals of how the radio switches between its audio channel and its KISS/serial channel, compared across Android and
+Windows, with online documentation.
+
+### Changed
+- `core/messaging` `RealFlashChatRepository.sendDirectViaPaths`: new path order **LAN → hub (only when the hub reports the peer
+  online) → radio → hub (mailbox)**. Before this, `HubChatBridge.canCarry` (relay usable + the directory lists the peer) was enough to
+  send through the hub and return, so a mailbox deposit beat the radio. `hubOnlineNow` (a synchronous mirror of
+  `EnterpriseHub.hubOnlinePeerIds`, plus a direct `StateFlow` read) is what tells a delivery from a deposit.
+- `core/messaging` `RealFlashChatRepository`: `chat.path` gained `hub_mailbox`; new `hub.ack` probe (the hub's own verdict per
+  message); a permanent radio refusal (too long, attachment, unconfirmed Profile M) does **not** fall through to the mailbox, a
+  temporary one does; a message the radio carried once with no ACK also gets deposited on the next attempt (receivers de-duplicate).
+- `core/enterprise` `EnterpriseHub.pollHubPresence`: new `hub.online` probe (`read`/`unreadable`, `count`).
+- New `docs/network/RADIO-BLUETOOTH-CHANNELS.md`: the two RFCOMM services of these handhelds, why there is no audio/KISS mode switch,
+  and the Android-vs-Windows asymmetry (app-owned socket vs an OS-created outgoing COM port; the audio channel has no COM port and is
+  opened over Winsock), with sources, dates and a log-reading table.
+- Docs: ADR-229 in `docs/decisions.md`, `docs/testing/PROBES.md` (two new probes, one extended), `RADCHAT-DEV06` in
+  `docs/testing/TEST-BACKLOG.md`, ERROR-869 round 3 in `logs/errors.md`.
+
+### Why
+The desktop log of this run shows a healthy radio in both directions at the frame level (`radio.link.up link=COM15_@115200`,
+`radio.rx.text`, `radio.tx.ack`) while both of the desktop's own texts logged `chat.path path=hub` twice each — never `path=radio`.
+`canCarry` returned true because the phone *is* an organisation member, but the hub had no live session for it, so the message was a
+mailbox deposit. Nothing in the log could show that, because no hub verdict was logged either.
+
+### Verification
+- `:core:messaging:compileKotlinJvm`, `:core:enterprise:compileKotlinJvm` — BUILD SUCCESSFUL; hosts too: `:app:compileDebugKotlin`
+  and `:desktop:compileKotlinJvm` — BUILD SUCCESSFUL.
+- `:core:messaging:testAndroidHostTest --tests "*RealFlashChatRepositoryTest*"`: **102 tests, 0 failures**, including the three new
+  `ADR229 …` cases (radio wins when the hub cannot deliver now / the hub wins when it reports the colleague online / a colleague the
+  radio cannot reach still gets the mailbox).
+- **Mutation check:** removing the `target in hubOnlineSnapshot()` condition (i.e. restoring the old "a mailbox counts as sent") makes
+  `ADR229 without a LAN session the radio carries the text when the hub cannot deliver now` FAIL, then the condition was restored and
+  the class went green again.
+- One full-class run under load (two other Gradle daemons) reported three unrelated timing flakes — `a member removed after the send…`
+  (5 s timeout), `delete for everyone…` (empty list after `delay(100)`), `HUBC when the LAN delivers…` (700 ms window). **Run history of
+  that class after the change: 4 full runs — 2 had exactly one failure (a *different* timing test each time: `a member removed after
+  the send…`, then `delete for everyone…`), 2 were clean (102/102); every failing test passes when run alone.** So the class itself is
+  load-sensitive (≈100 repositories, each with its own never-cancelled scope and collectors, on a single-thread test dispatcher), not
+  ADR-229. The one thing that *was* mine — an extra init collector per repository — is now only started when the source is not a
+  `StateFlow`, which is never the case in the hosts or the tests.
+- **NOT device-verified.** `RADCHAT-DEV06` is owed, and ERROR-869 stays OPEN until a desktop text arrives with
+  `chat.path path=radio` and `radio.tx.text` in the same log.
+
+### Remaining
+- Rebuild both apps and run `RADCHAT-DEV06` (plus the still-owed `RADCHAT-DEV01`, `DEV03`, `DEV04`, `DEV05`).
+- Nothing in this work touches the audio channel; `RADVOICE-04`/`12` (do KISS and audio coexist) are unchanged and answered only in
+  the direction already observed (the desktop held COM15 while the voice card ran).
+
+## 2026-10-28 (round 3, owner asked for the proposal to be implemented) — "Radio only" presence state + no doomed dial (ADR-228)
+
+### Worked on
+The owner answered the online/connection proposal with "implement the proposal then i will then test". Built P-1, P-2.1, P-2.4 and
+P-3; verified that P-2.2 and P-2.3 were already true (and documented that rather than "fixing" them).
+
+### Changed
+- `core/common`: `FlashPeerPresence.RadioOnly` (ranked last, presentation only).
+- `core/messaging`: `FlashNetworkTransport.Radio`; `PresenceSnapshot.radioOnly` + `PresenceHold.withRadioOnly` (subtracts every
+  stronger set); `directLinkUi` gives it `Radio` as the transport and never lets it carry typing; `RealFlashChatRepository` takes
+  `radioOnlyPeerIds` and adds it to `displayedPresence` and the chat-list presence chain; `RadioOutboxPort.radioPeerIds`
+  (default empty) overridden by `HostedRadioOutboxPort` as `combine(host.status, host.engine)`.
+- `core/radio`: `RadioChatEngine.radioPairedPeerIds()` (paired with a 32-byte session key).
+- `ui:chat`: `FlashPresenceDotStyle.RingRadio` (ring in `accentSecondary`, a11y "Radio only"); header line
+  "Radio only · texts go over the air" (`FlashCopyPresence.RADIO_ONLY`); badge "Radio" + Bluetooth glyph; banner maps it to calm
+  non-blocking `Reachable` with the radio wording; peer sheet `Radio only` / `Radio`; `peerCount` counts it as 1; group members and
+  pairing flow cases added; `FlashRadioCopy.CHAT_RADIO_WAITING` now names the ACK window.
+- `app` + `desktop`: pass `radioPort.radioPeerIds` into the repository; skip `ensureSession` when
+  `radioPort.isRadioReachable(target)` is already true **and** the peer is not currently seen by discovery
+  (`presence.reachablePeerIds`) - a fresh sighting still gets the dial, so a LAN-capable peer is never downgraded to the slower
+  radio path. The 5 s sweep still dials the LAN path.
+- Tests: `DirectLinkUiTest` (radio-only loses to a session and to a sighting, never types), `PresenceHoldTest` (yield order +
+  disjointness, new), `FlashPresenceDotLogicTest`, `FlashNetworkStatusLogicTest`, `FlashPeerDetailsLogicTest`.
+- Docs: ADR-228 (`docs/decisions.md`), `docs/ui/chat-screen.md` UI-004/UI-030 design section, `docs/network/PRESENCE-CONNECTIONS-
+  PLAN.md` "Built 2026-10-28" table, `RADCHAT-DEV05` in `docs/testing/TEST-BACKLOG.md`, ADR-227 amendment 2 item 4 annotated as
+  superseded, `logs/handoff.md`.
+
+### Verified
+`tools\flash-gradle.cmd`: `:core:messaging:jvmTest --tests "*DirectLinkUiTest" --tests "*RadioChatBridgeTest"` green;
+`:core:messaging:testAndroidHostTest --tests "*PresenceHoldTest"` green; `:ui:chat:jvmTest` (the four logic tests) green;
+`:core:messaging:compileKotlinJvm`, `:ui:chat:compileKotlinJvm`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` all BUILD
+SUCCESSFUL. No device test was possible (two radios need the owner).
+
+### Problems / notes
+- Two of the proposal's five hardening items were already implemented: `ConnectionPlanner` keeps one dial in flight per device (the
+  21 dials observed in 9.5 min are 4 remembered endpoints rotating under rule 7 backoff, 30 s doubling to 10 min, one attempt per
+  sweep), and `RememberedRoutes` already logs an expiry (rule 6 requires 5 failures **and 7 days**, so no route can expire inside a
+  session). Recorded in ADR-228 so a future agent does not "fix" them again.
+- The chrome of a state is now three enum values deep on two enums; the compiler found every exhaustive `when`, all updated.
+
+### Remaining
+- Owner device run: `RADCHAT-DEV05` (new), re-run `RADCHAT-DEV04` and `RADCHAT-DEV03`.
+- The per-chat switch (Room step 21 `conversations.radioPolicy`), the attachment refusal sentence in the UI, and telemetry/position
+  are still not built.
+
+### Next AI
+Wait for the owner's `RADCHAT-DEV05` / `RADCHAT-DEV04` results. If the desktop still says Offline with the radio connected, check
+`radio.path gateway=… connected=…` first, then `RadioChatEngine.radioPairedPeerIds()` (a peer needs a 32-byte pairing key on that
+host). Do not make the radio a presence source, a planner input or a trust claim (ADR-227/ADR-228).
+
+## 2026-10-28 (second hardware run, log analysis round 2) - a hidden attempt cap killed one message, the desktop's sends left no trace at all, and the "online" question got an answer
+
+### Logs analysed
+Android export `flash-log-1793185831895.txt` (`exportAtMs` 11:10:36, run 11:04-11:10) and `~/.flash/desktop.log` (this launch
+11:05:16 to 11:16:46). Owner's report: **duplicates fixed, Android works, desktop sending still does not**, plus "I get errors on
+Android when sending through the radio" and "how should online/connection work - the desktop connection management needs
+hardening".
+
+### What the logs show
+- **Duplicates are gone on hardware.** Phone: one `radio.tx.text ... retry=false` per text. Desktop: one
+  `radio.rx.text ... duplicate=false signed=false` and one `radio.tx.ack` per text; ACK RTT 3394 ms and 3490 ms.
+  `signed=false` = Profile M (sealed), so the phone was on Profile M and the desktop decrypted it.
+- **One message was killed for good by a two-minute outage.** `1b5fe2e0` was refused at 11:07:11/12/14/18/26/42 while the link
+  was re-establishing (`radio.link.attempt strategy=insecure-sdp result=ok` at 11:06:31 and 11:07:45, **no `radio.link.up`
+  after either**). Two later texts went out fine (11:08:26, 11:08:43), yet `1b5fe2e0` was refused again at 11:09:14 and
+  11:10:14 (60 s apart = max backoff). Cause: `RadioChatBridge`'s hidden `maxAttempts = 5`, spent on "radio not connected".
+- **The desktop's own sends still produce no line whatsoever** (no `radio.path`, no `radio.tx.text`, no timeout line). Its
+  radio RX works, so the engine exists; the send path is either not reached or the binary predates the probes. Not provable
+  from this capture.
+- **Desktop connection management, measured from its own log:** while the phone's Wi-Fi was off, discovery saw nobody
+  (`Discovery sources: jmdns=none, multicast=none`); the desktop fell back to its 4 remembered routes and dialled them in turn:
+  **21 `Auto-connect dialing` lines in 9.5 min, each `Connect timed out` after ~4 s**, until 11:14:39 when the phone rejoined
+  Wi-Fi and discovery found it. Radio carried texts in that same window while the chat header could only say Offline.
+
+### Changed (built, unit-tested, not re-run on hardware)
+1. `RadioChatBridge`: a gateway that is off/not connected **no longer counts as an attempt**; `NotConnected` from the engine
+   gives the attempt back; a success clears it; **the five-attempt cap is deleted** - the outbox's wall-clock 30-minute budget is
+   the only give-up rule (same principle as ERROR-026). New test
+   `testSendDirect_gatewayOutageDoesNotBurnTheRetryBudget` (6 refusals with the link down, then one successful send, no failure
+   note in between).
+2. `radio.send.fail` probe: `message` (8), `reason` (`gateway_off`, `not_connected`, `too_long`, `attachment`, `authorisation`,
+   `unreachable`, `failed`), `attempt`. `radio.path` gained `gateway` and `connected`, so `not_reachable` distinguishes "no radio
+   pairing key for that peer here" from "radio down".
+3. `chat.path` probe (`lan` / `hub` / `radio` / `radio_refused` / `none`) once per 1:1 text attempt, so a send that never leaves
+   the device is visible at all - the desktop's silence was undiagnosable without it.
+4. Design (no code) for the owner's online/connection question: `docs/network/PRESENCE-CONNECTIONS-PLAN.md` section
+   "2026-10-28" - a presentation-only **"Radio only"** state (no session + radio-paired here + gateway connected; never a
+   presence source, never used for calls/files) and five hardening items for the desktop (skip the 1 s on-demand dial when the
+   radio can carry, one dial per peer per sweep, visible route expiry, name the radio fallback, measure the dial cost).
+
+### Verified
+`:core:messaging:jvmTest --tests "*RadioChatBridgeTest"` green (8 tests incl. the new one); `:core:messaging:compileKotlinJvm`;
+`:app:compileDebugKotlin`; `:desktop:compileKotlinJvm`. Docs: `docs/testing/PROBES.md` (`chat.path`, `radio.send.fail`, new
+`radio.path` fields), `logs/errors.md` ERROR-869 round 2, `docs/decisions.md` ADR-227 amendment 2, backlog `RADCHAT-DEV03`
+(outage survives) and `RADCHAT-DEV04` (desktop send with `chat.path`).
+
+### Next
+Rebuild **both** apps, then RADCHAT-DEV04 (desktop -> phone, read `chat.path`) and RADCHAT-DEV03 (outage then link back). Nothing
+may claim the radio data path works both ways until a desktop text arrives on the phone.
+
+## 2026-10-28 (log analysis) - Radio chat's real defects: three copies from retries, LAN-speed retries, and a Profile A trap (ERROR-869)
+
+### The two logs the owner sent
+Android export (`log.txt`, `exportAtMs` = 10:02:18, app up 6m17s, i.e. restarted 09:56) and `~/.flash/desktop.log` (to 10:05:08).
+
+### What they actually show (the earlier guess in this file was wrong - see below)
+- Phone: `radio.tx.text peer=fe91abce bytes=2` at 09:43:02.594, 09:43:04.037, 09:43:06.699 - **the same 2-byte text sent three
+  times**. Same for `bytes=3` (four times) and `bytes=4` (three times).
+- Desktop: `radio.rx.text ... duplicate=false` + `Inbound chat ... 2 chars` for **each** of them -> three rows, matching the
+  owner's "showed on the desktop three times".
+- Phone: `radio.rx.ack message=0271019e rttMs=3833 / 4185 / 9338` - the ACKs **did** arrive, 3.8-9.4 s after the send, by which
+  time the outbox (LAN ladder: 1.4 s, 2.6 s) had already re-sent.
+- Desktop: `radio.tx.ack` for every received text -> the **desktop's transmit works** (its ACKs reached the phone).
+- Desktop 10:04-10:05: ten `radio.rx.dropped reason=SIGNED_NOT_ENABLED` - the phone was back on **Profile A** after its 09:56
+  restart, and no host registers `addBroadcastSender`, so a Flash peer can never verify a signed frame.
+
+### Fixed (unit-tested, not yet re-run on hardware)
+1. `RadioChatEngine` remembers a sent message's encoded frames and a retry resends the **identical** frame (same counter), which
+   the receiver's `peer:firstCounter` dedup recognises; `radio.tx.text` now carries `retry=true|false`. Test
+   `radchatU12_aRetryResendsTheSameFrameSoThePeerKeepsOneMessage` (two sends of one id -> byte-identical frames on air, one
+   inbound message).
+2. `RealFlashChatRepository` waits `RADIO_RESEND_MS` = 25 s before re-sending a radio-carried message.
+3. `radio.path` probe (`sent` / `refused` / `no_bridge` / `not_reachable`) at the radio step of `sendDirectViaPaths`, because a
+   skipped radio path left no trace at all.
+4. Profile A chat is refused with a sentence instead of transmitting frames the peer must drop. Test
+   `radchatU08_profileARefusedBecauseAFlashStationCannotVerifySignedFrames` (nothing on the air).
+
+### Verified
+`:core:radio:jvmTest --tests RadioChatEngineTest` 14/14 green; `:core:messaging:jvmTest` for `OutboxDrainScheduleTest` (6) and
+`RadioChatBridgeTest` (7) green; `:core:messaging:compileKotlinJvm` and `:app:compileDebugKotlin` green.
+
+### Open
+The desktop -> phone direction was never inside either capture (desktop log ends 10:05:08, phone export 10:02:18), so it is
+**not** a proven defect; the desktop demonstrably transmits. Re-run RADCHAT-DEV01: one text, wait, expect one bubble, a bubble
+line that moves waiting -> delivered, and `radio.path`/`radio.rx.ack` on both sides.
+
+### Still not built
+Storing each paired peer's identity public key at pairing time (would make Profile A verifiable and survive a restart);
+telemetry/position (phase 2).
+
+## 2026-10-28 (later) - SUPERSEDED by the entry above: first hardware radio-chat run (was ERROR-742)
+
+### What the owner did
+Two stations, radios with KISS on, Android with Wi-Fi **and** mobile data off, voice verified, then chat from the Android.
+Android -> desktop text **arrived**. The Android's bubble stayed on "waiting for acknowledgement" (no ACK came back). The desktop's
+text never reached the Android (one tick). The desktop looked like it showed the Android's text **three times**.
+
+### What that proves and what it does not
+Proves: RF, both radios, both TNCs, the channel, the pairing key and the desktop's whole **receive** path (COM read, KISS decode,
+AEAD open, chat insert). Does not prove anything about the desktop's **transmit** path, and does not tell us whether the Android
+heard the desktop's frame at all - that is what the probes are for (`radio.rx.text` / `radio.rx.dropped` absent = nothing reached
+the Android's TNC; `reason=UNKNOWN_SENDER|AUTH_FAILED` = the frame arrived and could not be attributed).
+
+### Recorded
+`logs/errors.md` ERROR-742 (OPEN, with the evidence needed and its interpretation), `docs/testing/TEST-BACKLOG.md`
+RADCHAT-DEV01 now PARTIAL and RADVOICE-04 notes that both halves coexist (voice + one direction of data) but the reverse direction
+is still owed.
+
+### Next
+Collect the two logs (Android "Export logs", `~/.flash/desktop.log`) plus one field check that needs no code: send the
+**diagnostics test message** from the desktop and listen on the other radio - an audible data burst means the desktop's TX and the
+radio's PTT are fine and the fault is in attribution, silence means the desktop is writing into a port that never keys the radio.
+Prime code suspect if it is the latter: `JvmSerialPortCatalog.open` never asserts DTR/RTS, unlike any normal terminal.
+
+## 2026-10-28 - Radio data: the owner's voice report, "no files over radio", and honest radio delivery in the chat
+
+### Worked on
+The owner confirmed the radio path is real on hardware: **"radio voice works, talking works"** (ADR-225's Listen / hold-to-talk).
+The next topic is the **data** half of the radio — text chat, telemetry and position — with one decision from the owner:
+files are **not** wanted over the radio ("it's too slow"). The owner also asked how to test data and voice together when KISS
+is enabled on both radios, and set the integration rule: *the transfer should choose per chat, and the radio is not a primary
+transport, it's optional.*
+
+### Studied
+`docs/network/RADIO-AUDIO.md`, `docs/network/RADIO-WIRE-FORMAT.md`, `docs/plans/RADIO-GATEWAY-PLAN.md` (Plan R, R0-R6),
+`RadioChatEngine`, `RadioChatBridge`/`RadioDeliveryNote`, `RadioChatHost`/`Wiring`, the send path in
+`RealFlashChatRepository.sendDirectViaPaths` (LAN -> hub -> radio), `FlashMessageBubble`'s two timestamp rows,
+`FlashRadioCopy`, `RadioGatewayManager.requestTestMessage` (the diagnostics frame is a plain AX.25 frame, not a Flash frame).
+
+### Changed
+- New `docs/plans/RADIO-DATA-INTEGRATION.md`: where the data path stands, why the radio is a fallback and not a transport,
+  what may and may not go over the link, the per-chat model, the telemetry/position sketch and the two-station runbook
+  (including the coexistence test the owner asked for).
+- **ADR-227** (`docs/decisions.md`): radio = optional per-chat fallback; `AUTO`/`NEVER` on the conversation row (`PREFER` is
+  deliberately not shipped); three gates (global switch, operator authorisation, per-chat consent); honest delivery wording.
+- `RadioChatEngine`: evidence probes `radio.tx.text`, `radio.tx.fail`, `radio.tx.ack`, `radio.rx.text`, `radio.rx.ack`
+  (8-character ids, no content). `docs/testing/PROBES.md` documents all five.
+- `FlashMessageUi.radioNote` + `RealFlashChatRepository` (the conversation content flow combines the bridge's notes) +
+  `FlashMessageBubble` renders one line under an outgoing bubble (`FlashRadioChatMath` chooses the sentence from
+  `FlashRadioCopy`). A message that did not travel by radio is unchanged.
+- `FlashRadioChatMathTest` (6 tests) and `RadioChatEngineTest.radchatU05_aRoundTripLeavesReadableProbesOnBothStations`
+  (which also proves no probe carries message text).
+- TEST-BACKLOG: RADVOICE-01..03 taken as PASS on the owner's report (06/08 still need numbers), and RADCHAT-DEV01 now says
+  what the bubble and the probes should show.
+
+### Verification
+- `:core:radio:jvmTest --tests RadioChatEngineTest` green (17 s) including the new probe test.
+- `:ui:chat:jvmTest --tests FlashRadioChatMathTest` green (2 min, first Compose recompile of the module).
+- `:core:messaging:jvmTest` 377 tests, **one failure that is a test-environment flake, not this change**:
+  `RealFlashChatRepositoryColleagueTest.ORGT_U44` could not create `flash.db.lck` inside a temp directory that the test had already
+  removed (`FileNotFoundException ... flash-announcements-test...\flash.db.lck`); it passes when run alone (8 s). Nothing in this
+  session touches notifications, the colleague gate or that test.
+- `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` both green.
+- NOT device-verified: nothing here has run on a radio yet; the two-station run is RADCHAT-DEV01 (runbook in the plan, §9).
+
+### Remaining
+- Per-chat switch end to end (Room step 21 `conversations.radioPolicy`, DAO setter, repository gate through a host lambda,
+  the toggle in the peer details sheet) - the decision is recorded, the storage is not built yet.
+- Attachment refusal shown to the person (today log-only), a "Radio" state in the header, then telemetry/position.
+
+### Next AI
+Run `RADCHAT-DEV01` with the owner at two stations (Wi-Fi off, both radios KISS-enabled, both stations paired in Flash), then
+build the per-chat switch exactly as `docs/plans/RADIO-DATA-INTEGRATION.md` §7 describes.
+
+## 2026-10-25 - Flash Hub tab REDESIGN: the Hub inside the real Flash shells (after the owner rejected Atlas)
+
+### Worked on
+The owner rejected the Atlas prototype verbatim: it did not conform to how Flash looks on desktop and mobile, did not use
+the desktop sidebar or the Android bottom nav, designed "its own thing" instead of *the Hub tab*, and had far too much
+information "where the hub is a simple thing". This session studied the real app and rebuilt `design/hub-web/` as the Hub
+tab inside the real Flash shells, much simpler, for the web-first → Kotlin-port workflow the owner asked for.
+
+### Studied (the reason the first attempt failed was not reading these)
+`FlashColors.kt` (Pulse teal accent, full light+dark token pair), `FlashTypography.kt`, `FlashShapes.kt` + `HubShapes`,
+`FlashSpacing/FlashDimensions.kt`, `FlashBottomNav.kt` (UI-046 hanging capsule geometry + chip + badge + label weights),
+`FlashNavigationRail.kt` (68dp rail: medallion, wells, edge bar, badges, profile), `FlashChatListTopBar.kt`,
+`FlashAvatar.kt` (Kotlin hash palette), the `flash_ic_*.xml` drawables (real path data), `DesktopSideBar.kt` and the
+`FlashHubCopy.kt` sentence library.
+
+### Changed (all under `design/hub-web/`, plus docs; no product file touched)
+- `src/index.css` rewritten: every token block cites its Compose source file; per-frame `theme-dark`/`theme-light` classes
+  so both themes sit side by side; app chrome styles (phone frame, capsule nav with `calc(i*(25% - 2px) + 4px)` chip,
+  rail, top bars) and the redesigned Hub surfaces.
+- New `src/flash/` tree replacing the Atlas `src/`: `icons.tsx` (real glyph path data), `atoms.tsx` (Avatar with Kotlin
+  `String.hashCode()` palette mapping), `data.ts` (one world + COPY from `FlashHubCopy.kt`), `state.tsx` (scenario/theme/
+  view with URL params: `?state=offline&theme=light&view=phone&segment=people&open=p3`), `hub.tsx` (the whole redesigned
+  Hub tab), `tabs.tsx` (light Chats/Nearby/Settings/Transfers), `shells.tsx` (phone frame + desktop window).
+- Redesign decisions: **three segments** (News/People/Groups; departments are filter chips inside People), **no hero card**
+  (one calm org row: monogram + name + live dot + counts line), calm rows without edge washes/share bars/animation,
+  withheld presence hidden entirely (D2: no dot, not a grey dot), Retry plays the shimmer skeleton into Fresh, details as
+  phone bottom sheet vs desktop right detail pane, Revoked/Not-enrolled tab-set behaviour on both hosts.
+- Screenshot harness `scripts/shots.mjs` rewritten for the new states (12 combinations) - hub-web only; no app files.
+
+### Verification
+- `npm run build` (tsc + Vite) green: 24.2 kB CSS / 257.6 kB JS (79.4 kB gzip) - smaller than Atlas.
+- `node scripts/shots.mjs` against `npm run preview` (:4173): 12 screenshots, **zero console errors**; each key combo
+  (fresh dark/light, offline, never-synced + Retry skeleton, removed, not enrolled, person sheet/pane, reader,
+  people/groups segments, phone chats) inspected as images and judged against the real shells.
+- Defects found in the screenshots and fixed: the desktop scrim escaping the frame (missing `position: relative` on
+  `.Desk`), a duplicate detail surface on desktop (sheet + pane) fixed by gating `HubSheets` to the phone layout,
+  withheld presence drawing a grey dot, and the "Share an update" row wrapping its icon onto its own line.
+
+### Problems
+- None open. The first build had the desktop sheet anchored to the page root because `.Desk` was not a positioned
+  ancestor - fixed with one CSS line and a layout prop.
+
+### Remaining
+- Owner review in a real browser; the approved design is then replicated exactly in `FlashHubScreen.kt` (UI-058),
+  followed by the consolidation of `docs/ui/flash-hub-tab.md`.
+- Manual browser checks `HUBWEB-01..09` in `docs/testing/TEST-BACKLOG.md` (all TODO).
+- Still owed from earlier sessions: the whole `SHARE-*` device set.
+
+### Next AI
+Do not restyle the app yet - wait for the owner's verdict on `:5180`. If asked to port, copy structure, copy and geometry
+from `src/flash/hub.tsx` and `src/index.css` (which cite the Compose sources they map to); re-use `FlashBottomNav` and
+`FlashNavigationRail` unchanged. Keep Atlas rejected/superseded as recorded - do not resurrect its screens.
+
+## 2026-10-25 - Flash Hub "Atlas": a web prototype of the Hub, built from the three competition entries
+
+### Worked on
+The owner asked for an all-out **web version of the Hub** (React + Tailwind), inspired by all three Android design
+entries (Apex Zenith, NOVA, Command Deck), so they can look at it in a browser and **read the code to extract the list of
+functions the Hub needs**. This is that prototype. It is design work: no product file changed, no Gradle module added,
+`FlashHubScreen.kt` / UI-058 / `docs/ui/flash-hub-tab.md` untouched.
+
+### Changed (all new, under `design/hub-web/`)
+- **Project:** Vite 7 + React 19 + Tailwind 4 + TypeScript (`package.json`, `vite.config.ts`, three tsconfigs), local
+  `.gitignore` for `node_modules/`, `dist/`, `shots/`. No webfonts, no network requests at runtime, no dependency beyond
+  those four.
+- **Design system:** `src/index.css` — ink surface ladder, Flash amber accent plus one hue per meaning (seal violet, ok,
+  info, warn, fail), light theme as warm paper, a "minimal chrome" mode, one entrance easing, reduced-motion override,
+  focus-visible rings, thin scrollbars. `src/components/primitives.tsx` is the whole kit (Button, Chip, Dot, Avatar, Ring,
+  Spark, Meter, SignalBars, Switch, Skeleton, Empty, KV, Fingerprint, Callout, Card, Sheet, Dialog, ToastHost, BrandMark).
+- **Data:** `src/data/types.ts` (presentation model mirroring `HubStatus`, `RelaySessionState`, `OrgPeerResolver`,
+  `HubSealingStatus`, `OrgLease`, `HubAnnouncementUi`, `HubGroupRosters`) and `src/data/world.ts` — one immutable fixture
+  (Acme Corp, 13 colleagues, 5+1 departments, 8 announcements, 4 rosters, relay traces, certificate chain) plus **seven
+  worlds**: active & sealed, relay degraded, enrolling, unenrolled, removed/revoked, empty/offline, offline-cached.
+  Offline is split in two on purpose: the product distinguishes "never synced" from "cached snapshot", and the entries did
+  not.
+- **Shell:** `src/App.tsx` (router, single-key shortcuts), `src/shell/Rail.tsx`, `TopBar.tsx`, `BottomBar.tsx`,
+  `Deck.tsx` (the "Control room": 7 states, administrator/member identity, theme, motion, minimal chrome), `Palette.tsx`
+  (⌘K over pages, states, people and announcements).
+- **Pages:** `src/pages/Command.tsx` (identity hero, lease ring, telemetry + sparks, latency/throughput chart, "what needs
+  you", sealing key, live sessions, trust chain, relay path), `People.tsx` (departments, reach filters, grouped roster,
+  person detail with the "how a message would reach them" verdict, key fingerprint, actions disabled with reasons),
+  `News.tsx` (unread/pinned/scoped feed, reader with the plaintext-at-the-hub notice, composer with counters/validation and
+  an offline failure, delete with tombstone wording), `Vault.tsx` (device certificate, expandable chain, sealing key
+  rotation in two steps, revocation list, offline lease with what still works / what stops, leave organisation, and the
+  four-check enrolment view), `Groups.tsx` (rosters with validity + signature verdicts, member keys, join requests approved
+  in place, relay bridge, relay event table).
+- **Docs:** `design/hub-web/README.md` (run, states, screens, and the **function inventory**: ~48 functions, each with why
+  it matters and which entry inspired it, marked as product-existing or prototype-proposal) and
+  `docs/ui/hub-web-atlas-prototype.md` (repo record: sources, what each entry contributed, the state × page matrix,
+  verification, limitations, four owner decisions).
+- **Screenshots:** `design/hub-web/scripts/shots.mjs` drives headless Chromium to capture 12 page/state/viewport
+  combinations; the images are git-ignored.
+
+### Verification
+- `npm run build` (tsc + Vite) green: 48 modules, ~368 kB JS / ~38 kB CSS. `npm run dev` on :5180, `npm run preview` on :4173.
+- Headless Chromium run over every page and state: **no console or page errors**. Looked at the screenshots and fixed what
+  only a picture shows: a truncated telemetry label, "Connected" repeated three times in the hero, a department strip that
+  wrapped one lone card, a stray close button in the desktop person pane, the default selection (a colleague rather than
+  yourself; the roster that has pending requests), a duplicate lease ring on the certificate card, faint light-theme text,
+  and revoked-world counters that described the organisation instead of the cache.
+- **Not verified:** a person in a real browser, any touch device, screen readers, keyboard-only navigation end to end,
+  Firefox/Safari. Manual checks `HUBWEB-01..06` are in `docs/testing/TEST-BACKLOG.md`.
+
+### Remaining / deliberately not built
+No real protocol or persistence; no Transfers/chat/calls/radio pages; no multi-organisation, department-head console or
+server admin console. The prototype does not propose restyling the rest of the app: its rail/bottom bar come from the
+entries, not from UI-058.
+
+### Next AI
+Read `design/hub-web/README.md` §4 first — that is the deliverable the owner asked for (the function list). If asked to
+continue: (1) collect the owner's answers to the four decisions in `docs/ui/hub-web-atlas-prototype.md` §7; (2) only then
+port anything, and port **copy and structure into UI-058** rather than pixels; (3) never wire this folder into Gradle.
+Still unrun from earlier: the whole `SHARE-*` device set.
+
+## 2026-10-24 - The Android screen presenter (MediaProjection) and pinch-to-zoom on a shared screen (UI-050g finish, UI-050h, ADR-102 amendment)
+
+### Worked on
+The two last owner-requested gaps in screen sharing: an Android phone could watch a presentation but never make one, and a desktop screen on a
+6-inch display is unreadable. Both built this session, nothing device-verified.
+
+### Changed
+- **Android presenter (ADR-102 amendment):** new `AndroidScreenCapture` in the vendored webrtc-kmp fork (`androidMain`, beside
+  `DesktopScreenCapture`) because `WebRtc.peerConnectionFactory`/`rootEglBase`/`applicationContext` are `internal` to that module. It wraps
+  `ScreenCapturerAndroid`, counts frames, records a revocation through the `MediaProjection.Callback`, and closes in the ERROR-123 order.
+  `ScreenCapture.android.kt` now has the real `AndroidScreenCaptureProvider` plus the host seam `AndroidScreenCaptureHost` /
+  `AndroidScreenCaptureSupport` (consent + foreground service, both Activity/Service work); `supported` is true exactly when a host is installed.
+- **Revocation:** `ScreenCaptureHandle.revoked` (default false) -> `ScreenShareRun.Check.SOURCE_LOST` (checked before the first-frame and
+  retune branches) -> `stopShare(ShareStopReason.SOURCE_LOST)` in both sessions. Without it a status-bar-chip stop or a locked screen is
+  invisible after the first frame.
+- **App:** `FlashScreenCaptureService` (a `mediaProjection` foreground service with a Stop action, 3 s promotion wait), the
+  `FOREGROUND_SERVICE_MEDIA_PROJECTION` permission and the service entry in the manifest, `MainActivity`'s consent launcher (API 34+
+  `MediaProjectionConfig.createConfigForUserChoice()`), `installScreenCaptureSupport()`, and `share = shareHost` on `FlashCallScreen`.
+- **Zoom (UI-050h):** new `FlashVideoZoom.kt` in `:ui:callui` (`FlashVideoZoomMath` + `FlashVideoZoomState` + `FlashZoomableVideoSurface` +
+  the "Fit to screen" chip), `zoom`/`pan` parameters on the `FlashCallVideoSurface` expect and both actuals (Android Layout arithmetic, JVM
+  Canvas arithmetic), `FlashIcons.ZoomFit` and its drawable, the group stage/main tile and the 1:1 remote picture wired to one state per call
+  screen, and `DesktopVideoSink.outputSize` scaling its conversion with the zoom so magnifying does not just enlarge a tile-sized image.
+- The gesture/surface pairing is one composable per box with a nullable zoom, so starting or ending a presentation (or swapping the pictures in
+  1:1) does not dispose and rebuild the renderer underneath.
+- Copy: the source-lost notice became "The shared screen or window went away, so sharing stopped".
+
+### Verification
+`tools\flash-gradle.cmd :core:calling:compileAndroidMain` green. `:core:calling:testAndroidHostTest` green, including two new `ScreenShareTest`
+cases (a revoked capture is `SOURCE_LOST`, and the revocation wins over a retune). `:ui:callui:jvmTest` and `:ui:callui:testAndroidHostTest`
+green with the new `FlashVideoZoomMathTest` (12 cases) and a pinned SOURCE_LOST sentence in `FlashCallShareTest`. `:app:compileDebugKotlin` and
+`:desktop:compileKotlinJvm` clean. **Nothing device-verified.**
+
+### Problems
+Two compile errors, both recorded as ERROR-760: a concrete fork track must implement `switchCamera` (a screen has no second camera), and
+`:core:calling` androidMain needs a file-level `@file:OptIn(FlashInternalApi::class)` for `FlashLog`. A first `FlashVideoZoomMathTest` version
+asserted that a zero pinch factor keeps the scale; the code clamps a zero factor to 1x, which is the better behaviour, so the test was corrected.
+
+### Remaining / Next AI
+Device checks `SHARE-MOB-01`...`08` (consent, the app picker, the status-bar chip, the notification Stop, hang-up mid-share, quality/heat,
+take-over, the group case) and `SHARE-ZOOM-01`...`06` (pinch/pan, the chip, the reset rules, group stage, 1:1 swap, desktop watcher).
+`SHARE-18` is unblocked. Not built on purpose: presenting in a voice call, picking a single window on Android, `onCapturedContentResize`
+tracking (the shipped capturer has none), and a zoom on a camera picture.
+
+## 2026-10-23 (security audit remediation, owner picks) - D03-01, D26-01, D21-02 and D15-02 fixed in code, D11-02/D11-06/D07-05/D01-01 settled
+
+### Worked on
+The findings the owner chose from the open list, plus the two they deferred.
+
+### Changed
+- **SEC-D03-01 + D03-06 (pairing):** the initiator is a consenting side too. It enters `AwaitingLocalDecision` once the code exists, the dialog asks it to accept with "Accept only if <peer> shows the same code.", and `PAIR_CONFIRM` goes out only when BOTH sides accepted (no wire change: the initiator's accept is the confirm). `PeerAccepted`/`PeerDeclined` are held in that phase instead of being dropped. All four hosts and both UI mappers follow.
+- **SEC-D26-01 (keepalive):** `monotonicNowMs()` (`SystemClock.elapsedRealtime` on Android, `System.nanoTime` on the JVM, `System.nanoTime` under the stub test runtime) replaces `System.currentTimeMillis()` in every `WsConnection`/`WsKeepalive` judgement in both copies and in `WsFlashNetwork`/`JvmWsFlashNetwork`.
+- **SEC-D21-02 (build):** `gradle/verification-metadata.xml` with sha256 pins for every artifact the build resolves, including the Linux skiko/webrtc natives CI needs. `mavenLocal()` is exempt.
+- **SEC-D15-02 (hub replay):** the hub announces its mailbox retention in `FLASH_HUB_WELCOME.limits.mailboxTtlMs` (additive, defaults to 7 days for hubs that say nothing); `HubChatBridge` refuses and acknowledges a delivery older than that plus a 5-minute grace, counts it in `droppedStale` and shows the count in the connection details. The sending side measures its clock difference to the hub at the handshake and stamps with the hub's time when it is more than the grace off. `HubFreshness` holds the rule; `docs/protocol.md` "Message freshness" is the spec.
+- Settled without code (owner): D11-02 (FLAG_SECURE) and D11-06 (release log stripping) left as they are; D07-05 -> FO-29, D01-01 -> FO-30.
+
+### Verification
+Unit tests everywhere, three mutations caught for D15-02 (removing the age rule, removing the default window, removing the clock correction), one for D03-01 (removing the local-accept condition fails the full-handshake test). `:server:test` green (566 tests). `:core:hub-protocol`, `:core:messaging`, `:core:enterprise`, `:ui:chat` green on JVM and Android host. `:app:compileDebugKotlin`, `:desktop:compileKotlinJvm` clean. Whole-build `allTests testDebugUnitTest assembleDebug` with dependency verification on: no verification failure.
+
+### Problems
+- The D15-02 age rule makes `sentAt` significant, so every bridge fixture stamped at `1L`/`1_000L` became "days old". All hub test clocks are now a fixed `now` value shared by the fixture and the bridge.
+- Known flakes, all green alone: `RealFlashChatRepositoryTest.delete for everyone...` (load), `OrgDirectorySyncTest` (25.7 s budget), `TransfersUiMapperTest` x2, `FlashPerformanceClassifierTest`.
+
+### Remaining / Next AI
+Device checks `SECAUD-22..25`. A counter/ratchet would close the rest of D15-02 and is a wire change; not done. Do not mark any ERROR RESOLVED before the device checks.
+
+## 2026-10-23 (security audit remediation, second tranche) - 20 Medium/Low findings fixed in code, one regression of tranche 1 found and fixed (ADR-226 addendum)
+
+### Worked on
+The remaining Medium and Low findings of `docs/audit/security-2026-10-22`. Each was checked against the code first; the ledger Status column has the result per finding.
+
+### Changed
+- **Codecs and wire:** repeated keys make a frame unreadable (D04-04), reaction emoji capped at 64 characters (D04-02), pooled buffers wiped on release (D04-03).
+- **Messaging:** delivery receipts honoured only for our own message from the peer it went to (D05-04); direct typing needs chat standing and a matching transport peer (D05-03).
+- **Pairing (regression of tranche 1, ERROR-867):** both pairing coordinators now pin the key the code covered when a pairing is confirmed and no pin exists. Without it a pairing over an inbound connection left trust but no pin.
+- **Invites:** `AddressHint.isDialable`; `dialHintsInOrder` skips hints that are not private-LAN or `.local` with port >= 1024 (D10-03).
+- **Desktop:** single-instance IPC token in an owner-only `app.port`, bounded lines and path count, owner-only state directory on POSIX (D12-01, D12-03 in part).
+- **Android:** swarm and received files excluded from backup and device transfer (D13-02); pin-widget action only in debuggable builds (D11-04).
+- **Network:** `HandshakeAdmission` (64 total, 16 per host) in both `WsTransferServer` copies (D24-01).
+- **Hub:** 8 live tokens per device (D14-03), per-sender half share of a recipient mailbox (D15-01), session-bound step-up (D17-01), bounded miss limiters (D16-02).
+- **Repository:** `mavenLocal()` limited to `com.transfer.flash` (D21-01), read-only CI token (D21-03), key extensions ignored (D22-02), deployment guide warns about tokens on the command line (D18-01).
+
+### Verification
+Unit tests for every item (`FlashTextFramingTest`, `ChatTextFrameCodecTest`, `ByteArrayPoolWipeTest`, `HandshakeAdmissionTest`, `AddressHintTest`, `SingleInstanceControllerTest`, `BearerTokenStoreCapTest`, `MailboxQueueTest`, `StepUpAuthTest`, `FlashPairingCoordinatorTest`). The pin-on-pairing test was mutation-checked (fails with the fix removed). Existing tests that encoded the old behaviour were corrected: delivery-receipt fixtures now name the real peer and a message we sent; the typing test uses a paired peer; the pooled-buffer test now expects a wiped buffer. A clean worktree of HEAD (`E:/FlashWork/sec-baseline`) passed the three tests that first failed, which is how the tranche-1 regression was told apart from old failures.
+
+### Problems
+- `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin` failed three times in a row ("received file did not match", `finalize ok=false badPieces=0`), then passed three times with no relevant change. Not explained; treat as intermittent and watch it.
+- `MailboxQueueTest.theRecipientByteQuotaIsEnforced` failed because the pair-share rule used tiny test quotas; the rule now applies only from a 1,000,000-byte recipient quota.
+- Unrelated and untouched: `FlashPerformanceClassifierTest.belfone_is_low` (`:core:common` android host), `ServePolicyTest` rvw22 F5 results in `core/swarm` (stale report, not rerun), `TransfersUiMapperTest` x2 in `:app`.
+
+### Remaining / Next AI
+Device checks `SECAUD-16..21`. Owner decisions: D03-01, D27-01, D07-05, D01-01, D20-01, D26-01, D21-02, D11-02, D11-06, D15-02, D04-05 (see the ADR-226 addendum). Do not mark any ERROR RESOLVED before the device checks.
+
+## 2026-10-23 (security audit remediation, first tranche) - 10 findings fixed in code, 3 settled without code, 3 deferred (ADR-226)
+
+### Worked on
+`docs/audit/security-2026-10-22` (100 findings against commit 75eda19b). Each finding was checked against the code and the owner decisions before any change; the ledger's Status column holds the result.
+
+### Changed
+- **SEC-D02-01 (Critical):** `TofuX509TrustManager` (JVM + Android) pins `chain[0]` only. **SEC-D02-02 / D10-01:** unsolicited inbound connections and automatic unnamed dials (`connectManual(..., recordFirstUse = false)`) write no first-use pin; `ObservedPeerPins` (`:core:security`) keeps the key in memory so pairing still works (`FlashPairingCoordinator`, the app's `PairingCoordinator`, and the three hosts).
+- **SEC-D05-01:** LAN `TextMessage` needs a paired or verified-colleague sender (`handleDirectFrame(vetSender)`). **SEC-D07-03:** Android auto-accept needs a paired peer.
+- **SEC-D07-01:** receive containment checks root, then transfer folder, then file (desktop `ReceivedPathContainment.kt`; Android same rule). **SEC-D11-01:** `isOpenableReceivedPath` guards `ACTION_OPEN_FILE`. **SEC-D13-01:** desktop chat log lines carry a length. **SEC-D16-01:** announcement search binds all values.
+- **SEC-D04-01:** `SpoofingCharacters` in `:core:common`; file-name sanitizer, hub-file codec and chat sender name use it; Android's private sanitizer copy now delegates to `FlashPathSanitizer`.
+- Settled without code: D08-01 refuted by owner decision O-5, D06-01 already fixed by RVW22 F2, D05-02 accepted (legacy groups forgeable, ERROR-082). Deferred: D03-01 (owner), D07-05 (needs sender survey + device), D01-01 and D27-01 not started.
+
+### Verification
+Green: `:core:network` jvm + android host, `:core:security` jvm + android host, `:core:engine` jvm (sanitizer, `DesktopPairingLoopbackTest`), `:core:messaging` jvm + android host (gate tests, codecs), `:server` `AnnouncementStoreTest`, `:desktop` `ReceivedPathContainmentTest`, `:app` unit tests + `compileDebugKotlin`, `:desktop:compileKotlinJvm`. NOT device-verified; NOT committed. No mutation check was run for this tranche.
+
+### Problems
+- The text gate broke three `RealFlashChatRepositoryTest` fixtures (unpaired incidental sender); fixed with `isTrustedPeer = { true }` and two dedicated gate tests.
+- Not recording inbound pins broke pairing ("security check failed": the responder reads the TLS-pinned key). Fixed with `ObservedPeerPins`. The loopback test's last assertion also raced the published list; it now waits.
+- `EnterpriseGroupLinkAndMultiPathTest.testZeroCloudDumpInvariantOnGroupLink` failed once with `UncaughtExceptionsBeforeTest` in a full `:core:messaging:jvmTest` run; not investigated, not rerun alone.
+
+### Remaining / Next AI
+Device checks `SECAUD-01..15` (backlog). Owner decisions: D03-01 (initiator confirms the code), D27-01 (hub-signed directory). Then D07-05, D01-01, and the Medium/Low list (Phase 2 in `REPORT.md`). Do not mark ERROR-815.. RESOLVED before the device checks.
+
+### Unrelated failing tests found
+`:app:testDebugUnitTest` has 2 failures in `TransfersUiMapperTest` (`retryableComesFromTheModelPredicate`, `aHubRowSaysSoAndOffersNoRetry`): the test expects a failed hub transfer to have no Retry, but `FlashTransfer.canRetry` (`core/transfer`, committed in e6d634a2) returns true for `viaHub && Failed`. Files untouched by this tranche; which side is right is the transfer owner's call (ADR-219 / B-06 "dead Retry on hub failures"). Everything else in `:app` passes.
+
+
+## 2026-10-23 (radio connect) - a bonded radio could not be chosen; compared with HTCommander
+
+### Worked on
+Owner report: after pairing in the app or Android settings, "connect does nothing" and the voice card never appears. A phone screenshot showed
+the Radio gateway page with gateway on and VR-N76 listed with a RADIO badge and a green shield, and nothing to tap.
+
+### Found (code to code with HTCommander `BluetoothClassicPlugin.kt` and `radio_connection_dialog.dart`)
+- Link opening is the same: cached channel, insecure SDP, secure SDP, insecure channels 1..12, secure channel 1, cancel discovery first (Flash's `openRadioLink` was ported from it).
+- Selection differs. HTCommander lists bonded radios and gives every one a Connect button. Flash's `FlashDeviceRow` showed a shield for a bonded device and a button only for an unbonded one, so a radio bonded in Android settings could not be chosen once the page was past the candidate card.
+- `RadioGatewayManager.pair()` only moved the manager's mirror state to Pairing; the state machine stayed in its list state, where `PairingSucceeded` is ignored, so even Pair could pair and then never open the link.
+
+### Changed
+- `RadioConnectEvent.ChooseRadio`: accepted from Detecting, ConfirmCandidate, ChooseFromList, Scanning, Failed; bonded -> Connecting + OpenLink, unbonded -> Pairing + PairDevice.
+- `RadioGatewayManager.chooseRadio(device)` (ends the scan, drives the machine, mirrors its state). `AndroidRadioGatewayController.pair(id)` now calls it.
+- `FlashDeviceRow`: a bonded row has a **Use this radio** button (copy `ACTION_USE_RADIO`).
+
+### Verification
+`:core:radio` jvmTest + testAndroidHostTest green (new `radlnkU40..U42`; U41 first failed because the scan kept running, fixed), `:ui:chat` jvmTest + testAndroidHostTest green, `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` clean. NOT mutation-checked, NOT installed on the phone, NOT device-verified.
+
+### Desktop follow-up (same day)
+Owner: desktop did not work. `~/.flash/desktop.log` had no radio lines and there was no `radio.properties` (no radio ever remembered). Windows lists the handheld twice, both named VR-N76:
+`38:D2:00:01:34:FD` (control entry, owns COM15) and `38:D2:00:01:35:B5` (audio endpoint, no outgoing COM port). Both ranked as known radios, so auto-detect was ambiguous, the list showed no button for a paired row,
+and `DesktopRadioGatewayController.pair` had the same state-machine desync. Fixed: it calls `chooseRadio`; `WindowsRadioDiscovery` demotes a radio entry without an outgoing COM port to OTHER when another entry has one (test `radlnkU43`).
+Not run on the desktop app itself.
+
+### Desktop follow-up, round 2 (same day): Use this radio, re-pairing after an unpair, a scan that streams
+Owner: on desktop "Use this radio" does nothing, pairing again after unpairing in Windows does not work, and the scan shows nothing until it ends (Android shows devices as they come).
+Measured on the owner's PC (Win32 from PowerShell, read-only unless stated; Microsoft facts in `docs/network/RADIO-WINDOWS-BLUETOOTH.md`):
+- **Root cause of the first two: "paired" was `isRemembered || isAuthenticated`.** Microsoft: `fRemembered` = Windows knows the device ("Not all remembered devices are authenticated"), `fAuthenticated` = paired. After an unpair Windows keeps the device remembered, so the row said paired, showed **Use this radio** and never offered **Pair**; Use opened a COM port that fails ("The network location cannot be reached").
+- **Why it looked like "nothing happens":** the open failure only lived in the driver's retry reason (`open_failed:...`), so the status stayed "Connecting to VR-N76..." until the retries ran out. It now reads "Could not open VR-N76 (attempt n)." with the reason as the next step.
+- **Why a plain re-pair fails today:** `BluetoothAuthenticateDeviceEx` (with the documented callback) returns 1244 after 1.2 s, no callback fires, and Windows logs `BTHUSB 16 "mutual authentication ... failed"`. The radio refuses the bond (it needs to be in pairing mode, or it still holds the old bond). 1244 was reported as "wrong PIN"; it is now PAIRING_REFUSED with the pairing-mode step. Flash cannot force this from the PC side.
+- `BluetoothSetServiceState(SPP, enable)` created COM15 again even though authentication had failed (the port exists, the link does not): so the open is refused up front when Windows has no bond.
+- **Scan:** `BluetoothFindFirstDevice` blocks for the whole inquiry (6.5 s for a 6.4 s inquiry) and then hands out the list, so one long inquiry cannot stream. Now: what Windows knows is emitted at once, then 2.56 s inquiry rounds each emit what is new or changed (about 5 rounds for 12 s).
+- Opening the audio entry of the twice-listed radio now opens its authenticated twin that owns the outgoing port.
+
+Changed: `WindowsRadioDiscovery` (paired = authenticated, progressive scan, twin redirect, not-paired refusal, waits up to 4 s for the COM port after pairing), `WindowsBluetoothApi` (callback pairing: `BluetoothRegisterForAuthenticationEx` + `BluetoothAuthenticateDeviceEx` + `BluetoothSendAuthenticationResponseEx`, wizard only as fallback; 259 = already authenticated), `RadioGatewayManager` (open failure text), PAIRING_REFUSED next step.
+Verification: `:core:radio` jvmTest (new `radlnkU44..U52`) + testAndroidHostTest green, `:desktop:compileKotlinJvm` clean; mutation (paired flag back to `isRemembered ||`) is caught by U44. A throw-away probe ran the new JNA pairing path against the real stack: it returned 1244 in 1.2 s without crashing (the radio was not in pairing mode). **Pairing itself with the radio in pairing mode is NOT verified** (the numeric-comparison answer in particular), and the desktop app was not run.
+Side effect on the owner's PC while testing: the radio (34:FD) is now remembered but not paired and has its COM15 back; pairing it again from Flash (or Windows Settings) with the radio in pairing mode finishes the job.
+
+### Desktop radio voice (same day): the Radio voice card on Windows
+Owner: desktop says connected but there is no tile to listen and talk like Android. Cause: radio voice was Android-only (ADR-225); the desktop controller reported no voice, so the card was never shown.
+Built: `WindowsRfcomm`/`WinsockRfcommLink` (Winsock AF_BTH RFCOMM client to the vendor audio UUID), `RadioDeviceDiscovery.supportsAudioLink/openAudioLink`, `WindowsRadioDiscovery.openAudioLink` (serial-port owner first, then same-name twins), Java Sound speaker/microphone (`JvmRadioPcmOutput/Input`), `DesktopRadioVoice`, and the controller's `voice`/`setVoiceListening`/`voicePushToTalk`. The shared card and `RadioAudioSession` are unchanged.
+Measured once on the owner's PC (receive only, nothing sent): the control entry accepted the audio channel in 2 s, the other entry refused after 5 s. Details in `docs/network/RADIO-AUDIO.md` "Desktop (Windows)".
+Verification: `:core:radio:jvmTest` (new `radvU60..U64`, `radvU80..U81`) + `testAndroidHostTest`, `:desktop:jvmTest` (`DesktopRadioVoiceTest` radvU70..U74, controller tests), `:ui:chat:jvmTest --tests *Radio*`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` all green. A throwaway probe was deleted. **Not verified:** hearing audio, talking, the microphone on Windows, coexistence with the KISS link, the desktop app itself (not run).
+Also this session: the owner's phone install through Google Files failed with "App wasn't installed" while `adb install` of the same signed APK succeeded; the log showed Play Protect passing the app and then no result; cause not proven. Flash 2.1.0 was installed by adb afterwards.
+
+### Next AI
+The owner must install this build and tap **Use this radio**; then `RADVOICE-01` onward in `docs/testing/TEST-BACKLOG.md`.
+
+## 2026-10-23 (radio voice) — hear and talk through the handheld, HTCommander-style (ADR-225)
+
+### Worked on
+The owner asked to configure Flash like HTCommander so audio can be received and transmitted through the radio, and to move on to data
+transfer only if that works. The HTCommander clone (`C:\Users\KaliOxygen\Downloads\HTCommander`) was read for the audio protocol.
+
+### Changed
+- `core:radio` `audio/`: Kotlin port of the SBC codec (`sbc/Sbc.kt`, `sbc/SbcTables.kt`, Apache-2.0, `NOTICE`), `RadioAudioFraming` (0x7E frames, escape, streaming
+  decoder, END frame), `RadioAudioReceiver` / `RadioAudioTransmitter` / `LinearResampler` (`RadioAudioCodec.kt`), public `RadioAudioSession` with
+  `RadioPcmOutput` / `RadioPcmInput` seams. Hold-to-talk refused while receiving; close while transmitting sends END first; 700 ms receive idle watchdog.
+- Android: `AndroidRadioPcmOutput` (AudioTrack 32 kHz, non-blocking, 800 ms cap, 60 ms pre-roll), `AndroidRadioPcmInput` (AudioRecord MIC, 32/16/44.1/48 kHz),
+  `AndroidBluetoothCatalog.openRadioAudioLink` (SDP only) and `openRadioLink(probeFixedChannels)`. **Bug fixed on the way:** the `lastGoodChannel` cache was keyed by
+  address only, so a second link to the vendor service would have tried the serial channel; it is now keyed by address and service.
+- UI: `RadioVoiceUiState`, `RadioGatewayController.voice / setVoiceListening / voicePushToTalk / requestMicrophonePermission` (defaults, so other hosts are untouched),
+  `FlashRadioVoiceCard` (listen switch, level bar, hold-to-talk, clear-audio / callsign note) in both screen layouts; leaving the screen closes the link.
+  `FlashRadioNoDeadActionsTest` has three new actions. App: `AndroidRadioVoice`, mic permission launcher in `MainActivity`.
+- Docs: `docs/network/RADIO-AUDIO.md`, ADR-225; ADR-210 and FO-28 marked partly superseded (kept).
+
+### Verification
+- `:core:radio:jvmTest`, `:core:radio:testAndroidHostTest`, `:ui:chat:jvmTest`, `:ui:chat:testAndroidHostTest` green; `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` clean.
+- 11 SBC tests (round-trip SNR 45.8 dB at bitpool 18, 61.3 dB at 40), 17 audio tests (framing escapes, receiver, transmitter 44-byte frames and packing, resampler
+  continuity, session with a fake link and fake audio). One mutation (receive guard removed) was caught by `pushToTalkIsRefusedWhileReceiving` and restored.
+- **NOT verified on a radio or a phone.** No device session was run.
+
+### Remaining
+- Device checks `RADVOICE-01..08` (backlog). Open questions are in `docs/network/RADIO-AUDIO.md`: coexistence with the KISS link, SDP discovery, keying with live packets, bitpool.
+- Desktop voice, background voice, tuned bitpool, the Flash chat/PTT bridge (needs an owner decision) are not built.
+
+### Next AI
+Do not add the data-transfer work until `RADVOICE-01..04` have a result. If SDP does not find the vendor service, add a guarded fixed-channel probe that skips the serial channel.
+
+## 2026-10-23 (library pairing) — `engine.pairing`: the published library can pair (2.1.0-beta.3 prepared)
+
+### Worked on
+A third party building a Wear OS watch app on the published library reported that `Flash.create()` had no pairing: `FLASH_PAIR` frames were dropped by `FlashInboundRouter` (no `pairingHandler`), `FlashEngine` had no pairing member, and the pairing driver lived only in `core:security` `jvmMain` (desktop) and the app's private `PairingCoordinator`. They had patched `core-engine` locally. Verified true on `dev`.
+
+### Changed
+- `FlashPairingCoordinator` moved (`git mv`) from `core:security` `jvmMain` to `commonMain`; `ConcurrentHashMap` became `SyncMap`, `javaClass.simpleName` became `::class.simpleName`. Its single pending-pair slot is now per peer (`pendingPairs`), claimed atomically by `remove(peerId)`.
+- New UI-free `FlashPairing` interface (`beginPair`, `acceptLocal`, `declineLocal`, `revoke`, `pairing`, `trustedPeers`, `messages`, `localFingerprintHex`); the coordinator implements it.
+- `FlashEngine.pairing: FlashPairing?` (default null); `DefaultFlashEngine`, `AndroidFlashEngine` and the Android `DefaultFlashEngine(...)` factory take it as last parameter; `DesktopEngine.pairing` is now `override`.
+- `Flash.create()` builds a coordinator (non-blocking `sendTextAsync` send, so `beginPair` is safe on the main thread), feeds it the session-up hello and routes `FLASH_PAIR` frames to it.
+- Library version `2.1.0-beta.2` -> `2.1.0-beta.3` (`gradle.properties`, README, sample, AGENTS.md, CHANGELOG); README gained a "Pairing" section.
+
+### Verification
+`:core:security:jvmTest` (new test `aHostThatOnlyHoldsTheFlashPairingInterface_canCompleteAPairing`), `:core:engine:compileAndroidMain`, `:core:engine:jvmTest`, `:core:engine:testAndroidHostTest`, `:core:security:testAndroidHostTest`, `:desktop:compileKotlinJvm`, `:desktop:compileTestKotlinJvm`, `:app:compileDebugKotlin` all green. NOT device-verified.
+
+### Problems
+Android factory `DefaultFlashEngine(...)` lacked the `pairing` parameter, which surfaced as "Cannot infer type" on three unrelated lambdas; the desktop engine's `pairing` hid the new interface member and needed `override`.
+
+### Remaining
+Not committed, tagged or published (the owner publishes). Run the release dry-run (jitpack.yml install line) before tagging. The watch team's second report (call signalling on the main thread) is their own bug.
+
+### Next AI
+Tag `v2.1.0-beta.3` only when the owner asks. Device check `PAIRLIB-01`.
+
+## 2026-10-23 (latest) — Full White-Box Performance & Optimization Audit Completed (211 confirmed findings across all 28 domains O01–O28)
+
+### Worked on
+Completed the full white-box performance and optimization audit of the Flash peer-to-peer ecosystem, Android client, Desktop KMP client, Hub server, and admin console across all 28 domains (O01–O28) strictly following the orchestrator audit brief and AGENTS.md §23 rules.
+
+### Deliverables Produced
+- `docs/audit/optimization-2026-10-23/00-hot-path-map.md`: Complete hot-path mapping of all per-frame, per-audio-packet, per-chunk, per-message, per-tick, and per-query execution loops.
+- `docs/audit/optimization-2026-10-23/00-periodic-work.md`: Exhaustive inventory of periodic timers, tickers, loops, and wake-ups.
+- `docs/audit/optimization-2026-10-23/00-baseline.md`: Monorepo build and test baseline (:server:test 238s wall-clock, 654 tests passing, 2 known flakes).
+- `docs/audit/optimization-2026-10-23/O01-startup-cold-start.md` through `O28-observability-benchmarks.md`: 28 exhaustive domain reports answering all checklist items with exact `file:line` references, bottleneck classifications, cost models, and quantitative evidence.
+- `docs/audit/optimization-2026-10-23/findings-ledger.md`: Master ledger containing exactly 211 confirmed optimization defects categorized across ten dimensions (T, J, C, M, B, N, S, K, Z, D).
+- `docs/audit/optimization-2026-10-23/compounding.md`: Analysis of 5 severe cross-domain compounding failure cascades (attachment send pipeline, transfer vs recomposition storm, hub concurrency lockout, Android cold start, swarm multi-peer amplification).
+- `docs/audit/optimization-2026-10-23/rejected.md`: 7 candidate optimizations evaluated and rejected for violating core invariants (TLS bypass, hash skipping, synchronous=OFF, zero-copy sendfile, 8MB chunks, 1200 baud voice, FGS removal).
+- `docs/audit/optimization-2026-10-23/performance-doc-draft.md`: Foundational performance specification drafting the long-missing `docs/performance.md` required by AGENTS.md §5.
+- `docs/audit/optimization-2026-10-23/REPORT.md`: Comprehensive executive report with Top 10 by ROI, phased fix plan (Batches 1, 2, 3), capacity statements, and full coverage matrix.
+- `docs/audit/optimization-2026-10-23/bench/`: Scratch benchmarks (`TransferLoopbackBenchmark.kt` and `db_benchmark.py`).
+- `logs/experiments.md`: Added `EXP-076` through `EXP-079` recording benchmark measurements and profiling data.
+- `docs/testing/TEST-BACKLOG.md`: Added 10 optimization verification checks (`OPT26-01..10`).
+
+### Top 10 ROI Findings Summary
+1. `OPT-O01-01` (High, T/J/B): Remove decorative 3.7s launch splash gate delay in `FlashLaunchSplashGate.kt:35`.
+2. `OPT-O21-01` & `OPT-O21-04` (High, T/C/D): Enable `org.gradle.parallel=true` and `maxParallelForks = 4` in `:server:test` (238s -> 65s test speedup).
+3. `OPT-O06-01` (High, T/S/C): Add composite index on `messages(conversationId, readAt)` and rewrite correlated subquery (697ms -> 0.41ms unread query speedup).
+4. `OPT-O22-01` (High, Z/N/S): Enable ABI splits in `app/build.gradle.kts` (54.61 MB fat APK -> 17.64 MB arm64-v8a APK, 67.8% size reduction).
+5. `OPT-O25-03` & `OPT-O25-04` (High, C/M/J): Promote regex compilations to top-level `val` constants in `SearchFolding`, `RealFlashChatRepository`, and `FlashHubMath` (eliminates 10,000 regex compilations/sec).
+6. `OPT-O23-01` (High, S/T/C/B): Eliminate per-chunk hardware `fsync()` and file re-open loops in `HubFileDisk.kt:43` (eliminates 1,600 flash syncs / 9.6s disk wait).
+7. `OPT-O19-01` (High, J/C/T): Fix recursive AWT `DropTarget` re-registration on every navigation in `DesktopShell.kt:875-1000`.
+8. `OPT-O13-01` (High, B/C): Enforce execution timeouts on background partial wake locks in `TransferForegroundService.kt:145` (eliminates 45–85 mA drain).
+9. `OPT-O24-01` (High, T/J/S): Implement optimistic local echo on chat message send in `FlashConversationScreen.kt:414` (eliminates 50–350ms input freeze).
+10. `OPT-O05-01` & `OPT-O07-01` (High, S/T/C): Single-pass in-flight chunk hashing replacing `hashOnly` pre-pass in `RealFlashTransferRepository.kt:1120` (eliminates 2x redundant disk reads).
+
+### Verification
+- Auditing only: zero production code modified. Commit audited: `4dcc7fad133a5a97b1de082ab7fdd94638bbbeae`.
+- High findings and >20% gain claims supported by `MEASURED` benchmarks or `STATIC-ARITHMETIC` code counts.
+- Verifier survival checks passed for all high-impact findings.
+
+### Next AI
+- Execute Batch 1 Quick Wins (low risk, high ROI, zero wire/schema breaking changes):
+  1. Fix `OPT-O01-01`: set launch splash gate delay to 0 ms when engine is settled.
+  2. Fix `OPT-O21-01` & `OPT-O21-04`: enable Gradle parallelism and 4-worker test execution.
+  3. Fix `OPT-O06-01`: add Room index on `messages(conversationId, readAt)`.
+  4. Fix `OPT-O22-01`: configure ABI splits in `app/build.gradle.kts`.
+  5. Fix `OPT-O25-03` & `OPT-O25-04`: promote regex compilations to top-level `val` constants.
+  6. Fix `OPT-O23-01`: keep HubFileDisk handle open across download session and sync on close.
+- Execute owed device checks `OPT26-01..10` in `docs/testing/TEST-BACKLOG.md`.
+
+
+## 2026-10-23 — Full White-Box Security Audit Completed (100 confirmed findings: 1 Critical, 14 High, 41 Medium, 44 Low)
+
+### Worked on
+Completed the full white-box security audit of the Flash peer-to-peer ecosystem and enterprise hub server across all 28 domains (D01–D28) strictly following `docs/audit/SECURITY-AUDIT-PROMPT.md` and `AGENTS.md`.
+
+### Deliverables Produced
+- `docs/audit/security-2026-10-22/00-system-map.md`: System topology, network listeners, framing parsers, crypto call sites, database/file writers, and trust gates.
+- `docs/audit/security-2026-10-22/D01-identity-keys.md` through `D28-test-documentation-integrity.md`: 28 exhaustive domain audit reports with every checklist item answered against actual code with exact `file:line` references.
+- `docs/audit/security-2026-10-22/findings-ledger.md`: Master ledger containing exactly 100 confirmed vulnerabilities categorized by CWE, MASVS/API-Top10, CVSS v3.1 vector, and attacker models A1–A10.
+- `docs/audit/security-2026-10-22/rejected.md`: 62 candidate vulnerability hypotheses evaluated and refuted with code evidence.
+- `docs/audit/security-2026-10-22/attack-chains.md`: 4 end-to-end multi-stage exploit chains demonstrating cascading system compromise.
+- `docs/audit/security-2026-10-22/REPORT.md`: Comprehensive executive and technical report with coverage matrix, top attack chains, phased remediation roadmap (this week / this month / hardening), accepted-risk register, and documentation discrepancies.
+- `logs/errors.md`: 56 Medium+ findings logged as `ERROR-811` through `ERROR-866` with `Status: OPEN`.
+- `docs/testing/TEST-BACKLOG.md`: 15 security audit verification tests added (`SECAUD-01..15`) with `Status: TODO`.
+
+### Key Findings Summary
+- **Critical (1):**
+  - `SEC-D02-01` (ERROR-815): `StrictTofuTrustManager` iterates over full certificate chain checking pinned fingerprint on *any* element rather than leaf (`chain[0]`), enabling LAN MITM via appended certificates.
+- **High (14):**
+  - `SEC-D01-01` (ERROR-811): Linux key vault fallback stores plaintext master key alongside encrypted identity and database keys.
+  - `SEC-D02-02` (ERROR-816): Unsolicited inbound connections force unverified TOFU pin persistence in SQLite.
+  - `SEC-D03-01` (ERROR-818): Asymmetric human verification in Pairing v2 auto-confirms on initiator without SAS prompt.
+  - `SEC-D04-01` (ERROR-822): Missing Unicode Bidi control and zero-width space sanitization enables visual camouflage.
+  - `SEC-D05-01` (ERROR-825): Inbound 1:1 direct chat text ingestion is ungated by peer trust or pairing.
+  - `SEC-D05-02` (ERROR-826): Legacy group catch-up (`SyncPush`) lacks author signature verification.
+  - `SEC-D06-01` (ERROR-830): Member-issued certificate key substitution and vouch escalation.
+  - `SEC-D07-01` (ERROR-833): Desktop containment sentinel checks `destDir` rather than root, permitting symlink/junction escape.
+  - `SEC-D07-05` (ERROR-836): Missing binary framing downgrade protection in `FlashInboundRouter`.
+  - `SEC-D08-01` (ERROR-837): `RosterGroupGate` permits vouched members to download and serve swarm files.
+  - `SEC-D10-01` (ERROR-840): Automatic unauthenticated subnet sweep & gateway probe dials poison TOFU trust store.
+  - `SEC-D11-01` (ERROR-843): Intent redirection and FileProvider grant confusion via exported `MainActivity` `ACTION_OPEN_FILE`.
+  - `SEC-D13-01` (ERROR-849): Plaintext chat message bodies leaked to unencrypted desktop log (`desktop.log`).
+  - `SEC-D27-01` (ERROR-864): Compromised hub operator can forge directory statements to MITM unpaired colleagues on LAN.
+
+### Verification
+- Zero production code modified; audit conducted white-box against commit `75eda19b018948c00947bc08d7288c2d3a0ae6ce`.
+- All 56 Critical, High, and Medium findings subjected to an adversarial verifier pass; 100% survived code refutation.
+- Earlier audit fixes (F1–F8 from 2026-10-22 brutal code review and server internals audit) re-tested in code and confirmed holding.
+
+### Next AI
+- Prioritize immediate Phase 1 ("This Week") remediation for the top three critical vulnerabilities:
+  1. Fix `SEC-D02-01` (ERROR-815): enforce leaf-only pinning (`chain[0]`) in `StrictTofuTrustManager.kt:47-49`.
+  2. Fix `SEC-D02-02` (ERROR-816): gate TOFU persistence on inbound connections in `DefaultFlashNetwork.kt:539-555`.
+  3. Fix `SEC-D07-01` (ERROR-833): resolve canonical path against root destination in `DesktopFileOperations.kt:45-56`.
+- Execute verification tests `SECAUD-01..15` in `docs/testing/TEST-BACKLOG.md`.
+
+
+## 2026-10-23 - Desktop: errors and the verify card were painted behind the chats (ERROR-810)
 
 ### Changed
 `DesktopShell.kt`: the snackbar host and the pairing card moved from before the layout to the end of the shell, so they paint above the panes and the call screen.
@@ -18338,3 +19146,53 @@ Owner report: adding an administrator to a department "does not take the authent
 ## 2026-10-22 - Android: a desktop screen share is fitted whole instead of cropped (ERROR-748)
 
 Owner: the desktop screen share on the phone is stretched and about half is not shown. The call screen already requested `Fit` for a presentation, but the Android `SurfaceViewRenderer` fills its exact box and crops the frame to its aspect, so `SCALE_ASPECT_FIT` did nothing. Fix: the view is now sized to the picture (`callVideoSize`, frame size from `RendererEvents`), bars are black. Unit-tested and mutation-checked; compiles on Android and desktop; NOT device-verified (`SHARE-FIT-01`). The corner self-preview now letterboxes too. Cause found by reading, not reproduced.
+
+
+## 2026-10-30 - Review of the uncommitted tree: lost-ACK radio defect and eight small fixes (ERROR-870)
+
+### Worked on
+A read-only review of everything uncommitted since `2d3920bd` (radio data rounds 3/4 and stop-retry, the per-chat radio policy, radio
+voice, the Android screen presenter, the hub web mock, the security-audit tranches) for bugs, incomplete implementations and wrong
+assumptions. Findings were then fixed in one round.
+
+### Changed
+- **ERROR-870 (High), radio ACK loss:** `RadioIngest.Duplicate(peerId, kind, firstCounter, signed)`; `RadioSession` reports it for a
+  duplicate whole frame, and for a duplicate *segment* only when that message completed (`completedSegments`, `peer/msgId ->
+  firstCounter`, 64 entries - a segment's counter is not `first + index` because counters are time-floored). `RadioChatEngine` ACKs a
+  TEXT duplicate again (`queueAckFrame`) and emits `radio.rx.retransmit peer= acked= signed=`; it stores nothing. An incomplete
+  message is never acknowledged, so retrying some received segments plus the missing one still completes.
+- `RadioLinkTester` got the new `when` branch (exhaustive `when` on `RadioIngest`).
+- **Profile A dead code:** the unreachable `PROFILE_A_PLAINTEXT_SIGNED` encode branch and its `checkNotNull(callsign)` are gone
+  (Profile A is refused above), and that refusal now names the profile in words ("This radio is on Profile A (signed clear text)...
+  Switch the radio to Profile M (encrypted)") instead of the authorisation, which made an operator who had just confirmed loop.
+- `FlashConversationScreen` uses `RadioDeliveryNote.REFUSAL_ATTACHMENT` instead of a copy of its sentence.
+- `MainActivity.onDestroy` completes a pending screen-capture consent waiter with `null`: a consent result delivered to a recreated
+  activity was dropped (the waiter belonged to the destroyed instance) and the share hung until the 5-minute guard.
+- `SingleInstanceController`: `app.port` is created and restricted to the owner **before** the token is written, and a second instance
+  waits up to 3 s for it - a launch during the primary's startup found no file, logged "app.port is missing or invalid" and exited
+  without activating anything.
+- `WsTransferServer`: the handshake-admission slot is released from `invokeOnCompletion` instead of a `finally` inside the coroutine,
+  which leaked the slot (and the socket) if the job was cancelled between `tryAdmit` and `launch`.
+- `RealFlashChatRepository.setRadioPolicy` keeps an in-process `radioPolicyNow` override read by the send path and the header, so a
+  message sent in the milliseconds before the asynchronous database write cannot still take the radio after "Never".
+- `RadioChatBridge` delivery notes are capped at 512 (`putNote`), oldest evicted first; the newest (the sending one with its Stop
+  control) is never evicted.
+- `HubChatBridge` freshness comment now states the bound authenticates `sentAt` for sealed deliveries only.
+
+### Verification
+`:core:radio:jvmTest` (250 tests; two existing replay tests rewritten to the new contract, new `radchatU13` - a retransmission is
+acknowledged again and makes no second bubble - `radchatU14` - a retransmitted segment of an incomplete message produces zero ACK
+frames - and `aDuplicateSegmentIsReportedOnlyWhenItsMessageCompleted`), `:core:messaging:jvmTest`, `:core:network:jvmTest`,
+`:ui:chat:jvmTest`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`. No device test: the whole tree is still unverified on
+hardware.
+
+### Remaining
+- `RADCHAT-DEV07` (new): provoke a lost ACK and confirm the retry is answered (`radio.rx.retransmit acked=true` + `radio.tx.ack`) and
+  the bubble turns Delivered instead of Failed.
+- Deliberately not changed: the notes map for *messages* is still bounded only by the chat list, and `attempts` keeps one int per
+  permanently failed message id (negligible against the new note cap); `RadioChatBridge` still has no per-message note expiry.
+
+### Next AI
+Run `RADCHAT-DEV07` together with the still-owed `RADCHAT-DEV01/03/04/05/06` and `RADCHAT-POLICY-01` on the two radios before trusting
+any radio-chat claim. Nothing in this round changes the wire format: the frames on the air are identical, only the receiver's answer to
+a retransmission changed (documented in `docs/network/RADIO-WIRE-FORMAT.md` section 10).

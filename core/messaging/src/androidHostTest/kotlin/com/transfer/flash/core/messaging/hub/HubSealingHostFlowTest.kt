@@ -80,7 +80,8 @@ class HubSealingHostFlowTest {
     }
 
     /** One device: its bridge over its own relay, backed by a shared directory the test edits. */
-    private class Host(
+    // inner: it reads the test's fixed clock (SEC-D15-02)
+    private inner class Host(
         val me: Person,
         val directory: MutableMap<String, Person>,
         val pinStore: MemoryHubSealingPinStore = MemoryHubSealingPinStore(),
@@ -94,10 +95,16 @@ class HubSealingHostFlowTest {
         }
         var standing: HubPeerStanding = HubPeerStanding.MEMBER
         val bridge = HubChatBridge(
-            localDeviceId = me.id, port = relay, contentViaHub = { readable }, sealing = sealing,
+            localDeviceId = me.id, port = relay, timeSource = clock, contentViaHub = { readable }, sealing = sealing,
             standing = { standing },
         )
         val sink = Sink()
+    }
+
+    /** One stated instant for every bridge clock and every stamp (the age rule, SEC-D15-02). */
+    private val now = 1_700_000_000_000L
+    private val clock = object : com.transfer.flash.core.common.time.FlashTimeSource {
+        override fun nowMs(): Long = now
     }
 
     private val alice = Person("alice")
@@ -105,7 +112,7 @@ class HubSealingHostFlowTest {
 
     private fun directory() = mutableMapOf("alice" to alice, "bob" to bob)
 
-    private fun text(id: String = "m-1") = MessageWireFrame.TextMessage(id, "bob", "alice", "Alice", "the launch code is 1234", 1_000L)
+    private fun text(id: String = "m-1") = MessageWireFrame.TextMessage(id, "bob", "alice", "Alice", "the launch code is 1234", now)
 
     private fun deliver(from: Host, to: Host, index: Int = 0): HubInboundOutcome {
         val sent = from.relay.sent[index]
@@ -118,7 +125,7 @@ class HubSealingHostFlowTest {
         val a = Host(alice, dir)
         val b = Host(bob, dir)
         assertTrue(a.bridge.canCarry("bob"))
-        assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+        assertTrue(a.bridge.sendDirect("bob", "m-1", now, text()))
         assertEquals(HubSealing.ENVELOPE_TYPE, a.relay.sent.single().type)
         assertFalse(a.relay.sent.single().payload.contains("launch code"))
         assertEquals(HubInboundOutcome.STORED, deliver(a, b))
@@ -132,7 +139,7 @@ class HubSealingHostFlowTest {
         try {
             val a = Host(alice, dir)
             assertFalse(a.bridge.canCarry("bob"))
-            assertFalse(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+            assertFalse(a.bridge.sendDirect("bob", "m-1", now, text()))
             assertTrue("never a plaintext fallback", a.relay.sent.isEmpty())
             assertEquals(HubWaitReason.NEEDS_UPDATE, a.bridge.waiting.value["bob"])
         } finally {
@@ -147,7 +154,7 @@ class HubSealingHostFlowTest {
         try {
             val a = Host(alice, dir, readable = true)
             assertTrue(a.bridge.canCarry("bob"))
-            assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+            assertTrue(a.bridge.sendDirect("bob", "m-1", now, text()))
             assertTrue(a.relay.sent.single().type != HubSealing.ENVELOPE_TYPE)
             assertNull(a.bridge.waiting.value["bob"])
         } finally {
@@ -160,12 +167,12 @@ class HubSealingHostFlowTest {
         val dir = directory()
         val store = MemoryHubSealingPinStore()
         val a = Host(alice, dir, store, readable = true)
-        assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text("m-1")))
+        assertTrue(a.bridge.sendDirect("bob", "m-1", now, text("m-1")))
 
         bob.rotateKey() // reinstall: the directory now serves another key for the same device id
         try {
             assertFalse(a.bridge.canCarry("bob"))
-            assertFalse(a.bridge.sendDirect("bob", "m-2", 2_000L, text("m-2")))
+            assertFalse(a.bridge.sendDirect("bob", "m-2", now + 1_000L, text("m-2")))
             assertEquals("no readable downgrade, nothing sent", 1, a.relay.sent.size)
             assertEquals(HubWaitReason.KEY_CHANGED, a.bridge.waiting.value["bob"])
             assertTrue(a.sealing.pendingKeyChanges.value.containsKey("bob"))
@@ -191,7 +198,7 @@ class HubSealingHostFlowTest {
         val dir = directory()
         var down = false
         val a = Host(alice, dir, directoryDown = { down })
-        assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+        assertTrue(a.bridge.sendDirect("bob", "m-1", now, text()))
         bob.rotateKey()
         assertFalse(a.bridge.canCarry("bob"))
         down = true
@@ -205,12 +212,12 @@ class HubSealingHostFlowTest {
         val frame = GroupWireFrame.Receipt("g-1", "m-9", "alice", 1_000L)
         val off = Host(alice, dir)
         assertFalse("sealing keys exist, but groups are not sealed: without the switch nothing goes", off.bridge.canCarry("bob", group = true))
-        assertFalse(off.bridge.sendGroup("bob", "g-1:m", 1_000L, frame) && off.relay.sent.isNotEmpty() && off.relay.sent.single().type == HubSealing.ENVELOPE_TYPE)
+        assertFalse(off.bridge.sendGroup("bob", "g-1:m", now, frame) && off.relay.sent.isNotEmpty() && off.relay.sent.single().type == HubSealing.ENVELOPE_TYPE)
         assertTrue(off.relay.sent.none { it.type == HubSealing.ENVELOPE_TYPE })
 
         val on = Host(alice, dir, readable = true)
         assertTrue(on.bridge.canCarry("bob", group = true))
-        assertTrue(on.bridge.sendGroup("bob", "g-1:m", 1_000L, frame))
+        assertTrue(on.bridge.sendGroup("bob", "g-1:m", now, frame))
         assertTrue("group frames travel readable", on.relay.sent.single().type != HubSealing.ENVELOPE_TYPE)
     }
 
@@ -229,7 +236,7 @@ class HubSealingHostFlowTest {
         val dir = directory()
         val a = Host(alice, dir)
         val b = Host(bob, dir)
-        assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+        assertTrue(a.bridge.sendDirect("bob", "m-1", now, text()))
         val sent = a.relay.sent.single()
         val parts = sent.payload.split('.').toMutableList()
         val c = parts[3]
@@ -244,7 +251,7 @@ class HubSealingHostFlowTest {
     fun `a sealed message is kept for later when the sender cannot be looked up right now`() = runBlocking {
         val dir = directory()
         val a = Host(alice, dir)
-        assertTrue(a.bridge.sendDirect("bob", "m-1", 1_000L, text()))
+        assertTrue(a.bridge.sendDirect("bob", "m-1", now, text()))
         val sent = a.relay.sent.single()
         var down = false
         val b = Host(bob, dir, directoryDown = { down })

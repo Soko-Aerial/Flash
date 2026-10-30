@@ -30,8 +30,9 @@ public enum class ShareStopReason {
     TAKEN_OVER,
 
     /**
-     * The shared window was closed or the screen went away. NOT produced today (design decision D8: the watchdog looks
-     * at the first frame only, so a window closed mid-share shows a frozen picture until the presenter stops; ERROR-137).
+     * The platform ended the capture itself (Android: the user stopped it from the status-bar chip, or the screen was
+     * locked), or the shared window was closed. Produced on Android today, through
+     * [ScreenCaptureHandle.revoked]; the desktop capturer cannot report a closed window (D8, ERROR-137).
      */
     SOURCE_LOST,
 
@@ -377,7 +378,7 @@ internal class ScreenShareRun(
     private var openedAtMs = 0L
     private var tunedHeight = 0
 
-    enum class Check { OK, RETUNE, NO_FRAMES }
+    enum class Check { OK, RETUNE, NO_FRAMES, SOURCE_LOST }
 
     /** Opens [source] at the ladder's capture size. Throws when the capturer cannot start. */
     suspend fun open(source: ShareSource): ScreenCaptureHandle {
@@ -451,11 +452,13 @@ internal class ScreenShareRun(
     }
 
     /**
-     * One watchdog look: [Check.NO_FRAMES] when nothing arrived within the first-frame timeout (the share is dead),
+     * One watchdog look: [Check.SOURCE_LOST] when the platform took the capture away (Android's status-bar chip, a
+     * locked screen), [Check.NO_FRAMES] when nothing arrived within the first-frame timeout (the share is dead),
      * [Check.RETUNE] when the captured height became known or changed (the scale factor must follow it).
      */
     fun check(): Check {
         val h = handle ?: return Check.OK
+        if (h.revoked) return Check.SOURCE_LOST
         if (h.frameCount == 0L) {
             return if (nowMs() - openedAtMs >= ShareLadder.FIRST_FRAME_TIMEOUT_MS) Check.NO_FRAMES else Check.OK
         }

@@ -66,6 +66,7 @@ public class WsTransferServer(
     private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
     private val inFlightSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
+    private val handshakeAdmission = HandshakeAdmission()
 
     @Volatile
     public var listenPort: Int = 0
@@ -116,8 +117,21 @@ public class WsTransferServer(
     private suspend fun acceptLoop(socket: ServerSocket) = withContext(Dispatchers.IO) {
         while (isActive && !socket.isClosed) {
             val client = runCatching { socket.accept() }.getOrElse { break }
+            // SEC-D24-01: bound the sockets that may sit in the handshake; a refused one is closed at once.
+            val remoteHost = client.inetAddress?.hostAddress ?: "?"
+            if (!handshakeAdmission.tryAdmit(remoteHost)) {
+                WsLog.d(TAG, "WS handshake refused from=$remoteHost: too many sockets are still handshaking")
+                runCatching { client.close() }
+                continue
+            }
             inFlightSockets.add(client)
-            launch {
+            // The admission slot must come back even when this coroutine never starts (the accept loop's scope can
+            // be cancelled between tryAdmit and launch), so it is released from the job's completion handler rather
+            // than a finally inside the body. A socket whose handler never ran is closed here; one that ran leaves
+            // its socket to the WsConnection that owns it.
+            val started = java.util.concurrent.atomic.AtomicBoolean(false)
+            val sessionJob = launch {
+                started.set(true)
                 var activeSocket: Socket = client
                 // Audit S1: the client's TLS leaf, captured when the (lazy) server handshake runs inside
                 // handshake() below, then carried on the WsConnection for the post-HELLO binding.
@@ -161,6 +175,10 @@ public class WsTransferServer(
                     inFlightSockets.remove(client)
                     inFlightSockets.remove(activeSocket)
                 }
+            }
+            sessionJob.invokeOnCompletion {
+                handshakeAdmission.release(remoteHost)
+                if (!started.get()) runCatching { client.close() }
             }
         }
     }

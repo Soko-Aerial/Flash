@@ -48,7 +48,11 @@ class FlashAppWidgetProvider : AppWidgetProvider() {
 
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
-        if (intent.action == ACTION_PIN_WIDGET) {
+        // SEC-D11-04: the receiver is exported (the launcher and system send widget updates), so any app could send this
+        // action and raise the system's pin-widget prompt over whatever the user is doing. It is a developer aid
+        // (adb), so only a debuggable build honours it.
+        val debuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable && intent.action == ACTION_PIN_WIDGET) {
             val result = requestPinWidget(context)
             Log.i(TAG, "Pin widget requested via action: result=$result")
         }

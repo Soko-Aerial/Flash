@@ -198,6 +198,25 @@ class FlashPathSanitizerTest {
     }
 
     @Test
+    fun bidiOverrideAndZeroWidthCharactersCannotCamouflageAnExtension() {
+        // SEC-D04-01: "photo_<RLO>fdp.exe" is drawn as "photo_exe.pdf".
+        val rlo = FlashPathSanitizer.sanitize("photo_‮fdp.exe")
+        assertEquals("photo__fdp.exe", rlo)
+        assertFalse(rlo.contains('‮'))
+        assertEquals("a_b.txt", FlashPathSanitizer.sanitize("a​b.txt"))
+        assertEquals("x_.txt", FlashPathSanitizer.sanitizeFileName("x⁦.txt"))
+        assertEquals("a_b.txt", FlashPathSanitizer.sanitizeRelativePath("a﻿b.txt"))
+    }
+
+    @Test
+    fun joinersUsedByEmojiAndPersianSurviveSanitising() {
+        val family = "👨‍👩.png"
+        assertEquals(family, FlashPathSanitizer.sanitize(family))
+        val persian = "می‌خواهم.txt"
+        assertEquals(persian, FlashPathSanitizer.sanitize(persian))
+    }
+
+    @Test
     fun fileName_variantTrimsAndFallsBackToReceivedBin() {
         assertEquals("received.bin", FlashPathSanitizer.sanitizeFileName("   ..   "))
         assertEquals("doc.pdf", FlashPathSanitizer.sanitizeFileName("  doc.pdf...  "))

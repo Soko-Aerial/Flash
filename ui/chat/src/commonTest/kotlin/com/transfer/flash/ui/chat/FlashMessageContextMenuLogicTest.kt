@@ -12,4 +12,10 @@ class FlashMessageContextMenuLogicTest {
         assertTrue("Delete" in messageActionLabels(isMine = true))
         assertTrue("Delete" in messageActionLabels(isMine = false))
     }
+
+    @Test
+    fun stopSendingIsOfferedOnlyWhenTheCallerHasAPendingRadioRetry() {
+        assertFalse("Stop sending" in messageActionLabels(isMine = true))
+        assertTrue("Stop sending" in messageActionLabels(isMine = true, canStopRadioRetry = true))
+    }
 }

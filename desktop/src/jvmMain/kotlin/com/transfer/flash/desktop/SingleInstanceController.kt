@@ -91,6 +91,7 @@ public object SingleInstanceController {
         args: Array<String> = emptyArray(),
     ): Boolean {
         baseDir.mkdirs()
+        DesktopPaths.restrictToOwner(baseDir)
         lockFile = File(baseDir, "app.lock")
         portFile = File(baseDir, "app.port")
 
@@ -139,7 +140,15 @@ public object SingleInstanceController {
             val server = ServerSocket(0, 10, InetAddress.getByName("127.0.0.1"))
             serverSocket = server
             val port = server.localPort
-            portFile?.writeText(port.toString())
+            // SEC-D12-01: the port file also carries a random token; a request without it is dropped, so another local
+            // process that merely finds the port cannot stage files or steal focus. The file is created owner-only
+            // BEFORE the token is written, so it is never readable by another user even for an instant.
+            val token = newToken()
+            portFile?.let { file ->
+                runCatching { if (!file.exists()) file.createNewFile() }
+                restrictToOwner(file)
+                file.writeText(port.toString() + "\n" + token)
+            }
             portFile?.deleteOnExit()
 
             thread(name = "FlashSingleInstanceListener", isDaemon = true) {
@@ -148,15 +157,21 @@ public object SingleInstanceController {
                         val client = server.accept()
                         client.soTimeout = 3000
                         val reader = client.getInputStream().bufferedReader()
-                        val line = reader.readLine()
+                        val presented = readBoundedLine(reader)
+                        if (presented == null || !tokenMatches(presented.trim(), token)) {
+                            FlashLog.w(TAG, "Ignoring an activation request without the instance token.")
+                            client.close()
+                            continue
+                        }
+                        val line = readBoundedLine(reader)
                         if (line != null) {
                             val trimmed = line.trim()
                             if (trimmed.startsWith(COMMAND_SEND)) {
                                 val paths = mutableListOf<String>()
                                 val rest = trimmed.substring(COMMAND_SEND.length).trim()
                                 if (rest.isNotEmpty()) paths.add(rest)
-                                while (true) {
-                                    val nextLine = reader.readLine() ?: break
+                                while (paths.size < MAX_SHARED_PATHS) {
+                                    val nextLine = readBoundedLine(reader) ?: break
                                     val t = nextLine.trim()
                                     if (t == END_OF_TRANSMISSION || t.isEmpty()) break
                                     paths.add(t)
@@ -201,13 +216,15 @@ public object SingleInstanceController {
 
     private fun notifyRunningInstance(files: List<File> = emptyList()) {
         try {
-            val portStr = portFile?.takeIf { it.exists() }?.readText()?.trim()
-            val port = portStr?.toIntOrNull()
-            if (port != null && port in 1..65535) {
+            val lines = awaitPortFileLines()
+            val port = lines.getOrNull(0)?.trim()?.toIntOrNull()
+            val token = lines.getOrNull(1)?.trim().orEmpty()
+            if (port != null && port in 1..65535 && token.isNotEmpty()) {
                 FlashLog.i(TAG, "Connecting to primary instance on 127.0.0.1:$port to request activation or send files...")
                 Socket(InetAddress.getByName("127.0.0.1"), port).use { socket ->
                     socket.soTimeout = 4000
                     socket.getOutputStream().bufferedWriter().apply {
+                        write(token + "\n")
                         if (files.isNotEmpty()) {
                             write(COMMAND_SEND + "\n")
                             for (f in files) {
@@ -229,6 +246,69 @@ public object SingleInstanceController {
             FlashLog.w(TAG, "Failed to send activation/send ping to running instance: ${t.message}")
         }
     }
+
+    private fun newToken(): String {
+        val bytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(bytes)
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
+    }
+
+    /**
+     * The port file, waiting out the primary instance's startup (it writes the file right after it takes the lock).
+     * Without this wait, a second launch in that window found no file, logged "app.port is missing or invalid" and
+     * exited without activating anything: the user's click did nothing at all.
+     */
+    private fun awaitPortFileLines(): List<String> {
+        val deadline = System.currentTimeMillis() + PORT_FILE_WAIT_MS
+        while (true) {
+            val lines = portFile?.takeIf { it.exists() }?.readText()?.lines().orEmpty()
+            if (lines.size >= 2 && lines[1].isNotBlank()) return lines
+            if (System.currentTimeMillis() >= deadline) return lines
+            try {
+                Thread.sleep(PORT_POLL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return lines
+            }
+        }
+    }
+
+    internal fun tokenMatches(presented: String, expected: String): Boolean =
+        java.security.MessageDigest.isEqual(presented.toByteArray(Charsets.UTF_8), expected.toByteArray(Charsets.UTF_8))
+
+    /** One line of at most [MAX_LINE_CHARS] characters; a longer line is treated as the end of the input. */
+    private fun readBoundedLine(reader: java.io.Reader): String? {
+        val sb = StringBuilder()
+        while (sb.length <= MAX_LINE_CHARS) {
+            val c = reader.read()
+            if (c < 0) return if (sb.isEmpty()) null else sb.toString()
+            if (c == '\n'.code) return sb.toString()
+            if (c != '\r'.code) sb.append(c.toChar())
+        }
+        return null
+    }
+
+    /** Best effort: `0600` where POSIX permissions exist, owner-only flags elsewhere (SEC-D12-01, D12-03). */
+    internal fun restrictToOwner(file: File) {
+        try {
+            java.nio.file.Files.setPosixFilePermissions(
+                file.toPath(),
+                java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+            )
+        } catch (_: Throwable) {
+            file.setReadable(false, false)
+            file.setWritable(false, false)
+            file.setReadable(true, true)
+            file.setWritable(true, true)
+        }
+    }
+
+    private const val MAX_LINE_CHARS = 4096
+    private const val MAX_SHARED_PATHS = 256
+
+    /** How long a duplicate launch waits for the primary instance to publish `app.port` (SEC-D12-01 ordering). */
+    private const val PORT_FILE_WAIT_MS = 3_000L
+    private const val PORT_POLL_MS = 50L
 
     /**
      * Releases locks and sockets on app termination.

@@ -55,6 +55,12 @@ class HubSealingBridgeTest {
         )
     }
 
+    /** One stated instant, used both as the bridge clocks and as every stamp (the age rule, SEC-D15-02). */
+    private val now = 1_700_000_000_000L
+    private val clock = object : com.transfer.flash.core.common.time.FlashTimeSource {
+        override fun nowMs(): Long = now
+    }
+
     private val alice = Person("alice")
     private val bob = Person("bob")
     private val eve = Person("eve")
@@ -72,22 +78,22 @@ class HubSealingBridgeTest {
     }
 
     private fun aliceBridge(relay: FakeHubRelay, directory: Map<String, EnterpriseDirectoryMember>) = HubChatBridge(
-        localDeviceId = "alice", port = relay, contentViaHub = { false }, sealing = sealingFor(alice, directory),
+        localDeviceId = "alice", port = relay, timeSource = clock, contentViaHub = { false }, sealing = sealingFor(alice, directory),
         standing = { HubPeerStanding.MEMBER },
     )
 
     private fun bobBridge(relay: FakeHubRelay, directory: Map<String, EnterpriseDirectoryMember>) = HubChatBridge(
-        localDeviceId = "bob", port = relay, contentViaHub = { false }, sealing = sealingFor(bob, directory),
+        localDeviceId = "bob", port = relay, timeSource = clock, contentViaHub = { false }, sealing = sealingFor(bob, directory),
         standing = { HubPeerStanding.MEMBER },
     )
 
-    private val frame = MessageWireFrame.TextMessage("m-1", "bob", "alice", "Alice", "the launch code is 1234", 1_000L)
+    private val frame = MessageWireFrame.TextMessage("m-1", "bob", "alice", "Alice", "the launch code is 1234", now)
 
     private fun sealOnce(): FakeHubRelay.Sent {
         val relay = FakeHubRelay()
         val directory = mapOf("bob" to bob.directoryEntry())
         runBlocking {
-            assertTrue(aliceBridge(relay, directory).sendDirect("bob", "m-1", 1_000L, frame))
+            assertTrue(aliceBridge(relay, directory).sendDirect("bob", "m-1", now, frame))
         }
         return relay.sent.single()
     }
@@ -145,7 +151,7 @@ class HubSealingBridgeTest {
         val directory = mapOf("alice" to alice.directoryEntry())
         val outcome = runBlocking {
             val evesBridge = HubChatBridge(
-                localDeviceId = "eve", port = relay, contentViaHub = { false }, sealing = sealingFor(eve, directory),
+                localDeviceId = "eve", port = relay, timeSource = clock, contentViaHub = { false }, sealing = sealingFor(eve, directory),
                 standing = { HubPeerStanding.MEMBER },
             )
             evesBridge.handleInbound(HubInbound("alice", sent.id, sent.type, sent.sentAt, sent.payload), sink)
@@ -162,7 +168,7 @@ class HubSealingBridgeTest {
         val sent = runBlocking {
             val bridge = aliceBridge(relay, mapOf("bob" to forged))
             assertFalse(bridge.canCarry("bob"))
-            bridge.sendDirect("bob", "m-1", 1_000L, frame)
+            bridge.sendDirect("bob", "m-1", now, frame)
         }
         assertFalse(sent)
         assertTrue("nothing readable may be sent instead", relay.sent.isEmpty())
@@ -175,7 +181,7 @@ class HubSealingBridgeTest {
         val sink = Sink()
         val outcome = runBlocking {
             HubChatBridge(
-                localDeviceId = "bob", port = relay, contentViaHub = { false }, sealing = sealing,
+                localDeviceId = "bob", port = relay, timeSource = clock, contentViaHub = { false }, sealing = sealing,
                 standing = { HubPeerStanding.MEMBER },
             ).handleInbound(HubInbound("alice", sent.id, sent.type, sent.sentAt, sent.payload), sink)
         }

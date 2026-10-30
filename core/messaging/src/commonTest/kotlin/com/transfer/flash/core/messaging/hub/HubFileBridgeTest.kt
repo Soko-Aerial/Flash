@@ -20,6 +20,12 @@ import kotlin.test.assertTrue
 /** HUBFILE-U15..U18 (ADR-216): a hub file ticket travels sealed or not at all, in both directions. */
 class HubFileBridgeTest {
 
+    /** Stated once: the fixture ticket and everything delivered are stamped here (the age rule, SEC-D15-02). */
+    private val now = 1_700_000_000_000L
+    private val clock = object : com.transfer.flash.core.common.time.FlashTimeSource {
+        override fun nowMs(): Long = now
+    }
+
     private val relay = FakeHubRelay()
 
     private class FileSink(private val takes: Boolean = true) : HubInboundSink {
@@ -39,6 +45,7 @@ class HubFileBridgeTest {
     ) = HubChatBridge(
         localDeviceId = "me",
         port = relay,
+        timeSource = clock,
         contentViaHub = { content },
         sealing = sealing,
         standing = { if (member) HubPeerStanding.MEMBER else HubPeerStanding.UNKNOWN },
@@ -50,7 +57,7 @@ class HubFileBridgeTest {
         localId = "m-1",
         senderId = sender,
         senderName = "Alice",
-        sentAt = 1_000L,
+        sentAt = now,
         ticket = HubFileTicket(
             fileId = "0123456789abcdef0123456789abcdef",
             key = key,
@@ -66,7 +73,7 @@ class HubFileBridgeTest {
     )
 
     private fun inbound(type: String, payload: String, from: String = "alice") =
-        HubInbound(from = from, id = "m-1", type = type, sentAt = 1_000L, payload = payload)
+        HubInbound(from = from, id = "m-1", type = type, sentAt = now, payload = payload)
 
     @Test
     fun `HUBFILE-U15 the route needs a member and a sealing key, and the readable opt-in does not count`() = runTest {

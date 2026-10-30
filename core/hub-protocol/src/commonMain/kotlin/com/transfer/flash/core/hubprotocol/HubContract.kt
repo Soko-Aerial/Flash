@@ -183,6 +183,22 @@ public object HubContract {
     /** Clock-skew tolerance applied at both ends of every validity window. */
     public const val CLOCK_SKEW_MS: Long = 60_000L
 
+    // ---- message freshness (SEC-D15-02) ----------------------------------------------------------------------
+
+    /**
+     * How long a hub mailbox keeps an undelivered message, by default (`ServerConfig.mailboxTtlDays` is 7). A hub
+     * announces its own value in [com.transfer.flash.core.hubprotocol.relay.RelayLimits.mailboxTtlMs]; this is what a
+     * client assumes when the hub announced none (an older hub).
+     */
+    public const val DEFAULT_MAILBOX_TTL_MS: Long = 7L * 24L * 60L * 60L * 1000L
+
+    /**
+     * Slack added to the mailbox retention before a recipient calls a delivery stale: clock difference between two
+     * devices and the queue-to-socket delay. Without it, a message delivered at the very end of its retention would be
+     * refused by a slightly fast clock.
+     */
+    public const val MESSAGE_AGE_GRACE_MS: Long = 5L * 60L * 1000L
+
     // ---- sizes (REL-04, SEC-16) -----------------------------------------------------------------------------
 
     /** Largest relay text frame, in UTF-8 bytes, in either direction. Both WebSocket stacks set this as `maxFrameSize`. */

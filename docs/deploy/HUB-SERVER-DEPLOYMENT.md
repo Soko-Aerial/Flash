@@ -221,6 +221,8 @@ tried to set. Every setting can be given as `--kebab-case` on the command line o
 | `FLASH_MAILBOX_TTL_DAYS` | `--mailbox-ttl-days` | `7` | How long the hub holds mail for an absent device |
 | `FLASH_CHALLENGE_TIMEOUT_MS` | `--challenge-timeout-ms` | `60000` | Auth challenge validity |
 
+> **Do not pass the two tokens as command-line flags on a shared machine** (SEC-D18-01, audit 2026-10-22): arguments are visible to every local user in the process list. Use the environment variables (a systemd `EnvironmentFile`, a Docker secret or `env_file`) or let the hub create `setup-token.txt`. The `--setup-token` / `--management-token` flags exist for quick local tests only.
+
 Subcommands (run with no `serve` argument):
 
 ```text

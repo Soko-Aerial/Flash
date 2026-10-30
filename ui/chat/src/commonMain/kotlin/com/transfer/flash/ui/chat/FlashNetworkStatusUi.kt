@@ -83,6 +83,9 @@ object FlashNetworkStatusMath {
         // UI-030b: seen by discovery with no session. There is no transport to name, and it is not
         // "searching" either: a send will connect.
         peerPresence == FlashPeerPresence.Reachable -> FlashConnectionHealth.Reachable
+        // ADR-228: no session, no sighting, but the radio can carry a text to this peer. Same calm
+        // "no session yet" health as a sighting — the banner only says how, never that it is idle.
+        peerPresence == FlashPeerPresence.RadioOnly -> FlashConnectionHealth.Reachable
         transport == FlashNetworkTransport.Unknown -> FlashConnectionHealth.Offline
         (transport == FlashNetworkTransport.Lan || transport == FlashNetworkTransport.WifiDirect) &&
             peerPresence == FlashPeerPresence.Online -> FlashConnectionHealth.Connected
@@ -97,6 +100,8 @@ object FlashNetworkStatusMath {
         FlashNetworkTransport.Lan -> "LAN"
         FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
         FlashNetworkTransport.Relay -> "Relay"
+        // ADR-228: the badge must never say "No link" for a peer a text can still reach.
+        FlashNetworkTransport.Radio -> "Radio"
         FlashNetworkTransport.Unknown -> "No link"
     }
 
@@ -115,7 +120,13 @@ object FlashNetworkStatusMath {
         }
         FlashConnectionHealth.Degraded -> if (transport == FlashNetworkTransport.Relay) "Relayed" else "Degraded connection"
         FlashConnectionHealth.Connecting -> "Connecting…"
-        FlashConnectionHealth.Reachable -> "Online · connects when you send"
+        // ADR-228: the same "no session yet" health, worded for the air: a station cannot be polled, so
+        // this never promises an answer, only that the text goes out.
+        FlashConnectionHealth.Reachable -> if (transport == FlashNetworkTransport.Radio) {
+            "Radio only · texts go over the air"
+        } else {
+            "Online · connects when you send"
+        }
         FlashConnectionHealth.Offline -> "Searching for devices…"
     }
 
@@ -135,6 +146,8 @@ object FlashNetworkStatusMath {
         FlashNetworkTransport.Lan -> FlashIcons.Wifi
         FlashNetworkTransport.WifiDirect -> FlashIcons.WifiDirect
         FlashNetworkTransport.Relay -> FlashIcons.Relay
+        // ADR-228: the radio is the Bluetooth serial link, so it wears the Bluetooth mark.
+        FlashNetworkTransport.Radio -> FlashIcons.Bluetooth
         FlashNetworkTransport.Unknown -> FlashIcons.Device
     }
 }

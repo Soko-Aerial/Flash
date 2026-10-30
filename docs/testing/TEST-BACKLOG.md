@@ -3246,7 +3246,7 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 - SHARE-15 No-frame watchdog. Setup: Windows presenter, a share source that produces no frame (a minimised window if the capturer then sends nothing). Steps: start sharing, wait past ShareLadder.FIRST_FRAME_TIMEOUT_MS. Pass: the share ends with the "no picture" notice, the camera returns, the viewer's tile goes back to the camera, a new share can start; log has "no frame within". Source: ERROR-138. Status: TODO
 - SHARE-16 Hang up while sharing, 20 times (Windows, then Linux). Pass: no native crash, no `hs_err`, capture closed each time. Source: ERROR-140, ERROR-123 class. Status: TODO
 - SHARE-17 Take-over after a skewed clock. Setup: three devices in a call, one with its clock set 30 days ahead. Steps: the skewed device shares, then a second device starts a share. Pass: the second device becomes the presenter on all three, the skewed one stops. Source: ERROR-139. Status: TODO
-- SHARE-18 Android presenter tuning (BLOCKED until the Android presenter exists). Steps: share, stop, check the camera sender degradation preference is back to balanced. Source: S6. Status: TODO
+- SHARE-18 Android presenter tuning (UNBLOCKED 2026-10-24: the Android presenter now exists, see SHARE-MOB-*). Steps: share, stop, check the camera sender degradation preference is back to balanced. Source: S6. Status: TODO
 - SHARE-19 Lost ss=0 in a group. Setup: three devices; the presenter stops while one viewer's signalling is down, then it recovers. Pass: the viewer drops the presenter claim within one status round. Source: ERROR-141. Status: TODO
 - BT-18 Radio that connects and drops. Setup: a serial radio that accepts the open then resets (or a wire pulled right after open). Pass: the Waiting retry delays grow (1 s, 2 s, 4 s ...) in the log. Source: ERROR-142. Status: TODO
 - BT-19 Stuck write on Android RFCOMM (BLOCKED: no debug entry yet, see BT-16). Steps: power the radio off mid-write, stop the driver. Pass: stop returns within about 1 s. Source: ERROR-143. Status: TODO
@@ -5179,7 +5179,229 @@ PASS BT-R05: Text message arrives on Station 2; Station 1 shows 'sent by radio, 
 Plan R §7 / Phase R3 (`docs/plans/RADIO-GATEWAY-PLAN.md` §11).
 
 ### Status
-TODO (Owner physical execution per `runbook-R3.md`)
+PARTIAL->FIXED IN CODE 2026-10-28 (owner's two-radio run + both logs; **not** re-run on hardware): **Android -> desktop text
+arrived** (RF, both radios, KISS, pairing keys and the desktop's receive path proven), and the desktop's ACKs arrived back
+(`radio.rx.ack`, RTT 3.8-9.4 s), so the radio carries both ways. What looked like failure was two defects, both now fixed
+(ERROR-869): (1) every retry was **re-encoded with a new counter**, and the receiver names an inbound text `rad-<counter>`, so
+one text became **three chat rows** on the desktop — a retry now resends the identical frame and stays one message;
+(2) the outbox retried at LAN speed (1.4 s, 2.6 s) while a radio ACK takes up to 9.4 s — a radio-carried message is now re-armed
+after 25 s. The 10:04 silence (`radio.rx.dropped reason=SIGNED_NOT_ENABLED` on the desktop) was the phone back on **Profile A**
+after its 09:56 restart: radio chat now refuses that with a sentence instead of putting unverifiable frames on the air.
+**Re-run owed** (same runbook as below); voice and data did coexist, so RADVOICE-04's coexistence half is observed.
+**Second run 2026-10-28 11:05-11:16:** the duplicate fix is confirmed on hardware (desktop: one `radio.rx.text
+duplicate=false signed=false` and one `radio.tx.ack` per text; phone: one `radio.tx.text ... retry=false`; ACK RTT
+3394/3490 ms). The desktop -> Android direction still produced **no line at all** in the desktop log, so it stays owed
+as RADCHAT-DEV04.
+
+---
+
+## RADCHAT-DEV03 — A radio send survives a link outage (ERROR-869 round 2)
+
+### Setup
+Two stations as in RADCHAT-DEV01, both on Profile M, gateway Connected on both, Wi-Fi off.
+
+### Steps
+1. With the gateway Connected, **turn the radio off** (or unplug the COM port / walk out of Bluetooth range) and send
+   one text from the phone.
+2. Watch for ~1 min (the outbox retries, backing off to 60 s).
+3. **Turn the radio back on**, wait for `radio.link.up`, and send nothing else.
+
+### Pass Line
+```text
+PASS: while the link is down the bubble says the radio is not connected (not "failed"); turning the radio back on
+delivers that same message by itself within about 25 s, with one bubble on the other station, `radio.path result=sent`
+and `radio.rx.ack`. No `radio.send.fail reason=attempts_exhausted` exists any more (the cap is gone).
+```
+Fail: the message is marked Failed and never goes out after the link returns (the old defect), or it is transmitted
+twice. Source: ERROR-869 round 2, ADR-227 amendment 2. Status: TODO
+
+---
+
+## RADCHAT-DEV04 — Desktop -> Android text, with the send path visible (ERROR-869)
+
+### Setup
+Both apps **rebuilt from the current tree** (the desktop binary must contain `chat.path`), two stations as in
+RADCHAT-DEV01, both Profile M, Wi-Fi off on both.
+
+### Steps
+1. Desktop: open the 1:1 with the phone and send `"desktop to radio test"`.
+2. Read `~/.flash/desktop.log` for the send.
+
+### Pass Line
+```text
+PASS: the phone shows the text once, the desktop's bubble reaches delivered, and the desktop log has
+`chat.path peer=… message=… path=radio`, `radio.tx.text peer=… segments=1 … retry=false` and `radio.tx.ack` for the
+phone's ACK.
+```
+Interpretation if it fails: no `chat.path` at all for a message that is visibly queued means the send path never ran
+(stale build, message never drained, or the UI did not send); `chat.path path=lan` with no session means the LAN sink
+claimed success; `path=hub` means the hub took it; `path=radio_refused` plus `radio.send.fail reason=…` names the exact
+refusal (an `authorisation` reason means the desktop is on Profile A). Source: ERROR-869 round 2. Status: TODO
+
+---
+
+## RADCHAT-DEV05 — The header says "Radio only" instead of Offline (ADR-228)
+
+### Setup
+Both apps **rebuilt from the current tree** (the desktop binary must contain the new presence state), two stations as in
+RADCHAT-DEV01, both Profile M, gateway Connected on both, **Wi-Fi off on both**, both paired with each other.
+
+### Steps
+1. Desktop: open the 1:1 chat with the phone. **Before sending anything**, read the header.
+2. Send `"header state test"`.
+3. Repeat the other way round (phone opens the chat with the desktop).
+
+### Pass Line
+```text
+PASS: with no Wi-Fi session and no discovery sighting, the chat header reads
+"Radio only · texts go over the air" with the ring dot in the accent colour, the transport badge reads "Radio" (Bluetooth
+glyph), the connection strip reads the same sentence and does not say "Searching for devices…", and the text still arrives
+and reaches delivered.
+```
+Interpretation if it fails: header still says **Offline** means the gateway is not `CONNECTED` or the peer has no 32-byte
+pairing session key on that host (`radio.path gateway=… connected=…` in the log says which); header says **Online** (no
+radio wording) means discovery still sees the peer, which is correct behaviour and not a bug; the badge saying "No link"
+would mean an old build. Also check that a peer with a live LAN session still reads **Connected** and the badge **LAN** —
+the radio must never win over a real session.
+
+### Source
+ADR-228 (`docs/decisions.md`), `docs/ui/chat-screen.md` UI-004/UI-030, `docs/network/PRESENCE-CONNECTIONS-PLAN.md`
+section "Built 2026-10-28".
+
+### Status
+TODO
+
+---
+
+## RADCHAT-DEV06 — The desktop's texts reach the radio when the hub cannot deliver now (ADR-229)
+
+### Setup
+Both apps **rebuilt from the current tree** (this is a send-path change, so an old desktop binary keeps the old order), two
+stations as in RADCHAT-DEV01, both KISS TNC enabled and linked, **Wi-Fi off on both** so no LAN session exists. The hub may be
+reachable from one side only, which is the case that exposed the defect.
+
+### Steps
+1. Desktop: `flash.db`/`desktop.log` open in a tail. Send `"desktop to phone"` from the 1:1 chat.
+2. Read the desktop log for the three lines of that message (`chat.path`, `radio.path`, `radio.tx.text`).
+3. Phone: confirm the text arrives and the desktop's bubble reaches **Delivered**.
+4. Repeat the other way round (phone → desktop).
+5. Leave the desktop open, turn the phone's radio off, and send `"phone radio off"` from the desktop. Wait 60 s.
+
+### Pass Line
+```text
+PASS: with no LAN session the desktop's text takes `chat.path path=radio` (not `path=hub`), `radio.tx.text` appears, and the
+phone shows it and ACKs it. `path=hub` appears only when `hub.online` counted at least one colleague, and `hub.ack kind=` then
+says DELIVERED or HELD. In step 5 the first attempt is `path=radio` and about 25 s later the message is also deposited
+(`hub_mailbox`) so it is not lost while the phone's radio is off.
+```
+
+Interpretation if it fails: `path=hub` with `hub.online result=read count=0` means the order fix is not in the binary (old build);
+`path=hub` with `hub.online count>0` is correct behaviour — the hub really had a session for the peer, so look at the hub side, not
+the radio; `radio.path result=not_reachable gateway=true connected=true` means the desktop holds no radio key for that peer (re-pair
+for radio, `RADCHAT-DEV01`); `radio.path result=refused` is explained by the next line, `radio.send.fail reason=…`.
+
+### Source
+ADR-229 (`docs/decisions.md`), ERROR-869 round 3 (`logs/errors.md`), `docs/network/RADIO-BLUETOOTH-CHANNELS.md` §5 and §7.
+
+### Status
+TODO
+
+---
+
+## RADCHAT-POLICY-01 — Per-chat radio fallback and attachment refusal (2026-10-29)
+
+### Setup
+Two paired stations with the radio gateway connected on both. Use one direct chat. First leave the peer reachable by LAN or a sealed hub-file route; then turn Wi-Fi off on both and ensure the peer is radio-only.
+
+### Steps
+1. In the direct chat's details sheet, tap **Radio fallback** until it says **Never**. With Wi-Fi off, send text; then send a text from the other station.
+2. Return the setting to **Automatic**. With the peer radio-only, open the attachment picker and try to attach a photo or file.
+3. Restore a LAN session or a sealed hub-file route and repeat the attachment selection.
+
+### Pass
+- `Never` survives leaving and reopening the chat; the local header no longer claims `Radio only`; the outbound text remains queued without `radio.tx.text`; an inbound radio text still appears.
+- In radio-only state, the picker shows **"Photos and files cannot be sent by radio"** and does not stage a file. If connectivity changes after selection, the send-time guard creates a visible failed attachment row with the same sentence.
+- With LAN or a sealed hub-file route, attachment selection remains available; it is not blocked merely because a radio is connected.
+
+### Source
+`docs/plans/RADIO-DATA-INTEGRATION.md` §4/§7; Room schema 21; ADR-227.
+
+### Status
+TODO
+
+---
+
+## RADCHAT-STOP-01 — Stop an unacknowledged radio retry (2026-10-29)
+
+### Setup
+Two paired Profile M stations with Wi-Fi off, the radio gateway connected on both. Arrange for the receiving radio to be off
+or out of range after the sender keys its first text frame.
+
+### Steps
+1. Send one direct text and wait until its bubble reads **"Radio · sent, waiting for acknowledgement"**.
+2. Tap the visible **Stop** beside that outgoing message's radio delivery line (or open its context menu and choose **Stop sending**).
+3. Restore the receiving radio. Wait longer than 25 seconds, then use the normal failed-message retry affordance and send again.
+4. Repeat step 2 while an ACK is deliberately delayed but still arrives after Stop.
+
+### Pass
+- Stop is offered only while the outgoing radio note is awaiting an ACK or held for a radio connection; it removes the local
+  outbox row, reads **"Stopped retrying by radio; delivery is unconfirmed"**, and emits no more `radio.tx.text` after 25 s.
+- A manual retry is still possible. An ACK already in flight after Stop wins honestly: the bubble becomes Delivered rather than
+  claiming it failed.
+
+### Source
+ADR-227 amendment 3; `RadioChatBridge.stopRetry`; `radio.retry.stop` probe.
+
+### Status
+TODO
+
+---
+
+## RADUI-DEV01 — The redesigned radio page (redesign v2, 2026-10-28)
+
+### Setup
+Both apps rebuilt from the current tree. Phone (Android) and Windows desktop. Two radios are not required for the layout
+pass: the page renders without a radio, and with one connected it is the same screen in its "linked" state.
+
+### Steps
+1. Phone: open the radio page from Settings → "Radio gateway (beta)". With the gateway **off**, confirm the page shows the
+   station plate ("No radio set up yet", "Radio gateway is off."), the three readiness steps, and **no** scan/security/mode
+   sections (nothing has an outlined card: only the plate and any attention strip are filled).
+2. Turn the gateway on. Confirm: the plate gains the tone wash and the master switch reads On; the sections "This link"
+   (only when a radio is remembered), "Nearby radios", "Security profile", "Operational mode", "Radio diagnostics" appear as
+   a small-caps label with hairline-separated rows.
+3. Tap "Scan for radios" in the **Nearby radios** header. Confirm the pill changes to "Stop (Ns)", devices appear as rows with
+   a RADIO / SERIAL SPP / OTHER chip, and `Pair` / `Use this radio` is on the right of each row.
+4. Connect a radio, then confirm the "This link" rows show radio name, address, profile and callsign, and that `Forget` is the
+   only action in that section.
+5. Security: tap Profile M while not authorised → the authorisation sheet opens **inside the window** (on Windows it must not
+   appear as a separate native window). Tick the acknowledgement, type a callsign, confirm.
+6. Diagnostics: with no link, "Send" is disabled and the row explains that a test message needs a live link; with a link, tap
+   Send → the RF warning sheet, "Transmit now" keys the radio.
+7. Android voice (when the voice section is present): the listen switch row, phase sentence, level bar and hold-to-talk behave
+   as before (this was a restyle only).
+8. Desktop: widen the window to maximised. The page stays **one centred column, no wider than 720 dp** — no second, shorter
+   column and no stretched rows. Repeat steps 1–6 and confirm nothing is clipped at 100 % and 125 % Windows scaling.
+
+### Pass Line
+```text
+PASS: the page reads top-to-bottom as plate → (permission / candidate strips only when they apply) → This link → readiness
+steps → Nearby radios → Security profile → Operational mode → Radio voice → Radio diagnostics; every section is a label plus
+hairline rows; the only filled surfaces are the station plate and a strip that needs an answer; both sheets open inside the
+window on Windows; the desktop column is centred and at most 720 dp wide; every controller action still does what it did
+before (scan, pair, connect, reconnect, forget, profile, authorise, modes, test message, voice).
+```
+
+Interpretation if it fails: a section that looks like a card again means `HubShapes`/`hubRuleBelow` were bypassed; a sheet in
+its own window on Windows means `AlertDialog` came back instead of `FlashConfirmHost`; a hardcoded colour means
+`HubTone`/`colors.*` were bypassed (grep the radio package for `Color(0xFF`).
+
+### Source
+`docs/ui/radio-gateway.md` "Redesign v2" (2026-10-28); ADR-226/227/228/229 unchanged (wiring untouched).
+`FlashRadioGatewayComponents.kt`, `FlashRadioGatewayScreen.kt`, `FlashRadioVoiceCard.kt`.
+
+### Status
+TODO (owner visual pass; unit tests green: `:ui:chat:jvmTest --tests "*Radio*"`, 43 tests)
 
 ---
 
@@ -6178,3 +6400,170 @@ All **Status: TODO**. Source: ERROR-752..758 and `docs/audit/2026-10-22-comprehe
 
 ## DESKTOP-ZORDER-01 (2026-10-23)
 - **DESKTOP-ZORDER-01:** Windows desktop, wide (two-pane) and narrow (single-pane) window. (1) Cause an error message: create a group with an offline member, or connect by IP to a dead address. (2) Open a group, start verifying/pairing a device from it while on the Chats tab, and also from the Hub tab. **Pass:** the message appears above the sidebar and chat panes; the pairing card appears above everything and its Accept/Decline can be clicked; on the Nearby tab the pairing UI is still the screen's own. Also during an active call the card and a message are visible. Source: ERROR-810. Status: TODO
+
+
+## SECAUD-01..15 (2026-10-23) — Security Audit Verification Tests (Critical & High Findings)
+
+All **Status: TODO**. Source: ERROR-811..866 and `docs/audit/security-2026-10-22/REPORT.md`.
+
+- **SECAUD-01 (TLS leaf-only certificate pinning, SEC-D02-01, ERROR-815):** Two test instances (A and B). Attacker presents a synthetic certificate chain where an intermediate or root certificate matches the pinned SHA-256 fingerprint, but the leaf certificate has an attacker-controlled keypair. **Pass:** Handshake is immediately aborted with `SSLPeerUnverifiedException` / `CertificateException`; connection fails closed; only leaf certificate (`chain[0]`) fingerprint is accepted. Status: TODO
+- **SECAUD-02 (Inbound unsolicited connection rejects TOFU pin persistence, SEC-D02-02, ERROR-816):** Device A and unauthenticated stranger B on the same LAN. B initiates unsolicited TCP/TLS connection to A's WebSocket server on port 45822 without prior pairing. **Pass:** A does not persist B's certificate fingerprint to `PeerTrustPolicy` / SQLite database until explicit user approval or pairing ceremony completion. Status: TODO
+- **SECAUD-03 (Pairing v2 symmetric manual SAS confirmation dialog enforcement, SEC-D03-01, ERROR-818):** Device A (initiator) and Device B (responder). Perform Pairing v2. B enters commitment code and reveals SAS. Observe A's UI. **Pass:** A displays an explicit "Confirm 6-digit SAS code matches peer" confirmation dialog requiring user tap, rather than automatically transitioning to CONFIRMED. Status: TODO
+- **SECAUD-04 (Unicode Bidi and zero-width character sanitization, SEC-D04-01, ERROR-822):** Peer C sets display name containing Right-to-Left Override (`\u202E`), Left-to-Right Embedding (`\u202A`), or Zero-Width Space (`\u200B`), e.g. simulating `Alice [verified]`. Also send file named `report\u202Efdp.exe`. **Pass:** Bidi control characters and zero-width spaces are stripped/escaped; file extension is displayed honestly (`reportexe.pdf` or raw sanitized text); no spoofed verification badges or inverted extensions. Status: TODO
+- **SECAUD-05 (Inbound 1:1 direct chat text ingestion trust gating, SEC-D05-01, ERROR-825):** Unpaired LAN stranger D sends a direct text message frame via WebSocket to Device A. **Pass:** Unpaired direct message is not inserted directly into the main message table; held in a quarantine / message request state or rejected until user explicitly trusts/accepts D. Status: TODO
+- **SECAUD-06 (Legacy group catch-up author signature verification, SEC-D05-02, ERROR-826):** Group with members A, B, and attacker E. E sends a synthetic `SyncPush` payload containing forged message entities with author set to A. B receives the `SyncPush` from E. **Pass:** B rejects or verifies author cryptographic signatures on all historical batch entities; forged messages attributed to A are dropped. Status: TODO
+- **SECAUD-07 (Group member-issued certificates verified against group admin public keys, SEC-D06-01, ERROR-830):** Non-admin group member F attempts to issue a member certificate for device G with substituted public key or vouch escalation. Device A receives member admission frame signed by F. **Pass:** A verifies certificate against the group's authorized admin signing key, rejecting any non-admin issued certificate or unauthorized role upgrade. Status: TODO
+- **SECAUD-08 (Path traversal containment sentinel checks canonical destination root, SEC-D07-01, ERROR-833):** Desktop client with download directory containing a symlink or junction pointing to `%TEMP%` or `%USERPROFILE%`. Inbound transfer sends file relative path attempting to traverse through the pre-existing junction (`safe_link/../../target.txt`). **Pass:** File receiver evaluates canonical path of the output file against the canonical path of the root downloads directory, rejecting the transfer with `SecurityException` / `PathTraversalException`. Status: TODO
+- **SECAUD-09 (Binary framing downgrade protection in FlashInboundRouter, SEC-D07-05, ERROR-836):** Attacker attempts to initiate file transfer using legacy unencrypted or unauthenticated framing when encrypted framing is negotiated. Send file chunks over unencrypted socket frame while transfer metadata indicates encryption. **Pass:** Receiver strictly enforces binary encrypted framing; aborts transfer; does not display misleading "Verified / Encrypted" badges on unencrypted streams. Status: TODO
+- **SECAUD-10 (RosterGroupGate restricts swarm download and piece distribution, SEC-D08-01, ERROR-837):** Group has full members and a vouched-only / guest member H. H attempts to request swarm pieces or announce swarm availability for a group-restricted file. **Pass:** Swarm driver rejects piece requests from H; H is not served piece bitfields for group files. Status: TODO
+- **SECAUD-11 (Automatic subnet sweep and gateway auto-probe do not persist TOFU pins, SEC-D10-01, ERROR-840):** Device on LAN initiates background subnet sweep or gateway probe. Inspect `PeerTrustPolicy` / SQLite certificate store after sweep encounters active IP addresses with TLS servers. **Pass:** Scanned host certificates are discarded unless an explicit pairing or interactive transfer is initiated by the user. Status: TODO
+- **SECAUD-12 (Android MainActivity ACTION_OPEN_FILE intent caller validation, SEC-D11-01, ERROR-843):** Malicious third-party app on Android device crafts an explicit Intent with `ACTION_OPEN_FILE` and private FileProvider URI pointing to Flash internal data. Third-party app fires intent to `MainActivity`. **Pass:** Intent is rejected or validated against authorized package caller; no arbitrary internal URI resolution or grant forwarding. Status: TODO
+- **SECAUD-13 (Desktop log sanitization scrubs sensitive message bodies, SEC-D13-01, ERROR-849):** Send and receive chat messages containing confidential text. Inspect `%USERPROFILE%\.flash\desktop.log` / `~/.local/share/flash/desktop.log`. **Pass:** Chat message bodies, authentication tokens, and private keys are scrubbed or replaced with `[REDACTED]` / length tokens. Status: TODO
+- **SECAUD-14 (Local LAN peer verification validates peer certificates independently of hub operator, SEC-D27-01, ERROR-864):** Hub server operator compromises or alters directory statements mapping colleague device ID to an attacker TLS certificate. Attacker on LAN presents forged hub directory entry to connect to peer on LAN. **Pass:** Client verifies peer's certificate against the cryptographic organization root CA / enrollment delegation rather than unverified hub directory metadata alone. Status: TODO
+- **SECAUD-15 (Linux key vault prompts for user passphrase when D-Bus Secret Service is absent, SEC-D01-01, ERROR-811):** Run Flash Desktop on Linux in headless/minimal environment where D-Bus Secret Service daemon is not running. Launch Flash. **Pass:** App prompts user for an encryption passphrase to derive vault master key via Argon2id / PBKDF2, rather than writing a cleartext `vault.key` alongside the encrypted database. Status: TODO
+
+## SECAUD-16..21 (2026-10-23) — Security Audit, second tranche (Medium and Low)
+
+All **Status: TODO**. Source: `docs/audit/security-2026-10-22/findings-ledger.md` (rows marked "tranche 2") and ADR-226.
+
+- **SECAUD-16 (Windows second launch, SEC-D12-01 / D12-03):** On Windows start Flash, then start it again from a shortcut and with `--send <file>` (right-click Send). **Pass:** the first window comes to the front and the file is staged exactly as before; `app.port` has two lines (port, token) and a hand-made `echo ACTIVATE | nc 127.0.0.1 <port>` without the token does nothing. On Linux the state folder is `drwx------`. Status: TODO
+- **SECAUD-17 (Invite hints, SEC-D10-03):** Join a group with a real invite from a phone on the same Wi-Fi (hints are `192.168.x.x:port`). **Pass:** the inviter is dialed from the hint and the join completes. Then paste an invite whose hint is `127.0.0.1:45822` or a public address: no dial in the log (`Skipping 1 address hint(s)`), the join waits for discovery. Status: TODO
+- **SECAUD-18 (Typing and receipts, SEC-D05-03 / D05-04):** Two paired phones: typing indicator and the double tick still work both ways, in 1:1 and in a group. With a third, unpaired device on the LAN nothing it sends changes either. **Pass:** ticks and "typing…" as before; log shows no "Ignoring a delivery receipt" for the real peer. Status: TODO
+- **SECAUD-19 (Backup rules, SEC-D13-02):** `adb shell bmgr backupnow com.transfer.flash` on a build with received files and swarm pieces, then inspect the transport archive (or run `adb shell dumpsys backup`). **Pass:** neither `files/swarm` nor `files/FlashReceived` is in the archive. Status: TODO
+- **SECAUD-20 (Handshake admission, SEC-D24-01):** From a laptop open 100 TCP connections to the phone port 45822 and hold them silent. **Pass:** the phone keeps answering a normal chat from a paired peer; more than 16 held connections from the one address are closed; after the holder disconnects, new peers connect at once. Status: TODO
+- **SECAUD-21 (Hub: mailbox share, step-up, tokens, SEC-D15-01 / D17-01 / D14-03):** On a test hub, (a) one enrolled device queues messages to an offline recipient until refused: the refusal comes before the whole mailbox is full and a second sender can still queue; (b) a console step-up approved in one browser session is refused when replayed from a second login; (c) a device that logs in more than 8 times keeps working, only its oldest sessions are dropped. **Pass:** all three as described. Status: TODO
+- **SECAUD-22 (Pairing needs both devices, SEC-D03-01 / D03-06):** Start a pairing from the initiator. **Pass:** the initiator shows the code, the sentence "Accept only if <peer> shows the same code." and Accept/Decline (it does NOT sit on "Waiting for peer"); accepting on one device alone pairs nothing and the other side stays on its card; after accepting on the second device both reach Paired and each trusts the other. Repeat on Windows against Android. Status: TODO
+- **SECAUD-23 (Keepalive survives a clock change, SEC-D26-01):** Pair two phones and keep a chat idle. Set one phone's clock forward by an hour (Settings → Date & time, manual), then backward by an hour. **Pass:** the session stays up through both changes; no `WS: peer silent` / `Reaping` line appears and no redial is needed. Then let a session idle past its liveness window with the clock correct: it still reaps within the window (the fix did not disable the watchdog). Status: TODO
+- **SECAUD-24 (Dependency verification blocks a swapped jar, SEC-D21-02):** On a scratch checkout, edit one recorded checksum in `gradle/verification-metadata.xml` (e.g. change the last hex digit of `org.jetbrains.skiko:skiko`). **Pass:** the build fails with "Incorrect checksum" naming that artifact and the file path. Restore it. Then delete the whole `gradle/verification-metadata.xml` locally: the build still passes but downloads without checks (that is what the file buys). Also confirm a normal full build (`allTests testDebugUnitTest assembleDebug`) is green with the file present, on a clean Gradle cache if one is available. Status: TODO
+- **SECAUD-25 (A replayed hub message is refused, SEC-D15-02):** On a test hub, have device A (paired or colleague of B) send B a message while B is offline; use the admin console or a SQL client to push the mailbox row's `sent_at` back 30 days (`UPDATE mailbox_envelopes SET sent_at = sent_at - 2592000000`), then bring B online. **Pass:** B shows the message as refused, nothing new appears in the chat, and Settings → hub connection details count it under "Old messages refused". Then repeat without the change: the message is stored normally. On a hub with a 1-day `mailboxTtlDays`, a delivery two days old is refused and one an hour old is kept. Set a phone's clock 3 days behind, send through the hub to a phone with the correct clock: the message arrives (the sender stamps with the hub's time). Status: TODO
+
+
+## OPT26-01..10 (2026-10-23) — Performance & Optimization Audit Verification Tests
+
+All **Status: TODO**. Source: `docs/audit/optimization-2026-10-23/REPORT.md` and `findings-ledger.md`.
+
+- **OPT26-01 (Launch splash gate delay removal, OPT-O01-01):** Cold launch on real device (Infinix X6882B or Samsung) with `FlashLaunchSplashGate` delay set to 0. Measure time from process start to chat list display via `adb shell am start-activity -W com.transfer.flash/.MainActivity`. **Pass:** Time-to-first-display drops by ~3.7s; chat list is interactive in <1.5s. Status: TODO
+- **OPT26-02 (Unread count index & preview speed, OPT-O06-01):** Seed client SQLite database with 50,000 messages across 20 chats. Launch app and open chat list. **Pass:** Chat list unread badges and previews load in <20ms without scroll stutter or dropped frames. Status: TODO
+- **OPT26-03 (Android APK ABI split verification, OPT-O22-01):** Build release APK with ABI splits (`tools\flash-gradle.cmd :app:assembleRelease`). Verify output artifacts in `app/build/outputs/apk/release/`. **Pass:** `app-arm64-v8a-release.apk` is <= 18 MB (down from 54.6 MB); installs cleanly on Android 14 test device. Status: TODO
+- **OPT26-04 (Desktop DropTarget navigation jank, OPT-O19-01):** On Windows 11 desktop, navigate rapidly between 5 active chat conversations and type 50 characters. Capture frame rendering with profiler. **Pass:** Zero Win32 OLE `RevokeDragDrop` teardowns; frame render time stays <= 16.6 ms (60 FPS). Status: TODO
+- **OPT26-05 (Hub file download fsync reduction, OPT-O23-01):** Download a 100 MB file from Hub over LAN on mobile and desktop. Monitor flash I/O syscalls via `strace` / ETW. **Pass:** Single `fsync` call at completion; download completes in <4 seconds on 5 GHz Wi-Fi. Status: TODO
+- **OPT26-06 (Background wake lock release, OPT-O13-01):** Start a 100 MB transfer, turn phone screen off. After transfer completes, monitor wake locks via `adb shell dumpsys power`. **Pass:** `FlashTransfer` wake lock is released immediately on completion; AP enters deep sleep / power collapse within 15 seconds. Status: TODO
+- **OPT26-07 (Optimistic local echo on chat send, OPT-O24-01):** In a 1:1 chat on phone, type a message and tap send. Observe composer and bubble. **Pass:** Bubble appears instantly (0 ms) with a pending clock/spinner icon; no input field freeze or disappearing text. Status: TODO
+- **OPT26-08 (Single-pass streaming attachment hash, OPT-O05-01):** Send a 1 GB video file as attachment. Monitor disk read throughput via `adb shell cat /proc/[pid]/io` before transfer start. **Pass:** File is read from flash memory exactly once; no multi-gigabyte `hashOnly` pre-pass before offer creation. Status: TODO
+- **OPT26-09 (Radio link idle sleep, OPT-O26-01):** Connect to a KISS Bluetooth radio modem. Keep chat idle. Monitor CPU and wake-ups via `dumpsys cpuinfo`. **Pass:** Zero 250ms periodic wake-ups; thread blocks indefinitely on socket read until incoming packet arrives. Status: TODO
+- **OPT26-10 (Server test parallelization, OPT-O21-04):** Run `tools\flash-gradle.cmd :server:test` on workstation. **Pass:** All 656 tests pass across 4 parallel forks in <= 80 seconds with zero port collisions or deadlocks. Status: TODO
+
+
+## PAIRLIB-01 (2026-10-23) — Pairing through the published library
+
+- **PAIRLIB-01 (`engine.pairing`, ADR-224):** Build a small app (or the Flash Watch app) on `Flash.create()` from the `2.1.0-beta.3` library with no local patches, and a phone or desktop running Flash. Discover the peer, call `engine.pairing.beginPair(...)` from the main thread. **Pass:** both devices show the same 6-digit code; after `acceptLocal()` on both, each lists the other in `trustedPeers`; no `NetworkOnMainThreadException` and no "dropped FLASH_PAIR" in the log; `revoke` removes it. Also repeat with two peers asked before either answers (per-peer pending intent). Status: TODO
+
+
+## RADVOICE-01..08 (2026-10-23) - Radio voice (hear and talk through the handheld)
+
+Source: ADR-225, `docs/network/RADIO-AUDIO.md`. Needs the owner's phone, the VR-N76 / UV-Pro and a second radio (or scanner) on the same frequency.
+
+**Owner report 2026-10-28: "radio voice works, talking works."** RADVOICE-01/02/03 are therefore taken as PASS on the owner's hardware (audio channel opens, speech is heard, holding to talk transmits and unkeys); the exact device/Android version and the chosen capture rate were not recorded, so RADVOICE-06 and RADVOICE-08 stay TODO. Everything else is **Status: TODO**.
+
+- **RADVOICE-01 (audio channel opens):** Pair the radio (as radio and, if the phone lists it twice, as audio device). Radio gateway on, a remembered radio, open the Radio screen, switch "Listen to the radio" on. **Pass:** the card goes Connecting then Listening within 10 s; logcat `RadioVoice` / probe `radio.link.attempt` shows which strategy (insecure-sdp or secure-sdp) worked. **Fail:** "Could not open the radio's audio channel": record the attempt lines (decides whether a fixed-channel probe is needed).
+- **RADVOICE-02 (receive):** With listening on, key a second radio on the same frequency and speak for 5 s. **Pass:** speech is audible and intelligible on the phone, the card shows Receiving with a moving level bar, and returns to Listening within 1 s of release; logcat shows `rx run start` / `rx run end`.
+- **RADVOICE-03 (transmit):** Listening on, hold "Hold to talk" and say a test phrase for 5 s, release. **Pass:** the second radio receives it intelligibly, the handheld shows TX only while held and unkeys within 1 s of release (END frame).
+- **RADVOICE-04 (coexistence with KISS):** Repeat 02 and 03 while the KISS gateway is Connected, then connect the KISS link while voice is listening. **Pass:** both stay up and a test message (diagnostics card) still sends; or the exact failure is recorded. **2026-10-28 (owner):** voice worked with KISS connected on both stations, and a chat text travelled Android -> desktop meanwhile, so the two halves do coexist (the desktop's cryptographic ACK came back too). The reverse text direction was not proven in the captured window (ERROR-869); re-run RADCHAT-DEV01 after the fix.
+- **RADVOICE-05 (anti-doubling):** While the radio is receiving, press hold-to-talk. **Pass:** nothing is transmitted and the card says "The radio is receiving. Wait until it is quiet."
+- **RADVOICE-06 (microphone permission and rates):** Fresh install, deny the microphone, hold to talk. **Pass:** the card asks for the microphone, "Allow microphone" opens the prompt, and talking works after allowing. Record the capture rate chosen on each phone.
+- **RADVOICE-07 (lifecycle):** Switch the radio off, walk out of range and back, leave the screen while listening, lock the screen. **Pass:** a lost radio shows "The radio closed the audio link." or "...was lost.", leaving the screen releases speaker and microphone (no mic indicator), nothing stays keyed.
+- **RADVOICE-08 (quality):** Compare intelligibility at the default bitpool 18 with a build at 40 (`RadioAudioSession(bitpool = 40)`) on a real transmission. Record which one to ship.
+
+- **RADVOICE-09 (choose a bonded radio):** Pair the radio in Android settings first. Open Radio gateway, switch it on, Scan. **Pass:** the VR-N76 row shows **Use this radio**; tapping it goes Connecting then Connected, a remembered-radio card appears, and the voice card follows. Also try it after tapping Scan from the "Is this your radio?" card. Source: progress 2026-10-23 (radio connect). Status: TODO
+- **RADVOICE-10 (desktop radio connect):** Windows Bluetooth paired with the radio (both VR-N76 entries may exist). Close every Flash instance, `desktop:run`, Radio gateway on. **Pass:** one "Is this your radio?" card for the entry that owns the COM port (34:FD on the owner's PC) or a list row with **Use this radio**; Confirm/Use goes Connecting then Connected and a remembered radio appears. Fail: record the status sentence and `~/.flash/desktop.log`. Status: TODO
+
+- **RADVOICE-11 (desktop pairing and scan):** Windows, Flash closed then `desktop:run`, Radio gateway on. (a) Remove the VR-N76 entries in Windows Bluetooth settings, put the radio in pairing mode, open Scan in Flash. **Pass:** the radio appears within about 3 s of the scan start (not after 12 s) with a **Pair** button (not Use this radio). (b) Tap Pair. **Pass:** it pairs without a Windows wizard, a COM port appears, then it connects; if the radio refuses, the card says "Pairing was refused ..." with the pairing-mode step, never "wrong PIN". (c) Unpair in Windows only (radio still holding the bond), rescan. **Pass:** the row shows **Pair** again, not Use this radio. (d) With two VR-N76 entries paired, tap Use this radio on either. **Pass:** it opens the one with the COM port. Record in the log the Win32 result of the pair (`desktop.log` / probe) and whether Windows showed any prompt. Source: `docs/network/RADIO-WINDOWS-BLUETOOTH.md`, progress 2026-10-23. Status: TODO
+
+- **RADVOICE-12 (desktop radio voice):** Windows, Flash closed then `desktop:run`, radio paired and connected, Radio gateway page. (a) The **Radio voice** card appears under the radio card. (b) Switch Listen on. **Pass:** within about 3 s it says listening (not an error); if it fails, the card names the reason. (c) Have another radio transmit. **Pass:** the PC speaker plays it and the level bar moves; no loud clicks. (d) Windows microphone allowed: hold the talk button for 2 s and say your callsign. **Pass:** the radio transmits (watch it or a second receiver), releasing unkeys it within 1 s; the card shows Transmitting only while held. (e) Hold talk while the radio is receiving. **Pass:** it refuses with the receiving message. (f) Turn the KISS link on at the same time and repeat (c). **Pass:** both work, or record which one drops (RADVOICE-04). (g) Leave the page. **Pass:** audio and microphone stop. Source: ADR-225 amendment, `docs/network/RADIO-AUDIO.md`. Status: TODO
+
+
+## SHARE-MOB-01..08 (2026-10-24) — presenting the screen from Android (MediaProjection, ADR-102)
+
+Source: ADR-102, `docs/calling/SCREEN-SHARE-DESIGN.md` section 8, `docs/ui/calling-ui.md` UI-050g, `docs/android-platform-notes.md`
+(2026-10-24). Built and unit-tested, **nothing device-verified**. Needs two devices: an Android phone on this build as the presenter and
+another device (phone or Windows) in the same video call as the watcher. Logcat filter `SHARE` / `CALL` / `SCREENCAP`. All **Status: TODO**.
+
+- **SHARE-MOB-01 (a phone shares its screen in a 1:1 call):** video call phone A (this build) <-> phone B. On A: More -> Share screen -> "This device's screen" -> Share. **Pass:** the system consent dialog appears; after Allow, the Android "Sharing your screen" notification is in the shade within 1 s, B shows A's screen letterboxed with "A is presenting" within about 3 s, and A's own indicator strip says "You are sharing ...". Fail: record whether the dialog, the notification, the service (`dumpsys activity services FlashScreenCaptureService`) or the first frame was missing, and the logcat line from `FlashScreenCaptureProvider`/`SCREENCAP`.
+- **SHARE-MOB-02 (the system's app picker):** API 34+ device: start a share and choose **a single app** instead of the whole screen. **Pass:** only that app is visible to B (no status bar, no other apps); note whether the picture is letterboxed inside black bars (expected: the capturer has no resize handling, see the platform note) and how much of the tile it wastes.
+- **SHARE-MOB-03 (the status-bar chip revokes the share):** Android 15 QPR1+ device: share, then tap the system's status-bar chip (or lock the screen). **Pass:** the share stops by itself within about 2 s, A shows "The shared screen or window went away, so sharing stopped", the notification disappears, A's camera comes back if it was on, and B returns to the camera or avatar. **Also:** after the revocation, starting a new share works (fresh consent).
+- **SHARE-MOB-04 (the notification's Stop action):** share, pull the shade, tap Stop on the "Sharing your screen" notification. **Pass:** the share ends, B returns to normal, the notification goes away, the call keeps running; repeating a share afterwards works.
+- **SHARE-MOB-05 (consent refused and consent abandoned):** share, then press Back/Deny in the consent dialog. Then start a share and leave the dialog open for 10 s before denying. **Pass:** both times the picker closes, the call is untouched, A gets "Sharing could not start" once, and no notification and no service are left behind (`dumpsys`). No `SecurityException` in the log.
+- **SHARE-MOB-06 (hang up / leave while sharing, 10 times):** share, then hang up from A; then share and hang up from B; then share and force-stop A. **Pass:** no crash on either side, the service is gone (`dumpsys`), the notification is gone, no camera or projection left on (no green/red privacy dot), and a new call can share again. Watch for `IllegalStateException` from `createVirtualDisplay` (a reused consent) in the log.
+- **SHARE-MOB-07 (quality, frame rate and heat):** share a scrolling document or video for 5 minutes while B watches. **Pass:** the picture is readable (record whether 10 pt text is legible without zoom), the log's `CALL_RENDER` stats on B show about 10 fps and the share's own rung; record A's battery temperature before and after, and whether the phone warned about heat. Also rotate A during the share and confirm the picture follows (the capture size is fixed at start; record the exact behaviour).
+- **SHARE-MOB-08 (take-over and the group case):** three devices in a group video call. A (Android) shares; B (desktop) then shares and confirms. **Pass:** A stops with "B started sharing, so yours stopped", the notification and service go away on A, everyone shows B. Then C (Android) shares in the same group call and is seen by both. Also check the group stage shows the presenter's tile with the "Presenting" chip.
+
+## SHARE-ZOOM-01..06 (2026-10-24) — pinch to zoom into a shared screen (UI-050h)
+
+Source: UI-050h in `docs/ui/calling-ui.md`, `ui/callui/.../FlashVideoZoom.kt` (unit-tested, `FlashVideoZoomMathTest`). Needs a presenter
+(desktop or Android) and a watcher. All **Status: TODO**.
+
+- **SHARE-ZOOM-01 (pinch in and drag on a phone):** watch a desktop screen share on a phone (1:1). Pinch out to about 3x, then drag with one finger in every direction. **Pass:** the picture grows around the pinch, follows the finger without lag or jitter, stops at the edge of the picture instead of showing black, and never shrinks below the whole picture. The camera picture of a normal call cannot be zoomed at all.
+- **SHARE-ZOOM-02 (the way back):** while zoomed, tap the "Fit to screen" chip; then zoom again and pinch back in below 1x. **Pass:** both return to the whole picture with no offset left over; the chip appears only while magnified and sits over the picture without covering the presenter's name or the PiP.
+- **SHARE-ZOOM-03 (the state resets by itself):** zoom in, then (a) the presenter stops and starts sharing again, (b) a different person starts presenting in a group, (c) the call ends and a new call starts. **Pass:** each time the picture is whole again at 1x, never left magnified from the previous share.
+- **SHARE-ZOOM-04 (group stage and compact tile):** in a group video call with a presenter, zoom the stage tile; switch to the compact (one-video) layout and back. **Pass:** the same magnification applies to the presenter's tile in both layouts, a camera tile cannot be zoomed, and tapping a tile still pins/unpins it (a plain tap must not be swallowed by the zoom gesture).
+- **SHARE-ZOOM-05 (1:1 tap-to-swap still works while presenting):** in a 1:1 call with a presentation, tap the main picture (swap to the self preview) and tap again. **Pass:** the swap still happens on a plain tap; while swapped the preview cannot be zoomed; swapping back keeps the zoom that was set.
+- **SHARE-ZOOM-06 (desktop watcher):** watch the same share on Windows and pinch with a touchpad, or drag with the mouse. **Pass:** record what the desktop does (the gesture layer is Compose `detectTransformGestures`, so a touchpad pinch is expected to work and a mouse drag to pan while zoomed); the picture stays sharp when zoomed (the conversion size follows the zoom, up to the frame's own size), and the "Fit to screen" chip works.
+
+
+## HUBWEB-01..09 (2026-10-25, rewritten same day) - the Flash Hub tab redesign web mock (`design/hub-web/`)
+
+Source: `docs/ui/hub-web-redesign-2026-10-25.md`, `design/hub-web/README.md`. The **replacement** of the rejected Atlas
+prototype, recording its HUBWEB-01..06 wording (the Atlas checks are marked OBSOLETE by the supersede banner in
+`docs/ui/hub-web-atlas-prototype.md`). A standalone React + Tailwind design mock, **not product code and not in the
+Gradle build**. Screenshot-verified in headless Chromium (12 page/state/viewport combinations, clean console) but has
+not been looked at by a person in a real browser. All **Status: TODO**.
+Run it with `cd design/hub-web; npm install; npm run dev` and open `http://localhost:5180`.
+Both hosts are on screen at once: Android (bottom nav, left) and desktop (68dp sidebar, right).
+
+- **HUBWEB-01 (it looks like Flash in the real shell):** compare each host against the running app. **Pass:** the Android frame's bottom nav is the hanging capsule with the sliding chip and the right tab sets (Hub badge; Transfers back when "Not enrolled"), the desktop rail is the 68dp medallion + icon wells + edge bar; colours are Pulse teal (not amber), type matches, cards/chips/tabs read as HubShapes; nothing else on the page pretends to be the app.
+- **HUBWEB-02 (the hub reads as simple):** scroll the three segments News/People/Groups on both hosts. **Pass:** no hero card, no stat tiles, no count-ups, no rings; the org row is one calm line; each segment is a short scannable list; next to the 2026-10-20 implementation the reviewer should *want* less, not miss decoration.
+- **HUBWEB-03 (departments become chips):** in People tap All / My department / each department chip. **Pass:** the list filters each time, "My department" marked, no separate Departments screen exists anywhere, and the set is still comprehensible as a place for every department.
+- **HUBWEB-04 (the states survive):** walk App state = Offline · cached / Never synced / Removed / Not enrolled and hit Retry on Never synced. **Pass:** Offline shows the neutral data-age strip with grey dot and readable lists; Never synced shows caution strip + empty state + Retry that plays a skeleton into Fresh; Removed turns the whole tab into the removal notice on both hosts; Not enrolled removes the Hub item and puts Transfers back on BOTH navs.
+- **HUBWEB-05 (honesty sentences, exactly):** open an unpaired colleague, a paired colleague online, and any announcement. **Pass:** the reach sentence differs per case (Wi-Fi now / through the company server / offline), the unpaired honesty note appears only when the peer is unpaired, and the plaintext-at-the-hub notice appears in the News list footer and the reader. Flag any sentence the owner would not sign (they must be `FlashHubCopy.kt` text).
+- **HUBWEB-06 (presence rule D2):** in People find the colleague with withheld availability. **Pass:** that row shows **no dot and no slot at all** — not a grey dot, not an empty gap.
+- **HUBWEB-07 (details per host):** on the desktop frame click a person and an announcement; on the phone frame do the same. **Pass:** desktop opens them only in the right detail pane (list + pane, never a sheet over the list); phone opens them only as a bottom sheet whose scrim covers the whole screen including the top bar and the nav; both include a clear close.
+- **HUBWEB-08 (search):** open search, type "maya", Enter. **Pass:** grouped results (People/News/Groups), Enter opens the first person hit, Esc/back closes and clears the query, and the results keyboard/scroll do not trap focus.
+- **HUBWEB-09 (light theme + narrow page):** switch Theme = Light and drag the window narrow until the frames stack. **Pass:** light keeps every hairline and chip legible, the phone bezel stays dark, no frame overflows its column, and the review-page controls stay reachable.
+
+---
+
+## RADCHAT-DEV07 - A lost ACK no longer strands a radio text (ERROR-870)
+
+### Setup
+Two paired Profile M stations with Wi-Fi off, both apps **rebuilt from the current tree**, both KISS TNCs enabled and linked
+(`radio.link.up` on both). Logs open on both hosts (`desktop.log`, Android logcat). This test deliberately provokes the case
+`RADCHAT-DEV06` step 5 only touches by accident: the receiver gets the text but its ACK never reaches the sender.
+
+### Steps
+1. Send one direct text from the desktop to the phone and let it reach **Delivered** (proves the baseline path).
+2. Send a second text from the desktop. As soon as the phone shows it, **switch the phone's radio off** (or pull its power) before
+   the ACK goes out. If the ACK escapes anyway, key the phone's PTT so the channel is busy at that moment, or repeat until the
+   desktop still reads *"sent, waiting for acknowledgement"* after 30 s.
+3. Turn the phone's radio back on and wait 30 s without touching the desktop.
+4. Repeat once with a long message (over ~200 bytes, so it is segmented) and drop one segment: send it while the phone's radio is off,
+   bring it back in the middle of the retries.
+5. Health check: leave one text unacknowledged for 30 minutes (or lower the give-up temporarily) and confirm the bubble becomes
+   Failed at give-up, not before, and that the peer still shows exactly one copy.
+
+### Pass Line
+```text
+PASS: after the radio returns, the desktop log shows `radio.rx.retransmit` on the PHONE (acked=true) and `radio.tx.ack` follows it,
+and the desktop's bubble turns Delivered within one retry interval (~25 s) instead of failing. The phone still shows ONE text.
+For the segmented message, `radio.rx.partial` may be followed by `radio.rx.retransmit`/`radio.tx.ack` only once the whole message
+has arrived; the completed message appears once, with no duplicate row. The 30-minute case still ends in Failed, honestly.
+```
+Interpretation if it fails: `radio.rx.retransmit acked=false` means the retry arrived for a message the phone never completed (expected
+for a missing segment, wrong for the finished text); no `radio.rx.retransmit` at all on the phone means the retry frame never reached
+it (look at `radio.rx.drop reason=` for `replay`/`duplicate_incomplete`, and at the TNC link) � that is ERROR-870 not fixed or an old
+binary, not a new defect; a second copy of the text means the duplicate was stored instead of only acknowledged.
+
+### Source
+ERROR-870, `docs/network/RADIO-WIRE-FORMAT.md` section 10, `RadioChatEngineTest.radchatU13`/`radchatU14`.
+
+### Status
+TODO

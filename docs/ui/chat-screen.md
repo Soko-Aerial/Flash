@@ -527,3 +527,73 @@ if (showEncryptionSheet) {
     FlashEncryptionSheet(state = …, onDismiss = { showEncryptionSheet = false })
 }
 ```
+
+---
+
+## UI-004 / UI-030 — "Radio only" presence (ADR-228, 2026-10-28)
+
+**Status:** IMPLEMENTED, unit-tested, **NOT device-verified**. Extends UI-030b's presence states with a
+fourth one and adds a transport value for the badge.
+
+### Why
+
+On 2026-10-28 the two-radio run showed the contradiction the owner asked about: texts A→B and B→A were
+delivered by radio (ACKed 3.4 s and 3.5 s later) while the desktop's chat header could only say
+**Offline**, because presence is the LAN session set. The peer *was* reachable; the header said it was
+not. The fix is presentation only — see ADR-228 for why the radio must not become a presence source.
+
+### States and precedence
+
+One more state, ranked last so every stronger claim wins:
+
+```
+typing (needs a session) > live LAN session > hub session > reconnect grace
+  > discovery sighting > radio only > offline
+```
+
+| Input | Meaning |
+|---|---|
+| `PresenceSnapshot.radioOnly` | `RadioOutboxPort.radioPeerIds` — a radio pairing key exists here **and** this device's gateway is `CONNECTED`. Computed by `HostedRadioOutboxPort` by combining `host.status` with the engine's paired set, so a key that is gone or a gateway that is down both remove the peer. |
+
+Rules that keep it honest:
+
+- It never satisfies typing, calls, files, group fan-out or presence sharing (`PeerTrustPolicy` is untouched).
+- A discovery sighting outranks it: a send tries the LAN first (ADR-227), so the header must not promise
+  the slower path when a faster one is plausible.
+- It is presentation-only in the send path too: nothing in the outbox reads it, so a stale set can make
+  the header optimistic at worst, never route a frame.
+
+### Visual specification
+
+| Element | Radio only |
+|---|---|
+| Presence dot | `FlashPresenceDotStyle.RingRadio` — the **ring** shape (same meaning as UI-030b: no session) in `FlashTheme.colors.accentSecondary` instead of `statusOnline`, so it is never mistaken for a Wi-Fi sighting. Colour is not the only cue. |
+| Header line | `Radio only · texts go over the air` (`FlashCopyPresence.RADIO_ONLY`, one string for both hosts) |
+| Transport badge | `Radio` (`FlashNetworkStatusMath.transportLabel`) with the `FlashIcons.Bluetooth` glyph — never "No link" |
+| Connection banner | health `Reachable` (calm, non-blocking), label `Radio only · texts go over the air`; the `peerCount` derivation counts it as 1, or the banner's `peerCount == 0` branch would say "Searching for devices…" |
+| Peer details sheet | presence `Radio only` (secondary colour — it is still not a session), Connection row `Radio` |
+| Bubble | unchanged: the radio delivery line under an outgoing message (ADR-227) |
+
+The waiting sentence under a bubble now names the measured window: *"Radio · sent, waiting for
+acknowledgement (usually a few seconds)"* (3.4 s and 3.5 s measured on hardware; the resend pacing is 25 s).
+
+### Accessibility
+
+- `FlashPresenceDotMath.description(RingRadio)` = `"Radio only"`, so a screen reader never hears "Online"
+  for an air-only peer.
+- The header line and badge are text, not colour-only (WCAG 1.4.1).
+- No new interaction: nothing here is tappable that was not tappable before.
+
+### Known limitations
+
+- Not device-verified; `RADCHAT-DEV05` in `docs/testing/TEST-BACKLOG.md` covers a two-radio check.
+- The set is recomputed on gateway status / engine changes, not on every trust-store edit; revoking a radio
+  pairing while a chat is open updates the header on the next status emission (the send path re-checks
+  the pairing itself, so this is cosmetic).
+- Groups, calls and files never show it: the radio carries 1:1 text only.
+- It says "we can transmit to them", never "they are listening" — a station cannot be polled.
+
+### Testing checklist
+
+- [x] Unit tests — `DirectLinkUiTest` (radio-only wins nothing, loses to session and sighting), `PresenceHoldTest` (disjointness and yield order), `FlashPresenceDotLogicTest`, `FlashNetworkStatusLogicTest`, `FlashPeerDetailsLogicTest`, `FlashRadioChatMathTest`
+- [ ] Device QA — `RADCHAT-DEV05`: both apps rebuilt, Wi-Fi off, both radios on, one chat open: the header reads "Radio only · texts go over the air", the badge "Radio", and a text still goes out.

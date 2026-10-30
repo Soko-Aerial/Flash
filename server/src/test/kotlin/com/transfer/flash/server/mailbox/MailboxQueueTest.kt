@@ -188,6 +188,18 @@ class MailboxQueueTest {
     }
 
     @Test
+    fun oneSenderCanNotTakeMoreThanItsShareOfOneRecipientsMailbox() = runTest {
+        // SEC-D15-01
+        val q = queue(limits = MailboxLimits(perRecipientRows = 100, perSenderRows = 1_000))
+        repeat(50) { assertIs<EnqueueResult.Queued>(q.enqueue(msg("a$it", origin = "greedy"))) }
+        val refused = assertIs<EnqueueResult.QuotaExceeded>(q.enqueue(msg("a50", origin = "greedy")))
+        assertEquals(QuotaScope.SENDER, refused.scope)
+        // Everybody else can still reach the recipient, and the greedy sender can still reach others.
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("b0", origin = "polite")))
+        assertIs<EnqueueResult.Queued>(q.enqueue(msg("a-other", origin = "greedy", target = "carol")))
+    }
+
+    @Test
     fun theRecipientRowQuotaIsEnforcedAndNamesItsScope() = runTest {
         val q = queue(limits = MailboxLimits(perRecipientRows = 3))
         repeat(3) { assertIs<EnqueueResult.Queued>(q.enqueue(msg("m$it", origin = "s$it"))) }

@@ -5,6 +5,10 @@ on:
     branches: [ main, dev ]
   pull_request:
 
+# SEC-D21-03: the token only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   build-test:
     runs-on: ubuntu-latest

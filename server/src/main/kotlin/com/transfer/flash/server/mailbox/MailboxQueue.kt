@@ -162,6 +162,15 @@ class MailboxQueue(
         if (recipientBytes + size > limits.perRecipientBytes) {
             return EnqueueResult.QuotaExceeded(QuotaScope.RECIPIENT, "recipient mailbox byte quota ${limits.perRecipientBytes} exceeded")
         }
+        // SEC-D15-01: one sender may hold at most half of a recipient's mailbox, so a single (compromised or buggy)
+        // device cannot fill it and starve everyone else's messages to that recipient. Tiny test-sized quotas keep
+        // the plain recipient rule.
+        if (limits.perRecipientRows >= PAIR_SHARE_MIN_ROWS && limits.perRecipientBytes >= PAIR_SHARE_MIN_BYTES) {
+            val (pairRows, pairBytes) = pairUsage(conn, m.origin, m.target, now)
+            if (pairRows >= limits.perRecipientRows / 2 || pairBytes + size > limits.perRecipientBytes / 2) {
+                return EnqueueResult.QuotaExceeded(QuotaScope.SENDER, "sender already holds its share of this recipient's mailbox")
+            }
+        }
         val (senderRows, senderBytes) = usage(conn, "origin_device_id", m.origin, now)
         if (senderRows >= limits.perSenderRows) {
             return EnqueueResult.QuotaExceeded(QuotaScope.SENDER, "sender has ${limits.perSenderRows} undelivered messages")
@@ -229,6 +238,17 @@ class MailboxQueue(
         ).use { stmt ->
             stmt.setString(1, who)
             stmt.setLong(2, now)
+            stmt.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getLong(2) }
+        }
+
+    private fun pairUsage(conn: Connection, origin: String, target: String, now: Long): Pair<Long, Long> =
+        conn.prepareStatement(
+            "SELECT COUNT(*), COALESCE(SUM(payload_bytes), 0) FROM mailbox_envelopes " +
+                "WHERE origin_device_id = ? AND target_device_id = ? AND expires_at > ? AND undeliverable_reason IS NULL",
+        ).use { stmt ->
+            stmt.setString(1, origin)
+            stmt.setString(2, target)
+            stmt.setLong(3, now)
             stmt.executeQuery().use { rs -> rs.next(); rs.getLong(1) to rs.getLong(2) }
         }
 
@@ -485,6 +505,10 @@ class MailboxQueue(
     private companion object {
         /** Pages of a single fetch spent skipping quarantined rows; the router simply asks again after that. */
         const val MAX_QUARANTINE_ROUNDS = 20
+
+        /** The per-sender share of one recipient's mailbox applies from this recipient quota upwards. */
+        const val PAIR_SHARE_MIN_ROWS = 100
+        const val PAIR_SHARE_MIN_BYTES = 1_000_000L
 
         /** A device id is logged by its first characters only. */
         const val DEVICE_ID_LOG_CHARS = 8

@@ -491,8 +491,13 @@ private fun hideFromStrangers(directory: OrganizationDirectory, groupId: String,
 
 /** One miss limiter per device for the single lookup (A2 §3.3.2: 60/min total, 10/min misses). */
 private val lookupMissLimiters = java.util.concurrent.ConcurrentHashMap<String, DirectoryPrivacy.LookupMissLimiter>()
-private fun lookupMissLimiterFor(deviceId: String): DirectoryPrivacy.LookupMissLimiter =
-    lookupMissLimiters.computeIfAbsent(deviceId) { DirectoryPrivacy.LookupMissLimiter() }
+private fun lookupMissLimiterFor(deviceId: String): DirectoryPrivacy.LookupMissLimiter {
+    // SEC-D16-02: one entry per device that ever looked someone up; bounded so the map can not grow without limit.
+    if (lookupMissLimiters.size >= MAX_LOOKUP_LIMITERS) lookupMissLimiters.clear()
+    return lookupMissLimiters.computeIfAbsent(deviceId) { DirectoryPrivacy.LookupMissLimiter() }
+}
+
+private const val MAX_LOOKUP_LIMITERS = 20_000
 
 private fun DepartmentMember.toPersonDto(actor: DirectoryActor, directory: OrganizationDirectory, isOnline: (String) -> Boolean): PersonDto {
     val dept = directory.getDepartment(departmentId)

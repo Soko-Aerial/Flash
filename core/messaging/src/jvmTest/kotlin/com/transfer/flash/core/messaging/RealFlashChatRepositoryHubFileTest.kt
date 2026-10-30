@@ -294,12 +294,14 @@ class RealFlashChatRepositoryHubFileTest {
     @Test
     fun `HUBFILE-U24 a ticket for a file that already left the hub is stored as failed with the sender's name`(): Unit = runBlocking {
         val bob = device("bob")
+        // Stamped now: the ticket is recent, the FILE it names had already expired on the hub (SEC-D15-02 keeps recent mail).
+        val now = System.currentTimeMillis()
         val f = HubFileFrame(
-            localId = "m-9", senderId = "alice", senderName = "Alice", sentAt = 1_000L,
-            ticket = HubFileTicket(fileId, key, "ab".repeat(32), 3_000_000L, 1_048_576, 3, 5_000L),
+            localId = "m-9", senderId = "alice", senderName = "Alice", sentAt = now,
+            ticket = HubFileTicket(fileId, key, "ab".repeat(32), 3_000_000L, 1_048_576, 3, now - 60_000L),
             fileName = "old.pdf", mime = "application/pdf", meta = "",
         )
-        bob.relay.deliver(HubInbound("alice", "r-9", HubSealing.ENVELOPE_TYPE, 1_000L, HubChatBridge.HUB_FILE + "\n" + HubFileFrameCodec.encode(f)))
+        bob.relay.deliver(HubInbound("alice", "r-9", HubSealing.ENVELOPE_TYPE, now, HubChatBridge.HUB_FILE + "\n" + HubFileFrameCodec.encode(f)))
         awaitUntil("the row") { bob.db.hubFileDao().get(inId) != null }
         val row = bob.db.hubFileDao().get(inId)!!
         assertEquals(HubFileStates.FAILED, row.state)

@@ -454,8 +454,17 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /** v20 -> v21: device-local outbound radio-fallback consent for direct chats. */
+    val STEP_20_21: FlashSchemaStep = FlashSchemaStep(
+        from = 20,
+        to = 21,
+        statements = listOf(
+            "ALTER TABLE `conversations` ADD COLUMN `radioPolicy` TEXT NOT NULL DEFAULT 'AUTO'",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20, STEP_20_21
     )
 }

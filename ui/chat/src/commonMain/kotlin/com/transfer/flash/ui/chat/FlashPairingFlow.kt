@@ -130,6 +130,9 @@ object FlashPairingMath {
         FlashNetworkTransport.Lan -> "LAN"
         FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
         FlashNetworkTransport.Relay -> "Relay"
+        // ADR-227/228: pairing never happens over the radio (a radio key comes from a LAN pairing), so the
+        // glyph row stays hidden rather than claiming a transport that was not used.
+        FlashNetworkTransport.Radio -> null
         FlashNetworkTransport.Unknown -> null
     }
 }
@@ -196,6 +199,17 @@ fun FlashPairingDialog(
 
             if (phase == FlashPairingPhase.RequestReceived || phase == FlashPairingPhase.AwaitingPeerConfirmation) {
                 VerificationCodeBlock(code = FlashPairingMath.formatCode(safeRequest.numericCode))
+
+                if (phase == FlashPairingPhase.RequestReceived) {
+                    // SEC-D03-06: both devices ask for this; the only protection is people comparing the two screens.
+                    FlashText(
+                        text = "Accept only if ${safeRequest.peerName} shows the same code.",
+                        style = FlashTheme.typography.captionDefault,
+                        color = colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = FlashSpacing.space12),
+                    )
+                }
 
                 FlashCountdownBar(
                     fraction = secondsLeft.toFloat() / safeRequest.expiresInSeconds.coerceAtLeast(1),

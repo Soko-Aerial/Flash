@@ -89,6 +89,13 @@ class HubFileFrameCodecTest {
     }
 
     @Test
+    fun `a file name that hides its extension with a bidi override or zero-width space is refused`() {
+        assertEquals("name", invalid(with("name", "photo_‮fdp.exe")))
+        assertEquals("name", invalid(with("name", "re​port.pdf")))
+        assertEquals("name", invalid(with("name", "a⁦b.pdf")))
+    }
+
+    @Test
     fun `HUBFILE-U12 every field rule refuses by name`() {
         assertEquals("localId", invalid(with("localId", "")))
         assertEquals("localId", invalid(with("localId", "x".repeat(129))))

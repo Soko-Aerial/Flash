@@ -77,10 +77,54 @@ class DirectLinkUiTest {
         assertEquals(FlashNetworkTransport.Unknown, reachable.transport)
     }
 
+    @Test
+    fun `a peer only the radio can reach says Radio only and names the radio`() {
+        val link = directLinkUi("peer", snapshot(radioOnly = setOf("peer")), typingNames = emptyList())
+
+        assertEquals(FlashPeerPresence.RadioOnly, link.presence)
+        assertEquals(FlashNetworkTransport.Radio, link.transport)
+    }
+
+    @Test
+    fun `a live session and a discovery sighting both outrank radio only`() {
+        // A session is a real link; the radio is a possibility.
+        val online = directLinkUi(
+            "peer",
+            snapshot(online = setOf("peer"), radioOnly = setOf("peer")),
+            typingNames = emptyList(),
+        )
+        assertEquals(FlashPeerPresence.Online, online.presence)
+        assertEquals(FlashNetworkTransport.Lan, online.transport)
+
+        // A Wi-Fi sighting gets first claim because a send tries the LAN first (ADR-227).
+        val seen = directLinkUi(
+            "peer",
+            snapshot(reachable = setOf("peer"), radioOnly = setOf("peer")),
+            typingNames = emptyList(),
+        )
+        assertEquals(FlashPeerPresence.Reachable, seen.presence)
+        assertEquals(FlashNetworkTransport.Unknown, seen.transport)
+    }
+
+    @Test
+    fun `radio only never shows the typing indicator`() {
+        // A station cannot be polled and typing travels on a session, so there is nothing to hold.
+        val link = directLinkUi("peer", snapshot(radioOnly = setOf("peer")), typingNames = listOf("Alice"))
+        assertEquals(FlashPeerPresence.RadioOnly, link.presence)
+        assertTrue(link.typingNames.isEmpty(), "typing is a session signal, never a radio one")
+    }
+
     private fun snapshot(
         online: Set<String> = emptySet(),
         connecting: Set<String> = emptySet(),
         reachable: Set<String> = emptySet(),
         hubOnline: Set<String> = emptySet(),
-    ) = PresenceSnapshot(online = online, connecting = connecting, reachable = reachable, hubOnline = hubOnline)
+        radioOnly: Set<String> = emptySet(),
+    ) = PresenceSnapshot(
+        online = online,
+        connecting = connecting,
+        reachable = reachable,
+        hubOnline = hubOnline,
+        radioOnly = radioOnly,
+    )
 }

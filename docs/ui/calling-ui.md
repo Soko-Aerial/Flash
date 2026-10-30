@@ -722,12 +722,13 @@ navigation decision. See ADR-067 "Not built".
 
 ## UI-050g — Screen share in calls (2026-10-09, ADR-102)
 
-**Status:** DESIGNED, then IMPLEMENTED on 2026-10-09 (unit-tested; not device-verified, `SHARE-01`...`SHARE-14`). Wire, states and ladder:
-`docs/calling/SCREEN-SHARE-DESIGN.md`. This section was written before the UI code (AGENTS section 34).
+**Status:** DESIGNED, then IMPLEMENTED on 2026-10-09 (unit-tested; not device-verified, `SHARE-01`...`SHARE-14`). The Android presenter
+followed on 2026-10-24 (`SHARE-18`, `SHARE-MOB-01`...`08`). Wire, states and ladder: `docs/calling/SCREEN-SHARE-DESIGN.md`. This section was
+written before the UI code (AGENTS section 34).
 
 ### Purpose
-Let a person on the desktop app show a screen or a window to the other people in a 1:1 or group call, and let everyone else (phones
-included) see it clearly. Android can watch; it cannot present yet.
+Let a person show a screen or a window to the other people in a 1:1 or group call — from the desktop app or an Android phone — and let
+everyone else see it clearly.
 
 ### Approaches considered
 1. A seventh dock button. Rejected: six buttons already fill a 360 dp phone (UI-050e), and a phone cannot present.
@@ -753,7 +754,7 @@ included) see it clearly. Android can watch; it cannot present yet.
 | Indicator, lowered | "Your computer is busy, so the picture is smaller" |
 | Receiver label | "{name} is presenting" (1:1 and group); group tile chip "Presenting" |
 | Notice, taken over | "{name} started sharing, so yours stopped" |
-| Notice, source lost | "The shared window closed, so sharing stopped" |
+| Notice, source lost | "The shared screen or window went away, so sharing stopped" |
 | Notice, no frames | "Nothing could be captured from that screen, so sharing stopped" |
 | Notice, failed | "Sharing could not start" |
 | Notice, someone presenting | "{name} is presenting. Stop theirs first or share anyway" |
@@ -776,6 +777,52 @@ included) see it clearly. Android can watch; it cannot present yet.
 - **Dark mode:** the strip uses the accent colour and `textOnAccent`; the label uses the same on-video scrim as the tile name bar.
 
 ### Not built
-Presenting from Android (MediaProjection, a foreground service of type `mediaProjection`), audio of the shared content, annotation, a
-remote-control channel, a thumbnail preview in the picker (the capturer gives titles only), and group voice calls (a share needs the
-video call kind).
+Audio of the shared content, annotation, a remote-control channel, a thumbnail preview in the picker (the capturer gives titles only),
+group voice calls (a share needs the video call kind), and picking a single *window* on Android (the system dialog offers the whole screen or
+one app). The Android presenter itself is built (2026-10-24) but not device-verified.
+
+## UI-050h — Pinch to zoom into a shared screen (2026-10-24)
+
+**Status:** DESIGNED, then IMPLEMENTED on 2026-10-24 (unit-tested; not device-verified, `SHARE-ZOOM-01`...`06`). This section was written
+before the UI code (AGENTS section 34).
+
+### Purpose
+A presentation is text, and text at the size of a whole desktop on a 6-inch phone is unreadable. Receivers get their own magnifier: pinch to
+zoom into the shared picture and drag to look around it, then one tap to see the whole thing again.
+
+### Approaches considered
+1. **Ask the presenter for a bigger picture** (renegotiate, raise the ladder rung). Rejected: it costs the presenter's bandwidth and CPU, it
+   cannot help a 4K screen read on a phone, and it would fight the strain ladder that exists to keep the call alive.
+2. **A "full screen" mode that hides the controls.** Rejected as the whole answer: it helps a little and then stops; the text is still small.
+3. **A magnifier on the receiving surface only (chosen).** The picture is drawn larger inside the same box and offset, and the box crops it.
+   Nothing on the wire changes, the presenter never knows, and a device that does not zoom sees exactly what it sees today.
+
+### Behaviour
+- **Gestures:** pinch to magnify 1x to 5x, drag with one finger to move around while magnified. A pinch back under 1x returns to the whole
+  picture and clears the drag. Double tap is not used (it would collide with the tap that swaps the pictures).
+- **What can be zoomed:** only a presentation — the 1:1 remote picture while the other device is presenting, and the presenter's tile (stage or
+  compact main tile) in a group. A camera picture is never magnified: a face at 3x is a bug report, not a feature.
+- **The way back:** while magnified, a "Fit to screen" chip sits at the middle of the right edge, 48 dp, with its own description. It is the
+  visible escape for anyone a pinch does not reach.
+- **State:** one zoom per call screen. It resets when the presentation starts, when a different person starts presenting, and when the call
+  ends; it survives recomposition, a re-measure and a renderer swap.
+- **The tap that swaps the pictures still works:** the gesture layer only consumes once a pinch or drag passes touch slop, so a plain tap on
+  the presentation still swaps the corner preview (1:1).
+- **Pan as a fraction, not pixels:** the state stores -1..1 per axis and the surface applies it to the travel it really has, so a letterboxed
+  axis (the picture is not wider than the box) simply does not move, and the two platforms need no shared pixel knowledge.
+- **Desktop conversion size:** a magnified picture is converted at the size it is drawn at, up to the frame's own size, so zooming does not
+  just enlarge a tile-sized image.
+
+### Copy (in `CallZoomText`, unit-tested)
+| Where | Text |
+|---|---|
+| Chip | "Fit to screen" |
+| Chip, description | "Zoom out to see the whole shared screen" |
+
+### Accessibility
+The chip is a 48 dp button with a description and a role, and it is not the only way back (a pinch works). The magnified picture needs no
+description of its own — it is the same picture, only larger. Reduced motion needs nothing: the picture moves only while a finger does.
+
+### Not built
+Zoom on a camera picture, rotation-aware zoom (the picture is magnified inside the box, not turned), a zoom level indicator, and remembering
+the zoom for the next presentation of the same screen.

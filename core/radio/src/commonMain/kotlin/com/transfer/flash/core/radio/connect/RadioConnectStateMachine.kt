@@ -25,7 +25,7 @@ public enum class RadioConnectFailureReason(
     ),
     PAIRING_REFUSED(
         sentence = "Pairing was refused by the radio or canceled.",
-        nextStep = "Put the radio into pairing mode and try pairing again.",
+        nextStep = "Put the radio into pairing mode and try pairing again. If it was paired with this device before, also remove this device from the radio's list of paired devices, if it has one.",
     ),
     WRONG_PIN(
         sentence = "The Bluetooth pairing PIN was incorrect.",
@@ -107,6 +107,14 @@ public sealed interface RadioConnectEvent {
     public data class CandidateConfirmed(val candidate: RadioCandidateDevice) : RadioConnectEvent
     public data object CandidateRejected : RadioConnectEvent
     public data class SelectCandidate(val candidate: RadioCandidateDevice) : RadioConnectEvent
+
+    /**
+     * The operator tapped a radio in the list ("Use this radio" for a bonded one, "Pair" for a new one).
+     * Unlike [SelectCandidate] it is accepted from every state that shows the list or the candidate card,
+     * because the screen can list devices while the machine is still in [RadioConnectState.ConfirmCandidate]
+     * or [RadioConnectState.Detecting] (the manager's scan only mirrors its own state).
+     */
+    public data class ChooseRadio(val candidate: RadioCandidateDevice) : RadioConnectEvent
     public data object StartScanning : RadioConnectEvent
     public data class DeviceDiscovered(val device: RadioCandidateDevice) : RadioConnectEvent
     public data object StopScanning : RadioConnectEvent
@@ -143,6 +151,27 @@ public class RadioConnectStateMachine(
                 commands += RadioConnectCommand.StopDiscoveryScan
             }
             commands += RadioConnectCommand.CloseLink
+            return commands
+        }
+
+        if (event is RadioConnectEvent.ChooseRadio) {
+            val current = state
+            val canChoose = current is RadioConnectState.Detecting ||
+                current is RadioConnectState.ConfirmCandidate ||
+                current is RadioConnectState.ChooseFromList ||
+                current is RadioConnectState.Scanning ||
+                current is RadioConnectState.Failed
+            if (canChoose) {
+                if (current is RadioConnectState.Scanning) commands += RadioConnectCommand.StopDiscoveryScan
+                val c = event.candidate
+                if (c.isPaired) {
+                    state = RadioConnectState.Connecting(c)
+                    commands += RadioConnectCommand.OpenLink(c)
+                } else {
+                    state = RadioConnectState.Pairing(c)
+                    commands += RadioConnectCommand.PairDevice(c)
+                }
+            }
             return commands
         }
 

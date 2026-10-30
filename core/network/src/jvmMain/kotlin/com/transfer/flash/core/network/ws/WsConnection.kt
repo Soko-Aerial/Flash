@@ -74,7 +74,8 @@ public class WsConnection(
     private val pingIntervalMs: Long = DEFAULT_PING_INTERVAL_MS,
     private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
     private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    /** Keepalive clock (SEC-D26-01): monotonic, so a wall-clock jump is not mistaken for silence. */
+    private val nowMs: () -> Long = ::monotonicNowMs,
     /**
      * SPKI fingerprint of the peer's TLS leaf, recorded when pin evaluation had to be deferred
      * because the peer's id was not known during the handshake: an outbound manual-IP dial
@@ -140,7 +141,7 @@ public class WsConnection(
         get() = !closed.get()
 
     /**
-     * Wall clock ([nowMs]) of the most recent inbound frame of any kind, including keepalive PONGs.
+     * Monotonic clock ([nowMs]) of the most recent inbound frame of any kind, including keepalive PONGs.
      *
      * Exposed so callers can ask whether a session is merely *present* or actually carrying traffic.
      * Every recovery path in [WsFlashNetwork] used to gate on map presence alone, which let a socket
@@ -157,7 +158,7 @@ public class WsConnection(
         get() = keepalive.pingIntervalMs
 
     /**
-     * Wall clock ([nowMs]) of the last text or binary frame, either way, that was not background
+     * Monotonic clock ([nowMs]) of the last text or binary frame, either way, that was not background
      * traffic (presence, link control). The ECO idle close judges on this (PC5).
      */
     public val lastUserTrafficAtMs: Long

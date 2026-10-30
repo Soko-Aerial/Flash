@@ -86,7 +86,12 @@ public class JvmWsFlashNetwork(
     /** Backoff floor for the accepting side's backup redial loop (ERROR-026); injectable for tests. */
     private val backupRedialBaseMs: Long = BACKUP_REDIAL_BASE_MS,
     /** Clock for session-freshness checks; injectable so tests need not wait. */
-    private val nowMs: () -> Long = System::currentTimeMillis,
+    /**
+     * The clock every liveness and reconnect judgement on this network reads. Monotonic since SEC-D26-01,
+     * and the SAME source [WsConnection] stamps its inbound frames with — a wall-clock jump would otherwise
+     * make a fresh session look stale (or a dead one fresh).
+     */
+    private val nowMs: () -> Long = ::monotonicNowMs,
     /** The device's transport tier (ERROR-033), read per use; defaults to the shipped numbers. */
     private val transportProfile: () -> FlashTransportProfile = { FlashPerformanceMode.HIGH.transport },
     /** Tokens this device advertises in its HELLO `caps` (SW-2). */
@@ -282,7 +287,17 @@ public class JvmWsFlashNetwork(
     override suspend fun connectManual(host: String, port: Int): FlashResult<FlashSession> =
         connectManual(host, port, null)
 
-    public suspend fun connectManual(host: String, port: Int, peerDeviceId: String?): FlashResult<FlashSession> = withContext(Dispatchers.IO) {
+    /**
+     * [recordFirstUse] is false for a dial the user did not ask for (the gateway probe and the subnet sweep, SEC-D10-01):
+     * whoever answers an unnamed address is accepted, but its key is not written as a first-use pin, so a rogue host on
+     * the network cannot claim a contact's id before the contact does.
+     */
+    public suspend fun connectManual(
+        host: String,
+        port: Int,
+        peerDeviceId: String?,
+        recordFirstUse: Boolean = true,
+    ): FlashResult<FlashSession> = withContext(Dispatchers.IO) {
         if (!running.get()) {
             return@withContext FlashResult.Failure(FlashError.NetworkUnavailable("Network not started"))
         }
@@ -375,7 +390,11 @@ public class JvmWsFlashNetwork(
             val deferredLeaf = connection.deferredPeerLeafFingerprintHex
             if (deferredLeaf != null) {
                 val verifier = tlsOptions?.pinVerifier
-                val bound = verifier != null && verifier.isPinned(peerDevice.id.value, deferredLeaf)
+                val bound = verifier != null && if (recordFirstUse) {
+                    verifier.isPinned(peerDevice.id.value, deferredLeaf)
+                } else {
+                    verifier.verifyWithoutRecording(peerDevice.id.value, deferredLeaf)
+                }
                 if (!bound) {
                     FlashLog.w(
                         TAG,
@@ -455,8 +474,8 @@ public class JvmWsFlashNetwork(
     /**
      * Why an inbound connection's certificate does not prove the id its HELLO claims, or null when it
      * does (audit S1). Runs the same [com.transfer.flash.core.network.tls.FlashPinVerifier] check an
-     * outbound dial runs inside its handshake: trust-on-first-use records a first contact's key, and
-     * a different key answering for an already-pinned id is refused.
+     * outbound dial runs inside its handshake, except that a first contact's key is NOT recorded
+     * (SEC-D02-02: a stranger must not pre-seed a pin); a different key answering for an already-pinned id is refused.
      */
     private fun inboundIdentityFailure(connection: WsConnection, claimedDeviceId: String): String? {
         // Plaintext exists only in tests: production engines cannot start without TLS (audit S3).
@@ -469,7 +488,7 @@ public class JvmWsFlashNetwork(
             return if (expected != null && expected == claimedDeviceId) null
             else "no client certificate bound to the claimed id"
         }
-        return if (tls.pinVerifier.isPinned(claimedDeviceId, leaf)) null
+        return if (tls.pinVerifier.verifyWithoutRecording(claimedDeviceId, leaf)) null
         else "client certificate does not match the pin for the claimed id"
     }
 

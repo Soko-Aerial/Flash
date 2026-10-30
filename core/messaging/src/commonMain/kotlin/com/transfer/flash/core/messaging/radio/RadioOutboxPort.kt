@@ -1,6 +1,7 @@
 package com.transfer.flash.core.messaging.radio
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -76,6 +77,15 @@ public interface RadioOutboxPort {
 
     /** True if [recipientDeviceId] is a paired peer known to be radio-reachable. */
     public fun isRadioReachable(recipientDeviceId: String): Boolean
+
+    /**
+     * Peer ids this device could carry a text to over the radio right now: paired for radio here and the
+     * gateway connected (ADR-228). Presentation only — the chat header's "Radio only" state reads it.
+     *
+     * The default is empty, so an implementation that does not know leaves every peer as it was.
+     */
+    public val radioPeerIds: Flow<Set<String>>
+        get() = MutableStateFlow(emptySet())
 
     /**
      * Hands one text message to the radio transmit queue.

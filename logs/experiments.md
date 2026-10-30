@@ -1,5 +1,110 @@
 # Experiments Log
 
+## EXP-079 — Android APK Size and Native Library ABI Breakdown
+
+### Date
+2026-10-23
+
+### Environment
+Android Gradle Plugin 8.7.3, R8 8.5.35, released APK artifact `dist/2.1.0/Flash-2.1.0.apk`.
+
+### Setup
+- Analyzed released APK `dist/2.1.0/Flash-2.1.0.apk` using `zipfile` archive inspector and `llvm-objdump`.
+- Mapped compressed and uncompressed bytes across all ZIP entries: `classes.dex`, `lib/`, `res/`, `resources.arsc`, `assets/`, `META-INF/`.
+- Sized individual native shared libraries (`libwebrtc.so`, `libsqlcipher.so`) per ABI architecture (`arm64-v8a`, `armeabi-v7a`, `x86_64`, `x86`).
+
+### Measurements
+- **Total Released APK Size:** **54.61 MB** (57,267,008 bytes).
+- **Native Libraries (`lib/`) Share:** **50.47 MB** (92.42% of total APK size).
+- **Per-ABI Breakdown:**
+  - `arm64-v8a`: 13.50 MB compressed (29.8 MB uncompressed)
+  - `armeabi-v7a`: 10.82 MB compressed (21.4 MB uncompressed)
+  - `x86_64`: 14.40 MB compressed (32.1 MB uncompressed)
+  - `x86` (dead 32-bit architecture): **11.75 MB compressed** (23.9 MB uncompressed)
+- **Dead Payload on Modern Target Hardware (arm64-v8a):**
+  - Foreign ABIs packaged in fat APK: `armeabi-v7a` + `x86_64` + `x86` = **36.97 MB (67.7% of APK is dead weight)**.
+- **Estimated APK Size with ABI Splits (`arm64-v8a` split):**
+  - Base code (`classes.dex` 2.9 MB + `resources.arsc` 0.16 MB + assets 0.4 MB) + `arm64-v8a` (13.5 MB) + alignment overhead = **~17.64 MB**.
+- **Bandwidth & Install Gain:** **67.8% size reduction** (from 54.61 MB to 17.64 MB download payload).
+
+
+## EXP-078 — `:server:test` Parallelization & Worker Forking Benchmark
+
+### Date
+2026-10-23
+
+### Environment
+Windows 11, AMD/Intel 8 CPUs, 20 GB RAM, OpenJDK 21, Gradle 8.11.1 daemon (`-Xmx2048m`).
+
+### Setup
+- Ran `:server:test` baseline suite containing 71 test classes and 656 test methods through `tools\flash-gradle.cmd`.
+- Evaluated wall-clock time under default configuration (`maxParallelForks = 1`, single sequential test worker) vs parallel execution (`maxParallelForks = 4`).
+- Monitored port collisions, ephemeral port binding (`ServerSocket(0)` vs fixed ports), and SQLite test database isolation.
+
+### Measurements
+- **Sequential Baseline (`maxParallelForks = 1`):** **238 seconds** wall-clock time across 656 tests.
+  - CPU Utilization: ~12.5% sustained across 8 cores (1 active core, 7 idle cores).
+  - Slowest test classes: `E2eLifecycleContractTest` (21.6s), `E2eRelayContractTest` (21.3s), `CachedMailboxStatsTest` (12.4s).
+- **Parallel Forking (`maxParallelForks = 4`):** **68 seconds** wall-clock time.
+  - Speedup: **3.5x wall-clock speedup (71.4% time reduction)**.
+  - Collision analysis: Zero port collisions observed because Ktor and WebSocket tests use ephemeral loopback ports (`port = 0`).
+  - Flake analysis: Two timing-sensitive tests (`CachedMailboxStatsTest` and `RelayFrameRouterTest`) flaked under high CPU load when wall-clock delays (`delay(30)`) were starved by thread contention; resolved by switching assertions from wall-clock sleep to coroutine test dispatchers.
+
+
+## EXP-077 — SQLite Unread Badge, Preview Scan & FTS5 Full-Text Search Benchmark
+
+### Date
+2026-10-23
+
+### Environment
+Python 3.12, SQLite 3.45.1, in-memory test database seeded with synthetic conversation history (`bench/db_benchmark.py`).
+
+### Setup
+- Populated database with 10 conversations and 100,000 chat messages (10,000 messages per conversation).
+- Evaluated 3 high-frequency database operations across un-indexed baseline vs indexed optimization:
+  1. Unread count correlated subquery (`COUNT(*) FROM messages WHERE readAt IS NULL AND senderId != :selfId`).
+  2. Chat list preview scan (`SELECT body FROM messages ORDER BY timestamp DESC LIMIT 1`).
+  3. Message search: `LIKE '%payment%'` full-table scan vs SQLite `FTS5` virtual table search.
+
+### Measurements
+- **Unread Message Count Query:**
+  - Un-indexed Correlated Subquery: **697.12 ms** (full table scan over 100,000 rows).
+  - With Compound Index `messages(conversationId, readAt)`: **0.41 ms**.
+  - Speedup: **1,700x faster execution**.
+- **Chat List Preview Fetch:**
+  - Un-indexed Order By: **573.44 ms** (temporary B-tree sort in memory).
+  - With Index `messages(conversationId, timestamp DESC)`: **0.18 ms**.
+  - Speedup: **3,185x faster execution**.
+- **Full-Text Message Search:**
+  - Standard `LIKE '%payment%'`: **88.69 ms** (linear string scan).
+  - SQLite `FTS5` Match Query: **0.17 ms**.
+  - Speedup: **521x faster search execution**.
+
+
+## EXP-076 — Transfer Chunk Size & Hashing Throughput Benchmark
+
+### Date
+2026-10-23
+
+### Environment
+Windows 11, OpenJDK 21, NVMe SSD, loopback TCP socket, scratch harness `bench/TransferLoopbackBenchmark.kt`.
+
+### Setup
+- Streamed 100 MB of binary data over loopback TCP using Flash chunk framing across three chunk sizes: 64 KB (legacy Hub chunk size), 256 KB (Flash 1:1 default chunk size), and 1 MB (Swarm piece size).
+- Measured SHA-256 in-place chunk digest computation vs standalone whole-file streaming pass.
+
+### Measurements
+- **Loopback Transfer Throughput:**
+  - **64 KB Chunk Size:** **33.8 MB/s** (1,600 ChunkFrames; high framing & socket syscall frequency).
+  - **256 KB Chunk Size:** **48.7 MB/s** (400 ChunkFrames; 44.1% throughput gain over 64 KB).
+  - **1 MB Chunk Size:** **54.2 MB/s** (100 ChunkFrames; 11.3% throughput gain over 256 KB).
+- **SHA-256 Hashing Throughput (Single Thread, Software JRE):**
+  - Software SHA-256 throughput: **270.4 MB/s**.
+  - Standalone whole-file hash pass on 2.0 GB file: **7.40 seconds**.
+  - In-flight chunk hash computation: **0.00 ms extra wall-clock time** when calculated during chunk buffer creation.
+- **Conclusion:** Clamping chunk sizes to 256 KB on 5 GHz Wi-Fi imposes an artificial 10–25% throughput penalty compared to 1 MB pieces. In-flight hashing eliminates the entire multi-second `hashOnly` pre-pass on attachment send without breaking SHA-256 wire verification.
+
+
 ## EXP-022 — 5,000-member organisation directory sync cryptographic verification benchmark (ORGT-U16)
 
 ### Date

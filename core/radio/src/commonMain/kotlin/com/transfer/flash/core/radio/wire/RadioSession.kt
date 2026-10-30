@@ -60,6 +60,21 @@ public sealed interface RadioIngest {
         public val signed: Boolean,
     ) : RadioIngest
 
+    /**
+     * A frame the anti-replay window has already accepted once: the sender retransmitted it, which on this link
+     * usually means its ACK was lost (ERROR-870). [firstCounter] is the counter an ACK must name, so the receiver
+     * can acknowledge again without storing the message twice.
+     *
+     * A duplicate of a segment is only reported when that message already completed, so an incomplete message is
+     * never acknowledged as whole. Nothing was stored and nothing new may be emitted for this result.
+     */
+    public class Duplicate(
+        public val peerId: String,
+        public val kind: RadioKind,
+        public val firstCounter: Long,
+        public val signed: Boolean,
+    ) : RadioIngest
+
     /** An authenticated segment was stored; more are expected. */
     public class Partial(public val peerId: String, public val received: Int, public val total: Int) : RadioIngest
 
@@ -107,6 +122,16 @@ public class RadioSession(
     private val windows = HashMap<String, ReplayWindow>()
     private val reassembler = SegmentReassembler(maxSegments = config.maxSegments, timeoutMs = config.reassemblyTimeoutMs)
     private val broadcastSenders = LinkedHashMap<String, ByteArray>()
+
+    /**
+     * `peerId/msgId` of segmented messages this station has completed, mapped to the counter an ACK must name
+     * (ERROR-870). A retransmitted segment carries its own counter, which is not necessarily `first + index`
+     * (counters are time-floored), so the first counter has to be remembered here to acknowledge a retry.
+     * Bounded: only the newest entries are needed, because a retry follows its message within seconds.
+     */
+    private val completedSegments = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > MAX_COMPLETED_REMEMBERED
+    }
 
     /** Registers (or replaces) a paired peer and its 32-byte pairing session key. */
     public fun addPeer(peerId: String, pairKey: ByteArray) {
@@ -230,7 +255,7 @@ public class RadioSession(
             val plain = crypto.aeadOpen(ctx.recv.key, nonce(ctx.recv.nonceSalt, header.counter), aad, sealed) ?: continue
             // Authenticated from here on.
             when (window.check(header.counter)) {
-                ReplayVerdict.DUPLICATE -> return RadioIngest.Dropped(RadioDrop.REPLAY, "duplicate")
+                ReplayVerdict.DUPLICATE -> return duplicateOf(ctx.peerId, header, plain)
                 ReplayVerdict.TOO_OLD -> return RadioIngest.Dropped(RadioDrop.TOO_OLD)
                 ReplayVerdict.FRESH -> Unit
             }
@@ -254,9 +279,28 @@ public class RadioSession(
         val chunk = plain.copyOfRange(RadioWire.SEGMENT_HEADER_SIZE, plain.size)
         return when (val r = reassembler.add(peerId, msgId, idx, total, header.counter, chunk, nowMs)) {
             is SegmentResult.Incomplete -> RadioIngest.Partial(peerId, r.received, r.total)
-            is SegmentResult.Complete -> RadioIngest.Delivered(peerId, header.kind, r.body, r.firstCounter, r.segments, ttl, signed = false)
+            is SegmentResult.Complete -> {
+                completedSegments["$peerId/$msgId"] = r.firstCounter
+                RadioIngest.Delivered(peerId, header.kind, r.body, r.firstCounter, r.segments, ttl, signed = false)
+            }
             is SegmentResult.Rejected -> RadioIngest.Dropped(RadioDrop.BAD_SEGMENT, r.reason)
         }
+    }
+
+    /**
+     * A frame that arrived once already (ERROR-870). The engine may ACK its [RadioIngest.Duplicate.firstCounter]
+     * again, which is how a sender whose ACK was lost stops retrying.
+     *
+     * A whole message is safe to report: the replay window proves it was accepted once. A segment is reported only
+     * when this station completed that message, so the sender is never told a partial message arrived whole.
+     */
+    private fun duplicateOf(peerId: String, header: RadioHeader, plain: ByteArray): RadioIngest {
+        if (!header.segmented) return RadioIngest.Duplicate(peerId, header.kind, header.counter, signed = false)
+        if (plain.size < RadioWire.SEGMENT_HEADER_SIZE) return RadioIngest.Dropped(RadioDrop.REPLAY, "duplicate")
+        val msgId = ((plain[0].toInt() and 0xFF) shl 8) or (plain[1].toInt() and 0xFF)
+        val firstCounter = completedSegments["$peerId/$msgId"]
+            ?: return RadioIngest.Dropped(RadioDrop.REPLAY, "duplicate_incomplete")
+        return RadioIngest.Duplicate(peerId, header.kind, firstCounter, signed = false)
     }
 
     private fun ingestSigned(header: RadioHeader, info: ByteArray, ttl: Int, nowMs: Long): RadioIngest {
@@ -274,7 +318,7 @@ public class RadioSession(
             if (!verifier.verify(pub, signedBytes, sig)) continue
             val window = windowFor("bc/$peerId")
             when (window.check(header.counter)) {
-                ReplayVerdict.DUPLICATE -> return RadioIngest.Dropped(RadioDrop.REPLAY, "duplicate")
+                ReplayVerdict.DUPLICATE -> return RadioIngest.Duplicate(peerId, header.kind, header.counter, signed = true)
                 ReplayVerdict.TOO_OLD -> return RadioIngest.Dropped(RadioDrop.TOO_OLD)
                 ReplayVerdict.FRESH -> Unit
             }
@@ -341,5 +385,8 @@ public class RadioSession(
         const val LABEL_ALPHABET: String = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         val TAG_PREFIX: ByteArray = "tag".encodeToByteArray()
         val LABEL_PREFIX: ByteArray = "lbl".encodeToByteArray()
+
+        /** Completed segmented messages remembered so a retransmitted segment can be acknowledged (ERROR-870). */
+        const val MAX_COMPLETED_REMEMBERED: Int = 64
     }
 }

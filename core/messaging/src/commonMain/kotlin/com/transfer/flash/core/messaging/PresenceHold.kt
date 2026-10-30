@@ -35,6 +35,13 @@ internal data class PresenceSnapshot(
      * transport at all).
      */
     val hubOnline: Set<String> = emptySet(),
+    /**
+     * ADR-228: peers this device could reach over the radio right now — a radio pairing key exists
+     * here and the gateway is connected. In none of the sets above. Presentation only: a station
+     * cannot be polled, so this says "we can transmit", never "they are listening". Disjoint from
+     * [reachable] (a Wi-Fi sighting, which still gets first claim: a send tries the LAN first).
+     */
+    val radioOnly: Set<String> = emptySet(),
 )
 
 /** PC3: joins the discovery sightings onto the session snapshot as [PresenceSnapshot.reachable]. */
@@ -57,6 +64,22 @@ internal fun Flow<PresenceSnapshot>.withHubOnline(hubOnlinePeerIds: Flow<Set<Str
         snapshot.copy(reachable = snapshot.reachable - reported, hubOnline = online)
     }.distinctUntilChanged()
 
+/**
+ * Joins the radio's paired-and-connected peer set onto the snapshot as [PresenceSnapshot.radioOnly]
+ * (ADR-228).
+ *
+ * It is the *last* source, so every stronger claim wins: a live session, the reconnect grace, a hub
+ * relay session and a discovery sighting all remove the peer from this set. Nothing about it reaches
+ * the send path — the radio is tried by the outbox on its own (ADR-227) — so a stale set can make the
+ * header optimistic at worst, never route a frame.
+ */
+internal fun Flow<PresenceSnapshot>.withRadioOnly(radioPeerIds: Flow<Set<String>>): Flow<PresenceSnapshot> =
+    combine(this, radioPeerIds.distinctUntilChanged()) { snapshot, radio ->
+        snapshot.copy(
+            radioOnly = radio - snapshot.online - snapshot.connecting - snapshot.hubOnline - snapshot.reachable,
+        )
+    }.distinctUntilChanged()
+
 /** A direct chat's verdict: what the header may claim and which transport it can name. */
 internal data class DirectLinkUi(
     val presence: FlashPeerPresence,
@@ -75,7 +98,7 @@ internal data class DirectLinkUi(
  * a hub-only colleague.
  *
  * Precedence: typing (only while reachable) > live LAN session > hub session > reconnect grace >
- * discovery sighting (no transport claimed) > offline.
+ * discovery sighting (no transport claimed) > radio-only (ADR-228) > offline.
  */
 internal fun directLinkUi(
     conversationId: String,
@@ -87,6 +110,8 @@ internal fun directLinkUi(
     // peer, with the relay as its named transport, even though there is no LAN session.
     val isHubOnline = !isOnline && conversationId in peers.hubOnline
     val isConnecting = !isOnline && !isHubOnline && conversationId in peers.connecting
+    val isSeen = !isOnline && !isHubOnline && !isConnecting && conversationId in peers.reachable
+    val isRadioOnly = !isOnline && !isHubOnline && !isConnecting && !isSeen && conversationId in peers.radioOnly
     val reachable = isOnline || isConnecting || isHubOnline
     val presence = when {
         typingNames.isNotEmpty() && reachable -> FlashPeerPresence.Typing
@@ -98,16 +123,21 @@ internal fun directLinkUi(
         isConnecting -> FlashPeerPresence.Connecting
         // PC3: seen by discovery, no session. The header says "Online" with a ring and
         // claims no transport, so the banner explains that a send will connect.
-        conversationId in peers.reachable -> FlashPeerPresence.Reachable
+        isSeen -> FlashPeerPresence.Reachable
+        // ADR-228: no Wi-Fi path, but a radio key and a connected gateway. Says "Radio only" and
+        // names the radio, so the header stops claiming Offline while a text can still go out.
+        isRadioOnly -> FlashPeerPresence.RadioOnly
         else -> FlashPeerPresence.Offline
     }
     // Without a transport the header's resolveHealth() short-circuits Unknown -> Offline and shows
     // "Searching for devices…" even when the peer has a live session. An active session is our
     // LAN/WS mesh link, so stamp Lan when online — and only when online: a peer mid-reconnect has no
-    // link to name. A hub-online colleague has no LAN session but a known transport: the relay.
+    // link to name. A hub-online colleague has no LAN session but a known transport: the relay, and a
+    // radio-only peer has the radio.
     val transport = when {
         isOnline -> FlashNetworkTransport.Lan
         isHubOnline -> FlashNetworkTransport.Relay
+        isRadioOnly -> FlashNetworkTransport.Radio
         else -> FlashNetworkTransport.Unknown
     }
     return DirectLinkUi(

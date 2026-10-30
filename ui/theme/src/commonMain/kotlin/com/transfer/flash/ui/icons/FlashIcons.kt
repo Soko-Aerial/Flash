@@ -96,6 +96,8 @@ object FlashIcons {
     val DataSaver = FlashIconSpec(Res.drawable.flash_ic_data_saver, "Data saver")
     /** ADR-102: share a screen or window into the call. */
     val ScreenShare = FlashIconSpec(Res.drawable.flash_ic_screen_share, "Share screen")
+    /** UI-050h: put a zoomed shared screen back to its whole size. */
+    val ZoomFit = FlashIconSpec(Res.drawable.flash_ic_zoom_fit, "Fit to screen")
 
     /** UI-046 bottom-navigation tab glyphs (docs/ui/bottom-nav.md). */
     val Chat = FlashIconSpec(Res.drawable.flash_ic_chat, "Chats")

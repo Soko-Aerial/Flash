@@ -73,6 +73,12 @@ class FlashCallShareTest {
         assertEquals("Ana started sharing, so yours stopped", CallShareText.notice(FlashShareNotice.TAKEN_OVER, "Ana", 4))
         assertEquals("Someone else started sharing, so yours stopped", CallShareText.notice(FlashShareNotice.TAKEN_OVER, null, 4))
         assertEquals("Only 3 people can watch your share at once", CallShareText.notice(FlashShareNotice.WATCHER_CAP, null, 3))
+        // UI-050h / Android: a screen or a window can go away without this device doing anything (the system revokes the
+        // projection), so the sentence must not claim the person closed a window.
+        assertEquals(
+            "The shared screen or window went away, so sharing stopped",
+            CallShareText.notice(FlashShareNotice.SOURCE_LOST, null, 4),
+        )
     }
 
     // ---- who presents

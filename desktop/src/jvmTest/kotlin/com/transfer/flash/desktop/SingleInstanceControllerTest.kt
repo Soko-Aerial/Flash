@@ -57,6 +57,38 @@ class SingleInstanceControllerTest {
     }
 
     @Test
+    fun aRequestWithoutTheInstanceTokenIsIgnored() {
+        // SEC-D12-01: another local process that finds the port must not be able to focus the window or stage files.
+        val testDir = tempFolder.newFolder("single_inst_test_token")
+        assertTrue(SingleInstanceController.acquireOrActivate(testDir))
+        val latch = CountDownLatch(1)
+        SingleInstanceController.onActivate = { latch.countDown() }
+        SingleInstanceController.onShareFiles = { latch.countDown() }
+
+        val port = File(testDir, "app.port").readText().lines().first().trim().toInt()
+        val stray = tempFolder.newFile("stray.txt")
+        Socket(InetAddress.getByName("127.0.0.1"), port).use { socket ->
+            socket.getOutputStream().bufferedWriter().apply {
+                write("ACTIVATE\n")
+                write("SEND ${stray.absolutePath}\nEND_SEND\n")
+                flush()
+            }
+            socket.soTimeout = 2000
+            val reply = runCatching { socket.getInputStream().bufferedReader().readLine() }.getOrNull()
+            assertTrue("no OK for a request without the token, got $reply", reply != "OK")
+        }
+        assertFalse("the callbacks must not run", latch.await(1, TimeUnit.SECONDS))
+        SingleInstanceController.release()
+    }
+
+    @Test
+    fun theTokenComparisonAcceptsOnlyTheExactToken() {
+        assertTrue(SingleInstanceController.tokenMatches("abc", "abc"))
+        assertFalse(SingleInstanceController.tokenMatches("abd", "abc"))
+        assertFalse(SingleInstanceController.tokenMatches("", "abc"))
+    }
+
+    @Test
     fun parseFilesFromArgsParsesExistingFiles() {
         val f1 = tempFolder.newFile("test_file_1.txt")
         val f2 = tempFolder.newFile("test_file_2.png")

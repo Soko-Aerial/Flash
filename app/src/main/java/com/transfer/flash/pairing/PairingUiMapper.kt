@@ -20,7 +20,8 @@ object PairingUiMapper {
         // milliseconds away, so no dialog yet. The initiator is simply "waiting for the other device".
         PairingPhase.AwaitingPeerReveal -> FlashPairingPhase.Idle
         PairingPhase.AwaitingPeerNonce -> FlashPairingPhase.AwaitingPeerConfirmation
-        // Responder sub-states before it accepts both show the actionable consent card.
+        // Both devices show the actionable consent card before they accept: the responder in RequestReceived /
+        // AwaitingLocalDecision, the initiator in AwaitingLocalDecision (SEC-D03-01).
         PairingPhase.RequestReceived,
         PairingPhase.AwaitingLocalDecision -> FlashPairingPhase.RequestReceived
         PairingPhase.AwaitingPeerConfirmation -> FlashPairingPhase.AwaitingPeerConfirmation

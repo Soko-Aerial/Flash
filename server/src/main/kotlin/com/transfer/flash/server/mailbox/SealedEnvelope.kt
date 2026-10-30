@@ -24,7 +24,9 @@ object EnvelopeKind {
  * @property msgId Globally unique message UUID.
  * @property hops Number of hops traversed across mesh/relays (decremented/incremented per relay policy).
  * @property counter Reserved (REL-15 decision, ADR-112): replay protection is the recipient's msgId dedupe, the relay wire has
- *   no counter and the mailbox table no longer stores one. Kept only so the binary format stays readable.
+ *   no counter and the mailbox table no longer stores one. Kept only so the binary format stays readable. SEC-D15-02 added the
+ *   age bound on top: the hub announces its retention in `FLASH_HUB_WELCOME.limits.mailboxTtlMs` and a recipient refuses a
+ *   delivery older than that, so clearing a chat no longer makes an old envelope acceptable again.
  * @property kind Payload category: "CHAT", "RECEIPT", "SMALL_FILE", or "META".
  * @property recipientDeviceIds List of intended recipient device IDs.
  * @property payload Sealed ciphertext payload or binary frame.

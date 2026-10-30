@@ -105,12 +105,12 @@ internal class WsKeepalive(
         ) : Verdict
     }
 
-    /** Wall clock of the last inbound frame of ANY kind. Written by the read loop. */
+    /** Monotonic clock (SEC-D26-01) of the last inbound frame of ANY kind. Written by the read loop. */
     @Volatile
     internal var lastInboundAtMs: Long = startedAtMs
         private set
 
-    /** Wall clock of the last frame this side wrote, of any kind. Written by the send path. */
+    /** Monotonic clock (SEC-D26-01) of the last frame this side wrote, of any kind. Written by the send path. */
     @Volatile
     internal var lastOutboundAtMs: Long = startedAtMs
         private set
@@ -123,14 +123,14 @@ internal class WsKeepalive(
     internal var role: PingRole = PingRole.BOTH
 
     /**
-     * Wall clock of the last data frame, in either direction, that is not background traffic
+     * Monotonic clock (SEC-D26-01) of the last data frame, in either direction, that is not background traffic
      * ([isBackgroundText]). Starts at the connection's start, so a new session counts as active.
      */
     @Volatile
     internal var lastUserTrafficAtMs: Long = startedAtMs
         private set
 
-    /** Wall clock of the previous keepalive tick, used to detect a stalled scheduler. */
+    /** Monotonic clock of the previous keepalive tick, used to detect a stalled scheduler. */
     private var lastTickAtMs: Long = startedAtMs
 
     /**

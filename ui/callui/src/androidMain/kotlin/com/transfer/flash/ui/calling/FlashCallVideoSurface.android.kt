@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.Constraints
@@ -20,6 +21,7 @@ import com.shepeliev.webrtckmp.WebRtc
 import com.transfer.flash.core.common.logging.FlashLog
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+import kotlin.math.roundToInt
 
 /**
  * Android actual: the original [SurfaceViewRenderer] path, moved here verbatim by S3b. The
@@ -32,6 +34,8 @@ internal actual fun FlashCallVideoSurface(
     modifier: Modifier,
     zOrderMediaOverlay: Boolean,
     mirror: Boolean,
+    zoom: Float,
+    pan: Offset,
 ) {
     // The renderer view always fills the box it is measured into and then CROPS the frame to that box's aspect ratio, whatever
     // scaling type it has (ERROR-748: a 16:9 desktop share on a portrait phone lost most of its width). So the scaling type is
@@ -69,9 +73,17 @@ internal actual fun FlashCallVideoSurface(
         }
         val boxWidth = constraints.maxWidth
         val boxHeight = constraints.maxHeight
-        val (width, height) = callVideoSize(fit, frame.width, frame.height, boxWidth, boxHeight)
+        val (fittedWidth, fittedHeight) = callVideoSize(fit, frame.width, frame.height, boxWidth, boxHeight)
+        // UI-050h: the same fitted picture, magnified. The box crops it, and [pan] decides which part is in the middle; an
+        // axis the picture already fills (or overfills) is the only one that can travel.
+        val width = (fittedWidth * zoom).roundToInt().coerceAtLeast(1)
+        val height = (fittedHeight * zoom).roundToInt().coerceAtLeast(1)
+        val travelX = (width - boxWidth).coerceAtLeast(0)
+        val travelY = (height - boxHeight).coerceAtLeast(0)
+        val x = (boxWidth - width) / 2 + (pan.x.coerceIn(-1f, 1f) * travelX / 2f).roundToInt()
+        val y = (boxHeight - height) / 2 + (pan.y.coerceIn(-1f, 1f) * travelY / 2f).roundToInt()
         val placeable = picture.measure(Constraints.fixed(width, height))
-        layout(boxWidth, boxHeight) { placeable.place((boxWidth - width) / 2, (boxHeight - height) / 2) }
+        layout(boxWidth, boxHeight) { placeable.place(x, y) }
     }
 
     // onRelease covers the view being discarded; this covers the composable leaving the tree

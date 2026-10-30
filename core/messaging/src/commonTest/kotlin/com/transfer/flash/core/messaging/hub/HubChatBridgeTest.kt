@@ -26,6 +26,13 @@ import kotlin.test.assertTrue
 /** ADR-122: the inbound and outbound rules of the hub bridge, with a scripted relay and no database. */
 class HubChatBridgeTest {
 
+    /** The instant every fixture is stamped at, and the bridge's clock: the age rule (SEC-D15-02) is measured against it. */
+    private val now = 1_700_000_000_000L
+
+    private val clock = object : com.transfer.flash.core.common.time.FlashTimeSource {
+        override fun nowMs(): Long = now
+    }
+
     private val log = mutableListOf<String>()
     private val relay = FakeHubRelay(log)
 
@@ -55,6 +62,7 @@ class HubChatBridgeTest {
     ) = HubChatBridge(
         localDeviceId = "me",
         port = relay,
+        timeSource = clock,
         contentViaHub = { content },
         sealing = sealing,
         standing = { standing[it] ?: HubPeerStanding.UNKNOWN },
@@ -66,7 +74,7 @@ class HubChatBridgeTest {
         from = from,
         id = id,
         type = HubChatBridge.CHAT_FRAME,
-        sentAt = 1_000L,
+        sentAt = now,
         payload = ChatTextFrameCodec.encode(
             MessageWireFrame.TextMessage(id, "me", from, "Alice", body, 1_000L),
         )!!,
@@ -116,7 +124,81 @@ class HubChatBridgeTest {
         assertTrue(relay.recvAcks.isEmpty(), "no RECV_ACK for a message that was not stored")
     }
 
-    // ----- dedupe -----
+    // ----- freshness (SEC-D15-02) -----
+
+    @Test
+    fun aDeliveryOlderThanTheHubsRetentionIsRefusedAndAcknowledged() = runTest {
+        // The hub says it keeps mail for an hour; this arrives a day late, so it is a replay.
+        relay.mailboxTtl = 3_600_000L
+        val sink = RecordingSink(log)
+        val stale = text("old").copy(sentAt = now - 86_400_000L)
+        assertEquals(HubInboundOutcome.REJECTED, bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER)).handleInbound(stale, sink))
+        assertTrue(sink.direct.isEmpty(), "never stored as new")
+        assertEquals(listOf("old"), relay.recvAcks, "acknowledged, or the hub would redeliver it for ever")
+    }
+
+    @Test
+    fun aDeliveryJustInsideTheRetentionIsKept() = runTest {
+        relay.mailboxTtl = 3_600_000L
+        val sink = RecordingSink(log)
+        val edge = text("edge").copy(sentAt = now - 3_600_000L - com.transfer.flash.core.hubprotocol.HubContract.MESSAGE_AGE_GRACE_MS)
+        assertEquals(HubInboundOutcome.STORED, bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER)).handleInbound(edge, sink))
+    }
+
+    @Test
+    fun aHubThatAnnouncesNothingGetsTheDefaultWindow() = runTest {
+        // 0 means "an older hub said nothing": the default 7 days must apply, not "refuse everything".
+        suspend fun outcomeDaysAgo(days: Long): HubInboundOutcome {
+            relay.mailboxTtl = 0L
+            val sink = RecordingSink(log)
+            val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER))
+            return b.handleInbound(text("d-$days").copy(sentAt = now - days * 86_400_000L), sink)
+        }
+        assertEquals(HubInboundOutcome.STORED, outcomeDaysAgo(1))
+        assertEquals(HubInboundOutcome.REJECTED, outcomeDaysAgo(8))
+    }
+
+    @Test
+    fun anOldStampIsNotJudgedWhenTheSenderLeftItAtZero() = runTest {
+        val sink = RecordingSink(log)
+        assertEquals(
+            HubInboundOutcome.STORED,
+            bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER)).handleInbound(text("zero").copy(sentAt = 0L), sink),
+        )
+    }
+
+    @Test
+    fun aSenderWhoseClockIsDaysBehindStampsWithTheHubsClock() {
+        // SEC-D15-02: otherwise every message this device sends would be refused on age by a correct recipient.
+        relay.serverTimeOffset = 86_400_000L
+        runTest {
+            val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER))
+            assertTrue(b.sendDirect("alice", "m-clock", now, MessageWireFrame.TextMessage("m-clock", "me", "alice", "A", "x", now)))
+            assertEquals(now + 86_400_000L, relay.sent.single().sentAt)
+        }
+    }
+
+    @Test
+    fun aSmallClockDifferenceIsLeftAloneAndNoOffsetChangesNothing() {
+        runTest {
+            val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER))
+            relay.serverTimeOffset = 1_000L
+            b.sendDirect("alice", "m-small", now, MessageWireFrame.TextMessage("m-small", "me", "alice", "A", "x", now))
+            relay.serverTimeOffset = null
+            b.sendDirect("alice", "m-none", now, MessageWireFrame.TextMessage("m-none", "me", "alice", "A", "x", now))
+        }
+        assertEquals(listOf(now, now), relay.sent.map { it.sentAt })
+    }
+
+    @Test
+    fun theStaleCountRisesOnlyForStaleDeliveries() = runTest {
+        relay.mailboxTtl = 3_600_000L
+        val sink = RecordingSink(log)
+        val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER))
+        b.handleInbound(text("fresh"), sink)
+        b.handleInbound(text("gone").copy(sentAt = now - 86_400_000L), sink)
+        assertEquals(1, b.droppedStale.value)
+    }
 
     @Test
     fun aRedeliveredMessageIsStoredOnceAndAcknowledgedAgain() = runTest {
@@ -193,6 +275,7 @@ class HubChatBridgeTest {
         val b = HubChatBridge(
             localDeviceId = "me",
             port = relay,
+            timeSource = clock,
             contentViaHub = { true },
             standing = { id -> hubPeers.standing(id) },
             isPaired = { false },
@@ -232,12 +315,12 @@ class HubChatBridgeTest {
         val sink = RecordingSink(log)
         val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER))
         val receipt = HubInbound(
-            "alice", "r-1", HubChatBridge.CHAT_FRAME, 1L,
+            "alice", "r-1", HubChatBridge.CHAT_FRAME, now,
             ChatTextFrameCodec.encode(MessageWireFrame.DeliveryReceipt("m-1", "me", "alice", 5L))!!,
         )
         assertEquals(HubInboundOutcome.STORED, b.handleInbound(receipt, sink))
         val forgedDelete = HubInbound(
-            "alice", "d-1", HubChatBridge.CHAT_FRAME, 1L,
+            "alice", "d-1", HubChatBridge.CHAT_FRAME, now,
             DirectMessageActionCodec.encode(MessageWireFrame.DeleteForEveryone("m-1", "me", "bob")),
         )
         assertEquals(HubInboundOutcome.REJECTED, b.handleInbound(forgedDelete, sink))
@@ -249,7 +332,7 @@ class HubChatBridgeTest {
     fun aPlainTextGroupMessageIsNoLongerTurnedIntoAGroupFrameWithTheEnvelopeIdAsGroup() = runTest {
         // The old fallback made GroupWireFrame.Message(groupId = envelope id, text = whatever arrived).
         val sink = RecordingSink(log)
-        val junk = HubInbound("alice", "g-1", HubChatBridge.LEGACY_GROUP, 1L, "just some words")
+        val junk = HubInbound("alice", "g-1", HubChatBridge.LEGACY_GROUP, now, "just some words")
         val outcome = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER), linked = setOf("g-1")).handleInbound(junk, sink)
         assertEquals(HubInboundOutcome.REJECTED, outcome)
         assertTrue(sink.group.isEmpty())
@@ -257,7 +340,7 @@ class HubChatBridgeTest {
     }
 
     private fun groupMessage(from: String = "alice", groupId: String = "grp") = GroupWireFrame.Message(
-        groupId = groupId, messageId = "gm-1", from = from, senderName = "Alice", sentAt = 1L, text = "hi team",
+        groupId = groupId, messageId = "gm-1", from = from, senderName = "Alice", sentAt = now, text = "hi team",
     )
 
     @Test
@@ -265,7 +348,7 @@ class HubChatBridgeTest {
         val b = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER), linked = setOf("grp"))
         val sink = RecordingSink(log)
         fun inbound(frame: GroupWireFrame, from: String = "alice", id: String = "gm-1") =
-            HubInbound(from, id, HubChatBridge.GROUP_FRAME, 1L, GroupFrameCodec.encode(frame))
+            HubInbound(from, id, HubChatBridge.GROUP_FRAME, now, GroupFrameCodec.encode(frame))
 
         assertEquals(HubInboundOutcome.STORED, b.handleInbound(inbound(groupMessage()), sink))
         assertEquals(HubInboundOutcome.REJECTED, b.handleInbound(inbound(groupMessage(groupId = "other"), id = "gm-2"), sink))
@@ -276,7 +359,7 @@ class HubChatBridgeTest {
     @Test
     fun membershipAndSecretFramesNeverComeInThroughTheHub() = runTest {
         val bundleLike = GroupWireFrame.Leave(groupId = "grp", from = "alice", memberId = "alice", operationId = "op", membershipVersion = 1L)
-        val inbound = HubInbound("alice", "gl-1", HubChatBridge.GROUP_FRAME, 1L, GroupFrameCodec.encode(bundleLike))
+        val inbound = HubInbound("alice", "gl-1", HubChatBridge.GROUP_FRAME, now, GroupFrameCodec.encode(bundleLike))
         val sink = RecordingSink(log)
         val outcome = bridge(standing = mapOf("alice" to HubPeerStanding.MEMBER), linked = setOf("grp")).handleInbound(inbound, sink)
         assertEquals(HubInboundOutcome.REJECTED, outcome)

@@ -18,9 +18,17 @@ class FlashPresenceDotLogicTest {
     }
 
     @Test
+    fun `a radio-only peer keeps the ring shape in its own colour`() {
+        // ADR-228: shape still means "no session"; the separate style exists so the dot is not drawn in the
+        // Wi-Fi sighting's colour and so a screen reader says "Radio only", not "Online".
+        assertEquals(FlashPresenceDotStyle.RingRadio, FlashPresenceDotMath.style(FlashPeerPresence.RadioOnly))
+    }
+
+    @Test
     fun `descriptions use the owner's names`() {
         assertEquals("Connected", FlashPresenceDotMath.description(FlashPresenceDotStyle.Solid))
         assertEquals("Online", FlashPresenceDotMath.description(FlashPresenceDotStyle.Ring))
+        assertEquals("Radio only", FlashPresenceDotMath.description(FlashPresenceDotStyle.RingRadio))
         assertNull(FlashPresenceDotMath.description(FlashPresenceDotStyle.None))
     }
 

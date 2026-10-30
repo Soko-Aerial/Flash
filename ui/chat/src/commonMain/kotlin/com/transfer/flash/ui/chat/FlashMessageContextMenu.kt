@@ -81,6 +81,7 @@ fun FlashMessageFocusOverlay(
     onSelectMultiple: () -> Unit,
     onDelete: () -> Unit,
     onDeleteForEveryone: (() -> Unit)? = null,
+    onStopRadioRetry: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     /** UI-051: shows a "Message Info" item. The host passes it only for a message that offers it. */
     onMessageInfo: (() -> Unit)? = null,
@@ -183,6 +184,12 @@ fun FlashMessageFocusOverlay(
                     onDeleteForEveryone = onDeleteForEveryone?.let { deleteForEveryone ->
                         {
                             deleteForEveryone()
+                            onDismiss()
+                        }
+                    },
+                    onStopRadioRetry = onStopRadioRetry?.let { stop ->
+                        {
+                            stop()
                             onDismiss()
                         }
                     },
@@ -406,6 +413,7 @@ fun FlashContextMenuCard(
     onSelectMultiple: () -> Unit,
     onDelete: () -> Unit,
     onDeleteForEveryone: (() -> Unit)? = null,
+    onStopRadioRetry: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onMessageInfo: (() -> Unit)? = null,
     onPin: (() -> Unit)? = null,
@@ -455,6 +463,14 @@ fun FlashContextMenuCard(
                 onClick = onMessageInfo,
             )
         }
+        if (onStopRadioRetry != null) {
+            FlashContextMenuItem(
+                icon = FlashIcons.Close,
+                label = "Stop sending",
+                onClick = onStopRadioRetry,
+                isDestructive = true,
+            )
+        }
         HorizontalDivider(
             color = colors.borderSubtle,
             thickness = FlashDimensions.borderHairline,
@@ -482,6 +498,7 @@ internal fun messageActionLabels(
     isMine: Boolean,
     hasMessageInfo: Boolean = false,
     canPin: Boolean = false,
+    canStopRadioRetry: Boolean = false,
 ): List<String> = buildList {
     add("Reply")
     add("Copy Text")
@@ -489,6 +506,7 @@ internal fun messageActionLabels(
     if (canPin) add("Pin")
     add("Select Multiple")
     if (hasMessageInfo) add(FlashMessageInfoMath.MENU_LABEL)
+    if (canStopRadioRetry) add("Stop sending")
     if (isMine) add("Delete for everyone")
     add("Delete")
 }

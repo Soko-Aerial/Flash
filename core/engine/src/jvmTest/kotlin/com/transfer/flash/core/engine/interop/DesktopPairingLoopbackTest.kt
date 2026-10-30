@@ -113,6 +113,11 @@ class DesktopPairingLoopbackTest {
 
                 // The human's decision, made here by the test: nothing completes without it.
                 responder.pairing.acceptLocal()
+                // SEC-D03-01: the initiator is asked to accept the same code before it confirms.
+                waitUntil(what = "the initiator must be asked to accept as well") {
+                    initiator.pairing.pairing.value?.phase == PairingPhase.AwaitingLocalDecision
+                }
+                initiator.pairing.acceptLocal()
 
                 waitUntil(
                     what = "both sides must persist trust",
@@ -136,10 +141,10 @@ class DesktopPairingLoopbackTest {
                     responder.trustStore.getTrustedPeers().size,
                     "exactly one peer must have been trusted on the responder",
                 )
-                assertTrue(
-                    responder.pairing.trustedPeers.value.any { it.id == initiator.identity.deviceId.value },
-                    "the responder must publish the new trusted peer (the Nearby row reads this)",
-                )
+                // The list is republished just after the trust store is written, so wait for it rather than race it.
+                waitUntil(what = "the responder must publish the new trusted peer (the Nearby row reads this)") {
+                    responder.pairing.trustedPeers.value.any { it.id == initiator.identity.deviceId.value }
+                }
             }
         } finally {
             watcher.cancel()

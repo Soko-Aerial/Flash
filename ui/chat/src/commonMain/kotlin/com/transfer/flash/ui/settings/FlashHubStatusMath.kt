@@ -44,6 +44,8 @@ public data class FlashHubSealingUi(
     public val unverified: Int = 0,
     /** Readable messages refused because "Messages through the hub" is off. */
     public val readableOff: Int = 0,
+    /** Old deliveries refused so a replay cannot pass as new (SEC-D15-02). */
+    public val stale: Int = 0,
 )
 
 /** A label/value pair in the connection detail sheet. */
@@ -204,6 +206,9 @@ public object FlashHubStatusMath {
         }
         if (sealing.readableOff > 0) {
             add(FlashHubDetailLine("Messages not accepted", "${sealing.readableOff}. They were readable by the hub and \"Messages through the hub\" is off."))
+        }
+        if (sealing.stale > 0) {
+            add(FlashHubDetailLine("Old messages refused", "${sealing.stale}. They arrived so late that they were older than the server keeps messages, so Flash did not keep them a second time."))
         }
     }
 

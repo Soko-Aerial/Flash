@@ -113,6 +113,32 @@ class RadioChatBridgeTest {
     }
 
     @Test
+    fun stopRetry_marksTheUnacknowledgedRadioSendStopped_butALateAckStillWins() = runTest {
+        val port = FakeRadioOutboxPort()
+        port.reachablePeers += "peer-1"
+        var delivered = false
+        val bridge = RadioChatBridge(
+            port = port,
+            scope = backgroundScope,
+            onInboundMessage = { _, _, _, _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> delivered = true },
+            onMessageFailed = {},
+        )
+        val frame = MessageWireFrame.TextMessage("msg-stop", "conv-1", "me", "Me", "Stop retry", 1000L)
+
+        assertTrue(bridge.sendDirect("peer-1", frame))
+        assertTrue(bridge.stopRetry("msg-stop"))
+        assertEquals(RadioDeliveryNote.STATE_STOPPED, bridge.notes.value["msg-stop"]?.statusText)
+        assertTrue(bridge.notes.value["msg-stop"]?.isFailure == true)
+        assertFalse(bridge.stopRetry("msg-stop"))
+
+        port.receiptFlow.emit(RadioDeliveryReceipt("msg-stop", "peer-1", 2000L))
+        testScheduler.runCurrent()
+        assertTrue(delivered)
+        assertTrue(bridge.notes.value["msg-stop"]?.isDelivered == true)
+    }
+
+    @Test
     fun testSendDirect_tooLong_refusedWithSentence() = runTest {
         val port = FakeRadioOutboxPort()
         port.reachablePeers += "peer-1"
@@ -269,5 +295,48 @@ class RadioChatBridgeTest {
 
         assertEquals("sender-peer", inboundSender)
         assertEquals("Inbound radio packet", inboundText)
+    }
+
+    /**
+     * ERROR-869 (2026-10-28): during a two-minute link outage the old five-attempt budget was spent on
+     * "radio not connected", so the message was refused forever afterwards even with the link back. A link that
+     * is down is not the message's failure.
+     */
+    @Test
+    fun testSendDirect_gatewayOutageDoesNotBurnTheRetryBudget() = runTest {
+        val port = FakeRadioOutboxPort()
+        port.reachablePeers += "peer-1"
+
+        val failed = mutableListOf<String>()
+        val bridge = RadioChatBridge(
+            port = port,
+            scope = backgroundScope,
+            onInboundMessage = { _, _, _, _, _ -> },
+            onDeliveryReceipt = { _, _, _ -> },
+            onMessageFailed = { failed += it },
+        )
+
+        val frame = MessageWireFrame.TextMessage(
+            localId = "msg-outage",
+            conversationId = "conv-1",
+            senderId = "me",
+            senderName = "Me",
+            text = "Sent during a radio outage",
+            sentAt = 1000L,
+        )
+
+        // Six refused attempts with the link down: more than the old cap of five.
+        port.isConnectedValue = false
+        repeat(6) { assertFalse(bridge.sendDirect("peer-1", frame)) }
+        assertTrue(failed.isEmpty(), "a link outage must not mark the message failed")
+        assertTrue(port.sentMessages.isEmpty())
+
+        // The link comes back: the same message goes out on its next attempt.
+        port.isConnectedValue = true
+        assertTrue(bridge.sendDirect("peer-1", frame))
+        assertEquals(1, port.sentMessages.size)
+        assertEquals("msg-outage", port.sentMessages.single().messageId)
+        assertTrue(failed.isEmpty())
+        assertEquals(RadioDeliveryNote.STATE_SENT_WAITING, bridge.notes.value["msg-outage"]?.statusText)
     }
 }

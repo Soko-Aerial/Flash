@@ -22,7 +22,7 @@ import kotlinx.coroutines.withTimeoutOrNull
  * engines publish a state the UI can render?
  *
  *  - `alpha` is the initiator (the desktop the human tapped on) and must reach
- *    `AwaitingPeerConfirmation` — the "compare this code with the other screen" state. If this is null,
+ *    `AwaitingLocalDecision` (SEC-D03-01: the initiator also confirms the code) — the "compare this code with the other screen" state. If this is null,
  *    the dialog cannot appear no matter what the UI does, and the bug is in the coordinator.
  *  - `beta` is the responder (the phone) and must reach `RequestReceived` — the state whose dialog the
  *    user DID see. Asserting it here keeps the test honest about the direction it is not testing.
@@ -96,11 +96,11 @@ class DesktopEnginePairingTest {
         // chat edges added in the chat/group audit, step 1, made that visible in a full-suite run). The claim is
         // unchanged: the initiator must reach the compare-the-code state.
         val reachedConfirmation = await(PAIR_TIMEOUT_MS) {
-            alpha.pairing.pairing.value?.phase == com.transfer.flash.core.security.pairing.PairingPhase.AwaitingPeerConfirmation
+            alpha.pairing.pairing.value?.phase == com.transfer.flash.core.security.pairing.PairingPhase.AwaitingLocalDecision
         }
         assertTrue(
             reachedConfirmation,
-            "the initiator must publish AwaitingPeerConfirmation (compare-the-code), was ${alpha.pairing.pairing.value?.phase}",
+            "the initiator must publish AwaitingLocalDecision (compare-the-code, SEC-D03-01), was ${alpha.pairing.pairing.value?.phase}",
         )
 
         // The other half of the same claim: the peer shows an actionable request.
@@ -122,6 +122,8 @@ class DesktopEnginePairingTest {
         // button takes, minus the click. Four frames (request → accept → confirm → paired) and then
         // durable trust on both sides, which is what "paired" means to the rest of the product.
         beta.pairing.acceptLocal()
+        // SEC-D03-01: the initiator accepts the code too; its PAIR_CONFIRM goes out only after that.
+        alpha.pairing.acceptLocal()
 
         val confirmed = await(PAIR_TIMEOUT_MS) {
             alpha.pairing.pairing.value?.phase == PairingPhase.Confirmed &&

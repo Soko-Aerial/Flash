@@ -95,6 +95,9 @@ class DesktopEngineRenameTest {
         alpha.pairing.beginPair(betaId, "beta") { }
         assertTrue(await(PAIR_TIMEOUT_MS) { beta.pairing.pairing.value?.phase == PairingPhase.RequestReceived }, "no pair request")
         beta.pairing.acceptLocal()
+        // SEC-D03-01: the initiator confirms the code as well.
+        assertTrue(await(PAIR_TIMEOUT_MS) { alpha.pairing.pairing.value?.phase == PairingPhase.AwaitingLocalDecision }, "initiator never asked to accept")
+        alpha.pairing.acceptLocal()
         assertTrue(
             await(PAIR_TIMEOUT_MS) { alpha.trust.isTrusted(FlashDeviceId(betaId)) && beta.trust.isTrusted(FlashDeviceId(alphaId)) },
             "pairing did not persist trust on both sides",

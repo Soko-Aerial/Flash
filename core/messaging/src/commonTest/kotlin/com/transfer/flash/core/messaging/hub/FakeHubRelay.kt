@@ -21,9 +21,21 @@ class FakeHubRelay(private val log: MutableList<String> = mutableListOf()) : Hub
     val ackEvents = MutableSharedFlow<HubAckEvent>(extraBufferCapacity = 64)
     override val acks: Flow<HubAckEvent> = ackEvents
 
+    /** What the fake hub announced as its mailbox retention (SEC-D15-02); 0 models an older hub that says nothing. */
+    @kotlin.concurrent.Volatile
+    var mailboxTtl: Long = 0L
+
+    /** How far this device's clock is ahead of the fake hub's (SEC-D15-02). */
+    @kotlin.concurrent.Volatile
+    var serverTimeOffset: Long? = null
+
     /** Whether the fake relay session is signed in; flip it to model a (re)connect. */
     val connectedState = kotlinx.coroutines.flow.MutableStateFlow(false)
     override val connected: Flow<Boolean> = connectedState
+
+    override val mailboxTtlMs: Long get() = mailboxTtl
+
+    override val serverTimeOffsetMs: Long? get() = serverTimeOffset
 
     val typingEvents = MutableSharedFlow<HubTypingEvent>(extraBufferCapacity = 64)
     override val typing: Flow<HubTypingEvent> = typingEvents

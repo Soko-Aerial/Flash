@@ -282,6 +282,15 @@ class RealFlashChatRepositoryTest {
             conversations[id]?.let { conversations[id] = it.copy(muted = muted); flow.value = conversations.values.toList() }
         }
 
+        override suspend fun setRadioPolicy(id: String, radioPolicy: String) {
+            conversations[id]?.let {
+                if (!it.isGroup) {
+                    conversations[id] = it.copy(radioPolicy = radioPolicy)
+                    flow.value = conversations.values.toList()
+                }
+            }
+        }
+
         override suspend fun updateLastReadCursor(id: String, cursor: String) {
             conversations[id]?.let {
                 conversations[id] = it.copy(lastReadCursor = cursor)
@@ -380,7 +389,14 @@ class RealFlashChatRepositoryTest {
         override val connectionStatus: MutableStateFlow<com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus> =
             MutableStateFlow(com.transfer.flash.core.messaging.radio.RadioGatewayConnectionStatus.CONNECTED)
 
-        override fun isRadioReachable(recipientDeviceId: String): Boolean = true
+        /** Whether this device holds the peer's radio key (ADR-227). */
+        @kotlin.concurrent.Volatile
+        var reachable: Boolean = true
+
+        /** Message ids handed to the transmitter, in order (ADR-229 path-order tests). */
+        val textSent: MutableList<String> = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        override fun isRadioReachable(recipientDeviceId: String): Boolean = reachable
 
         override suspend fun sendTextMessage(
             recipientDeviceId: String,
@@ -388,8 +404,10 @@ class RealFlashChatRepositoryTest {
             text: String,
             sentAt: Long,
             emergency: Boolean,
-        ): com.transfer.flash.core.messaging.radio.RadioSendResult =
-            com.transfer.flash.core.messaging.radio.RadioSendResult.SentWaitingAck
+        ): com.transfer.flash.core.messaging.radio.RadioSendResult {
+            textSent += messageId
+            return com.transfer.flash.core.messaging.radio.RadioSendResult.SentWaitingAck
+        }
 
         override val inboundMessages: Flow<com.transfer.flash.core.messaging.radio.RadioInboundMessage> =
             kotlinx.coroutines.flow.MutableSharedFlow()
@@ -532,6 +550,22 @@ class RealFlashChatRepositoryTest {
     }
 
     @Test
+    fun `radio fallback policy is persisted per direct conversation only`() = runBlocking {
+        val conversations = FakeConversationDao()
+        conversations.upsert(ConversationEntity(id = "peer", title = "Peer", isGroup = false))
+        conversations.upsert(ConversationEntity(id = "group", title = "Group", isGroup = true))
+        val repository = newRepository(conversationDao = conversations)
+
+        repository.setRadioPolicy("peer", com.transfer.flash.core.common.model.FlashRadioPolicy.NEVER)
+        repository.setRadioPolicy("group", com.transfer.flash.core.common.model.FlashRadioPolicy.NEVER)
+        kotlinx.coroutines.delay(100)
+
+        assertEquals("NEVER", conversations.get("peer")!!.radioPolicy)
+        assertEquals("AUTO", conversations.get("group")!!.radioPolicy)
+        repository.close()
+    }
+
+    @Test
     fun `without a pin store a pin request is ignored and the state carries none`() = runBlocking {
         val repository = newRepository()
         repository.openConversation("conv-a")
@@ -666,7 +700,7 @@ class RealFlashChatRepositoryTest {
             MessageWireFrame.DeliveryReceipt(
                 messageId = frame.localId,
                 conversationId = "conv-alex",
-                memberId = "peer-device-id",
+                memberId = "conv-alex",
                 deliveredAt = System.currentTimeMillis(),
             ),
         )
@@ -704,6 +738,7 @@ class RealFlashChatRepositoryTest {
             reactionDao = reactionDao,
             transportSink = transportSink,
             ioDispatcher = testDispatcher,
+            isTrustedPeer = { true },
         )
 
         val inbound = MessageWireFrame.TextMessage(
@@ -742,6 +777,54 @@ class RealFlashChatRepositoryTest {
         assertEquals("peer-device-id", replyTargets.first())
     }
 
+    private fun inboundTextRepo(
+        messageDao: FakeMessageDao,
+        paired: Boolean,
+        org: Boolean,
+    ) = RealFlashChatRepository(
+        localDeviceId = "my-device-id",
+        localDisplayName = "Kali",
+        messageDao = messageDao,
+        conversationDao = FakeConversationDao(),
+        outboxDao = FakeOutboxDao(),
+        receiptDao = FakeReceiptDao(),
+        draftDao = FakeDraftDao(),
+        recentSearchDao = FakeRecentSearchDao(),
+        reactionDao = FakeReactionDao(),
+        transportSink = null,
+        ioDispatcher = testDispatcher,
+        isTrustedPeer = { paired },
+        isOrgPeer = { org },
+    )
+
+    private fun strangerText() = MessageWireFrame.TextMessage(
+        localId = "gate-1",
+        conversationId = "my-device-id",
+        senderId = "peer-device-id",
+        senderName = "Someone",
+        text = "hello",
+        sentAt = System.currentTimeMillis(),
+    )
+
+    // SEC-D28-01 / SEC-D05-01: the capability predicate was tested in isolation, but nothing proved the inbound path used it.
+    @Test
+    fun `an unpaired non-colleague LAN text message is dropped and stores nothing`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        inboundTextRepo(messageDao, paired = false, org = false).onInboundWireFrame(strangerText())
+        assertEquals(0, messageDao.messages.size)
+    }
+
+    @Test
+    fun `a paired sender and a verified colleague are both accepted over LAN`() = runBlocking {
+        val pairedDao = FakeMessageDao()
+        inboundTextRepo(pairedDao, paired = true, org = false).onInboundWireFrame(strangerText())
+        assertEquals(1, pairedDao.messages.size)
+
+        val orgDao = FakeMessageDao()
+        inboundTextRepo(orgDao, paired = false, org = true).onInboundWireFrame(strangerText())
+        assertEquals(1, orgDao.messages.size)
+    }
+
     @Test
     fun `onInboundWireFrame drops frames when transportPeerId does not match claim author`() = runBlocking {
         val messageDao = FakeMessageDao()
@@ -764,6 +847,7 @@ class RealFlashChatRepositoryTest {
             reactionDao = reactionDao,
             transportSink = null,
             ioDispatcher = testDispatcher,
+            isTrustedPeer = { true },
         )
 
         val spoofedText = MessageWireFrame.TextMessage(
@@ -830,6 +914,7 @@ class RealFlashChatRepositoryTest {
                 reactionDao = reactionDao,
                 transportSink = null,
                 ioDispatcher = testDispatcher,
+                isTrustedPeer = { true },
                 onInboundTextMessage = { conversationId, senderName, text ->
                     notified.add(Triple(conversationId, senderName, text))
                 },
@@ -1478,7 +1563,7 @@ class RealFlashChatRepositoryTest {
             ioDispatcher = testDispatcher,
         )
         val now = System.currentTimeMillis()
-        messageDao.insert(msg("m-zombie", "conv-A", "into the void").copy(status = "PENDING"))
+        messageDao.insert(msg("m-zombie", "conv-A", "into the void").copy(senderId = "my-device-id", status = "PENDING"))
         outboxDao.enqueue(
             OutboxEntity(
                 localId = "m-zombie",
@@ -1504,7 +1589,7 @@ class RealFlashChatRepositoryTest {
             MessageWireFrame.DeliveryReceipt(
                 messageId = "m-zombie",
                 conversationId = "conv-A",
-                memberId = "peer",
+                memberId = "conv-A",
                 deliveredAt = System.currentTimeMillis(),
             ),
         )
@@ -1835,6 +1920,8 @@ class RealFlashChatRepositoryTest {
                 override suspend fun setArchived(id: String, archived: Boolean) = delegate.setArchived(id, archived)
                 override suspend fun setPinned(id: String, pinned: Boolean) = delegate.setPinned(id, pinned)
                 override suspend fun setMuted(id: String, muted: Boolean) = delegate.setMuted(id, muted)
+                override suspend fun setRadioPolicy(id: String, radioPolicy: String) =
+                    delegate.setRadioPolicy(id, radioPolicy)
                 override suspend fun updateLastReadCursor(id: String, cursor: String) =
                     delegate.updateLastReadCursor(id, cursor)
                 override suspend fun clearLastReadCursor(id: String) {
@@ -3281,7 +3368,7 @@ class RealFlashChatRepositoryTest {
 
     @Test
     fun `direct inbound typing remains keyed to transport peer`() = runBlocking {
-        val repository = newRepository()
+        val repository = newRepository(trustedPeers = setOf("peer-a"))
         repository.openConversation("peer-a")
 
         repository.onInboundWireFrame(
@@ -3974,6 +4061,8 @@ class RealFlashChatRepositoryTest {
         content: Boolean = true,
         graceMs: Long = 250L,
         paired: Set<String> = emptySet(),
+        radio: FakeRadioOutboxPort? = null,
+        hubOnline: Set<String> = emptySet(),
     ): HubRig {
         val log = java.util.Collections.synchronizedList(mutableListOf<String>())
         val relay = com.transfer.flash.core.messaging.hub.FakeHubRelay(log)
@@ -4008,6 +4097,8 @@ class RealFlashChatRepositoryTest {
             hubPeers = peers,
             hubContentViaHub = { content },
             hubFallbackGraceMs = graceMs,
+            hubOnlinePeerIds = MutableStateFlow(hubOnline),
+            radioPort = radio,
         )
         return HubRig(relay, repository, inner, outbox, directory, trust, log)
     }
@@ -4064,7 +4155,8 @@ class RealFlashChatRepositoryTest {
         val rig = hubRig()
         rig.trust.linkGroupToHub("hub-g1")
         rig.relay.deliver(
-            com.transfer.flash.core.messaging.hub.HubInbound("colleague", "hub-g1", "GROUP_MSG", 1L, "free text"),
+            // Stamped now: an old stamp is refused on age before its type is even looked at (SEC-D15-02).
+            com.transfer.flash.core.messaging.hub.HubInbound("colleague", "hub-g1", "GROUP_MSG", System.currentTimeMillis(), "free text"),
         )
         awaitUntil { rig.relay.recvAcks.contains("hub-g1") }
 
@@ -4132,6 +4224,53 @@ class RealFlashChatRepositoryTest {
 
         assertEquals(1, rig.relay.sent.size)
         assertEquals("colleague", rig.relay.sent.single().to)
+    }
+
+    // ----- ADR-229: a mailbox deposit is not a delivery, so the radio is tried before it (ERROR-869 round 3) -----
+
+    @Test
+    fun `ADR229 without a LAN session the radio carries the text when the hub cannot deliver now`() = runBlocking {
+        val radio = FakeRadioOutboxPort()
+        val rig = hubRig(lanUp = false, radio = radio)
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("over the air")
+        awaitUntil { radio.textSent.isNotEmpty() }
+        kotlinx.coroutines.delay(300)
+
+        assertEquals(1, radio.textSent.size)
+        assertTrue(
+            "a mailbox deposit is not a delivery: the hub must not take a message it cannot deliver now",
+            rig.relay.sent.isEmpty(),
+        )
+        assertNotNull(rig.messages.messages[radio.textSent.single()])
+    }
+
+    @Test
+    fun `ADR229 the hub still carries the text when it reports the colleague online`() = runBlocking {
+        val radio = FakeRadioOutboxPort()
+        val rig = hubRig(lanUp = false, radio = radio, hubOnline = setOf("colleague"))
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("through the server")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+        kotlinx.coroutines.delay(300)
+
+        assertEquals(1, rig.relay.sent.size)
+        assertTrue("the radio must stay idle when the hub can deliver now", radio.textSent.isEmpty())
+    }
+
+    @Test
+    fun `ADR229 a colleague the radio cannot reach still gets the mailbox`() = runBlocking {
+        val radio = FakeRadioOutboxPort().apply { reachable = false }
+        val rig = hubRig(lanUp = false, radio = radio)
+
+        rig.repository.openConversation("colleague")
+        rig.repository.sendText("held until they connect")
+        awaitUntil { rig.relay.sent.isNotEmpty() }
+
+        assertEquals(1, rig.relay.sent.size)
+        assertTrue(radio.textSent.isEmpty())
     }
 
     @Test

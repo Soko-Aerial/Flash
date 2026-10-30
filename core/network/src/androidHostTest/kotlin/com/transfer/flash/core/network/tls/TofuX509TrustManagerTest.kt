@@ -116,15 +116,36 @@ class TofuX509TrustManagerTest {
     }
 
     @Test
-    fun chainFallbackAcceptsWhenAnyChainCertPins() {
-        val other = SoftwareCertMaker.newIdentity("CN=flash-other").certificate
-        // Leaf is unknown; the issuer's key is the pinned one.
+    fun aPinnedCertificateAppendedBehindAnUnknownLeafIsRejected() {
+        // SEC-D02-01: the attacker proves possession of its own leaf key only; the victim's public
+        // certificate appended as chain[1] must not satisfy the pin.
+        val victim = SoftwareCertMaker.newIdentity("CN=flash-victim").certificate
+        val events = mutableListOf<String>()
         val tm = TofuX509TrustManager(
-            { _, presented -> presented == fingerprintHex(other) },
+            { _, presented -> presented == fingerprintHex(victim) },
+            "device-a",
+            events::add,
+        )
+
+        listOf<(Array<X509Certificate>) -> Unit>(
+            { tm.checkServerTrusted(it, "ECDHE_ECDSA") },
+            { tm.checkClientTrusted(it, "ECDHE_ECDSA") },
+        ).forEach { check ->
+            val outcome = runCatching { check(arrayOf(cert, victim)) }
+            assertTrue(outcome.exceptionOrNull() is CertificateException)
+        }
+        assertEquals(listOf(fingerprintHex(cert), fingerprintHex(cert)), events)
+    }
+
+    @Test
+    fun aPinnedLeafIsStillAcceptedWhenOtherCertificatesFollowIt() {
+        val extra = SoftwareCertMaker.newIdentity("CN=flash-extra").certificate
+        val tm = TofuX509TrustManager(
+            { _, presented -> presented == fingerprintHex(cert) },
             "device-a",
         )
 
-        tm.checkServerTrusted(arrayOf(cert, other), "ECDHE_ECDSA")
+        tm.checkServerTrusted(arrayOf(cert, extra), "ECDHE_ECDSA")
     }
 
     @Test

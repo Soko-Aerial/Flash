@@ -13,6 +13,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
@@ -75,10 +76,16 @@ internal actual fun FlashCallVideoSurface(
     modifier: Modifier,
     zOrderMediaOverlay: Boolean,
     mirror: Boolean,
+    zoom: Float,
+    pan: Offset,
 ) {
     val holder = remember { DesktopVideoSink() }
 
-    SideEffect { holder.fillWhenMatching = fit == CallVideoFit.Balanced }
+    SideEffect {
+        holder.fillWhenMatching = fit == CallVideoFit.Balanced
+        // UI-050h: a magnified picture needs a bigger conversion, or zooming in would only enlarge a tile-sized image.
+        holder.zoomFactor = if (zoom.isFinite() && zoom > 0f) zoom else 1f
+    }
 
     DisposableEffect(holder, track) {
         holder.bind(track)
@@ -109,20 +116,31 @@ internal actual fun FlashCallVideoSurface(
             val effectiveW = if (isRotated) rawH else rawW
             val effectiveH = if (isRotated) rawW else rawH
             val fill = fit == CallVideoFit.Balanced && sameOrientation(effectiveW, effectiveH, size.width, size.height)
-            val scale = if (fill) {
+            val baseScale = if (fill) {
                 maxOf(size.width / effectiveW, size.height / effectiveH)
             } else {
                 minOf(size.width / effectiveW, size.height / effectiveH)
             }
+            // UI-050h: magnify the fitted picture; the canvas clip above crops it to the box and [pan] picks which part of it
+            // sits in the middle (an axis the picture does not overfill does not move).
+            val zoomFactor = if (zoom.isFinite() && zoom > 0f) zoom else 1f
+            val scale = baseScale * zoomFactor
             if (!scale.isFinite() || scale <= 0f) return@Canvas
 
             val dstW = rawW * scale
             val dstH = rawH * scale
+            // The picture as it is drawn is dstW x dstH (before the rotation turns it back); the travel is what exceeds the box.
+            val drawnW = if (isRotated) dstH else dstW
+            val drawnH = if (isRotated) dstW else dstH
+            val travelX = (drawnW - size.width).coerceAtLeast(0f)
+            val travelY = (drawnH - size.height).coerceAtLeast(0f)
+            val shiftX = pan.x.coerceIn(-1f, 1f) * travelX / 2f
+            val shiftY = pan.y.coerceIn(-1f, 1f) * travelY / 2f
             drawIntoCanvas { canvas ->
                 val native = canvas.nativeCanvas
                 native.save()
                 native.clipRect(Rect.makeWH(size.width, size.height))
-                native.translate(size.width / 2f, size.height / 2f)
+                native.translate(size.width / 2f - shiftX, size.height / 2f - shiftY)
                 if (mirror) native.scale(-1f, 1f)
                 if (rotation != 0) native.rotate(rotation.toFloat())
                 native.drawImageRect(
@@ -159,6 +177,9 @@ internal class DesktopVideoSink : VideoTrackSink {
 
     /** Balanced: fill the box when the picture has its orientation (see [sameOrientation]). */
     @Volatile var fillWhenMatching: Boolean = true
+
+    /** UI-050h: the magnification the picture is drawn at, so the conversion is not smaller than what is shown. */
+    @Volatile var zoomFactor: Float = 1f
 
     @Volatile private var targetW = 0
     @Volatile private var targetH = 0
@@ -330,7 +351,10 @@ internal class DesktopVideoSink : VideoTrackSink {
         val sx = tw.toFloat() / effW
         val sy = th.toFloat() / effH
         val fill = fillWhenMatching && sameOrientation(effW.toFloat(), effH.toFloat(), tw.toFloat(), th.toFloat())
-        val scale = if (fill) maxOf(sx, sy) else minOf(sx, sy)
+        // UI-050h: convert at the size the picture is drawn at, which a magnified presentation makes larger than the tile.
+        val zoomFactorNow = zoomFactor
+        val zoom = if (zoomFactorNow.isFinite() && zoomFactorNow > 0f) zoomFactorNow else 1f
+        val scale = (if (fill) maxOf(sx, sy) else minOf(sx, sy)) * zoom
         if (!scale.isFinite() || scale >= DOWNSCALE_THRESHOLD) return width to height
         val w = even((width * scale).roundToInt()).coerceIn(MIN_SIDE, width)
         val h = even((height * scale).roundToInt()).coerceIn(MIN_SIDE, height)

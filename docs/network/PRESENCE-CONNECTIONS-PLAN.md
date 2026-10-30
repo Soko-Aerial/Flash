@@ -321,3 +321,86 @@ all call it. This follows the migration direction (one shared frame) and makes �
 - `docs/android-platform-notes.md`: OEM freezers (ERROR-074) ignore the foreground service and the battery whitelist,
   and what the user has to change. The final numbers and the default mode need PC6's measurements, which are postponed (FO-05): until then they stay
   labelled estimates.
+
+## 2026-10-28 — A peer reachable only by radio: what to show, and what the desktop really does when nothing answers
+
+Owner question after the first two-radio run ("the online and connection how should we do it", "the desktop
+connection management needs hardening"). Nothing here is built: this is the analysis and the proposed work.
+
+### What the code does today (verified 2026-10-28)
+
+| Fact | Where |
+|---|---|
+| The online dot is still the LAN session set, plus (since ADR-139) the hub directory's `online` for enrolled colleagues. | `RealFlashChatRepository.isOnline`, `directLinkUi(...)`, `PresenceSnapshot.hubOnline` |
+| Radio is **not** a presence source and never dials anything (ADR-227: optional per-chat fallback, never a transport). | `RadioChatBridge`, `RealFlashChatRepository.sendDirectViaPaths` |
+| The header can only say `Connected` / `Online` / `Offline` / `Connecting.` / `typing.` | `FlashChatHeader.kt` (`presenceSubtitle`) |
+| A send that no path takes is now visible (`chat.path`, `radio.path`, `radio.send.fail`, ERROR-869). Before that it produced no line at all. | `RealFlashChatRepository`, `RadioChatBridge` |
+| A remembered Wi-Fi route is retried with backoff and dropped after 5 failures **and** 10 min; the on-demand dial waits 1 s per outbox pass; the sweep runs every 5 s. | `RememberedRoutes` (rules 6/7), `AutoConnector.DIAL_ON_DEMAND_BUDGET_MS`, `DEFAULT_SWEEP_INTERVAL_MS` |
+
+### Evidence from the 2026-10-28 run (desktop log, 11:05–11:16)
+
+- The phone's Wi-Fi was off for the radio test, so the desktop's discovery saw nobody: `Discovery sources: jmdns=none,
+  multicast=none`. The desktop fell back to 4 remembered routes for its one paired peer (from earlier networks) and
+  dialled them in turn: **21 `Auto-connect dialing` lines in 9.5 min, every one ending `Connect timed out` after ~4 s**
+  (`192.168.1.115`, `.112`, `.113`, `192.168.0.191`). The first success was at **11:14:39**, when the phone's Wi-Fi
+  came back and discovery found it — the remembered routes never worked.
+- In the same window the radio carried two texts (11:08:26 and 11:08:43, ACKed 3.4 s and 3.5 s later) while the
+  desktop's chat header could only have said Offline. The two facts are true at once: **the peer is reachable, and
+  presence says it is not.**
+- A separate Android defect from the same run is fixed in code: five "radio not connected" refusals during the link
+  drop spent a hidden five-attempt budget and left that one message permanently refused (ERROR-869).
+
+### Proposal — three parts
+
+**P-1 One more *presentation* state: "Radio only" (UI, not trust).** Show it when all three hold: no session with the
+peer, the peer is radio-paired here (a 32-byte pairing session key, `RadioPairingAdapter.isPairedForRadio`), and this
+device's gateway is connected. It is a hint, never a promise: it does not mark the peer online for calls, files,
+typing or presence sharing, and it never makes the planner dial. Pure maths function (same shape as
+`FlashChatHeaderMath.groupSubtitle`) so it is unit-testable, and a header subtitle such as
+"Radio only · messages take a few seconds". The composer can then say, before a send, that the message will go by
+radio rather than after the fact. AGENTS section 34: the header component doc (UI-004) gets the design first.
+
+**P-2 Desktop connection management, hardened.**
+1. **Do not spend the dial budget when the radio can already carry.** Today every outbox pass calls
+   `ensureSession` (~1 s) before the radio step, so a radio-only peer pays a second per message for a dial that cannot
+   succeed. Rule: when `radioBridge.canCarry(peer)` and the peer has no sighting younger than 60 s, skip the on-demand
+   dial (the sweep still runs).
+2. **One dial in flight per peer across all remembered endpoints**, and log `Auto-connect result` once per peer per
+   sweep rather than once per endpoint — the log is unreadable today and a person cannot tell whether it is 4 routes or
+   4 peers.
+3. **Make the expiry visible**: `Remembered routes: expiring <host> after 5 failed dials` — the storms do end, but
+   nothing in the log said so.
+4. **Name the fallback in the UI**: when a send is carried by radio after a failed dial, the bubble already says it
+   went by radio; the header should stop claiming the peer is Offline (P-1).
+5. Measure (PC0/MEAS-*): the wall-clock cost of one `ensureSession` call on the desktop when all remembered routes are
+   dead, and the number of dials per 10 min before a route expires. Today's numbers are read off one log, not measured.
+
+**P-3 Sender feedback.** `radio.tx.text … retry=` plus the bubble's own line is the audit trail; the user-facing
+sentence for a radio send under way should name the measured ACK window ("waiting for the acknowledgement, usually a
+few seconds") instead of looking like a stuck message. The refusal sentences already come from `FlashRadioCopy`.
+
+### Deliberately not proposed
+
+- Radio in the planner, in discovery, or in presence sharing: ADR-227 keeps radio a per-chat fallback, and a radio
+  "online" that peers could report would be wrong most of the time (a station cannot be polled).
+- Radio for calls, files or groups: the airtime budget forbids it (ADR-225/227).
+- Touching the session ceiling, the modes or the keepalive: nothing in this run pointed there.
+
+### Built 2026-10-28 (ADR-228) - P-1, P-2.1, P-2.4 and P-3
+
+Everything here is unit-tested and **NOT device-verified** (owner checks `RADCHAT-DEV05` and the re-run of `RADCHAT-DEV03/04`
+in `docs/testing/TEST-BACKLOG.md`).
+
+| Item | State | Where |
+|---|---|---|
+| P-1 "Radio only" state | **BUILT** | `FlashPeerPresence.RadioOnly`, `PresenceSnapshot.radioOnly`, `PresenceHold.withRadioOnly`, new `RadioOutboxPort.radioPeerIds` (default empty, overridden by `HostedRadioOutboxPort` from `host.status` + `engine.radioPairedPeerIds()`), `RealFlashChatRepository.radioOnlyPeerIds`, both hosts wired |
+| P-2.1 skip the dial when the radio can carry | **BUILT** | both hosts' `transportSink`: `ensureSession` only when the radio cannot carry the target **or** discovery sees the peer right now (`presence.reachablePeerIds` - a sighting means a dial can win, and the LAN is faster); the 5 s sweep still dials |
+| P-2.4 name the fallback | **BUILT** | `FlashNetworkTransport.Radio` -> badge "Radio", Bluetooth glyph, calm `Reachable` banner "Radio only - texts go over the air"; header line and dot in `docs/ui/chat-screen.md` |
+| P-3 sender feedback | **BUILT** | `FlashRadioCopy.CHAT_RADIO_WAITING` = "Radio - sent, waiting for acknowledgement (usually a few seconds)" |
+| P-2.2 one dial in flight per peer | **ALREADY TRUE** - no change | `ConnectionPlanner.plan` puts a device in flight while a dial runs, so the others wait. The 21 dials in 9.5 min are 4 remembered endpoints rotated under rule 7 backoff (30 s doubling to 10 min), one attempt per sweep, which is the designed behaviour |
+| P-2.3 make the expiry visible | **ALREADY TRUE** - no change | `RememberedRoutes` logs `Remembered route expired peer=... at host:port`; note rule 6 needs 5 failures **and 7 days**, so no route can expire inside one session. If the log felt silent, that is why, not a missing line |
+| P-2.5 measure the dial cost | OPEN (backlog) | `MEAS-*`; today's 4 s timeouts and 1 s `ensureSession` budget are read off one log |
+
+What that means for the owner's scenario (phone off Wi-Fi, both apps rebuilt): the desktop's chat header reads
+**Radio only - texts go over the air** instead of Offline, the send no longer waits ~1 s on a dial that cannot succeed, and
+the bubble says when the acknowledgement is still outstanding.

@@ -72,6 +72,8 @@ internal fun FlashGroupVideoSurfaces(
     session: FlashCallMedia?,
     onVideoFocus: (String?) -> Unit,
     modifier: Modifier = Modifier,
+    /** UI-050h: the magnification of the presentation, shared by the stage and the compact main tile. */
+    presentationZoom: FlashVideoZoomState? = null,
 ) {
     val remoteTracks = rememberRemoteVideoTracks(session?.remoteVideoTracks)
     val localTrack = rememberVideoStreamTrack(session?.localVideoStreamTrack)
@@ -103,6 +105,7 @@ internal fun FlashGroupVideoSurfaces(
                         showingFewer = state.showingFewerVideos,
                         isMain = true,
                         presenting = participant.peerId == presenter,
+                        presentationZoom = presentationZoom,
                     )
                 } else {
                     tiles.forEach { participant ->
@@ -117,6 +120,7 @@ internal fun FlashGroupVideoSurfaces(
                                 showingFewer = state.showingFewerVideos,
                                 isMain = false,
                                 presenting = participant.peerId == presenter,
+                                presentationZoom = presentationZoom,
                             )
                         }
                     }
@@ -182,6 +186,8 @@ private fun FlashGroupVideoTile(
     showingFewer: Boolean,
     isMain: Boolean,
     presenting: Boolean = false,
+    /** UI-050h: the magnification of the presentation this tile shows, shared by the stage and the compact main tile. */
+    presentationZoom: FlashVideoZoomState? = null,
 ) {
     val colors = FlashTheme.colors
     val shape = RoundedCornerShape(if (rounded) FlashShapes.radius12 else 0.dp)
@@ -240,7 +246,15 @@ private fun FlashGroupVideoTile(
         // Keyed on the grant, not on the track: the renderer is released only when the view is discarded (a track
         // change must never release it), and a grant that is lost really does discard it.
         if (participant.video.hasPicture()) {
-            FlashCallVideoSurface(track = track, fit = videoFitFor(presenting), modifier = Modifier.fillMaxSize())
+            // UI-050h: the presentation is the one picture anybody may magnify; nothing else in the grid is. The surface
+            // itself is the same composable whether or not this tile is presenting, so a share starting does not tear
+            // down and rebuild this participant's renderer.
+            FlashZoomableVideoSurface(
+                track = track,
+                fit = videoFitFor(presenting),
+                zoom = if (presenting) presentationZoom else null,
+                modifier = Modifier.fillMaxSize(),
+            )
         }
         if (!showsVideo) {
             Box(

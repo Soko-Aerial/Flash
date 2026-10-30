@@ -1,5 +1,45 @@
 # Android Platform Notes
 
+## 2026-10-24 - MediaProjection screen sharing: consent is single-use, the FGS type is mandatory, and the callback is the only revocation signal (ADR-102, UI-050g)
+
+### Android version / API level
+- MediaProjection: API 21+.
+- App screen sharing (share one app window instead of the display) and `MediaProjectionConfig`: API 34 (Android 14).
+- `FOREGROUND_SERVICE_MEDIA_PROJECTION` + `android:foregroundServiceType="mediaProjection"`: required when targeting API 34+ (this app
+  targets 36).
+- Status-bar chip and auto-stop on screen lock: **Android 15 QPR1+**.
+
+### Official documentation source
+- https://developer.android.com/media/grow/media-projection (fetched 2026-10-24, **verified**). The facts the implementation rests on:
+  - The manifest needs `FOREGROUND_SERVICE` **and** `FOREGROUND_SERVICE_MEDIA_PROJECTION`, and the service needs
+    `android:foregroundServiceType="mediaProjection"`. Without a type in the manifest `startForeground` throws
+    `MissingForegroundServiceTypeException`.
+  - **Consent is per session and the token is single-use**: `createVirtualDisplay()` throws `SecurityException` if the `Intent` from
+    `createScreenCaptureIntent()` is passed to `getMediaProjection()` more than once, or if `createVirtualDisplay()` is called twice on one
+    `MediaProjection`. Every share therefore asks again; a share cannot be resumed from an old consent.
+  - A `MediaProjection.Callback` must be registered, otherwise `createVirtualDisplay()` throws `IllegalStateException`. `onStop()` is
+    invoked when the user stops the projection (status-bar chip), when the screen is locked, when another projection starts, or when the
+    process is killed. A stopped projection can never create a virtual display again.
+  - `createScreenCaptureIntent(createConfigForUserChoice())` is the same as the plain `createScreenCaptureIntent()` on API 34+;
+    `createConfigForDefaultDisplay()` is the opt-out (whole display only).
+  - `WindowManager.getMaximumWindowMetrics()` is the recommended way to size the capture; `Display.getRealMetrics()` is deprecated as of
+    API 31 and returns the app window's bounds for a non-resizable app.
+- The shipped capturer, checked by decompiling the AAR (`io.github.webrtc-sdk:android:125.6422.05`, 2026-10-24, **read**): `startCapture`
+  calls `getMediaProjection`, then `registerCallback` with the callback the app passed in, then creates the virtual display (the documented
+  order); `changeCaptureFormat` recreates it; the version has **no** `onCapturedContentResize` handling.
+
+### Project implication
+- `FlashScreenCaptureService` (app) is the `mediaProjection` FGS; `MainActivity` owns the consent launcher; `AndroidScreenCaptureProvider`
+  (`:core:calling` androidMain) sequences consent -> service promoted -> capture, and refuses to open the projection if the service was not
+  promoted in 3 s.
+- Because the callback the app passes is the only callback (WebRTC registers it), `HandleState.onStop` is where a revocation becomes
+  `AndroidCaptureHandle.revoked` -> `ScreenShareRun.Check.SOURCE_LOST` -> `stopShare(ShareStopReason.SOURCE_LOST)`. Without it a revoked
+  projection would look like a frozen picture until the 5 s first-frame timeout, and after the first frame it would never be noticed at all.
+- **Unverified on a device**: whether a single-app share is letterboxed inside the full-screen virtual display (the AAR has no resize
+  handling), and how the status-bar chip behaves on an OEM build. `SHARE-MOB-01`...`08` in `docs/testing/TEST-BACKLOG.md`.
+- Note the app targets API 36, so `FOREGROUND_SERVICE_MEDIA_PROJECTION` is mandatory; a build without it fails at `startForeground`, which the
+  provider reports as "Sharing could not start" rather than crashing the call.
+
 ## 2026-09-03 - A mesh Wi-Fi roam is invisible to `ConnectivityManager`; `VOICE_COMMUNICATION` is a request, not a contract; and what a 2 GB API-27 handset actually cannot afford
 
 ### Android version / API level

@@ -249,6 +249,21 @@ public class RadioGatewayManager(
     }
 
     /**
+     * The operator picked [device] from the list. A bonded radio is opened at once; an unbonded one is paired first.
+     * Goes through the state machine so that the machine and the screen agree (a bare [pair] call leaves the machine
+     * in its list state, where the pairing result is ignored).
+     */
+    public suspend fun chooseRadio(device: DiscoveredDevice) {
+        if (!_state.value.isEnabled) return
+        // The screen can be scanning while the machine is still on the candidate card, so the scan is ended here.
+        scanJob?.cancel()
+        scanJob = null
+        val commands = stateMachine.transition(RadioConnectEvent.ChooseRadio(device.toCandidateDevice()))
+        updateState { copy(connectState = stateMachine.state) }
+        executeCommands(commands)
+    }
+
+    /**
      * Pairs with an unpaired radio device.
      */
     public suspend fun pair(device: DiscoveredDevice) {
@@ -528,6 +543,9 @@ public class RadioGatewayManager(
     public companion object {
         /** Upper bound of a test message (UTF-8 bytes): one short line, never a payload. */
         public const val MAX_TEST_MESSAGE_BYTES: Int = 64
+
+        /** `KissTncDriver` prefixes the reason of a link that could not even be opened with this. */
+        private const val OPEN_FAILED_PREFIX: String = "open_failed:"
     }
 
     private fun derivePlainSentenceAndNextStep(s: RadioGatewayState): Pair<String, String> {
@@ -560,7 +578,14 @@ public class RadioGatewayManager(
                 "Pairing with ${cs.candidate.name}..." to "Confirm pairing on your device if prompted."
             }
             is RadioConnectState.Connecting -> {
-                "Connecting to ${cs.target.name}..." to "Opening the radio serial link."
+                val ls = s.linkState
+                if (ls is TncLinkState.Waiting && ls.reason.startsWith(OPEN_FAILED_PREFIX)) {
+                    // The driver keeps retrying; without this the screen says "Connecting..." for ever and hides why.
+                    "Could not open ${cs.target.name ?: cs.target.addressOrPort} (attempt ${ls.attempt})." to
+                        ls.reason.removePrefix(OPEN_FAILED_PREFIX).ifBlank { "Check that the radio is on and in range." }
+                } else {
+                    "Connecting to ${cs.target.name}..." to "Opening the radio serial link."
+                }
             }
             is RadioConnectState.Connected -> {
                 when (val ls = s.linkState) {

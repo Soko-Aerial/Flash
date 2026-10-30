@@ -59,6 +59,7 @@ class RelayHandshakeContractTest {
     private fun ApplicationTestBuilder.hub(
         fixture: HubTestFixture,
         handshakeTimeoutMs: Long = HubContract.HANDSHAKE_TIMEOUT_MS,
+        mailboxTtlDays: Int = 7,
     ): FlashServerEngine {
         val engine = FlashServerEngine(
             config = ServerConfig(),
@@ -67,6 +68,7 @@ class RelayHandshakeContractTest {
             adminAuthService = AdminAuthService(printSetupTokenToConsole = false),
             revocationListProvider = { fixture.revocationList },
             relayHandshakeTimeoutMs = handshakeTimeoutMs,
+            mailboxTtlMs = mailboxTtlDays.toLong() * 24L * 60L * 60L * 1000L,
         )
         application { engine.configureApplication(this) }
         return engine
@@ -109,6 +111,28 @@ class RelayHandshakeContractTest {
         assertEquals(alice.cert.serial, welcome.principal.certSerial)
         assertEquals(HubContract.RELAY_WIRE_VERSION, welcome.v)
         assertTrue(engine.connectionPool.isConnected("alice"))
+
+        t.disconnect()
+        scope.cancel()
+    }
+
+    @Test
+    fun theWelcomeAnnouncesHowLongMailIsKeptSoRecipientsCanRefuseReplays() = testApplication {
+        // SEC-D15-02: without the announced retention a recipient cannot tell a replayed envelope from a fresh one.
+        val fixture = HubTestFixture()
+        hub(fixture, mailboxTtlDays = 3)
+        val alice = fixture.enrol("alice")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val t = transport(wsClient())
+        val frames = collect(scope, t)
+
+        assertTrue(t.connect("http://localhost", fixture.identity(alice)), "handshake must succeed: ${t.lastFailure}")
+        awaitUntil("WELCOME") { frames.any { it is RelayFrame.Welcome } }
+        assertEquals(3L * 24 * 60 * 60 * 1000, frames.filterIsInstance<RelayFrame.Welcome>().first().limits.mailboxTtlMs)
+
+        // ...and the client transport keeps it, which is what the chat bridge reads.
+        assertEquals(3L * 24 * 60 * 60 * 1000, t.limits.value?.mailboxTtlMs)
+        assertNotNull(t.serverTimeOffsetMs.value, "the handshake also measures the clock difference")
 
         t.disconnect()
         scope.cancel()

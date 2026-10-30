@@ -73,6 +73,9 @@ public object FlashMigrations {
     /** v19 -> v20: a 1:1 transfer row keeps its identity (C-09). */
     public val MIGRATION_19_20: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_19_20)
 
+    /** v20 -> v21: direct-chat outbound radio consent. */
+    public val MIGRATION_20_21: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_20_21)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

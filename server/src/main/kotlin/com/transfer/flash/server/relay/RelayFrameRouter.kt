@@ -95,6 +95,11 @@ public class RelayFrameRouter(
      * peer, which is only right without a proxy.
      */
     private val clientAddressOf: (ApplicationCall) -> String = { it.request.origin.remoteAddress },
+    /**
+     * How long this hub keeps an undelivered message, announced in the WELCOME so recipients can refuse stale
+     * deliveries (SEC-D15-02). Defaults to the shipped retention for a router built without a mailbox.
+     */
+    private val mailboxTtlMs: () -> Long = { HubContract.DEFAULT_MAILBOX_TTL_MS },
 ) {
 
     private val logger = LoggerFactory.getLogger(RelayFrameRouter::class.java)
@@ -670,7 +675,13 @@ public class RelayFrameRouter(
         relaySession.draining = true
         relaySession.validUntilMs = validUntilMs
         relaySession.offer(
-            RelayFrameCodec.encode(RelayFrame.Welcome(principal = principal, serverTime = clock(), limits = RelayLimits())),
+            RelayFrameCodec.encode(
+                RelayFrame.Welcome(
+                    principal = principal,
+                    serverTime = clock(),
+                    limits = RelayLimits(mailboxTtlMs = mailboxTtlMs()),
+                ),
+            ),
         )
         metrics.inc(RelayMetrics.HANDSHAKES, 1, "result" to "ok")
         register(relaySession)

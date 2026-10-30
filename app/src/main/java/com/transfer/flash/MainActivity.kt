@@ -7,6 +7,8 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.projection.MediaProjectionConfig
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -113,10 +115,14 @@ import com.transfer.flash.calling.findActivity
 import com.transfer.flash.core.calling.model.FlashCallAudioRoute
 import com.transfer.flash.core.calling.model.FlashCallAudioRouting
 import com.transfer.flash.calling.FlashCallService
+import com.transfer.flash.calling.FlashScreenCaptureService
+import com.transfer.flash.core.calling.AndroidScreenCaptureHost
+import com.transfer.flash.core.calling.AndroidScreenCaptureSupport
 import com.transfer.flash.core.ptt.PttSessionEngine
 import com.transfer.flash.ptt.PttSessionOverlay
 import com.transfer.flash.pairing.PairingUiModel
 import com.transfer.flash.ui.calling.FlashCallScreen
+import com.transfer.flash.ui.calling.FlashCallShareHost
 import com.transfer.flash.ui.settings.FlashSettingsModel
 import com.transfer.flash.ui.settings.FlashSettingsMath
 import com.transfer.flash.ui.settings.FlashSettingsScreen
@@ -149,6 +155,7 @@ import java.io.File
 import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -180,6 +187,19 @@ class MainActivity : ComponentActivity() {
     // deep in Compose) so the launcher survives config changes and only fires once per launch.
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best-effort; no-op on denial */ }
+
+    /**
+     * ADR-102 (UI-050g): the system's screen-capture consent dialog. A field-level launcher so it survives configuration
+     * changes; [screenCaptureConsentWaiter] carries the answer back to the capturer, which is suspended on it while the
+     * dialog is up.
+     */
+    private var screenCaptureConsentWaiter: CompletableDeferred<Intent?>? = null
+    private val screenCaptureConsentLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            val waiter = screenCaptureConsentWaiter
+            screenCaptureConsentWaiter = null
+            waiter?.complete(if (result.resultCode == android.app.Activity.RESULT_OK) result.data else null)
+        }
 
     /**
      * Bug 7: conversation a notification-tap wants to open. Emitted from [onNewIntent] and
@@ -219,6 +239,50 @@ class MainActivity : ComponentActivity() {
 
     private val receivedStorageState = MutableStateFlow(FlashReceivedStorageState())
     private var receivedStorageJob: Job? = null
+
+    /**
+     * ADR-102 (UI-050g): gives `:core:calling` the two things only this activity can provide for a screen share — the
+     * system consent dialog and the `mediaProjection` foreground service. Installed on every create (a recreated
+     * activity owns a new consent launcher); the capturer reads it per share, so a process that never got here simply
+     * cannot present.
+     */
+    private fun installScreenCaptureSupport() {
+        AndroidScreenCaptureSupport.install(object : AndroidScreenCaptureHost {
+            override suspend fun requestConsent(): Intent? = requestScreenCaptureConsent()
+            override suspend fun startProjection(): Boolean = FlashScreenCaptureService.startAndAwait(this@MainActivity)
+            override fun stopProjection() = FlashScreenCaptureService.stop(this@MainActivity)
+        })
+    }
+
+    /**
+     * Shows the system consent dialog and suspends until it is answered (null when refused). Android 14+ lets the user
+     * pick the whole screen or a single app (`MediaProjectionConfig.createConfigForUserChoice`); before that the display
+     * is the only choice.
+     */
+    private suspend fun requestScreenCaptureConsent(): Intent? = withContext(Dispatchers.Main) {
+        val manager = getSystemService(MediaProjectionManager::class.java) ?: return@withContext null
+        // One dialog at a time. A second request while the dialog is up waits for the same answer: the launcher delivers
+        // exactly one result, so a waiter of its own would sit there until the timeout and then report a refusal nobody
+        // made. (Two shares from one consent cannot happen: the session allows one presenter, and Android refuses a
+        // second projection on the same consent anyway.)
+        screenCaptureConsentWaiter?.let { pending ->
+            return@withContext withTimeoutOrNull(SCREEN_CAPTURE_CONSENT_TIMEOUT_MS) { pending.await() }
+        }
+        val waiter = CompletableDeferred<Intent?>()
+        screenCaptureConsentWaiter = waiter
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        screenCaptureConsentLauncher.launch(intent)
+        // The dialog is modal. The timeout only guards the case where no answer ever arrives (the activity went away).
+        try {
+            withTimeoutOrNull(SCREEN_CAPTURE_CONSENT_TIMEOUT_MS) { waiter.await() }
+        } finally {
+            if (screenCaptureConsentWaiter === waiter) screenCaptureConsentWaiter = null
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Must be called before super.onCreate to take over the theme's splash window.
@@ -266,6 +330,7 @@ class MainActivity : ComponentActivity() {
         }
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
+        installScreenCaptureSupport()
         FlashNotificationManager.initChannels(this)
         // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
         // start) — consume the launch intent here too.
@@ -351,6 +416,18 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         FlashNotificationManager.appForeground = false
         DiscoveryEngineHolder.setUiStarted(false)
+    }
+
+    override fun onDestroy() {
+        // ADR-102: the screen-capture host is this activity (a consent launcher and the projection service). Dropping it
+        // keeps the process-wide seam from holding a destroyed activity; a recreated one installs its own in onCreate.
+        // A share already open keeps the host it was opened with, through its handle.
+        // A consent dialog still open now has nobody to deliver its answer to (a recreated activity owns a new
+        // launcher), so the capturer is told "refused" at once instead of waiting out the 5-minute guard.
+        screenCaptureConsentWaiter?.complete(null)
+        screenCaptureConsentWaiter = null
+        AndroidScreenCaptureSupport.uninstall()
+        super.onDestroy()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -478,7 +555,9 @@ class MainActivity : ComponentActivity() {
                     FlashNotificationManager.clearTransfer(this, transferId)
                 }
                 val path = intent.getStringExtra(FlashNotificationManager.EXTRA_FILE_PATH)
-                if (path != null) {
+                // The activity is exported, so any app can send this action: only a real file of ours is opened (SEC-D11-01).
+                val receivedRoots = listOf(com.transfer.flash.debug.DiscoveryEngineHolder.receivedFilesRoot(this))
+                if (path != null && isOpenableReceivedPath(path, receivedRoots)) {
                     openAttachment(this, path, guessMimeType(path, path, this))
                 }
                 pendingShortcutTab.value = FlashDestination.Transfers
@@ -685,6 +764,9 @@ private const val SYSTEM_SPLASH_FADE_MS: Long = 200L
 /** UI-056: the longest the system splash waits for the "Launch animation" setting before skipping it. */
 private const val LAUNCH_SETTING_READ_TIMEOUT_MS: Long = 1_000L
 
+/** ADR-102: how long a screen-share start waits for the system consent dialog before it gives up. */
+private const val SCREEN_CAPTURE_CONSENT_TIMEOUT_MS: Long = 5L * 60L * 1_000L
+
 /** Toast when a group call could not be placed at all (ERROR-095); a call that starts but leaves someone out names them on its screen. */
 private const val GROUP_CALL_NOT_STARTED: String =
     "Couldn't start the group call: none of its members can be called from this device " +
@@ -839,6 +921,13 @@ fun FlashApp(
         }
         onDispose { radioGatewayController.permissionRequester = null }
     }
+    val radioMicLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted -> radioGatewayController.onMicrophonePermissionResult(granted) }
+    DisposableEffect(radioGatewayController, radioMicLauncher) {
+        radioGatewayController.microphonePermissionRequester = { radioMicLauncher.launch(Manifest.permission.RECORD_AUDIO) }
+        onDispose { radioGatewayController.microphonePermissionRequester = null }
+    }
     val radioUiState by radioGatewayController.state.collectAsState()
 
     val settings = FlashSettingsModel(
@@ -886,6 +975,7 @@ fun FlashApp(
             keyState = hubSealingKeyState,
             unverified = hubDropped.unverified,
             readableOff = hubDropped.readableOff,
+            stale = hubDropped.stale,
         ),
         hubRelinkableGroups = hubRelinkable,
         orgTrustState = orgTrustState,
@@ -2021,6 +2111,7 @@ private fun FlashShell(
                 chatRepository.toggleReaction(messageId, emoji)
             },
             onTypingChanged = chatRepository::setTyping,
+            onSetRadioPolicy = { policy -> conversationId?.let { chatRepository.setRadioPolicy(it, policy) } },
             onAttachmentClick = chatRepository::openAttachmentPicker,
             onSendFile = { uri, displayName, size ->
                 val peerId = conversationId
@@ -2148,6 +2239,9 @@ private fun FlashShell(
             },
             onRetryMessage = { messageId ->
                 chatRepository.retryMessage(messageId)
+            },
+            onStopRadioRetry = { messageId ->
+                chatRepository.stopRadioRetry(messageId)
             },
             onPauseTransfer = { transferId ->
                 engine.transfers?.let { repo ->
@@ -3522,6 +3616,23 @@ private fun FlashShell(
                 audioRouter.attach(audioState.speakerOn)
             }
         }
+        // ADR-102 / UI-050g: presenting the screen from Android. The engine reports "cannot present" until
+        // [installScreenCaptureSupport] has run, so the Share row appears only on a device that really can.
+        val callingEngine = engine.calls
+        val shareHost = remember(callingEngine) {
+            callingEngine?.let { calling ->
+                FlashCallShareHost(
+                    listSources = { calling.listShareSources() },
+                    usesSystemPicker = calling.shareUsesSystemPicker,
+                    onStart = { source, quality, takeOver ->
+                        scope.launch { calling.startScreenShare(source, quality, takeOver) }
+                    },
+                    onStop = { scope.launch { calling.stopScreenShare() } },
+                    onSetQuality = { calling.setShareQuality(it) },
+                    onDismissNotice = { calling.dismissShareNotice() },
+                )
+            }
+        }
         if (activeCall != null) {
             FlashCallScreen(
                 state = activeCall,
@@ -3592,6 +3703,7 @@ private fun FlashShell(
                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 },
+                share = shareHost,
             )
         }
     }

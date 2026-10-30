@@ -61,4 +61,11 @@ class FlashTextFramingTest {
             parsed
         )
     }
+
+    @Test
+    fun aRepeatedKeyMakesTheFrameUnreadableInsteadOfLettingTheLastValueWin() {
+        // SEC-D04-04
+        assertNull(FlashTextFraming.parseFields("FLASH_X a=1 b=2 a=3", "FLASH_X"))
+        assertEquals(mapOf("a" to "1", "b" to "2"), FlashTextFraming.parseFields("FLASH_X a=1 b=2", "FLASH_X"))
+    }
 }

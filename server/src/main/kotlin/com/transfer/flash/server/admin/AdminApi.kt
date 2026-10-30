@@ -155,7 +155,7 @@ internal suspend fun ApplicationCall.preAuth(d: AdminApiDeps): Boolean {
 /** Verifies the step-up header for [action] on [target]; responds 403 [ERR_STEP_UP] and returns false when missing. */
 internal suspend fun ApplicationCall.stepUpOk(d: AdminApiDeps, session: AdminSession, action: String, target: String): Boolean {
     val id = request.headers["X-Step-Up"]
-    if (id.isNullOrBlank() || !d.stepUp.authorize(id, session.username, action, target)) {
+    if (id.isNullOrBlank() || !d.stepUp.authorize(id, session.username, action, target, session.sessionId)) {
         d.audit.logUnauthenticated(session.username, "stepup.refused", "action=$action target=$target")
         respondError(HttpStatusCode.Forbidden, ERR_STEP_UP, MSG_STEP_UP)
         return false
@@ -820,7 +820,7 @@ private fun Route.stepUpRoutes(d: AdminApiDeps) {
         post("/challenge") {
             val session = call.adminSession(d) ?: return@post
             val b = call.body<StepUpChallengeBody>() ?: return@post
-            when (val r = d.stepUp.createChallenge(session.username, b.action, b.target)) {
+            when (val r = d.stepUp.createChallenge(session.username, b.action, b.target, session.sessionId)) {
                 is StepUpAuth.Created.Ok -> {
                     val c = r.challenge
                     call.respondJson(

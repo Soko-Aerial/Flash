@@ -1,5 +1,7 @@
 package com.transfer.flash.core.engine
 
+import com.transfer.flash.core.common.text.SpoofingCharacters
+
 /**
  * Shared filesystem path sanitizer and traversal guard (AGENTS.md §19).
  * Preserves directory structure for folder transfers while guarding against path traversal,
@@ -45,7 +47,9 @@ public object FlashPathSanitizer {
     public fun sanitizeFileName(raw: String): String = sanitizeComponent(raw.trim(), "received.bin")
 
     private fun sanitizeComponent(component: String, fallback: String): String {
-        val replaced = replaceLoneSurrogates(component.replace(ILLEGAL_CHARS_REGEX, "_")).trimEnd('.', ' ')
+        // SEC-D04-01: bidi overrides and zero-width characters would let a name display as a different extension.
+        val visible = component.map { if (SpoofingCharacters.isSpoofing(it)) '_' else it }.joinToString("")
+        val replaced = replaceLoneSurrogates(visible.replace(ILLEGAL_CHARS_REGEX, "_")).trimEnd('.', ' ')
         if (replaced.isBlank() || replaced == "." || replaced == "..") return fallback
 
         // RVW22 F16: test the name that will really be used. Truncation can cut "con<spaces>xyz.txt" down to "con.txt".

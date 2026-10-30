@@ -55,6 +55,10 @@ class PairingSessionStateMachineTest {
             PairingSessionEvent.PeerNonce(requestId, peerFp, peerKey, responderNonce, pinnedPeerFingerprintHex = peerFp),
         )
 
+    /** Initiator whose user has accepted the displayed code (SEC-D03-01). */
+    private fun initiatorAccepted(requestId: String = "req-9"): PairingSessionState =
+        reduce(initiated(requestId), PairingSessionEvent.LocalAccept)
+
     // ------------------------------------------------------------- entry
 
     @Test
@@ -135,7 +139,7 @@ class PairingSessionStateMachineTest {
 
     @Test
     fun `PAIRED with a different ephemeral key than the code covered fails`() {
-        var s = reduce(initiated(), PairingSessionEvent.PeerAccepted("req-9"))
+        var s = reduce(initiatorAccepted(), PairingSessionEvent.PeerAccepted("req-9"))
         s = reduce(s, PairingSessionEvent.Paired(peerFp, byteArrayOf(7, 7)))
         assertEquals("paired-material-mismatch", s.failureReason)
     }
@@ -216,6 +220,9 @@ class PairingSessionStateMachineTest {
     @Test
     fun `initiator path - Paired frame confirms and carries peer key material`() {
         var s = initiated()
+        // SEC-D03-01: the initiator is asked to accept the code too.
+        assertEquals(PairingPhase.AwaitingLocalDecision, s.phase)
+        s = reduce(s, PairingSessionEvent.LocalAccept)
         assertEquals(PairingPhase.AwaitingPeerConfirmation, s.phase)
         s = reduce(s, PairingSessionEvent.PeerAccepted("req-9"))
         assertTrue(s.peerAccepted)
@@ -225,11 +232,32 @@ class PairingSessionStateMachineTest {
     }
 
     @Test
-    fun `stale PeerAccepted requestId ignored in AwaitingPeerConfirmation`() {
+    fun `initiator whose peer accepted first still waits for its own user`() {
+        // SEC-D03-01: the responder may answer before the initiator's user has looked at the code.
+        var s = reduce(initiated(), PairingSessionEvent.PeerAccepted("req-9"))
+        assertEquals(PairingPhase.AwaitingLocalDecision, s.phase)
+        assertTrue(s.peerAccepted)
+        // PAIRED cannot finish a pairing the local user has not accepted.
+        assertEquals(PairingPhase.AwaitingLocalDecision, reduce(s, PairingSessionEvent.Paired(peerFp, peerKey)).phase)
+        s = reduce(s, PairingSessionEvent.LocalAccept)
+        assertEquals(PairingPhase.AwaitingPeerConfirmation, s.phase)
+        assertTrue(s.peerAccepted)
+        assertEquals(PairingPhase.Confirmed, reduce(s, PairingSessionEvent.Paired(peerFp, peerKey)).phase)
+    }
+
+    @Test
+    fun `initiator declining returns to Idle and a later PAIRED is ignored`() {
+        val s = reduce(initiated(), PairingSessionEvent.LocalDecline)
+        assertEquals(PairingSessionState.IDLE, s)
+        assertEquals(PairingPhase.Idle, reduce(s, PairingSessionEvent.Paired(peerFp, peerKey)).phase)
+    }
+
+    @Test
+    fun `stale PeerAccepted requestId ignored by the initiator`() {
         var s = initiated()
         s = reduce(s, PairingSessionEvent.PeerAccepted("other-request"))
         assertFalse(s.peerAccepted)
-        assertEquals(PairingPhase.AwaitingPeerConfirmation, s.phase)
+        assertEquals(PairingPhase.AwaitingLocalDecision, s.phase)
     }
 
     @Test
@@ -339,7 +367,7 @@ class PairingSessionStateMachineTest {
 
     @Test
     fun `paired with blank or invalid fingerprint fails closed`() {
-        var s = reduce(initiated(), PairingSessionEvent.PeerAccepted("req-9"))
+        var s = reduce(initiatorAccepted(), PairingSessionEvent.PeerAccepted("req-9"))
         s = reduce(s, PairingSessionEvent.Paired("", peerKey))
         assertEquals(PairingPhase.Failed, s.phase)
         assertEquals("invalid-fingerprint", s.failureReason)

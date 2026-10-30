@@ -107,7 +107,15 @@ class DefaultFlashPairingProtocolTest {
 
         assertTrue(responder.protocol.respondAccept() is FlashResult.Success)
         responder.flushTo(initiator) // PAIR_ACCEPT
+        testScheduler.runCurrent()
         assertTrue(initiator.protocol.session.value.peerAccepted)
+        // SEC-D03-01: the responder's acceptance alone is not reported as a go-ahead; the initiator's user must accept too.
+        assertEquals(PairingPhase.AwaitingLocalDecision, initiator.protocol.session.value.phase)
+        assertTrue(initiatorEvents.none { it is FlashPairingEvent.PeerAccepted })
+        assertTrue(initiator.protocol.respondAccept() is FlashResult.Success)
+        testScheduler.runCurrent()
+        assertTrue("the initiator sends no PAIR_ACCEPT, its answer is PAIR_CONFIRM", initiator.outgoing.none { it is FlashPairingFrame.PairAccept })
+        assertEquals(1, initiatorEvents.count { it is FlashPairingEvent.PeerAccepted })
         responder.protocol.onFrame(
             FlashPairingFrame.PairConfirm(
                 requestId = responder.protocol.session.value.requestId!!,
@@ -126,6 +134,30 @@ class DefaultFlashPairingProtocolTest {
         assertTrue(responderEvents.any { it is FlashPairingEvent.Confirmed })
         iJob.cancel()
         rJob.cancel()
+    }
+
+    @Test
+    fun `an initiator that accepted first confirms as soon as the responder accepts`() = runTest {
+        // SEC-D03-01, the other order: whoever looks at the code first does not make the pairing complete; the last
+        // acceptance does, and that is the only moment PAIR_CONFIRM goes out.
+        val clock = FakeClock(1_000)
+        val initiator = alice(clock)
+        val responder = bob(clock)
+        val initiatorEvents = mutableListOf<FlashPairingEvent>()
+        val iJob = launch(start = CoroutineStart.UNDISPATCHED) { initiator.protocol.events.collect { initiatorEvents += it } }
+
+        exchangeNonces(initiator, responder)
+        testScheduler.runCurrent()
+        assertTrue(initiator.protocol.respondAccept() is FlashResult.Success)
+        testScheduler.runCurrent()
+        assertTrue("nothing to confirm yet", initiatorEvents.none { it is FlashPairingEvent.PeerAccepted })
+
+        assertTrue(responder.protocol.respondAccept() is FlashResult.Success)
+        responder.flushTo(initiator) // PAIR_ACCEPT
+        testScheduler.runCurrent()
+        assertEquals(1, initiatorEvents.count { it is FlashPairingEvent.PeerAccepted })
+        assertTrue("the host sends the confirm, not the protocol", initiator.outgoing.none { it is FlashPairingFrame.PairConfirm })
+        iJob.cancel()
     }
 
     @Test
@@ -234,6 +266,7 @@ class DefaultFlashPairingProtocolTest {
         exchangeNonces(initiator, responder)
         responder.protocol.respondAccept()
         responder.flushTo(initiator)
+        initiator.protocol.respondAccept()
         responder.protocol.onFrame(
             FlashPairingFrame.PairConfirm(
                 responder.protocol.session.value.requestId!!,

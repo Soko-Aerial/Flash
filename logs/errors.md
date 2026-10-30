@@ -1,5 +1,2149 @@
 # Error Log
 
+## ERROR-868 — A hub test's fixed `sentAt` became "days old" once the age rule existed, and the fixture clock had to become the bridge clock (SEC-D15-02 fallout)
+
+### Date
+2026-10-23
+
+### Area
+Hub chat bridge / tests
+
+### Symptoms
+After adding the freshness rule, `HubChatBridgeTest.crossDepartmentSenderIsRejectedWhenDirectoryOnlyCoversOwnDepartment` and every fixture built on `text(...)` in the hub tests started failing with `expected:<STORED> but was:<REJECTED>`. Nothing about the senders had changed.
+
+### Environment
+- JVM and Android host unit tests, `:core:messaging`, `:core:enterprise`
+- Build through `toolslash-gradle.cmd`
+- Not device-specific
+
+### Error
+```text
+java.lang.AssertionError: expected:<STORED> but was:<REJECTED>
+	at ... HubChatBridgeTest$crossDepartmentSenderIsRejectedWhenDirectoryOnlyCoversOwnDepartment$1.invokeSuspend
+```
+
+### Root cause
+The fixtures stamp `sentAt = 1L` / `1_000L` (epoch 1970), which was fine while nothing read the value. `HubChatBridge` now measures delivery age against `timeSource.nowMs()`, and `SystemTimeSource` in a test is the real 2026 clock, so every fixture was 56 years old and correctly refused.
+
+### Failed attempts
+1. Adding only the clock to the shared `bridge()` helper — the one hand-built bridge in the same file still defaulted to the real clock and kept failing.
+2. Adding the clock to every bridge but leaving the stamps at 1970 — all fixtures were then consistently "old".
+
+### Working fix
+Each hub bridge test class now states one instant (`now = 1_700_000_000_000L`) and one `FlashTimeSource` returning it, used by every bridge AND every fixture stamp, so fixture age is exactly zero. `FakeHubRelay` gained `mailboxTtl`/`serverTimeOffset` so a test can model the retention and a clock difference. A test that specifically wants an old stamp subtracts from `now`.
+
+### Verification
+`:core:messaging:jvmTest` and `:core:messaging:testAndroidHostTest` green (the whole class), `:server:test` green, three mutations caught.
+
+### Related files
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/hub/HubChatBridgeTest.kt`
+- `core/messaging/src/commonTest/kotlin/com/transfer/flash/core/messaging/hub/FakeHubRelay.kt`
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/hub/*.kt`
+
+### Status
+RESOLVED (test-only).
+
+## ERROR-867 — A device paired over an inbound connection kept trust but got no pin (regression of the SEC-D02-02 fix)
+
+### Date
+2026-10-23
+
+### Area
+Pairing / TLS pins / groups
+
+### Symptoms
+After the tranche-1 change that stops inbound first contact from writing a TOFU pin, `DesktopEngineGroupSessionUpTest` and `DesktopEngineRenameTest` (group part) failed: `createGroup failed ... (its security key could not be verified)` and "beta never learned the group". Both passed on a clean HEAD.
+
+### Root cause
+Pairing read the observed (unpinned) key to prove the hello fingerprint, but finishing the pairing never saved it. Trust was stored, the pin was not, so `SignedGroups.keyMatchesPin` had nothing to compare.
+
+### Working fix
+`FlashPairingCoordinator` and the app's `PairingCoordinator` save `observedPeerPin(peerId)` as the pin when a pairing is confirmed and no pin exists. Test `aPairingOverAnUnpinnedInboundConnection_pinsTheKeyTheCodeCovered`, mutation-checked.
+
+### Verification
+Unit and desktop engine tests only. Device check: pair two phones where the other device dialled first, then create a group (SECAUD-18 covers pairing and groups; also run GJOIN-01).
+
+### Related files
+- `core/security/.../pairing/FlashPairingCoordinator.kt`
+- `app/.../pairing/PairingCoordinator.kt`
+
+### Status
+OPEN (fixed in code, not device-verified)
+
+## ERROR-866 — Vacuous Security Verification: PeerTrustPolicyTest Validates Pure Logic Functions While Inbound Direct Chat Intake Remains Ungated (SEC-D28-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D28-test-documentation-integrity) — `core/messaging/.../PeerTrustPolicyTest.kt:88-100`
+
+### Symptoms / Vulnerability
+**[Medium]** The Flash test suite contains thorough unit test suites for `PeerTrustPolicy` (`ORGT-U25` capability matrix tests), validating that `mayChat(isPaired = false, isOrg = false)` correctly returns `false` for unauthenticated strangers. However, this test exercises the pure mathematical policy function in isolation. In the live production engine (`RealFlashChatRepository.kt:5947`), inbound direct 1:1 text wire frames (`FLASH_CHAT_TEXT`) never invoke `PeerTrustPolicy.mayChat` or `isTrustedPeer()`. The presence of green unit tests for the policy creates a false assurance of capability enforcement, while the actual integration point is completely disconnected.
+
+**Impact:** False sense of security: unit tests pass 100% while an unauthenticated LAN stranger can inject direct chat messages.
+
+### Root cause
+Unit tests test `PeerTrustPolicyTest` without asserting against `RealFlashChatRepository` wire frame ingestion.
+
+### Working fix / Recommendation
+Add an end-to-end integration test verifying that synthetic `FLASH_CHAT_TEXT` frames from unauthenticated peers are dropped and emit an `org.gate.deny` probe.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../PeerTrustPolicyTest.kt:88-100`
+- docs/audit/security-2026-10-22\D28-test-documentation-integrity.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-865 — Excessive Offline Org Trust Grace Period (Up to 365 Days) Enables Persistent Access by Revoked Devices (SEC-D27-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D27-trust-model-business-logic) — `core/enterprise/.../RealOrgPeerResolver.kt:148, 197`
+
+### Symptoms / Vulnerability
+**[Medium]** `OrgDirectorySync.kt:393-396` allows the hub server to configure `offlineGraceDays` up to 365 days (`DirectorySyncDto.MAX_OFFLINE_GRACE_DAYS = 365`). In `RealOrgPeerResolver.kt:197`, this duration is used directly to compute lease validity: `OrgLease.Valid(untilMs = lastSyncSuccessMs + graceMs)`. If an organization configures a lengthy grace period, and a rogue or terminated employee has their device revoked by the administrator, legitimate colleagues who remain offline (or are traveling without hub connectivity) will continue to trust the revoked colleague's device on local Wi-Fi networks for up to a full year without querying the hub for revocations.
+
+**Impact:** Extended window of vulnerability where revoked colleagues retain unauthorized communication capabilities with offline peers.
+
+### Root cause
+Offline validation deliberately avoids network calls. A 365-day ceiling is excessively long for security-critical enterprise trust.
+
+### Working fix / Recommendation
+Reduce `MAX_OFFLINE_GRACE_DAYS` from 365 to a sensible maximum (e.g. 14 or 30 days) and alert the user with an "Offline Trust Warning" when operating on cached snapshots older than 7 days.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/enterprise/.../RealOrgPeerResolver.kt:148, 197`
+- docs/audit/security-2026-10-22\D27-trust-model-business-logic.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-864 — Compromised Hub Operator (A4) Can Impersonate Unpaired Colleagues on LAN via Synthetic Directory Statements (SEC-D27-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D27-trust-model-business-logic) — `core/enterprise/.../RealOrgPeerResolver.kt:259-291`
+
+### Symptoms / Vulnerability
+**[High]** Flash's trust model grants organization colleagues (`isOrg == true`) the capability to initiate direct 1:1 chats (`mayChat`), send reactions (`mayReact`), and ring devices (`mayRing`) without prior out-of-band pairing. A colleague's identity is authenticated solely by matching the TLS leaf certificate against public keys recorded in the organization directory snapshot signed by the Hub's delegate key. In the absence of a tamper-evident Key Transparency Log or gossip verification, a compromised hub operator or an attacker holding a valid delegation key can generate synthetic member statements substituting an attacker-controlled public key for any legitimate colleague (e.g. an executive or finance officer). When the victim communicates with that colleague on the LAN, the client verifies the attacker's key against the hub-signed directory snapshot and establishes an encrypted session directly with the attacker without displaying any warning or requiring out-of-band verification.
+
+**Impact:** Undetected man-in-the-middle and impersonation of any unpaired colleague by a compromised hub server.
+
+### Root cause
+`OrgPeerResolver` trusts the hub's signed statements. While PAIRED pins cannot be overwritten, contacts that have never undergone Pairing v2 have no PAIRED pin.
+
+### Working fix / Recommendation
+1. Implement a verifiable, append-only Key Transparency Log (ADR S-15).
+  2. Visually distinguish "Verified Colleague" (out-of-band paired) from "Unverified Colleague" (directory-only) in the UI, requiring explicit user confirmation before accepting attachments or sensitive calls from unverified colleagues.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/enterprise/.../RealOrgPeerResolver.kt:259-291`
+- docs/audit/security-2026-10-22\D27-trust-model-business-logic.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-863 — Wall-Clock System.currentTimeMillis() Used for Keepalive Timeouts and Deadlines in WsConnection (SEC-D26-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D26-time-clocks-freshness) — `core/network/.../WsConnection.kt:73, 77`
+
+### Symptoms / Vulnerability
+**[Medium]** `WsConnection` utilizes `nowMs: () -> Long = System::currentTimeMillis` to drive its keep-alive heartbeat loop, liveness timeout watchdog, and connection ping interval calculations. Wall-clock time is non-monotonic: it changes unpredictably during NTP synchronisation steps, daylight saving time transitions, or manual user clock adjustments. If the system clock steps forward by more than `livenessTimeoutMs` (e.g. 45 seconds during an NTP synchronization jump), `WsKeepalive.onTick` incorrectly concludes that the remote peer timed out and immediately severs active WebSocket connections, terminating active file transfers and calls. Conversely, if the clock steps backward, elapsed interval calculations produce negative values, suppressing keep-alive pings and preventing the app from detecting dropped sockets.
+
+**Impact:** Denial of service and socket instability: unexpected termination of ongoing peer transfers and calls upon routine NTP time adjustments.
+
+### Root cause
+`WsConnection` has no negative-delta clamp or monotonic guarantee for `nowMs`.
+
+### Working fix / Recommendation
+Migrate network watchdog timing to a monotonic clock source:
+  ```kotlin
+  nowMs: () -> Long = { System.nanoTime() / 1_000_000L }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../WsConnection.kt:73, 77`
+- docs/audit/security-2026-10-22\D26-time-clocks-freshness.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-862 — Null-Authentication RFCOMM by Design Permits Proximity Eavesdropping and Injection to Local TNC (SEC-D25-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D25-bluetooth-radio-link) — `core/radio/.../AndroidBluetoothCatalog.kt:136,156-167`
+
+### Symptoms / Vulnerability
+**[Medium]** Handheld amateur radio transceivers (such as Vero VR-N75/N76) do not implement Bluetooth Secure Simple Pairing (SSP) or authentication PINs. To connect to these devices, `AndroidBluetoothCatalog.openRadioLink` explicitly opens insecure RFCOMM sockets via `device.createInsecureRfcommSocketToServiceRecord(id)` and channel reflection. The Bluetooth link between the phone/PC and the radio hardware has zero link-layer encryption and zero device authentication. A nearby Bluetooth attacker can spoof the radio's BD_ADDR or SDP record, intercept unencrypted KISS commands, or inject malicious KISS frames directly into the phone's receive pipeline or transmit queue.
+
+**Impact:** Proximity eavesdropping of unencrypted broadcast radio traffic and local transmission injection on the radio channel.
+
+### Root cause
+Handheld radio firmware limitations force null authentication. While pairwise chat messages inside `RadioSession` are protected by AES-256-GCM, link-level KISS commands and unencrypted broadcast frames over Bluetooth remain unauthenticated.
+
+### Working fix / Recommendation
+1. Clearly document in the UI that the local Bluetooth-to-radio link is unencrypted.
+  2. Forbid transmission of unencrypted broadcast traffic or control commands over the radio link when operating in sensitive environments.
+  3. Where supported by newer hardware models, prefer USB serial connections over Bluetooth SPP.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/radio/.../AndroidBluetoothCatalog.kt:136,156-167`
+- docs/audit/security-2026-10-22\D25-bluetooth-radio-link.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-861 — Unbounded Concurrent Inbound Sockets and Unthrottled Handshake Coroutines in WsTransferServer Enables Resource Exhaustion DoS (SEC-D24-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D24-availability-resource-exhaustion) — `core/network/.../WsTransferServer.kt:116-165`
+
+### Symptoms / Vulnerability
+**[Medium]** `WsTransferServer.acceptLoop` runs an unbounded `while` loop accepting incoming TCP connections on port 45822. For every accepted socket, it unconditionally adds the socket to `inFlightSockets` and launches a new coroutine on `Dispatchers.IO` to execute the TLS handshake and WebSocket upgrade. There is no maximum concurrent connection ceiling, nor is there any rate-limiting per remote IP. A single attacker on the local Wi-Fi or LAN can open hundreds or thousands of simultaneous TCP connections without completing the handshake. This floods the host with concurrent coroutines, consumes available socket file descriptors, and exhausts native SSL heap memory, rendering the device incapable of accepting legitimate peer connections or transferring files.
+
+**Impact:** Complete denial of service for peer-to-peer messaging and file transfers on Android and Desktop.
+
+### Root cause
+`HANDSHAKE_TIMEOUT_MS` (8,000 ms) eventually times out idle connections, but an attacker can open new connections at a rate far exceeding the timeout reclamation threshold. There is no capacity check before spawning coroutines.
+
+### Working fix / Recommendation
+Introduce an inbound connection semaphore and per-IP limit:
+  ```kotlin
+  private const val MAX_CONCURRENT_INBOUND = 32
+  private const val MAX_INBOUND_PER_IP = 4
+  ```
+  If `inFlightSockets.size >= MAX_CONCURRENT_INBOUND`, close the accepted socket immediately before launching the coroutine or initializing TLS.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../WsTransferServer.kt:116-165`
+- docs/audit/security-2026-10-22\D24-availability-resource-exhaustion.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-860 — Static, Non-Rotating deviceId Broadcast in Cleartext via mDNS Enables LAN Device Tracking Across Networks (SEC-D23-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D23-privacy-data-minimisation) — `core/discovery/.../NsdFlashDiscovery.kt:154-157`
+
+### Symptoms / Vulnerability
+**[Medium]** The Flash application generates a local `deviceId` (a random UUID) at first launch and persists it permanently in application settings. Whenever discovery is active, `NsdFlashDiscovery` advertises this exact static identifier, along with the user's friendly name, in plaintext mDNS multicast TXT records (`_flash._tcp.local.`) across the local subnet. Any passive sniffer on public Wi-Fi networks (e.g., cafés, airports, hotels, university campuses) can record this persistent identifier, track the physical presence of the user over time, and correlate the user across multiple physical locations and networks.
+
+**Impact:** Long-term user location and device tracking across Wi-Fi networks.
+
+### Root cause
+mDNS/DNS-SD packets are unencrypted broadcast traffic by design. Because `deviceId` never rotates, it acts as a permanent tracking beacon.
+
+### Working fix / Recommendation
+Implement ephemeral discovery identifiers:
+  1. Generate rotating ephemeral advertisement tokens derived from the identity key and current time window (e.g. daily rotation), resolving the true identity only during mutual TLS handshake.
+  2. Provide a user preference for "Invisible Mode" to disable active mDNS advertisement on untrusted public Wi-Fi networks.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/discovery/.../NsdFlashDiscovery.kt:154-157`
+- docs/audit/security-2026-10-22\D23-privacy-data-minimisation.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-859 — Missing Gradle Dependency Verification (verification-metadata.xml) Leaves Build Vulnerable to Upstream Tampering (SEC-D21-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D21-dependencies-supply-chain) — `gradle/`
+
+### Symptoms / Vulnerability
+**[Medium]** The Flash build system does not enable Gradle Dependency Verification. There is no `gradle/verification-metadata.xml` specifying SHA-256 checksums or trusted PGP signing keys for resolved dependencies and plugins. If an attacker performs DNS spoofing or compromises an upstream mirror (such as the configured Google Cloud Storage mirror `https://maven-central.storage-download.googleapis.com/maven2/`), or if a maintainer account of an upstream library is compromised, Gradle silently downloads and executes the tampered classes without error.
+
+**Impact:** Malicious code injection during build time or application execution without triggering any integrity check.
+
+### Root cause
+HTTPS certificates validate server identity but do not prevent malicious or tampered artifacts served legitimately by compromised mirrors or repository accounts.
+
+### Working fix / Recommendation
+Generate and commit a dependency verification configuration via `./gradlew --write-verification-metadata sha256 allTests` and enforce `checksums` verification mode in `gradle/verification-metadata.xml`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `gradle/`
+- docs/audit/security-2026-10-22\D21-dependencies-supply-chain.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-858 — Global mavenLocal() Repository Prioritized First Enables Local Dependency Poisoning (SEC-D21-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D21-dependencies-supply-chain) — `settings.gradle.kts:26`
+
+### Symptoms / Vulnerability
+**[Medium]** In `settings.gradle.kts`, `dependencyResolutionManagement.repositories` places `mavenLocal()` as the very first repository, preceding `google()` and `mavenCentral()`. Gradle searches repositories sequentially: the first repository containing an artifact satisfying coordinates satisfies the resolution. The local Maven cache (`~/.m2/repository`) is an unauthenticated, unverified local filesystem directory shared across all projects and processes for the user. Any unprivileged process, third-party build tool, or rogue dependency from another project running on the same machine can place poisoned JAR files into `~/.m2/repository/com/squareup/okio/` or `org/jetbrains/kotlinx/`. Gradle will pull these compromised artifacts instead of fetching legitimate ones from Maven Central.
+
+**Impact:** Supply-chain compromise: developer and CI builds can unknowingly compile and bundle malicious local code into released APKs and desktop binaries.
+
+### Root cause
+The code comments erroneously assume `mavenLocal()` is "harmless". Gradle does not verify whether coordinates exist in Maven Central before checking `mavenLocal()`; it accepts the first hit.
+
+### Working fix / Recommendation
+Restrict `mavenLocal()` exclusively to the `:sample:consumer-desktop` project or declare repository content filtering so `mavenLocal()` only resolves group `com.transfer.flash.*`:
+  ```kotlin
+  mavenLocal {
+      content {
+          includeGroup("com.transfer.flash")
+      }
+  }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `settings.gradle.kts:26`
+- docs/audit/security-2026-10-22\D21-dependencies-supply-chain.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-857 — Symmetrical Session Key and Missing AAD Direction/Counter in E2eFrameCodec Allows Frame Reflection and In-Session Replay (SEC-D20-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D20-cross-cutting-cryptography) — `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/crypto/E2eFrameCodec.kt:52,69,94`
+
+### Symptoms / Vulnerability
+**[Medium]** When two peers establish an encrypted session via ephemeral ECDH, both derive an identical symmetric 32-byte AES-256 session key (`sessionKey`). `E2eFrameCodec.encrypt` and `decrypt` invoke AES-GCM with static `aad = "flash-e2e-v${FlashProtocol.VERSION}"`. Neither the transmission direction (e.g., `initiator -> responder` vs `responder -> initiator`), nor a session identifier, nor a monotonic frame sequence counter is included in the AAD or the authenticated wire frame. Consequently, an on-path attacker or transport proxy can reflect a valid frame sent by Alice back to Alice on the same connection; Alice will authenticate and process the frame as if it originated from Bob. Furthermore, identical valid ciphertext frames can be replayed repeatedly within the session.
+
+**Impact:** Integrity violation: an attacker can induce a device to re-process its own sent frames as incoming peer messages (reflection) or duplicate previous state-modifying frames (replay).
+
+### Root cause
+The GCM authentication tag authenticates `nonce`, `ciphertext`, and `aad`. Because `sessionKey` and `aad` are identical for both Alice and Bob, a ciphertext generated by Alice satisfies Bob's verification AND Alice's verification.
+
+### Working fix / Recommendation
+1. Derive two separate keys via HKDF: `client_to_server_key` and `server_to_client_key` (or `initiator_to_responder` and `responder_to_initiator`), or include a direction byte in the AAD (`0x01` = Outbound, `0x02` = Inbound relative to session role).
+  2. Include a monotonically incrementing 64-bit sequence counter in the AAD and reject out-of-order/replayed counters at the recipient.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/crypto/E2eFrameCodec.kt:52,69,94`
+- docs/audit/security-2026-10-22\D20-cross-cutting-cryptography.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-856 — Step-up challenges not bound to session ID, permitting cross-session replay (SEC-D17-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D17-hub-admin-console) — `server/src/main/kotlin/com/transfer/flash/server/admin/StepUpAuth.kt:49-62,222-230`
+
+### Symptoms / Vulnerability
+**[Medium]** `StepUpChallenge` records the administrator's username (`val adminUsername: String`), action, target, and nonce, but does NOT bind the challenge to the specific `sessionId` or session token that initiated it. When `StepUpAuth.authorize` is invoked during a protected operation, it only validates that `challenge.adminUsername == session.username`. If an administrator has multiple active sessions (or if an attacker holds a stolen session cookie for the same admin account), a step-up challenge initiated and approved by the legitimate administrator in Session A can be intercepted or reused by Session B to authorize a privileged action. Furthermore, when an administrator logs out of Session A or an admin session is revoked via `revokeSession`, pending verified challenges in `StepUpAuth` remain active in memory until their 5-minute TTL expires.
+
+**Impact:** An attacker who has obtained an admin session cookie can execute high-impact administrative actions (such as installing new delegation certificates, modifying server settings, or resetting credentials) by racing or intercepting an approved `challengeId` generated by the victim administrator in a concurrent session.
+
+### Root cause
+`adminSession` verifies the session cookie, but `StepUpChallenge` has no awareness of which session created it.
+
+### Working fix / Recommendation
+Record `sessionId: String` in `StepUpChallenge` upon creation, and require `challenge.sessionId == session.sessionId` in `StepUpAuth.authorize`. Additionally, purge all outstanding challenges for `session.username` or `session.sessionId` upon logout or session revocation.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/StepUpAuth.kt:49-62,222-230`
+- docs/audit/security-2026-10-22\D17-hub-admin-console.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-855 — Dynamic string interpolation in announcement search SQL clauses bypasses parameter binding (SEC-D16-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D16-hub-rest-api) — `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementStore.kt:525,535`
+
+### Symptoms / Vulnerability
+**[Medium]** `AnnouncementStore.searchAnnouncements` constructs dynamic SQL filter clauses by directly interpolating `callerDeptId` and the user-supplied query parameter `departmentId` into SQL string literals (`a.department_id = '${escapeSql(departmentId)}'`) rather than using JDBC parameter placeholders (`?`). While a helper `escapeSql` is used to double single quotes (`replace("'", "''")`), relying on custom string sanitization in place of prepared statement parameter binding violates secure database interaction standards and creates architectural fragility.
+
+**Impact:** An attacker who discovers SQLite string parsing discrepancies or encoding bypasses could alter query logic, enumerate announcements outside their authorized visibility scope, or inject SQL expressions.
+
+### Root cause
+Existing checks only escape `'` with `''`, but the query is still assembled dynamically via string interpolation.
+
+### Working fix / Recommendation
+Refactor `searchAnnouncements` to use parameter placeholders (`?`) in both `$visibilityClause` and `$filterClause`, and pass the bound parameters into `stmt.setString(...)`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/announcements/AnnouncementStore.kt:525,535`
+- docs/audit/security-2026-10-22\D16-hub-rest-api.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): every search value is bound as a parameter. Unit-tested in `AnnouncementStoreTest`.
+
+
+## ERROR-854 — Hub relay protocol lacks freshness window or monotonic counters, permitting message replay if client chat history cleared (SEC-D15-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D15-hub-relay-mailbox) — `server/src/main/kotlin/com/transfer/flash/server/mailbox/SealedEnvelope.kt:26-32`
+
+### Symptoms / Vulnerability
+**[Medium]** In `SealedEnvelope.kt`:
+  ```kotlin
+  * @property counter Reserved (REL-15 decision, ADR-112): replay protection is the recipient's msgId dedupe, the relay wire has
+  *   no counter and the mailbox table no longer stores one.
+  ```
+  The hub relay wire format (`FLASH_RELAY` / `FLASH_DELIVER`) and mailbox storage do not enforce monotonic sequence numbers, ratchet states, or timestamp validity ceilings. Replay protection relies entirely on the recipient client's local SQLite database deduplication (`INSERT OR IGNORE INTO messages WHERE messageId = ?`).
+  If a recipient clears a conversation, deletes messages to free disk space, or provisions a new secondary device (e.g. a newly paired desktop that did not receive original messages), a rogue hub operator (A4) or network eavesdropper who recorded past ciphertext can re-deliver an old valid `FLASH_DELIVER` envelope.
+  Because the message ID is not present in the recipient's local database, the client accepts the replayed message, decrypts it with the active session key, displays it in the chat timeline, and triggers a user notification.
+
+### Root cause
+Deduplication by `msgId` works only as long as the recipient retains all historical message IDs indefinitely.
+
+### Working fix / Recommendation
+Include a sender-signed timestamp in the authenticated envelope payload and enforce a maximum acceptable age window (e.g. reject messages whose authenticated timestamp is older than 7 days, or require ratchet-based replay counters).
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/mailbox/SealedEnvelope.kt:26-32`
+- docs/audit/security-2026-10-22\D15-hub-relay-mailbox.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Fix 2026-10-23 (in code, unit-tested, mutation-checked, not device-verified)
+
+The hub announces its mailbox retention in `FLASH_HUB_WELCOME.limits.mailboxTtlMs` (additive; a hub that says nothing gets the 7-day default) and `HubChatBridge` refuses and acknowledges a delivery older than that plus `HubContract.MESSAGE_AGE_GRACE_MS` (5 min), counting it in `droppedStale`. The sender measures its clock difference to the hub at the handshake and stamps with the hub's time when it is past the grace, so a badly set sender clock is not refused. `HubFreshness` holds the rule. Tests: `HubChatBridgeTest` (fresh, edge, default window, zero stamp, sender clock, counter), `MessageFreshnessTest`, `RelayHandshakeContractTest`; three mutations caught. Device check `SECAUD-25`.
+
+### Status
+OPEN (fixed in code 2026-10-23; closes only after SECAUD-25)
+
+
+## ERROR-853 — Mailbox quota exhaustion allows single sender to starve target recipient from receiving messages (SEC-D15-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D15-hub-relay-mailbox) — `server/src/main/kotlin/com/transfer/flash/server/mailbox/MailboxQueue.kt:158-164`
+
+### Symptoms / Vulnerability
+**[Medium]** `MailboxLimits` defines two per-entity quotas:
+  - `perRecipientRows = 1_000` (maximum queued messages waiting for a recipient across all senders)
+  - `perSenderRows = 5_000` (maximum queued messages in transit from a sender across all recipients)
+  There is **no per-sender-to-recipient sub-quota**.
+  Because a sender's allowance (5,000) exceeds a recipient's allowance (1,000), a single malicious enrolled colleague can transmit 1,000 small offline messages to a target colleague (e.g., `dev-target`).
+  In `MailboxQueue.kt:158-161`:
+  ```kotlin
+  val (recipientRows, recipientBytes) = usage(conn, "target_device_id", m.target, now)
+  if (recipientRows >= limits.perRecipientRows) {
+      return EnqueueResult.QuotaExceeded(QuotaScope.RECIPIENT, "recipient mailbox holds ${limits.perRecipientRows} messages")
+  }
+  ```
+  Once the attacker fills the 1,000 slots, any subsequent message sent by *other* colleagues (or critical organizational announcements) to `dev-target` while offline is rejected with `EnqueueResult.QuotaExceeded` (`ERR_QUOTA_EXCEEDED`).
+  The target recipient is completely denied the ability to receive communications from anyone else in the organization until they connect and acknowledge the attacker's messages.
+
+### Root cause
+Quotas are enforced atomically via SQLite immediate transactions, but only measure aggregate rows per recipient, allowing one sender to consume 100% of the recipient's quota.
+
+### Working fix / Recommendation
+Introduce a per-sender-per-recipient row limit (e.g. maximum 100 queued messages from any single sender to a given recipient) in `MailboxLimits`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/mailbox/MailboxQueue.kt:158-164`
+- docs/audit/security-2026-10-22\D15-hub-relay-mailbox.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-852 — Enrollment invites allow arbitrary client-chosen `deviceId`, enabling prospective device ID pre-emption and lockout (SEC-D14-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D14-hub-auth) — `server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt:216-240`
+
+### Symptoms / Vulnerability
+**[Medium]** When an administrator creates an enrollment invite (`createInvite`), the invite specifies scope (`department`, `allowedGroups`, `role`, `expiry`, `maxUses`), but **does not bind an expected or authorized `deviceId`**.
+  When enrolling (`/api/v1/enroll`), the client submits `deviceId` alongside `subjectPublicKey` and proof-of-possession.
+  In `IdentityStore.kt:209-245`, if the specified `deviceId` is not currently in the database (or is marked `UNENROLLED`), the hub registers `deviceId` with the caller's `subjectPublicKey`.
+  If a malicious colleague discovers or anticipates the device ID of another employee (e.g., from LAN peer discovery sightings, prior transfers, or debug logs), the attacker can use their own valid invite token to register the victim's `deviceId` with the attacker's own public key.
+  When the legitimate employee subsequently attempts to enroll their device with their own invite token, `IdentityStore.kt:215` encounters:
+  ```kotlin
+  if (existing.subjectPublicKey != subjectPublicKey) {
+      return@immediate EnrollOutcome.Refused(EnrollRefusal.DEVICE_CONFLICT)
+  }
+  ```
+  The legitimate device's enrollment is permanently blocked with HTTP 409 Conflict (`ERR_CONFLICT`).
+
+### Root cause
+No device ID reservation or pre-assignment mechanism exists in `InviteScope`. Device ID ownership is determined strictly by first-to-claim.
+
+### Working fix / Recommendation
+Support optional `boundDeviceId` in `InviteScope` so administrators can issue invites strictly locked to a specific device ID. Alternatively, generate `deviceId` server-side during enrollment rather than accepting arbitrary client strings, or allow administrators to resolve device ID conflicts through the console.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/EnrollmentService.kt:216-240`
+- docs/audit/security-2026-10-22\D14-hub-auth.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-851 — Unpinned first delegation permits Trust-On-First-Use (TOFU) root key hijacking on startup (SEC-D14-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D14-hub-auth) — `server/src/main/kotlin/com/transfer/flash/server/auth/DelegationManager.kt:152-160`
+
+### Symptoms / Vulnerability
+**[Medium]** In `DelegationManager.kt`, when `requireRootPin` is not explicitly set to true in configuration and no initial root pin exists (`rootPin() == null`), the hub automatically adopts the root key of the first valid delegation certificate it encounters on the filesystem:
+  ```kotlin
+  if (rootPin() == null) {
+      onRootAdopted(rootFingerprint(cert))
+      log.warn(
+          "TRUST ON FIRST USE: the hub adopted root key {} from the first delegation it saw. Compare it with the fingerprint " +
+              "'keytool init-root' printed; set FLASH_ROOT_FINGERPRINT (and FLASH_REQUIRE_ROOT_PIN=true) so this can not happen.",
+          rootFingerprint(cert),
+      )
+  }
+  ```
+  If an attacker on a shared host, deployment environment, or via container volume manipulation plants a `delegation.cert` before the legitimate administrator deploys the official delegation, the hub binds itself to the attacker's organization root key. The server will subsequently accept only attacker-signed delegations and issue certificates under the attacker's authority.
+
+### Root cause
+While `requireRootPin` exists as a flag (`requireRootPin: Boolean = false`), it defaults to false, permitting insecure TOFU adoption out of the box.
+
+### Working fix / Recommendation
+Require `FLASH_ROOT_FINGERPRINT` to be specified during server initialization, or fail startup if no root fingerprint is configured instead of silently adopting the first delegation file found.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/auth/DelegationManager.kt:152-160`
+- docs/audit/security-2026-10-22\D14-hub-auth.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-850 — Android Auto Backup exfiltrates enterprise hub files and swarm pieces to unencrypted cloud storage (SEC-D13-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D13-data-at-rest) — `app/src/main/res/xml/data_extraction_rules.xml:18-25`
+
+### Symptoms / Vulnerability
+**[Medium]** In `data_extraction_rules.xml`:
+  ```xml
+  <cloud-backup>
+      <exclude domain="sharedpref" path="." />
+      <exclude domain="database" path="." />
+      <exclude domain="device_sharedpref" path="." />
+      <exclude domain="device_database" path="." />
+      <exclude domain="external" path="." />
+      <exclude domain="file" path="logs" />
+  </cloud-backup>
+  ```
+  The rule explicitly excludes `sharedpref`, `database`, `external`, and `file path="logs"`.
+  However, in `DiskHubFileStorage` (`HubFileStorage.kt:45`), downloaded enterprise organization files and pending download parts are stored under `context.filesDir/hub-files` (`done/<fileId>.bin`, `down/<fileId>.part`). Similarly, swarm partial pieces are stored under `context.filesDir/swarm/partial/<key>.part` (`AndroidPieceStorage.kt:23`).
+  Because `hub-files` and `swarm` reside within `context.filesDir` (the `file` domain) and are NOT excluded in `data_extraction_rules.xml` or `backup_rules.xml`, Android Auto Backup automatically uploads downloaded enterprise documents and partial files to the user's personal Google Drive backup storage.
+
+### Root cause
+Only `logs` was excluded under domain `file`. Enterprise files and swarm parts were omitted from the exclusion list.
+
+### Working fix / Recommendation
+Update `data_extraction_rules.xml` and `backup_rules.xml` to explicitly exclude `hub-files` and `swarm`:
+  ```xml
+  <exclude domain="file" path="hub-files" />
+  <exclude domain="file" path="swarm" />
+  ```
+  Alternatively, set `android:allowBackup="false"` or store temporary/cached downloads in `context.noBackupFilesDir` or `context.cacheDir`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `app/src/main/res/xml/data_extraction_rules.xml:18-25`
+- docs/audit/security-2026-10-22\D13-data-at-rest.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-849 — Plaintext chat message bodies leaked to unencrypted desktop log file (`desktop.log`) (SEC-D13-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D13-data-at-rest) — `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt:1621,1625`
+
+### Symptoms / Vulnerability
+**[High]** In `DesktopEngine.kt`, the callbacks for inbound text messages contain diagnostic log statements:
+  ```kotlin
+  onInboundTextMessage = { conversationId, senderName, text ->
+      FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"}: ${text.take(120)}")
+      onInboundMessageNotification?.invoke(conversationId, senderName, text, null)
+  },
+  onInboundTextMessageWithGroupTitle = { conversationId, senderName, text, groupTitle ->
+      FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"} (group $groupTitle): ${text.take(120)}")
+      onInboundMessageNotification?.invoke(conversationId, senderName, text, groupTitle)
+  },
+  ```
+  These statements write the first 120 characters of every incoming chat message to `FlashLog.i(TAG_WS, ...)`.
+  In `DesktopMain.kt:520-547`, `installDesktopLogSink()` directs all `FlashLog` entries to `<stateDir>/desktop.log` (default `~/.flash/desktop.log` or `~/.local/share/flash/desktop.log`).
+  On Linux, `desktop.log` is created with world-readable permissions (`0644`, see `SEC-D12-03`). On Windows, it is readable by any local unprivileged process running under the user.
+  This completely defeats at-rest encryption of the SQLite database: even though the database is encrypted with ChaCha20/AES via `SQLite3MultipleCiphers`, plaintext message excerpts are recorded permanently in cleartext in the log file.
+
+### Root cause
+No redaction or sanitization is performed on `text`. The 120-character substring preserves almost all typical short text messages in full.
+
+### Working fix / Recommendation
+Remove message text logging entirely from `DesktopEngine.kt:1621,1625`. Log only metadata:
+  `FlashLog.i(TAG_WS, "Inbound chat in $conversationId from ${senderName ?: "?"} (length=${text.length})")`
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt:1621,1625`
+- docs/audit/security-2026-10-22\D13-data-at-rest.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): desktop chat log lines carry a length, not the text. NOT device-verified; device check SECAUD-13.
+
+
+## ERROR-848 — World-readable application state directory, settings, and logs on multi-user Linux workstations (SEC-D12-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D12-desktop-application) — `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopPaths.kt:21-35`
+
+### Symptoms / Vulnerability
+**[Medium]** On Linux, `DesktopPaths.stateDir()` resolves to `~/.local/share/flash` or `~/.flash`. Directory creation is performed via `stateDir.mkdirs()` in `DesktopIdentityStores.kt:41`, `DesktopSettingsStore.kt:69`, and `DesktopMain.kt:522`.
+  Because standard Java `File.mkdirs()` and `FileWriter` rely on the OS default process umask (commonly `0022`), directories are created with permissions `0755` (`rwxr-xr-x`) and created files (`desktop.log`, `identity.properties`, `settings.properties`, `trust.properties`) are assigned permissions `0644` (`rw-r--r--`).
+  `desktop.log` logs verbose runtime events: IP addresses, open listening ports, peer device IDs, group join tokens, signalling metadata, WebRTC connection statistics, and transferred file names. On multi-user Linux workstations, any user with local access can read these files.
+
+### Root cause
+While `KeyFileVault.kt:81-90` creates the master key file with owner-only POSIX permissions (`0600`), this protection was not extended to `stateDir`, `desktop.log`, `trust.properties`, or `settings.properties`.
+
+### Working fix / Recommendation
+In `DesktopPaths.stateDir()` and `installDesktopLogSink()`, create directories and files using `java.nio.file.Files.createDirectories` and `createFile` with `PosixFilePermissions.asFileAttribute(setOf(OWNER_READ, OWNER_WRITE, OWNER_EXECUTE))` when operating on POSIX platforms.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopPaths.kt:21-35`
+- docs/audit/security-2026-10-22\D12-desktop-application.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-847 — `SingleInstanceController` processes UNC paths without restriction, leaking NetNTLMv2 hashes to remote SMB hosts (SEC-D12-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D12-desktop-application) — `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt:177-183`
+
+### Symptoms / Vulnerability
+**[Medium]** In `SingleInstanceController.kt`, when a `SEND <path>` line is received from the loopback socket, the server executes:
+  ```kotlin
+  val path = line.removePrefix("SEND ").trim()
+  if (path.isNotEmpty()) {
+      val file = File(path)
+      if (file.exists()) {
+          onShareFiles(listOf(file))
+      }
+  }
+  ```
+  On Windows systems, if `path` is a Universal Naming Convention (UNC) path (e.g., `\\192.168.1.50\share\file.txt`), calling `file.exists()` instructs the Windows kernel to establish an SMB session with the target host (`192.168.1.50`) on port 445. As part of SMB protocol negotiation, Windows automatically sends the current user's NetNTLMv2 challenge-response hash.
+
+### Root cause
+No validation exists to check if `path` begins with `\\` or `//` or refers to remote network shares.
+
+### Working fix / Recommendation
+Sanitize and restrict input paths in `SingleInstanceController`:
+  Reject any path starting with `\\`, `//`, or containing URI scheme prefixes before invoking `File(path).exists()`. Ensure paths resolve strictly to local drive letters (`[A-Za-z]:\\`) on Windows and absolute POSIX paths on Linux.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt:177-183`
+- docs/audit/security-2026-10-22\D12-desktop-application.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-846 — Unauthenticated loopback IPC socket in `SingleInstanceController` allows local process to stage arbitrary files and hijack UI focus (SEC-D12-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D12-desktop-application) — `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt:139-189`
+
+### Symptoms / Vulnerability
+**[Medium]** `SingleInstanceController` ensures only one instance of Flash runs by binding a TCP `ServerSocket` to `127.0.0.1` on an ephemeral port and writing the chosen port to `~/.flash/app.port`. When a second process or command-line invocation starts, it reads `app.port` and connects to the loopback socket to forward file paths (`SEND <path>`) or bring the application window to the foreground (`ACTIVATE`).
+  However, the loopback socket listener enforces **zero authentication, authorization tokens, or session secrets**. Any local process or sandboxed application running on the same machine can read `app.port` (or scan loopback ports) and issue `SEND <path>` commands. The listener verifies only that `File(path).exists()`, immediately triggers `onShareFiles(listOf(file))`, places the file into the active user's send tray / queue, and activates the window.
+
+### Root cause
+No guards or authentication checks exist. `SingleInstanceController` accepts any raw TCP connection on loopback.
+
+### Working fix / Recommendation
+Generate a cryptographically random authorization cookie (e.g. 32 bytes hex) when creating the single instance lock, write it with owner-only permissions (`0600`) to `~/.flash/app.token`, and require incoming TCP connections to authenticate with `AUTH <token>` before accepting any `SEND` or `ACTIVATE` commands. Reject connections that fail authentication and close the socket immediately.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/SingleInstanceController.kt:139-189`
+- docs/audit/security-2026-10-22\D12-desktop-application.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-845 — Missing Lock Screen Visibility Restrictions Leaks Private Message Content and Sender Information (SEC-D11-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D11-android-app-surface) — `app/.../FlashNotificationManager.kt:617`
+
+### Symptoms / Vulnerability
+**[Medium]** In `FlashNotificationManager.kt`:
+  ```kotlin
+  val notification = NotificationCompat.Builder(appContext, CHANNEL_MESSAGES)
+      .setSmallIcon(R.drawable.ic_notification_flash)
+      .setContentTitle(title)
+      .setContentText(body)
+      .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+      .setAutoCancel(true)
+      .setContentIntent(contentIntent)
+      .build()
+  ```
+  The notification builder does not specify `.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)` and does not provide an obfuscated public notification via `.setPublicVersion(...)`.
+
+**Impact:** On devices with default Android notification settings, full message contents (`body`) and sender identity (`title`) are rendered on the lock screen, exposing confidential conversations to bystanders without requiring device unlock.
+
+### Root cause
+Notification channels are initialized with standard importance (`IMPORTANCE_HIGH`), but per-notification visibility levels are omitted.
+
+### Working fix / Recommendation
+Configure `.setVisibility(NotificationCompat.VISIBILITY_PRIVATE)` on message notifications and supply a sanitized public version displaying "New message" without message text or sender name.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `app/.../FlashNotificationManager.kt:617`
+- docs/audit/security-2026-10-22\D11-android-app-surface.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-844 — Missing FLAG_SECURE Allows Android Task Switcher Snapshots and Screen Capture of Confidential Chats and Secrets (SEC-D11-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D11-android-app-surface) — `app/.../MainActivity.kt:96`
+
+### Symptoms / Vulnerability
+**[Medium]** `MainActivity` never calls `window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)`.
+
+**Impact:** 1. When Flash is placed in the background or switched via the Android Overview (recents) task switcher, the Android OS captures an unencrypted bitmap snapshot of the active screen and stores it in `/data/system_ce/0/snapshots/`. Confidential messages, group invite codes, device keys, and user contacts remain stored on disk in cleartext image format.
+  2. Applications with `MediaProjection` or accessibility permissions can capture screenshots of active Flash conversations and private keys.
+
+### Root cause
+No screen security policy or user preference toggle was implemented.
+
+### Working fix / Recommendation
+Provide a "Screen Security" toggle in Settings (defaulting to enabled for high-security environments) that applies `FLAG_SECURE` to the window, preventing recents snapshots and third-party screen capture.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `app/.../MainActivity.kt:96`
+- docs/audit/security-2026-10-22\D11-android-app-surface.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-843 — Intent Redirection and FileProvider Grant Confusion via Exported MainActivity ACTION_OPEN_FILE (SEC-D11-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D11-android-app-surface) — `app/.../MainActivity.kt:475`
+
+### Symptoms / Vulnerability
+**[High]** `MainActivity` is exported (`android:exported="true"`) to act as the main launcher and share target. In `handleIncomingIntent(intent)`:
+  ```kotlin
+  FlashNotificationManager.ACTION_OPEN_FILE -> {
+      val path = intent.getStringExtra(FlashNotificationManager.EXTRA_FILE_PATH)
+      if (path != null) {
+          openAttachment(this, path, guessMimeType(path, path, this))
+      }
+      pendingShortcutTab.value = FlashDestination.Transfers
+  }
+  ```
+  `MainActivity` treats `ACTION_OPEN_FILE` identically regardless of whether the intent originated from Flash's internal notification `PendingIntent` or an external application.
+  
+  In `openAttachment`:
+  ```kotlin
+  val uri: android.net.Uri = try {
+      if (path.startsWith("content://") || path.startsWith("file://")) {
+          android.net.Uri.parse(path)
+      } else {
+          androidx.core.content.FileProvider.getUriForFile(
+              context,
+              "${context.packageName}.fileprovider",
+              java.io.File(path),
+          )
+      }
+  } ...
+  val view = android.content.Intent(android.content.Intent.ACTION_VIEW).apply {
+      setDataAndType(uri, effectiveMime.ifBlank { "*/*" })
+      addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+  }
+  context.startActivity(view)
+  ```
+  Flash takes the untrusted `path` extra, converts it into a `FileProvider` URI, grants `FLAG_GRANT_READ_URI_PERMISSION`, and fires an implicit `ACTION_VIEW` intent.
+
+**Impact:** 1. **Private File Exfiltration:** A rogue app installed on the device can launch `MainActivity` with `ACTION_OPEN_FILE` and `EXTRA_FILE_PATH` set to any file inside Flash's FileProvider roots (e.g. downloaded transfer files, cached voice recordings `flash-voice-*.m4a`, camera captures, or log export archives). By registering an intent filter for `ACTION_VIEW`, the rogue app receives read permissions to Flash's private files.
+  2. **Unsolicited Execution / Package Installation:** If `path` points to a received APK file or executable payload, Flash automatically launches the system package installer or handler without user prompt or confirmation.
+
+### Root cause
+`ShareUriPolicy` was implemented to protect `ACTION_SEND`, but `ACTION_OPEN_FILE` was overlooked and left unauthenticated on the exported activity.
+
+### Working fix / Recommendation
+Do not route `ACTION_OPEN_FILE` through an exported Activity. Route notification file opening through an internal unexported BroadcastReceiver (`exported="false"`) or explicitly verify that the intent originated from the app itself (e.g. validating a cryptographically secure in-memory nonce or using an internal pending intent token).
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `app/.../MainActivity.kt:475`
+- docs/audit/security-2026-10-22\D11-android-app-surface.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): `isOpenableReceivedPath` refuses URI strings and paths outside the received-files root. Unit-tested. NOT device-verified; device check SECAUD-12.
+
+
+## ERROR-842 — Unfiltered Address Hints in Group Invites Enable Blind Intranet SSRF and Port Probing (SEC-D10-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D10-discovery-presence) — `core/security/.../GroupInvite.kt:40`
+
+### Symptoms / Vulnerability
+**[Medium]** v2 Group invites (`flash://g/1/...`) can carry up to 3 `addressHints` (`GroupInvite.kt:40`). In `GroupInvite.kt`, validation is limited strictly to `hint.encodeToByteArray().size in 1..64`.
+  
+  When an invite is accepted in `RealFlashChatRepository.kt:2051`:
+  ```kotlin
+  dialHintsInOrder(invite.groupId, invite.inviterDeviceId, invite.addressHints)
+  ```
+  `dialHintsInOrder` invokes `onConnectPeerWithHints`. In `DiscoveryEngineHolder.kt:1500-1509`:
+  ```kotlin
+  val parts = hint.split(":")
+  val host = parts[0]
+  val port = parts.getOrNull(1)?.toIntOrNull() ?: WsTransferServer.PREFERRED_PORT
+  networkImpl.connectManual(host, port, peerId)
+  ```
+  Neither the repository nor the host engine performs any destination filtering. Unlike presence tips (which strictly enforce `PresenceCodec.isDialableHost`), address hints permit loopback addresses (`127.0.0.1`), link-local / cloud metadata services (`169.254.169.254`), and arbitrary internal intranet hosts and ports (`10.0.0.1:22`, `192.168.1.1:80`).
+  
+  Additionally, `hint.split(":")` breaks IPv6 literals (e.g. `[::1]:45822` or `fe80::1`), parsing invalid hostnames.
+
+**Impact:** An attacker distributing a malicious `flash://g/1/...` invite link can induce victim devices to send TCP SYN packets and TLS ClientHellos to arbitrary internal ports and loopback services when the user clicks "Join". This enables intranet port mapping, internal service probing, and potential denial-of-service on fragile embedded TCP devices.
+
+### Root cause
+Developers relied on `PresenceCodec.isDialableHost` for presence tips, but forgot to apply the same validator to `GroupInvite` address hints.
+
+### Working fix / Recommendation
+Validate each hint using `PresenceCodec.isDialableHost` in `GroupInvite.init` and `GroupInviteCodec.decode`. Use robust URI/endpoint parsing that handles IPv6 brackets properly (`host.substringBeforeLast(':')` / `host.substringAfterLast(':')`).
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/.../GroupInvite.kt:40`
+- docs/audit/security-2026-10-22\D10-discovery-presence.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-841 — Presence State Machine Acts as Unrestricted Third-Party Presence and Network Endpoint Oracle (SEC-D10-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D10-discovery-presence) — `core/network/.../presence/PresenceState.kt:393`
+
+### Symptoms / Vulnerability
+**[Medium]** Flash exchanges presence via `FLASH_PRES` frames. A peer sends a `Want` frame containing truncated hashes `H(salt, targetDeviceId)`. In `PresenceState.mayShare`:
+  ```kotlin
+  private fun mayShare(receiver: String, peer: Peer, subject: String, direct: Boolean, view: PresenceLocalView): Boolean {
+      if (subject == receiver || subject == localDeviceId) return false
+      val flag = shareFlags[subject]
+      if (if (direct) flag != true else flag == false) return false
+      if (view.rosters.any { receiver in it && subject in it }) return true
+      return peer.theirWant.isNotEmpty() && peer.hashOf(subject) in peer.theirWant
+  }
+  ```
+  Line 398 unconditionally returns `true` if `peer.hashOf(subject) in peer.theirWant`. The code fails to verify that `subject` has authorized `receiver`, or that `receiver` is a contact/paired peer of `subject`.
+
+**Impact:** Any paired contact of device B (e.g. colleague Charlie) can query device B about any third-party device ID (e.g. Alice). If Alice is on device B's LAN or connected to device B, device B returns a `PresenceFrame.Report` revealing Alice's online presence, liveness state (`Connected` vs `Seen`), and exact network endpoint (`hostAddress:port`). This allows malicious peers to turn mutual contacts into presence and physical network location trackers.
+
+### Root cause
+The developers assumed that salt-hashing `H(salt, id)` was sufficient privacy protection because an attacker cannot invert the hash. However, device IDs are public static UUIDs broadcast in cleartext across the LAN (see `SEC-D10-04`), allowing attackers to pre-compute `H(salt, id)` for any target.
+
+### Working fix / Recommendation
+Enforce contact mutuality in `mayShare`: only share presence about `subject` if `receiver` and `subject` are in a common active group roster (`view.rosters.any { receiver in it && subject in it }`), or if `receiver` is in `subject`'s explicit contact list.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../presence/PresenceState.kt:393`
+- docs/audit/security-2026-10-22\D10-discovery-presence.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-840 — Automatic Unauthenticated Subnet Sweep & Gateway Auto-Probe Dials Pin Rogue Hosts and Poison TOFU Trust Store for Unpaired Peers (SEC-D10-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D10-discovery-presence) — `core/network/.../AutoConnector.kt:136`
+
+### Symptoms / Vulnerability
+**[High]** Flash features automatic discovery mechanisms that dial IP addresses without a known device identity:
+  1. Hotspot Gateway Auto-Probe: `gatewayHosts` automatically dials port 45822 on the default gateway (`192.168.1.1:45822`).
+  2. Subnet Sweep (DR3): `sweepHosts` sweeps the `/24` subnet on port 45822 and automatically dials every host that answers.
+  
+  In `ConnectionPlanner.kt:168, 179`, these dials are generated with `peerDeviceId = null`. When `AutoConnector.runDial` executes, it invokes `dial(d)`, which falls through to `else -> networkImpl.connectManual(d.host, d.port)` without specifying a peer device ID.
+  
+  In `WsFlashNetwork.connectManual(host, actualPort, null)`, because `resolvedPeerDeviceId` is null, `client.connect` accepts ANY certificate presented by the remote host. After the TLS handshake completes, the remote host transmits its `FLASH_WS_HELLO` frame specifying an arbitrary `deviceId`. In `WsFlashNetwork.kt:456-475`, Flash calls `verifier.isPinned(peerDevice.id.value, deferredLeaf)`. For any device ID that has not yet been pinned in `trustStore`, `TofuPinVerifier.isPinned` executes:
+  ```kotlin
+  recordPin?.invoke(deviceId, presented)
+  ```
+  This immediately commits the rogue host's TLS key fingerprint into `trustStore` under the claimed `deviceId`, and registers the session as an active connection for that device ID.
+
+**Impact:** 1. **TOFU Pin Poisoning / Denial of Service:** A rogue host on the LAN can listen on port 45822, wait for Flash's automatic gateway probe or subnet sweep to connect, and claim the device ID of any targeted peer (e.g. Alice). Flash automatically binds and persists the attacker's key under Alice's ID. When the real Alice later attempts to connect, her TLS handshake is rejected with `PeerUnavailable` ("This device's security key does not match the one Flash trusted before"), permanently locking Alice out until the user clears app storage.
+  2. **Unsolicited Message Ingestion:** By registering an active session under the claimed ID, the rogue host can exploit `SEC-D05-01` (inbound chat text ingestion ungated by pairing) to inject spam or phishing messages directly into the victim's chat list without user interaction.
+
+### Root cause
+`DialedIdBindingTest` only tests dials where `peerDeviceId` is explicitly specified. For gateway probes and sweep hits, `peerDeviceId` is intentionally null, and Flash erroneously treats first-contact on these unsolicited probes as legitimate TOFU pinning.
+
+### Working fix / Recommendation
+Never invoke `recordPin` on dials originating from gateway probes or subnet sweep hits (`d.peerDeviceId == null`). Sessions established from unnamed probes must remain in an unpinned, ephemeral state and must never persist pins into `trustStore` until explicit user confirmation or mutual pairing v2 completes.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../AutoConnector.kt:136`
+- docs/audit/security-2026-10-22\D10-discovery-presence.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): an automatic unnamed dial passes `recordFirstUse = false`. Unit-tested in `DialedIdBindingTest`. NOT device-verified; device check SECAUD-11.
+
+
+## ERROR-839 — WebRTC DTLS-SRTP Media Transport Lacks Certificate Fingerprint Binding Against Authenticated Identity Key (SEC-D09-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D09-calls-webrtc-ptt) — `core/calling/.../FlashCallSession.kt:1465`
+
+### Symptoms / Vulnerability
+**[Medium]** WebRTC establishes media encryption using DTLS-SRTP. The underlying `PeerConnection` generates ephemeral self-signed certificates on the fly. In standard WebRTC, the certificate fingerprint is exchanged via SDP (`a=fingerprint:sha-256 ...`). However, Flash does not sign the SDP or bind the DTLS certificate fingerprint to the peer's pinned ECDSA identity public key.
+
+**Impact:** In group calls where signaling frames are forwarded across intermediate peers (mesh forwarding via `GroupJoin` and `GroupAccept`), an on-path or relay peer can tamper with SDP offer/answers or substitute the media transport endpoint without breaking signaling authentication, intercepting or injecting media streams.
+
+### Root cause
+Flash assumed that TLS transport on the WebSocket signaling link was sufficient, omitting signaling-to-media DTLS binding.
+
+### Working fix / Recommendation
+Include the DTLS certificate fingerprint in the call signaling frame, signed with the device's private identity key, and verify the signature before applying the remote SDP.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/calling/.../FlashCallSession.kt:1465`
+- docs/audit/security-2026-10-22\D09-calls-webrtc-ptt.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-838 — SwarmDriver Ingests Inbound Piece Frames Without Peer Membership Validation and Accepts Unsolicited Pieces (SEC-D08-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D08-swarm-distribution) — `core/swarm/.../SwarmDriver.kt:431`
+
+### Symptoms / Vulnerability
+**[Medium]** In `SwarmDriver.handleFrame`, frames such as `Summary`, `ManifestGet`, `Have`, `HaveAll`, and `Request` explicitly verify `groupContext.isPeerAllowed(frame.groupId, peerId)`. However, `SwarmFrame.Piece` completely omits the `isPeerAllowed` check. Furthermore, in `TransferScheduler.handlePieceArrived`:
+  ```kotlin
+  val reqKey = e.peerId to e.index
+  val reqTime = content.inFlightRequests.remove(reqKey)
+  if (reqTime != null) {
+      content.inFlightByPiece[e.index]?.remove(e.peerId)
+      requestWindow.removeInFlightBytes(pieceLen)
+  } else if (content.bitfield.get(e.index)) {
+      return
+  }
+  ```
+  If `reqTime == null` (the piece was never requested from `e.peerId`), the engine does not discard it; as long as the piece has not yet been acquired, it verifies the SHA-256 hash against the manifest and writes it to disk.
+
+**Impact:** Any connected peer (including removed members or non-members) can inject unsolicited pieces into a downloading swarm transfer. While the piece hash matches the manifest, this allows external parties to force disk I/O and participate in transfers without group authorization.
+
+### Root cause
+The engine assumed that checking piece hash integrity is sufficient to accept piece data, overlooking transport peer authorization.
+
+### Working fix / Recommendation
+In `SwarmDriver.kt:431`, enforce `if (!groupContext.isPeerAllowed(frame.groupId, peerId)) return`. In `TransferScheduler.kt`, discard unsolicited pieces unless actively requested.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/swarm/.../SwarmDriver.kt:431`
+- docs/audit/security-2026-10-22\D08-swarm-distribution.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-837 — RosterGroupGate Permits Vouched Members to Download and Serve Swarm Files Violating Documented Security Boundary (SEC-D08-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D08-swarm-distribution) — `core/messaging/.../RosterGroupGate.kt:38`
+
+### Symptoms / Vulnerability
+**[High]** In `docs/security.md` §9 and ADR-044 V2, the project explicitly establishes that vouched group members (members who paired only with the group owner, not with the local device) **"get no files in either direction (group attachments are paired-only in both directions)"**. Furthermore, `PeerTrustPolicy.mayServeSwarm(isPaired, isOrg)` strictly returns `isPaired`. However, in `RosterGroupGate.allows(groupId, peerId, kind)`:
+  ```kotlin
+  val isTrusted = if (isV2) {
+      isTrustedPeer(peerId) || isVouchedMember(groupId, peerId, peerIdentityKey(peerId))
+  } else {
+      isTrustedPeer(peerId)
+  }
+  if (!isTrusted) return false
+  if (kind == GroupTraffic.FILE_SERVE) {
+      return swarmServingEnabled(groupId)
+  }
+  return true
+  ```
+  `RosterGroupGate` allows vouched members through for both `GroupTraffic.FILE_RECEIVE` (used by `SwarmGroupContext.isPeerAllowed`) and `GroupTraffic.FILE_SERVE` (used by `SwarmGroupContext.isServeAllowed`).
+
+**Impact:** Vouched peers whom the user never paired with can download private group files and receive swarm pieces from the user. Because vouched peers have no bilateral pairing session key, chunks travel without `FSEC` application-layer encryption. Additionally, a rogue group owner can vouch an arbitrary key to exfiltrate swarm files from other group members.
+
+### Root cause
+`RosterGroupGate` treats vouched trust identically to paired trust for all traffic kinds except where explicitly differentiated.
+
+### Working fix / Recommendation
+In `RosterGroupGate.allows`, if `kind == GroupTraffic.FILE_RECEIVE || kind == GroupTraffic.FILE_SERVE`, require `isTrustedPeer(peerId)` (bilateral pairing) and explicitly disallow unvouched/vouched-only peers.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RosterGroupGate.kt:38`
+- docs/audit/security-2026-10-22\D08-swarm-distribution.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - REFUTED 2026-10-23 (ADR-226): contradicts owner decision O-5. Nothing changed.
+
+
+## ERROR-836 — Missing Binary Framing Downgrade Protection in FlashInboundRouter and Falsified FlashTransfer.isEncrypted UI Attribute (SEC-D07-05)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D07-file-transfer-1to1) — `core/engine/.../FlashInboundRouter.kt:360`
+
+### Symptoms / Vulnerability
+**[High]** In `FlashInboundRouter.kt:207-212`, Flash enforces downgrade protection for text frames by checking `if (DirectChatFamily.matches(text) && sessionKey != null) return true`, dropping unencrypted text frames from paired peers. In contrast, `routeInboundBinary` (lines 360-374) lacks any downgrade protection: if `sessionKey != null` but the sender transmits unencrypted `FLSH` binary frames instead of `FSEC` envelopes, `routeInboundBinary` silently falls through to `else { data }` and processes the unencrypted binary chunks. Furthermore, `RealFlashTransferRepository.kt:1240` sets `isEncrypted = peerDeviceId?.let { isPeerEncrypted(it) } ?: false`, determining encryption status purely based on whether a session key exists in the trust store rather than whether the binary frames were actually encrypted with `FSEC`. As a result, unencrypted file transfers from paired peers are accepted in cleartext, while the UI displays the transfer as end-to-end encrypted to the user.
+
+**Impact:** Compromise of confidentiality and integrity of file transfers; security indicator spoofing leading users to trust unencrypted transfers.
+
+### Root cause
+Audit S1b added text downgrade protection to `routeInboundText`, but an equivalent check was omitted from `routeInboundBinary`.
+
+### Working fix / Recommendation
+1. In `routeInboundBinary`, drop unencrypted `FLSH` frames from keyed peers:
+     ```kotlin
+     if (!SecureBinaryFrameCodec.isSecureFrame(data) && sessionKey != null) {
+         FlashLog.w(TAG, "Dropped unencrypted binary frame from keyed peer $peerDeviceId (downgrade)")
+         return true
+     }
+     ```
+  2. Record the actual encryption status on `FlashTransfer` based on whether the `FILE_START` and `CHUNK` frames arrived inside an `FSEC` envelope.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/engine/.../FlashInboundRouter.kt:360`
+- docs/audit/security-2026-10-22\D07-file-transfer-1to1.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - DEFERRED 2026-10-23 (ADR-226): several binary senders were not shown to encrypt; needs a sender survey and device checks.
+
+
+## ERROR-835 — Android Flash.kt Inbound Auto-Accept Omits Peer Trust Gate, Permitting Unsolicited File Intake from Unauthenticated LAN Strangers (SEC-D07-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D07-file-transfer-1to1) — `core/engine/.../Flash.kt:995`
+
+### Symptoms / Vulnerability
+**[Medium]** In Desktop Flash (`DesktopEngine.kt:2198` and `EngineProxies.kt:177-184`), the auto-accept capability is strictly governed by `shouldAutoAcceptOffer(offerTrusted, offerAuto, autoAcceptIncoming)`, which requires `peerTrusted == true`. In contrast, Android's `Flash.kt:995` executes `if (config.autoAcceptIncoming) acceptOffer?.invoke(frame.transferId)` directly inside `onOfferReceived` without checking `trustStore.isTrusted(pid)` or requiring pairing. If `autoAcceptIncoming` is enabled on Android (as highlighted in `Flash.kt` KDoc line 131), any unauthenticated stranger on the local network can transmit unsolicited files that are automatically accepted, written to disk, and injected into the chat database.
+
+**Impact:** Malicious un-paired LAN devices can push files directly into device storage without user consent or knowledge.
+
+### Root cause
+The acceptance gate in `ReceivePipeline` delays disk file creation until `acceptSession` is invoked. However, because `acceptOffer` is called immediately from `onOfferReceived` when `autoAcceptIncoming` is true, the acceptance gate is instantly bypassed on Android without any check against `trustStore`.
+
+### Working fix / Recommendation
+In `Flash.kt:995`, ensure auto-accept only triggers if the offering peer is verified as paired in `trustStore`:
+  ```kotlin
+  val isTrusted = pid?.let { trustStoreRef?.isTrusted(FlashDeviceId(it)) } == true
+  if (config.autoAcceptIncoming && isTrusted) acceptOffer?.invoke(frame.transferId)
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/engine/.../Flash.kt:995`
+- docs/audit/security-2026-10-22\D07-file-transfer-1to1.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): `Flash.kt` auto-accept requires a trusted peer. Compiled; no dedicated test. NOT device-verified.
+
+
+## ERROR-834 — Transfers Completed Without Whole-File Hash Verification (UNVERIFIABLE) Are Reported as Successful and Falsely Labeled "Verified" in UI (SEC-D07-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D07-file-transfer-1to1) — `core/transfer/.../RealFlashTransferRepository.kt:1475`
+
+### Symptoms / Vulnerability
+**[Medium]** When `WholeFileVerifier.check()` cannot read the assembled file (e.g. due to `IOException`, file locked by an antivirus scanner, or missing metadata), it returns `WholeFileCheck.UNVERIFIABLE`. In `RealFlashTransferRepository.kt:1475`, `UNVERIFIABLE` calls `onIncomingCompleted(transferId, verified = false, localPath = localPath)`. In `FlashInboundRouter.kt:708`, `failed` is computed as `wholeFile == WholeFileCheck.MISMATCH || (ioFailure != null && !chunksVerified)`, which evaluates to `false` when `wholeFile == UNVERIFIABLE`. The router therefore replies with `COMPLETE verified=true` to the sender and transitions the local transfer state to `Completed`. To compound this, both the Android UI mapper (`TransfersUiMapper.kt:46`) and Desktop UI mapper (`DesktopShell.kt:2730`) hardcode `verified = (state == DomainState.Completed)`. This causes any transfer that reaches `Completed` to be displayed with the badge "Verified", completely misleading the user when whole-file verification was actually skipped or impossible.
+
+**Impact:** Files whose whole-file integrity could not be verified are accepted as complete, acknowledged as verified to the sender, and presented to the user with a misleading "Verified" badge.
+
+### Root cause
+ADR-099 ensured that a flush/close failure (`ioFailure`) requires whole-file hash confirmation. However, when the flush succeeds but the subsequent whole-file read fails (`UNVERIFIABLE`), the logic treats the per-chunk verification as sufficient to mark the transfer `Completed`, and the UI mappers do not consult the actual verification flag.
+
+### Working fix / Recommendation
+1. Treat `WholeFileCheck.UNVERIFIABLE` as a failure condition unless whole-file hashing was explicitly disabled.  
+  2. Map `verified = (state == DomainState.Completed && transfer.errorMessage == null)` or pass a dedicated `isVerified` boolean from the domain model to `FlashTransferItemUi`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/transfer/.../RealFlashTransferRepository.kt:1475`
+- docs/audit/security-2026-10-22\D07-file-transfer-1to1.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-833 — Desktop & Dev Console Containment Sentinel Checks destDir Rather than Root, Permitting Path Escape via Pre-Existing Symlinks/Junctions (SEC-D07-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D07-file-transfer-1to1) — `desktop/.../DesktopEngine.kt:1813`
+
+### Symptoms / Vulnerability
+**[High]** In `DesktopEngine.kt:1810-1815` and `DiscoveryEngineHolder.kt:944-949`, incoming files are resolved via `val destDir = File(canonicalRoot, safeId).canonicalFile` and `val dest = File(destDir, safeRelativePath).canonicalFile`. The path traversal sentinel then asserts `require(dest.path.startsWith(destDir.path + File.separator))`. In contrast to production Android (`Flash.kt:330`), which correctly checks `require(dest.path.startsWith(canonicalRoot.path + File.separator))`, the desktop and dev console engines check containment against `destDir` instead of `canonicalRoot`. If `canonicalRoot` contains an existing symlink or NTFS junction named `safeId` pointing to an external directory (such as `~/.ssh` or `/etc`), `destDir` canonicalizes to the target of the symlink, and `dest.path.startsWith(destDir.path + File.separator)` evaluates to `true`.
+
+**Impact:** An attacker offering a transfer with a matching `transferId` can write files directly into arbitrary locations outside the designated download folder, leading to sensitive file overwrite or execution hijacking.
+
+### Root cause
+`FlashInboundRouter.kt:780` checks `FlashPathSanitizer.sanitize(transferId) == transferId`, which ensures `transferId` does not contain `/`, `\`, or `..`. However, a plain filename (e.g. `"link"`) passes sanitization unchanged. When a symlink of that name already exists in the save folder, canonicalization resolves the link target before the containment check, which incorrectly compares against `destDir` rather than `canonicalRoot`.
+
+### Working fix / Recommendation
+Update both `DesktopEngine.kt:1813` and `DiscoveryEngineHolder.kt:947` to require that `destDir.path.startsWith(canonicalRoot.path + File.separator)` AND `dest.path.startsWith(canonicalRoot.path + File.separator)`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/.../DesktopEngine.kt:1813`
+- docs/audit/security-2026-10-22\D07-file-transfer-1to1.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): canonical root, then transfer folder, then file (`isContainedInReceivedRoot` on desktop, same rule on Android). Unit-tested. NOT device-verified; device check SECAUD-08.
+
+
+## ERROR-832 — Outbox Drain Transmits Enqueued Group Messages to Removed Members Without Active Membership Check (SEC-D06-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D06-groups-rosters) — `core/messaging/.../RealFlashChatRepository.kt:6413`
+
+### Symptoms / Vulnerability
+**[Medium]** When a message is sent in a group chat, `sendGroupText` generates delivery entries in `group_deliveries` for all currently active members. If an admin or owner subsequently removes a member from the group via `removeGroupMemberLocked`, the removal logic removes the member from the roster and trust store but fails to cancel or delete pending delivery rows in `group_deliveries`. When the background outbox drain worker executes (`drainGroupOutbox`), it retrieves `pending = deliveries.pendingForMessage(item.localId)` and transmits the group message frame via `sendGroupViaPaths` directly to `delivery.memberId`. The drain path fails to check `groupGate.allows(groupId, delivery.memberId, GroupTraffic.CHAT)` or verify whether `delivery.memberId` remains an active member.
+
+**Impact:** Messages enqueued prior to or concurrently with a member's removal are transmitted over the wire to the removed member after their removal has been executed, violating post-removal confidentiality.
+
+### Root cause
+`drainGroupOutbox` assumes that membership validation performed at enqueue time in `sendGroupText` remains valid indefinitely throughout all subsequent retry attempts.
+
+### Working fix / Recommendation
+In `drainGroupOutbox`, before dispatching `sendGroupViaPaths`, check:
+  ```kotlin
+  if (!groupGate.allows(message.conversationId, delivery.memberId, GroupTraffic.CHAT)) {
+      deliveries.delete(item.localId, delivery.memberId)
+      continue
+  }
+  ```
+  Additionally, in `removeGroupMemberLocked`, explicitly purge pending delivery records for `deviceId` in `groupId`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt:6413`
+- docs/audit/security-2026-10-22\D06-groups-rosters.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-831 — Tombstone Cap Truncation (64) Permits Rollback Replay of Former Member Certificates on Newcomers (SEC-D06-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D06-groups-rosters) — `core/messaging/.../SignedGroups.kt:452`
+
+### Symptoms / Vulnerability
+**[Medium]** `SignedGroups.bundleFor` caps the number of tombstones included in full roster reconcile bundles to `GroupPolicy.MAX_BUNDLE_TOMBSTONES = 64`. If a group experiences more than 64 member removals/leaves over its lifetime, older tombstones are dropped from subsequent bundles. When a new member joins the group, its initial roster state contains only active members and the 64 most recent tombstones. If an attacker re-transmits an older owner-signed active certificate (`seq = 1, active = true`) for a previously removed member whose tombstone was pruned, the newcomer checks `val current = rows[cert.subjectId]`. Because `current == null`, `membershipUpdateWins(1, null)` returns `true`. The newcomer validates the owner's signature on the old cert and installs the removed member back as an active member in its local roster.
+
+**Impact:** A removed former member is resurrected as an active member on newly joined devices. The newcomer will accept messages from the former member, accept incoming call legs from them, and transmit outbound group messages to them.
+
+### Root cause
+`membershipUpdateWins` returns `true` whenever `existing == null`. Because the newcomer's database never received the pruned tombstone, `existing` evaluates to `null`.
+
+### Working fix / Recommendation
+1. Maintain a monotonic roster epoch or minimum sequence watermark in `GroupCharter` or `GroupSettings` that defines the lowest acceptable active member certificate sequence number, or
+  2. Maintain a cryptographic accumulator (e.g. hash tree or bloom filter of removed subject IDs) signed by the owner, or preserve tombstones persistently without truncation in `bundleFor` for all removed member IDs.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../SignedGroups.kt:452`
+- docs/audit/security-2026-10-22\D06-groups-rosters.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-830 — Member-Issued Certificate Key Substitution and Vouch Escalation Enables Non-Admin Identity Takeover (SEC-D06-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D06-groups-rosters) — `core/messaging/.../GroupSignatureRules.kt:111`
+
+### Symptoms / Vulnerability
+**[High]** When `membersMayAdd` is enabled in group settings (ADR-074, GM-9), `GroupSignatureRules.checkCert` permits any active member to issue member certificates. Line 111 marks all active member-issued certificates as `vouchable`: `val vouchable = (ownerIssued || adminIssued || memberIssued) && cert.active`. In `subjectKeyIsBound`, if `vouchable` is true, it queries `vouching?.verdict(subjectId, fingerprint(subjectKey), groupId)`. Under `VouchRules.decide` line 73, when a device is already vouched by that group (`vouchingGroups == setOf(groupId)`), it returns `VouchVerdict.ACCEPT` based on the historical assumption that "the owner re-issued the cert". Furthermore, `checkCert` does not verify whether `cert.subjectId` is already an existing member or an admin. An attacker member can forge an updated certificate for an existing member (or an admin) with a higher `seq` and an attacker-generated public key. Receiving devices accept the cert, replace the victim's public key in `group_members`, and update the vouched pin in the trust store.
+
+**Impact:** An attacker member can completely hijack the identity of any non-owner member or admin in the group, author arbitrary messages signed under the victim's name, demote admins to plain members, join group calls as the victim, and cause receiving devices to reject subsequent connections from the legitimate member due to pinned key mismatch (Denial of Service).
+
+### Root cause
+`checkCert` restricts regular members only with `if (cert.role != MemberCert.ROLE_MEMBER || !cert.active) return "issuer-privilege"`. It does not check if `cert.subjectId` already exists in `knownKey`, does not check if `cert.subjectId` is an admin (`adminLookup(cert.subjectId) != null`), and marks `memberIssued` as `vouchable`, triggering the pin replacement path in `VouchRules`.
+
+### Working fix / Recommendation
+1. In `GroupSignatureRules.kt:111`, restrict `vouchable` so that `memberIssued` certificates can NEVER vouch new pins or replace existing pins:
+     ```kotlin
+     val vouchable = (ownerIssued || adminIssued) && cert.active
+     ```
+  2. For `memberIssued` certificates, enforce that `knownKey == null` (members may only introduce completely new members, never re-certify or update existing members) and enforce that `adminLookup?.invoke(cert.subjectId) == null` and `cert.subjectId != charter.ownerId`.
+  3. In `subjectKeyIsBound`, if `knownKey != null`, mandate that `subjectKey.contentEquals(knownKey)` unless the issuer is the group founder/owner.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../GroupSignatureRules.kt:111`
+- docs/audit/security-2026-10-22\D06-groups-rosters.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - ALREADY FIXED by RVW22 F2 (commit 5ce1b407, after the audited commit). Verify with SECAUD-07.
+
+
+## ERROR-829 — Pre-Emptive DeleteForEveryone Tombstone Injection Suppresses Subsequent Legitimate Message and Call Log Ingestion (SEC-D05-05)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D05-messaging-semantics) — `core/messaging/.../RealFlashChatRepository.kt:6080`
+
+### Symptoms / Vulnerability
+**[Medium]** When `DeleteForEveryone` is received for a `messageId` that does not exist in local storage (`messageDao.getByLocalId` is `null`), both direct (line 6080) and group (line 3680) handlers insert a pre-emptive tombstone row: `MessageEntity(localId = frame.messageId, deletedAt = now, ...)`. Because the `messages` table uses `@Insert(onConflict = OnConflictStrategy.IGNORE)` with `@PrimaryKey val localId: String`, any subsequent insert of a legitimate message with that `localId` is silently ignored and dropped by SQLite.
+  This is exploitable whenever message IDs are shared or known in advance:
+  1. **Call Records:** In WebRTC calling, `callId` is exchanged during signaling (`CallWireFrame.Invite`/`Offer`). At call completion, `RealFlashChatRepository.logCallEvent` inserts the call record with `localId = callId`. An attacker who initiates or receives a call can send `DeleteForEveryone(messageId = callId)` before hanging up. When `logCallEvent` executes, SQLite drops the record, erasing all incoming, outgoing, or missed call logs.
+  2. **Predictable/Relayed IDs:** An attacker who knows an in-flight message ID can pre-emptively tombstone it, causing the recipient to drop the actual message upon arrival.
+
+**Impact:** Anti-forensics and audit trail suppression. Call history and predictable messages can be pre-emptively erased.
+
+### Root cause
+Pre-emptive tombstones were designed to handle out-of-order deletion without considering identifier collision with non-chat entities such as `callId`.
+
+### Working fix / Recommendation
+1. In `logCallEvent`, generate a dedicated UUID for `localId` (e.g. `callEventId = UuidIdGenerator.newId()`) rather than reusing the wire `callId`.
+  2. In `DeleteForEveryone`, reject pre-emptive tombstones unless the sender proves authorship (e.g., in v2 signed groups, require the author's signature over the deletion request).
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt:6080`
+- docs/audit/security-2026-10-22\D05-messaging-semantics.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-828 — Delivery Receipt Forgery Enables Silent Outbox Suppression and Premature Retraction (SEC-D05-04)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D05-messaging-semantics) — `core/messaging/.../RealFlashChatRepository.kt:6031`
+
+### Symptoms / Vulnerability
+**[Medium]** When processing a direct `MessageWireFrame.DeliveryReceipt`, `RealFlashChatRepository.onInboundWireFrame` verifies that `frame.memberId == transportPeerId`. However, it never queries the database or outbox to verify that `frame.messageId` belongs to a message actually addressed to `frame.memberId`. The repository unconditionally executes `messageDao.updateStatus(frame.messageId, "DELIVERED")` and `outboxDao.delete(frame.messageId)`. If an attacker learns or targets an in-flight `messageId` addressed to another peer (e.g. in multi-party interactions, mesh forwarding, or via eavesdropping), sending a DeliveryReceipt for that ID immediately deletes the sender's pending outbox entry and falsely marks the message as DELIVERED.
+
+**Impact:** Denial of Service / message suppression. The sender stops retrying the message, believing it was successfully delivered to the intended recipient, while the legitimate recipient never receives it.
+
+### Root cause
+The outbox design assumed `localId` is only known to the intended recipient.
+
+### Working fix / Recommendation
+In `onInboundWireFrame` for `DeliveryReceipt`, look up the message and ensure `message.conversationId == frame.memberId` before updating status or deleting from the outbox:
+  ```kotlin
+  val message = messageDao.getByLocalId(frame.messageId) ?: return
+  if (message.conversationId != frame.memberId) {
+      FlashLog.w("CHAT", "SECURITY: Delivery receipt member ${frame.memberId} does not match message recipient ${message.conversationId}, dropping")
+      return
+  }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt:6031`
+- docs/audit/security-2026-10-22\D05-messaging-semantics.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-827 — Direct Typing Indicator Ingestion Lacks Peer Trust and Identity Verification, Permitting Spoofed UI Notifications (SEC-D05-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D05-messaging-semantics) — `core/messaging/.../RealFlashChatRepository.kt:6056`
+
+### Symptoms / Vulnerability
+**[Medium]** In `RealFlashChatRepository.onInboundWireFrame` for `MessageWireFrame.TypingFrame`, group typing verifies that `transportPeerId == frame.memberId` and that the sender is an active member. However, direct 1:1 typing (`else` branch at line 6056) performs NO check on `transportPeerId == frame.memberId`, NO check on `isTrustedPeer`, and NO check on `PeerTrustPolicy.mayChat`. The repository records `convTyping[frame.memberId] = frame.memberName`, which is published directly to the conversation UI header.
+
+**Impact:** An attacker on the local network can inject typing events with spoofed names (e.g. `memberName = "Security Alert: Verify Credentials"` or spoofing legitimate contacts). The victim's UI displays the attacker-controlled string in the conversation header.
+
+### Root cause
+The validation check `transportPeerId != null && frame.memberId != transportPeerId` was placed inside `if (isGroup)` instead of being applied universally across all typing frames.
+
+### Working fix / Recommendation
+Move the transport peer identity check before the `if (isGroup)` branch, and gate direct typing on `PeerTrustPolicy.mayChat`:
+  ```kotlin
+  if (transportPeerId != null && frame.memberId != transportPeerId) return
+  if (!isGroup) {
+      val isPaired = isTrustedPeer(transportPeerId ?: frame.memberId)
+      val isOrg = effectiveIsOrgPeer(transportPeerId ?: frame.memberId)
+      if (!PeerTrustPolicy.mayChat(isPaired, isOrg)) return
+  }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt:6056`
+- docs/audit/security-2026-10-22\D05-messaging-semantics.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-826 — Legacy Group Catch-Up (SyncPush) Lacks Author Verification, Permitting Arbitrary Historical Message Forgery (SEC-D05-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D05-messaging-semantics) — `core/messaging/.../GroupFrameCodec.kt:400`
+
+### Symptoms / Vulnerability
+**[High]** In `GroupFrameCodec.kt:400`, `GroupWireFrame.SyncPush` decodes `author = fields["author"]?.ifBlank { null } ?: from`. When a node synchronizes past group history via catch-up (ADR-100), `RealFlashChatRepository.handleSyncPush` processes each pushed message. For v2 signed groups (`isV2Group`), it validates `signedGroups.verifiedAuthorLabel` against ECDSA member certificates. However, for legacy v1 groups (`!isV2Group(frame.groupId)`), signature verification is bypassed, and `handleSyncPush` never verifies that `message.from == frame.from` or that `message.from` is an active group member. A malicious member answering a catch-up request can inject arbitrary historical messages with `author = <victim_id>`, spoofing the author, sender name, timestamp, and message text.
+
+**Impact:** Complete message fabrication and impersonation in legacy groups. A malicious participant can frame other group members for defamatory, fraudulent, or criminal messages in persistent chat records.
+
+### Root cause
+Comment in `GroupFrameCodec.kt:142` notes that `author` was intended only for v2 signed pushes. However, the decoder at line 400 extracts `author` unconditionally, and `handleSyncPush` fails to assert `message.from == frame.from` for unsigned groups.
+
+### Working fix / Recommendation
+In `RealFlashChatRepository.handleSyncPush`, enforce that in legacy (unsigned) groups, the message author MUST strictly equal the relay pusher (`frame.from`), and reject any mismatch:
+  ```kotlin
+  if (!isV2Group(frame.groupId)) {
+      if (message.from != frame.from) {
+          FlashLog.w("CHAT", "SECURITY: legacy group SyncPush author mismatch (author=${message.from} pusher=${frame.from}), dropping")
+          return
+      }
+      if (!isActiveGroupMember(members, frame.groupId, message.from)) {
+          FlashLog.w("CHAT", "SECURITY: legacy group SyncPush author is not an active member (${message.from}), dropping")
+          return
+      }
+  }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../GroupFrameCodec.kt:400`
+- docs/audit/security-2026-10-22\D05-messaging-semantics.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - ACCEPTED RISK (ADR-226): legacy groups are forgeable by owner decision (ERROR-082); v2 groups verify the author. Nothing changed.
+
+
+## ERROR-825 — Inbound 1:1 Direct Chat Text Ingestion Is Ungated by Peer Trust or Pairing, Permitting Unsolicited LAN Spam and Phishing (SEC-D05-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D05-messaging-semantics) — `core/messaging/.../RealFlashChatRepository.kt:5947`
+
+### Symptoms / Vulnerability
+**[High]** Inbound 1:1 direct chat message ingestion (`MessageWireFrame.TextMessage`) in `RealFlashChatRepository.onInboundWireFrame` never enforces `PeerTrustPolicy.mayChat(isPaired, isOrg)` or validates peer trust status. Any unauthenticated device on the local network that connects to `WsTransferServer` (port 45822) can transmit `FLASH_MSG` frames. The repository unconditionally inserts the message into SQLite (`messageDao.insert`), upserts a new or unarchived direct conversation (`upsertDirectConversation`), fires system-level sound/vibration notifications (`onInboundTextMessageWithGroupTitle`), and responds with an automatic `DeliveryReceipt`.
+
+**Impact:** An attacker on the local Wi-Fi or hotspot can inject spam, display arbitrary phishing or social engineering messages, spoof sender display names (`senderName`), trigger continuous notification harassment, and exhaust device storage.
+
+### Root cause
+`PeerTrustPolicy.mayChat` was implemented in `PeerTrustPolicy.kt:12` and tested in unit tests, but production call sites were only wired into `HubChatBridge` relay paths, leaving LAN direct ingress completely unguarded.
+
+### Working fix / Recommendation
+In `RealFlashChatRepository.onInboundWireFrame` for `TextMessage`, evaluate `PeerTrustPolicy.mayChat`:
+  ```kotlin
+  val peerId = transportPeerId ?: frame.senderId
+  val isPaired = isTrustedPeer(peerId)
+  val isOrg = effectiveIsOrgPeer(peerId)
+  if (!PeerTrustPolicy.mayChat(isPaired = isPaired, isOrg = isOrg)) {
+      FlashLog.w("CHAT", "Dropped 1:1 direct message from untrusted peer $peerId")
+      return
+  }
+  ```
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../RealFlashChatRepository.kt:5947`
+- docs/audit/security-2026-10-22\D05-messaging-semantics.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): LAN `TextMessage` needs `PeerTrustPolicy.mayChat`; hub and radio bridges pass `vetSender = false`. Unit-tested in `RealFlashChatRepositoryTest`. NOT device-verified; device check SECAUD-05.
+
+
+## ERROR-824 — Dirty Buffer Reuse Without Zeroing in ByteArrayPool and ChunkBufferPool Exposes Residual Plaintext (SEC-D04-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D04-wire-protocol-codecs) — `core/common/.../ByteArrayPool.kt:57`
+
+### Symptoms / Vulnerability
+**[Medium]** `ByteArrayPool` pools 16 KiB and 32 KiB arrays for WebSocket frame parsing and network I/O, while `ChunkBufferPool` pools buffers up to 1 MiB for file transfers. When a rented buffer is released via `release(buffer)`, it is added directly to internal deques without zeroing its contents (`buffer.fill(0)`). Similarly, `acquire()` returns existing buffers with prior data intact.
+
+**Impact:** Buffers recycled through these pools frequently hold decrypted chat messages, file payloads, certificates, or session keys. If a subsequent caller rents a 32 KiB buffer for a smaller operation (e.g., reading a 256-byte frame) and fails to strictly limit slice operations to the read count, uninitialized tail bytes containing sensitive plaintext from previous connections can be leaked. Furthermore, memory scrapers or crash reports inspecting the heap obtain long-lived plaintext remnants in the pool.
+
+### Root cause
+The pool implementations were optimized purely for ART garbage collection latency reduction (mitigating Large Object Space GC pauses) without security consideration for memory scrubbing.
+
+### Working fix / Recommendation
+Wipe buffers upon release: add `buffer.fill(0)` in `ByteArrayPool.release()` and `ChunkBufferPool.release()`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/common/.../ByteArrayPool.kt:57`
+- docs/audit/security-2026-10-22\D04-wire-protocol-codecs.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-823 — Unbounded Reaction Emoji String Ingestion Enables Database Bloat and Mobile DoS (SEC-D04-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D04-wire-protocol-codecs) — `core/messaging/.../ChatTextFrameCodec.kt:163`
+
+### Symptoms / Vulnerability
+**[Medium]** In `ChatTextFrameCodec.kt`, the direct reaction codec decodes the `emoji` field directly from the wire without enforcing a maximum length, code point count, or validating that the string represents an actual emoji glyph (`emoji = f["emoji"] ?: return DecodeResult.RecognizedButInvalid`). When dispatched to `RealFlashChatRepository.kt:6120`, the method calls `applyReactionDelta(messageId, frame.emoji, frame.memberId, frame.isAdded)`. `applyReactionDelta` executes `reactionDao.upsert(ReactionEntity(messageId, emoji, ...))`.
+
+**Impact:** The composite primary key of `ReactionEntity` is `(messageId, emoji)`. Because there is no check on the character length of `emoji` or the maximum number of distinct reactions per message, an authenticated peer or organization colleague can flood a chat thread with tens of thousands of reaction frames carrying random 1 KiB strings. Each frame creates a new persistent row in the encrypted SQLCipher database. This causes catastrophic database bloat, disk storage depletion on mobile devices, query slowdowns, and `OutOfMemoryError` during conversation loading in the UI.
+
+### Root cause
+`RealFlashChatRepository` enforces `MAX_MESSAGE_TEXT_LENGTH = 16_384` for message bodies, but completely lacks length or count limits for reaction frames.
+
+### Working fix / Recommendation
+In `ChatTextFrameCodec.kt`, enforce that `emoji.length <= 16` and `emoji.codePointCount <= 4`. In `RealFlashChatRepository.kt`, cap the maximum distinct reactions per message (e.g., maximum 20 distinct emojis per message) and reject additions once the limit is reached.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/messaging/.../ChatTextFrameCodec.kt:163`
+- docs/audit/security-2026-10-22\D04-wire-protocol-codecs.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-822 — Missing Unicode Bidi Control and Zero-Width Space Sanitization Enables Visual Camouflage (SEC-D04-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D04-wire-protocol-codecs) — `core/engine/.../FlashPathSanitizer.kt:10`
+
+### Symptoms / Vulnerability
+**[High]** While `:server`'s `AnnouncementText.kt:113-120` explicitly documents and implements comprehensive filtering for Unicode bidi override/isolate controls (`U+202A..U+202E`, `U+2066..U+2069`) and zero-width characters (`U+200B..U+200D`, `U+2060`, `U+FEFF`), this protection was completely omitted from client file sanitization and message codecs. `FlashPathSanitizer.kt:10` defines `ILLEGAL_CHARS_REGEX = Regex("[\\\\/:*?\"<>|\\u0000-\\u001F\\u007F]")`, which only strips ASCII control characters and standard path separators. Similarly, `HubFileFrameCodec.kt:167` only checks `Char::isISOControl`, which does not encompass Unicode bidi or formatting characters.
+
+**Impact:** An attacker can transmit a malicious executable or script with a Right-to-Left Override (RLO) character (`\u202E`) embedded in the filename: for example, `photo_\u202Efdp.exe`. `FlashPathSanitizer.sanitize()` retains the RLO character and preserves the `.exe` extension. When displayed in the Jetpack Compose chat bubble, file transfer progress card, system notification, or desktop file manager, the text renderer reverses the display string to `photo_exe.pdf`. The recipient believes they are receiving a safe PDF document, but opening the file executes the native executable. Furthermore, display names containing zero-width spaces or bidi overrides allow undetectable visual impersonation of legitimate contacts.
+
+### Root cause
+`FlashPathSanitizer` guards against directory traversal (`..`), path separators (`/`, `\`), Windows reserved device names (`CON`, `PRN`), and ASCII control characters, but does not inspect characters in the general Unicode category `Cf` (Format characters) or the specific bidi control ranges.
+
+### Working fix / Recommendation
+Update `FlashPathSanitizer.kt` and `HubFileFrameCodec.kt` to filter all bidi control characters (`\u202A..\u202E`, `\u2066..\u2069`) and invisible/zero-width formatting characters (`\u200B..\u200D`, `\u2060`, `\uFEFF`) before validating file extensions and computing display names.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/engine/.../FlashPathSanitizer.kt:10`
+- docs/audit/security-2026-10-22\D04-wire-protocol-codecs.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): `SpoofingCharacters`, sanitizer, hub-file codec, chat sender name; Android's private sanitizer copy replaced by the shared one. Unit-tested. NOT device-verified; device check SECAUD-04.
+
+
+## ERROR-821 — Peer Unpairing Deletes Underlying TLS Pin and Fails to Terminate Active Transport Sessions or Inhibit Automatic Re-Pairing (SEC-D03-04)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D03-pairing-v2) — `core/security/.../AndroidPreferencesTrustStore.kt:48`
+
+### Symptoms / Vulnerability
+**[Medium]** When a user revokes trust for a peer, `revokeTrust` deletes the peer's stored TLS pin from the trust store if it is not vouched by a group (`pins.remove(deviceId)`). This contradicts documented security design (`docs/developer-guide/guides/pairing-and-trust.md:270`), which states that revoking trust must preserve the TLS pin. Furthermore, `revokeTrust` fails to close active WebSocket transport sessions. Finally, in `RealFlashChatRepository`, incoming 1:1 text messages do not require paired status, and if conversation history exists with an organization colleague, `maybeAutoPairColleague` immediately re-pairs the peer upon receipt of any message, overriding the user's revocation.
+
+**Impact:** 1. Deleting the TLS pin allows an attacker taking over an unpaired device ID to connect under TOFU first-use rules without triggering a `KEY_CHANGED` pin-mismatch security alert.  
+  2. An unpaired peer retains live transport WebSocket connectivity and can continue exchanging frames until the socket drops naturally.  
+  3. A user cannot unpair a compromised or unwanted organization colleague; any new incoming message silently restores paired and verified status in the local trust store.
+
+### Root cause
+`maybeAutoPairColleague` checks only `!isTrustedPeer(peerId)` and `effectiveIsOrgPeer(peerId)`. Because the database still contains past messages, it triggers auto-pairing immediately.
+
+### Working fix / Recommendation
+1. Retain the TLS identity pin upon `revokeTrust` so future connection attempts with altered keys raise `KEY_CHANGED` warnings.  
+  2. Immediately disconnect active WebSocket connections to the revoked peer.  
+  3. Record an explicit `unpairedAtMs` timestamp or tombstone in `FlashTrustStore` and require manual user action to re-pair a revoked colleague.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/.../AndroidPreferencesTrustStore.kt:48`
+- docs/audit/security-2026-10-22\D03-pairing-v2.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-820 — Absence of Pairing Attempt Rate Limiting, Failure Lockout, and Glare Handling Enables UI Takeover and DoS (SEC-D03-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D03-pairing-v2) — `core/security/.../PairingSessionStateMachine.kt:189`
+
+### Symptoms / Vulnerability
+**[Medium]** The pairing state machine restricts execution to a single concurrent session across the entire engine and enforces no rate-limiting, failure thresholds, or lockout mechanisms. In addition, when two devices simultaneously tap "Pair" on each other, a protocol glare condition occurs: both enter `AwaitingPeerNonce` and reject each other's `PAIR_REQUEST` without negotiating or resolving priority, deadlocking until timeout. Finally, on Android, `FlashPairingDialog` is presented globally over any active application screen upon receipt of an unsolicited pairing request.
+
+**Impact:** An attacker on the local network can flood `PAIR_REQUEST` frames to continuously display modal pairing dialogs on the victim's screen, disrupting application usage. Furthermore, an attacker can keep the victim's pairing engine permanently occupied in `AwaitingPeerReveal`, systematically blocking legitimate pairing attempts with other devices.
+
+### Root cause
+A 2.5-second terminal linger delay exists before `resetProtocol()`, but the state machine immediately returns to `Idle` upon expiration, allowing indefinite re-triggering.
+
+### Working fix / Recommendation
+1. Implement per-peer exponential backoff and temporary lockout (e.g., 5-minute block after 3 declined or failed attempts).  
+  2. Suppress full-screen modal pairing prompts when the user is not actively on the `NearbyDevices` tab; present unobtrusive system notifications instead.  
+  3. Implement tie-breaking glare resolution (e.g., lexicographical comparison of device IDs) when simultaneous `PAIR_REQUEST` frames cross on the wire.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/.../PairingSessionStateMachine.kt:189`
+- docs/audit/security-2026-10-22\D03-pairing-v2.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-819 — Static Ephemeral Keypair Reused Across Engine Lifetime Lacks Forward Secrecy and Cryptographic Context Binding (SEC-D03-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D03-pairing-v2) — `desktop/.../DesktopEngine.kt:328`
+
+### Symptoms / Vulnerability
+**[Medium]** The "ephemeral" ECDH keypair utilized during Pairing v2 is not ephemeral. It is generated exactly once during engine initialization (`crypto.generateEphemeralEcdhKeyPair()`) and passed as a static instance to `PairingCoordinator` / `FlashPairingCoordinator`. The same public key is advertised to all peers, and the same private key is used to compute all ECDH shared secrets. Furthermore, the HKDF key derivation function (`EcP256Ops.sessionKeyFromSharedSecret`) uses an empty salt (`FlashCrypto.EMPTY_SALT`) and a static info string (`"flash-e2e-v1"`), failing to bind the pairing nonces (`N_I`, `N_R`) or device identities into the session key.
+
+**Impact:** Re-pairing between the same two devices produces identical session keys. Compromise of the process memory holding this single keypair exposes all pairwise session keys negotiated with every peer throughout the lifetime of the application. The lack of nonce and identity binding in the KDF violates standard cryptographic hygiene (e.g., Noise Protocol / TLS 1.3 key schedule standards).
+
+### Root cause
+`DefaultFlashPairingProtocol` accepted a lambda provider (`ephemeralPublicKeyProvider: () -> ByteArray`), but both host implementations pass a lambda returning the single startup key.
+
+### Working fix / Recommendation
+Generate a fresh ECDH keypair per pairing session inside `beginRequest` and `onFrame(PairRequest)`. Update HKDF session key derivation to salt with `initiatorNonce + responderNonce` and bind `initiatorFingerprint + responderFingerprint` into `info`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/.../DesktopEngine.kt:328`
+- docs/audit/security-2026-10-22\D03-pairing-v2.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-818 — Asymmetric Human Verification in Pairing v2 Auto-Confirms on Initiator, Enabling Malicious Peer Impersonation (SEC-D03-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D03-pairing-v2) — `app/.../PairingCoordinator.kt:285`
+
+### Symptoms / Vulnerability
+**[High]** The Pairing v2 state machine and user interface implement human confirmation asymmetrically: only the *responder* is presented with an action button to confirm the 6-digit numeric comparison code. On the *initiator* device, receipt of a `PAIR_ACCEPT` wire frame triggers an automatic transmission of `PAIR_CONFIRM` (carrying the SHA-256 hash of the initiator's derived code) without requiring any local user input or confirmation that the numbers match.
+
+**Impact:** An attacker on the local network who advertises a target device's name or who lures the victim into tapping "Pair" can programmatically answer with `PAIR_NONCE`, `PAIR_ACCEPT`, and `PAIRED` frames. The initiator's device auto-accepts, marks the attacker's device as trusted and verified (`isTrusted = true`, `isVerified = true`), derives an ECDH session key, and completes the pairing with zero human verification of the 6-digit code.
+
+### Root cause
+`TofuPinVerifier` records the attacker's TLS leaf key on first connection. `PairingV2.matchesPinnedIdentity` validates that the pairing frame matches the transport TLS key, which succeeds because the attacker controls the transport connection. The cryptographic commitment guarantees that both parties agreed on the same code, but because the attacker's software automatically accepts, the out-of-band verification is completely bypassed.
+
+### Working fix / Recommendation
+Implement symmetric confirmation requiring explicit user acceptance on both sides:
+  1. Add an `AwaitingLocalDecision` state on the initiator after `PAIR_NONCE` is processed and the code is derived.
+  2. Display the 6-digit comparison code with an "Accept" / "Confirm Match" button on the initiator UI.
+  3. Transmit `PAIR_CONFIRM` only after `LocalAccept` is triggered by the initiator user.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `app/.../PairingCoordinator.kt:285`
+- docs/audit/security-2026-10-22\D03-pairing-v2.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - DEFERRED 2026-10-23 (ADR-226): changes the owner-verified pairing flow; owner decision needed.
+
+
+## ERROR-817 — Missing TLS Certificate Pinning on Client-to-Hub Transport Enables MITM by Local/Corporate CAs (SEC-D02-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D02-transport-security) — `core/enterprise/.../EnterpriseEnrollmentClient.kt:151`
+
+### Symptoms / Vulnerability
+**[Medium]** When connecting to an Enterprise Hub for device enrollment, directory lookups, mailbox fetching, and relay forwarding, the client instantiates Ktor `HttpClient(CIO)` without configuring custom certificate pins or public key pinning:
+  ```kotlin
+  public fun createDefaultClient(): HttpClient = HttpClient(CIO) {
+      install(HttpTimeout) { ... }
+  }
+  ```
+  The Ktor CIO engine relies entirely on the platform's default X.509 TrustManager (system CA root store).
+  
+  Furthermore, `server` provides a built-in `tlsMode=self` mode where it generates a self-signed P-256 certificate and logs its SHA-256 fingerprint:
+  `The certificate's SHA-256 [fingerprint] is logged at start-up so a client can pin it.` (`TlsSupport.kt:31-33`).
+  However, no client-side pinning mechanism exists in `EnterpriseEnrollmentClient` or `KtorRelayTransport`. Clients connecting to a self-signed hub immediately fail with `PKIX path building failed`, while clients connecting to a hub backed by a public/enterprise CA will implicitly trust any certificate issued by any root CA in the device trust store.
+
+**Impact:** Any adversary in possession of a trusted CA certificate (e.g. corporate TLS inspection proxies, malicious root certificates installed on managed devices, compromised public CAs) can transparently intercept, decrypt, and modify all client-hub communications. This exposes:
+  - 15-minute Bearer auth tokens exchanged during `/auth/challenge` and `/auth/verify`.
+  - Organization member directories and relay metadata.
+  - Device enrollment requests and invites.
+
+### Root cause
+End-to-end payload encryption protects message contents between paired peers, but hub authentication tokens, mailbox envelopes, online presence, and enrollment credentials rely directly on transport-layer TLS. Without certificate or SPKI pinning, transport security is subordinate to the integrity of the entire platform CA store.
+
+### Working fix / Recommendation
+1. Add an optional `expectedHubFingerprintHex` parameter to `EnterpriseHub` configuration and enrollment invites.
+  2. Configure Ktor CIO's `https` block with a custom `X509TrustManager` that enforces SPKI SHA-256 fingerprint matching against the configured hub fingerprint.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/enterprise/.../EnterpriseEnrollmentClient.kt:151`
+- docs/audit/security-2026-10-22\D02-transport-security.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-816 — Unsolicited Inbound Connections Force Unverified TOFU Pin Persistence, Enabling Pre-Emptive Key Poisoning and DoS (SEC-D02-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D02-transport-security) — `core/network/.../TofuPinVerifier.kt:49`
+
+### Symptoms / Vulnerability
+**[High]** For inbound connections, the server listener accepts connections without a pre-configured `expectedDeviceId` (`expectedDeviceId = null`, `deferPinWhenDeviceIdUnknown = true`). Once the TLS handshake finishes, the inbound peer sends a `HELLO` message declaring its `claimedDeviceId` (`JvmWsFlashNetwork.kt:498`).
+  
+  To validate the inbound peer, `inboundIdentityFailure` calls:
+  `tls.pinVerifier.isPinned(claimedDeviceId, leaf)`
+  
+  In both Android (`Flash.kt:279`) and Desktop (`DesktopEngine.kt:1224`), `tls.pinVerifier` is constructed as:
+  ```kotlin
+  TofuPinVerifier(
+      lookupPin = { id -> trustStore.get(id)?.pinnedFingerprintHex },
+      recordPin = { id, fp -> trustStore.trust(id, fp) },
+      ownFingerprintHex = ownFingerprintHex,
+  )
+  ```
+  Inside `TofuPinVerifier.isPinned()`:
+  ```kotlin
+  val known = lookupPin(deviceId)?.let { FlashPinVerifier.normalize(it) } ...
+  return if (known.isNullOrBlank()) {
+      // First connect: trust on first use and record the pin
+      recordPin?.invoke(deviceId, presented)
+      true
+  } else {
+      constantTimeEquals(known, presented)
+  }
+  ```
+  Because `lookupPin(claimedDeviceId)` is `null` for any device not yet paired or contacted, `recordPin` is **immediately invoked**, writing the attacker's presented leaf certificate fingerprint directly into the persistent `trustStore`!
+  
+  This occurs **before** any user pairing dialog, consent prompt, out-of-band verification, or registration completes. Flash device IDs are 16-character hex strings broadcast in cleartext over mDNS/NSD service announcements and Wi-Fi Direct device names. An attacker on the local network can observe a victim's device ID, connect to the victim's open listening port (45820-45829), present an arbitrary ephemeral certificate, and send `HELLO` claiming any target peer ID. Flash permanently records the attacker's key for that target ID.
+
+**Impact:** 1. **Denial of Service:** When the legitimate peer later attempts to connect or be contacted, `lookupPin` returns the attacker's poisoned pin. The legitimate connection is immediately rejected with a hard `KEY_CHANGED` / `Mismatch` security exception.
+  2. **Irreversible Lockout:** Flash's trust store provides no user-facing UI to unpin or delete unpaired TOFU pins without wiping the entire application database.
+  3. **Pairing Interception:** An attacker can pre-seed their own key for an intended contact before pairing occurs.
+
+### Root cause
+The post-handshake check in `inboundIdentityFailure` was introduced to prevent an unauthenticated peer from claiming a *known* contact's ID. However, because it relies on `TofuPinVerifier.isPinned()`, which has side-effecting `recordPin` behavior on first use, unsolicited inbound connections weaponize the check to poison unknown IDs.
+
+### Working fix / Recommendation
+Separate *pin verification* from *pin recording*. For inbound connections, unknown peers must not be automatically recorded into persistent trust storage. Instead, inbound connections from unpinned devices must operate in an uncommitted/tentative state until explicit user confirmation or successful Pairing v2 / Group Proof completion occurs.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../TofuPinVerifier.kt:49`
+- docs/audit/security-2026-10-22\D02-transport-security.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): an unsolicited inbound first contact is accepted but not recorded; `ObservedPeerPins` keeps the key in memory for the pairing check. Unit-tested; `DesktopPairingLoopbackTest` passes. NOT device-verified; device check SECAUD-02.
+
+
+## ERROR-815 — Trust Manager Verifies Fingerprint on Any Chain Element Rather than Leaf, Enabling Impersonation via Chain Appending (SEC-D02-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D02-transport-security) — `core/network/.../TofuX509TrustManager.kt:103`
+
+### Symptoms / Vulnerability
+**[Critical]** In `TofuX509TrustManager.verify()`, when verifying a peer during a connection where `expectedDeviceId` is known (such as an outbound dial to a discovered or paired contact), the trust manager iterates over every certificate in the presented chain:
+  ```kotlin
+  val pinned = chain.any { cert ->
+      val fp = fingerprintHexOrNull(cert)
+      fp != null && pinVerifier.isPinned(deviceId, fp)
+  }
+  if (!pinned) {
+      throw rejected(role, leafFp, "no chain certificate matches the pin for device '$deviceId'")
+  }
+  ```
+  In TLS, the peer must prove possession of the private key corresponding to `chain[0]` (the leaf certificate) during the `CertificateVerify` handshake exchange. However, Flash uses self-signed peer certificates without Certificate Authority (CA) validation (`getAcceptedIssuers()` returns an empty array).
+  
+  Because `chain.any` is satisfied if *any* certificate in the chain matches the pin, an active network attacker A1 can generate their own ephemeral key pair and leaf certificate (`cert_attacker`), append the victim's genuine public certificate (`cert_victim`, which is publicly broadcast in mDNS or discoverable over the network) as `chain[1]`, and present `[cert_attacker, cert_victim]`.
+  
+  `TofuX509TrustManager` tests `cert_victim` against `pinVerifier.isPinned(deviceId, fp)`, which returns `true`. The handshake succeeds because the attacker proves possession of `cert_attacker`'s private key.
+  
+  Furthermore, when `expectedDeviceId` is supplied, `deferPinWhenDeviceIdUnknown` is `false`, so `onLeafObserved(leafFp)` is never called. Consequently, `deferredPeerLeafFingerprintHex` remains `null`. In `JvmWsFlashNetwork:375-395`, when `leaf == null`, the application performs no post-handshake leaf binding check, believing the trust manager already validated the leaf! The TLS session is established under the attacker's private key, granting the attacker full impersonation and decryption capabilities.
+
+**Impact:** An active attacker on the local network or Wi-Fi Direct path can completely impersonate any paired contact when the victim dials that contact. The attacker intercepts the TLS connection, establishes an encrypted session with their own keys, receives all sent files or messages, and can inject arbitrary payloads without triggering a pin mismatch error.
+
+### Root cause
+`TofuX509TrustManager` computes `leafFp = fingerprintHexOrNull(chain[0])` on line 91, but only uses it for exception messages; on lines 103-106, it evaluates `chain.any` instead of strictly checking `chain[0]`. Because Flash does not build or verify CA trust chains, intermediate/chained certificates must never be evaluated for identity pinning.
+
+### Working fix / Recommendation
+In `TofuX509TrustManager.kt`, strictly verify the leaf certificate (`chain[0]`) and reject any connection where `chain[0]` does not match the pinned fingerprint for `deviceId`:
+  ```kotlin
+  val isLeafPinned = pinVerifier.isPinned(deviceId, leafFp)
+  if (!isLeafPinned) {
+      throw rejected(role, leafFp, "leaf certificate does not match the pin for device '$deviceId'")
+  }
+  ```
+  Additionally, disallow multi-certificate chains in P2P mode by enforcing `require(chain.size == 1)`.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/network/.../TofuX509TrustManager.kt:103`
+- docs/audit/security-2026-10-22\D02-transport-security.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN - FIXED IN CODE 2026-10-23 (ADR-226): leaf-only pin check, unit-tested (the new test is written to fail on the old `chain.any`; the old code was not rerun to prove it). NOT device-verified; device check SECAUD-01. Do not mark RESOLVED until it passes.
+
+
+## ERROR-814 — Hub Server Delegate Private Key Stored Unencrypted in Base64 on Disk (SEC-D01-04)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D01-identity-keys) — `server/.../KeyFiles.kt:187`
+
+### Symptoms / Vulnerability
+**[Medium]** The Hub Server maintains an offline root key (`root-identity.pk8`) and an online delegate key (`server-identity.pk8`). While the offline root key is encrypted with PBKDF2-HMAC-SHA256 (>=600,000 iterations) and AES-256-GCM (`RootKeyFile.encrypt`), the online server delegate private key is stored as unencrypted Base64-encoded PKCS#8 bytes in `<dataDir>/server-identity.pk8`. The file relies solely on operating system file permissions (`SecureFiles.writeOwnerOnly`: POSIX mode `0600` or Windows NTFS ACL).
+
+**Impact:** Anyone who obtains read access to the server's data directory (via backup dumps, unencrypted filesystem snapshots, container exports, or backup operator access) immediately obtains the hub's private delegate key. With this key, an attacker can issue valid device certificates within the delegation's scopes (`enrol:member`, `enrol:dept_admin`, `revoke:member`), decrypt relay payloads, and impersonate the enterprise hub.
+
+### Root cause
+Filesystem ACLs and POSIX permissions protect only against unprivileged users on a live running host; they do not protect against backup theft, offline storage analysis, or volume imaging.
+
+### Working fix / Recommendation
+Provide an option to encrypt `server-identity.pk8` using a startup passphrase environment variable (`FLASH_SERVER_KEY_PASSPHRASE`) or integrate with a hardware security module / KMS (PKCS#11 / TPM / cloud KMS).
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `server/.../KeyFiles.kt:187`
+- docs/audit/security-2026-10-22\D01-identity-keys.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-813 — Linux Secret Service Keyring Transport Transmits Master Key in Plaintext over D-Bus (SEC-D01-03)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D01-identity-keys) — `desktop/.../DbusSecretKeyStore.kt:86`
+
+### Symptoms / Vulnerability
+**[Medium]** When storing and retrieving the 32-byte master encryption key from the Linux Secret Service daemon (GNOME Keyring / KWallet), `DbusSecretKeyStore.openSession` negotiates the `"plain"` session algorithm. Although the D-Bus session bus communicates over Unix domain sockets, all traffic on the session bus is visible to any process running within the desktop session with access to the bus address (e.g. tools executing `dbus-monitor --session` or unconfined desktop applications).
+
+**Impact:** A local process or script running in the user's graphical session can listen to D-Bus messages and capture the 32-byte master encryption key in cleartext during application startup or key creation, granting full decryption capability for `id-key.bin` and `db-key.bin`.
+
+### Root cause
+Unix domain socket file permissions isolate across UIDs, but do not provide process-level isolation among applications running under the same user UID on the D-Bus session bus.
+
+### Working fix / Recommendation
+Implement the Secret Service specification's encrypted session mode (`dh-ietf1024-sha256-aes128-cbc-pkcs7`) to encrypt the master key in transit across the D-Bus socket between the application and the keyring daemon.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `desktop/.../DbusSecretKeyStore.kt:86`
+- docs/audit/security-2026-10-22\D01-identity-keys.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-812 — Windows DPAPI Protection Lacks Secondary Entropy and User Credential Binding (SEC-D01-02)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D01-identity-keys) — `core/security/.../IdentityKeyVault.kt:44`
+
+### Symptoms / Vulnerability
+**[Medium]** On Windows desktop installations, `IdentityKeyVault.Dpapi` invokes JNA's `Crypt32Util.cryptProtectData(plain)` to protect the identity private key (`id-key.bin`), the chat database key (`db-key.bin`), and pairwise session keys. JNA's default implementation calls the Win32 `CryptProtectData` function with default flags (0, meaning `CRYPTPROTECT_CURRENT_USER`) and `pOptionalEntropy = null`. Because no secondary application-specific entropy or user credential binding is supplied, any code running under the same Windows user account (including untrusted scripts, macros, or malware) can invoke `CryptUnprotectData` on these files and obtain the plaintext keys.
+
+**Impact:** Any background process, malware, or unauthorized script running with standard user privileges in the same Windows desktop session can decrypt Flash's private identity key and the SQLCipher database passphrase, enabling full cloning of the user's cryptographic identity and unauthorized decryption of message history.
+
+### Root cause
+Windows DPAPI `CRYPTPROTECT_CURRENT_USER` scope does not isolate processes within the same user session. Without `pOptionalEntropy`, any process possessing the file bytes can decrypt them via standard Windows API calls.
+
+### Working fix / Recommendation
+Provide an application-specific entropy byte array (`pOptionalEntropy`) to `CryptProtectData` derived from an installation secret or prompt the user for an optional master PIN/password to bind DPAPI decryption.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/.../IdentityKeyVault.kt:44`
+- docs/audit/security-2026-10-22\D01-identity-keys.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
+
+## ERROR-811 — Linux Key Vault Fallback Stores Master Key Alongside Encrypted Identity and Database Keys (SEC-D01-01)
+
+### Date
+2026-10-23
+
+### Area
+Security Audit (D01-identity-keys) — `core/security/.../KeyFileVault.kt:45`
+
+### Symptoms / Vulnerability
+**[High]** When Flash runs on Linux without an active D-Bus Secret Service (e.g. headless servers, container environments, minimal desktop window managers, SSH sessions, or when a user dismisses the keyring unlock prompt), `DesktopVaults.forCurrentOs` falls back to `FileMasterKey`. This creates a random 32-byte AES key and saves it to `<stateDir>/identity/vault.key` with POSIX permissions `0600`. The device identity key is encrypted with AES-256-GCM using this key and stored in `<stateDir>/identity/id-key.bin`. In addition, the chat database passphrase (`ChatDbKeyStore`) is protected by the same vault and stored in `<stateDir>/chat/db-key.bin`. Because both the encryption key and the encrypted payload reside inside the same state directory (`~/.local/share/flash/`), any backup, archive, or volume copy of the application directory contains both the lock and the key.
+
+**Impact:** Any entity that gains read access to the state directory (e.g. via system backup archives, cloud drive sync, Docker volume inspection, forensic image, or shared filesystem) can immediately read `vault.key`, decrypt `id-key.bin`, extract the raw PKCS#8 private identity key, and decrypt `db-key.bin` to access all local chat history without needing to crack any password or access an OS keystore.
+
+### Root cause
+POSIX `0600` permissions only prevent unauthorized read operations by distinct local UID users on an active Linux OS kernel. They offer no protection once the directory is archived, copied, backed up, or accessed offline.
+
+### Working fix / Recommendation
+Do not silently fall back to an unencrypted file master key in the same directory. When no OS keyring is available, require the user to configure a master passphrase (derived via Argon2 or PBKDF2 as done in `RootKeyFile.kt`) to encrypt the master key, or store `vault.key` outside the state directory with distinct access controls.
+
+### Verification
+Verifier result: survived. Regression test required in test suite.
+
+### Related files
+- `core/security/.../KeyFileVault.kt:45`
+- docs/audit/security-2026-10-22\D01-identity-keys.md
+- docs/audit/security-2026-10-22/REPORT.md
+
+### Status
+OPEN
+
 ## ERROR-810 — Desktop: error messages and the "verify this device" card were painted behind the chats (owner report)
 
 ### Date
@@ -27,6 +2171,58 @@ Both are now the last siblings of the shell: above the layout, the push-to-talk 
 OPEN (until the device check)
 
 
+
+## ERROR-760 — The Android screen-capture helper did not compile: a fork track must refuse `switchCamera`, and `:core:calling` androidMain must opt in to `FlashInternalApi` for `FlashLog`
+
+### Date
+2026-10-24
+
+### Area
+Vendored webrtc-kmp fork / `:core:calling` androidMain (ADR-102 Android presenter)
+
+### Symptoms
+Two compile errors on the first build of the new Android presenter and its provider:
+
+```text
+e: .../third_party/webrtc-kmp/webrtc-kmp/src/androidMain/kotlin/com/shepeliev/webrtckmp/AndroidScreenCapture.kt:191:10
+   Class 'ScreenVideoStreamTrack' is not abstract and does not implement abstract member:
+     suspend fun switchCamera(deviceId: String? = ...): Unit
+e: .../core/calling/src/androidMain/kotlin/com/transfer/flash/core/calling/ScreenCapture.android.kt:88:9
+e: .../core/calling/src/androidMain/kotlin/com/transfer/flash/core/calling/ScreenCapture.android.kt:88:18
+   This is an internal Flash API and should not be used outside the Flash library modules.
+```
+
+### Environment
+- Windows 11, JDK per `gradle.properties`, Gradle 9.5, AGP 9.3.1, Kotlin 2.2.x, compileSdk 36 / minSdk 24
+- Builds through `tools\flash-gradle.cmd` (AGENTS section 36); no device involved (compile-only errors)
+
+### Root cause
+1. `VideoStreamTrack` is an interface with `suspend fun switchCamera(deviceId: String?)`, and `RenderedVideoStreamTrack` (both targets) is
+   abstract and does not implement it: every concrete track must. A screen capture has no second camera, so the new
+   `ScreenVideoStreamTrack` has to say so explicitly, exactly like `RemoteVideoStreamTrack` does.
+2. `FlashLog` is annotated `@FlashInternalApi` (`@RequiresOptIn`, `ERROR` level). `:core:calling`'s androidMain does not opt in module-wide;
+   its existing android files opt in per declaration (`@OptIn(...)` on a class, as in `FlashWebRtcEngine.kt`), so a new file must do it too.
+
+### Failed attempts
+None — both were identified from the compiler message.
+
+### Working fix
+1. `ScreenVideoStreamTrack` overrides `switchCamera` and logs via `org.webrtc.Logging.e` (imported), with the KDoc explaining that a screen has
+   no second camera.
+2. A file-level `@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)` at the top of
+   `core/calling/src/androidMain/.../ScreenCapture.android.kt`.
+
+### Verification
+`tools\flash-gradle.cmd :core:calling:compileAndroidMain` green; then `:core:calling:testAndroidHostTest`, `:ui:callui:jvmTest`,
+`:ui:callui:testAndroidHostTest`, `:app:compileDebugKotlin` and `:desktop:compileKotlinJvm` all green. Nothing device-verified.
+
+### Related files
+- `third_party/webrtc-kmp/webrtc-kmp/src/androidMain/kotlin/com/shepeliev/webrtckmp/AndroidScreenCapture.kt`
+- `core/calling/src/androidMain/kotlin/com/transfer/flash/core/calling/ScreenCapture.android.kt`
+- `third_party/webrtc-kmp/MODIFICATIONS.md`
+
+### Status
+RESOLVED (compile-time; not a device behaviour, so no device test is owed for it)
 
 ## ERROR-759 — RVW22 CRITICAL/HIGH findings checked and found NOT to be defects (F6, F23, F32)
 
@@ -12166,3 +14362,253 @@ second refresh really was started.
 
 ### Status
 RESOLVED (test-only; the product behaviour was always correct).
+
+## ERROR-869 - Radio chat: one text became three on the other station, the bubble waited for an ACK it had already received, and a restarted phone silently sent frames the peer drops
+
+> Number note: this first bore the next free number after the file's tail (742), but 742/743 are already used above for the swarm
+> greeting work. Renamed to 869 on 2026-10-28; the analysis below is unchanged.
+
+### Date
+2026-10-28
+
+### Area
+Radio gateway / radio chat (`:core:radio`, `:core:messaging` radio bridge, desktop host)
+
+### Symptoms (owner's two-radio run, first hardware test of radio chat)
+- Android: Wi-Fi off, mobile data off. Radio voice worked (talk + hear) on the same radio.
+- Owner left the Radio screen, opened the chat, sent text from **Android**: the **desktop received it**.
+- The Android's bubble stayed on "waiting for acknowledgement"; the desktop appeared to show the text **three times**.
+- Sending from the **desktop**: the message never arrives on Android; the desktop shows **one tick** (written, not delivered).
+
+### Root cause (confirmed from both logs, 2026-10-28)
+
+Three defects, one of them a real duplicate-message bug:
+
+1. **A retry was a different message.** `RadioChatEngine.sendText` re-encodes on every call, so each retry carried a new
+   counter, and the receiving engine names an inbound text `rad-<first counter>`. The repository's insert is idempotent by
+   `localId`, but the id differed per retry, so one text was stored **three times**. Both logs agree: the phone transmitted
+   `radio.tx.text bytes=2` at 09:43:02.594, 09:43:04.037 and 09:43:06.699 (and `bytes=3` four times, `bytes=4` three times);
+   the desktop logged `radio.rx.text ... duplicate=false` and `Inbound chat ... 2 chars` for each of them.
+2. **The retry ladder is LAN speed.** The phone got its ACKs (`radio.rx.ack ... rttMs=3833`, `4185`, `9338`, `9411`, `9767`)
+   long after the outbox had already re-sent at 1.4 s and 2.6 s. So the duplicates were guaranteed, not bad luck.
+3. **A restart silently reverted to Profile A.** After the phone's 09:56 restart its profile was back to the default
+   `PROFILE_A_PLAINTEXT_SIGNED`, and `RadioSession.ingestSigned` drops signed frames unless the sender's identity public key
+   was registered with `addBroadcastSender` — which **no host ever calls**, and a pairing stores only the key's **fingerprint**,
+   so it cannot be registered either. The desktop logged ten `radio.rx.dropped reason=SIGNED_NOT_ENABLED` at 10:04-10:05: the
+   phone was transmitting frames nobody could read, and (correctly, by design) nothing was answered on air.
+
+The desktop's transmit is **not** broken: its `radio.tx.ack` frames reached the phone (`radio.rx.ack` on the phone names the
+desktop's peer id), so the Windows COM-port link keys the radio. The "desktop send does nothing" observation has no
+`radio.tx.text`/`radio.tx.fail`/`radio.path` line in the captured window at all — the desktop log ends at 10:05:08 and the
+phone export at 10:02:18, i.e. the attempt was probably never inside either capture. A `radio.path` probe now records the
+decision, so the next run answers it instead of guessing.
+
+### Fix (in code, unit-tested, not yet re-run on hardware)
+- `RadioChatEngine` keeps the encoded frames of a sent message (`SentFrames`, bounded, 5 min) and a retry puts the **same
+  counters** back on the air; the receiver's `peer:firstCounter` dedup then recognises it and only re-acks it. `radio.tx.text`
+  gained `retry=true|false`. Test: `radchatU12_aRetryResendsTheSameFrameSoThePeerKeepsOneMessage`.
+- `RealFlashChatRepository` re-arms a radio-carried message after `RADIO_RESEND_MS` (25 s) instead of the LAN ladder.
+- `RealFlashChatRepository.sendDirectViaPaths` emits `radio.path` (`sent`, `refused`, `no_bridge`, `not_reachable`) whenever
+  the radio is the last path, so a silent no-send is visible in a log.
+- `RadioChatEngine.sendText` **refuses** Profile A with a sentence ("Radio chat needs the encrypted profile (Profile M)…")
+  instead of putting unverifiable frames on the air. Test:
+  `radchatU08_profileARefusedBecauseAFlashStationCannotVerifySignedFrames`.
+- **Follow-up, not built:** storing each paired peer's identity public key at pairing time would make Profile A verifiable and
+  would let a restart keep working without re-confirming Profile M.
+
+### Environment
+- Station 1: Android phone (Flash, `dev`, build of 2026-10-28 with the radio delivery note), Wi-Fi and mobile data OFF.
+- Station 2: Windows desktop (Flash desktop), radio on a Windows COM port (SPP).
+- Two handheld radios, KISS TNC enabled on both, same channel. Voice verified working both ways on the same pair.
+
+### What the symptoms already prove
+- RF, both radios, both TNCs, the channel and the pairing key are good **in the Android -> desktop direction** (the desktop
+  decrypted and displayed an AEAD-sealed Profile M text).
+- The desktop's **receive** path (COM port read, KISS decode, AEAD open, chat insert) works.
+- The desktop did **not** get an ACK for its own message and the Android did not get the desktop's text, so the desktop's
+  **transmit** path is the prime suspect (`JvmSerialPortCatalog.open` opens the port and never asserts DTR/RTS; the Android link
+  is an RFCOMM SPP socket, which has no such line state).
+
+### Not proven yet (do not "fix" before the evidence arrives)
+- Whether the Android's TNC **heard** the desktop's frame at all (`PROBE radio.rx.*` / `radio.rx.dropped` on the Android).
+- Whether the desktop's driver actually **wrote** anything (`PROBE radio.tx.text` on the desktop, `txFrames`).
+- Whether the three copies on the desktop were one message stored three times (a real defect) or the owner pressing send three
+  times. Note the receiver is idempotent on the message id (`MessageDao.insert` IGNORE on `localId`), so three rows require
+  three distinct ids.
+
+### Evidence needed (next run)
+- Android: Settings -> Export logs (`session.header` + the `PROBE` lines).
+- Desktop: `C:\Users\<user>\.flash\desktop.log` (overwritten per launch).
+- Look for: `radio.tx.text`, `radio.tx.ack`, `radio.rx.text`, `radio.rx.ack`, `radio.rx.dropped`, `radio.link.up/down`,
+  `radio.tnc.params`.
+- Interpretation: no `radio.rx.*` and no `radio.rx.dropped` on the Android means nothing reached its TNC (TX/link side);
+  `radio.rx.dropped reason=UNKNOWN_SENDER|AUTH_FAILED` means the frame arrived but could not be attributed (crypto/label side).
+
+### Status
+FIXED IN CODE 2026-10-28 (defects 1-3 above; unit tests green); **NOT re-run on hardware yet**. The database of the run's desktop
+should still be checked for the duplicate rows (they are real rows, not a UI artefact), and RADCHAT-DEV01 must be repeated.
+
+### Related files
+- `core/radio/src/jvmMain/.../link/JvmSerialPortCatalog.kt` (desktop COM port: no DTR/RTS assertion)
+- `core/radio/src/commonMain/.../chat/RadioChatEngine.kt` (probes, lanes, ACK)
+- `docs/plans/RADIO-DATA-INTEGRATION.md` section 9 (runbook)
+
+### Round 2 - second hardware run, 2026-10-28 11:05-11:16 (external append point)
+
+#### What the run proved
+- **The duplicate fix works.** The desktop logged `radio.rx.text peer=adb2d87d bytes=2 duplicate=false signed=false` and
+  `radio.rx.text ... bytes=7 duplicate=false signed=false` - one line per text, one bubble each, and one
+  `radio.tx.ack` per text. The phone logged `radio.tx.text ... retry=false` once per send. `signed=false` means the
+  frames were Profile M (sealed), i.e. the phone was on Profile M and the desktop decrypted them.
+- **The 25 s radio resend spacing works:** the phone's ACKs came back at `rttMs=3394` and `3490` and no third copy was
+  sent.
+- **A message could be killed for ever by a link outage.** Message `1b5fe2e0` was refused at 11:07:11, 12, 14, 18, 26
+  and 42 (six `radio.path ... result=refused` while the radio link was being re-established: `radio.link.attempt
+  strategy=insecure-sdp result=ok` at 11:06:31 and 11:07:45 with no `radio.link.up` after either). Two texts sent after
+  that (11:08:26, 11:08:43) went through normally, yet `1b5fe2e0` was still refused at 11:09:14 and 11:10:14 - 60 s
+  apart, the outbox's maximum backoff. The bridge's hidden five-attempt budget had been spent on "radio not connected",
+  and `RadioChatBridge` refuses past it before it ever calls the engine, so no later attempt could succeed.
+
+#### Fixes in round 2 (in code, unit-tested, not yet re-run on hardware)
+- `RadioChatBridge`: a gateway that is off or not connected **no longer counts as an attempt**, `NotConnected` from the
+  engine gives the attempt back, a successful send clears the count, and the five-attempt cap is **deleted**. The
+  single give-up rule is the outbox's own wall-clock budget (30 min, `OUTBOX_GIVE_UP_AFTER_MS`), as ERROR-026 decided
+  for LAN, instead of a second, hidden budget that a two-minute outage can burn. Test:
+  `testSendDirect_gatewayOutageDoesNotBurnTheRetryBudget` (six refused attempts with the link down, then one successful
+  send, no `onMessageFailed` during the outage).
+- `RadioChatBridge` emits `radio.send.fail` with `reason` (`gateway_off`, `not_connected`, `too_long`, `attachment`,
+  `authorisation`, `unreachable`, `failed`) and `attempt`. `radio.path result=refused` alone could not say which of those
+  it was, which is what made this run hard to read.
+- `radio.path` now carries `gateway` and `connected`, so `not_reachable` with `gateway=true connected=true` is "this peer
+  has no radio pairing key on this device" rather than "the radio is down".
+- `RealFlashChatRepository` emits `chat.path` (`lan`, `hub`, `radio`, `radio_refused`, `none`) once per 1:1 text
+  attempt. The desktop's own sends produced **no line at all** in this run - not `radio.path`, not `radio.tx.text` - so
+  the send path (or a stale desktop build) could not be told apart from a silent refusal. This line answers it: no
+  `chat.path` for a message that is visibly in the outbox means the send path never ran.
+
+#### Still unproven (needs the next run, with both apps rebuilt)
+- Why the desktop's own send produced nothing. Candidates, in order: (a) the desktop binary was older than the probe
+  build, (b) the message never left the outbox, (c) the LAN sink claimed success. `chat.path` names (b) vs (c), and
+  `radio.send.fail` names the refusal if the radio step ran.
+- Two `radio.link.attempt ... result=ok` with no matching `radio.link.up` and no `radio.link.down` (11:06:31,
+  11:07:45): the catalog found a working strategy but the driver never reported the link up. That window is exactly
+  when `1b5fe2e0` was refused as "not connected", so the reconnect produced an unusable link for about 100 s. Worth a
+  probe after the driver installs a link, and a `reason` when it does not.
+
+#### Status after round 2
+FIXED IN CODE 2026-10-28 (round 2: attempt budget, refusal reasons, path probes); **NOT re-run on hardware yet**.
+`RADCHAT-DEV01` (one text, one bubble, `retry=false`, ACK, `radio.path result=sent`) still owed, plus the new
+`RADCHAT-DEV03` (outage during a send) and `RADCHAT-DEV04` (desktop rebuild, read `chat.path`).
+
+#### Round 3 (2026-10-28, evening) - the desktop received and ACKed but never transmitted, and the log said `path=hub`
+
+**What the owner reported:** "its the same delivrery works but the desktop cant send", i.e. Android→desktop radio texting works and
+the desktop's ACKs reach the phone ("it shows delivered on the android"), while desktop→Android does not arrive. This round had a
+**rebuilt desktop** and the new probes, so the send path is now visible.
+
+**Evidence** (`C:\Users\KaliOxygen\.flash\desktop.log`, 12:15-12:20, both stations with KISS TNC enabled):
+
+```text
+12:15:51.773 I/PROBE: org.snapshot.applied org=32DB9CC3... version=14 membersCount=0 revocationsCount=0 signer=hub-root
+12:15:51.778 I/PROBE: org.lease.state state=VALID
+12:15:52.709 I/PROBE: radio.link.up link=COM15_@115200 attempt=1
+12:19:06.919 I/PROBE: radio.rx.text peer=adb2d87d bytes=2 duplicate=false signed=false
+12:19:06.923 I/PROBE: radio.tx.ack  peer=adb2d87d
+12:19:27.757 I/PROBE: chat.path peer=adb2d87d message=e624c8e2 path=hub
+12:19:28.748 I/PROBE: chat.path peer=adb2d87d message=e624c8e2 path=hub
+12:19:44.428 I/PROBE: chat.path peer=adb2d87d message=3cbd47e9 path=hub
+12:19:45.437 I/PROBE: chat.path peer=adb2d87d message=3cbd47e9 path=hub
+12:19:51.802 I/PROBE: radio.rx.text peer=adb2d87d bytes=4 duplicate=false signed=false
+12:19:51.803 I/PROBE: radio.tx.ack  peer=adb2d87d
+```
+
+**Root cause:** not Bluetooth, not KISS, and not the desktop build. `chat.path path=hub` is the answer: `sendDirectViaPaths` asked
+`HubChatBridge.canCarry(target)` (relay usable **and** the directory lists the peer - the desktop's `HubPeerDirectory` resolved the
+phone through `lookupPerson`, although the org snapshot itself reported `membersCount=0`), the hub took the frame, `sendDirect`
+returned true, and the method returned **before** the radio step. `canCarry` does not mean "delivers now": it also covers the hub's
+mailbox, which is what the hub does for an enrolled colleague with no live relay session. The text therefore sat in a server mailbox
+while the radio link was up and idle. Two `chat.path` lines per message are the outbox drain and its retry, both down the same path.
+The hub never sent a verdict, and there was no probe for one, so "held in a mailbox" and "delivered" were indistinguishable.
+
+**Fix (ADR-229):** the hub outranks the radio **only when it reports the peer online** (`EnterpriseHub.hubOnlinePeerIds`, read
+through a synchronous mirror so path selection never waits on a collector). Order is LAN → hub (live session) → radio → hub
+(mailbox). A permanently refused radio frame (too long, attachment, unconfirmed Profile M) still ends the message; a temporary one
+(link down) falls through to the mailbox. If the radio carried a message once and no ACK came back, the next attempt also deposits it
+with the hub (receivers de-duplicate by message id), so a peer whose radio is off is not stranded.
+
+**Probes added:** `chat.path` gained `hub_mailbox`; `hub.ack` records the hub's verdict (`DELIVERED`, `HELD`, `UNDELIVERABLE`,
+`QUOTA`, `REFUSED`, `EXPIRED`, `DROPPED`); `hub.online` records what the presence poll answered (`read`/`unreadable`, `count`).
+
+**Verified:** `:core:messaging:compileKotlinJvm`, `:core:enterprise:compileKotlinJvm` and the three new path-order tests in
+`RealFlashChatRepositoryTest` (radio wins when the hub cannot deliver now; hub wins when it reports the peer online; a colleague the
+radio cannot reach still gets the mailbox) — `testAndroidHostTest` for that class: 102 tests, 0 failures. Mutation-checked: dropping
+the `target in hubOnlineSnapshot()` condition makes the radio test fail, and restoring it turns the class green again. **NOT re-run on
+hardware.**
+
+**Status after round 3:** FIXED IN CODE 2026-10-28 (ADR-229); device check `RADCHAT-DEV06` owed. ERROR-869 stays OPEN until a
+desktop text arrives on the phone with `chat.path path=radio` and `radio.tx.text` in the same log.
+
+---
+
+## ERROR-870 — Radio chat: a retry of an already-received text can never be acknowledged (lost ACK strands the message)
+
+### Date
+2026-10-30
+
+### Area
+Radio chat / retransmission and ACK (`:core:radio`)
+
+### Symptoms
+A text whose cryptographic ACK was lost on the air is retried every `RADIO_RESEND_MS` (25 s) by the outbox, because the sender never
+sees a receipt. Each retry is the same frame (the fix for ERROR-869), so the receiver's 64-wide anti-replay window classifies it
+`DUPLICATE` and `RadioSession.ingest` returned `RadioIngest.Dropped(REPLAY, "duplicate")`: **no ACK was sent and nothing was
+transmitted**. The sender retried until `OUTBOX_GIVE_UP_AFTER_MS` (30 min) and then showed **Failed**, while the peer had the text all
+along. A single lost segment was equally unrecoverable: its message could never complete, so it never got an ACK either.
+
+The KDoc on `RadioChatEngine.SentFrames` and the comment in `radchatU12` both claimed the receiver "re-acks" a retry. It did not —
+the claim was never true, only untested.
+
+### Environment
+Found by reading the code during the 2026-10-30 review of the uncommitted tree; not reproduced on hardware. Same two radios as
+ERROR-869.
+
+### Error
+No exception: `radio.rx.text` never appears for the duplicate, and the sender logs repeated `radio.tx.text` for one message id with no
+`radio.receipt` between them.
+
+### Root cause
+`RadioSession.ingest` treated `ReplayVerdict.DUPLICATE` as "drop silently", which is right for an unsolicited replay attack but wrong for
+the one duplicate the protocol itself provokes: the retry of a message that arrived. The ACK (and the "delivered" state) is the only
+thing the sender is waiting for, and it was suppressed exactly when it was needed. Nothing in the engine could see the duplicate,
+because the session hid it.
+
+### Failed attempts
+None tried; the defect was found before the device test that would have shown it (`RADCHAT-DEV06` step 5 does provoke a lost ACK, so it
+would have surfaced as an intermittent "failed although delivered").
+
+### Working fix
+- `RadioIngest` gained `Duplicate(peerId, kind, firstCounter, signed)`. `RadioSession` returns it for a duplicate **whole** frame
+  (the window proves reception) and for a duplicate **segment** only when that message already completed — it now remembers
+  `peerId/msgId → firstCounter` for the last 64 completed segmented messages, because a retransmitted segment's own counter is not
+  necessarily `first + index` (counters are time-floored).
+- `RadioChatEngine` ACKs a `Duplicate` whose kind is TEXT again (`queueAckFrame`) and emits `radio.rx.retransmit peer= acked= signed=`.
+  It stores nothing, so the peer still keeps one bubble.
+- An incomplete message is never acknowledged, so the existing recovery path (retry all segments; the received ones duplicate, the
+  missing one completes the message) keeps working.
+- Also in this round: the unreachable Profile A branch and its `checkNotNull(callsign)` were removed (Profile A is refused above it),
+  and the refusal sentence now names the profile instead of the authorisation.
+
+### Verification
+`radchatU12`'s false comment corrected; new tests `radchatU13_aRetransmissionIsAcknowledgedAgain` (the retry produces a second receipt
+and no second bubble) and `radchatU14_aRetransmittedSegmentOfAnIncompleteMessageIsNotAcknowledged` (only the first segment of a
+segmented message, twice → zero ACK frames on the air). `:core:radio:jvmTest` green. **Not device-verified**: `RADCHAT-DEV07`.
+
+### Related files
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/wire/RadioSession.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngine.kt`
+- `core/radio/src/commonMain/kotlin/com/transfer/flash/core/radio/diag/RadioLinkTester.kt` (exhaustive `when`)
+- `core/radio/src/commonTest/kotlin/com/transfer/flash/core/radio/chat/RadioChatEngineTest.kt`
+- `docs/network/RADIO-WIRE-FORMAT.md` §10
+
+### Status
+FIXED IN CODE 2026-10-30; OPEN until `RADCHAT-DEV07` passes on two radios.

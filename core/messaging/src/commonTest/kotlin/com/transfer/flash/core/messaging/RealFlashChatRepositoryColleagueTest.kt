@@ -173,6 +173,7 @@ class RealFlashChatRepositoryColleagueTest {
         override suspend fun setArchived(id: String, archived: Boolean) {}
         override suspend fun setPinned(id: String, pinned: Boolean) {}
         override suspend fun setMuted(id: String, muted: Boolean) {}
+        override suspend fun setRadioPolicy(id: String, radioPolicy: String) {}
         override suspend fun updateLastReadCursor(id: String, cursor: String) {}
         override suspend fun clearLastReadCursor(id: String) {}
         override suspend fun deleteConversations(ids: List<String>) {

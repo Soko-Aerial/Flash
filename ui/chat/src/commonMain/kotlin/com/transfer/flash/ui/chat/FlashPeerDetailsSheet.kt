@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.transfer.flash.core.common.model.FlashPeerPresence
+import com.transfer.flash.core.common.model.FlashRadioPolicy
 import com.transfer.flash.core.messaging.model.FlashChatHeaderUiState
 import com.transfer.flash.core.messaging.model.FlashNetworkTransport
 import com.transfer.flash.ui.avatar.FlashAvatar
@@ -49,6 +50,8 @@ object FlashPeerDetailsMath {
     fun presenceLabel(presence: FlashPeerPresence): String = when (presence) {
         FlashPeerPresence.Online -> "Connected"
         FlashPeerPresence.Reachable -> "Online"
+        // ADR-228: no session, but a text still goes out over the radio.
+        FlashPeerPresence.RadioOnly -> "Radio only"
         FlashPeerPresence.Typing -> "Typing…"
         FlashPeerPresence.Connecting -> "Connecting…"
         FlashPeerPresence.Offline -> "Offline"
@@ -58,11 +61,15 @@ object FlashPeerDetailsMath {
         presence == FlashPeerPresence.Online || presence == FlashPeerPresence.Typing
 
     fun transportLabel(transport: FlashNetworkTransport, presence: FlashPeerPresence): String {
+        // ADR-228: no session to call "connected", but the text still goes out, so "Not connected" would be
+        // a lie in the other direction.
+        if (transport == FlashNetworkTransport.Radio) return "Radio"
         if (!isReachable(presence)) return "Not connected"
         return when (transport) {
             FlashNetworkTransport.Lan -> "Local network (Wi-Fi)"
             FlashNetworkTransport.WifiDirect -> "Wi-Fi Direct"
             FlashNetworkTransport.Relay -> "Relay"
+            FlashNetworkTransport.Radio -> "Radio"
             FlashNetworkTransport.Unknown -> "Not connected"
         }
     }
@@ -85,6 +92,8 @@ fun FlashPeerDetailsSheet(
     isTrusted: Boolean = false,
     onRevokeTrust: (() -> Unit)? = null,
     onOpenSharedContent: (() -> Unit)? = null,
+    radioPolicy: FlashRadioPolicy = FlashRadioPolicy.AUTO,
+    onSetRadioPolicy: (FlashRadioPolicy) -> Unit = {},
 ) {
     val colors = FlashTheme.colors
     val presenceLabel = remember(header.presence) {
@@ -185,6 +194,36 @@ fun FlashPeerDetailsSheet(
                     label = "Trust",
                     value = if (isTrusted) "Paired device" else "Not paired",
                 )
+                DetailDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(FlashShapes.bubbleGrouped)
+                        .clickable { onSetRadioPolicy(if (radioPolicy == FlashRadioPolicy.AUTO) FlashRadioPolicy.NEVER else FlashRadioPolicy.AUTO) }
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = "Radio fallback: ${if (radioPolicy == FlashRadioPolicy.AUTO) "Automatic" else "Never"}"
+                        }
+                        .padding(vertical = FlashSpacing.space12),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    FlashIcon(
+                        icon = FlashIcons.Bluetooth,
+                        contentDescription = null,
+                        size = FlashDimensions.iconSm,
+                        tint = colors.textTertiary,
+                    )
+                    FlashText(
+                        text = "Radio fallback",
+                        modifier = Modifier.weight(1f).padding(start = FlashSpacing.space12),
+                        style = FlashTheme.typography.bodyDefault,
+                        color = colors.textSecondary,
+                    )
+                    FlashText(
+                        if (radioPolicy == FlashRadioPolicy.AUTO) "Automatic" else "Never",
+                        style = FlashTheme.typography.bodyDefault.copy(fontWeight = FontWeight.Bold),
+                        color = colors.textPrimary,
+                    )
+                }
                 if (onOpenSharedContent != null) {
                     DetailDivider()
                     Row(
@@ -312,6 +351,7 @@ private fun FlashNetworkTransport.detailIconSpec(): FlashIconSpec = when (this) 
     FlashNetworkTransport.Lan -> FlashIcons.Wifi
     FlashNetworkTransport.WifiDirect -> FlashIcons.WifiDirect
     FlashNetworkTransport.Relay -> FlashIcons.Relay
+    FlashNetworkTransport.Radio -> FlashIcons.Bluetooth
     FlashNetworkTransport.Unknown -> FlashIcons.Connection
 }
 

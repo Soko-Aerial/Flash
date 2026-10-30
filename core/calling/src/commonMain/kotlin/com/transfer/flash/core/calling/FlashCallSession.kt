@@ -833,6 +833,13 @@ public class FlashCallSession(
                 when (shareRun.check()) {
                     ScreenShareRun.Check.OK -> Unit
                     ScreenShareRun.Check.RETUNE -> onMediaThread { tuneShareSender(videoSender) }
+                    ScreenShareRun.Check.SOURCE_LOST -> {
+                        // Android ended the capture itself (status-bar chip / locked screen): nothing is being sent any
+                        // more, so this is a stop, not a pause. The notice says the share ended.
+                        FlashLog.i("CALL", "share: the platform ended the capture, stopping call=$callId")
+                        scope.launch { stopShare(ShareStopReason.SOURCE_LOST) }
+                        return@launch
+                    }
                     ScreenShareRun.Check.NO_FRAMES -> {
                         FlashLog.w("CALL", "share: no frame within ${ShareLadder.FIRST_FRAME_TIMEOUT_MS} ms, stopping call=$callId")
                         // On the session scope, NOT as a child of this job: stopShare cancels this job (S1).

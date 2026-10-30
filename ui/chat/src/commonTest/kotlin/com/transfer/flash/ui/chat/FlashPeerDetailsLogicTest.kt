@@ -18,6 +18,7 @@ class FlashPeerDetailsLogicTest {
     fun `presenceLabel covers every presence`() {
         assertEquals("Connected", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Online))
         assertEquals("Online", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Reachable))
+        assertEquals("Radio only", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.RadioOnly))
         assertEquals("Typing…", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Typing))
         assertEquals("Connecting…", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Connecting))
         assertEquals("Offline", FlashPeerDetailsMath.presenceLabel(FlashPeerPresence.Offline))
@@ -50,6 +51,17 @@ class FlashPeerDetailsLogicTest {
             "Not connected",
             FlashPeerDetailsMath.transportLabel(FlashNetworkTransport.Lan, FlashPeerPresence.Offline),
         )
+    }
+
+    @Test
+    fun `a radio-only peer is named, not called disconnected`() {
+        // ADR-228: there is no session, but a text goes out, so "Not connected" would be the wrong claim.
+        assertEquals(
+            "Radio",
+            FlashPeerDetailsMath.transportLabel(FlashNetworkTransport.Radio, FlashPeerPresence.RadioOnly),
+        )
+        // And it is still not a live session: the presence line keeps the secondary colour.
+        assertFalse(FlashPeerDetailsMath.isReachable(FlashPeerPresence.RadioOnly))
     }
 
     // --- encryptionLabel ---
