@@ -302,6 +302,9 @@ in its fragment.
 The audit lists 211 defects, not 211 things to do. These are gated, obsolete, or not code at all. A stream that
 reaches one of these writes it into its fragment as `BLOCKED — needs owner decision` and moves to the next finding.
 
+> **All of the "owner" rows below were answered on 2026-10-30 — see §12 and ADR-232.** Only the rows marked
+> `device session` and `owner (ops)` still block: those need hardware or a deployment, not a decision.
+
 | Finding | Why it is gated | Who decides |
 |---|---|---|
 | `OPT-O01-01` "remove the 3.7 s launch splash" | **ADR-080 / UI-056** makes the splash play to the end on purpose (about 3.45 s, one gate per process). Only the *wait for the engine* may be trimmed; deleting the animation reverses an owner decision. | owner |
@@ -397,8 +400,10 @@ keepalive drops it) · `O14-05` the structural-equality iteration on every `conv
 
 **Batch 3:**
 `O06-08` BLOB inlining (`SwarmContentEntity` 131 KB manifest; coordinate with S) · `O25-09` collection sizing ·
-`O27-04` in-memory SQLite for the client tests. **Gated:** `O06-03` (ADR-218), `O06-10` (key derivation), `O04-01`
-(paging).
+`O27-04` in-memory SQLite for the client tests. **Decided by ADR-232:** `O06-03` **stays on LIKE** (FTS5 only if a real device
+shows >~300 ms over ~100k messages); `O06-10` takes the **`mmap_size` half only** — the PBKDF2 iteration count is not lowered;
+`O04-01` is **approved** — page the history, and the pager must resolve `FlashBackStackState.targetMessageId` so search
+deep-links still land on the right message.
 
 **Verify:** the audit's own `bench/db_benchmark.py` before/after at 100k messages, plus `:core:persistence:jvmTest`
 and the two migration tests. The index change is a schema step: bump `FlashSchemaSteps`, add the `22.json`, and prove
@@ -479,7 +484,8 @@ telemetry is C's.
 discovery downscale (**needs G's screen-state signal** — agree on an interface; N owns the discovery side) ·
 `O10-02` the permanent `MulticastLock` (N owns `core:discovery`; G calls the new lease API if one is needed).
 
-**Gated:** `O09-04`, `O09-07` (wire format, §8).
+**Decided by ADR-232:** `O09-04` and `O09-07` are **not taken** — no wire-format change now. N implements only the allocation
+half (`O09-05`, `O09-06`, `O14-02`), which changes no bytes. A wire v3 with a negotiated fallback is its own project.
 
 **Verify:** `:core:network:jvmTest`, `:core:discovery` tests, and for the lock change a two-device transfer check
 (`PERF-N01`).
@@ -498,7 +504,10 @@ whole engine for an empty outbox · `O13-03` `Verifying` missing from the Androi
 subnet sweep at launch. (`O02-09` — the `Activity` context held by `AndroidImageDecoder` — is T's, because the file is
 in `ui/platform-shims`.)
 
-**Batch 3 / gated:** `O13-06` (§8), `O01-01` (§8 — only the *gate wait*, and only with the owner's yes).
+**Batch 3 / decided by ADR-232:** `O13-06` is **approved** — the `connectedDevice` service stops when there is no peer, no
+transfer and no hub connection, and one opt-in setting ("Keep listening in the background") restores today's behaviour with
+the honest sentence. `O01-01` is **not taken** — ADR-080 stands and the splash is never dismissed; G may change what happens
+*during* the splash, never whether the animation finishes.
 
 **Verify:** `:app:compileDebugKotlin`, `:app:compileDebugAndroidTestKotlin`, and a device session for the wake-lock
 and Doze behaviour (`PERF-G01`, `PERF-G02`) — a battery claim without `batterystats` is not a result.
@@ -555,7 +564,8 @@ hash changes. `FlashLog` is called by every module: keep the public API source-c
 tombstones in a `LinkedHashMap` · `O23-07` heap-wrapped NIO buffers in the piece storage · `O03-15` the piece-map
 canvas allocations (S owns `FlashSwarm*.kt`) · `O28-04` scheduler telemetry.
 
-**Gated:** `O08-03` (fairness, §8). `O06-08` (the BLOB entity) is D's — coordinate, do not edit persistence.
+**Decided by ADR-232:** `O08-03` is **approved** — age-weighted / deficit round-robin serve slots, no wire change, proved with
+the multi-device run S owes anyway. `O06-08` (the BLOB entity) is D's — coordinate, do not edit persistence.
 
 **Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (a rare flake that passed in the 2026-10-30 baseline — record it
 rather than "fixing" it), and a three-device swarm check (`PERF-S01`).
@@ -736,7 +746,9 @@ for markChunksDone + setBytesDone; O06-09 the org search index; O02-02 stop reta
 O14-04 Eagerly -> WhileSubscribed; O14-05 structural equality on every mutation; O07-03 write amplification (DAO side);
 O28-05 slow-query callbacks.
 Batch 3: O06-08 BLOB inlining (coordinate with S), O25-09 collection sizing, O27-04 in-memory SQLite tests.
-GATED: O06-03 FTS5 (ADR-218), O06-10 PBKDF2 iterations, O04-01 paging - record BLOCKED with the reason.
+DECIDED (ADR-232, do not record BLOCKED): O06-03 stays on LIKE (FTS5 only if a real device shows >~300 ms over ~100k
+messages); O06-10 takes the mmap_size half only - do NOT lower the PBKDF2 iteration count; O04-01 IS approved - page the
+history, and the pager must resolve FlashBackStackState.targetMessageId so search deep-links still land.
 
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
@@ -894,7 +906,8 @@ across socket I/O; O14-03 the global drainMutex serialising peers; O09-03 double
 queue head-of-line; O10-05 unsynchronised polling sweepers; O10-07 directed broadcast basic-rate penalty.
 Batch 3: O09-02 TLS session resumption (measure both hosts); O10-01 screen-off discovery downscale (agree a screen-state
 API with G before changing discovery); O10-02 the permanent MulticastLock -> a leased lock with a bound.
-GATED: O09-04 and O09-07 change the wire format - record BLOCKED, do not change bytes.
+DECIDED (ADR-232, do not record BLOCKED): O09-04 and O09-07 are NOT taken - no wire-format change now, no bytes change. Take
+only the allocation half (O09-05, O09-06, O14-02), and say in the report that the wire items were declined with this ADR.
 
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
@@ -942,8 +955,9 @@ timeout plan; O13-08 the delay(300) service poll; O01-02 synchronous DataStore/S
 O01-07 redundant MediaCodecList enumeration; O01-08 sequential PRAGMAs at open.
 Batch 2: O13-05 ACTION_SCREEN_OFF handling; O13-04 Transsion Tier 3 silent AudioTrack; O13-07 audio-focus backoff;
 O01-04 eager engine assembly + subnet sweep at launch.
-GATED: O01-01 (ADR-080 - the splash must still play; only the engine wait may change, and only with the owner's yes) and
-O13-06 (Play policy vs ADR-041). Record BLOCKED with the reason; do not delete the splash or the FGS.
+DECIDED (ADR-232, do not record BLOCKED): O13-06 IS approved - the connectedDevice service stops when there is no peer, no
+transfer and no hub connection, plus one opt-in "Keep listening in the background" setting with the honest sentence. O01-01 is
+NOT taken - ADR-080 stands and the splash is never dismissed; change what happens during it, never whether it finishes.
 NOTE: O10-01/O10-02 belong to N. If you need a screen-state signal in discovery, ask N (plan section 4.2).
 
 RULES
@@ -1140,7 +1154,8 @@ fsync + DAO amplification (caller side only); O08-05 the 4 Hz idle ticker; O08-0
 O08-08 tombstone retention + summary broadcasts; O02-04 Channel.UNLIMITED queues; O02-05 permanent tombstones;
 O23-07 heap-wrapped NIO buffers in the piece storage; O03-15 the piece-map canvas allocations; O28-04 scheduler
 telemetry.
-GATED: O08-03 (serve fairness) - record BLOCKED with the reason and do not change who wins a slot.
+DECIDED (ADR-232, do not record BLOCKED): O08-03 IS approved - age-weighted / deficit round-robin serve slots, no wire change,
+proved with the multi-device run you owe anyway (PERF-S01). Say in the report what changed about who wins a slot and why.
 
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
@@ -1258,27 +1273,54 @@ devices, and whether the webrtc fork needs republishing. Stop the daemon when th
 
 ---
 
-## 12. Owner decisions needed when a stream reaches them
+## 12. Decisions — answered 2026-10-30 (ADR-232)
 
-These are the §8 items that block work rather than merely gating it. A stream that reaches one records
-`BLOCKED — owner decision` and moves on, so nothing here has to be answered before the programme starts; but the first
-two decide whether a top-10 ROI item is done at all, so they are worth asking early.
+These were the §8 items that blocked work. The owner delegated them to the integrator's recommendation on 2026-10-30, so all
+of them are now decided in **ADR-232**. A stream that reaches one of these **implements the answer**; it no longer records
+`BLOCKED — owner decision`. The question text is kept, with the answer under it, so the reasoning stays readable.
+
+| # | Finding | Answer | Who |
+|---|---|---|---|
+| 1 | `OPT-O01-01` splash | **Keep ADR-080.** No gate change; a shorter splash means a shorter choreography, never a dismissed one | nobody (recorded as "not doing") |
+| 2 | `OPT-O06-03` FTS5 | **Stay on LIKE**; FTS5 only if a real device shows >~300 ms over ~100k messages | nobody now; D if the trigger fires |
+| 3 | `OPT-O13-06` FGS | **Stop when idle** + one opt-in "Keep listening in the background" setting | G |
+| 4 | `OPT-O06-10` PBKDF2 | **Keep 256k**; take only the `mmap_size` half | D (mmap part) |
+| 5 | `OPT-O22-03` BouncyCastle | **Keep**, ADR-230 stands (pinned 1.81.1) | nobody (recorded) |
+| 6 | `OPT-O04-01` history paging | **Approved**, and it must load around `targetMessageId` | D |
+| 7 | `OPT-O09-04`/`O09-07` wire | **No wire change now**; N takes the allocation half (`O09-05`, `O09-06`, `O14-02`) | N |
+| 8 | `OPT-O08-03` swarm fairness | **Approved** (age-weighted / deficit round-robin), proved by a multi-device run | S |
+| 9 | `OPT-O22-01` per-ABI APKs (PERF-A04) | **Approved**: per-ABI **and** universal, with the release script collecting outputs and failing on a stale one | integrator |
+| 10 | `PERF-A03` desktop installer | **Run the smoke test** before the next Windows build ships | owner machine |
+| 11 | `PERF-A02` baseline profile | **Deferred** to when G touches startup | — |
+| 12 | `PERF-A07` sleep-based tests | **D's first commit**; it is what allows 2 forks again | D |
+
+The original questions, with their answers:
 
 1. **Launch splash (`OPT-O01-01`).** Keep ADR-080 (the animation always plays, ~3.45 s) and let G trim only the engine
    wait, or reverse ADR-080 for a faster cold start? *Recommendation: keep the splash; trim the wait.*
+   **Answer: keep.** The engine already runs underneath (`finishAt = engineSettled ? introEnd : max(introEnd, 6000)`), so
+   nothing is gained by dismissing it; a cut ink stroke reads as a bug. Shorten the choreography if cold start ever matters.
 2. **Search (`OPT-O06-03` FTS5).** Stay on LIKE + file names (ADR-218), or authorise FTS5 as a Room step 23 with a
    migration and a reindex? *Recommendation: stay; D's index work covers the reported slowness.*
+   **Answer: stay.** Trigger: >~300 ms on a real device over ~100k messages, then FTS5 is its own item (step 23 + reindex).
 3. **`OPT-O13-06`**: may the `connectedDevice` foreground service stop when no peer is connected (Play-policy clean,
-   but a phone then cannot receive until it is opened)?
+   but a phone then cannot receive until it is opened)? **Answer: yes, stop when idle**, and add the opt-in setting so the
+   behaviour is the user's choice rather than a silent policy violation.
 4. **`OPT-O06-10`**: may the SQLCipher PBKDF2 iteration count be lowered (faster open, weaker key derivation)?
+   **Answer: no.** Fix `mmap_size` instead; the iteration count protects the only copy of the chat history.
 5. **`OPT-O22-03`**: remove BouncyCastle from the desktop (smaller installer, TLS certificate generation rewritten)?
+   **Answer: no** (ADR-230). Every cheaper alternative gives every install the same TLS identity or needs `--add-exports`.
 6. **`OPT-O04-01`**: page the conversation history (a behaviour change users see), or leave it?
+   **Answer: page it**, and the pager must resolve `FlashBackStackState.targetMessageId` so search deep-links still land.
 7. **`OPT-O09-04`/`O09-07`**: is a wire-format breaking change worth it for Base64 inflation and text framing, given
-   both hosts must be updated together?
+   both hosts must be updated together? **Answer: not now.** Three implementations plus a published library must move
+   together; a wire v3 is a project with its own ADR, started only on a measured complaint.
 8. **`OPT-O08-03`**: may the swarm change who wins a serve slot (fairness vs throughput)?
+   **Answer: yes.** Starvation looks like "my file never downloads"; no wire change; prove it with the multi-device run.
 
-Until an answer exists, the stream records `BLOCKED — owner decision` in its fragment and works the next finding. No
-stream may answer these itself, and none of them may be "unblocked" by a code comment.
+Until an answer existed, a stream recorded `BLOCKED — owner decision`. That is no longer an acceptable outcome for these twelve
+items: the answer exists, so a stream that skips one must say which ADR-232 clause it is skipping.
+
 
 ## 13. What the integrator does at each merge
 

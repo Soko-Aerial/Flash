@@ -19307,3 +19307,57 @@ and the notices scoping works.
 Hand out Stream D + T against `dev` (base now includes this merge), and tell them the gate numbers in §6.3.2 are the ones to
 hold: gate 1 ≥ 2,138 tests and ≤ ~320 s forced, gate 2 exactly 1,526 with 2 known failures. Nothing was pushed.
 
+---
+
+## 2026-10-30 (later still) — the programme's twelve open decisions answered (ADR-232)
+
+### Worked on
+Every decision the optimization programme would otherwise stop at: the eight §12 questions of
+`docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` plus the four items the Wave 0 merge raised. The owner delegated them to the
+integrator's recommendation, so each is now an answer a stream implements instead of a `BLOCKED — owner decision` line.
+
+### Changed
+- `docs/decisions.md` **ADR-232**: twelve items, each with the decision, the reason, and what reopens it.
+- Plan §12 rewritten as "Decisions — answered 2026-10-30": a table of answers plus the original questions kept underneath with
+  their answers, so the reasoning survives (§27). §8's table now says which rows still block (only `device session` and
+  `owner (ops)`), and the per-stream "Gated" lines in §9 and in the kickoff prompts for D, N, G and S now read
+  "DECIDED — implement this" instead of "record BLOCKED".
+- Backlog: `PERF-A04` is DECIDED (ship per-ABI **and** universal, with the script collecting outputs and failing on a stale
+  one); `PERF-A01` is unblocked to TODO; `PERF-A03` is scheduled before the next Windows build ships.
+
+### The answers
+1. **Splash `O01-01` — keep ADR-080.** The engine already runs underneath (`finishAt = engineSettled ? introEnd : max(introEnd,
+   6000)`), so nothing is saved by dismissing it; a cut ink stroke reads as a bug. A shorter splash means a shorter
+   choreography, never a gated one.
+2. **FTS5 `O06-03` — stay on LIKE**, with a measured trigger: >~300 ms on a real device over ~100k messages, then FTS5 is its
+   own item (Room step 23 + reindex). Deferring a migration on every existing install for an unreported pain is the right trade.
+3. **FGS `O13-06` — stop when idle**, plus one opt-in "Keep listening in the background" setting and the honest sentence.
+   Play policy is an existential cost; EXP-002 already showed the service never guaranteed the promise (4 % alive on Infinix).
+4. **PBKDF2 `O06-10` — keep 256k**, take only the `mmap_size` half. Weakening the only thing protecting the chat database for a
+   few hundred milliseconds is not a trade.
+5. **BouncyCastle `O22-03` — keep** (ADR-230): every cheaper alternative gives every install the same TLS identity or needs
+   `--add-exports`; the installer already lost 19.7 MB.
+6. **History paging `O04-01` — approved**, with the hard requirement that the pager resolves
+   `FlashBackStackState.targetMessageId`, or "tap a search hit and land on it" (shipped with the search upgrade) breaks.
+7. **Wire `O09-04`/`O09-07` — declined for now**: three implementations plus a published library must move together; N takes the
+   allocation half only. A wire v3 is its own project.
+8. **Swarm fairness `O08-03` — approved**: starvation reads as "my file never downloads"; age-weighted/deficit slots, no wire
+   change, proved with the multi-device run S owes.
+9. **Per-ABI APKs `O22-01` — approved** (with universal kept), because 17.55 MB versus 54.63 MB reaches the phone case that is
+   almost everyone — but only with the script fixed to collect outputs and to fail on a stale one.
+10. **Desktop installer smoke test — before the next Windows build ships.** 11. **Baseline profile — deferred** to when G touches
+    startup. 12. **`RealFlashChatRepositoryTest` — D's first commit** (it buys back 114 s per gate-2 run).
+
+### Verification
+Docs only: no code, no build, nothing device-verified. The plan's §12 table, §8 note and the four prompt blocks were re-read
+after editing to confirm no "record BLOCKED" instruction is left for these twelve.
+
+### Remaining
+- The integrator implements ADR-232 item 9 (release script + docs + `REL-*`), which unblocks `PERF-A01`.
+- D, S, G and N pick their answers up from their prompts; nothing else waits on the owner for the programme.
+
+### Next AI
+Paste the D and T blocks (§11.D, §11.T) and let them run. If a stream reports a `BLOCKED — owner decision`, it is either one of
+the `device session`/`owner (ops)` rows in §8 or a mistake: these twelve are answered.
+
+

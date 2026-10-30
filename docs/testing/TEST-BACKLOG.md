@@ -6559,7 +6559,7 @@ has arrived; the completed message appears once, with no duplicate row. The 30-m
 ```
 Interpretation if it fails: `radio.rx.retransmit acked=false` means the retry arrived for a message the phone never completed (expected
 for a missing segment, wrong for the finished text); no `radio.rx.retransmit` at all on the phone means the retry frame never reached
-it (look at `radio.rx.drop reason=` for `replay`/`duplicate_incomplete`, and at the TNC link) � that is ERROR-870 not fixed or an old
+it (look at `radio.rx.drop reason=` for `replay`/`duplicate_incomplete`, and at the TNC link) � that is ERROR-870 not fixed or an old
 binary, not a new defect; a second copy of the text means the duplicate was stored instead of only acknowledged.
 
 ### Source
@@ -6582,7 +6582,7 @@ review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
 - **Steps (only if PERF-A04 says yes):** build `:app:assembleRelease`, install `app-arm64-v8a-release-unsigned.apk` on an
   arm64 phone, launch, place a call, open an encrypted chat.
 - **Pass condition:** no `UnsatisfiedLinkError`, WebRTC initialises, the SQLCipher database opens.
-- **Status:** BLOCKED on PERF-A04.
+- **Status:** TODO once the release script ships per-ABI files — approved by ADR-232 item 9 on 2026-10-30.
 
 ### PERF-A02 - Regenerate the baseline profile on a device
 - **Area:** startup / ART profiles
@@ -6603,7 +6603,8 @@ review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
   place a 1:1 call; open the Hub tab; quit and relaunch.
 - **Pass condition:** no `NoClassDefFoundError` / `UnsatisfiedLinkError` / missing-module error at any step, and the window
   renders without missing Compose classes.
-- **Status:** TODO - this is the only way `O22-02`/`O22-05`/`O19-04` stop being claims.
+- **Status:** TODO — scheduled by ADR-232 item 10: **before the next Windows build ships.** This is the only way
+  `O22-02`/`O22-05`/`O19-04` stop being claims.
 
 ### PERF-A04 - Owner decision: ship per-ABI APKs?
 - **Area:** release distribution
@@ -6612,7 +6613,11 @@ review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
 - **Steps:** decide whether the release ships one universal APK (today's behaviour) or per-ABI files, then if per-ABI update
   `tools/build-release.ps1`, `docs/release-build.md` and the `REL-*` checks together.
 - **Pass condition:** a documented release flow that produces the chosen artifact(s), and `build-release.ps1` runs green.
-- **Status:** TODO (owner decision).
+- **Status:** DECIDED 2026-10-30 (ADR-232 item 9) — **ship per-ABI *and* universal**: `Flash-<version>.apk` stays universal,
+  and `Flash-<version>-arm64-v8a.apk` (17.55 MB) is added. Implementation pending, and it must do all three of: collect
+  `app/build/outputs/apk/release/*.apk` instead of the single hard-coded name, **fail on a stale output** (the script only
+  `Test-Path`s today, so a leftover APK from an earlier build would be signed and shipped), and update
+  `docs/release-build.md` + the `REL-*` checks. Then PERF-A01 becomes runnable.
 
 ### PERF-A05 - `:server:test` at four forks
 - **Area:** server test suite under the new fork setting
