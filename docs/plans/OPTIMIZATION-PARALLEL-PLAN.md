@@ -1,0 +1,1163 @@
+# Optimization programme — parallel streams, worktrees and kickoff prompts
+
+Written 2026-10-30 for the owner. Source of the work: `docs/audit/optimization-2026-10-23/` (211 findings;
+ledger = `findings-ledger.md`, evidence = `O01..O28*.md`, compounding model = `compounding.md`, refused ideas =
+`rejected.md`).
+
+**Read `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` §3 (machine rules) and §8 (log fragments) before starting a
+stream.** This file adds the *split*; it does not replace that protocol, AGENTS.md §6–§13/§35/§36, or the audit's
+own evidence.
+
+---
+
+## 1. What this split is for
+
+Twelve **directory-disjoint** streams. Two streams in the same wave never edit the same file, so a
+`git merge --no-ff` of one into `dev` cannot collide with the other — except in the canonical logs, which no
+stream edits (§5.1). Where a file *must* be shared by design (`core/engine`, `core/messaging/*`, `ui/chat`,
+`app/*`, `desktop/*`), §4.2 names one owning stream **per file** and the other streams work in new files or in a
+carved-out subpackage.
+
+A stream is sized for one agent over a few sessions: **batch 1** = quick wins (hours), **batch 2** = the real fix
+(days), **batch 3** = the deep item (optional, or gated on a decision).
+
+---
+
+## 2. Facts this plan stands on (checked 2026-10-30, not taken from the audit)
+
+| Fact | Value | Consequence |
+|---|---|---|
+| Machine | 8 logical CPUs, ~20 GB RAM, one Gradle build at a time (`Global\FlashGradleBuild` lock) | 2 agents comfortable, 3 workable, 4 mostly wait for the lock |
+| `E:` free | ~69.9 GB | Worktrees and their `build/` output fit; ~3–4 GB per *built* tree |
+| A worktree checkout | 38 MB of tracked files | Creating a worktree is cheap; **building** it is the cost |
+| Main tree | `C:\Users\KaliOxygen\Downloads\Flash` — the **integrator's** tree, `dev` at `7dab9a57` when this plan was written (the commit that adds this file is its child) | Streams never edit it |
+| Audit base commit | `4dcc7fad` (2026-10-23), **before** the radio data/voice and screen-share work now on `dev` | Every finding must be re-verified against today's code before it is worked |
+| Verification style | Most findings are `STATIC-ARITHMETIC`, only ~20 are `MEASURED` | Measure before and after; a finding that no longer reproduces is closed as `NO LONGER REPRODUCES`, not "fixed" |
+| Build gate | `cmd /c "tools\flash-gradle.cmd <tasks>"` (AGENTS §36) | Never `gradlew`; exit 75 = someone else is building |
+
+**The audit is a claim, not evidence about this tree.** Several of its recommendations are refused by policy (§8), and
+the code has moved since `4dcc7fad`. A stream's first act on a finding is to open the file and confirm the defect
+still exists; if it does not, record that and move on.
+
+---
+
+## 3. The twelve streams
+
+Counts are findings from the ledger: the twelve streams sum to **210** and the gated row makes **211**, which is what
+the ledger lists. Two gated findings are counted inside their own stream (`O07-10` in T, `O08-03` in S) and are marked
+in §9; `OPT-O22-03` is the separate gated row.
+
+| # | Stream | Worktree / branch | Findings | Domain focus | Wave |
+|---|---|---|---|---|---|
+| A | **build** | `E:\FlashWork\opt-build` / `agent/opt-build` | 25 | Gradle, CI, APK/jpackage size, baseline profiles, test speed | **0 (alone, merges first)** |
+| D | **data** | `E:\FlashWork\opt-data` / `agent/opt-data` | 23 | Room/SQLite indexes + PRAGMAs, DAO queries, chat-list state, `RealFlashChatRepository` | 1 |
+| T | **transfer** | `E:\FlashWork\opt-transfer` / `agent/opt-transfer` | 28 | `core:transfer`, media pipeline (`ui:platform-shims`), storage I/O | 2 |
+| U | **ui** | `E:\FlashWork\opt-ui` / `agent/opt-ui` | 28 | Compose stability, chat/conversation responsiveness, optimistic echo | 2 |
+| N | **net** | `E:\FlashWork\opt-net` / `agent/opt-net` | 18 | WebSocket mesh, locks, discovery, presence | 3 |
+| G | **android** | `E:\FlashWork\opt-android` / `agent/opt-android` | 13 | Wake locks, FGS, background workers, Android start-up | 3 |
+| H | **hub** | `E:\FlashWork\opt-hub` / `agent/opt-hub` | 19 | `:server`, console, hub client (`core:enterprise`), hub SQLite | 4 |
+| E | **desktop** | `E:\FlashWork\opt-desktop` / `agent/opt-desktop` | 10 | Desktop shell, drop target, toasts, desktop start-up | 4 |
+| K | **kernel** | `E:\FlashWork\opt-kernel` / `agent/opt-kernel` | 10 | `core:common` logging/probes/regex, `core:security` crypto | 4 |
+| S | **swarm** | `E:\FlashWork\opt-swarm` / `agent/opt-swarm` | 14 | `core:swarm` scheduler, HAVE storms, piece storage | 5 |
+| R | **radio** | `E:\FlashWork\opt-radio` / `agent/opt-radio` | 7 | `core:radio` read loop, framing, pendingAcks | 5 |
+| C | **calls** | `E:\FlashWork\opt-calls` / `agent/opt-calls` | 15 | WebRTC capture/codec, PTT audio, call UI | 5 |
+| — | gated | — | 1 | `OPT-O22-03` (BouncyCastle removal) needs an ADR (§8) | — |
+
+Why these boundaries and not the audit's O01–O28: the audit is organised by *symptom*, the streams by *directory*.
+Two audit domains can share a directory (O03 and O24 both live in `ui/chat`), and one audit domain can span five
+directories (O25). Merging is decided by files, not by symptoms.
+
+---
+
+## 4. File ownership
+
+### 4.1 The exclusive map
+
+A stream may edit **only** the paths in its row. Anything else is a merge conflict waiting to happen.
+
+| Stream | Owns (may edit) | Must not touch |
+|---|---|---|
+| **A build** | `gradle.properties`, `settings.gradle.kts`, root `build.gradle.kts`, `gradle/**` (incl. `libs.versions.toml`), `.github/**`, **every** module's `build.gradle.kts`, `buildSrc/**`, `app/proguard-rules.pro`, `tools/**`, new `benchmark/**` module, `ThirdPartyNotices*` | every `src/**` (except a new `benchmark/src/**`) |
+| **D data** | `core/persistence/**` (schema step **22** is yours), `core/messaging/**` **except** `hub/**` and `radio/**`, `desktop/src/**/JvmFlashDatabaseOpener*` | `ui/**`, `:server`, `core/transfer`, build files |
+| **T transfer** | `core/transfer/**`, `ui/platform-shims/**`, `core/engine/FlashPathSanitizer.kt` | `core/persistence`, `core/swarm`, `core/network`, `ui/chat`, build files |
+| **U ui** | `ui/chat/**` except `radio/**` and `FlashSwarm*.kt`, `ui/theme/**`, `ui/hub/**`, `docs/ui/chat-screen.md` | `RealFlashChatRepository.kt`, `ui/callui`, `app/**`, `desktop/**` |
+| **N net** | `core/network/**`, `core/discovery/**`, `core/engine/{FlashEngine,FlashBaseEngine,FlashConfig,FlashInboundRouter,MagicFrameRouter,PeerOrderedInbox,PlatformLock}.kt` | `core/messaging`, `ui/**`, hosts |
+| **H hub** | `server/**`, `core/enterprise/**`, `core/hub-protocol/**`, `core/messaging/hub/**`, `core/engine/{HubFileBinding,HubFileRows,StreamingHubFileSource}.kt`, `docs/protocol-routes.txt` | client chat/UI, `core/persistence`, build files |
+| **G android** | `app/**` except `app/**/radio/**`, `app/**/calling/**`, `app/**/ptt/**`; `app/src/**/ui/splash/**` | `core/**`, `ui/**`, build files |
+| **E desktop** | `desktop/**` except `desktop/**/radio/**`, `radioaudio/**`, `radiospike/**` and `**/JvmFlashDatabaseOpener*` (D owns that one file) | `core/**`, `ui/**`, build files |
+| **K kernel** | `core/common/**`, `core/security/**` | everything else |
+| **S swarm** | `core/swarm/**`, `core/engine/{SwarmHostBinding,RoomSwarmStateStore,NetworkSwarmTransport,GroupFileSender,MessagingSwarmGroupContext}.kt`, `ui/chat/src/**/FlashSwarm*.kt` | `core/persistence`, `core:transfer`, `ui/chat` siblings |
+| **R radio** | `core/radio/**`, `core/messaging/radio/**`, `ui/chat/src/**/radio/**`, `app/src/main/java/com/transfer/flash/radio/**`, `desktop/src/**/radio*/**` | `core/messaging` outside `radio/**`, `core/persistence`, `ui/chat` outside `radio/`, build files |
+| **C calls** | `core/calling/**`, `core/ptt/**`, `ui/callui/**`, `third_party/webrtc-kmp/**`, `app/src/**/calling/**`, `app/src/**/ptt/**` | `ui/chat`, `core/network` |
+
+### 4.2 The shared files, and the one owner for each
+
+These are the only paths more than one stream could reasonably want. The owner edits; everyone else reads and, if a
+change is truly needed there, **writes a request into their own log fragment** and lets the integrator route it.
+
+| File | Who might want it | Owner | Rule |
+|---|---|---|---|
+| `gradle.properties`, `*.gradle.kts`, `gradle/**`, CI | everyone (a dependency, a flag, a test fork) | **A** | "No new dependency, no new module, no build flag" without A. A applies requests in its own commits. |
+| `RealFlashChatRepository.kt` | D (queries, invalidation), U (optimistic echo), R (radio send path) | **D** | U implements optimistic echo as a **UI-local pending overlay** in `ui/chat` (no repository edit). R does not touch it. |
+| `core/engine/PlatformLock.kt` | T (write lock), N (O14-01) | **N** | T reads it; if T needs a change, it goes in N's queue. |
+| `core/messaging/hub/**`, `core/messaging/radio/**` | H, R | **H / R** | D stays out of both subpackages. |
+| `ui/chat/**` | U, S (piece map), R (radio screens) | **U** for everything else | S owns `FlashSwarm*.kt`; R owns `ui/chat/**/radio/**`. |
+| `ui/theme/**` (splash composable) | U (canvas allocations), G (splash timing) | **U** | G changes *when* the splash is shown (`FlashLaunchSplashProcess`), U changes *what it draws*. |
+| `app/**` | G, R, C | **G** | R owns `app/**/radio/**`; C owns `app/**/calling/**` and `app/**/ptt/**`. |
+| `desktop/**` | E, R | **E** | R owns `desktop/**/radio*/**`. |
+| `logs/*`, `docs/testing/TEST-BACKLOG.md`, `docs/decisions.md`, `AGENTS.md` §29, `docs/security.md`, `docs/testing/PROBES.md`, `docs/android-platform-notes.md` | everyone | **integrator** | Streams write only `logs/streams/<stream>/*` (§5.1). |
+| `docs/protocol.md`, `docs/protocol-routes.txt`, `RouteTableContractTest` | H; N and D for a wire/DB note | **H** | A wire-format change is gated (§8) and H regenerates the route list. |
+
+### 4.3 The standing rules every stream prompt repeats
+
+1. New logic goes in **new files**; an existing large file gets a minimal hook, never a reformat.
+2. No new dependency, no new Gradle module, no wire-format change, no Room/schema change (D holds step 22),
+   no new permission, no new probe namespace — all of those are **A's**, **H's** or the owner's, and are requested.
+3. One build at a time, through `tools\flash-gradle.cmd`.
+4. The phone is a single-owner resource: no stream touches it. Everything needing a device goes to the backlog.
+5. Commit only to `agent/opt-<stream>`, small commits, never to `dev`/`main`, never force-push, never `git stash`
+   in the main tree.
+
+## 5. Keeping merges clean
+
+### 5.1 Logs: fragments, never the canonical files
+
+This is the rule that keeps the most work from being lost. `logs/progress.md` alone is ~16k lines and every agent
+inserts at the top; two agents doing that means the last writer deletes the other's entry.
+
+Each stream writes **only** into `logs/streams/<stream>/` in the same format the canonical file uses:
+
+```text
+logs/streams/<stream>/progress.md          (one "## YYYY-MM-DD — <title>" block per session)
+logs/streams/<stream>/errors.md            (ERROR-NNN from the stream's reserved block)
+logs/streams/<stream>/experiments.md       (EXP-NNN from the stream's reserved block, before/after numbers)
+logs/streams/<stream>/backlog-additions.md (device/manual checks still owed, PERF-<x>NN)
+logs/streams/<stream>/decisions-additions.md (ADR-NNN from the stream's reserved block)
+logs/streams/<stream>/probes-additions.md  (only if the stream adds a probe)
+```
+
+The integrator folds them into the canonical files at each merge (that is the documented exception to AGENTS §6–§10
+and it needs the owner's yes — protocol §9 question 3). A fragment that never gets folded is still the record.
+
+### 5.2 Commits
+
+Small, focused, conventional: `perf(data): index messages(conversationId, readAt) (OPT-O06-01)`. One finding (or one
+tight group) per commit, the finding ID in the subject, so the integrator can cherry-pick if a batch must be split.
+
+### 5.3 The conflict-free invariant
+
+Before a stream starts batch 2 it runs:
+
+```text
+git -C E:\FlashWork\opt-<stream> fetch origin (or: git -C <main tree> rev-parse dev)
+git -C E:\FlashWork\opt-<stream> merge dev        # merge, never rebase: verified history is not rewritten
+```
+
+A merge that touches a file the stream has also modified means the ownership map (§4) was breached — stop and ask
+the integrator, do not resolve it locally.
+
+---
+
+## 6. Waves, merge order and the gate
+
+### 6.1 The waves
+
+A = build goes **first and alone** because it changes `gradle.properties` and the module build files that every
+other tree compiles with. After A merges, every stream merges `dev` once and rebases nothing.
+
+| Wave | Streams (start together) | Why together | Why not more |
+|---|---|---|---|
+| **0** | **A** | Touches only build files; every later build benefits | Two agents here would both edit `gradle.properties` |
+| **1** | **D** + **T** | Disjoint dirs; D is the 1,700× query win, T is the transfer-freeze cascade | Both are heavy builds; the lock serialises them anyway |
+| **2** | **U** + **N** | Disjoint dirs; U is the 11 FPS → 60 FPS cascade, N is the WhatsApp-style mesh stalls | Neither needs another stream merged; U's optimistic echo is UI-local (§8) |
+| **3** | **G** + **H** | Android battery/background + hub server; no shared file | G's O10 items stay with N — G does not touch `core/discovery` |
+| **4** | **E** + **K** | Desktop host + shared kernel utilities; both small | K changes `FlashLog`, which every module calls — land it before S/R/C start, so their measurements run on the new logging cost |
+| **5** | **S** + **R** + **C** | The device-gated trio (swarm, radio, calls); each needs phone checks anyway | All three owe device tests, so they interleave with owner test sessions |
+
+**Recommended: two agents.** Three works if the owner can process three reports a week. Four mostly queues on the
+build lock (protocol §5 says the same).
+
+### 6.2 Merge order inside a wave
+
+Any order, because the files are disjoint. The integrator merges with `--no-ff`, folds the log fragments, then runs
+the gate. If two streams in a wave both change the *same* module's public API (rare by design), merge the one whose
+finding is lower-risk first and let the other resolve against it.
+
+### 6.3 The integration gate
+
+Run after every merge, on the merged `dev`, through the lock:
+
+```text
+cmd /c "tools\flash-gradle.cmd :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain"
+```
+
+Add `:server:test` when H merged, `:core:radio:jvmTest` when R merged, `:core:calling:jvmTest`/`:core:ptt:jvmTest`
+when C merged, `:core:enterprise:jvmTest` when H merged, and `:app:compileDebugAndroidTestKotlin` when G merged.
+After a Room or server-migration merge, run `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` (+ the server
+`MigratorTest`) **again on the merged result**: two individually green migrations can still collide.
+
+**Baseline (fill before wave 1).** The gate must be run once on `dev` before any stream lands, and the result
+written here, including the known pre-existing failures. From the 2026-10-30 review the known flakes were
+`RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author`,
+`SwarmInteropTest` (origin drop and rejoin) and two `TransfersUiMapperTest` cases (ERROR-106) — re-check, do not
+assume.
+
+| Gate task | Result on `dev` before wave 1 | Known pre-existing failures |
+|---|---|---|
+| (integrator fills) | | |
+
+At the end of a session a stream runs `cmd /c "tools\flash-gradle.cmd --stop"` so an idle daemon does not hold
+2–4 GB.
+
+---
+
+## 7. Reservations (so two streams never take the same number)
+
+| Resource | Used today | A | D | T | U | N | G | H | E | K | S | R | C |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| ADR | 229 | 230–239 | 240–249 | 250–259 | 260–269 | 270–279 | 280–289 | 290–299 | 300–309 | 310–319 | 320–329 | 330–339 | 340–349 |
+| ERROR | 870 | 871–880 | 881–890 | 891–900 | 901–910 | 911–920 | 921–930 | 931–940 | 941–950 | 951–960 | 961–970 | 971–980 | 981–990 |
+| EXP | 79 | 80–84 | 85–89 | 90–94 | 95–99 | 100–104 | 105–109 | 110–114 | 115–119 | 120–124 | 125–129 | 130–134 | 135–139 |
+| Room schema | 21 | – | **22** | – | – | – | – | – | – | – | – | – | – |
+| Test prefix | – | `PERF-A` | `PERF-D` | `PERF-T` | `PERF-U` | `PERF-N` | `PERF-G` | `PERF-H` | `PERF-E` | `PERF-K` | `PERF-S` | `PERF-R` | `PERF-C` |
+| Probe area | – | – | existing `db.*` | existing `transfer.*` | – | existing net names | existing app names | existing `hub.*` | existing desktop names | existing `log.*` | existing `swarm.*` | existing `radio.*` | existing call names |
+
+Integrator takes 991+ (ERROR), 350+ (ADR), 140+ (EXP). Only D may bump the Room schema; a stream that believes it
+needs a schema change stops and asks. Server migrations are H's alone, and it records the component version it took
+in its fragment.
+
+## 8. Findings that must NOT be implemented as written
+
+The audit lists 211 defects, not 211 things to do. These are gated, obsolete, or not code at all. A stream that
+reaches one of these writes it into its fragment as `BLOCKED — needs owner decision` and moves to the next finding.
+
+| Finding | Why it is gated | Who decides |
+|---|---|---|
+| `OPT-O01-01` "remove the 3.7 s launch splash" | **ADR-080 / UI-056** makes the splash play to the end on purpose (about 3.45 s, one gate per process). Only the *wait for the engine* may be trimmed; deleting the animation reverses an owner decision. | owner |
+| `OPT-O06-03` FTS5 for search | **ADR-218** deliberately defers FTS5 (LIKE + file names today). D fixes the index/scan findings instead. | owner |
+| `OPT-O07-10` drop application-level AES over TLS 1.3 | **REJ-01** refuses weakening transport security; removing the sealed-chunk layer is a security architecture change, not a perf patch. Revisit only with a threat model. | owner + ADR |
+| `OPT-O09-04` / `OPT-O09-07` Base64 inflation + text-line framing | Wire format. Both hosts, versioned, with a compatibility window. N may still fix the *allocation* half (`O09-05`) without changing bytes. | owner + ADR |
+| `OPT-O06-10` lower SQLCipher PBKDF2 iterations | Weakens the database key derivation. Security decision with a documented trade-off. | owner + `docs/security.md` |
+| `OPT-O13-06` drop the `connectedDevice` FGS when no peer is connected | Play policy vs **ADR-041** background-transfer support, and Transsion Hiber freezes the process. Changes when a user can receive. | owner |
+| `OPT-O22-03` remove BouncyCastle | It generates the desktop TLS certificate; removal touches handshake code on both hosts and needs an ADR + a device test. | owner |
+| `OPT-O04-01` page the conversation history | Behaviour/feature change (what the user can scroll back to), not a pure optimisation. | owner |
+| `OPT-O08-03` steal-back / fairness in swarm serve slots | Changes who gets pieces; needs the SW fairness invariant re-read and a multi-device test. | owner |
+| `OPT-O02-07` / `OPT-O17-01` server heap cliff | Deployment profile (JVM flags, connection budget), not source. H documents the numbers the owner must deploy. | owner (ops) |
+| `OPT-O11-01`, `OPT-O11-03`, `OPT-O12-06` codec changes | Need real devices, and O11 changes the vendored `webrtc-kmp` fork that is republished (ADR-103). | device session |
+| `OPT-O26-06` "voice clips over the 1200 baud data channel" | **Obsolete.** ADR-210/ADR-225 put audio on the vendor SBC Bluetooth channel; REJ-06 rejects packet-radio voice on Shannon grounds. Mark it and do not build it. | already decided |
+| `OPT-O24-01` optimistic echo | Allowed, **only** as a UI-local pending overlay: the outbox row must still be written before the bubble shows "sent", or a crash loses the message (AGENTS §18). | U implements with that constraint |
+
+**Re-verified on 2026-10-30 (still true):** `org.gradle.parallel` and `org.gradle.caching` are absent/comment in
+`gradle.properties`; `app/build.gradle.kts` has no ABI splits; `:server` has no `maxParallelForks`. **Not yet
+re-verified:** every finding D/T/U/N/G/H/E/K/S/R/C touch — that is each stream's first step.
+
+---
+
+## 9. The findings per stream, in batches
+
+Effort/risk are the audit's own (S/M/L, Low/Medium). "Doc" is the evidence file in
+`docs/audit/optimization-2026-10-23/`.
+
+### A — build (25)
+
+**Batch 1 — configuration only, no source (each under an hour):**
+`O21-01` uncomment `org.gradle.parallel` · `O21-02` `org.gradle.caching=true` · `O21-03` daemon `-Xmx4096m` + modern
+GC · `O21-04` `:server:test` `maxParallelForks=4` · `O21-05` CI runs `:server:test` · `O21-06` CI JDK 21 +
+`--no-daemon` audit · `O21-07` pin the BouncyCastle version range · `O21-08` notices/AboutLibraries only on release ·
+`O21-10` drop the duplicate Room KSP in `:app` · `O22-01` ABI splits (arm64-v8a, armeabi-v7a, x86_64) · `O22-04` dead
+JRE modules · `O22-05` drop Material 2 from the desktop umbrella · `O22-06` narrow the `org.webrtc.**` keep rule ·
+`O22-07` remove parked `:ui:chat` androidMain dependencies · `O20-05` R8 rules that strip logs in release.
+
+**Batch 2 — one-day items:**
+`O21-09` split `buildSrc` · `O19-04` desktop JVM flags (`MaxGCPauseMillis`, `Xss512k`, `ExitOnOutOfMemoryError`) ·
+`O19-05` AppCDS archive in jpackage · `O01-06` desktop AppCDS/JVM flags — **the same defect as O19-04/05, close it as a
+duplicate** · `O22-02` strip the 24 foreign native SQLite binaries from the installer ·
+`O01-03` + `O28-01` a `:benchmark` module with Macrobenchmark and baseline/startup profiles.
+
+**Batch 3 — measurement:**
+`O27-01` forks monorepo-wide · `O27-02` virtual time (config + the shared test harness only; per-module test rewrites
+belong to the owning stream) · `O27-05` the flake infrastructure.
+
+**Gated:** `O22-03` (remove BouncyCastle) — needs an ADR and a TLS device test (§8). Record it, do not do it.
+
+**Verify:** before/after `:server:test` wall clock, a clean `:app:assembleRelease` APK size per ABI, `:desktop:package*`
+installer size, and one cold `:core:messaging:compileKotlinJvm`. Evidence runs must say *executed*, not
+`FROM-CACHE` — so for the numbers use `--rerun-tasks` on the single task.
+
+### D — data (23)
+
+**Batch 1 (the 1,700× win + the indexes):**
+`O06-01` index `messages(conversationId, readAt)` and rewrite `observeUnreadCounts` (697 ms → 0.41 ms) · `O06-05`
+five missing indexes (`outbox.nextAttemptAt`, `hub_file.createdAtMs`, `conversations(pinned, sortOrder)`, …) ·
+`O04-02` the N+1 synchronous queries in the chat-list combine · `O25-04` cache the regex in `decodeReactorIds` ·
+`O02-06` + `O06-04` the **desktop** opener `JvmFlashDatabaseOpener` (non-WAL / `synchronous=FULL`, no page-cache
+bound) · `O23-05` + `O06-06` `auto_vacuum` + `journal_size_limit` (this is the one Room step **22**).
+
+**Batch 2:**
+`O06-02` `observeLatestPreviews` (573 ms, re-run on every write) · `O04-03` receipt/reaction invalidation storm ·
+`O04-04` search/unread scans · `O06-07` one transaction for `markChunksDone` + `setBytesDone` · `O06-09` the
+`searchMembers` index that a leading wildcard defeats · `O02-02` stop retaining closed conversation state ·
+`O14-04` cancel the timed-out `scope.async` jobs in `sendWithTimeout` (today they keep writing to the socket until the
+keepalive drops it) · `O14-05` the structural-equality iteration on every `conversationState` emission ·
+`O07-03` 5,120 transactions per 10 GB (with T: T owns the caller, D owns the DAO) · `O28-05` slow-query callbacks.
+
+**Batch 3:**
+`O06-08` BLOB inlining (`SwarmContentEntity` 131 KB manifest; coordinate with S) · `O25-09` collection sizing ·
+`O27-04` in-memory SQLite for the client tests. **Gated:** `O06-03` (ADR-218), `O06-10` (key derivation), `O04-01`
+(paging).
+
+**Verify:** the audit's own `bench/db_benchmark.py` before/after at 100k messages, plus `:core:persistence:jvmTest`
+and the two migration tests. The index change is a schema step: bump `FlashSchemaSteps`, add the `22.json`, and prove
+the chain.
+
+### T — transfer (28)
+
+**Batch 1 (cheap, high ROI):**
+`O07-07` the 1 MB chunk plan silently clamped to 256 KB · `O07-09` the boxed `ArrayList<Int>` done-set reconcile
+(`ResumeBitVector`) · `O25-01` the O(N·M) `pendingIndexes` init · `O07-05` the per-chunk `Sha256.digest` provider
+lookup · `O23-04` purge orphaned hub binaries/partials/voice/camera files · `O23-03` pre-allocate + the FAT32 4 GB
+check · `O23-06` buffered `saveToGallery` (250,000 syscalls per multi-GB copy) · `O05-04` EXIF header without
+re-reading the file · `O05-05` rotate without a second full pixel matrix · `O05-08` trim the camera/voice cache ·
+`O05-09` bounded decode retries · `O02-08` the `JvmImageDecoder` 32-bitmap (~64 MB) cache with no trim hook ·
+`O02-09` the `Activity` context held by `AndroidImageDecoder` (both files are in `ui/platform-shims`, which T owns).
+
+**Batch 2 (the cascade):**
+`O05-01` + `O07-01` one streaming pass for the whole-file hash and the chunk hashes (no `hashOnly` pre-pass; 5.8 GB
+→ 1.9 GB of reads for a 2 GB file) · `O02-01` route inbound frames through `ChunkBufferPool` · `O23-02` a seekable source so resume skips to the missing
+offsets instead of re-reading the whole file · `O07-08` coalesce the 100 Hz progress flow (with U reading
+it) · `O07-06` in-flight chunk retransmission instead of a 15 s timeout + full restart · `O07-02` `.part` + atomic
+rename · `O07-04` take the hash/disk work off the lock-bound reader thread · `O28-02` flight telemetry so the
+before/after is measurable.
+
+**Batch 3:**
+`O02-10` the resume bit vector · `O25-07` `ChunkFrame.serialize` pooling + redundant sort · `O05-02`/`O05-03`/`O05-10`
+desktop AAC/JCodec work off the UI thread · `O07-10` **gated** (§8).
+
+**Verify:** `:core:transfer:jvmTest`, `bench/TransferLoopbackBenchmark.kt` before/after, and EXP numbers in the
+fragment. The hash single-pass change must keep the whole-file verification (REJ-02 forbids dropping it).
+
+### U — ui (28)
+
+**Batch 1 (each S, each provable by inspection):**
+`O03-03` hoist `draft` out of the root `ConversationScreen` scope (every keystroke re-composes the screen) ·
+`O03-04` a Compose compiler stability configuration file for the domain models · `O03-01`/`O03-11`/`O03-12` read
+animation values in the draw phase and guard `reduceMotion` · `O03-05` hoist the per-card lambdas ·
+`O03-06` stop the O(N) set equality check on every `LazyColumn` recomposition · `O03-08` the context-menu list
+allocation · `O03-13` hoist the `BorderStroke` · `O03-09` memoise the trusted-peer regex mapping ·
+`O03-02` the reaction chip's composition-phase state + puff reads (reading animation state in composition instead of
+the draw phase, so every chip frame re-composes) ·
+`O04-05` per-row `SwipeToDismissBox` state · `O04-06` day separators out of the inline lambda (slot reuse) ·
+`O24-05` the settings toggle's synchronous DataStore write · `O24-06` no infinite transition while a sheet opens ·
+`O24-07` reserve the image ratio before decode.
+
+**Batch 2:**
+`O03-14` the splash canvas allocations (in `ui/theme`) · `O03-15` is **S's** ·
+`O03-16` the double text measurement in the quoted reply · `O03-17`/`O03-18` are `BoxWithConstraints` in the nav bar
+(U) and the call dock (**C**) · `O03-07` the re-created `GroupFileSender` remember key ·
+`O24-01` optimistic local echo as a **UI-local overlay** (§8) · `O24-02` keep the staging tray visible with a spinner
+until `sendFile` returns · `O24-03` the IME `animateContentSize` jitter · `O24-04` auto-scroll when the keyboard
+opens · `O05-06`/`O05-07` the 10 Hz voice-note card and its waveform parsing · `O25-05` memoise the sorts in the
+nearby and video-grid layouts · `O04-07` the unconstrained `animateScrollToItem`.
+
+**Batch 3:** `O24-08` is E's (desktop reduce-motion).
+
+**Verify:** `:ui:chat:jvmTest`, the Compose compiler metrics for the touched composables (stability report), and a
+device check (`PERF-U01`) for anything that changes what a user sees. Do not claim a frame-rate number without a
+Macrobenchmark run (A's `:benchmark` module).
+
+### N — net (18)
+
+**Batch 1:**
+`O09-06` + `O14-02` the `Thread.sleep(25)` busy-poll in `WsSession` backpressure · `O09-05` the
+`ByteArrayPool` copy-and-discard in `WebSocketCodec` · `O09-08` the unconditional `UUID.randomUUID()` for a flow
+nobody collects · (`O14-04`/`O14-05` are D's) · `O10-03` the 253 Binder IPC cycles per subnet sweep ·
+`O10-06` the duplicated connectivity triggers.
+
+**Batch 2:**
+`O09-01` `BoundedSendQueue` bypassed by unbuffered blocking writes under the global write lock · `O14-01` the
+monitor lock held across socket I/O · `O14-03` the global `drainMutex` serialising every peer ·
+`O09-03` double JSON tree parsing in `RelayFrameCodec` · `O10-04` the NSD resolve queue head-of-line block ·
+`O10-05` the unsynchronised polling sweepers · `O10-07` directed broadcast basic-rate penalty · `O28-03` call
+telemetry is C's.
+
+**Batch 3:**
+`O09-02` TLS session resumption (measure both hosts; it changes handshake behaviour) · `O10-01` screen-off
+discovery downscale (**needs G's screen-state signal** — agree on an interface; N owns the discovery side) ·
+`O10-02` the permanent `MulticastLock` (N owns `core:discovery`; G calls the new lease API if one is needed).
+
+**Gated:** `O09-04`, `O09-07` (wire format, §8).
+
+**Verify:** `:core:network:jvmTest`, `:core:discovery` tests, and for the lock change a two-device transfer check
+(`PERF-N01`).
+
+### G — android (13)
+
+**Batch 1 (battery, the owner-visible one):**
+`O13-01` the perpetual partial wake lock → bounded, ref-counted lease · `O13-02` the keepalive worker that spins the
+whole engine for an empty outbox · `O13-03` `Verifying` missing from the Android 15 timeout plan ·
+`O13-08` the `delay(300)` poll at service start · `O01-02` synchronous DataStore/SQLite on the main thread ·
+`O01-07` the redundant `MediaCodecList` enumeration · `O01-08` sequential PRAGMAs at open.
+
+**Batch 2:**
+`O13-05` `ACTION_SCREEN_OFF` handling (polling and tickers in a pocket) · `O13-04` the Transsion Tier 3 silent
+`AudioTrack` · `O13-07` audio-focus backoff in `TranssionHiberKeepAlive` · `O01-04` the eager engine assembly +
+subnet sweep at launch. (`O02-09` — the `Activity` context held by `AndroidImageDecoder` — is T's, because the file is
+in `ui/platform-shims`.)
+
+**Batch 3 / gated:** `O13-06` (§8), `O01-01` (§8 — only the *gate wait*, and only with the owner's yes).
+
+**Verify:** `:app:compileDebugKotlin`, `:app:compileDebugAndroidTestKotlin`, and a device session for the wake-lock
+and Doze behaviour (`PERF-G01`, `PERF-G02`) — a battery claim without `batterystats` is not a result.
+
+### H — hub (19)
+
+**Batch 1:**
+`O23-01` the per-chunk `fsync` + open/close in `HubFileDisk` (1,600 per 50 MB) · `O25-10` the N+1 revocation cascade
+(~2.1 s of exclusive write lock) · `O18-01` gzip/deflate static assets · `O18-02` the 35-request ES module waterfall ·
+`O17-04` `ExitOnOutOfMemoryError` in the deploy scripts.
+
+**Batch 2:**
+`O17-02` `writeChunkFile` inside `db.withTransaction` · `O25-02` the O(D·M) directory sync + repeated JSON ·
+`O25-06` the linear scan over `memberDeviceIds` · `O16-01` the stop-and-wait hub file chunk pipeline ·
+`O16-03` the 30 s HTTP presence poll while the relay is up · `O02-03` the 35–45 MB org snapshot spike ·
+`O02-07`/`O17-01` the heap cliff (**document only**, §8) · `O27-03` real sockets/Netty in the test suite.
+
+**Batch 3:** `O16-02` multi-page sync (overlaps `O02-03`) · `O16-04` batched mailbox acks · `O18-03` console
+preloading · `O25-09` collection sizing · `O17-03` the group fan-out serialisation.
+
+**Verify:** `:server:test` (compare against A's new parallel baseline, not the old 238 s), the hub file e2e test, and
+the admin console tests. A migration change also re-runs the server `MigratorTest` on the merged result.
+
+### E — desktop (10)
+
+`O19-01` the recursive AWT `DropTarget` registration · `O19-02` the transfer toast observing 100 Hz at idle ·
+`O19-03` the window-width container read during resize · `O03-10` the desktop shell root invalidation from eight
+StateFlows · `O19-06` + `O01-05` the blocking constructor (DPAPI, keys, disk) · `O19-07` idle discovery downscaling
+when minimised to tray · `O20-03` the synchronous unbuffered console sink · `O14-06` the 28–34 threads the desktop
+spawns at idle from independent coroutine/OkHttp/Ktor pools (E owns the desktop tree; it does not edit
+`core/network`) · `O24-08` OS reduce-motion · `O19-04`/`O19-05` are A's (build).
+
+**Verify:** `:desktop:compileKotlinJvm`, `:desktop:jvmTest`, and a manual frame profiler note (`PERF-E01`).
+
+### K — kernel (10)
+
+`O20-01` `inline fun FlashLog.d(tag, msg: () -> String)` + level check before the lambda (the 11 FPS contributor) ·
+`O20-04` `FlashProbe` vararg pair allocation and repeated sanitisation · `O20-02` move the rotating sink's three regex
+redactions + date formatting off the caller thread · `O20-06` compress the diagnostic log export ·
+`O15-01` cache the parsed SPKI in `ecP256Verify` (halves signature verification) · `O15-02` one `SecureRandom` ·
+`O15-03` cache `Cipher.getInstance("AES/GCM/NoPadding")` per thread · `O15-04` drop the okio `HashingSink` wrapper in
+`Sha256.digest` · `O25-03` top-level `Regex` + cached NFKD folding in `foldForSearch`/initials · `O27-06` keep the
+heavy crypto tests out of the default sweep (tag + a documented task).
+
+**Verify:** `:core:common:jvmTest`, `:core:security:jvmTest`, and a JMH-style microbenchmark note for the regex and
+hash changes. `FlashLog` is called by every module: keep the public API source-compatible.
+
+### S — swarm (14)
+
+`O08-01` the O(P·N·W) scheduler → bitset + rarest-first · `O25-08` the discarded O(P·N) holder computation in
+`updateWaitReason` · `O08-07` the O(N²) HAVE storm · `O08-02` the redundant full-piece re-hash on serve ·
+`O08-04` per-piece fsync + DAO amplification · `O08-05` the 4 Hz idle ticker · `O08-06` thermal governor integration ·
+`O08-08` tombstone retention + summary broadcasts · `O02-04` `Channel.UNLIMITED` queues · `O02-05` permanent
+tombstones in a `LinkedHashMap` · `O23-07` heap-wrapped NIO buffers in the piece storage · `O03-15` the piece-map
+canvas allocations (S owns `FlashSwarm*.kt`) · `O28-04` scheduler telemetry.
+
+**Gated:** `O08-03` (fairness, §8). `O06-08` (the BLOB entity) is D's — coordinate, do not edit persistence.
+
+**Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (known flake — record it), and a three-device swarm check
+(`PERF-S01`).
+
+### R — radio (7)
+
+`O26-01` the 250 ms semi-blocking read loop in `KissTncDriver` (14,400 wake-ups/hour) · `O26-04` framing/AAD/serial
+buffer churn · `O26-03` the unbounded `pendingAcks` and `UNLIMITED` channels · `O26-05` the up-to-4 s
+`Thread.sleep()` in Android connection probing · `O26-07` JCA provider lookups + SPKI re-parsing in
+`JdkRadioCrypto`/`JdkRadioSignatureScheme` · `O26-02` channel occupancy / goodput (measure first: 1200 baud numbers
+are easy to get wrong) · `O26-06` **obsolete** (§8).
+
+**Verify:** `:core:radio:jvmTest`, the golden-frame test (the wire must not change), and `RADCHAT-*`/`RADVOICE-*`
+device checks. Anything touching `RadioSession` re-runs the anti-replay tests (ERROR-870 lives there).
+
+### C — calls (15)
+
+`O11-01` 1080p30 software VP8 on desktop (**device-gated**) · `O11-02` the camera capturer running when the camera is
+off · `O11-03` the unconditional VP8 SDP that strips MediaCodec (**device-gated, fork**) · `O11-04` the O(N) stats
+allocation in mesh calls · `O11-05` the dead SDP bitrate tuning · `O11-06` occluded remote frames still rasterising ·
+`O11-07` uncapped screen-share encoding to 4 watchers · `O12-01` the 50 Hz playout StateFlow ·
+`O12-02` ~550 allocs/sec in the audio pipeline · `O12-03` the 1 s `TargetDataLine` cold open (pre-warm) ·
+`O12-04` the non-adaptive 120 ms jitter buffer · `O12-05` Android `AudioTrack` performance mode + attributes ·
+`O12-06` PCM16 airtime (**gated**, both hosts) · `O03-18` the call-dock `BoxWithConstraints` · `O28-03` call
+telemetry.
+
+**Verify:** `:core:calling:jvmTest`, `:core:ptt:jvmTest`, `:ui:callui:jvmTest`, `:desktop:compileKotlinJvm`, and a
+two-device call check. A change to the vendored `webrtc-kmp` fork must be recorded in
+`third_party/webrtc-kmp/MODIFICATIONS.md` and needs the fork republished (ADR-103) before the app can use it.
+
+## 10. Tracking
+
+The integrator keeps this table current; a stream's own fragment holds its detail.
+
+| Stream | Worktree | Batch 1 | Batch 2 | Batch 3 | Merged (`git log --oneline -1`) | Gate | Device checks owed |
+|---|---|---|---|---|---|---|---|
+| A build | `opt-build` | ☐ | ☐ | ☐ | | | PERF-A01 (APK size), PERF-A02 (cold start) |
+| D data | `opt-data` | ☐ | ☐ | ☐ | | | PERF-D01 (unread latency), PERF-D02 (chat list) |
+| T transfer | `opt-transfer` | ☐ | ☐ | ☐ | | | PERF-T01 (send a 2 GB file), PERF-T02 (resume) |
+| U ui | `opt-ui` | ☐ | ☐ | ☐ | | | PERF-U01 (scroll during transfer) |
+| N net | `opt-net` | ☐ | ☐ | ☐ | | | PERF-N01 (transfer under lock change) |
+| G android | `opt-android` | ☐ | ☐ | ☐ | | | PERF-G01 (battery), PERF-G02 (Doze) |
+| H hub | `opt-hub` | ☐ | ☐ | ☐ | | | PERF-H01 (hub file 50 MB), PERF-H02 (revocation) |
+| E desktop | `opt-desktop` | ☐ | ☐ | ☐ | | | PERF-E01 (navigation frames) |
+| K kernel | `opt-kernel` | ☐ | ☐ | ☐ | | | none |
+| S swarm | `opt-swarm` | ☐ | ☐ | ☐ | | | PERF-S01 (three devices) |
+| R radio | `opt-radio` | ☐ | ☐ | ☐ | | | PERF-R01 (idle wake-ups) |
+| C calls | `opt-calls` | ☐ | ☐ | ☐ | | | PERF-C01 (call CPU/audio) |
+
+---
+
+## 11. Kickoff prompts
+
+Paste **one** block into a fresh agent session. Each starts by creating its own worktree on `E:`, then re-reads the
+plan and the audit evidence. They are written to be used verbatim; only the stream letter changes.
+
+Two things the blocks do not repeat:
+
+- **Resuming a stream?** If `E:\FlashWork\opt-<stream>` already exists, do **not** create a second worktree: run
+  `git worktree list` from the main tree, work in the existing one, and `git log --oneline -1` first to see what is
+  already committed. `git worktree add` fails if the branch exists, and a second tree on the same branch is not
+  possible.
+- **The base is `dev` at the commit this plan was committed in.** If `dev` has moved since, `git merge dev` before
+  batch 1 (never rebase).
+
+### 11.A — build
+
+```text
+You are the BUILD (A) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST, before reading anything else:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-build -b agent/opt-build dev
+    Copy-Item .\local.properties E:\FlashWork\opt-build\local.properties
+    cd E:\FlashWork\opt-build
+Do every edit, every build and every commit there. The main tree is the integrator's: never edit it. Never copy
+keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "A — build" (your findings and batch order).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 (machine rules) and section 8 (log fragments).
+4. docs/audit/optimization-2026-10-23/: O21-build-gradle.md, O22-size-dependencies.md,
+   O27-test-suite-performance.md, O01-startup.md (O01-03), O19-desktop-app.md (O19-04/05),
+   O20-logging-probes.md (O20-05), O28-observability-benchmarks.md (O28-01).
+
+YOU OWN: gradle.properties, settings.gradle.kts, the root and every module build.gradle.kts, gradle/**, .github/**,
+buildSrc/**, app/proguard-rules.pro, ThirdPartyNotices*, tools/**, and a new benchmark/ module.
+YOU MUST NOT TOUCH: any src/** file (except benchmark/src/**), and the canonical logs/docs (write logs/streams/build/).
+
+DO IN THIS ORDER
+Batch 1 (config only, no source): O21-01 parallel, O21-02 caching, O21-03 daemon heap, O21-04 :server forks,
+O21-05 CI runs :server:test, O21-06 CI JDK, O21-07 pin BouncyCastle, O21-08 notices on release only, O21-10 drop the
+duplicate KSP, O22-01 ABI splits, O22-04 dead JRE modules, O22-05 drop Material 2, O22-06 narrow the webrtc keep rule,
+O22-07 remove parked ui:chat deps, O20-05 R8 log stripping.
+Batch 2: O21-09 buildSrc split, O19-04 desktop JVM flags, O19-05 AppCDS, O01-06 (the same defect as O19-04/05 - close it
+as a duplicate), O22-02 strip foreign SQLite binaries, O01-03 + O28-01 the :benchmark module with Macrobenchmark + baseline
+profiles.
+Batch 3: O27-01 forks monorepo-wide, O27-02 virtual time (config/harness only), O27-05 flake infrastructure.
+GATED: O22-03 (BouncyCastle removal) needs an ADR - record BLOCKED, do not do it.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew. Exit 75
+  means another agent holds the lock: do non-build work and retry.
+- For evidence numbers rerun the single task with --rerun-tasks and quote the executed time, not FROM-CACHE.
+- Do not change application behaviour, versions of Kotlin/AGP/Compose, or add a dependency without asking.
+- Commit only to agent/opt-build, small commits, finding ID in the subject (perf(build): enable Gradle parallel (OPT-O21-01)).
+- Log only into logs/streams/build/ in the canonical format, using ADR 230-239, ERROR 871-880, EXP 80-84.
+
+VERIFY: :server:test wall clock before/after; :app:assembleRelease APK size per ABI; :desktop:package* installer size;
+one cold :core:messaging:compileKotlinJvm. Then the integration gate of the plan section 6.3.
+
+REPORT (short): what you changed per finding, the before/after numbers you measured, the exact tasks you ran and
+their last lines, the shared files you edited and their hunk sizes, what is left, and any finding that no longer
+reproduces. Run cmd /c "tools\flash-gradle.cmd --stop" when you finish a session.
+```
+
+### 11.D — data
+
+```text
+You are the DATA (D) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-data -b agent/opt-data dev
+    Copy-Item .\local.properties E:\FlashWork\opt-data\local.properties
+    cd E:\FlashWork\opt-data
+The main tree is the integrator's: never edit it. Never copy keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 18, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "D — data".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3, section 7 (reservations), section 8.
+4. docs/audit/optimization-2026-10-23/: O06-database-room-sqlite.md, O04-chat-list-and-conversation.md,
+   O02-heap-and-native-memory.md (O02-02/O02-06), O14-concurrency-dispatchers-locks.md, O25-algorithmic-complexity.md
+   (O25-04/09), O23-storage-file-io.md (O23-05).
+
+YOU OWN: core/persistence/** (Room schema step 22 is yours), core/messaging/** EXCEPT hub/** and radio/**,
+and desktop JvmFlashDatabaseOpener*. You are the only owner of RealFlashChatRepository.kt.
+YOU MUST NOT TOUCH: ui/**, server/**, core/transfer, core/swarm, any build.gradle.kts, the canonical logs
+(write logs/streams/data/).
+
+DO IN THIS ORDER
+Batch 1: O06-01 index messages(conversationId, readAt) + rewrite observeUnreadCounts; O06-05 the five missing indexes;
+O04-02 the N+1 queries in the chat-list combine; O25-04 cache the decodeReactorIds regex; O02-06 + O06-04 desktop
+opener PRAGMAs (it runs non-WAL/synchronous=FULL);
+O23-05 + O06-06 auto_vacuum + journal_size_limit (this is schema step 22).
+Batch 2: O06-02 latest previews; O04-03 receipt invalidation storm; O04-04 search/unread scans; O06-07 one transaction
+for markChunksDone + setBytesDone; O06-09 the org search index; O02-02 stop retaining closed conversation state;
+O14-04 Eagerly -> WhileSubscribed; O14-05 structural equality on every mutation; O07-03 write amplification (DAO side);
+O28-05 slow-query callbacks.
+Batch 3: O06-08 BLOB inlining (coordinate with S), O25-09 collection sizing, O27-04 in-memory SQLite tests.
+GATED: O06-03 FTS5 (ADR-218), O06-10 PBKDF2 iterations, O04-01 paging - record BLOCKED with the reason.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Any Room change is schema step 22: bump FlashSchemaSteps/FlashDatabase/FlashMigrations, add schemas/22.json, and run
+  FlashMigrationsChainTest + FlashJvmMigrationsTest. No other stream may bump the schema.
+- Measure with docs/audit/optimization-2026-10-23/bench/db_benchmark.py before and after at 100k messages.
+- Keep queries index-friendly; never drop WAL and never synchronous=OFF (rejected.md REJ-03).
+- Commit only to agent/opt-data, small commits with the finding ID. Logs only in logs/streams/data/
+  (ADR 240-249, ERROR 881-890, EXP 85-89, tests PERF-D*).
+
+VERIFY: :core:persistence:jvmTest, :core:messaging:jvmTest, the two migration tests, and the db_benchmark before/after
+numbers. Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + measured before/after, the gate commands and their last lines, the schema step you
+took, what is left, and every finding that no longer reproduces. Stop the daemon when the session ends.
+```
+
+### 11.T — transfer
+
+```text
+You are the TRANSFER (T) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-transfer -b agent/opt-transfer dev
+    Copy-Item .\local.properties E:\FlashWork\opt-transfer\local.properties
+    cd E:\FlashWork\opt-transfer
+The main tree is the integrator's. Never copy keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 18, 23, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "T — transfer" (+ compounding.md cascade 1).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O05-media-pipeline.md, O07-file-transfer-throughput.md,
+   O23-storage-file-io.md, O02-heap-and-native-memory.md (O02-01/08/09/10), O25-algorithmic-complexity.md (O25-01/07),
+   O28-observability-benchmarks.md (O28-02), rejected.md (REJ-02, REJ-05 - do not break them).
+
+YOU OWN: core/transfer/**, ui/platform-shims/**, core/engine/FlashPathSanitizer.kt.
+YOU MUST NOT TOUCH: core/persistence (D owns the DAOs), core/swarm (S), core/network (N), ui/chat, any
+build.gradle.kts, the canonical logs (write logs/streams/transfer/).
+
+DO IN THIS ORDER
+Batch 1 (cheap): O07-07 the 1 MB chunk clamp; O07-09 the boxed done-set reconcile; O25-01 pendingIndexes O(N*M);
+O07-05 per-chunk Sha256 provider lookup; O23-04 purge orphaned hub binaries/partials/voice/camera files; O23-03 disk
+pre-allocation + FAT32 4 GB check; O05-04 EXIF without a second full read; O05-05 no post-decode pixel rotation blit;
+O05-08 trim the camera/voice cache; O05-09 bounded decode retries; O02-08 + O02-09 the image-decoder cache and
+Activity-context leaks in ui/platform-shims.
+Batch 2 (the cascade): O05-01 + O07-01 ONE streaming pass for whole-file + chunk hashes (5.8 GB -> ~1.9 GB reads for
+2 GB) keeping whole-file verification; O02-01 inbound frames through ChunkBufferPool; O23-02 seekable resume source;
+O07-08 coalesce the 100 Hz progress flow; O07-06 in-flight chunk retransmission; O07-02 .part + atomic rename;
+O07-04 hash/disk work off the lock-bound reader; O28-02 flight telemetry so the improvement is measurable.
+Batch 3: O02-10 the resume bit vector, O25-07 ChunkFrame.serialize pooling, O05-02/03/10 desktop AAC/JCodec off the
+UI thread. GATED: O07-10 (REJ-01) - record BLOCKED, do not remove encryption.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Never keep a whole file in memory; stream (AGENTS section 18). Never drop the whole-file hash (REJ-02).
+- No chunk size above 1 MB and no 8/16 MB chunks (REJ-05).
+- Commit only to agent/opt-transfer, small commits with the finding ID. Logs only in logs/streams/transfer/
+  (ADR 250-259, ERROR 891-900, EXP 90-94, tests PERF-T*).
+
+VERIFY: :core:transfer:jvmTest, bench/TransferLoopbackBenchmark.kt before/after, a resume test that interrupts at 90%,
+and the integration gate (plan section 6.3).
+
+REPORT: per finding the change + measured before/after, the gate commands and their last lines, what is left, and the
+findings that no longer reproduce. Stop the daemon when the session ends.
+```
+
+### 11.U — ui
+
+```text
+You are the UI (U) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-ui -b agent/opt-ui dev
+    Copy-Item .\local.properties E:\FlashWork\opt-ui\local.properties
+    cd E:\FlashWork\opt-ui
+The main tree is the integrator's. Never copy keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 22, 24, 31, 34, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "U — ui" (+ compounding.md cascade 2).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O03-compose-stability.md, O24-ui-responsiveness.md,
+   O04-chat-list-and-conversation.md (O04-05/06/07), O05-media-pipeline.md (O05-06/07),
+   O25-algorithmic-complexity.md (O25-05).
+5. docs/ui/flash-premium-chat-ui-implementation.md and docs/ui/chat-screen.md before changing a chat surface.
+
+YOU OWN: ui/chat/** EXCEPT radio/** and FlashSwarm*.kt, ui/theme/**, ui/hub/**.
+YOU MUST NOT TOUCH: RealFlashChatRepository.kt or any core/** file, ui/callui (C), app/** (G), desktop/** (E), any
+build.gradle.kts, the canonical logs (write logs/streams/ui/).
+
+DO IN THIS ORDER
+Batch 1: O03-03 hoist draft out of the root ConversationScreen scope; O03-04 stability configuration file;
+O03-01/11/12 animation reads in the draw phase + reduceMotion guards; O03-05 hoist per-card lambdas; O03-06 the O(N)
+set equality in LazyColumn; O03-08 context-menu list allocation; O03-13 hoist BorderStroke; O03-09 memoise the
+trusted-peer regex mapping; O03-02 the reaction chip reading animation state in composition; O04-05 per-row swipe state;
+O04-06 day separators (slot reuse); O24-05 settings toggle write; O24-06 sheet entrance transitions; O24-07 reserve
+image ratio.
+Batch 2: O03-14 splash canvas allocations (ui/theme); O03-16 quoted reply double measurement; O03-17 nav-bar
+BoxWithConstraints; O03-07 the GroupFileSender remember key; O24-01 optimistic echo AS A UI-LOCAL OVERLAY ONLY
+(the outbox row must exist before "sent"; never bypass durability); O24-02 keep the staging tray visible with a
+spinner; O24-03 IME resize jitter; O24-04 auto-scroll on keyboard; O05-06/07 voice-note 10 Hz + waveform parsing;
+O25-05 memoise the sorts; O04-07 unconstrained animateScrollToItem.
+NOT YOURS: O03-15 (S), O03-18 (C), O03-10 and O24-08 (E).
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Keep the design language (docs/ui/); no stock Material component may become the final composer/bubble.
+- Prefer reading animation state in the draw phase; never add an infinite transition without reduceMotion.
+- Commit only to agent/opt-ui, small commits with the finding ID. Logs only in logs/streams/ui/
+  (ADR 260-269, ERROR 901-910, EXP 95-99, tests PERF-U*).
+
+VERIFY: :ui:chat:jvmTest, :ui:theme:jvmTest, the Compose compiler stability report for the touched composables, and
+one device scroll check during an active transfer (PERF-U01). Do not claim a frame-rate number without a
+Macrobenchmark run.
+
+REPORT: per finding the change, what you measured (or why it is inspection-only), the gate commands and their last
+lines, what is left, findings that no longer reproduce. Stop the daemon when the session ends.
+```
+
+### 11.N — net
+
+```text
+You are the NET (N) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-net -b agent/opt-net dev
+    Copy-Item .\local.properties E:\FlashWork\opt-net\local.properties
+    cd E:\FlashWork\opt-net
+The main tree is the integrator's. Never copy keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 16, 19, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "N — net".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O09-websocket-mesh-wire.md, O10-discovery-presence.md,
+   O14-concurrency-dispatchers-locks.md, and docs/protocol.md before touching anything on the wire.
+
+YOU OWN: core/network/**, core/discovery/**, and core/engine/{FlashEngine,FlashBaseEngine,FlashConfig,
+FlashInboundRouter,MagicFrameRouter,PeerOrderedInbox,PlatformLock}.kt.
+YOU MUST NOT TOUCH: core/messaging (D/H), ui/**, app/** (G), desktop/** (E), core/transfer (T), any build.gradle.kts,
+the canonical logs (write logs/streams/net/). You are the owner of PlatformLock.kt.
+
+DO IN THIS ORDER
+Batch 1: O09-06 + O14-02 the Thread.sleep(25) backpressure poll; O09-05 the ByteArrayPool copy-and-discard;
+O09-08 the unconditional UUID.randomUUID(); O10-03 the 253 Binder IPCs per subnet sweep; O10-06 duplicated
+connectivity triggers.
+Batch 2: O09-01 BoundedSendQueue bypassed by blocking writes under the global write lock; O14-01 the monitor lock held
+across socket I/O; O14-03 the global drainMutex serialising peers; O09-03 double JSON tree parsing; O10-04 NSD resolve
+queue head-of-line; O10-05 unsynchronised polling sweepers; O10-07 directed broadcast basic-rate penalty.
+Batch 3: O09-02 TLS session resumption (measure both hosts); O10-01 screen-off discovery downscale (agree a screen-state
+API with G before changing discovery); O10-02 the permanent MulticastLock -> a leased lock with a bound.
+GATED: O09-04 and O09-07 change the wire format - record BLOCKED, do not change bytes.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Never weaken TLS, pinning or identity validation (AGENTS section 19). Ordering and delivery guarantees must survive
+  any lock change: prove it with a test, not with an argument.
+- No wire-format change without an ADR and both hosts.
+- Commit only to agent/opt-net, small commits with the finding ID. Logs only in logs/streams/net/
+  (ADR 270-279, ERROR 911-920, EXP 100-104, tests PERF-N*).
+
+VERIFY: :core:network:jvmTest, :core:discovery tests, :core:engine:compileKotlinJvm, and a two-device transfer while
+the lock change is exercised (PERF-N01). Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + what you measured, the gate commands and their last lines, what is left, findings
+that no longer reproduce, and any interface you need from another stream. Stop the daemon when the session ends.
+```
+
+### 11.G — android
+
+```text
+You are the ANDROID (G) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-android -b agent/opt-android dev
+    Copy-Item .\local.properties E:\FlashWork\opt-android\local.properties
+    cd E:\FlashWork\opt-android
+The main tree is the integrator's. Never copy keystore.properties or the .jks. You do not touch the phone unless the
+owner names you for a device session.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 20, 21, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "G — android".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md sections 3, 4 (the phone is single-owner) and 8.
+4. docs/audit/optimization-2026-10-23/: O13-background-battery-wakeups.md, O01-startup.md,
+   and docs/android-platform-notes.md. (O02-08/O02-09 are the transfer stream's: they live in ui/platform-shims.)
+
+YOU OWN: app/** EXCEPT radio/**, calling/**, ptt/**; app/src/**/ui/splash/**.
+YOU MUST NOT TOUCH: core/** (K owns common/security, N owns discovery/network, D owns persistence), ui/** (U),
+build.gradle.kts (A), the canonical logs (write logs/streams/android/).
+
+DO IN THIS ORDER
+Batch 1 (battery - the owner-visible one): O13-01 the perpetual partial wake lock -> bounded, ref-counted lease;
+O13-02 the keepalive worker spinning the whole engine for an empty outbox; O13-03 Verifying missing from the Android 15
+timeout plan; O13-08 the delay(300) service poll; O01-02 synchronous DataStore/SQLite on the main thread;
+O01-07 redundant MediaCodecList enumeration; O01-08 sequential PRAGMAs at open.
+Batch 2: O13-05 ACTION_SCREEN_OFF handling; O13-04 Transsion Tier 3 silent AudioTrack; O13-07 audio-focus backoff;
+O01-04 eager engine assembly + subnet sweep at launch.
+GATED: O01-01 (ADR-080 - the splash must still play; only the engine wait may change, and only with the owner's yes) and
+O13-06 (Play policy vs ADR-041). Record BLOCKED with the reason; do not delete the splash or the FGS.
+NOTE: O10-01/O10-02 belong to N. If you need a screen-state signal in discovery, ask N (plan section 4.2).
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Verify every Android platform claim against the current official docs before changing behaviour, and write the fact +
+  URL + date into logs/streams/android/platform-notes-additions.md (the integrator folds it into
+  docs/android-platform-notes.md). Never claim background support without a device run.
+- Commit only to agent/opt-android, small commits with the finding ID. Logs only in logs/streams/android/
+  (ADR 280-289, ERROR 921-930, EXP 105-109, tests PERF-G*).
+
+VERIFY: :app:compileDebugKotlin, :app:compileDebugAndroidTestKotlin (compile only - running is a device session), and
+put the battery/Doze checks in the backlog fragment. Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change, what still needs a device, the gate commands and their last lines, and any platform
+fact you verified with its URL. Stop the daemon when the session ends.
+```
+
+### 11.H — hub
+
+```text
+You are the HUB (H) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-hub -b agent/opt-hub dev
+    Copy-Item .\local.properties E:\FlashWork\opt-hub\local.properties
+    cd E:\FlashWork\opt-hub
+The main tree is the integrator's. Never copy keystore.properties or the .jks. No deployment from this stream.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 19, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "H — hub" (+ compounding.md cascade 3).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md sections 3, 7 and 8.
+4. docs/audit/optimization-2026-10-23/: O17-hub-server.md, O18-admin-console.md, O16-hub-client.md,
+   O25-algorithmic-complexity.md (O25-02/06/09/10), O23-storage-file-io.md (O23-01), and docs/protocol.md.
+
+YOU OWN: server/**, core/enterprise/**, core/hub-protocol/**, core/messaging/hub/**,
+core/engine/{HubFileBinding,HubFileRows,StreamingHubFileSource}.kt, docs/protocol-routes.txt.
+YOU MUST NOT TOUCH: core/persistence, core/messaging outside hub/, ui/**, hosts, build.gradle.kts (A owns :server and
+console build config), the canonical logs (write logs/streams/hub/).
+
+DO IN THIS ORDER
+Batch 1: O23-01 per-chunk fsync + open/close in HubFileDisk (1,600 per 50 MB); O25-10 the N+1 revocation cascade (~2.1 s
+of exclusive write lock); O18-01 gzip/deflate static assets; O18-02 the 35-request ES module waterfall;
+O17-04 ExitOnOutOfMemoryError in the deploy scripts.
+Batch 2: O17-02 writeChunkFile inside db.withTransaction; O25-02 the O(D*M) directory sync; O25-06 the linear
+memberDeviceIds scan; O16-01 stop-and-wait hub file chunks; O16-03 the 30 s presence poll while the relay is up;
+O02-03 the org snapshot heap spike; O27-03 real sockets/Netty in tests.
+Batch 3: O16-02 multi-page sync, O16-04 batched mailbox acks, O18-03 console preloading, O25-09 collection sizing,
+O17-03 group fan-out. DOCUMENT ONLY: O02-07 / O17-01 (the heap cliff is a deployment profile, not source).
+If you need a server migration, take the next version of its component and record it in your fragment.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- The wire contract is documented: any REST/route change updates docs/protocol-routes.txt (RouteTableContractTest) and
+  docs/protocol.md. A hub-file wire change needs an ADR first.
+- Never weaken the sealing, the bearer checks or the per-device limits for speed.
+- Commit only to agent/opt-hub, small commits with the finding ID. Logs only in logs/streams/hub/
+  (ADR 290-299, ERROR 931-940, EXP 110-114, tests PERF-H*).
+
+VERIFY: :server:test (compare with A's parallel baseline), :core:enterprise:jvmTest, the hub file e2e contract test, the
+console node tests, and the server MigratorTest. Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + measured before/after (latency, lock hold time, bytes), the gate commands and their
+last lines, the migration versions you took, what is left. Stop the daemon when the session ends.
+```
+
+### 11.E — desktop
+
+```text
+You are the DESKTOP (E) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-desktop -b agent/opt-desktop dev
+    Copy-Item .\local.properties E:\FlashWork\opt-desktop\local.properties
+    cd E:\FlashWork\opt-desktop
+The main tree is the integrator's. Never copy keystore.properties or the .jks. The owner's desktop app may stay open
+during the day; use temp state directories in tests, never ~/.flash.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "E — desktop".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O19-desktop-app.md, O03-compose-stability.md (O03-10),
+   O01-startup.md (O01-05), O20-logging-probes.md (O20-03), O24-ui-responsiveness.md (O24-08).
+
+YOU OWN: desktop/** EXCEPT radio/**, radioaudio/**, radiospike/**, and desktop JvmFlashDatabaseOpener* (D owns it).
+YOU MUST NOT TOUCH: core/** (N owns network, K owns common/security), ui/**, app/**, build.gradle.kts (A owns the JVM
+flags and packaging), the canonical logs (write logs/streams/desktop/).
+
+DO IN THIS ORDER
+O19-01 the recursive AWT DropTarget registration (key the DisposableEffect on the window only); O19-02 the transfer
+toast observing activeTransfers at 100 Hz while minimised; O19-03 the window-width container read during resize;
+O03-10 the desktop shell root invalidation from eight StateFlows; O19-06 + O01-05 the blocking constructor (DPAPI, key
+generation, disk) - move it off the main thread with a first-frame-safe path; O19-07 idle discovery downscaling when
+minimised to tray; O20-03 the synchronous unbuffered console sink; O14-06 the 28-34 threads the desktop spawns at idle
+from independent coroutine/OkHttp/Ktor pools (own it here; do not edit core/network); O24-08 OS reduce-motion.
+NOT YOURS: O19-04/O19-05 (A), O02-08 (T owns ui/platform-shims), O23 desktop bits owned by D.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- The window must show its first frame without waiting on disk or crypto; keep the DPAPI key handling unchanged in
+  behaviour (only move the thread).
+- Commit only to agent/opt-desktop, small commits with the finding ID. Logs only in logs/streams/desktop/
+  (ADR 300-309, ERROR 941-950, EXP 115-119, tests PERF-E*).
+
+VERIFY: :desktop:compileKotlinJvm, :desktop:jvmTest (note the known ERROR-106 failures in your report, do not fix
+them here), and a manual profiler note for navigation (PERF-E01). Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + what you measured, the gate commands and their last lines, what is left, findings
+that no longer reproduce. Stop the daemon when the session ends.
+```
+
+### 11.K — kernel
+
+```text
+You are the KERNEL (K) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-kernel -b agent/opt-kernel dev
+    Copy-Item .\local.properties E:\FlashWork\opt-kernel\local.properties
+    cd E:\FlashWork\opt-kernel
+The main tree is the integrator's. Never copy keystore.properties or the .jks.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 19, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "K — kernel" (+ compounding.md cascade 2 for FlashLog).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O20-logging-probes.md, O15-serialization-crypto-hashing.md,
+   O25-algorithmic-complexity.md (O25-03), O27-test-suite-performance.md (O27-06), docs/testing/PROBES.md.
+
+YOU OWN: core/common/** and core/security/**.
+YOU MUST NOT TOUCH: every other module (you are the only stream that edits core/common, so a mistake here breaks all
+hosts), any build.gradle.kts, the canonical logs (write logs/streams/kernel/).
+
+DO IN THIS ORDER
+O20-01 level-gated inline logging (inline fun d(tag, msg: () -> String) + a check before the lambda) - the 11 FPS
+contributor; O20-04 FlashProbe vararg/pair churn; O20-02 move the rotating sink's regex redaction + date formatting off
+the caller thread; O20-06 compress the diagnostic log export; O15-01 cache the parsed SPKI in ecP256Verify;
+O15-02 one SecureRandom; O15-03 cache Cipher per thread; O15-04 drop the okio HashingSink wrapper in Sha256.digest;
+O25-03 top-level Regex + cached NFKD in foldForSearch/initials; O27-06 tag the heavy crypto tests out of the default sweep.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- Keep the public API source-compatible: every module calls FlashLog/FlashProbe. If a signature must change, add an
+  overload and deprecate; never change behaviour of a log level that is enabled.
+- Never log secrets (AGENTS section 24). Never weaken a crypto primitive to save an allocation: cache the provider, not
+  the key material.
+- Commit only to agent/opt-kernel, small commits with the finding ID. Logs only in logs/streams/kernel/
+  (ADR 310-319, ERROR 951-960, EXP 120-124, tests PERF-K*).
+
+VERIFY: :core:common:jvmTest, :core:security:jvmTest, :core:common:testAndroidHostTest, plus one host compile
+(:desktop:compileKotlinJvm and :app:compileDebugKotlin) because both call this module. A microbenchmark note for the
+regex and hash changes. Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + measured before/after (allocs/op, ns/op, or a frame count), the gate commands and
+their last lines, and what is left. Stop the daemon when the session ends.
+```
+
+### 11.S — swarm
+
+```text
+You are the SWARM (S) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-swarm -b agent/opt-swarm dev
+    Copy-Item .\local.properties E:\FlashWork\opt-swarm\local.properties
+    cd E:\FlashWork\opt-swarm
+The main tree is the integrator's. Never copy keystore.properties or the .jks. No phone work unless the owner names you.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 18, 23, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "S — swarm" (+ compounding.md cascade 5).
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O08-group-swarm.md, O02-heap-and-native-memory.md (O02-04/05),
+   O25-algorithmic-complexity.md (O25-08), O23-storage-file-io.md (O23-07), O03-compose-stability.md (O03-15),
+   O28-observability-benchmarks.md (O28-04), and docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md.
+
+YOU OWN: core/swarm/**, core/engine/{SwarmHostBinding,RoomSwarmStateStore,NetworkSwarmTransport,GroupFileSender,
+MessagingSwarmGroupContext}.kt, ui/chat/src/**/FlashSwarm*.kt.
+YOU MUST NOT TOUCH: core/persistence (D owns SwarmContentEntity and the DAOs - ask), core/transfer (T), the rest of
+ui/chat (U), any build.gradle.kts, the canonical logs (write logs/streams/swarm/).
+
+DO IN THIS ORDER
+O08-01 the O(P*N*W) piece scheduler -> bitset + rarest-first queue; O25-08 the discarded O(P*N) holder computation in
+updateWaitReason; O08-07 the O(N^2) HAVE storm; O08-02 the redundant full-piece re-hash on serve; O08-04 per-piece
+fsync + DAO amplification (caller side only); O08-05 the 4 Hz idle ticker; O08-06 thermal governor integration;
+O08-08 tombstone retention + summary broadcasts; O02-04 Channel.UNLIMITED queues; O02-05 permanent tombstones;
+O23-07 heap-wrapped NIO buffers in the piece storage; O03-15 the piece-map canvas allocations; O28-04 scheduler
+telemetry.
+GATED: O08-03 (serve fairness) - record BLOCKED with the reason and do not change who wins a slot.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- The swarm engine is sans-IO and property-tested: every scheduler change keeps its invariants and adds a property
+  test. A tombstone/cancel path must never be weakened for speed.
+- Commit only to agent/opt-swarm, small commits with the finding ID. Logs only in logs/streams/swarm/
+  (ADR 320-329, ERROR 961-970, EXP 125-129, tests PERF-S*).
+
+VERIFY: :core:swarm:jvmTest (incl. SwarmInteropTest - it is a known flake, record it rather than "fixing" it), and a
+three-device swarm run for the throughput claim (PERF-S01). Then the integration gate (plan section 6.3).
+
+REPORT: per finding the change + measured piece/s and CPU, the gate commands and their last lines, what is left.
+Stop the daemon when the session ends.
+```
+
+### 11.R — radio
+
+```text
+You are the RADIO (R) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-radio -b agent/opt-radio dev
+    Copy-Item .\local.properties E:\FlashWork\opt-radio\local.properties
+    cd E:\FlashWork\opt-radio
+The main tree is the integrator's. Never copy keystore.properties or the .jks. Do not touch the owner's radios or phone
+unless you are explicitly given a device session.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "R — radio".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O26-bluetooth-radio.md, plus docs/network/RADIO-WIRE-FORMAT.md,
+   docs/network/RADIO-BLUETOOTH-CHANNELS.md, docs/network/RADIO-AUDIO.md and ADR-210 / ADR-225 / ADR-228 / ADR-229.
+
+YOU OWN: core/radio/**, core/messaging/radio/**, ui/chat/src/**/radio/**, app/src/main/java/com/transfer/flash/radio/**,
+desktop/src/**/radio*/**.
+YOU MUST NOT TOUCH: the rest of core/messaging (D), the rest of ui/chat (U), the rest of app/ (G), any build.gradle.kts,
+the canonical logs (write logs/streams/radio/). The wire format is not yours to change.
+
+DO IN THIS ORDER
+O26-01 the 250 ms semi-blocking read loop in KissTncDriver (14,400 wake-ups/hour) -> a bounded blocking read with a
+heartbeat; O26-04 framing/AAD/serial buffer churn; O26-03 the unbounded pendingAcks and UNLIMITED channels (bound them,
+keep the retry guarantee); O26-05 the up-to-4 s Thread.sleep() in Android connection probing; O26-07 the JCA provider
+lookups + SPKI re-parsing in JdkRadioCrypto/JdkRadioSignatureScheme; O26-02 channel occupancy/goodput - MEASURE first, do
+not guess 1200-baud numbers.
+OBSOLETE: O26-06 (voice over the data channel) - ADR-210/ADR-225 put audio on the vendor SBC channel and REJ-06 refuses
+the idea. Mark it, do not build it.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- The radio wire format (docs/network/RADIO-WIRE-FORMAT.md) and the golden-frame test must keep passing byte-for-byte.
+  Error 870 lived in RadioSession anti-replay: any change there re-runs the anti-replay tests and says so.
+- A radio optimisation must not make a delivery less reliable; lost-ACK handling is a correctness path, not overhead.
+- Commit only to agent/opt-radio, small commits with the finding ID. Logs only in logs/streams/radio/
+  (ADR 330-339, ERROR 971-980, EXP 130-134, tests PERF-R*).
+
+VERIFY: :core:radio:jvmTest (the 250-test suite, golden frames included), :desktop:compileKotlinJvm,
+:app:compileDebugKotlin. Device claims go to the backlog fragment (PERF-R01, and re-runs of RADCHAT-DEV03..07).
+
+REPORT: per finding the change + measured wake-ups/goodput, the gate commands and their last lines, what still needs a
+radio in hand. Stop the daemon when the session ends.
+```
+
+### 11.C — calls
+
+```text
+You are the CALLS (C) stream of the Flash performance-optimization programme.
+
+STEP 0 — CREATE YOUR WORKTREE FIRST:
+    cd C:\Users\KaliOxygen\Downloads\Flash
+    git worktree add E:\FlashWork\opt-calls -b agent/opt-calls dev
+    Copy-Item .\local.properties E:\FlashWork\opt-calls\local.properties
+    cd E:\FlashWork\opt-calls
+The main tree is the integrator's. Never copy keystore.properties or the .jks. No phone or desktop call session unless the
+owner names you.
+
+READ FIRST
+1. AGENTS.md sections 6-13, 23, 24, 31, 35, 36.
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "C — calls".
+3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
+4. docs/audit/optimization-2026-10-23/: O11-calls-webrtc.md, O12-ptt-realtime-audio.md,
+   O03-compose-stability.md (O03-18), O28-observability-benchmarks.md (O28-03), plus docs/calling/SCREEN-SHARE-DESIGN.md,
+   docs/ui/calling-ui.md, third_party/webrtc-kmp/MODIFICATIONS.md and ADR-103.
+
+YOU OWN: core/calling/**, core/ptt/**, ui/callui/**, third_party/webrtc-kmp/**, app/src/**/calling/**, app/src/**/ptt/**.
+YOU MUST NOT TOUCH: ui/chat (U), core/network (N), app/ outside calling/ and ptt/ (G), desktop/ (E), any build.gradle.kts,
+the canonical logs (write logs/streams/calls/).
+
+DO IN THIS ORDER
+O11-02 the camera capturer still running when the camera is off; O11-04 the O(N) stats allocation in mesh calls;
+O11-06 occluded remote frames still rasterising; O11-07 uncapped screen-share encoding to four watchers; O11-05 the dead
+SDP bitrate tuning (remove or make it real); O12-01 the 50 Hz playout StateFlow -> a fused rate; O12-02 ~550 allocs/sec in
+the audio pipeline; O12-03 the 1 s TargetDataLine cold open (pre-warm); O12-04 the non-adaptive 120 ms jitter buffer;
+O12-05 Android AudioTrack performance mode + attributes; O03-18 the call-dock BoxWithConstraints; O28-03 call telemetry.
+DEVICE-GATED (do the code only if you can prove it without a phone, otherwise record BLOCKED): O11-01 1080p30 software
+VP8 on desktop, O11-03 the unconditional VP8 SDP that strips MediaCodec, O12-06 PCM16 airtime.
+
+RULES
+- Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- A change inside third_party/webrtc-kmp must be recorded in third_party/webrtc-kmp/MODIFICATIONS.md and needs the fork
+  republished (ADR-103) before the apps can use it; say so in your report instead of bumping the version silently.
+- PTT is PAIRED-only and the voice path must stay intelligible; never trade a drop-out for a lower bitrate without a
+  measurement.
+- Commit only to agent/opt-calls, small commits with the finding ID. Logs only in logs/streams/calls/
+  (ADR 340-349, ERROR 981-990, EXP 135-139, tests PERF-C*).
+
+VERIFY: :core:calling:jvmTest, :core:ptt:jvmTest, :ui:callui:jvmTest, :desktop:compileKotlinJvm,
+:app:compileDebugKotlin, and put the call-quality checks in the backlog fragment (PERF-C01).
+
+REPORT: per finding the change + measured CPU/allocs/jitter, the gate commands and their last lines, what still needs two
+devices, and whether the webrtc fork needs republishing. Stop the daemon when the session ends.
+```
+
+---
+
+## 12. Owner decisions needed when a stream reaches them
+
+These are the §8 items that block work rather than merely gating it. A stream that reaches one records
+`BLOCKED — owner decision` and moves on, so nothing here has to be answered before the programme starts; but the first
+two decide whether a top-10 ROI item is done at all, so they are worth asking early.
+
+1. **Launch splash (`OPT-O01-01`).** Keep ADR-080 (the animation always plays, ~3.45 s) and let G trim only the engine
+   wait, or reverse ADR-080 for a faster cold start? *Recommendation: keep the splash; trim the wait.*
+2. **Search (`OPT-O06-03` FTS5).** Stay on LIKE + file names (ADR-218), or authorise FTS5 as a Room step 23 with a
+   migration and a reindex? *Recommendation: stay; D's index work covers the reported slowness.*
+3. **`OPT-O13-06`**: may the `connectedDevice` foreground service stop when no peer is connected (Play-policy clean,
+   but a phone then cannot receive until it is opened)?
+4. **`OPT-O06-10`**: may the SQLCipher PBKDF2 iteration count be lowered (faster open, weaker key derivation)?
+5. **`OPT-O22-03`**: remove BouncyCastle from the desktop (smaller installer, TLS certificate generation rewritten)?
+6. **`OPT-O04-01`**: page the conversation history (a behaviour change users see), or leave it?
+7. **`OPT-O09-04`/`O09-07`**: is a wire-format breaking change worth it for Base64 inflation and text framing, given
+   both hosts must be updated together?
+8. **`OPT-O08-03`**: may the swarm change who wins a serve slot (fairness vs throughput)?
+
+Until an answer exists, the stream records `BLOCKED — owner decision` in its fragment and works the next finding. No
+stream may answer these itself, and none of them may be "unblocked" by a code comment.
+
+## 13. What the integrator does at each merge
+
+1. `git -C C:\Users\KaliOxygen\Downloads\Flash merge --no-ff agent/opt-<stream>` (never from inside the worktree).
+2. Fold `logs/streams/<stream>/*` into `logs/progress.md`, `logs/errors.md`, `logs/experiments.md`,
+   `docs/decisions.md`, `docs/testing/PROBES.md` and `docs/testing/TEST-BACKLOG.md`.
+3. Move every device/manual check the stream owes into `docs/testing/TEST-BACKLOG.md` with its `PERF-<x>NN` ID.
+4. Run the integration gate (§6.3) on the merged tree and record the result in §10.
+5. Delete the worktree only after the merge is green: `git worktree remove E:\FlashWork\opt-<stream>`. Keep the branch.
+6. Update `logs/handoff.md` with the merged stream, the gate result and the next wave.

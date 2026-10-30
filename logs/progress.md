@@ -1,5 +1,45 @@
 # Progress Log
 
+## 2026-10-30 — Optimization audit split into 12 parallel streams (plan only)
+
+### Worked on
+Turned the 2026-10-23 optimization audit (211 findings, 28 domains) into work packages that separate agents can run
+at the same time in their own `E:\FlashWork` worktrees, with as few merge conflicts as possible.
+
+### Changed
+- New `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md`: 12 **directory-disjoint** streams (build, data, transfer, ui, net,
+  android, hub, desktop, kernel, swarm, radio, calls), a per-file ownership map for the modules `core/engine`,
+  `core/messaging`, `ui/chat`, `app` and `desktop` share, a conflict matrix, 5 waves, an integration gate, reserved
+  ADR/ERROR/EXP/Room-step/test-ID numbers, and 12 copy-paste kickoff prompts that each begin by creating their own
+  worktree (`git worktree add E:\FlashWork\opt-<stream> -b agent/opt-<stream> dev`).
+- Finding coverage was machine-checked against `findings-ledger.md`: all 211 IDs are assigned exactly once (210 in
+  streams + `OPT-O22-03` in the gated row).
+- 13 findings are recorded as gated or obsolete rather than "to do", with the decision they need: splash vs ADR-080,
+  FTS5 vs ADR-218, dropping the sealed-chunk encryption vs REJ-01, Base64/text wire framing, SQLCipher iteration
+  count, `connectedDevice` FGS vs ADR-041, BouncyCastle removal, history paging, swarm serve fairness, server heap as
+  deployment, codec changes needing devices, and `OPT-O26-06` radio voice (obsolete: ADR-210/ADR-225/REJ-06).
+
+### Why
+The owner wants several agents working at once on this PC: worktrees must live on `E:`, builds are serialized by
+`tools\flash-gradle.cmd`, and a split by directory (not by audit domain) is what keeps merges collision-free.
+
+### Verification
+- Ledger cross-check script: 211 unique IDs, none missing, none extra; each stream's count matches its heading.
+- Facts re-checked today rather than taken from the audit: tracked source is 38 MB (so a worktree is cheap and a
+  *build* is what costs 3-4 GB), `E:` free ≈ 69.9 GB, `org.gradle.parallel`/`caching` still absent from
+  `gradle.properties`, no ABI splits in `app/build.gradle.kts`, `logs/progress.md` ≈ 15,830 lines (why streams write
+  fragments).
+- No code changed, nothing built, nothing device-verified, nothing pushed.
+
+### Remaining
+- Pick the number of concurrent agents (plan recommends 2, allows 3), run the gate once on `dev` to fill §6.3's
+  baseline, then hand out wave 0 (build) and wave 1 (data + transfer).
+- The owner decisions in the plan's §12 are outstanding; each stream records `BLOCKED — owner decision` until answered.
+
+### Next AI
+Do not implement findings from the audit directly on `dev`. Start with `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md`,
+follow its wave order, and never let two streams edit the same file.
+
 ## 2026-10-30 — Stop an unacknowledged radio retry
 
 ### Worked on
