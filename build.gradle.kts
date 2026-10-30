@@ -23,10 +23,12 @@ allprojects {
     }
 
     // OPT-O27-01: configure test worker parallelization monorepo-wide
+    // OPT-O27-02: test runtime configuration for virtual time & coroutine performance
     // OPT-O27-05: full test failure reporting infrastructure to capture flakes with stacktraces
     tasks.withType<Test>().configureEach {
         maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1).coerceAtMost(4)
         forkEvery = 100
+        systemProperty("kotlinx.coroutines.debug", "off")
         testLogging {
             events("failed")
             exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
