@@ -9,7 +9,11 @@
 > (splash/ADR-080, FTS5/ADR-218, sealed-chunk encryption/REJ-01, wire framing, SQLCipher iterations, `connectedDevice`
 > FGS/ADR-041, BouncyCastle, history paging, swarm fairness, server heap as deployment, device-only codecs, and
 > `OPT-O26-06` radio voice, obsolete since ADR-210/ADR-225). **No code changed, nothing built, nothing device-verified.**
-> Next: fill the gate baseline in the plan's §6.3, then run wave 0 (build) and wave 1 (data + transfer).
+> The gate baseline is measured and in §6.3.1: ten `jvmTest` suites + two host compiles green (2,138 tests, 4 m 43 s),
+> the three `testAndroidHostTest` suites green (1,439 tests) and `:app:testDebugUnitTest` with the **two pre-existing
+> ERROR-106 `TransfersUiMapperTest` failures** only. The run proved the gate needed a **second command** — `jvmTest`
+> alone never runs `RealFlashChatRepositoryTest` (in `androidHostTest`, 688 tests) or `TransfersUiMapperTest` (in
+> `app/src/test`). Next: hand out wave 0 (build) then wave 1 (data + transfer).
 
 > 2026-10-30 review fixes: **BUILT, unit-tested, NOT device-verified.** The 2026-10-30 read of the uncommitted tree (radio data
 > rounds 3/4, radio policy, radio voice, screen presenter, hub web mock, security tranches) found one real defect and several small

@@ -185,26 +185,71 @@ finding is lower-risk first and let the other resolve against it.
 
 ### 6.3 The integration gate
 
-Run after every merge, on the merged `dev`, through the lock:
+Run it on the merged `dev` after every merge, through the lock. It is **two commands**, not one:
 
 ```text
-cmd /c "tools\flash-gradle.cmd :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain"
+cmd /c "tools\flash-gradle.cmd :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --continue --console=plain"
 ```
 
-Add `:server:test` when H merged, `:core:radio:jvmTest` when R merged, `:core:calling:jvmTest`/`:core:ptt:jvmTest`
-when C merged, `:core:enterprise:jvmTest` when H merged, and `:app:compileDebugAndroidTestKotlin` when G merged.
+```text
+cmd /c "tools\flash-gradle.cmd :core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest :ui:chat:testAndroidHostTest :app:testDebugUnitTest --continue --console=plain"
+```
+
+The second command exists because a `jvmTest`-only gate **never runs the data stream's main safety net**:
+`RealFlashChatRepositoryTest` lives in `core/messaging/src/androidHostTest` (688 tests with the rest of that source
+set), and `TransfersUiMapperTest` lives in `app/src/test`. Both were found missing from the first draft of this gate on
+2026-10-30, which is exactly the kind of gap a baseline run is for.
+
+Add `:server:test` when H merged, `:core:enterprise:jvmTest` when H merged, `:core:radio:jvmTest` when R merged,
+`:core:calling:jvmTest`/`:core:ptt:jvmTest` when C merged, and `:app:compileDebugAndroidTestKotlin` when G merged.
 After a Room or server-migration merge, run `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` (+ the server
 `MigratorTest`) **again on the merged result**: two individually green migrations can still collide.
 
-**Baseline (fill before wave 1).** The gate must be run once on `dev` before any stream lands, and the result
-written here, including the known pre-existing failures. From the 2026-10-30 review the known flakes were
-`RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author`,
-`SwarmInteropTest` (origin drop and rejoin) and two `TransfersUiMapperTest` cases (ERROR-106) — re-check, do not
-assume.
+#### 6.3.1 Baseline — measured 2026-10-30 on `dev` at `54ff4737`
 
-| Gate task | Result on `dev` before wave 1 | Known pre-existing failures |
+Both commands were run forced (`--rerun-tasks`), on Windows, after this plan's commit, before any stream started.
+
+| Command | Result | Wall clock |
 |---|---|---|
-| (integrator fills) | | |
+| 1 — ten `jvmTest` suites + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **BUILD SUCCESSFUL**, 2,138 tests, 0 failed, 0 errors, **2 skipped** | 4 m 43 s |
+| 2 — three `testAndroidHostTest` suites + `:app:testDebugUnitTest` | 1,526 tests, **2 failed** (both expected, below), 0 errors | 8 m 55 s |
+
+| Suite | Tests | Failed |
+|---|---|---|
+| `:core:common:jvmTest` | 9 | 0 |
+| `:core:security:jvmTest` | 170 | 0 (2 POSIX-only skips) |
+| `:core:persistence:jvmTest` | 84 | 0 |
+| `:core:messaging:jvmTest` | 382 | 0 |
+| `:core:transfer:jvmTest` | 139 | 0 |
+| `:core:swarm:jvmTest` | 151 | 0 |
+| `:core:network:jvmTest` | 319 | 0 |
+| `:ui:chat:jvmTest` | 723 | 0 |
+| `:ui:theme:jvmTest` | 58 | 0 |
+| `:ui:callui:jvmTest` | 103 | 0 |
+| `:core:messaging:testAndroidHostTest` | 688 | 0 |
+| `:core:persistence:testAndroidHostTest` | 53 | 0 |
+| `:ui:chat:testAndroidHostTest` | 698 | 0 |
+| `:app:testDebugUnitTest` | 87 | **2** |
+
+**Expected failures — do not chase, and do not "fix" one without reading ERROR-106 (open):**
+
+- `TransfersUiMapperTest.retryableComesFromTheModelPredicate` — bare `java.lang.AssertionError`.
+- `TransfersUiMapperTest.aHubRowSaysSoAndOffersNoRetry` — `AssertionError: a hub failure is final; a dropped network
+  keeps the row queued`.
+
+Both are pre-existing on `dev` before any stream exists. A merge that changes the count is the signal; a stream that
+believes it fixed them must say so in its report rather than silently inheriting them.
+
+**Also learned from the baseline:**
+
+- `SwarmInteropTest.testSwarmInteropThreeEndpointsOriginDropAndRejoin` **passed** under `--rerun-tasks`, so the flake
+  seen in the 2026-10-30 review did not reproduce: treat it as rare, not fixed.
+- The two skips are POSIX-only and expected on Windows:
+  `FileHubSealingKeyStoreTest.theKeyFileIsOwnerOnlyWhereTheFileSystemHasPosixModes` and
+  `KeyFileVaultTest.master key file is owner-only on a POSIX file system and holds 32 bytes`.
+
+Any **new** failure after a merge belongs to the stream that merged: it gets an `ERROR-NNN` from that stream's reserved
+block, and the integrator does not merge the next stream until the gate is back to the baseline above.
 
 At the end of a session a stream runs `cmd /c "tools\flash-gradle.cmd --stop"` so an idle daemon does not hold
 2–4 GB.
@@ -463,8 +508,8 @@ canvas allocations (S owns `FlashSwarm*.kt`) · `O28-04` scheduler telemetry.
 
 **Gated:** `O08-03` (fairness, §8). `O06-08` (the BLOB entity) is D's — coordinate, do not edit persistence.
 
-**Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (known flake — record it), and a three-device swarm check
-(`PERF-S01`).
+**Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (a rare flake that passed in the 2026-10-30 baseline — record it
+rather than "fixing" it), and a three-device swarm check (`PERF-S01`).
 
 ### R — radio (7)
 
@@ -625,8 +670,9 @@ RULES
 - Commit only to agent/opt-data, small commits with the finding ID. Logs only in logs/streams/data/
   (ADR 240-249, ERROR 881-890, EXP 85-89, tests PERF-D*).
 
-VERIFY: :core:persistence:jvmTest, :core:messaging:jvmTest, the two migration tests, and the db_benchmark before/after
-numbers. Then the integration gate (plan section 6.3).
+VERIFY: :core:persistence:jvmTest, :core:messaging:jvmTest, :core:messaging:testAndroidHostTest (this is where
+RealFlashChatRepositoryTest lives - 688 tests, and it is the suite that proves you did not break chat), the two
+migration tests, and the db_benchmark before/after numbers. Then the integration gate (plan section 6.3).
 
 REPORT: per finding the change + measured before/after, the gate commands and their last lines, the schema step you
 took, what is left, and every finding that no longer reproduces. Stop the daemon when the session ends.
@@ -729,7 +775,8 @@ RULES
 - Commit only to agent/opt-ui, small commits with the finding ID. Logs only in logs/streams/ui/
   (ADR 260-269, ERROR 901-910, EXP 95-99, tests PERF-U*).
 
-VERIFY: :ui:chat:jvmTest, :ui:theme:jvmTest, the Compose compiler stability report for the touched composables, and
+VERIFY: :ui:chat:jvmTest, :ui:chat:testAndroidHostTest (698 tests - it runs the Compose-side logic suites),
+:ui:theme:jvmTest, the Compose compiler stability report for the touched composables, and
 one device scroll check during an active transfer (PERF-U01). Do not claim a frame-rate number without a
 Macrobenchmark run.
 
@@ -830,8 +877,11 @@ RULES
 - Commit only to agent/opt-android, small commits with the finding ID. Logs only in logs/streams/android/
   (ADR 280-289, ERROR 921-930, EXP 105-109, tests PERF-G*).
 
-VERIFY: :app:compileDebugKotlin, :app:compileDebugAndroidTestKotlin (compile only - running is a device session), and
-put the battery/Doze checks in the backlog fragment. Then the integration gate (plan section 6.3).
+VERIFY: :app:compileDebugKotlin, :app:testDebugUnitTest, :app:compileDebugAndroidTestKotlin (compile only - running is a
+device session), and put the battery/Doze checks in the backlog fragment. :app:testDebugUnitTest already has TWO
+pre-existing failures on dev (TransfersUiMapperTest.retryableComesFromTheModelPredicate and
+.aHubRowSaysSoAndOffersNoRetry, ERROR-106) - your job is to add no third one, not to fix those unless you say so in the
+report. Then the integration gate (plan section 6.3).
 
 REPORT: per finding the change, what still needs a device, the gate commands and their last lines, and any platform
 fact you verified with its URL. Stop the daemon when the session ends.
@@ -1022,7 +1072,8 @@ RULES
 - Commit only to agent/opt-swarm, small commits with the finding ID. Logs only in logs/streams/swarm/
   (ADR 320-329, ERROR 961-970, EXP 125-129, tests PERF-S*).
 
-VERIFY: :core:swarm:jvmTest (incl. SwarmInteropTest - it is a known flake, record it rather than "fixing" it), and a
+VERIFY: :core:swarm:jvmTest (incl. SwarmInteropTest - a rare flake: it PASSED in the 2026-10-30 baseline, so record a
+failure rather than "fixing" it), and a
 three-device swarm run for the throughput claim (PERF-S01). Then the integration gate (plan section 6.3).
 
 REPORT: per finding the change + measured piece/s and CPU, the gate commands and their last lines, what is left.
