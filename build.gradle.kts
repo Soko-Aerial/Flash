@@ -26,6 +26,7 @@ allprojects {
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.android.test) apply false
     // Phase 06 (KMP pilot). `apply false` registers the plugins on the subproject
     // classpath without applying them at the root; omitting it causes "plugin already
     // on the classpath" conflicts in the module that does apply them.
