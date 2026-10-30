@@ -1,5 +1,18 @@
 # Current Handoff
 
+> 2026-10-30 decisions answered: **every open decision of the optimization programme is decided (ADR-232)** — the owner
+> delegated them to the integrator's recommendation, so a stream now *implements* the answer instead of writing
+> `BLOCKED — owner decision`. Summary: splash **keep** (ADR-080 stands; shorten the choreography, never gate it) · FTS5
+> **stay on LIKE** (trigger: >~300 ms on a real 100k-message device, then Room step 23) · `connectedDevice` FGS **stops when
+> idle** plus one opt-in "Keep listening in the background" setting (G) · PBKDF2 **stays 256k**, take only the `mmap_size`
+> half (D) · BouncyCastle **keeps** (ADR-230) · history paging **approved** and must resolve
+> `FlashBackStackState.targetMessageId` (D) · wire changes **declined** for now, N takes the allocation half only · swarm
+> fairness **approved** (S) · **per-ABI APKs approved** (17.55 MB vs 54.63 MB, universal kept) — the release script must
+> collect outputs *and* fail on a stale one, which unblocks `PERF-A01` · desktop installer smoke test **before the next
+> Windows build ships** · baseline profile deferred · `RealFlashChatRepositoryTest`'s sleeps are **D's first commit**. Plan §12
+> holds the table, §8 now says only `device session`/`owner (ops)` rows still block, and the D/N/G/S prompt blocks were
+> rewritten from "record BLOCKED" to "implement this". **Docs only — nothing built, nothing device-verified, not pushed.**
+
 > 2026-10-30 Wave 0 merged: **Stream A (build) verified, merged into `dev`, and cut down to what it can prove.** 21 of its 25
 > findings are in; five were reverted (`11c650a3`) because they change what ships or reverse a decision written in the file they
 > edited: `O22-01` ABI splits (breaks `tools/build-release.ps1:265`, which reads `app-release-unsigned.apk`; the distributed file

@@ -7021,3 +7021,100 @@ synchronise with `delay(20)`/`delay(100)` — ERROR-873 — so determinism won.
 ### Revisit when
 The owner answers PERF-A03/A04 (installer smoke test, per-ABI distribution), or when a device run makes
 `OPT-O01-03` real, or if a merger finds gate time regressing after another stream's build edits.
+
+## ADR-232 - The optimization programme's open decisions, answered (owner delegated, 2026-10-30)
+
+### Decision
+The eight §12 questions of `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` and the four items the Wave 0 merge left behind are
+answered below. The owner delegates these to the integrator's recommendation, so a stream that reaches one of these findings
+**implements the answer** instead of recording `BLOCKED — owner decision`. Each answer names what the stream does, and what
+would reopen it.
+
+The rule behind most of them: **a finding is not automatically worth taking.** An audit honest enough to list 211 findings
+also lists ones whose fix costs more than the problem, and "we decided not to" is a decision only if it has a reason and a
+trigger.
+
+### 1. `OPT-O01-01` launch splash - KEEP ADR-080
+The 3.7 s is not added to startup: `finishAt = engineSettled ? introEnd : max(introEnd, 6000)` in `FlashLaunchSplash`, so the
+engine initialises underneath and the splash only refuses to end before the 3.45 s intro. The engineering cost is already
+overlapped; the remaining time is a deliberate brand moment (UI-056), and the setting can already turn it off.
+
+If cold start ever needs to feel shorter, **shorten the choreography** (the 0.3-2.2 s ink stroke) and keep it always playing.
+Do not dismiss it on a timer or on readiness: a cut stroke looks like a bug, not a fast app. G may still change what happens
+*during* the splash (engine work), never that the animation finishes.
+### 2. `OPT-O06-03` FTS5 search - STAY on LIKE, with a measured trigger
+FTS5 is the correct fix for a `LIKE '%x%'` full scan (~800 ms on a phone at 100k messages), and this repo already runs it
+(the hub's announcements). It is still deferred, because the price is a Room step 23 migration plus a **full reindex on every
+existing install**, for a path that is not a reported pain.
+
+Trigger, in those words: a real device with a real large history measuring **more than ~300 ms** for a search over ~100k
+messages. Then FTS5 is its own item (Room step 23, one owner), not part of a stream's batch. D's index work still stands on
+its own merit - it fixes unread counts and previews, which are on every chat-list open.
+### 3. `OPT-O13-06` `connectedDevice` FGS - STOP when idle, with one opt-in setting
+A `connectedDevice` foreground service running with zero peers connected is what Play policy forbids, and a policy strike is
+an existential cost, not a lint warning.
+
+- Default: the service stops when there is no peer, no active transfer and no hub connection; the 15-minute WorkManager
+  wake-up (ADR-041) is what remains.
+- One setting, *"Keep listening in the background"*, restores today's behaviour for anyone who needs it, with the honest
+  sentence that the system may still stop it (EXP-002: 90 % alive on Samsung, 4 % on Infinix, so today's service never
+  actually promised what it looked like it promised).
+
+G implements it in the same change as `O10-02`'s `MulticastLock` lease. Reopen if the owner wants the old default back.
+### 4. `OPT-O06-10` PBKDF2 iterations - KEEP 256k, take the mmap half
+Lowering SQLCipher's iteration count buys a one-time few hundred milliseconds and weakens the only thing protecting the chat
+database; there is no user complaint to justify it. Take the finding's **other** half - the ineffective `mmap_size` on Android
+startup - under the same ID.
+### 5. `OPT-O22-03` BouncyCastle - KEEP (ADR-230 stands)
+10.3 MB on the desktop for `FlashCertMaker`'s self-signed TLS identity. Every cheaper alternative is worse: JDK-internal
+`sun.security.x509` needs `--add-exports` and breaks across JDKs; a build-time shared certificate gives every install the
+**same** identity and guts pinning. The installer already lost 19.7 MB in Wave 0. Reopen only if desktop download size becomes
+a real complaint, and then with a TLS test between a phone and the packaged app.
+### 6. `OPT-O04-01` history paging - APPROVED for D, with one hard requirement
+Page the conversation (newest N, older on scroll up). It is standard behaviour, and it fixes the real cost - opening a
+30k-message chat maps the whole thread.
+
+**Requirement, part of the finding and not a follow-up:** paging must be able to load *around an arbitrary message id*, because
+search results deep-link through `FlashBackStackState.targetMessageId`. A paging implementation that can only append backwards
+breaks "tap a search hit and land on it", which shipped in the search upgrade.
+### 7. `OPT-O09-04` / `OPT-O09-07` wire format - NO change now
+Base64 inflation and text-line framing are real overhead, but this is a breaking wire change across three implementations that
+must ship together (Android, Windows, the hub relay) plus a published library, with mixed-version peers during any rollout.
+
+N takes only the **allocation** half (`O09-05`, `O09-06`, `O14-02`), which changes no bytes. A wire v3 with a negotiated
+fallback is a deliberate project with its own ADR, to be started only if bandwidth or framing latency becomes a reported
+problem - the numbers in the audit are per-frame bytes, not user-visible symptoms.
+### 8. `OPT-O08-03` swarm serve-slot fairness - APPROVED for S
+A greedy slot reservation starves slow peers, and the user sees "my file never downloads" with nothing to report. It is inside
+S's engine, needs no wire change, and the fix is a scoring change (age-weighted / deficit round-robin). S re-reads the SW
+fairness invariant and proves it with a multi-device run (`PERF-S01`), which it owes anyway.
+### 9. Per-ABI APKs (`OPT-O22-01`, PERF-A04) - APPROVED: ship per-ABI **and** universal
+`Flash-<version>.apk` stays the universal build, and the release also carries `Flash-<version>-arm64-v8a.apk` (17.55 MB against
+54.63 MB) for the case that is almost everyone. The change has three mandatory parts, because the current script would ship a
+wrong file:
+
+1. `tools/build-release.ps1` collects whatever `app/build/outputs/apk/release/*.apk` contains instead of the single
+   hard-coded name.
+2. It **fails on a stale output** (delete the directory before the build, or compare timestamps): today it only `Test-Path`s
+   the file, and a leftover APK from an earlier build would be signed and shipped.
+3. `docs/release-build.md` and the `REL-*` checks learn the new names; PERF-A01 (sideload a per-ABI APK) becomes runnable.
+### 10. Desktop installer smoke test (PERF-A03) - DO before the next Windows build ships
+It is the only check that covers the stripped sqlite driver, the Material 2 exclusion and the JVM flags at runtime. Steps are
+in the backlog; it is 15 minutes of clicking, and until it passes, `O22-02`, `O22-05` and `O19-04` are claims.
+### 11. Baseline profile (PERF-A02) - DEFER to when G touches startup
+It needs a `benchmark` build type on `:app` plus a device run, and startup is not a reported problem. The hand-written profile
+we deleted was worse than none; the module and generator stay ready.
+### 12. `RealFlashChatRepositoryTest` (PERF-A07) - D's first commit
+Replacing its `delay(20)`/`delay(100)` synchronisation with real waits is what lets `maxParallelForks` go back to 2 and reclaim
+114 s per gate-2 run for every stream. Not optional, not a nice-to-have.
+
+### Consequences
+- D implements 2, 4, 6, 12; S implements 8; G implements 3; N implements 7's allocation half only; the integrator implements 9.
+- 1 and 5 mean **nothing is done** for those findings, and that is recorded rather than left OPEN as if nobody had looked.
+- Every answer has a trigger or a test that reopens it, so a future audit reads "decided, with this condition" instead of
+  rediscovering the question.
+
+### Revisit when
+The named trigger fires (search latency above ~300 ms on a real 100k-message device; a wire/bandwidth complaint; desktop size as
+a complaint; a Play policy warning), or the owner reverses one of the five "keep/defers".
+
