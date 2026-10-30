@@ -117,7 +117,7 @@ val thirdPartyNotices = tasks.register<ThirdPartyNoticesTask>("generateThirdPart
 }
 
 androidComponents {
-    onVariants { variant ->
+    onVariants(selector().withBuildType("release")) { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(thirdPartyNotices, ThirdPartyNoticesTask::outputDir)
     }
 }
