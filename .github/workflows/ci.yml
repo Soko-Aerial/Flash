@@ -15,11 +15,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -38,11 +38,13 @@ jobs:
         # --dry-run: see docs/publishing/library-compliance-review.md addendum A1.
         # --continue: without it the first failing module hid every later one, so CI reported one
         # red test at a time (audit B5). Hardware-only tests self-skip when CI=true (set by Actions).
-        run: ./gradlew allTests testDebugUnitTest assembleDebug --continue --no-daemon --stacktrace
+        # OPT-O21-05: add `test` so standalone JVM modules like :server have their tests executed in CI.
+        # OPT-O21-06: omit --no-daemon to preserve HotSpot JIT and daemon cache between steps.
+        run: ./gradlew allTests testDebugUnitTest test assembleDebug --continue --stacktrace
 
       - name: Android lint (app)
         # Lint was driven to 0 errors on 2026-09-23 (audit 4.4); this keeps it there.
-        run: ./gradlew :app:lintDebug --no-daemon
+        run: ./gradlew :app:lintDebug
 
       - name: Upload test results on failure
         if: failure()

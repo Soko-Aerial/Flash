@@ -12,11 +12,36 @@ val flashLibraryVersion: String = providers.gradleProperty("flashLibraryVersion"
 allprojects {
     version = flashLibraryVersion
     group = "com.transfer.flash"
+
+    configurations.all {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "org.bouncycastle" && requested.name == "bcutil-jdk18on") {
+                useVersion("1.81.1")
+                because("Pin dynamic range [1.81, 1.82) to prevent daily configuration cache eviction (OPT-O21-07)")
+            }
+        }
+    }
+
+    // OPT-O27-01: configure test worker parallelization monorepo-wide
+    // OPT-O27-02: test runtime configuration for virtual time & coroutine performance
+    // OPT-O27-05: full test failure reporting infrastructure to capture flakes with stacktraces
+    tasks.withType<Test>().configureEach {
+        maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1).coerceAtMost(4)
+        forkEvery = 100
+        systemProperty("kotlinx.coroutines.debug", "off")
+        testLogging {
+            events("failed")
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+            showStackTraces = true
+            showCauses = true
+        }
+    }
 }
 
 plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.android.library) apply false
+    alias(libs.plugins.android.test) apply false
     // Phase 06 (KMP pilot). `apply false` registers the plugins on the subproject
     // classpath without applying them at the root; omitting it causes "plugin already
     // on the classpath" conflicts in the module that does apply them.

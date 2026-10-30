@@ -14,7 +14,21 @@
 # (NoSuchMethodError / UnsatisfiedLinkError inside PeerConnectionFactory init) that
 # never reproduces in debug. Hence the blunt keep — the reflection here is native, so
 # there is no narrower rule that is honest.
--keep class org.webrtc.** { *; }
+# OPT-O22-06: narrow WebRTC keep rules to JNI entry points and active classes, allowing R8 to prune dead codecs/capturers.
+-keep class org.webrtc.** {
+    @org.webrtc.CalledByNative *;
+    @org.webrtc.CalledByNativeUnchecked *;
+}
+-keep class org.webrtc.PeerConnectionFactory* { *; }
+-keep class org.webrtc.PeerConnection* { *; }
+-keep class org.webrtc.AudioSource* { *; }
+-keep class org.webrtc.AudioTrack* { *; }
+-keep class org.webrtc.VideoSource* { *; }
+-keep class org.webrtc.VideoTrack* { *; }
+-keep class org.webrtc.VideoFrame* { *; }
+-keep class org.webrtc.SurfaceViewRenderer* { *; }
+-keep class org.webrtc.EglBase* { *; }
+-keep class org.webrtc.Logging* { *; }
 
 # Native method names can never be renamed: the symbol in the .so is matched by name.
 -keepclasseswithmembernames class * {
