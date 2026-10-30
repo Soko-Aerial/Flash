@@ -22,12 +22,23 @@ allprojects {
         }
     }
 
-    // OPT-O27-01: configure test worker parallelization monorepo-wide
-    // OPT-O27-02: test runtime configuration for virtual time & coroutine performance
+    // OPT-O27-01: cross-project test parallelism (org.gradle.parallel) is what helps here, not
+    // per-task forks. With parallel=true Gradle already runs up to max-workers test tasks at once,
+    // so four forks each multiplied into ~32 JVMs on 8 CPUs and made the compile-heavy gate 1 70%
+    // slower (467s vs 275s on the same 153 tasks, 2026-10-30, EXP-80).
+    //
+    // One fork everywhere, deliberately, even though two forks for the Robolectric host suites
+    // measured faster (gate 2 535s -> 376s): with 13 test JVMs running, two tests in
+    // RealFlashChatRepositoryTest that synchronise with `delay(20)`/`delay(100)` read an empty list
+    // and fail (ERROR-873). A gate that goes red under load costs every stream more than the
+    // minutes it saves. :server:test keeps its own four, with its own heap, in
+    // server/build.gradle.kts: a parallel run there is the only test task in the build, and 661
+    // tests passed twice at 4 forks on this machine.
+    // OPT-O27-02: `kotlinx.coroutines.debug` off is a test-runner property only; it is not
+    // Kotlin coroutine *virtual time* and does not change scheduling.
     // OPT-O27-05: full test failure reporting infrastructure to capture flakes with stacktraces
     tasks.withType<Test>().configureEach {
-        maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1).coerceAtMost(4)
-        forkEvery = 100
+        maxParallelForks = 1
         systemProperty("kotlinx.coroutines.debug", "off")
         testLogging {
             events("failed")
