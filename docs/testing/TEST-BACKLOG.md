@@ -6567,3 +6567,76 @@ ERROR-870, `docs/network/RADIO-WIRE-FORMAT.md` section 10, `RadioChatEngineTest.
 
 ### Status
 TODO
+
+
+## PERF-A01..A07 (2026-10-30) - Stream A (build) after the integrator review
+
+Stream A's own two items were in `logs/streams/build/backlog-additions.md`; they are folded in here with the corrections the
+review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
+
+### PERF-A01 - Per-ABI APK sideload (was Stream A's own A01)
+- **Area:** Android release packaging
+- **Source:** `OPT-O22-01` (REVERTED by the integrator)
+- **Setup:** Not applicable yet. The ABI splits were reverted because `tools/build-release.ps1:265` reads
+  `app-release-unsigned.apk`, which AGP stops producing once splits are on.
+- **Steps (only if PERF-A04 says yes):** build `:app:assembleRelease`, install `app-arm64-v8a-release-unsigned.apk` on an
+  arm64 phone, launch, place a call, open an encrypted chat.
+- **Pass condition:** no `UnsatisfiedLinkError`, WebRTC initialises, the SQLCipher database opens.
+- **Status:** BLOCKED on PERF-A04.
+
+### PERF-A02 - Regenerate the baseline profile on a device
+- **Area:** startup / ART profiles
+- **Source:** `OPT-O01-03`, `OPT-O28-01`
+- **Setup:** a phone on USB with debugging; the `:benchmark` module needs a `benchmark` build type on `:app` first (it does
+  not have one, so `:benchmark` compiles but cannot run). The hand-written `app/src/main/baseline-prof.txt` was deleted
+  because it was not generated and at least one rule cannot match.
+- **Steps:** add the `benchmark` build type + signing to `:app`, run `BaselineProfileGenerator` on the phone, replace
+  `app/src/main/baseline-prof.txt` with the generated file, then `StartupBenchmark` before/after.
+- **Pass condition:** a generated profile (not hand-written) is in the APK and startup is measured, not asserted.
+- **Status:** TODO.
+
+### PERF-A03 - Desktop installer smoke test
+- **Area:** Windows packaging (`O22-02` stripped sqlite jar, `O22-05` Material 2 excluded, `O19-04` JVM flags, jlink modules)
+- **Source:** ADR-231, EXP-80 addendum
+- **Setup:** `tools\flash-gradle.cmd :desktop:packageMsi`, install the MSI on a Windows machine.
+- **Steps:** launch; open a chat that has history (opens the SQLCipher database through the stripped driver); open Settings;
+  place a 1:1 call; open the Hub tab; quit and relaunch.
+- **Pass condition:** no `NoClassDefFoundError` / `UnsatisfiedLinkError` / missing-module error at any step, and the window
+  renders without missing Compose classes.
+- **Status:** TODO - this is the only way `O22-02`/`O22-05`/`O19-04` stop being claims.
+
+### PERF-A04 - Owner decision: ship per-ABI APKs?
+- **Area:** release distribution
+- **Source:** `OPT-O22-01`, ADR-231
+- **Setup:** measured sizes in EXP-80: arm64 17.55 MB, armv7 11.65 MB, x86_64 19.03 MB, universal 54.63 MB.
+- **Steps:** decide whether the release ships one universal APK (today's behaviour) or per-ABI files, then if per-ABI update
+  `tools/build-release.ps1`, `docs/release-build.md` and the `REL-*` checks together.
+- **Pass condition:** a documented release flow that produces the chosen artifact(s), and `build-release.ps1` runs green.
+- **Status:** TODO (owner decision).
+
+### PERF-A05 - `:server:test` at four forks
+- **Area:** server test suite under the new fork setting
+- **Source:** `OPT-O21-04`
+- **Setup:** `tools\flash-gradle.cmd :server:test --rerun-tasks`
+- **Pass condition:** 661 tests, 0 failures; no port/socket collisions.
+- **Status:** PASS - 2026-10-30, `dev` after review (`68128d00`), 661/661 green (7 test JVMs of other modules were running at
+  the same time). Wall clock not re-measured; the stream's 7 m 10 s -> 5 m 22 s claim is therefore still unverified.
+
+### PERF-A06 - Desktop tests with the stripped sqlite driver
+- **Area:** `O22-02` (`StripSqliteTask`)
+- **Source:** `OPT-O22-02`
+- **Setup:** `tools\flash-gradle.cmd :desktop:jvmTest --rerun-tasks`
+- **Pass condition:** the suite that opens the SQLCipher database (`ChatDbKeyStoreTest`, `DesktopEngineBootTest`,
+  `FlashDesktopEngineTest`) passes with only `classes/` + the host native library in the jar.
+- **Status:** PASS - 2026-10-30, 243 tests, 0 failures (the old ERROR-106 desktop failure did not reappear).
+
+### PERF-A07 - `RealFlashChatRepositoryTest` must stop sleeping
+- **Area:** `:core:messaging` host tests (Stream D's file)
+- **Source:** ERROR-873
+- **Setup:** `tools\flash-gradle.cmd :core:messaging:testAndroidHostTest --rerun-tasks` while another heavy test task runs
+  (`:server:test` is enough).
+- **Steps:** replace `delay(20)`/`delay(100)` in `pins are stored per conversation, newest first...` and
+  `delete for everyone sends direct action only for the local author` with an explicit wait on the state, then run the suite
+  at `maxParallelForks = 2` ten times.
+- **Pass condition:** 688/688 green on every run, with no sleep-based assertion left in those two cases.
+- **Status:** TODO.

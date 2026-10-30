@@ -14612,3 +14612,127 @@ segmented message, twice → zero ACK frames on the air). `:core:radio:jvmTest` 
 
 ### Status
 FIXED IN CODE 2026-10-30; OPEN until `RADCHAT-DEV07` passes on two radios.
+
+## ERROR-872 - A build stream's "before/after" compared an unforced run with a forced baseline, so a 70% regression was reported as a 13% win
+
+### Date
+2026-10-30
+
+### Area
+Build performance measurement (optimization programme, Stream A / build)
+
+### Symptoms
+Stream A reported the integration gate going from `4 m 43 s` to `4 m 06 s` (-13.1%) after its Gradle
+changes. Re-running the same command on the same machine with the same task set showed `275 s` on
+`dev` (unmodified) and `467 s` on the stream's branch: a **70% regression**, not a win.
+
+### Environment
+- Windows 11 (26100), 8 logical CPUs, 20 GB RAM
+- Gradle 9.5.0, Kotlin 2.2.10, AGP 9.3.1, JDK 21
+- One build at a time through `tools/flash-gradle.cmd`
+
+### Error
+```text
+Stream report:  Integration Gate 1  4 m 43 s -> 4 m 06 s   (-13.1%)
+Integrator:     :core:common:jvmTest ... :app:compileDebugKotlin --rerun-tasks
+                dev (86fc9a83)          BUILD SUCCESSFUL in 4 m 35 s (275 s)
+                agent/opt-build         BUILD SUCCESSFUL in 7 m 46 s (467 s)
+```
+
+### Root cause
+Two different measurements were subtracted from each other. The plan's baseline was taken with
+`--rerun-tasks` (every compile and test really executes). The stream's "optimized" run was not
+forced, so nearly every compile task was up-to-date and only the test tasks ran. The comparison
+therefore measured "forced full build" vs "warm incremental build", which is why a change that
+made the gate 70% slower looked 13% faster.
+
+The regression itself was real and had a cause: `maxParallelForks = cpus/2` was applied to **every**
+`Test` task while `org.gradle.parallel=true` was already running up to max-workers test tasks at
+once. On 8 CPUs that is up to ~32 test JVMs, and the compile-heavy gate spends its time competing
+for cores instead of compiling.
+
+### Failed attempts
+1. "The machine was busy" - re-ran the baseline as a control: 275 s, so the machine was not busy.
+2. "The 4 GB daemon is the cause" - not separable at first; the daemon heap alone was not the driver,
+   because dropping it was not needed once forks were capped (316 s with 4 GB retained).
+
+### Working fix
+`maxParallelForks` is now 1 by default and 2 for `*AndroidHost*` (measured: gate 2 535 s -> 376 s);
+`:server:test` keeps its explicit 4 because it is the only test task in that build. The daemon's
+`-XX:SoftRefLRUPolicyMSPerMB=50` was removed as well. Recorded as ADR-231 rule 4 and plan section 6.3.2.
+
+### Verification
+Forced gate on the reviewed `dev`: gate 1 = 2,138 tests, 0 failed, 2 POSIX-only skips, 316 s;
+gate 2 = 1,526 tests, exactly the two pre-existing `TransfersUiMapperTest` failures, 376 s.
+Both compared against the forced `dev` baseline measured the same day (275 s / 535 s).
+
+### Related files
+- `build.gradle.kts` (root `tasks.withType<Test>`)
+- `gradle.properties`
+- `server/build.gradle.kts`
+- `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` section 6.3.2
+- `docs/decisions.md` ADR-231
+- `logs/streams/build/INTEGRATOR-REVIEW.md`
+
+### Status
+RESOLVED in code 2026-10-30 (settings corrected and re-measured). The process rule stays open for
+every later stream: both halves of a before/after must be forced and the command line must be pasted.
+
+## ERROR-873 - Two RealFlashChatRepositoryTest cases fail under load because they synchronise with `delay(20)`/`delay(100)`
+
+### Date
+2026-10-30
+
+### Area
+`:core:messaging` Android host tests (test isolation / synchronisation), optimization programme gate
+
+### Symptoms
+`RealFlashChatRepositoryTest` (688 tests) reported 2 failures in a run that had 6 test tasks and ~13 test JVMs alive at once.
+The same suite and the same commit passed in three earlier runs today, including with two forks per task.
+
+### Error
+```text
+RealFlashChatRepositoryTest > pins are stored per conversation, newest first, and survive closing and reopening the chat FAILED
+java.lang.AssertionError: expected:<[m2, m1]> but was:<[]>
+	at com.transfer.flash.core.messaging.RealFlashChatRepositoryTest$pins are stored ... (RealFlashChatRepositoryTest.kt:522)
+
+RealFlashChatRepositoryTest > delete for everyone sends direct action only for the local author FAILED
+java.util.NoSuchElementException: List is empty.
+	at ... RealFlashChatRepositoryTest.kt:3436
+```
+
+### Root cause
+Not the product and not the build change: both tests use fixed sleeps as their only synchronisation. `pins are stored ...`
+calls `setMessagePinned`, then `delay(20)`, then another pin, then `delay(100)`, and asserts on
+`repository.conversationState.value.pinnedMessageIds`; the repository applies the change on its own dispatcher. With 13 JVMs
+competing for 8 cores the 100 ms window closes before the state is published, so the assertion reads the previous (empty)
+value. The delete-for-everyone case fails the same way one level down (`single()` on an empty list).
+
+### Failed attempts
+1. "A real regression in the merge" - re-read the product code: nothing in the review touches `:core:messaging`; the suite was
+   green twice on the merged tree before this run.
+2. "Two forks for the host suites is safe because the gate passed at 2 forks" - it passed once; the failure needs only CPU
+   contention, so it is a probability, not a switch.
+
+### Working fix
+Not fixed yet, on purpose: `RealFlashChatRepositoryTest` belongs to Stream D (`RealFlashChatRepository.kt` is D's file), and
+editing it here would create exactly the conflict the split exists to avoid. The test must await the state (poll `value` with a
+timeout, or collect the flow) instead of sleeping. Recorded for D as its first step in `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §9 D
+and as `PERF-A07` in `docs/testing/TEST-BACKLOG.md`.
+
+Build-side mitigation applied at once (`68128d00`): the monorepo-wide `maxParallelForks` is now **1** for every `Test` task
+(it had been 4, and briefly 2 for `*AndroidHost*`). `:server:test` keeps 4 because it is the only test task in that build and
+passed 661/661 twice at 4 forks on this machine.
+
+### Verification
+The suite that failed here passed at 1 fork on the reviewed tree (`dev` gate 2: 1,526 tests, only the two pre-existing
+`TransfersUiMapperTest` failures). The flake itself stays OPEN until the two tests stop sleeping.
+
+### Related files
+- `core/messaging/src/androidHostTest/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepositoryTest.kt` (lines ~500-530, ~3400-3440)
+- `build.gradle.kts` (root `tasks.withType<Test>`)
+- `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §6.3.2, §9 D
+- `docs/decisions.md` ADR-231
+
+### Status
+OPEN - test defect, load-dependent; build-side mitigation in place.

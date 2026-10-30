@@ -2140,3 +2140,53 @@ verify and the whole-file check: 10.3 s and 12.3 s in two runs (about 4–5 MB/s
 ### Conclusion
 Only a sanity number: it shows nothing is quadratic and the 50 MiB limit is reachable. It says nothing about phone CPU,
 real disks or real networks; `MEAS-HUBFILE-01` is the real measurement.
+## EXP-80 addendum - Wave 0 gate: the build stream's numbers, re-measured (2026-10-30, integrator)
+
+### Devices / environment
+Windows 11 (26100), 8 logical CPUs, 20 GB RAM, Gradle 9.5.0, Kotlin 2.2.10, AGP 9.3.1, JDK 21 JBR. One build at a time
+through `tools/flash-gradle.cmd`. `dev` at `86fc9a83` before the merge, `agent/opt-build` at `90796a40`, reviewed `dev` at
+`68128d00`.
+
+### Why this addendum exists
+Stream A's `EXP-80` compares an **unforced** gate run against the plan's **forced** baseline. Both halves must be forced, so
+every number below was re-run with `--rerun-tasks` (and, where marked, `--no-build-cache`), same command, same task set.
+
+### Gate 1 - ten `jvmTest` suites + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin`
+| Run | Config | Wall clock | Result |
+|---|---|---|---|
+| `dev` baseline | no parallel, no cache, 2 GB daemon | **275 s** | 2,138 tests, 0 failed, 2 POSIX-only skips |
+| branch as delivered | parallel + cache, 4 GB daemon, 4 forks/task | **467 s** | same tests |
+| reviewed `dev`, cache filling | 1 fork per task, no SoftRefLRU | **316 s** | same tests |
+| reviewed `dev`, `--no-build-cache` | same | **204 s** | same tests |
+
+The 112 s between the last two rows is build-cache **stores**: under `--rerun-tasks` nothing can be reused, so 153 tasks
+write their outputs and the run gets none of it back. On the normal loop the cache is read, not just written.
+
+### Gate 2 - three `testAndroidHostTest` suites + `:app:testDebugUnitTest`
+| Run | Config | Wall clock | Result |
+|---|---|---|---|
+| `dev` baseline | no parallel, no cache | **535 s** | 1,526 tests, 2 pre-existing failures |
+| branch as delivered | parallel + cache, 4 forks/task | **429 s** | same 2 failures |
+| reviewed `dev` | parallel + cache, 2 forks for host suites | **376 s** | same 2 failures, but NOT ADOPTED - it flaked ERROR-873 |
+| reviewed `dev`, shipped setting | parallel + cache, 1 fork per task | **490 s** | same 2 failures |
+
+### Artifacts (measured on the branch, before the ABI-split revert)
+| Artifact | Size |
+|---|---|
+| `app-arm64-v8a-release-unsigned.apk` | 17.55 MB (16.74 MiB) |
+| `app-armeabi-v7a-release-unsigned.apk` | 11.65 MB |
+| `app-x86_64-release-unsigned.apk` | 19.03 MB |
+| `app-universal-release-unsigned.apk` | 54.63 MB - the one a sideloader actually installs |
+| `Flash-2.1.0.msi` | 103.6 MB (98.76 MiB), from 123.3 MB before the sqlite strip |
+
+The per-ABI figures are real but the universal APK is what the release script packages today, so the user-visible saving is
+zero until the distribution decision in PERF-A04. This is why `O22-01` was reverted rather than merged.
+
+### Conclusion
+- Parallel Gradle plus a sane fork count is a genuine win: gate 1 275 s -> 204 s and gate 2 535 s -> 376 s (both forced).
+- Four forks per `Test` task with `org.gradle.parallel` on is a loss on 8 CPUs: gate 1 275 s -> 467 s. One fork per task is what
+  ships. Two forks for the Robolectric host suites is 114 s faster on gate 2 but made two `RealFlashChatRepositoryTest` cases
+  fail under load (ERROR-873), so it waits for PERF-A07; `:server:test` keeps 4 because it runs alone.
+- A before/after pair is only worth recording when both halves are forced and the command line is pasted.
+- Not measured here: the stream's `:server:test` claim (7 m 10 s -> 5 m 22 s; PERF-A05), `:server:test` under 4 forks on this
+  machine, and the desktop installers' runtime behaviour (PERF-A03).

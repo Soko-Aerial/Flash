@@ -6933,3 +6933,91 @@ server mailbox while the radio link was up and idle, and the sender had no way t
 ### Revisit when
 `RADCHAT-DEV06` passes on two radios with the hub unreachable, or if hub users report texts arriving by radio when the hub was merely
 a poll behind (the presence list is refreshed every `HubPresenceDefaults.POLL_MS`).
+
+## ADR-230 - BouncyCastle stays on the desktop, pinned (finding OPT-O22-03 blocked) (2026-10-30)
+
+### Decision
+`OPT-O22-03` — remove the BouncyCastle suite (`bcprov`, `bcpkix`, `bcutil`, ~10.3 MB) from the desktop runtime — is **BLOCKED**
+and waits for a dedicated review with a device TLS session. BouncyCastle stays, pinned to `1.81.1` in every configuration.
+
+### Context
+`core/network/src/jvmMain/.../tls/FlashCertMaker.kt` builds the self-signed certificate the desktop presents on its local
+WebSocket server with `org.bouncycastle.cert.jcajce.*`. That is the handshake Android pins against, so removing the suite is a
+handshake change, not a size change. The plan already classifies the finding as gated (§8).
+
+### Why the pin, though the suite stays
+`bcpkix:1.81` declares `bcutil` as a dynamic range `[1.81, 1.82)`, which Gradle resolves to the newest in the range and
+re-checks daily (and `gradle/verification-metadata.xml` already carried `1.81.1`, i.e. the range was resolving there anyway).
+Pinning `1.81.1` records today's behaviour and kills the dynamic check: **ERROR-871** is the failure it caused.
+
+### Revisit when
+Someone wants the 10.3 MB back and can run a TLS handshake test between a physical Android device and the packaged desktop app
+across the supported API levels.
+
+### Status
+BLOCKED - owner decision + device session.
+
+## ADR-231 - A build stream may not change what ships, and a benchmark must be forced before it is believed (2026-10-30)
+
+### Decision
+The integrator of the optimization programme (Wave 0, Stream A / build) reviewed `agent/opt-build` against the plan's
+ownership rules and accepted **21 of 25** findings. Five were reverted and four settings corrected. The general rules that
+come out of it, for every later stream as well:
+
+1. **A stream may not change the shipped artifact shape.** ABI splits, jlink module pruning, installer contents and
+   published-POM dependency sets are release decisions. They need the release tooling updated in the same change (here
+   `tools/build-release.ps1:265` reads `app-release-unsigned.apk`, which ABI splits stop producing) and a device or desktop
+   check, neither of which a build stream can do. Kept as proposals with measured numbers.
+2. **A comment that records a past failure outranks an optimization idea.** `core/calling/consumer-rules.pro` documents a
+   release-only `NoSuchMethodError` inside `PeerConnectionFactory` init and says the blunt `-keep class org.webrtc.**` is the
+   only honest rule. Narrowing it cannot be validated by unit tests, so it is not done.
+3. **A finding that is in the audit's list is still refused if the code it touches says why.** The `:ui:chat` block states
+   that four unused dependencies are kept because `ui-chat` is published and removing them changes what every consumer
+   resolves. "Zero references" was true and irrelevant.
+4. **Before/after numbers must both be forced.** The stream compared an unforced gate run (almost everything up-to-date)
+   with the plan's forced baseline and reported a 13 % win where the same command was really 70 % slower. Any performance
+   claim in a stream log now carries its command line.
+5. **A profile, a benchmark or a measurement is not "done" because the file exists.** The 25-line `baseline-prof.txt` was
+   written by hand from the source tree; one rule cannot match (`RealFlashChatRepository` has no two-argument constructor).
+   Deleted; the module and generator stay until a device produces the real one.
+
+### Context
+The audit (`docs/audit/optimization-2026-10-23/`) recommends all four reverted changes, and the plan (`docs/plans/
+OPTIMIZATION-PARALLEL-PLAN.md` §9) assigned them to Stream A. The stream implemented them as written, unit-tested them and
+logged them as complete. Nothing in the stream's report mentions the two in-code comments or the release script.
+
+Two of the reverts cost measurable wins (17.5 MB per-ABI APK, 19.7 MB of installer, 1.8 MB of Material 2), so they are
+recorded as proposals rather than deleted: the numbers are in EXP-80 and the decisions they need are PERF-A03/A04 in
+`docs/testing/TEST-BACKLOG.md`.
+
+The fork correction comes from measurement: with `org.gradle.parallel` already running up to max-workers test tasks,
+`maxParallelForks = cpus/2` everywhere meant ~32 JVMs on 8 CPUs. Four forks helped nobody except `:server:test`, where it is
+the only task running. Now 1 fork for every task, and `:server:test` keeps its explicit 4. Two forks for the Robolectric host
+suites measured faster (gate 2 376 s) but made two `RealFlashChatRepositoryTest` cases fail under load, because they
+synchronise with `delay(20)`/`delay(100)` — ERROR-873 — so determinism won.
+
+### Alternatives considered
+- **Merge everything and open follow-ups**: rejected. Two of the five are release-only failures that unit tests cannot see,
+  and one breaks the release script outright; a follow-up would leave `dev` unable to build a release correctly until
+  somebody noticed.
+- **Cherry-pick the acceptable 21 commits instead of merging**: rejected as history laundering. The stream's work is real and
+  its log stays; the reverts are separate, dated commits that name each rejected finding.
+- **Revert the whole stream**: rejected. 21 findings are sound and verified here, including the two that made the gate
+  meaningfully faster.
+- **Keep `-Xshare:auto` "because it is harmless"**: rejected. It would leave `OPT-O19-05` closed for a change that does
+  nothing; a false "done" costs more than an open item.
+
+### Consequences
+- `dev` keeps parallel Gradle, the build cache, the bigger daemon, `:server:test` forks, the CI changes, the composite build,
+  the stripped sqlite jar and the Material 2 exclusion. Measured gate result after review (forced): gate 1 204 s with
+  `--no-build-cache` (316 s while also filling the cache) against a 275 s baseline, and gate 2 490 s against 535 s — a 26 %
+  and 8 % win, in the opposite direction to the 70 % gate-1 regression the branch shipped with. Gate 2's 376 s at two forks
+  per task is 114 s faster and waits for PERF-A07, because those forks exposed ERROR-873.
+- `OPT-O19-05` and `OPT-O01-06` stay **open**; `OPT-O01-03`/`OPT-O28-01` stay open until a device generates a profile;
+  `OPT-O22-01`, `O22-04`, `O22-06`, `O22-07` become owner decisions rather than stream work.
+- `:benchmark` exists but cannot run yet: `:app` has no `benchmark` build type. PERF-A02 records the steps.
+- Future streams must paste the exact command line for both halves of any before/after.
+
+### Revisit when
+The owner answers PERF-A03/A04 (installer smoke test, per-ABI distribution), or when a device run makes
+`OPT-O01-03` real, or if a merger finds gate time regressing after another stream's build edits.

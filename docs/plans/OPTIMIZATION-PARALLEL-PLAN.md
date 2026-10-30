@@ -254,6 +254,32 @@ block, and the integrator does not merge the next stream until the gate is back 
 At the end of a session a stream runs `cmd /c "tools\flash-gradle.cmd --stop"` so an idle daemon does not hold
 2–4 GB.
 
+#### 6.3.2 After the Wave 0 merge (Stream A, 2026-10-30) — and the rule it taught the gate
+
+Stream A changed build configuration only, so its merge is where the gate's own numbers must be re-established. All four
+runs below are forced (`--rerun-tasks`), same machine, through the lock, same task set:
+
+| Gate | `dev` before the merge | `agent/opt-build` as delivered | `dev` after review |
+|---|---|---|---|
+| 1 — ten `jvmTest` + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **275 s**, 2,138 tests, 0 failed, 2 skips | **467 s**, same tests | **204 s** (`--no-build-cache`), same tests — **316 s** if the run also fills the cache |
+| 2 — three host suites + `:app:testDebugUnitTest` | **535 s**, 1,526 tests, 2 expected failures | **429 s** | **490 s** at one fork per task, same 2 failures (two forks for host suites gives 376 s and is 114 s faster, but flaked ERROR-873, so it is not the shipped setting) |
+
+Two rules follow, and they apply to every stream from now on:
+
+1. **A before/after pair must be forced on both sides.** The stream reported gate 1 at 246 s because its own run was
+   unforced (almost every compile up-to-date) while the baseline it compared against was forced. Recorded as ERROR-872.
+   Paste the command line with every number.
+2. **`--rerun-tasks` pays for build-cache *stores* without getting lookups back.** A forced run has nothing to reuse, so
+   the cache only writes — about **112 s** across gate 1's 153 tasks. For an evidence run whose only purpose is wall
+   clock, add `--no-build-cache`; for the normal loop leave the cache on, which is where it pays.
+
+Net after review: gate 1 −26 %, gate 2 −8 % against the forced baseline (about 694 s against 810 s for the pair). Gate 2's
+larger win needs per-task forks, which wait for `PERF-A07` (the two sleep-based tests of ERROR-873).
+
+Stream A's outcome: 21 of 25 findings merged; `O22-01` (ABI splits), `O22-04` (jlink pruning), `O22-06` (WebRTC keep rules)
+and `O22-07` (`:ui:chat` dependencies) reverted, `O19-05` (AppCDS) reverted as not delivered, and the fork/daemon/profile
+settings corrected. Authority: **ADR-231**, the per-finding table in `logs/streams/build/INTEGRATOR-REVIEW.md`.
+
 ---
 
 ## 7. Reservations (so two streams never take the same number)
@@ -329,7 +355,30 @@ belong to the owning stream) · `O27-05` the flake infrastructure.
 installer size, and one cold `:core:messaging:compileKotlinJvm`. Evidence runs must say *executed*, not
 `FROM-CACHE` — so for the numbers use `--rerun-tasks` on the single task.
 
+**Status 2026-10-30 — MERGED, reviewed (ADR-231).** 21 of 25 findings landed; see
+`logs/streams/build/INTEGRATOR-REVIEW.md` for the per-finding table and §6.3.2 for the gate numbers.
+
+- Landed: `O21-01`…`O21-10`, `O22-02`, `O22-05`, `O20-05`, `O19-04`, `O01-03`/`O28-01` (module only), `O27-01/02/05`.
+- **Not landed — owner decisions, not stream work:** `O22-01` ABI splits (breaks `tools/build-release.ps1:265`; the
+  distributed file is the universal APK anyway → PERF-A04), `O22-04` jlink pruning (unverifiable without an installer
+  smoke test → PERF-A03), `O22-06` narrowed WebRTC keeps (reverses a documented release-only crash fix), `O22-07`
+  `:ui:chat` dependency removal (published POM; the file says why they stay).
+- **Not landed — not delivered:** `O19-05` — `-Xshare:auto` is the JVM default and no AppCDS archive is shipped, so
+  `O01-06` is **not** closed. Still open.
+- **Corrected after measurement:** 4 forks per `Test` task → **1 for every task** (two forks for the Robolectric host
+  suites measured faster but flaked `RealFlashChatRepositoryTest` under load, ERROR-873); `SoftRefLRUPolicyMSPerMB=50`
+  and `forkEvery=100` removed; hand-written `app/src/main/baseline-prof.txt` deleted (not generated; one rule cannot
+  match) — `O01-03`/`O28-01` stay open until PERF-A02 runs on a device. `:benchmark` cannot run yet: `:app` has no
+  `benchmark` build type.
+
 ### D — data (23)
+
+**First step (ERROR-873, added by the integrator after the Wave 0 merge):** `RealFlashChatRepositoryTest` has two cases that
+synchronise with `delay(20)`/`delay(100)` and read an empty list under CPU load — `pins are stored per conversation, newest
+first…` (line ~522) and `delete for everyone sends direct action only for the local author` (line ~3436). They pass at one
+fork, but they are the reason the monorepo cannot use per-task forks. D owns this file: replacing the sleeps with an explicit
+wait (poll `conversationState.value` with a timeout, or collect the flow) belongs in D's first commit, before anyone trusts a
+gate at more than one fork.
 
 **Batch 1 (the 1,700× win + the indexes):**
 `O06-01` index `messages(conversationId, readAt)` and rewrite `observeUnreadCounts` (697 ms → 0.41 ms) · `O06-05`
