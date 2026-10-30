@@ -178,11 +178,7 @@ compose.desktop {
             vendor = "Flash"
             modules(
                 "java.sql",
-                "java.naming",
                 "jdk.unsupported",
-                "java.management",
-                "java.instrument",
-                "jdk.crypto.cryptoki",
             )
             // jdk.crypto.mscapi exists only in a Windows JDK; jlink on Linux fails with "Module not found" if it is
             // listed (Linux plan L0). A package is built on its own OS, so the host decides.
