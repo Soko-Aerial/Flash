@@ -51,6 +51,7 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
     override fun start(): Boolean {
         stopQuietly()
         peak.set(0)
+        pruneOldVoiceFiles(tempDir())
         val raw = File(tempDir(), "flash-voice-${System.currentTimeMillis()}.pcm")
         return try {
             val info = DataLine.Info(TargetDataLine::class.java, FORMAT)
@@ -206,4 +207,18 @@ internal fun peakOf(buffer: ByteArray, length: Int): Int {
         i += 2
     }
     return loudest
+}
+
+/**
+ * O05-08 / O23-04: Prunes abandoned temporary voice recording files older than [maxAgeMs].
+ */
+internal fun pruneOldVoiceFiles(dir: File, maxAgeMs: Long = 24 * 60 * 60 * 1000L) {
+    runCatching {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        dir.listFiles { _, name -> name.startsWith("flash-voice-") }?.forEach { file ->
+            if (file.isFile && file.lastModified() < cutoff) {
+                file.delete()
+            }
+        }
+    }
 }
