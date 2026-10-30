@@ -28,6 +28,11 @@ tasks.withType<JavaCompile>().configureEach {
     options.release.set(21)
 }
 
+tasks.withType<Test>().configureEach {
+    maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+    jvmArgs("-Xmx1024m", "-XX:+UseG1GC")
+}
+
 dependencies {
     // 1. Shared core logic from monorepo (headless, zero-UI)
     implementation(project(":core:common"))

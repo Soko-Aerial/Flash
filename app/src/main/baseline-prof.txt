@@ -1,0 +1,25 @@
+# Baseline Profile for Flash Android (OPT-O01-03)
+# Covers cold startup paths, DI initialization, theme, and chat list composition
+
+Lcom/transfer/flash/di/FlashApplication;
+HSPLcom/transfer/flash/di/FlashApplication;-><init>()V
+HSPLcom/transfer/flash/di/FlashApplication;->onCreate()V
+
+Lcom/transfer/flash/MainActivity;
+HSPLcom/transfer/flash/MainActivity;-><init>()V
+HSPLcom/transfer/flash/MainActivity;->onCreate(Landroid/os/Bundle;)V
+
+Lcom/transfer/flash/di/AppEngine;
+HSPLcom/transfer/flash/di/AppEngine;-><init>(Landroid/content/Context;)V
+
+Lcom/transfer/flash/core/persistence/db/FlashDatabase;
+HSPLcom/transfer/flash/core/persistence/db/FlashDatabase;-><init>()V
+
+Lcom/transfer/flash/core/messaging/RealFlashChatRepository;
+HSPLcom/transfer/flash/core/messaging/RealFlashChatRepository;-><init>(Lcom/transfer/flash/core/persistence/db/FlashDatabase;Lcom/transfer/flash/core/security/FlashTrustStore;)V
+
+Lcom/transfer/flash/ui/theme/FlashThemeKt;
+HSPLcom/transfer/flash/ui/theme/FlashThemeKt;->FlashTheme(ZLkotlin/jvm/functions/Function2;Landroidx/compose/runtime/Composer;II)V
+
+Lcom/transfer/flash/ui/chat/FlashChatListScreenKt;
+HSPLcom/transfer/flash/ui/chat/FlashChatListScreenKt;->FlashChatListScreen(Lcom/transfer/flash/core/messaging/FlashChatRepository;Landroidx/compose/runtime/Composer;I)V

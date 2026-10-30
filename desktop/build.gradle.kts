@@ -1,3 +1,5 @@
+import com.transfer.flash.buildlogic.StripSqliteTask
+import com.transfer.flash.buildlogic.ThirdPartyNoticesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
@@ -12,6 +14,31 @@ plugins {
     // kotlin-compose alias in ui/* — required for any @Composable code.
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.aboutlibraries)
+    id("flash.third-party-notices")
+}
+
+val sqliteJdbcStripped: Configuration = configurations.create("sqliteJdbcStripped") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
+dependencies {
+    "sqliteJdbcStripped"(libs.sqlite.jdbc.crypt)
+}
+
+val stripSqliteNatives = tasks.register<StripSqliteTask>("stripSqliteNatives") {
+    inputJar.from(sqliteJdbcStripped)
+    val osName = System.getProperty("os.name", "")
+    val hostArch = System.getProperty("os.arch", "").lowercase().let { if (it == "amd64") "x86_64" else it }
+    targetOs.set(osName)
+    targetArch.set(hostArch)
+    outputJar.set(layout.buildDirectory.file("stripped-libs/sqlite-jdbc-crypt-stripped.jar"))
+}
+
+configurations.configureEach {
+    if (name.contains("RuntimeClasspath", ignoreCase = true)) {
+        exclude(group = "io.github.willena", module = "sqlite-jdbc")
+    }
 }
 
 kotlin {
@@ -63,7 +90,11 @@ kotlin {
 
                 // Desktop native windowing for the CURRENT OS. This is the artifact that
                 // supplies `androidx.compose.ui.window.Window`/`application` on a JVM.
-                implementation(compose.desktop.currentOs)
+                // OPT-O22-05: exclude unused Material 2 runtime pulled by compose.desktop.currentOs
+                implementation(compose.desktop.currentOs) {
+                    exclude(group = "org.jetbrains.compose.material", module = "material")
+                    exclude(group = "org.jetbrains.compose.material", module = "material-desktop")
+                }
 
                 // The `compose.*` coordinates (redirect to the Skiko-backed desktop artifacts
                 // for jvm()); same set ui:chat declares.
@@ -103,6 +134,11 @@ kotlin {
                     else -> arch
                 }
                 runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.19.0:$hostOS-$hostArch")
+
+                // OPT-O22-02: Strip foreign multiplatform native libraries from sqlite-jdbc.jar
+                // Packaging all 24 multiplatform shared libraries wastes 16.4 MB of compressed payload
+                // in the desktop installer. Retain only the host OS/arch native binary.
+                runtimeOnly(files(stripSqliteNatives))
             }
         }
 
@@ -166,6 +202,16 @@ compose.desktop {
             "-Dskiko.fps=60"
         )
 
+        // OPT-O19-04: tune JVM flags for Compose Desktop 60 FPS frame budget and lower native thread memory
+        // OPT-O19-05: -Xshare:auto enables AppCDS if an archive is present
+        jvmArgs += listOf(
+            "-Xss512k",
+            "-XX:MaxGCPauseMillis=20",
+            "-XX:+UseStringDeduplication",
+            "-XX:+ExitOnOutOfMemoryError",
+            "-Xshare:auto"
+        )
+
         // Native distribution packaging (MSI/DEB/DMG) is Phase 24 polish, deliberately NOT
         // wired into any verification gate here — the phase's own Do-NOT list forbids it
         // (packaging tools may not be installed). This block exists only so the entry point is
@@ -178,11 +224,7 @@ compose.desktop {
             vendor = "Flash"
             modules(
                 "java.sql",
-                "java.naming",
                 "jdk.unsupported",
-                "java.management",
-                "java.instrument",
-                "jdk.crypto.cryptoki",
             )
             // jdk.crypto.mscapi exists only in a Windows JDK; jlink on Linux fails with "Module not found" if it is
             // listed (Linux plan L0). A package is built on its own OS, so the host decides.
