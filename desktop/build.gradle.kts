@@ -1,3 +1,4 @@
+import com.transfer.flash.buildlogic.StripSqliteTask
 import com.transfer.flash.buildlogic.ThirdPartyNoticesTask
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
@@ -14,6 +15,30 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.aboutlibraries)
     id("flash.third-party-notices")
+}
+
+val sqliteJdbcStripped: Configuration = configurations.create("sqliteJdbcStripped") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+}
+
+dependencies {
+    "sqliteJdbcStripped"(libs.sqlite.jdbc.crypt)
+}
+
+val stripSqliteNatives = tasks.register<StripSqliteTask>("stripSqliteNatives") {
+    inputJar.from(sqliteJdbcStripped)
+    val osName = System.getProperty("os.name", "")
+    val hostArch = System.getProperty("os.arch", "").lowercase().let { if (it == "amd64") "x86_64" else it }
+    targetOs.set(osName)
+    targetArch.set(hostArch)
+    outputJar.set(layout.buildDirectory.file("stripped-libs/sqlite-jdbc-crypt-stripped.jar"))
+}
+
+configurations.configureEach {
+    if (name.contains("RuntimeClasspath", ignoreCase = true)) {
+        exclude(group = "io.github.willena", module = "sqlite-jdbc")
+    }
 }
 
 kotlin {
@@ -109,6 +134,11 @@ kotlin {
                     else -> arch
                 }
                 runtimeOnly("dev.onvoid.webrtc:webrtc-java:0.19.0:$hostOS-$hostArch")
+
+                // OPT-O22-02: Strip foreign multiplatform native libraries from sqlite-jdbc.jar
+                // Packaging all 24 multiplatform shared libraries wastes 16.4 MB of compressed payload
+                // in the desktop installer. Retain only the host OS/arch native binary.
+                runtimeOnly(files(stripSqliteNatives))
             }
         }
 
