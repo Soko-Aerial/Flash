@@ -516,22 +516,46 @@ class RealFlashChatRepositoryTest {
 
         repository.openConversation("conv-a")
         repository.setMessagePinned("m1", true)
-        kotlinx.coroutines.delay(20)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
+        val m1Time = pinDao.rows["conv-a" to "m1"]?.pinnedAt ?: 0L
+        while (System.currentTimeMillis() <= m1Time) {
+            kotlinx.coroutines.delay(5)
+        }
         repository.setMessagePinned("m2", true)
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m2", "m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
 
         repository.closeConversation()
         repository.openConversation("conv-b")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds.isNotEmpty()) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertTrue("another chat must not see conv-a's pins", repository.conversationState.value.pinnedMessageIds.isEmpty())
 
         repository.openConversation("conv-a")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m2", "m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
 
         repository.setMessagePinned("m2", false)
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m1"), repository.conversationState.value.pinnedMessageIds)
     }
 
@@ -3427,7 +3451,13 @@ class RealFlashChatRepositoryTest {
 
         repository.deleteMessageForEveryone("theirs")
         repository.deleteMessageForEveryone("own")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (messageDao.messages["own"]?.deletedAt == null ||
+                sent.none { it.second is MessageWireFrame.DeleteForEveryone }
+            ) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
 
         assertNull(messageDao.messages["theirs"]!!.deletedAt)
         assertNotNull(messageDao.messages["own"]!!.deletedAt)
