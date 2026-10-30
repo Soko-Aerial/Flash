@@ -93,8 +93,13 @@ internal class MultiStreamDispatcher(
 
     private val plan: ChunkPlan = chunker.plan(meta, requestedChunkSize)
     private val resumeDone: List<Int> = doneIndexes.filter { it in 0 until plan.totalChunks }
+    private val resumeDoneSet: Set<Int> = if (resumeDone.size > 8) resumeDone.toHashSet() else emptySet()
     private val pendingIndexes: List<Int> =
-        (0 until plan.totalChunks).filter { it !in resumeDone }
+        if (resumeDoneSet.isNotEmpty()) {
+            (0 until plan.totalChunks).filter { it !in resumeDoneSet }
+        } else {
+            (0 until plan.totalChunks).filter { it !in resumeDone }
+        }
     private val resumedBytes: Long = resumeDone.sumOf { chunkBytes(it) }
 
     private val _progress = MutableStateFlow(
