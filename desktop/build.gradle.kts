@@ -63,7 +63,11 @@ kotlin {
 
                 // Desktop native windowing for the CURRENT OS. This is the artifact that
                 // supplies `androidx.compose.ui.window.Window`/`application` on a JVM.
-                implementation(compose.desktop.currentOs)
+                // OPT-O22-05: exclude unused Material 2 runtime pulled by compose.desktop.currentOs
+                implementation(compose.desktop.currentOs) {
+                    exclude(group = "org.jetbrains.compose.material", module = "material")
+                    exclude(group = "org.jetbrains.compose.material", module = "material-desktop")
+                }
 
                 // The `compose.*` coordinates (redirect to the Skiko-backed desktop artifacts
                 // for jvm()); same set ui:chat declares.
