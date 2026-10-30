@@ -1,5 +1,16 @@
 # Current Handoff
 
+> 2026-10-30 optimization-audit split (plan only, nothing built): `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` divides the
+> 2026-10-23 audit's 211 findings into **12 directory-disjoint streams** so several agents can work at once in their own
+> `E:\FlashWork\opt-<stream>` worktrees (branches `agent/opt-<stream>` off `dev`), with per-file ownership for the modules
+> they share, five waves, one integration gate, reserved ADR/ERROR/EXP/Room-step/test numbers, and one copy-paste kickoff
+> prompt per stream that starts by creating its own worktree. All 211 finding IDs are assigned exactly once (the coverage
+> was machine-checked against `findings-ledger.md`); 13 findings are marked gated/obsolete with the decision they need
+> (splash/ADR-080, FTS5/ADR-218, sealed-chunk encryption/REJ-01, wire framing, SQLCipher iterations, `connectedDevice`
+> FGS/ADR-041, BouncyCastle, history paging, swarm fairness, server heap as deployment, device-only codecs, and
+> `OPT-O26-06` radio voice, obsolete since ADR-210/ADR-225). **No code changed, nothing built, nothing device-verified.**
+> Next: fill the gate baseline in the plan's §6.3, then run wave 0 (build) and wave 1 (data + transfer).
+
 > 2026-10-30 review fixes: **BUILT, unit-tested, NOT device-verified.** The 2026-10-30 read of the uncommitted tree (radio data
 > rounds 3/4, radio policy, radio voice, screen presenter, hub web mock, security tranches) found one real defect and several small
 > ones; this round fixes them. **ERROR-870 (was High):** a radio text whose ACK was lost could never be acknowledged again - the
@@ -24,7 +35,8 @@
 > unchanged and still uncommitted before this round's commit. **Committed as `ffeec334` on `dev`** (322 files: the previously
 > uncommitted radio/screen-share/hub-mock/audit work plus this round's fixes).
 
-> 2026-10-30 radio retry stop: **BUILT, unit-tested, NOT device-verified, NOT committed.** An outgoing message that is
+> 2026-10-30 radio retry stop: **BUILT, unit-tested, NOT device-verified** (committed with the rest in `ffeec334`; this line
+> said "NOT committed" when it was written). An outgoing message that is
 > waiting for radio acknowledgement (or held because the gateway is unavailable) now offers a visible **Stop** beside its radio
 > delivery line, with **Stop sending** also in the context menu. It deletes only that message's durable outbox row, marks the local state `Stopped retrying by radio; delivery is
 > unconfirmed`, and preserves the normal manual Retry affordance. It cannot recall a frame already sent: a late cryptographic
