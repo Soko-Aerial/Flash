@@ -147,6 +147,34 @@ public class ResumeBitVector(public val totalChunks: Int) {
     }
 
     /**
+     * Copies all received chunk words directly from [source] into this vector using primitive word array copying.
+     * Completely eliminates boxed ArrayList<Int> allocations during geometric vector expansion (OPT-O07-09).
+     */
+    public fun copyWordsFrom(source: ResumeBitVector) {
+        val count = minOf(words.size, source.words.size)
+        source.words.copyInto(this.words, destinationOffset = 0, startIndex = 0, endIndex = count)
+        this.received = source.received
+    }
+
+    /**
+     * Bitwise union merge with another [ResumeBitVector] directly via 64-bit words,
+     * avoiding boxed Collection<Int> allocations.
+     */
+    public fun reconcile(other: ResumeBitVector) {
+        val wordLimit = minOf(words.size, other.words.size)
+        var newReceived = 0
+        for (w in 0 until wordLimit) {
+            val combined = words[w] or other.words[w]
+            words[w] = combined
+            newReceived += combined.countOneBits()
+        }
+        for (w in wordLimit until words.size) {
+            newReceived += words[w].countOneBits()
+        }
+        received = newReceived
+    }
+
+    /**
      * Union merge with a remote done-set; see class KDoc. Indexes outside `[0, totalChunks)` are
      * ignored rather than thrown: remote reports arrive over the wire and must never crash the
      * pipeline.

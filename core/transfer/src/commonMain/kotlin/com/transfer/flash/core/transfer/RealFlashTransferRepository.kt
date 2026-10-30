@@ -88,6 +88,10 @@ public class RealFlashTransferRepository(
      */
     private val freeSpaceBytes: () -> Long? = { null },
     /**
+     * O23-03: Whether the target storage volume is FAT32 (which imposes a 4 GB - 1 byte single file limit).
+     */
+    private val isFat32Volume: () -> Boolean = { false },
+    /**
      * How long a retried receive may sit at "Downloading" without a single new byte before it goes back to Failed with
      * [TransferFailureText.SENDER_DID_NOT_RESUME] (C-08). A receiver cannot restart a sender that is gone, so without a
      * bound the row would never say so.
@@ -960,6 +964,18 @@ public class RealFlashTransferRepository(
         store?.setStatus(transferId.value, FlashTransferState.Cancelled.name)
         forgetChunks(transferId.value, null)
 
+        // O23-04: Purge partial file and directory on explicit cancellation of an inbound transfer
+        if (transfer != null && transfer.direction == FlashTransferDirection.Receiving && !transfer.localPath.isNullOrBlank()) {
+            try {
+                FileSystem.SYSTEM.delete(transfer.localPath.toPath())
+                transfer.localPath.toPath().parent?.let { parent ->
+                    FileSystem.SYSTEM.delete(parent)
+                }
+            } catch (_: Exception) {
+                // Best effort cleanup
+            }
+        }
+
         // Tell the counterpart so both sides tear down deterministically (ADR-018).
         if (transfer != null) {
             emitOutgoing(transferId.value, transfer.peerDeviceId, ACTION_CANCEL)
@@ -1083,6 +1099,17 @@ public class RealFlashTransferRepository(
                 FlashTransferDirection.Receiving -> {
                     // Host tears down sink + pipeline session on this event.
                     emitIncoming(transferId, ACTION_CANCEL)
+                    // O23-04: Purge partial file and directory when sender cancels inbound transfer
+                    if (!transfer.localPath.isNullOrBlank()) {
+                        try {
+                            FileSystem.SYSTEM.delete(transfer.localPath.toPath())
+                            transfer.localPath.toPath().parent?.let { parent ->
+                                FileSystem.SYSTEM.delete(parent)
+                            }
+                        } catch (_: Exception) {
+                            // Best effort cleanup
+                        }
+                    }
                     updateTransferState(transferId) {
                         it.copy(
                             state = FlashTransferState.Cancelled,
@@ -1200,7 +1227,7 @@ public class RealFlashTransferRepository(
                 // Grow geometrically: exact-size growth copied the whole vector for every new highest index.
                 val size = maxOf(requiredChunks, minOf((existing?.totalChunks ?: 0) * 2, ReceivePipeline.MAX_TOTAL_CHUNKS))
                 ResumeBitVector(size).also { grown ->
-                    if (existing != null) grown.reconcile(existing.doneIndexes())
+                    if (existing != null) grown.copyWordsFrom(existing)
                     receiverDone[transferId] = grown
                 }
             } else {
@@ -1282,8 +1309,29 @@ public class RealFlashTransferRepository(
      * or for an unknown row, it admits: an unknown amount is no reason to refuse.
      */
     public fun admitIncoming(transferId: String): Boolean {
-        val free = runCatching { freeSpaceBytes() }.getOrNull() ?: return true
         val transfer = _activeTransfers.value.find { it.id.value == transferId } ?: return true
+        // O23-03: FAT32 has a strict 4 GB single-file limit (2^32 - 1 bytes). Refuse early to avoid mid-transfer crash.
+        if (transfer.bytesTotal >= 4_294_967_296L && isFat32Volume()) {
+            runCatching { FlashLog.w("TRANSFER", "inbound refused transferId=$transferId totalBytes=${transfer.bytesTotal} exceeds FAT32 4 GB limit") }
+            receiverRateMetersLock.withLock { receiverRateMeters.remove(transferId) }
+            updateTransferState(transferId) {
+                it.copy(
+                    state = FlashTransferState.Failed,
+                    speedBytesPerSec = 0L,
+                    etaSeconds = 0L,
+                    errorMessage = TransferFailureText.fat32LimitExceeded(),
+                )
+            }
+            store?.let { activeStore ->
+                repositoryScope.launch(workerDispatcher) {
+                    activeStore.setStatus(transferId, FlashTransferState.Failed.name)
+                }
+            }
+            emitIncoming(transferId, ACTION_DECLINE)
+            emitOutgoing(transferId, transfer.peerDeviceId, ACTION_CANCEL)
+            return false
+        }
+        val free = runCatching { freeSpaceBytes() }.getOrNull() ?: return true
         val needed = (transfer.bytesTotal - transfer.bytesDone).coerceAtLeast(0L)
         if (needed <= free) return true
         runCatching { FlashLog.w("TRANSFER", "inbound refused transferId=$transferId needed=$needed free=$free") }
