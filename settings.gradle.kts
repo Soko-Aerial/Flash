@@ -95,3 +95,6 @@ include(":sample:consumer-granular")
 // resolving the ROOT published coordinates from mavenLocal() so variant-aware selection of the
 // `-jvm` artifact is proven by compilation. Kept alongside the Android samples, never published.
 include(":sample:consumer-desktop")
+
+// OPT-O01-03 / OPT-O28-01: Macrobenchmark and Baseline Profile module
+include(":benchmark")
