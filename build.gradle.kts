@@ -12,6 +12,15 @@ val flashLibraryVersion: String = providers.gradleProperty("flashLibraryVersion"
 allprojects {
     version = flashLibraryVersion
     group = "com.transfer.flash"
+
+    configurations.all {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "org.bouncycastle" && requested.name == "bcutil-jdk18on") {
+                useVersion("1.81")
+                because("Pin dynamic range [1.81, 1.82) to prevent daily configuration cache eviction (OPT-O21-07)")
+            }
+        }
+    }
 }
 
 plugins {

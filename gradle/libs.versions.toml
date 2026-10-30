@@ -147,6 +147,7 @@ kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 bouncycastle = { group = "org.bouncycastle", name = "bcprov-jdk18on", version = "1.81" }
 bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version = "1.81" }
+bouncycastle-util = { group = "org.bouncycastle", name = "bcutil-jdk18on", version = "1.81" }
 # Phase 26 (ADR-035): Windows DPAPI access for the desktop identity vault (Crypt32Util).
 # JVM-variant-only scope; the human-authorized new dependency of the P2 decision.
 jna = { group = "net.java.dev.jna", name = "jna", version = "5.17.0" }
