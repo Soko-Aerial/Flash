@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -103,7 +104,8 @@ fun FlashMessageList(
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
 
-    val initialMessageIds = remember(messages.firstOrNull()?.id) { messages.mapTo(HashSet()) { it.id } }
+    val initialHeadId = messages.firstOrNull()?.id
+    val initialMessageIds = remember(initialHeadId) { messages.mapTo(HashSet()) { it.id } }
 
     val stickThresholdPx = with(LocalDensity.current) { FlashDimensions.chatBottomStickThreshold.toPx() }
     val atBottom = remember(stickThresholdPx) {
@@ -117,8 +119,8 @@ fun FlashMessageList(
     }
 
     // --- UI-021 unseen tracking: arrivals while scrolled up increment the pill counter. ---
-    // BOLT: Key previousTailId on initialMessageIds to prevent state leak across conversation switches
-    var previousTailId by remember(initialMessageIds) { mutableStateOf(messages.lastOrNull()?.id) }
+    // OPT-O03-06: Key previousTailId on initialHeadId instead of the initialMessageIds HashSet to eliminate O(N) set equality check on every recomposition.
+    var previousTailId by remember(initialHeadId) { mutableStateOf(messages.lastOrNull()?.id) }
     var unseenCount by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(messages) {
@@ -143,6 +145,23 @@ fun FlashMessageList(
         if (newestMessageId == null || newestMessageId in initialMessageIds) return@LaunchedEffect
         val newest = messages.last()
         if (shouldAutoScrollToNewMessage(isMine = newest.isMine, atBottom = atBottom.value)) {
+            if (motion.reduceMotion) {
+                listState.scrollToItem(0)
+            } else {
+                listState.animateScrollToItem(0)
+            }
+        }
+    }
+
+    // OPT-O24-04: Auto-scroll to tail when keyboard (IME) opens while user is viewing the latest messages.
+    // Compile repair: `WindowInsets.isImeVisible` is an Android-only API in Compose Multiplatform 1.9.3
+    // (the desktop artifact does not contain it), so the module compiled for Android and not for JVM.
+    // The signal now comes from the `flashImeVisible()` seam, which is the platform's own flag on
+    // Android and always false on desktop. `atBottom.value` is the guard, unchanged — a user scrolled
+    // up in history is not moved.
+    val isImeUp = flashImeVisible()
+    LaunchedEffect(isImeUp) {
+        if (isImeUp && atBottom.value) {
             if (motion.reduceMotion) {
                 listState.scrollToItem(0)
             } else {
@@ -356,12 +375,16 @@ private fun FlashDaySeparator(
 
 internal fun flashMessageKey(message: FlashMessageUi): String = message.id
 
-internal fun flashMessageContentType(message: FlashMessageUi): String = when {
-    message.callEvent != null -> if (message.isMine) "callEvent_out" else "callEvent_in"
-    message.images.isNotEmpty() -> if (message.isMine) "image_out" else "image_in"
-    message.voiceAttachments.isNotEmpty() -> if (message.isMine) "voice_out" else "voice_in"
-    message.fileAttachments.isNotEmpty() -> if (message.isMine) "file_out" else "file_in"
-    else -> if (message.isMine) "text_out" else "text_in"
+// OPT-O04-06: Distinguish items with day separators in contentType to prevent slot reuse height mismatches and scroll hitching
+internal fun flashMessageContentType(message: FlashMessageUi): String {
+    val base = when {
+        message.callEvent != null -> if (message.isMine) "callEvent_out" else "callEvent_in"
+        message.images.isNotEmpty() -> if (message.isMine) "image_out" else "image_in"
+        message.voiceAttachments.isNotEmpty() -> if (message.isMine) "voice_out" else "voice_in"
+        message.fileAttachments.isNotEmpty() -> if (message.isMine) "file_out" else "file_in"
+        else -> if (message.isMine) "text_out" else "text_in"
+    }
+    return if (message.daySeparator != null) "${base}_sep" else base
 }
 
 internal fun daySeparatorContentDescription(label: String): String = "Messages from $label"

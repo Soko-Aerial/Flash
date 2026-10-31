@@ -98,6 +98,9 @@ public fun FlashBrowseOrgGroupsSheet(
         isLoading = false
     }
 
+    // OPT-O24-06: the sheet loads as soon as it is shown. Deferring this behind a motion preference
+    // (a flat delay for every open, skipped under reduceMotion) made the load's timing depend on an
+    // accessibility setting and was not the entrance animation's real duration.
     LaunchedEffect(Unit) { load() }
 
     val filteredGroups = remember(allGroups, searchQuery) {
