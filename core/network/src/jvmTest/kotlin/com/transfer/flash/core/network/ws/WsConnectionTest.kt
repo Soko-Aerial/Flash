@@ -23,8 +23,8 @@ class WsConnectionTest {
         val closedLatch = CountDownLatch(1)
         val closedReason = AtomicReference<String>()
         val listener = object : WsConnection.Listener {
-            override fun onTextMessage(connection: WsConnection, text: String) {}
-            override fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
             override fun onConnectionClosed(connection: WsConnection, reason: String) {
                 closedReason.set(reason)
                 closedLatch.countDown()
@@ -56,8 +56,8 @@ class WsConnectionTest {
         val serverSideSocket = server.accept()
 
         val listener = object : WsConnection.Listener {
-            override fun onTextMessage(connection: WsConnection, text: String) {}
-            override fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
             override fun onConnectionClosed(connection: WsConnection, reason: String) {}
         }
 
@@ -88,6 +88,85 @@ class WsConnectionTest {
         assertTrue(socketClosedLatch.await(2, TimeUnit.SECONDS), "Underlying socket must be closed")
 
         serverSideSocket.close()
+        server.close()
+    }
+
+    @Test
+    fun `send methods return false when closed and do not throw`() {
+        val server = ServerSocket(0)
+        val clientSocket = Socket("127.0.0.1", server.localPort)
+        val serverSideSocket = server.accept()
+
+        val listener = object : WsConnection.Listener {
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override fun onConnectionClosed(connection: WsConnection, reason: String) {}
+        }
+
+        val conn = WsConnection(
+            socket = clientSocket,
+            maskOutboundFrames = true,
+            remoteLabel = "test-closed-sends",
+            listener = listener,
+        )
+
+        conn.close("Done")
+        assertFalse(conn.sendText("hello"))
+        assertFalse(conn.sendBinary(byteArrayOf(1, 2, 3)))
+        assertFalse(conn.sendBinaryConsuming(byteArrayOf(1, 2, 3)))
+        assertFalse(conn.sendPing())
+
+        serverSideSocket.close()
+        server.close()
+    }
+
+    @Test
+    fun `text frames are sent as priority and non-blocking`() {
+        val server = ServerSocket(0)
+        val clientSocket = Socket("127.0.0.1", server.localPort)
+        val serverSideSocket = server.accept()
+
+        val textReceivedLatch = CountDownLatch(1)
+        val receivedText = AtomicReference<String>()
+        val serverListener = object : WsConnection.Listener {
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {
+                receivedText.set(text)
+                textReceivedLatch.countDown()
+            }
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override fun onConnectionClosed(connection: WsConnection, reason: String) {}
+        }
+
+        val clientConn = WsConnection(
+            socket = clientSocket,
+            maskOutboundFrames = true,
+            remoteLabel = "client",
+            listener = object : WsConnection.Listener {
+                override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+                override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+                override fun onConnectionClosed(connection: WsConnection, reason: String) {}
+            },
+        )
+        val serverConn = WsConnection(
+            socket = serverSideSocket,
+            maskOutboundFrames = false,
+            remoteLabel = "server",
+            listener = serverListener,
+        )
+        serverConn.start()
+
+        val start = System.currentTimeMillis()
+        val enqueued = clientConn.sendText("priority-text-test")
+        val sendDuration = System.currentTimeMillis() - start
+
+        assertTrue(enqueued, "sendText should succeed")
+        assertTrue(sendDuration < 50, "sendText must be non-blocking, took ${sendDuration}ms")
+
+        assertTrue(textReceivedLatch.await(3, TimeUnit.SECONDS), "Server must receive priority text frame")
+        assertEquals("priority-text-test", receivedText.get())
+
+        clientConn.close("Done")
+        serverConn.close("Done")
         server.close()
     }
 }

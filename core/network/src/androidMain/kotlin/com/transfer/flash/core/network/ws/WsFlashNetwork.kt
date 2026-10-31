@@ -814,8 +814,8 @@ public class WsFlashNetwork(
         val queued = earlyFrames.remove(connection) ?: return
         queued.forEach { frame ->
             when (frame) {
-                is String -> into.onTextReceived(frame)
-                is ByteArray -> into.onBinaryReceived(frame)
+                is String -> into.tryEnqueueEarlyText(frame)
+                is ByteArray -> into.tryEnqueueEarlyBinary(frame)
             }
         }
     }
@@ -863,8 +863,8 @@ public class WsFlashNetwork(
         while (true) {
             val frame = queued.poll() ?: break
             when (frame) {
-                is String -> into.onTextReceived(frame)
-                is ByteArray -> into.onBinaryReceived(frame)
+                is String -> into.tryEnqueueEarlyText(frame)
+                is ByteArray -> into.tryEnqueueEarlyBinary(frame)
             }
         }
     }
@@ -1203,7 +1203,7 @@ public class WsFlashNetwork(
     // WsConnection.Listener implementation
     // ------------------------------------------------------------------
 
-    override fun onTextMessage(connection: WsConnection, text: String) {
+    override suspend fun onTextMessage(connection: WsConnection, text: String) {
         val session = sessionByConnection[connection]
         if (session != null) {
             session.onTextReceived(text)
@@ -1247,7 +1247,7 @@ public class WsFlashNetwork(
         }
     }
 
-    override fun onBinaryMessage(connection: WsConnection, data: ByteArray) {
+    override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {
         val session = sessionByConnection[connection]
         if (session != null) {
             session.onBinaryReceived(data)

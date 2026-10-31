@@ -158,6 +158,85 @@ class TofuTlsHandshakeTest {
         assertEquals("TLSv1.3", result.protocol)
     }
 
+    @Test(timeout = 10_000L)
+    fun sessionResumptionReusesSessionAndSucceeds() {
+        val serverCtx = FlashTlsContextFactory.serverContext(
+            FlashPinVerifier { _, _ -> true },
+            keyManagers = serverIdentity.keyManagers,
+        )
+        val server = serverCtx.serverSocketFactory
+            .createServerSocket(0, 8, InetAddress.getLoopbackAddress()) as SSLServerSocket
+        server.soTimeout = TIMEOUT_MS
+
+        val executor = Executors.newFixedThreadPool(2)
+        val verifier = FlashPinVerifier { _, fp -> fp == serverFpHex }
+        val clientIdentity = SoftwareCertMaker.newIdentity("CN=flash-client")
+
+        try {
+            // First handshake
+            val serverAccept1 = executor.submit(Callable {
+                server.accept().use { raw ->
+                    val socket = raw as SSLSocket
+                    socket.soTimeout = TIMEOUT_MS
+                    FlashTlsContextFactory.configure(socket)
+                    socket.startHandshake()
+                    socket.session.isValid
+                }
+            })
+            val clientCtx1 = FlashTlsContextFactory.clientContext(
+                verifier,
+                "device-resumption",
+                keyManagers = clientIdentity.keyManagers,
+            )
+            Socket().use { plain ->
+                plain.connect(InetSocketAddress(server.inetAddress, server.localPort), CONNECT_TIMEOUT_MS)
+                val ssl = clientCtx1.socketFactory.createSocket(plain, "localhost", server.localPort, true) as SSLSocket
+                ssl.use { s ->
+                    s.soTimeout = TIMEOUT_MS
+                    FlashTlsContextFactory.configure(s)
+                    s.startHandshake()
+                    assertTrue(s.session.isValid)
+                }
+            }
+            assertTrue(serverAccept1.get(TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS))
+
+            // Second handshake (reconnect) using clientContext
+            val serverAccept2 = executor.submit(Callable {
+                server.accept().use { raw ->
+                    val socket = raw as SSLSocket
+                    socket.soTimeout = TIMEOUT_MS
+                    FlashTlsContextFactory.configure(socket)
+                    socket.startHandshake()
+                    socket.session.isValid
+                }
+            })
+            val clientCtx2 = FlashTlsContextFactory.clientContext(
+                verifier,
+                "device-resumption",
+                keyManagers = clientIdentity.keyManagers,
+            )
+            // Same instance because it is cached
+            assertEquals(clientCtx1, clientCtx2)
+
+            Socket().use { plain ->
+                plain.connect(InetSocketAddress(server.inetAddress, server.localPort), CONNECT_TIMEOUT_MS)
+                val ssl = clientCtx2.socketFactory.createSocket(plain, "localhost", server.localPort, true) as SSLSocket
+                ssl.use { s ->
+                    s.soTimeout = TIMEOUT_MS
+                    FlashTlsContextFactory.configure(s)
+                    s.startHandshake()
+                    assertTrue(s.session.isValid)
+                    assertEquals(serverFpHex, fingerprintOf(s))
+                }
+            }
+            assertTrue(serverAccept2.get(TIMEOUT_MS.toLong(), TimeUnit.MILLISECONDS))
+        } finally {
+            executor.shutdownNow()
+            server.close()
+            FlashTlsContextFactory.clearCache()
+        }
+    }
+
     private companion object {
         const val TIMEOUT_MS = 5_000
         const val CONNECT_TIMEOUT_MS = 3_000

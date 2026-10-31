@@ -16,6 +16,7 @@ import com.transfer.flash.core.network.FrameAckStage
 import java.util.UUID
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.consumeAsFlow
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * DESKTOP DUPLICATE (Phase 15-3) of the `androidMain` original — byte-identical apart from
@@ -92,7 +94,9 @@ public class WsSession(
     override suspend fun send(message: ByteArray): FlashResult<Unit> {
         val ok = connection.sendBinary(message)
         return if (ok) {
-            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            if (_frameAcks.subscriptionCount.value > 0) {
+                _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            }
             FlashResult.Success(Unit)
         } else {
             FlashResult.Failure(FlashError.TransferFailed(peerDeviceId.value, "WebSocket sendBinary failed"))
@@ -102,7 +106,9 @@ public class WsSession(
     override suspend fun sendText(text: String): FlashResult<Unit> {
         val ok = connection.sendText(text)
         return if (ok) {
-            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            if (_frameAcks.subscriptionCount.value > 0) {
+                _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            }
             FlashResult.Success(Unit)
         } else {
             FlashResult.Failure(FlashError.TransferFailed(peerDeviceId.value, "WebSocket sendText failed"))
@@ -116,45 +122,78 @@ public class WsSession(
         onDisconnected(this, reason)
     }
 
-    public fun onTextReceived(text: String) {
-        while (_connectionState.value != FlashConnectionState.Disconnected) {
-            val result = textChannel.trySend(text)
-            if (result.isSuccess || result.isClosed) {
-                return
-            }
-            connection.touchLiveness()
-            try {
-                Thread.sleep(25)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
+    public suspend fun onTextReceived(text: String) {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return
+        try {
+            textChannel.sendKeepingLiveness(text)
+        } catch (_: ClosedSendChannelException) {
+            // Disconnected
         }
     }
 
-    public fun onBinaryReceived(data: ByteArray) {
-        while (_connectionState.value != FlashConnectionState.Disconnected) {
-            val result = binaryChannel.trySend(data)
-            if (result.isSuccess || result.isClosed) {
-                return
-            }
-            // Buffer full (backpressure from disk/consumer).
-            // Refresh connection watchdog timestamps so backpressure does not trigger
-            // a false "watchdog silence timeout" (BUG-03).
-            connection.touchLiveness()
-            try {
-                Thread.sleep(25)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
+    public suspend fun onBinaryReceived(data: ByteArray) {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return
+        try {
+            binaryChannel.sendKeepingLiveness(data)
+        } catch (_: ClosedSendChannelException) {
+            // Disconnected
         }
+    }
+
+    /**
+     * Non-blocking delivery of a frame that arrived BEFORE its session was registered.
+     *
+     * These two MUST NOT park. The network layer calls them from inside its session-registry
+     * `synchronized` block (and while finishing a glare hand-off), where this session's own
+     * consumer can need that same lock — waiting for room there is a deadlock, and a suspend
+     * hand-off is impossible from inside `synchronized`. A full buffer therefore drops the frame;
+     * that is logged rather than silent, because the frames on this path are identifying ones
+     * (HELLO and its reply) whose loss costs the whole connection. The window is bounded by
+     * MAX_PENDING_PEER_FRAMES and opens only before a consumer starts draining, so a drop here is
+     * a real defect report, not routine backpressure.
+     */
+    public fun tryEnqueueEarlyText(text: String): Boolean {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return false
+        if (textChannel.trySend(text).isSuccess) return true
+        FlashLog.w(logTag, "Early text frame DROPPED: inbound text buffer full before delivery")
+        return false
+    }
+
+    /** See [tryEnqueueEarlyText] for why this is non-blocking and why a drop is logged. */
+    public fun tryEnqueueEarlyBinary(data: ByteArray): Boolean {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return false
+        if (binaryChannel.trySend(data).isSuccess) return true
+        FlashLog.w(logTag, "Early binary frame DROPPED: inbound binary buffer full before delivery")
+        return false
     }
 
     public fun onClosed(reason: String) {
         _connectionState.value = FlashConnectionState.Disconnected
         closeChannels()
         onDisconnected(this, reason)
+    }
+
+    /**
+     * Hands one inbound frame to a bounded channel without losing the BUG-03 liveness protection.
+     *
+     * These channels are bounded on purpose: a slow consumer (a disk-bound chunk write) parks this
+     * call, which stops draining the socket and applies TCP backpressure to the peer instead of
+     * dropping frames. But the frames that would prove the *peer* alive are exactly the ones still
+     * unread behind a parked read loop, so with no stamp on [WsConnection.touchLiveness] a consumer
+     * 25 s behind looks like a silent peer and the watchdog closes a healthy connection. The read
+     * loop used to poll these channels every 25 ms and stamp liveness on each failed attempt
+     * (BUG-03); this is the same guarantee in suspend form - while the consumer is behind, refresh
+     * the connection's inbound/user-traffic stamps once per [BACKPRESSURE_TOUCH_INTERVAL_MS].
+     *
+     * Ordering is unchanged: this is still the read loop's single path, one frame at a time.
+     * A closed channel still throws [ClosedSendChannelException] and cancellation still propagates.
+     */
+    private suspend fun <T> Channel<T>.sendKeepingLiveness(value: T) {
+        while (true) {
+            val sent = withTimeoutOrNull(BACKPRESSURE_TOUCH_INTERVAL_MS) { send(value) }
+            if (sent != null) return
+            connection.touchLiveness()
+        }
     }
 
     private fun closeChannels() {
@@ -171,5 +210,14 @@ public class WsSession(
          */
         public const val BINARY_BUFFER_FRAMES: Int = 128
         public const val TEXT_BUFFER_FRAMES: Int = 512
+
+        /**
+         * How often [sendKeepingLiveness] refreshes the connection's liveness stamps while a
+         * consumer is behind. Comfortably below [WsConnection.DEFAULT_LIVENESS_TIMEOUT_MS] (25 s)
+         * so backpressure can never be mistaken for peer silence, and coarse enough that the
+         * timeout machinery costs nothing while frames are flowing normally (the first stamp only
+         * happens a full interval into a stall).
+         */
+        private const val BACKPRESSURE_TOUCH_INTERVAL_MS: Long = 1_000L
     }
 }

@@ -166,7 +166,17 @@ public class AutoConnector(
     }
 
     public companion object {
-        /** The sweep cadence all three hosts used before PC2. */
+        /**
+         * The sweep cadence all three hosts used before PC2. Kept at 5 s.
+         *
+         * OPT-O10-05 raised this (and the two discovery sweepers) to 15 s to "align idle
+         * sweepers"; the integrator review reverted it (2026-10-31). The subnet sweep is the
+         * fallback path for peers mDNS cannot show at all, so its cadence IS the discovery
+         * latency there, and the 15 s figure also inverted CompositeDiscovery's documented
+         * `browseWatchdogMs > sweepIntervalMs` invariant (10 s watchdog vs 15 s sweep, which is
+         * what lets a transient `browsing=false` trigger a pointless radio teardown). The wakeup
+         * saving it bought was never measured and is ~0.2 timers/second.
+         */
         public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
 
         /** Plan §3.5: "dials first, with a ~1 s budget on a LAN, then sends". */

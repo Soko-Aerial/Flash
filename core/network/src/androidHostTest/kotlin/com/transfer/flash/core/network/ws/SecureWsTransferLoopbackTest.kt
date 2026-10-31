@@ -43,11 +43,11 @@ class SecureWsTransferLoopbackTest {
     private class RecordingListener(
         val received: MutableMap<WsConnection, MutableList<String>> = mutableMapOf(),
     ) : WsConnection.Listener {
-        override fun onTextMessage(connection: WsConnection, text: String) {
+        override suspend fun onTextMessage(connection: WsConnection, text: String) {
             synchronized(received) { received.getOrPut(connection) { mutableListOf() }.add(text) }
         }
 
-        override fun onBinaryMessage(connection: WsConnection, data: ByteArray) = Unit
+        override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) = Unit
 
         override fun onConnectionClosed(connection: WsConnection, reason: String) = Unit
     }
