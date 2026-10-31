@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -154,6 +155,25 @@ object FlashVoiceMath {
     const val MIN_BAR_HEIGHT = 0.12f
 }
 
+/** Bounded LRU cache of bucketed FloatArray waveforms to prevent repeated calculations during scroll (OPT-O05-07). */
+internal object FlashWaveformCache {
+    private const val MAX_ENTRIES = 64
+    private val cache = LinkedHashMap<Int, FloatArray>(MAX_ENTRIES, 0.75f, true)
+
+    fun getOrBucket(amplitudes: List<Int>, barCount: Int): FloatArray {
+        val key = 31 * amplitudes.hashCode() + barCount
+        return synchronized(cache) {
+            cache[key] ?: FlashVoiceMath.bucketAmplitudes(amplitudes, barCount).also {
+                if (cache.size >= MAX_ENTRIES) {
+                    val eldest = cache.entries.iterator().next()
+                    cache.remove(eldest.key)
+                }
+                cache[key] = it
+            }
+        }
+    }
+}
+
 /**
  * UI-019 Voice Message Card.
  *
@@ -200,7 +220,7 @@ fun FlashVoiceMessageCard(
     var scrubFraction by remember(attachment.id) { mutableStateOf<Float?>(null) }
 
     val durationMs = attachment.durationMs
-    val displayElapsedMs = scrubFraction?.let { FlashVoiceMath.elapsedForFraction(it, durationMs) } ?: elapsedMs
+    val elapsedMsProvider: () -> Long = { scrubFraction?.let { FlashVoiceMath.elapsedForFraction(it, durationMs) } ?: elapsedMs }
 
     LaunchedEffect(isPlaying, playbackSpeed, attachment.id) {
         if (audioPlayer != null) {
@@ -344,7 +364,7 @@ fun FlashVoiceMessageCard(
             amplitudes = attachment.amplitudes,
             playedColor = playedColor,
             unplayedColor = unplayedColor,
-            playedBarCount = FlashVoiceMath.playedBarCount(displayElapsedMs, durationMs, FlashVoiceMath.WAVEFORM_BAR_COUNT),
+            playedBarCount = { FlashVoiceMath.playedBarCount(elapsedMsProvider(), durationMs, FlashVoiceMath.WAVEFORM_BAR_COUNT) },
             onSeek = { fraction ->
                 scrubFraction = null
                 elapsedMs = FlashVoiceMath.elapsedForFraction(fraction, durationMs)
@@ -365,11 +385,13 @@ fun FlashVoiceMessageCard(
 
         Spacer(modifier = Modifier.width(FlashSpacing.space8))
 
-        // Right side: remaining/duration label.
-        FlashText(
-            text = FlashVoiceMath.trailingLabel(displayElapsedMs, durationMs, hasStarted),
-            style = typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize),
+        // Right side: remaining/duration label (OPT-O05-06: 1 Hz updates via derivedStateOf).
+        FlashVoiceTrailingLabel(
+            elapsedMsProvider = elapsedMsProvider,
+            durationMs = durationMs,
+            hasStarted = hasStarted,
             color = primaryTextColor,
+            style = typography.numericEmphasis.copy(fontSize = typography.metadataDefault.fontSize),
         )
     }
 }
@@ -474,7 +496,7 @@ private fun FlashVoiceWaveform(
     amplitudes: List<Int>,
     playedColor: Color,
     unplayedColor: Color,
-    playedBarCount: Int,
+    playedBarCount: () -> Int,
     onSeek: (Float) -> Unit,
     onScrub: (Float) -> Unit,
     onScrubEnd: () -> Unit,
@@ -483,7 +505,7 @@ private fun FlashVoiceWaveform(
     val isUltraLow = FlashTheme.ultraLowUi
     val barCount = FlashVoiceMath.WAVEFORM_BAR_COUNT
     val buckets = if (isUltraLow) FloatArray(0) else remember(amplitudes, barCount) {
-        FlashVoiceMath.bucketAmplitudes(amplitudes, barCount)
+        FlashWaveformCache.getOrBucket(amplitudes, barCount)
     }
     var isScrubbing by remember { mutableStateOf(false) }
 
@@ -517,6 +539,7 @@ private fun FlashVoiceWaveform(
                 }
             },
     ) {
+        val currentPlayed = playedBarCount()
         if (isUltraLow) {
             val trackHeight = 4.dp.toPx()
             val y = (size.height - trackHeight) / 2f
@@ -527,7 +550,7 @@ private fun FlashVoiceWaveform(
                 size = Size(size.width, trackHeight),
             )
             // Played foreground rect
-            val progress = (playedBarCount.toFloat() / barCount.toFloat()).coerceIn(0f, 1f)
+            val progress = (currentPlayed.toFloat() / barCount.toFloat()).coerceIn(0f, 1f)
             if (progress > 0f) {
                 drawRect(
                     color = playedColor,
@@ -549,13 +572,36 @@ private fun FlashVoiceWaveform(
             val x = bar * slot
             val y = (size.height - barHeight) / 2f
             drawRoundRect(
-                color = if (bar < playedBarCount) playedColor else unplayedColor,
+                color = if (bar < currentPlayed) playedColor else unplayedColor,
                 topLeft = Offset(x, y),
                 size = Size(barWidth, barHeight),
                 cornerRadius = cornerRadius,
             )
         }
     }
+}
+
+/** Trailing duration / countdown label that recomposes at 1 Hz (second boundaries) via derivedStateOf. */
+@Composable
+private fun FlashVoiceTrailingLabel(
+    elapsedMsProvider: () -> Long,
+    durationMs: Long,
+    hasStarted: Boolean,
+    color: Color,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier = Modifier,
+) {
+    val text by remember(durationMs, hasStarted) {
+        derivedStateOf {
+            FlashVoiceMath.trailingLabel(elapsedMsProvider(), durationMs, hasStarted)
+        }
+    }
+    FlashText(
+        text = text,
+        style = style,
+        color = color,
+        modifier = modifier,
+    )
 }
 
 /** Compact playback-speed pill cycling 1× → 1.5× → 2×. */
