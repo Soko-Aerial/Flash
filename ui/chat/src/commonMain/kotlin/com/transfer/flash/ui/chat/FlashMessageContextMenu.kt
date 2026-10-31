@@ -211,6 +211,8 @@ fun FlashMessageFocusOverlay(
         }
 }
 
+private val DEFAULT_QUICK_REACTIONS: List<String> = listOf("❤️", "👍", "🔥", "😂", "😮", "🙏")
+
 /**
  * UI-009 Floating quick emoji reaction pill.
  *
@@ -226,7 +228,7 @@ fun FlashQuickReactionsBar(
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
     val haptics = rememberFlashHaptics()
-    val quickReactions = listOf("❤️", "👍", "🔥", "😂", "😮", "🙏")
+    val quickReactions = DEFAULT_QUICK_REACTIONS
 
     var visibleCount by remember { mutableStateOf(if (motion.reduceMotion) quickReactions.size + 1 else 0) }
 
