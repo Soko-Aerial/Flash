@@ -327,10 +327,10 @@ it is not done when the module compiles. D's `recordProgress` and summary projec
 `.part` rename and `isFat32Volume` were all shipped with no caller and looked finished in the diff; the review
 found them by grepping for call sites. **Grep for a caller before writing "implemented" in a fragment.**
 
-**Re-verified on 2026-10-30 (still true):** `org.gradle.parallel` and `org.gradle.caching` are absent/comment in
-`gradle.properties`; `app/build.gradle.kts` has no ABI splits; `:server` has no `maxParallelForks`. **Not yet
-re-verified:** every finding D/T/U/N/G/H/E/K/S/R/C touch Ã¢â‚¬â€ that is each stream's first step.
-
+**Re-verified on 2026-10-30 (still true unless marked):** `org.gradle.parallel` and `org.gradle.caching` are
+absent/comment in `gradle.properties`; `:server` has no `maxParallelForks`. Changed since: `app/build.gradle.kts` has ABI splits since
+2026-10-31 (ADR-243, `PERF-A04`), so a packaging check starts from `output-metadata.json`, not `app-release.apk`. **Not yet
+re-verified:** every finding D/T/U/N/G/H/E/K/S/R/C touch - that is each stream's first step.
 ---
 
 ## 9. The findings per stream, in batches
