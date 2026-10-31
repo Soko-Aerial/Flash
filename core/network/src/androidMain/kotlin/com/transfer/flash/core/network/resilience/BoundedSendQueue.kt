@@ -15,11 +15,11 @@ internal sealed interface EnqueueResult<out T> {
 
 /**
  * Why an item was rejected. Callers MUST treat rejection as a typed error and
- * keep their own copy of the write (plan upgrade 5: "overflow ⇒ typed error,
+ * keep their own copy of the write (plan upgrade 5: "overflow -> typed error,
  * outbox retains the write (C6 owns retry)").
  */
 internal enum class RejectReason {
-    /** Queue at capacity — nothing was evicted, nothing lost silently. */
+    /** Queue at capacity - nothing was evicted, nothing lost silently. */
     QueueFull,
 
     /** Queue closed for draining; no further accepts. */
@@ -29,45 +29,50 @@ internal enum class RejectReason {
 /**
  * Per-peer bounded send queue (plan C4.5 / upgrade 5).
  *
- * Capacity 64 (documented choice): Little's-Law sizing for chat traffic —
+ * Capacity 64 (documented choice): Little's-Law sizing for chat traffic -
  * at a typical interactive drain rate this absorbs multi-hundred-message
  * bursts (attachment fan-out to one peer) while bounding worst-case queue
  * latency and per-peer memory. It is deliberately NOT sized for sustained
  * overload: sustained producer>consumer means the session is dying anyway
  * and the outbox must retain writes.
  *
- * Backpressure mode: **reject-newest (fail fast)** — chosen over
+ * Backpressure mode: **reject-newest (fail fast)** - chosen over
  * drop-oldest and block:
  * - Not drop-oldest: Flash frames are user messages / transfer chunks where
- *   every item matters (research: "drop when newer data invalidates older" —
- *   live video/sensors — does not apply). Silent eviction would corrupt FIFO
+ *   every item matters (research: "drop when newer data invalidates older" -
+ *   live video/sensors - does not apply). Silent eviction would corrupt FIFO
  *   ordering guarantees C6 relies on for revision/receipt replay.
  * - Not block: a blocked producer holds the caller's coroutine on a dead
- *   peer's queue — deadlock-prone under exactly the failure conditions
+ *   peer's queue - deadlock-prone under exactly the failure conditions
  *   (half-open socket) this class exists to survive. Research: fail-fast is
- *   correct when "the caller has a fallback" — here the fallback is the
+ *   correct when "the caller has a fallback" - here the fallback is the
  *   durable outbox owned by C6.
  *
  * Thread-safe: multiple producers, single logical consumer (drain loop).
  */
-internal class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
+internal class BoundedSendQueue<T>(
+    val capacity: Int = DEFAULT_CAPACITY,
+    val priorityCapacity: Int = DEFAULT_PRIORITY_CAPACITY,
+) {
 
     init {
         require(capacity > 0) { "capacity must be > 0" }
+        require(priorityCapacity > 0) { "priorityCapacity must be > 0" }
     }
 
     private val lock = ReentrantLock()
     private val notEmpty = lock.newCondition()
+    private val priorityBuffer = ArrayDeque<T>(priorityCapacity)
     private val buffer = ArrayDeque<T>(capacity)
 
     @Volatile
     private var closed: Boolean = false
 
-    val size: Int get() = lock.withLock { buffer.size }
+    val size: Int get() = lock.withLock { priorityBuffer.size + buffer.size }
     val isClosed: Boolean get() = closed
 
     /**
-     * Attempts to append [item]. Never blocks, never drops existing items;
+     * Attempts to append [item] to the normal FIFO queue. Never blocks, never drops existing items;
      * returns [EnqueueResult.Rejected] when full or closed.
      */
     fun enqueue(item: T): EnqueueResult<T> = lock.withLock {
@@ -75,39 +80,49 @@ internal class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
         if (buffer.size >= capacity) return@withLock EnqueueResult.Rejected(RejectReason.QueueFull)
         buffer.addLast(item)
         notEmpty.signalAll()
-        EnqueueResult.Enqueued(buffer.size)
+        EnqueueResult.Enqueued(priorityBuffer.size + buffer.size)
     }
 
     /**
-     * Non-blocking poll; null when empty or closed-and-drained.
+     * Attempts to append [item] to the high-priority queue (drained before normal items).
+     * Never blocks, never drops existing items; returns [EnqueueResult.Rejected] when full or closed.
+     */
+    fun enqueuePriority(item: T): EnqueueResult<T> = lock.withLock {
+        if (closed) return@withLock EnqueueResult.Rejected(RejectReason.Closed)
+        if (priorityBuffer.size >= priorityCapacity) return@withLock EnqueueResult.Rejected(RejectReason.QueueFull)
+        priorityBuffer.addLast(item)
+        notEmpty.signalAll()
+        EnqueueResult.Enqueued(priorityBuffer.size + buffer.size)
+    }
+
+    /**
+     * Non-blocking poll; drains priority queue first, then normal queue.
+     * Null when empty or closed-and-drained.
      */
     fun poll(): T? = lock.withLock {
-        val item = buffer.pollFirst()
+        val item = priorityBuffer.pollFirst() ?: buffer.pollFirst()
         if (item != null) notEmpty.signalAll() // wake any close-waiters' producers
         item
     }
 
     /**
      * Blocking take with a real-time timeout in ms (JVM Condition await).
-     * Returns null on timeout or once closed and drained. The timeout uses
-     * wall-clock nanos rather than injected time because this is the only
-     * blocking surface; pure logic paths use [poll]/[drainInto] instead and
-     * stay deterministic.
+     * Returns null on timeout or once closed and drained. Drains priority queue first.
      */
     fun takeOrNull(timeoutMs: Long): T? = lock.withLock {
         var remainingNanos = timeoutMs * 1_000_000
-        while (buffer.isEmpty()) {
+        while (priorityBuffer.isEmpty() && buffer.isEmpty()) {
             if (closed) return@withLock null
             if (remainingNanos <= 0) return@withLock null
             remainingNanos = notEmpty.awaitNanos(remainingNanos)
         }
-        buffer.pollFirst()
+        priorityBuffer.pollFirst() ?: buffer.pollFirst()
     }
 
     /**
-     * Drains every currently-available item into [sink], in FIFO order.
+     * Drains every currently-available item into [sink], in FIFO order (priority items first).
      * Returns the number of items drained. Items enqueued concurrently
-     * DURING the drain may or may not be included — callers wanting exact
+     * DURING the drain may or may not be included - callers wanting exact
      * batch semantics should quiesce producers first.
      */
     fun drainInto(sink: (T) -> Unit): Int {
@@ -130,9 +145,9 @@ internal class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
         while (true) {
             val remainingMs = ((deadlineNanos - System.nanoTime()) / 1_000_000).coerceAtLeast(0)
             val item = takeOrNull(if (remainingMs == 0L && deadlineNanos > System.nanoTime()) 1 else remainingMs)
-                ?: return lock.withLock { buffer.isEmpty() }
+                ?: return lock.withLock { priorityBuffer.isEmpty() && buffer.isEmpty() }
             consumer(item)
-            if (deadlineNanos - System.nanoTime() <= 0) return lock.withLock { buffer.isEmpty() }
+            if (deadlineNanos - System.nanoTime() <= 0) return lock.withLock { priorityBuffer.isEmpty() && buffer.isEmpty() }
         }
     }
 
@@ -149,5 +164,6 @@ internal class BoundedSendQueue<T>(val capacity: Int = DEFAULT_CAPACITY) {
 
     companion object {
         const val DEFAULT_CAPACITY: Int = 64
+        const val DEFAULT_PRIORITY_CAPACITY: Int = 32
     }
 }

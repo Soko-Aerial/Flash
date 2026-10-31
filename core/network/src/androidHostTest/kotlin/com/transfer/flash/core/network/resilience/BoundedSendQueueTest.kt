@@ -139,4 +139,48 @@ class BoundedSendQueueTest {
         assertEquals(64, BoundedSendQueue<String>().capacity)
         assertEquals(64, BoundedSendQueue.DEFAULT_CAPACITY)
     }
+
+    @Test
+    fun `priority items are drained before normal items`() {
+        val q = BoundedSendQueue<String>(capacity = 10, priorityCapacity = 10)
+        q.enqueue("normal-1")
+        q.enqueue("normal-2")
+        q.enqueuePriority("priority-1")
+        q.enqueue("normal-3")
+        q.enqueuePriority("priority-2")
+
+        assertEquals("priority-1", q.poll())
+        assertEquals("priority-2", q.poll())
+        assertEquals("normal-1", q.poll())
+        assertEquals("normal-2", q.poll())
+        assertEquals("normal-3", q.poll())
+        assertNull(q.poll())
+    }
+
+    @Test
+    fun `priority queue accepts up to its capacity and rejects with QueueFull`() {
+        val q = BoundedSendQueue<Int>(capacity = 10, priorityCapacity = 2)
+        assertEquals(EnqueueResult.Enqueued<Int>(1), q.enqueuePriority(100))
+        assertEquals(EnqueueResult.Enqueued<Int>(2), q.enqueuePriority(200))
+        val rejected = q.enqueuePriority(300)
+        assertTrue(rejected is EnqueueResult.Rejected)
+        assertEquals(RejectReason.QueueFull, (rejected as EnqueueResult.Rejected).reason)
+        assertEquals(2, q.size)
+    }
+
+    @Test
+    fun `priority items can be enqueued when normal queue is full`() {
+        val q = BoundedSendQueue<String>(capacity = 2, priorityCapacity = 2)
+        q.enqueue("n1")
+        q.enqueue("n2")
+        val normalRejected = q.enqueue("n3")
+        assertEquals(RejectReason.QueueFull, (normalRejected as EnqueueResult.Rejected).reason)
+
+        // Priority still has headroom
+        val prioOk = q.enqueuePriority("p1")
+        assertTrue(prioOk is EnqueueResult.Enqueued)
+        assertEquals("p1", q.poll())
+        assertEquals("n1", q.poll())
+        assertEquals("n2", q.poll())
+    }
 }
