@@ -15,4 +15,11 @@ public interface FlashDiscovery {
     public suspend fun startAdvertising(listenPort: Int): FlashResult<Unit>
     public suspend fun stopAdvertising(): FlashResult<Unit>
     public suspend fun stopAll(): FlashResult<Unit>
+
+    /**
+     * OPT-O10-01: Informs discovery of display power state. When screen turns off and no transfer
+     * or call is in flight, discovery automatically downscales to ECO mode to conserve battery
+     * and release continuous Wi-Fi radio multicast locks. Restores user-selected mode when screen turns on.
+     */
+    public fun setScreenActive(active: Boolean) {}
 }
