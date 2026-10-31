@@ -1,6 +1,7 @@
 package com.transfer.flash.core.network.tls
 
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.KeyManager
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLSocket
@@ -32,9 +33,33 @@ internal object FlashTlsContextFactory {
     /** Preferred first; adjacent versions so negotiation never degrades (see [configure]). */
     private val PREFERRED_PROTOCOLS = arrayOf("TLSv1.3", "TLSv1.2")
 
+    private val clientCache = ConcurrentHashMap<ClientKey, SSLContext>()
+    private val serverCache = ConcurrentHashMap<ServerKey, SSLContext>()
+
+    private data class ClientKey(
+        val expectedDeviceId: String,
+        val pinVerifier: FlashPinVerifier,
+        val keyManagersIdentity: Int,
+    )
+
+    private data class ServerKey(
+        val expectedDeviceId: String?,
+        val pinVerifier: FlashPinVerifier,
+        val keyManagersIdentity: Int,
+    )
+
+    fun clearCache() {
+        clientCache.clear()
+        serverCache.clear()
+    }
+
     /**
      * Context used by outgoing connections. Verifies the server's chain against the pin for
      * [expectedDeviceId]; a null id makes every handshake fail closed (peer not yet identified).
+     *
+     * OPT-O09-02: Caches the SSLContext per expected peer so subsequent reconnects reuse the
+     * active SSLSessionContext, enabling TLS session resumption across reconnects and eliminating
+     * full asymmetric ECDH/ECDSA handshakes.
      */
     fun clientContext(
         pinVerifier: FlashPinVerifier,
@@ -44,21 +69,41 @@ internal object FlashTlsContextFactory {
         /** Manual-dial deferral (ADR-040); see [TofuX509TrustManager]. */
         deferPinWhenDeviceIdUnknown: Boolean = false,
         onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
-    ): SSLContext = createContext(
-        keyManagers,
-        TofuX509TrustManager(
-            pinVerifier,
-            expectedDeviceId,
-            onKeyChanged,
-            deferPinWhenDeviceIdUnknown,
-            onLeafObserved,
-        ),
-    )
+    ): SSLContext {
+        if (expectedDeviceId != null && !deferPinWhenDeviceIdUnknown) {
+            val key = ClientKey(expectedDeviceId, pinVerifier, System.identityHashCode(keyManagers))
+            return clientCache.computeIfAbsent(key) {
+                createContext(
+                    keyManagers,
+                    TofuX509TrustManager(
+                        pinVerifier,
+                        expectedDeviceId,
+                        onKeyChanged,
+                        deferPinWhenDeviceIdUnknown = false,
+                        onLeafObserved = onLeafObserved,
+                    ),
+                )
+            }
+        }
+        return createContext(
+            keyManagers,
+            TofuX509TrustManager(
+                pinVerifier,
+                expectedDeviceId,
+                onKeyChanged,
+                deferPinWhenDeviceIdUnknown,
+                onLeafObserved,
+            ),
+        )
+    }
 
     /**
      * Context used by accepting endpoints. When client-auth is requested via
      * `setWantClientAuth/setNeedClientAuth`, incoming client chains pass through the identical
      * TOFU validation with [expectedDeviceId] identifying the anticipated peer.
+     *
+     * OPT-O09-02: Caches the server SSLContext so session tickets issued to connecting peers are
+     * recognized on reconnect, enabling TLS session resumption.
      */
     fun serverContext(
         pinVerifier: FlashPinVerifier,
@@ -71,16 +116,33 @@ internal object FlashTlsContextFactory {
          */
         deferPinWhenDeviceIdUnknown: Boolean = false,
         onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
-    ): SSLContext = createContext(
-        keyManagers,
-        TofuX509TrustManager(
-            pinVerifier,
-            expectedDeviceId,
-            onKeyChanged,
-            deferPinWhenDeviceIdUnknown,
-            onLeafObserved,
-        ),
-    )
+    ): SSLContext {
+        if (!deferPinWhenDeviceIdUnknown) {
+            val key = ServerKey(expectedDeviceId, pinVerifier, System.identityHashCode(keyManagers))
+            return serverCache.computeIfAbsent(key) {
+                createContext(
+                    keyManagers,
+                    TofuX509TrustManager(
+                        pinVerifier,
+                        expectedDeviceId,
+                        onKeyChanged,
+                        deferPinWhenDeviceIdUnknown = false,
+                        onLeafObserved = onLeafObserved,
+                    ),
+                )
+            }
+        }
+        return createContext(
+            keyManagers,
+            TofuX509TrustManager(
+                pinVerifier,
+                expectedDeviceId,
+                onKeyChanged,
+                deferPinWhenDeviceIdUnknown,
+                onLeafObserved,
+            ),
+        )
+    }
 
     /** TLSv1.3 preferred, TLSv1.2 fallback, intersected with what the socket actually supports. */
     fun configure(socket: SSLSocket) {
@@ -93,6 +155,12 @@ internal object FlashTlsContextFactory {
     private fun createContext(keyManagers: Array<KeyManager>?, trustManager: TofuX509TrustManager): SSLContext {
         val context = SSLContext.getInstance("TLS")
         context.init(keyManagers, arrayOf<javax.net.ssl.TrustManager>(trustManager), SecureRandom())
+        runCatching {
+            context.clientSessionContext?.sessionTimeout = 86400
+            context.clientSessionContext?.sessionCacheSize = 256
+            context.serverSessionContext?.sessionTimeout = 86400
+            context.serverSessionContext?.sessionCacheSize = 256
+        }
         return context
     }
 }
