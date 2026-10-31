@@ -503,6 +503,31 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `migration from 21 to 22 adds the five missing secondary indexes`() {
+        helper.createDatabase(21).use { v21 ->
+            v21.execSQL(
+                "INSERT INTO outbox (localId, attempts, nextAttemptAt, payloadJson, createdAt) " +
+                    "VALUES ('out-1', 0, 100, '{}', 50)",
+            )
+            v21.execSQL(
+                "INSERT INTO conversations (id, title, isGroup, pinned, muted, archived, sortOrder, radioPolicy, groupProto) " +
+                    "VALUES ('c1', 'Chat 1', 0, 1, 0, 0, 500, 'AUTO', 0)",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare("SELECT localId, nextAttemptAt FROM outbox WHERE nextAttemptAt = 100").use { row ->
+                assertTrue(row.step(), "outbox row must survive migration 21->22")
+                assertEquals("out-1", row.getText(0))
+            }
+            upgraded.prepare("SELECT id, pinned, sortOrder FROM conversations WHERE pinned = 1").use { row ->
+                assertTrue(row.step(), "conversation row must survive migration 21->22")
+                assertEquals("c1", row.getText(0))
+            }
+        }
+    }
+
+    @Test
     fun `the public desktop opener upgrades an older file instead of failing`() = runBlocking {
         helper.createDatabase(3).use { v3 -> insertMessage(v3, version = 3) }
 

@@ -28,6 +28,19 @@ public interface FlashChatRepository {
     public val chatListState: StateFlow<FlashChatListUiState>
     public val conversationState: StateFlow<FlashConversationUiState>
     public fun openConversation(conversationId: String)
+
+    /**
+     * Opens [conversationId] targeting [targetMessageId] for deep-link navigation (ADR-232, OPT-O04-01).
+     * The history pager ensures the target message is loaded into [conversationState].
+     */
+    public fun openConversation(conversationId: String, targetMessageId: String?) {
+        openConversation(conversationId)
+    }
+
+    /**
+     * Loads the next page of older messages into the open [conversationId] (OPT-O04-01).
+     */
+    public fun loadMoreHistory(conversationId: String, count: Int = 50) {}
     public fun closeConversation()
     public fun sendText(text: String)
 

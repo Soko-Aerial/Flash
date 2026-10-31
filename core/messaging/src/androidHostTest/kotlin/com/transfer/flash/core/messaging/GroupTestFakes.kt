@@ -72,6 +72,17 @@ internal class InMemoryMessageDao : MessageDao {
                 .sortedWith(compareByDescending<MessageEntity> { it.sentAt }.thenByDescending { it.localId })
         }
 
+    override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> =
+        observeConversation(conversationId).map { it.take(limit) }
+
+    override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int {
+        val target = messages[targetMessageId] ?: return 0
+        return messages.values.count {
+            it.conversationId == conversationId && it.deletedAt == null &&
+                (it.sentAt > target.sentAt || (it.sentAt == target.sentAt && it.localId >= target.localId))
+        }
+    }
+
     /** `... AND deletedAt IS NULL AND (sentAt < :c OR (sentAt = :c AND localId < :id)) ORDER BY ... DESC`. */
     override suspend fun historyBefore(
         conversationId: String,
@@ -227,6 +238,9 @@ internal class InMemoryConversationDao : ConversationDao {
 
     override suspend fun get(id: String): ConversationEntity? = conversations[id]
 
+    override suspend fun getByIds(ids: List<String>): List<ConversationEntity> =
+        ids.mapNotNull { conversations[it] }
+
     override suspend fun setArchived(id: String, archived: Boolean) {
         conversations[id]?.let { conversations[id] = it.copy(archived = archived); publish() }
     }
@@ -318,6 +332,10 @@ internal class InMemoryGroupMemberDao : GroupMemberDao {
 
     override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
         members.values.filter { it.groupId == groupId && it.isActive }
+            .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
+
+    override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+        members.values.filter { it.isActive }
             .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
 
     override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =

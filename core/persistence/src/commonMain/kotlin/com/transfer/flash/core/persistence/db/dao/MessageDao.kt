@@ -27,6 +27,27 @@ public interface MessageDao {
     public fun observeConversation(conversationId: String): Flow<List<MessageEntity>>
 
     /**
+     * Bounded conversation observation for initial history pagination (OPT-O04-01).
+     */
+    @Query(
+        "SELECT * FROM messages WHERE conversationId = :conversationId AND deletedAt IS NULL " +
+            "ORDER BY sentAt DESC, localId DESC LIMIT :limit",
+    )
+    public fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>>
+
+    /**
+     * Resolves how many messages exist in the conversation newer than or equal to [targetMessageId]
+     * so search deep-links (FlashBackStackState.targetMessageId) land on the target message.
+     */
+    @Query(
+        "SELECT COUNT(*) FROM messages m " +
+            "JOIN messages target ON target.localId = :targetMessageId " +
+            "WHERE m.conversationId = :conversationId AND m.deletedAt IS NULL AND " +
+            "(m.sentAt > target.sentAt OR (m.sentAt = target.sentAt AND m.localId >= target.localId))",
+    )
+    public suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int
+
+    /**
      * Keyset page strictly before `(cursorSentAt, cursorLocalId)` in descending
      * `(sentAt, localId)` order. For the first page pass `cursorSentAt = Long.MAX_VALUE` and a
      * sentinel string greater than any real localId (e.g. `"\uFFFF"`).
@@ -188,12 +209,13 @@ public interface MessageDao {
      * one observation feeds the whole chat list instead of one flow per row.
      */
     @Query(
-        "SELECT m.conversationId AS conversationId, COUNT(*) AS unread FROM messages m " +
-            "JOIN conversations c ON c.id = m.conversationId " +
-            "WHERE m.senderId != :selfId AND m.deletedAt IS NULL AND (" +
-            "c.lastReadCursor IS NULL OR " +
-            "m.sentAt > (SELECT sentAt FROM messages WHERE localId = c.lastReadCursor)" +
-            ") GROUP BY m.conversationId",
+        "SELECT m.conversationId AS conversationId, COUNT(*) AS unread " +
+            "FROM conversations c " +
+            "LEFT JOIN messages cur ON cur.localId = c.lastReadCursor " +
+            "JOIN messages m ON m.conversationId = c.id " +
+            "WHERE m.senderId != :selfId AND m.deletedAt IS NULL " +
+            "AND (c.lastReadCursor IS NULL OR m.sentAt > cur.sentAt) " +
+            "GROUP BY m.conversationId",
     )
     public fun observeUnreadCounts(selfId: String): Flow<List<ConversationUnread>>
 

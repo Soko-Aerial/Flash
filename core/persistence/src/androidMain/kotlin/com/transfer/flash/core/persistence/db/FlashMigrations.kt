@@ -76,6 +76,9 @@ public object FlashMigrations {
     /** v20 -> v21: direct-chat outbound radio consent. */
     public val MIGRATION_20_21: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_20_21)
 
+    /** v21 -> v22: missing secondary indexes on top DAO queries (OPT-O06-05). */
+    public val MIGRATION_21_22: Migration = SupportSqlMigration(FlashSchemaSteps.STEP_21_22)
+
     /** Every migration, in order, for the open path. */
     public val ALL: Array<Migration> = FlashSchemaSteps.ALL.map { SupportSqlMigration(it) }.toTypedArray()
 }

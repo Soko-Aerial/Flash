@@ -463,8 +463,21 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /** v21 -> v22: missing secondary indexes on top DAO queries (OPT-O06-05). */
+    val STEP_21_22: FlashSchemaStep = FlashSchemaStep(
+        from = 21,
+        to = 22,
+        statements = listOf(
+            "CREATE INDEX IF NOT EXISTS `index_outbox_nextAttemptAt` ON `outbox` (`nextAttemptAt`)",
+            "CREATE INDEX IF NOT EXISTS `index_hub_file_createdAtMs` ON `hub_file` (`createdAtMs`)",
+            "CREATE INDEX IF NOT EXISTS `index_conversations_pinned_sortOrder` ON `conversations` (`pinned`, `sortOrder`)",
+            "CREATE INDEX IF NOT EXISTS `index_transfers_updatedAtMs` ON `transfers` (`updatedAtMs`)",
+            "CREATE INDEX IF NOT EXISTS `index_swarm_content_createdAtMs` ON `swarm_content` (`createdAtMs`)",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20, STEP_20_21
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20, STEP_20_21, STEP_21_22
     )
 }
