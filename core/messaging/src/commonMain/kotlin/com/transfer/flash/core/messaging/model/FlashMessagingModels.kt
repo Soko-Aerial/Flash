@@ -586,7 +586,49 @@ public data class FlashConversationUiState(
     val canChangeHistoryCeiling: Boolean = false,
     /** ADR-126: a calm notice about how this chat travels through the organisation hub (key changed, waiting for an update, group note). */
     val hubNotice: FlashHubNoticeUi? = null,
-)
+    /** Monotonic state version for O(1) StateFlow equality checks (OPT-O14-05). */
+    val stateVersion: Long = 0L,
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is FlashConversationUiState) return false
+        if (stateVersion != 0L && other.stateVersion != 0L) {
+            return stateVersion == other.stateVersion
+        }
+        return header == other.header &&
+            messages == other.messages &&
+            radioPolicy == other.radioPolicy &&
+            radioOnlyForAttachments == other.radioOnlyForAttachments &&
+            draftText == other.draftText &&
+            pinnedMessageIds == other.pinnedMessageIds &&
+            members == other.members &&
+            ongoingCall == other.ongoingCall &&
+            canRemoveMembers == other.canRemoveMembers &&
+            canAddMembers == other.canAddMembers &&
+            isGroupOwner == other.isGroupOwner &&
+            isGroupAdmin == other.isGroupAdmin &&
+            canPromoteAdmin == other.canPromoteAdmin &&
+            canContinueInNewGroup == other.canContinueInNewGroup &&
+            selfMembership == other.selfMembership &&
+            groupSync == other.groupSync &&
+            canShareInvite == other.canShareInvite &&
+            isGroupV2 == other.isGroupV2 &&
+            pendingJoinRequests == other.pendingJoinRequests &&
+            groupSettings == other.groupSettings &&
+            groupLocalPreferences == other.groupLocalPreferences &&
+            groupHistory == other.groupHistory &&
+            canChangeHistoryCeiling == other.canChangeHistoryCeiling &&
+            hubNotice == other.hubNotice
+    }
+
+    override fun hashCode(): Int {
+        if (stateVersion != 0L) return stateVersion.hashCode()
+        var result = header.hashCode()
+        result = 31 * result + messages.hashCode()
+        result = 31 * result + radioPolicy.hashCode()
+        return result
+    }
+}
 
 /** What the hub notice of a conversation is about (ADR-126). */
 public enum class FlashHubNoticeKind {

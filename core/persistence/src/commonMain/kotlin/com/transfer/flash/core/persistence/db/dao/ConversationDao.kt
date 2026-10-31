@@ -18,6 +18,9 @@ public interface ConversationDao {
     @Query("SELECT * FROM conversations WHERE id = :id LIMIT 1")
     public suspend fun get(id: String): ConversationEntity?
 
+    @Query("SELECT * FROM conversations WHERE id IN (:ids)")
+    public suspend fun getByIds(ids: List<String>): List<ConversationEntity>
+
     @Query("UPDATE conversations SET archived = :archived WHERE id = :id")
     public suspend fun setArchived(id: String, archived: Boolean)
 

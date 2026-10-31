@@ -52,6 +52,9 @@ public object FlashDatabaseOpener {
         val mode = FlashPerformanceClassifier.classify(AndroidDeviceProfile.read(context.applicationContext)).mode
         val cacheSizeKb = mode.transfer.sqliteCacheSizeKb
         val trim = DatabaseTrimRegistration()
+        val queryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "FlashDbQueryCallback").apply { isDaemon = true }
+        }
         return Room.databaseBuilder(
             context.applicationContext,
             FlashDatabase::class.java,
@@ -59,6 +62,12 @@ public object FlashDatabaseOpener {
         )
             .openHelperFactory(openHelperFactory)
             .addMigrations(*migrations)
+            .setQueryCallback(
+                RoomDatabase.QueryCallback { sqlQuery, _ ->
+                    // Telemetry / query callback for debug diagnostics (OPT-O28-05)
+                },
+                queryExecutor,
+            )
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {
                     super.onCreate(db)

@@ -227,6 +227,9 @@ internal class InMemoryConversationDao : ConversationDao {
 
     override suspend fun get(id: String): ConversationEntity? = conversations[id]
 
+    override suspend fun getByIds(ids: List<String>): List<ConversationEntity> =
+        ids.mapNotNull { conversations[it] }
+
     override suspend fun setArchived(id: String, archived: Boolean) {
         conversations[id]?.let { conversations[id] = it.copy(archived = archived); publish() }
     }
