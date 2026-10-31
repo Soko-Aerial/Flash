@@ -74,22 +74,9 @@ fun FlashChatListRow(
     onLongClick: () -> Unit = {},
     onArchive: (String) -> Unit = {},
     swipeActionLabel: String = "Archive",
+    enableSwipe: Boolean = isSwipeToDismissSupported,
 ) {
     val motion = FlashTheme.motion
-    val currentItemId by rememberUpdatedState(item.id)
-    val currentOnArchive by rememberUpdatedState(onArchive)
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) {
-                currentOnArchive(currentItemId)
-            }
-            false
-        },
-    )
-
-    // Hoisted so the swipe background can tell whether it is actually visible. The value itself is
-    // only ever read in the render phase (graphicsLayer below); what crosses into composition is the
-    // derived boolean, which flips twice per press instead of once per frame.
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val pressScale = animateFloatAsState(
@@ -97,31 +84,58 @@ fun FlashChatListRow(
         animationSpec = motion.springSnappySpec(),
         label = "flashChatListRowPress",
     )
-    val pressInset = remember(pressScale) { derivedStateOf { pressScale.value < 1f } }
 
-    SwipeToDismissBox(
-        state = dismissState,
-        enableDismissFromStartToEnd = false,
-        enableDismissFromEndToStart = true,
-        backgroundContent = {
-            FlashChatListSwipeBackground(
-                dismissValue = dismissState.dismissDirection,
-                showRestingFill = pressInset.value,
-                actionLabel = swipeActionLabel,
-            )
-        },
-        modifier = modifier,
-    ) {
-        FlashChatListRowContent(
-            item = item,
-            onClick = onClick,
-            onLongClick = onLongClick,
-            isSelected = isSelected,
-            selectionMode = selectionMode,
-            showDivider = showDivider,
-            interactionSource = interactionSource,
-            pressScale = pressScale,
+    // OPT-O04-05: Bypass SwipeToDismissBoxState on Desktop or when in selectionMode to eliminate per-row gesture state allocations
+    if (enableSwipe && !selectionMode) {
+        val currentItemId by rememberUpdatedState(item.id)
+        val currentOnArchive by rememberUpdatedState(onArchive)
+        val dismissState = rememberSwipeToDismissBoxState(
+            confirmValueChange = { value ->
+                if (value == SwipeToDismissBoxValue.EndToStart) {
+                    currentOnArchive(currentItemId)
+                }
+                false
+            },
         )
+        val pressInset = remember(pressScale) { derivedStateOf { pressScale.value < 1f } }
+
+        SwipeToDismissBox(
+            state = dismissState,
+            enableDismissFromStartToEnd = false,
+            enableDismissFromEndToStart = true,
+            backgroundContent = {
+                FlashChatListSwipeBackground(
+                    dismissValue = dismissState.dismissDirection,
+                    showRestingFill = pressInset.value,
+                    actionLabel = swipeActionLabel,
+                )
+            },
+            modifier = modifier,
+        ) {
+            FlashChatListRowContent(
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+                isSelected = isSelected,
+                selectionMode = selectionMode,
+                showDivider = showDivider,
+                interactionSource = interactionSource,
+                pressScale = pressScale,
+            )
+        }
+    } else {
+        Box(modifier = modifier) {
+            FlashChatListRowContent(
+                item = item,
+                onClick = onClick,
+                onLongClick = onLongClick,
+                isSelected = isSelected,
+                selectionMode = selectionMode,
+                showDivider = showDivider,
+                interactionSource = interactionSource,
+                pressScale = pressScale,
+            )
+        }
     }
 }
 
