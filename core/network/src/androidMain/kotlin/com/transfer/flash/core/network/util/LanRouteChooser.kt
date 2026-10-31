@@ -3,6 +3,7 @@ package com.transfer.flash.core.network.util
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import com.transfer.flash.core.network.ws.monotonicNowMs
 
 /**
  * Picks which network (if any) an outbound socket to a LAN host is bound to (ERROR-035).
@@ -15,6 +16,42 @@ internal class LanRouteChooser(private val connectivityManager: ConnectivityMana
 
     /** The chosen egress, plus why — the `reason` is logged because this is hard to diagnose blind. */
     class Route(val network: Network?, val reason: String)
+
+    private class SubnetLink(val network: Network, val localBits: Int, val prefixLength: Int)
+    private class UnmanagedSubnet(val localBits: Int, val prefixLength: Int)
+
+    private class RouteSnapshot(
+        val timestampMs: Long,
+        val candidates: List<Network>,
+        val links: List<SubnetLink>,
+        val unmanaged: List<UnmanagedSubnet>,
+    )
+
+    @Volatile
+    private var cachedSnapshot: RouteSnapshot? = null
+
+    private fun getSnapshot(manager: ConnectivityManager): RouteSnapshot {
+        val now = monotonicNowMs()
+        val existing = cachedSnapshot
+        if (existing != null && now - existing.timestampMs < CACHE_TTL_MS) {
+            return existing
+        }
+        val candidates = lanNetworks(manager)
+        val links = candidates.flatMap { network ->
+            manager.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull { linkAddress ->
+                val local = (linkAddress.address as? java.net.Inet4Address)?.hostAddress
+                if (local != null && Ipv4Routing.isUsableLocalAddress(local)) {
+                    Ipv4Routing.parse(local)?.let { localBits ->
+                        SubnetLink(network, localBits, linkAddress.prefixLength)
+                    }
+                } else null
+            }
+        }
+        val unmanaged = unmanagedSubnets(manager)
+        val snapshot = RouteSnapshot(now, candidates, links, unmanaged)
+        cachedSnapshot = snapshot
+        return snapshot
+    }
 
     /**
      * Picks which network (if any) to bind the dial to, based on where it is going.
@@ -31,18 +68,28 @@ internal class LanRouteChooser(private val connectivityManager: ConnectivityMana
      */
     fun choose(host: String): Route {
         val manager = connectivityManager ?: return Route(null, "no-connectivity-service")
-        val candidates = lanNetworks(manager)
         val destination = Ipv4Routing.parse(host)
-            ?: return Route(candidates.firstOrNull(), "non-literal-host")
-
-        candidates.firstOrNull { network -> isOnLink(manager, network, destination) }
-            ?.let { return Route(it, "on-link") }
-
-        if (unmanagedInterfaceIsOnLink(manager, destination)) {
-            return Route(null, "on-link-unmanaged-interface")
+        val snapshot = getSnapshot(manager)
+        if (destination == null) {
+            return Route(snapshot.candidates.firstOrNull(), "non-literal-host")
         }
 
-        return Route(candidates.firstOrNull(), "routed-fallback")
+        // 1. On-link Wi-Fi / Ethernet
+        for (link in snapshot.links) {
+            if (Ipv4Routing.onLink(link.localBits, link.prefixLength, destination)) {
+                return Route(link.network, "on-link")
+            }
+        }
+
+        // 2. Unmanaged interface (SoftAP / USB tether)
+        for (sub in snapshot.unmanaged) {
+            if (Ipv4Routing.onLink(sub.localBits, sub.prefixLength, destination)) {
+                return Route(null, "on-link-unmanaged-interface")
+            }
+        }
+
+        // 3. Fallback
+        return Route(snapshot.candidates.firstOrNull(), "routed-fallback")
     }
 
     /**
@@ -63,32 +110,7 @@ internal class LanRouteChooser(private val connectivityManager: ConnectivityMana
             .sortedBy { it.networkHandle }
     }
 
-    private fun isOnLink(
-        manager: ConnectivityManager,
-        network: Network,
-        destination: Int,
-    ): Boolean {
-        val addresses = manager.getLinkProperties(network)?.linkAddresses ?: return false
-        return addresses.any { linkAddress ->
-            val local = (linkAddress.address as? java.net.Inet4Address)?.hostAddress
-            local != null &&
-                Ipv4Routing.isUsableLocalAddress(local) &&
-                Ipv4Routing.parse(local)?.let { localBits ->
-                    Ipv4Routing.onLink(localBits, linkAddress.prefixLength, destination)
-                } == true
-        }
-    }
-
-    /**
-     * Whether [destination] is directly connected via an interface ConnectivityManager does not
-     * model as a network — in practice this device's own SoftAP or tether.
-     *
-     * Interfaces belonging to a non-LAN network are excluded using CM's own mapping rather than name
-     * prefixes, which vary by OEM, and the address must additionally be RFC 1918. Both guards exist
-     * to keep a cellular interface from ever winning here: returning true for one would unbind a dial
-     * and let it leave over mobile data.
-     */
-    private fun unmanagedInterfaceIsOnLink(manager: ConnectivityManager, destination: Int): Boolean {
+    private fun unmanagedSubnets(manager: ConnectivityManager): List<UnmanagedSubnet> {
         val excluded = nonLanInterfaceNames(manager)
         return runCatching {
             java.net.NetworkInterface.getNetworkInterfaces()?.asSequence().orEmpty()
@@ -97,20 +119,18 @@ internal class LanRouteChooser(private val connectivityManager: ConnectivityMana
                         nic.name !in excluded
                 }
                 .flatMap { nic -> nic.interfaceAddresses.asSequence() }
-                .any { interfaceAddress ->
+                .mapNotNull { interfaceAddress ->
                     val local = (interfaceAddress.address as? java.net.Inet4Address)?.hostAddress
-                    local != null &&
-                        Ipv4Routing.isUsableLocalAddress(local) &&
+                    if (local != null && Ipv4Routing.isUsableLocalAddress(local)) {
                         Ipv4Routing.parse(local)?.let { localBits ->
-                            Ipv4Routing.isPrivate(localBits) &&
-                                Ipv4Routing.onLink(
-                                    localBits,
-                                    interfaceAddress.networkPrefixLength.toInt(),
-                                    destination,
-                                )
-                        } == true
+                            if (Ipv4Routing.isPrivate(localBits)) {
+                                UnmanagedSubnet(localBits, interfaceAddress.networkPrefixLength.toInt())
+                            } else null
+                        }
+                    } else null
                 }
-        }.getOrDefault(false)
+                .toList()
+        }.getOrDefault(emptyList())
     }
 
     private fun nonLanInterfaceNames(manager: ConnectivityManager): Set<String> = runCatching {
@@ -124,4 +144,9 @@ internal class LanRouteChooser(private val connectivityManager: ConnectivityMana
             manager.getLinkProperties(network)?.interfaceName
         }
     }.getOrDefault(emptySet())
+
+    companion object {
+        /** 5-second TTL prevents repeated Binder IPC / ioctl storms during /24 sweeps (OPT-O10-03). */
+        private const val CACHE_TTL_MS: Long = 5_000L
+    }
 }

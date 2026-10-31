@@ -54,19 +54,17 @@ public object RelayFrameCodec {
     public fun decodeResult(text: String, maxBytes: Int = HubContract.MAX_FRAME_BYTES): Decoded {
         // UTF-8 size is >= char count, so the cheap bound is checked first and the exact one only when it could matter.
         if (text.length > maxBytes || utf8Size(text) > maxBytes) return Decoded.Rejected(RejectReason.TOO_LARGE)
-        val element = try {
-            HubJson.frames.parseToJsonElement(text)
-        } catch (_: SerializationException) {
-            return Decoded.Rejected(RejectReason.MALFORMED)
-        } catch (_: IllegalArgumentException) {
-            return Decoded.Rejected(RejectReason.MALFORMED)
-        }
-        val obj = element as? JsonObject ?: return Decoded.Rejected(RejectReason.MALFORMED)
-        val type = (obj["t"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (type == null || type !in KNOWN_TYPES) return Decoded.Rejected(RejectReason.UNKNOWN_TYPE)
         val frame = try {
-            HubJson.frames.decodeFromJsonElement(RelayFrame.serializer(), obj)
+            HubJson.frames.decodeFromString(RelayFrame.serializer(), text)
         } catch (_: SerializationException) {
+            val element = try {
+                HubJson.frames.parseToJsonElement(text)
+            } catch (_: Exception) {
+                return Decoded.Rejected(RejectReason.MALFORMED)
+            }
+            val obj = element as? JsonObject ?: return Decoded.Rejected(RejectReason.MALFORMED)
+            val type = (obj["t"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (type == null || type !in KNOWN_TYPES) return Decoded.Rejected(RejectReason.UNKNOWN_TYPE)
             return Decoded.Rejected(RejectReason.MALFORMED)
         } catch (_: IllegalArgumentException) {
             return Decoded.Rejected(RejectReason.MALFORMED)

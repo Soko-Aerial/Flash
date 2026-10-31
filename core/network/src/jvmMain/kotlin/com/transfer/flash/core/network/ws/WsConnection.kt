@@ -4,6 +4,9 @@ package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.network.resilience.BoundedSendQueue
+import com.transfer.flash.core.network.resilience.EnqueueResult
+import com.transfer.flash.core.network.resilience.RejectReason
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
@@ -18,20 +21,22 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * DESKTOP DUPLICATE (Phase 15-3) of the `androidMain` original — byte-identical apart from
+ * DESKTOP DUPLICATE (Phase 15-3) of the `androidMain` original - byte-identical apart from
  * this note. D1 = Option B forbids a shared JVM tier, so JDK-bound plumbing is duplicated
  * per target (CONVENTIONS.md R5 amendment). Do NOT edit one copy without the other.
 
  * One live WebSocket connection after the HTTP upgrade handshake completed.
  *
- * Reads run on a Dispatchers.IO coroutine; writes are serialized through a lock
- * so file chunks and control frames from different threads can never interleave.
- * Listener callbacks fire on the read thread — implementations must be thread-safe.
+ * Reads run on a Dispatchers.IO coroutine; writes are serialized through a dedicated
+ * writer coroutine backed by a [BoundedSendQueue] with priority separation. File chunks
+ * and control frames from different threads never interleave, and high-priority signaling,
+ * interactive text messages, and keepalive pings leapfrog bulk transfer chunks.
+ * Listener callbacks fire on the read thread - implementations must be thread-safe.
  *
  * ## Liveness (ADR-016 keepalive)
  *
  * A periodic WebSocket PING is sent every [pingIntervalMs] and a watchdog closes the connection
- * once no inbound frame of any kind has arrived for [livenessTimeoutMs] — including half-open TCP
+ * once no inbound frame of any kind has arrived for [livenessTimeoutMs] - including half-open TCP
  * after NAT/idle drops on mobile hotspots, where a blocked read never faults. Live peers answer
  * PINGs with PONGs, which keeps healthy idle connections fresh.
  *
@@ -63,7 +68,7 @@ import kotlinx.coroutines.launch
  *
  * With a [ticker], the connection is ticked by its network's single keepalive clock instead of its
  * own loop, and [applyPeerPingInterval] (called once the peer's HELLO arrives) decides whether this
- * side pings at all — see [WsKeepalive]. Without a ticker (tests, older callers) the connection runs
+ * side pings at all - see [WsKeepalive]. Without a ticker (tests, older callers) the connection runs
  * its own loop exactly as before.
  */
 public class WsConnection(
@@ -81,11 +86,26 @@ public class WsConnection(
      * because the peer's id was not known during the handshake: an outbound manual-IP dial
      * (ADR-040) or ANY inbound connection (audit S1). Non-null means the network still owes
      * `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO` before registering it.
+     *
+     * Still populated on a RESUMED TLS session (ADR-271): `tls.session.peerCertificates` carries
+     * the chain from the handshake the session cache kept, so the fingerprint does not depend on
+     * the trust manager being re-invoked.
      */
     public val deferredPeerLeafFingerprintHex: String? = null,
-    /** The network's shared keepalive clock (PC1), or null to run a private loop as before. */
+    /**
+     * Optional shared keepalive ticker (PC1: one loop for all connections). When non-null, this
+     * connection does NOT launch its own keepalive coroutine; the ticker calls [tickTarget] on
+     * its single clock.
+     */
     private val ticker: WsKeepaliveTicker? = null,
 ) {
+
+    public interface Listener {
+        public suspend fun onTextMessage(connection: WsConnection, text: String)
+        public suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray)
+        public fun onConnectionClosed(connection: WsConnection, reason: String)
+    }
+
     /**
      * The peer's TLS leaf public key (X.509 SPKI) exactly as presented in this connection's handshake,
      * or null on a plaintext socket (tests only). The leaf is Flash's identity key
@@ -95,12 +115,6 @@ public class WsConnection(
      */
     public val peerPublicKeyEncoded: ByteArray? = (socket as? javax.net.ssl.SSLSocket)?.let { tls ->
         runCatching { tls.session.peerCertificates.firstOrNull()?.publicKey?.encoded }.getOrNull()
-    }
-
-    public interface Listener {
-        public fun onTextMessage(connection: WsConnection, text: String)
-        public fun onBinaryMessage(connection: WsConnection, data: ByteArray)
-        public fun onConnectionClosed(connection: WsConnection, reason: String)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -123,13 +137,26 @@ public class WsConnection(
         peerHelloAccepted = true
         maxMessageBytes = WebSocketCodec.MAX_MESSAGE_BYTES
     }
+
+    private class OutboundFrame(
+        val opcode: Int,
+        val payload: ByteArray,
+        val consumePayload: Boolean = false,
+        val isPriority: Boolean = false,
+    )
+
+    private val sendQueue = BoundedSendQueue<OutboundFrame>()
     private val writeLock = ReentrantLock()
     private val input: InputStream = socket.getInputStream()
     private val output: OutputStream = socket.getOutputStream()
 
+    init {
+        scope.launch { writerLoop() }
+    }
+
     /**
      * Liveness bookkeeping. Owns the "last inbound frame" timestamp the watchdog judges on, and
-     * the suspension detection that stops it judging across a freeze — see [WsKeepalive].
+     * the suspension detection that stops it judging across a freeze - see [WsKeepalive].
      */
     private val keepalive = WsKeepalive(
         pingIntervalMs = pingIntervalMs,
@@ -239,7 +266,7 @@ public class WsConnection(
         if (verdict is WsKeepalive.Verdict.Close && verdict.needsConfirmation) {
             // Rendered by a tick that had itself just resumed from a freeze. The read loop
             // resumes on its own dispatcher, so a PONG already in the socket buffer may not
-            // be stamped yet — stay awake briefly and ask again before condemning the peer.
+            // be stamped yet - stay awake briefly and ask again before condemning the peer.
             kotlinx.coroutines.delay(STALL_CONFIRM_DELAY_MS)
             if (closed.get()) return false
             verdict = keepalive.confirmClose(nowMs())
@@ -249,14 +276,14 @@ public class WsConnection(
                 close("${verdict.reason} for ${verdict.silentForMs}ms")
                 return false
             }
-            WsKeepalive.Verdict.Ping -> send(WebSocketCodec.OPCODE_PING, ByteArray(0))
+            WsKeepalive.Verdict.Ping -> send(WebSocketCodec.OPCODE_PING, ByteArray(0), isPriority = true)
             WsKeepalive.Verdict.Quiet -> Unit
         }
         return true
     }
 
     public fun sendText(text: String): Boolean {
-        return send(WebSocketCodec.OPCODE_TEXT, text.toByteArray(Charsets.UTF_8))
+        return send(WebSocketCodec.OPCODE_TEXT, text.toByteArray(Charsets.UTF_8), isPriority = true)
     }
 
     /** Fire-and-forget text send that is safe to call from any thread (including main). */
@@ -265,17 +292,17 @@ public class WsConnection(
     }
 
     public fun sendBinary(data: ByteArray): Boolean {
-        return send(WebSocketCodec.OPCODE_BINARY, data)
+        return send(WebSocketCodec.OPCODE_BINARY, data, isPriority = false)
     }
 
     /**
      * [sendBinary] for callers that transfer ownership of [data]: on a masking (client) connection
      * the array is masked in place and must not be retained or reused afterwards. Intended for the
-     * transfer hot loop, whose frames are single-use `ChunkFrame.serialize` output — copying each
+     * transfer hot loop, whose frames are single-use `ChunkFrame.serialize` output - copying each
      * 64 KB payload again under the write lock was pure churn (EXP-001).
      */
     public fun sendBinaryConsuming(data: ByteArray): Boolean {
-        return send(WebSocketCodec.OPCODE_BINARY, data, consumePayload = true)
+        return send(WebSocketCodec.OPCODE_BINARY, data, consumePayload = true, isPriority = false)
     }
 
     /**
@@ -294,8 +321,7 @@ public class WsConnection(
      */
     public fun sendPing(): Boolean {
         if (closed.get()) return false
-        scope.launch { send(WebSocketCodec.OPCODE_PING, ByteArray(0)) }
-        return true
+        return send(WebSocketCodec.OPCODE_PING, ByteArray(0), isPriority = true)
     }
 
     /**
@@ -315,6 +341,7 @@ public class WsConnection(
      */
     public fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
+        sendQueue.close()
         ticker?.unregister(tickTarget)
         scope.launch {
             runCatching {
@@ -322,7 +349,7 @@ public class WsConnection(
                 // if the channel is idle or quickly drained. If a write is stuck/stalled under
                 // writeLock, do NOT hang here waiting indefinitely: proceed immediately to closing
                 // the socket, which aborts the blocked write and unblocks the stuck thread.
-                val acquired = writeLock.tryLock(200, TimeUnit.MILLISECONDS)
+                val acquired = writeLock.tryLock(100, TimeUnit.MILLISECONDS)
                 if (acquired) {
                     try {
                         WebSocketCodec.writeFrame(output, WebSocketCodec.OPCODE_CLOSE, ByteArray(0), maskOutboundFrames)
@@ -337,28 +364,74 @@ public class WsConnection(
         listener.onConnectionClosed(this, reason)
     }
 
-    private fun send(opcode: Int, payload: ByteArray, consumePayload: Boolean = false): Boolean {
+    private fun send(
+        opcode: Int,
+        payload: ByteArray,
+        consumePayload: Boolean = false,
+        isPriority: Boolean = false,
+    ): Boolean {
         if (closed.get()) return false
-        // Classified before the write: a consumed payload is masked in place by it.
-        val userTraffic = isUserTraffic(opcode, payload)
-        return runCatching {
-            writeLock.lock()
-            try {
-                if (closed.get()) throw java.io.IOException("Connection closed")
-                WebSocketCodec.writeFrame(output, opcode, payload, maskOutboundFrames, maskPayloadInPlace = consumePayload)
-            } finally {
-                writeLock.unlock()
+        val frame = OutboundFrame(opcode, payload, consumePayload, isPriority)
+        val result = if (isPriority) sendQueue.enqueuePriority(frame) else sendQueue.enqueue(frame)
+        return when (result) {
+            is EnqueueResult.Enqueued -> true
+            is EnqueueResult.Rejected -> when (result.reason) {
+                RejectReason.Closed -> false
+                // A full queue means the WRITER is behind, not that the peer is gone. Reporting
+                // that as `false` is what the transfer path reads as *permanent death of this
+                // channel* (`StreamChannel.sendFrame`), so it returned every un-ACKed chunk of a
+                // perfectly healthy stream to the shared pool whenever the link was slower than
+                // the source. Wait for room instead - the pre-queue write path did exactly that by
+                // blocking on the write lock, only without a bound.
+                RejectReason.QueueFull ->
+                    when (sendQueue.enqueueBlocking(frame, QUEUE_OFFER_TIMEOUT_MS, priority = isPriority)) {
+                        is EnqueueResult.Enqueued -> true
+                        is EnqueueResult.Rejected -> {
+                            FlashLog.w(
+                                TAG,
+                                "WS send queue full for ${QUEUE_OFFER_TIMEOUT_MS}ms remote=$remoteLabel " +
+                                    "opcode=$opcode; failing this frame",
+                            )
+                            false
+                        }
+                    }
             }
-            // Written frames feed the peer's watchdog, which is what lets a busy pair skip pings.
-            val now = nowMs()
-            keepalive.onOutbound(now)
-            if (userTraffic) keepalive.onUserTraffic(now)
-        }.onFailure { error ->
-            if (!closed.get()) {
-                FlashLog.w(TAG, "WS write failed remote=$remoteLabel", error)
-                close("Write failed")
+        }
+    }
+
+    private suspend fun writerLoop() {
+        try {
+            while (!closed.get() && scope.isActive) {
+                val frame = sendQueue.takeOrNull(500L) ?: continue
+                val userTraffic = isUserTraffic(frame.opcode, frame.payload)
+                try {
+                    writeLock.lock()
+                    try {
+                        if (closed.get()) break
+                        WebSocketCodec.writeFrame(
+                            output,
+                            frame.opcode,
+                            frame.payload,
+                            maskOutboundFrames,
+                            maskPayloadInPlace = frame.consumePayload,
+                        )
+                    } finally {
+                        writeLock.unlock()
+                    }
+                    val now = nowMs()
+                    keepalive.onOutbound(now)
+                    if (userTraffic) keepalive.onUserTraffic(now)
+                } catch (error: Exception) {
+                    if (!closed.get()) {
+                        FlashLog.w(TAG, "WS write failed remote=$remoteLabel", error)
+                        close("Write failed: ${error.message ?: error::class.java.simpleName}")
+                    }
+                    break
+                }
             }
-        }.isSuccess
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // normal exit on scope cancel
+        }
     }
 
     /** Whether an outbound frame counts as user traffic for the ECO idle close (PC5). */
@@ -378,12 +451,12 @@ public class WsConnection(
                 } catch (idle: WebSocketCodec.IdleTimeout) {
                     // The socket read timeout expired at a frame boundary: no frame arrived, but
                     // the socket is still valid and the stream is still aligned. Silence is the
-                    // watchdog's call, not the read loop's — a peer frozen by Doze for longer than
+                    // watchdog's call, not the read loop's - a peer frozen by Doze for longer than
                     // readTimeoutMs is quiet, not dead, and closing here is what used to drop a
                     // healthy session the moment either phone went to sleep (ERROR-025).
                     continue
                 }
-                // Any inbound frame proves the peer is alive — refresh the watchdog timestamp.
+                // Any inbound frame proves the peer is alive - refresh the watchdog timestamp.
                 keepalive.onInbound(nowMs())
                 when (message) {
                     is WebSocketCodec.Message.Text -> {
@@ -394,7 +467,7 @@ public class WsConnection(
                         keepalive.onUserTraffic(nowMs())
                         listener.onBinaryMessage(this, message.data)
                     }
-                    is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload, consumePayload = true)
+                    is WebSocketCodec.Message.Ping -> send(WebSocketCodec.OPCODE_PONG, message.payload, consumePayload = true, isPriority = true)
                     is WebSocketCodec.Message.Pong -> Unit
                     is WebSocketCodec.Message.Close -> {
                         close(if (message.reason.isNotBlank()) message.reason else "Peer closed connection (${message.code})")
@@ -427,7 +500,7 @@ public class WsConnection(
         public const val DEFAULT_PING_INTERVAL_MS: Long = WsKeepalive.DEFAULT_PING_INTERVAL_MS
 
         /**
-         * Socket read timeout. NOT a liveness rule — its only job is to keep the read loop from
+         * Socket read timeout. NOT a liveness rule - its only job is to keep the read loop from
          * blocking forever so it can re-check `closed`/`scope.isActive` and exit promptly. Expiry
          * at a frame boundary surfaces as [WebSocketCodec.IdleTimeout] and the loop reads again.
          */
@@ -450,5 +523,17 @@ public class WsConnection(
          * the same tick (see [WsKeepalive.confirmClose]).
          */
         private const val STALL_CONFIRM_DELAY_MS: Long = 2_000L
+
+        /**
+         * How long [send] waits for room in [sendQueue] before failing the frame.
+         *
+         * Sized for a writer *stall*, not for a peer's lifetime: the queue holds 64 frames
+         * (~4 MB at the default 64 KB chunk, ~64 MB if the chunker has adapted to its 1 MB
+         * ceiling - and it only adapts upward on a link fast enough to drain that in about a
+         * second), so a bound of a few seconds covers every merely-slow link while still failing
+         * in bounded time if the socket write is genuinely wedged. Pre-queue code applied no bound
+         * at all here.
+         */
+        private const val QUEUE_OFFER_TIMEOUT_MS: Long = 5_000L
     }
 }

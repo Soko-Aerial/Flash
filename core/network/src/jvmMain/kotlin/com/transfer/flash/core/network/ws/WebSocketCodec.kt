@@ -115,38 +115,52 @@ public object WebSocketCodec {
         maskPayloadInPlace: Boolean = false,
     ) {
         val maskKey = if (masked) ByteArray(4).also(random::nextBytes) else null
-        val header = ByteArrayOutputStream(14)
-        header.write(0x80 or opcode)
+        val headerBuf = ByteArray(14)
+        var headerLen = 0
+        headerBuf[headerLen++] = (0x80 or opcode).toByte()
         val length = payload.size
         val maskBit = if (masked) 0x80 else 0x00
         when {
-            length < 126 -> header.write(maskBit or length)
+            length < 126 -> {
+                headerBuf[headerLen++] = (maskBit or length).toByte()
+            }
             length <= 0xFFFF -> {
-                header.write(maskBit or 126)
-                header.write((length ushr 8) and 0xFF)
-                header.write(length and 0xFF)
+                headerBuf[headerLen++] = (maskBit or 126).toByte()
+                headerBuf[headerLen++] = ((length ushr 8) and 0xFF).toByte()
+                headerBuf[headerLen++] = (length and 0xFF).toByte()
             }
             else -> {
-                header.write(maskBit or 127)
+                headerBuf[headerLen++] = (maskBit or 127).toByte()
                 for (shift in 56 downTo 0 step 8) {
-                    header.write(((length.toLong() ushr shift) and 0xFFL).toInt())
+                    headerBuf[headerLen++] = (((length.toLong() ushr shift) and 0xFFL).toInt()).toByte()
                 }
             }
         }
         if (maskKey != null) {
-            header.write(maskKey)
+            System.arraycopy(maskKey, 0, headerBuf, headerLen, 4)
+            headerLen += 4
         }
-        output.write(header.toByteArray())
+        output.write(headerBuf, 0, headerLen)
         if (maskKey != null) {
-            val wirePayload = if (maskPayloadInPlace) {
-                payload
+            if (maskPayloadInPlace) {
+                for (index in payload.indices) {
+                    payload[index] = (payload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+                }
+                output.write(payload)
             } else {
-                ByteArray(payload.size) { payload[it] }
+                val chunkSize = minOf(payload.size, 4096)
+                val chunk = ByteArray(chunkSize)
+                var offset = 0
+                while (offset < payload.size) {
+                    val count = minOf(chunk.size, payload.size - offset)
+                    for (i in 0 until count) {
+                        val g = offset + i
+                        chunk[i] = (payload[g].toInt() xor maskKey[g and 3].toInt()).toByte()
+                    }
+                    output.write(chunk, 0, count)
+                    offset += count
+                }
             }
-            for (index in wirePayload.indices) {
-                wirePayload[index] = (wirePayload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
-            }
-            output.write(wirePayload)
         } else {
             output.write(payload)
         }
@@ -339,10 +353,16 @@ public object WebSocketCodec {
         val opcode = first and 0x0F
         val masked = second and 0x80 != 0
         val length = when (val length7 = second and 0x7F) {
-            126 -> (readByte(input).toLong() shl 8) or readByte(input).toLong()
+            126 -> {
+                val b = readFully(input, 2)
+                (((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)).toLong()
+            }
             127 -> {
+                val b = readFully(input, 8)
                 var value = 0L
-                repeat(8) { value = (value shl 8) or readByte(input).toLong() }
+                for (i in 0 until 8) {
+                    value = (value shl 8) or (b[i].toLong() and 0xFFL)
+                }
                 value
             }
             else -> length7.toLong()

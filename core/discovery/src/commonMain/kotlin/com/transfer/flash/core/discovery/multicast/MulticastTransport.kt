@@ -70,6 +70,49 @@ import kotlinx.coroutines.launch
  * composite keeps one endpoint (same address, same port, same device id) and its loss hysteresis
  * means whichever transport reports the peer first wins the right to keep it visible — so adding this
  * transport cannot make a peer that NSD already sees disappear.
+ *
+ * ## Rejected: adaptive suppression of the directed-broadcast fallback (2026-10-31, integrator)
+ *
+ * **REJECTED (OPT-O10-07, reverted).** The proposed optimisation was to skip the directed-broadcast
+ * copy of an announcement while multicast looked "healthy", to avoid the basic-rate airtime cost.
+ * The health signal was "an accepted peer announcement within the last 60 s" ([handleDatagram]).
+ * That signal cannot distinguish a multicast-borne datagram from a broadcast-borne one: the receiving
+ * sockets are bound to the wildcard address, so they accept directed broadcast on the announce port
+ * as well ([MulticastSocketFactory] documents this), and Java exposes no destination address on a
+ * datagram the way it does for a socket with an explicit bind. Broadcasting therefore refreshed the
+ * very counter that suppressed broadcasting.
+ *
+ * On exactly the networks the fallback exists for — multicast filtered but broadcast delivered (see
+ * [DirectedBroadcast]) — devices hear each other *only* by broadcast, so the cycle becomes: broadcast
+ * → suppressed for 60 s → nothing heard → [DEFAULT_PEER_LEASE_MS] (also 60 s) expires the lease →
+ * Lost/Found flap on a ~60-80 s period.
+ *
+ * Making the signal trustworthy needs a wire-format path tag (this datagram arrived by broadcast),
+ * which is a protocol change and therefore an owner decision. Until then the broadcast copy goes out
+ * with every announcement, unconditionally.
+ *
+ * ## Rejected: lengthening the sweep interval (2026-10-31, integrator ruling)
+ *
+ * **REJECTED (OPT-O10-05, reverted).** [DEFAULT_SWEEP_INTERVAL_MS] goes back to 5 s in this module and
+ * in `CompositeDiscovery`; the `AutoConnector` site is the integrator's. Three reasons, in the order
+ * they matter:
+ *
+ * 1. **It breaks a documented invariant.** `CompositeDiscovery`'s `browseWatchdogMs` KDoc says the
+ *    watchdog "Must exceed [sweepIntervalMs] so a transient false (state event racing a start) cannot
+ *    trigger a pointless radio teardown", and calls it "two sweep intervals". The watchdog is 10 s, so
+ *    15 s > 10 s inverts exactly that condition and lets the watchdog tear down a browse that is merely
+ *    waiting for its next sweep. Raising the watchdog to 30 s instead would push dead-radio recovery
+ *    from ~10 s to ~30 s — a worse trade than the wakeups it saves.
+ * 2. **The claimed win is unmeasured.** These loops do real work per tick ([startSweepLoop] runs
+ *    `recoverBindingsIfNeeded()` and [sweepLeases]); three loops at 5 s is 0.6 wakeups per second; and
+ *    no EXP entry on the branch measures the saving.
+ * 3. **User-visible cost.** [presenceGraceMs] is `peerLeaseMs + sweepIntervalMs` (60 s + 15 s = 75 s)
+ *    and `CompositeDiscovery` ages a departed peer over its own sweep interval, so a peer that walked
+ *    away lingers ~10 s longer before it reads as gone.
+ *
+ * The finding itself ("unsynchronised polling sweepers") is real but is not fixed by three
+ * independently larger periods. What it needs is one shared clock/ticker for the three sweepers (this
+ * one, `CompositeDiscovery`'s and `AutoConnector`'s) so they cannot drift into unsynchronised bursts.
  */
 public class MulticastTransport(
     private val socketFactory: MulticastSocketFactory,
