@@ -45,9 +45,14 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+// Compile repair, not part of OPT-O03-05's intent: the per-card lambda hoist rewrote the file and
+// voice attachment types from their fully qualified names to their simple names without adding
+// either import. Both names are needed by AttachmentCardItem and VoiceCardItem below.
+import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
 import com.transfer.flash.core.messaging.model.FlashMessageUi
+import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.avatar.FlashAvatar
@@ -383,45 +388,32 @@ private fun FlashMessageBubbleUltraLow(
             }
             if (message.fileAttachments.isNotEmpty()) {
                 message.fileAttachments.forEach { file ->
-                    FlashFileMessageCard(
-                        attachment = file,
+                    AttachmentCardItem(
+                        file = file,
                         isParentOutgoing = message.isMine,
-                        onCardClick = { onFileClick(file) },
-                        onActionClick = {
-                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
-                                onPauseTransfer(file)
-                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
-                                onResumeTransfer(file)
-                            } else {
-                                onFileClick(file)
-                            }
-                        },
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
-                        onAccept = { onAcceptOffer(file) },
-                        onDecline = { onDeclineOffer(file) },
-                        onPause = { onPauseTransfer(file) },
-                        onResume = { onResumeTransfer(file) },
-                        onCancel = { onCancelTransfer(file) },
+                        onFileClick = onFileClick,
+                        onAcceptOffer = onAcceptOffer,
+                        onDeclineOffer = onDeclineOffer,
+                        onPauseTransfer = onPauseTransfer,
+                        onResumeTransfer = onResumeTransfer,
+                        onCancelTransfer = onCancelTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
                 message.voiceAttachments.forEach { voice ->
-                    FlashVoiceMessageCard(
-                        attachment = voice,
+                    VoiceCardItem(
+                        voice = voice,
                         isParentOutgoing = message.isMine,
-                        onCardClick = {},
-                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
-                        selectionMode = inSelectionMode,
+                        inSelectionMode = inSelectionMode,
                         onSelectToggle = onSelectToggle,
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
+                        onAcceptOffer = onAcceptOffer,
+                        onResumeTransfer = onResumeTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
@@ -538,14 +530,17 @@ private fun FlashBubbleSurface(
     )
 
     val shape = bubbleShapeFor(message, FlashTheme.minimalChrome)
-    val selectionBorder = if (isHighlighted) {
+    // OPT-O03-13: Hoist and memoize BorderStroke instances to avoid allocation on every recomposition.
+    val highlightBorder = remember(colors.accentPrimary) {
         BorderStroke(1.5.dp, colors.accentPrimary)
-    } else if (isSelected) {
-        BorderStroke(1.5.dp, colors.accentPrimary)
-    } else if (!message.isMine) {
+    }
+    val incomingBorder = remember(colors.chatBorderIncoming) {
         BorderStroke(FlashDimensions.borderHairline, colors.chatBorderIncoming)
-    } else {
-        null
+    }
+    val selectionBorder = when {
+        isHighlighted || isSelected -> highlightBorder
+        !message.isMine -> incomingBorder
+        else -> null
     }
 
     // Custom bubble surface — no Material Surface; clip + background + optional border stroke.
@@ -642,45 +637,32 @@ private fun FlashBubbleSurface(
             // FlashMessageUi fields it read are gone. A message with images renders them above.
             if (message.fileAttachments.isNotEmpty()) {
                 message.fileAttachments.forEach { file ->
-                    FlashFileMessageCard(
-                        attachment = file,
+                    AttachmentCardItem(
+                        file = file,
                         isParentOutgoing = message.isMine,
-                        onCardClick = { onFileClick(file) },
-                        onActionClick = {
-                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
-                                onPauseTransfer(file)
-                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
-                                onResumeTransfer(file)
-                            } else {
-                                onFileClick(file)
-                            }
-                        },
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
-                        onAccept = { onAcceptOffer(file) },
-                        onDecline = { onDeclineOffer(file) },
-                        onPause = { onPauseTransfer(file) },
-                        onResume = { onResumeTransfer(file) },
-                        onCancel = { onCancelTransfer(file) },
+                        onFileClick = onFileClick,
+                        onAcceptOffer = onAcceptOffer,
+                        onDeclineOffer = onDeclineOffer,
+                        onPauseTransfer = onPauseTransfer,
+                        onResumeTransfer = onResumeTransfer,
+                        onCancelTransfer = onCancelTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
                 message.voiceAttachments.forEach { voice ->
-                    FlashVoiceMessageCard(
-                        attachment = voice,
+                    VoiceCardItem(
+                        voice = voice,
                         isParentOutgoing = message.isMine,
-                        onCardClick = {},
-                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
-                        selectionMode = inSelectionMode,
+                        inSelectionMode = inSelectionMode,
                         onSelectToggle = onSelectToggle,
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
+                        onAcceptOffer = onAcceptOffer,
+                        onResumeTransfer = onResumeTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
@@ -917,6 +899,99 @@ private fun FlashMessageTimestampRow(
             }
         }
     }
+}
+
+@Composable
+private fun AttachmentCardItem(
+    file: FlashFileAttachmentUi,
+    isParentOutgoing: Boolean,
+    onFileClick: (FlashFileAttachmentUi) -> Unit,
+    onAcceptOffer: (FlashFileAttachmentUi) -> Unit,
+    onDeclineOffer: (FlashFileAttachmentUi) -> Unit,
+    onPauseTransfer: (FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (FlashFileAttachmentUi) -> Unit,
+    onCancelTransfer: (FlashFileAttachmentUi) -> Unit,
+    onOpenActions: () -> Unit,
+    haptics: (FlashHaptic) -> Unit,
+) {
+    // Each closure forwards `file` itself, so the whole attachment is the key: the same transfer id is
+    // re-emitted with a new transferStatus / localUri as it progresses, and a closure cached against
+    // `file.id` alone kept dispatching the action with the attachment as it was when the card was first
+    // composed (onActionClick branches on transferStatus). The data-class key still keeps the closure
+    // across recompositions that do not change this attachment.
+    val onCardClick = remember(file, onFileClick) { { onFileClick(file) } }
+    val onActionClick = remember(file, onPauseTransfer, onResumeTransfer, onFileClick) {
+        {
+            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
+                onPauseTransfer(file)
+            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
+                onResumeTransfer(file)
+            } else {
+                onFileClick(file)
+            }
+        }
+    }
+    val onLongPress = remember(onOpenActions, haptics) {
+        {
+            haptics(FlashHaptic.Confirm)
+            onOpenActions()
+        }
+    }
+    val onAccept = remember(file, onAcceptOffer) { { onAcceptOffer(file) } }
+    val onDecline = remember(file, onDeclineOffer) { { onDeclineOffer(file) } }
+    val onPause = remember(file, onPauseTransfer) { { onPauseTransfer(file) } }
+    val onResume = remember(file, onResumeTransfer) { { onResumeTransfer(file) } }
+    val onCancel = remember(file, onCancelTransfer) { { onCancelTransfer(file) } }
+
+    FlashFileMessageCard(
+        attachment = file,
+        isParentOutgoing = isParentOutgoing,
+        onCardClick = onCardClick,
+        onActionClick = onActionClick,
+        onLongPress = onLongPress,
+        onAccept = onAccept,
+        onDecline = onDecline,
+        onPause = onPause,
+        onResume = onResume,
+        onCancel = onCancel,
+    )
+}
+
+@Composable
+private fun VoiceCardItem(
+    voice: FlashVoiceAttachmentUi,
+    isParentOutgoing: Boolean,
+    inSelectionMode: Boolean,
+    // Compile repair, not part of OPT-O03-05's intent: every other bubble-level callable in this file
+    // (FlashMessageBubble, FlashMessageBubbleUltraLow, lines 142/299/501) and FlashVoiceMessageCard
+    // itself declare this as `() -> Unit` — the message id is already bound by the caller — so the
+    // parameter had the wrong type and neither call site could compile.
+    onSelectToggle: () -> Unit,
+    onAcceptOffer: (FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (FlashFileAttachmentUi) -> Unit,
+    onOpenActions: () -> Unit,
+    haptics: (FlashHaptic) -> Unit,
+) {
+    // Keyed on the whole attachment for the same reason as AttachmentCardItem: onVoiceTransferAction
+    // branches on voice.transferStatus, which changes under the same voice id as the message downloads.
+    val onActionClick = remember(voice, onAcceptOffer, onResumeTransfer) {
+        { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) }
+    }
+    val onLongPress = remember(onOpenActions, haptics) {
+        {
+            haptics(FlashHaptic.Confirm)
+            onOpenActions()
+        }
+    }
+    FlashVoiceMessageCard(
+        attachment = voice,
+        isParentOutgoing = isParentOutgoing,
+        onCardClick = {},
+        onActionClick = onActionClick,
+        selectionMode = inSelectionMode,
+        onSelectToggle = onSelectToggle,
+        onLongPress = onLongPress,
+    )
 }
 
 /** Concise group-delivery progress; invalid/absent aggregates render nothing. */

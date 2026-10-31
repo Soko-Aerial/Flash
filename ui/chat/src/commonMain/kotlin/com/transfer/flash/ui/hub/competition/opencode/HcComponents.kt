@@ -243,18 +243,22 @@ internal fun HcPulseDot(
     val colors = FlashTheme.colors
     val t = hcTone(tone)
     val reduce = FlashTheme.motion.reduceMotion
-    // Unconditional, so the composition structure does not change when `pulsing` flips; the value is simply unused.
-    val transition = rememberInfiniteTransition(label = "hcPulse")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1800), RepeatMode.Restart),
-        label = "hcPulsePhase",
-    )
-    val ring = if (pulsing && !reduce) phase else 0f
+    // OPT-O03-12: Guard infinite transition with pulsing && !reduce so the clock does not tick when idle.
+    val phase = if (pulsing && !reduce) {
+        val transition = rememberInfiniteTransition(label = "hcPulse")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1800), RepeatMode.Restart),
+            label = "hcPulsePhase",
+        )
+    } else {
+        null
+    }
     Box(modifier.size(diameter * 2f), contentAlignment = Alignment.Center) {
-        if (ring > 0f) {
+        if (phase != null) {
             Canvas(Modifier.size(diameter * 2f)) {
+                val ring = phase.value
                 val max = size.minDimension / 2f
                 val r = max * (0.35f + 0.65f * ring)
                 drawCircle(color = t.strong.copy(alpha = (1f - ring) * 0.45f), radius = r)

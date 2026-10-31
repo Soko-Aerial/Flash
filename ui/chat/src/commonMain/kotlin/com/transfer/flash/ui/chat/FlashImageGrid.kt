@@ -142,6 +142,33 @@ fun FlashImageGrid(
     }
 }
 
+/**
+ * Aspect ratios already decoded, keyed by the image URI, so a tile can reserve the right shape before
+ * its bitmap arrives (OPT-O24-07).
+ *
+ * Entries are **never invalidated**: a ratio is remembered for the life of the process, so the same
+ * URI must keep pointing at the same picture. It is bounded at [MAX_ENTRIES] and evicts the oldest
+ * entry, and every access is guarded like its sibling `FlashWaveformCache`, so a caller that reports a
+ * ratio from a background dispatcher cannot corrupt the map.
+ */
+internal object FlashImageRatioCache {
+    private const val MAX_ENTRIES = 256
+    private val entries = LinkedHashMap<String, Float>()
+    private val lock = Any()
+
+    operator fun get(key: String): Float? = synchronized(lock) { entries[key] }
+
+    operator fun set(key: String, ratio: Float) {
+        synchronized(lock) {
+            if (entries.size >= MAX_ENTRIES) {
+                val oldest = entries.keys.firstOrNull()
+                if (oldest != null) entries.remove(oldest)
+            }
+            entries[key] = ratio
+        }
+    }
+}
+
 @Composable
 private fun FlashSingleImageTile(
     image: FlashImageAttachmentUi,
@@ -153,7 +180,11 @@ private fun FlashSingleImageTile(
     // photo used to land in a 4:3 box and ContentScale.Crop shaved the top and bottom off portrait
     // shots — the common case for phone photos. The decoded bitmap knows its own shape, so adopt it
     // as soon as the tile has one and keep 4:3 only as the pre-decode placeholder ratio.
-    var decodedRatio by remember(image.uri, image.thumbUri) { mutableStateOf<Float?>(null) }
+    // OPT-O24-07: Query in-memory FlashImageRatioCache to reserve the known aspect ratio before decode
+    // and avoid Cumulative Layout Shift during scroll recycling.
+    val cacheKey = image.uri ?: image.thumbUri
+    val cachedRatio = cacheKey?.let { FlashImageRatioCache[it] }
+    var decodedRatio by remember(image.uri, image.thumbUri) { mutableStateOf(cachedRatio) }
     val ratio = remember(image.width, image.height, decodedRatio) {
         val declared = if (image.width > 0 && image.height > 0) {
             image.width.toFloat() / image.height.toFloat()
@@ -174,7 +205,10 @@ private fun FlashSingleImageTile(
             shape = tileRadius,
             onClick = onClick,
             onLongPress = onLongPress,
-            onIntrinsicRatio = { decodedRatio = it },
+            onIntrinsicRatio = { intrinsic ->
+                decodedRatio = intrinsic
+                cacheKey?.let { FlashImageRatioCache[it] = intrinsic }
+            },
             modifier = Modifier.fillMaxSize(),
         )
     }

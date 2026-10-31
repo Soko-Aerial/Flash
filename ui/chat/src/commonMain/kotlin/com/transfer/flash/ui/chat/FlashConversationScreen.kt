@@ -83,8 +83,23 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
+private class FlashConversationDraftState(initialText: String = "") {
+    var text by mutableStateOf(initialText)
+}
+
 /** How often "typing…" is repeated while the composer holds text; the receiver forgets it after 6 s (TYPING_EXPIRY_MS). */
 private const val TYPING_KEEPALIVE_MS: Long = 3_000L
+
+/**
+ * Upper bound on how long a staged attachment may show its sending spinner (OPT-O24-02).
+ *
+ * The send reports no completion of its own: a staged *file* item is normally retired when its
+ * durable attachment message arrives (see the staging reconciliation effect below), and an image
+ * message carries no file name to match on, so this bound is what retires an image item. Either way
+ * the spinner is gone within this bound, so a send that never produces a message cannot leave one
+ * that keeps Send disabled.
+ */
+private const val STAGED_SEND_FALLBACK_MS: Long = 4_000L
 
 @Composable
 fun FlashConversationScreen(
@@ -415,23 +430,68 @@ fun FlashConversationScreen(
     val permissions = rememberFlashPermissionRequester()
     val uriHandler = LocalUriHandler.current
 
+    // OPT-O24-01: the optimistic echo overlays the outbox row while the SQLite write and the Room
+    // emit are still in flight. It is presentation only — the durable row is still written by
+    // onSendText / onSendReply below, and nothing here claims a message was stored.
+    var pendingOptimisticEchoes by remember { mutableStateOf<List<FlashOptimisticEcho>>(emptyList()) }
     var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
-    var draft by remember { mutableStateOf("") }
+    // The echoes and the rows are combined in the same derivation that renders the list, so an echo
+    // and its own durable row can never be on screen in the same frame. `localMessages` is the durable
+    // list (a local reaction toggle never changes ids), and it is a key, so the captured list cannot
+    // be stale.
+    val displayedMessages = remember(localMessages, pendingOptimisticEchoes) {
+        // Integrator: only concatenate when an echo is actually unmatched. `localMessages + emptyList()`
+        // still copies the whole thread, and this derivation runs on every Room emission — with echoes
+        // in flight almost never and the thread potentially thousands of rows, the copy was the common
+        // case and the echoes the rare one.
+        val unmatched = FlashOptimisticEchoMath.unmatched(localMessages, pendingOptimisticEchoes)
+        if (unmatched.isEmpty()) localMessages else localMessages + unmatched.map { it.message }
+    }
+
+    // Retire echoes whose row has arrived. The list is already correct without this — the effect only
+    // keeps the echo state from growing, and stops a retired echo from coming back if its row is later
+    // deleted.
+    LaunchedEffect(state.messages, pendingOptimisticEchoes) {
+        if (pendingOptimisticEchoes.isEmpty()) return@LaunchedEffect
+        val remaining = FlashOptimisticEchoMath.unmatched(localMessages, pendingOptimisticEchoes)
+        if (remaining.size != pendingOptimisticEchoes.size) {
+            pendingOptimisticEchoes = remaining
+        }
+    }
+
+    // OPT-O24-02: retire a staged attachment when its own durable message arrives — the real completion
+    // signal, not a clock. A file attachment carries the file name the tray staged, so the two can be
+    // matched. An image message carries no file name (only a caption), so an image item can only be
+    // retired by the bounded wait in the send handler.
+    // OPT-O24-01 note: this is `state.messages` (the durable rows) on purpose — an optimistic echo is
+    // never a completion signal, or a send that never reached the database would look finished.
+    LaunchedEffect(state.messages) {
+        if (stagedAttachments.any { it.isSending }) {
+            val receivedNames = state.messages.flatMap { msg ->
+                msg.fileAttachments.map { it.name }
+            }.toSet()
+            val remaining = stagedAttachments.filterNot { it.isSending && it.name in receivedNames }
+            if (remaining.size != stagedAttachments.size) {
+                stagedAttachments = remaining
+            }
+        }
+    }
+    val draftState = remember { FlashConversationDraftState() }
     // #11: whether we've told the peer we're currently typing, so we only send on transitions.
     var isTypingSignalled by remember { mutableStateOf(false) }
 
     // #9: seed the composer from the persisted draft the first time it arrives (and the user has
     // not started typing). Keyed on the restored text so a late-arriving draft flow still lands.
     LaunchedEffect(state.draftText) {
-        if (draft.isEmpty() && state.draftText.isNotEmpty()) {
-            draft = state.draftText
+        if (draftState.text.isEmpty() && state.draftText.isNotEmpty()) {
+            draftState.text = state.draftText
         }
     }
     // Persist the in-progress composer text when the screen leaves (navigation / process death).
-    // rememberUpdatedState keeps the dispose closure reading the latest draft, not the initial "".
-    val latestDraft by rememberUpdatedState(draft)
-    DisposableEffect(Unit) {
-        onDispose { onPersistDraft(latestDraft) }
+    // OPT-O03-03: The dispose closure reads directly from stable draftState rather than
+    // reading draft snapshot state in the root ConversationScreen composition scope.
+    DisposableEffect(draftState) {
+        onDispose { onPersistDraft(draftState.text) }
     }
     // Back: the host closes the repository's active conversation inside onBack, after which the typing signal (and, before the
     // draft became id-aware, the draft) could no longer be sent. So stop typing first, then leave.
@@ -601,6 +661,14 @@ fun FlashConversationScreen(
                 if (motion.reduceMotion) {
                     listState.scrollToItem(scrollIndex)
                 } else {
+                    // OPT-O04-07: When target distance > 15 items, pre-jump to within 10 items to prevent
+                    // measuring and laying out hundreds of intervening items during fling animation.
+                    val currentIndex = listState.firstVisibleItemIndex
+                    val distance = kotlin.math.abs(scrollIndex - currentIndex)
+                    if (distance > 15) {
+                        val preJumpIndex = if (scrollIndex > currentIndex) scrollIndex - 10 else scrollIndex + 10
+                        listState.scrollToItem(preJumpIndex)
+                    }
                     listState.animateScrollToItem(scrollIndex)
                 }
                 highlightedMessageId = targetId
@@ -918,10 +986,10 @@ fun FlashConversationScreen(
             if (state.selfMembership != FlashSelfMembership.Active) {
                 FlashGroupSelfNotice(membership = state.selfMembership)
             } else FlashComposer(
-                draft = draft,
+                draft = draftState.text,
                 onDraftChanged = {
                     val capped = FlashPinnedMessageMath.capLength(it, com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
-                    draft = capped
+                    draftState.text = capped
                     // #11: fire only on transitions (not every keystroke) to keep the wire quiet.
                     val typingNow = capped.isNotBlank()
                     if (typingNow != isTypingSignalled) {
@@ -946,14 +1014,67 @@ fun FlashConversationScreen(
                     stagedAttachments = stagedAttachments.filter { it.id != item.id }
                 },
                 onSend = {
-                    val text = draft.trim()
-                    val hasAttachments = stagedAttachments.isNotEmpty()
+                    val text = draftState.text.trim()
+                    // OPT-O24-02: an item already marked isSending is being sent right now, so it is
+                    // neither a reason to send nor part of what a second tap would send again.
+                    val itemsToSend = stagedAttachments.filterNot { it.isSending }
+                    val hasAttachments = itemsToSend.isNotEmpty()
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
-                        stagedAttachments.forEach { item ->
-                            onSendFile(item.uri, item.name, item.sizeBytes)
+                        if (itemsToSend.isNotEmpty()) {
+                            // OPT-O24-02: Keep the item in the tray with a spinner instead of vanishing instantly.
+                            val sendingIds = itemsToSend.mapTo(mutableSetOf()) { it.id }
+                            stagedAttachments = stagedAttachments.map {
+                                if (it.id in sendingIds) it.copy(isSending = true) else it
+                            }
+                            coroutineScope.launch {
+                                itemsToSend.forEach { item ->
+                                    onSendFile(item.uri, item.name, item.sizeBytes)
+                                }
+                                // onSendFile reports no completion. For a file, the durable attachment
+                                // message arriving in state.messages is the completion signal and retires
+                                // the item (see the staging reconciliation effect above); an image message
+                                // carries no file name to match on, so this wait is what retires it. Either
+                                // way the spinner is gone within this bound, so a send that never produces
+                                // a row cannot leave one behind for ever.
+                                delay(STAGED_SEND_FALLBACK_MS)
+                                stagedAttachments = stagedAttachments.filterNot { it.isSending && it.id in sendingIds }
+                            }
                         }
                         if (text.isNotEmpty()) {
+                            // OPT-O24-01: the echo appears as soon as this click handler records it — the
+                            // same recomposition — so it is on screen before a durable row could have come
+                            // back from the database. It is presentation only: onSendText / onSendReply
+                            // below still write the outbox row, and nothing here claims one was stored.
+                            val optimisticId = "opt_${kotlin.random.Random.nextLong().toString(16)}"
+                            val optimisticMsg = FlashMessageUi(
+                                id = optimisticId,
+                                // OPT-O24-01 compile repair: `state.title` does not exist on
+                                // FlashConversationUiState (the title lives on the header). The echo is
+                                // drawn with showSenderHeader = false, so this name is not rendered.
+                                senderName = state.header.title,
+                                senderInitials = "",
+                                timeLabel = "Just now",
+                                text = text,
+                                isMine = true,
+                                replyTo = quoted?.let { q ->
+                                    com.transfer.flash.core.messaging.model.FlashQuotedReplyUi(
+                                        messageId = q.id,
+                                        senderName = q.senderName,
+                                        textSnippet = FlashPinnedMessageMath.previewSnippet(q.text, maxChars = 120),
+                                    )
+                                },
+                                deliveryStatus = com.transfer.flash.core.messaging.model.FlashMessageStatus.Pending,
+                                groupPosition = com.transfer.flash.core.messaging.model.FlashMessageGroupPosition.SINGLE,
+                                showSenderHeader = false,
+                            )
+                            pendingOptimisticEchoes = pendingOptimisticEchoes + FlashOptimisticEcho(
+                                message = optimisticMsg,
+                                // The outgoing rows that exist right now: only a row outside this set
+                                // can be this echo's durable row.
+                                knownOutgoingIds = localMessages.asSequence().filter { it.isMine }.map { it.id }.toSet(),
+                            )
+
                             if (quoted != null) {
                                 // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
                                 onSendReply(text, quoted.id, FlashPinnedMessageMath.previewSnippet(quoted.text, maxChars = 120))
@@ -961,8 +1082,7 @@ fun FlashConversationScreen(
                                 onSendText(text)
                             }
                         }
-                        stagedAttachments = emptyList()
-                        draft = ""
+                        draftState.text = ""
                         replyingToMessage = null
                         // Sending clears the composer → stop the typing indicator (#11).
                         if (isTypingSignalled) {
@@ -1020,7 +1140,7 @@ fun FlashConversationScreen(
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
             FlashMessageList(
-                messages = localMessages,
+                messages = displayedMessages,
                 onOpenMessageActions = { msg -> focusedMessage = msg },
                 selectedMessageIds = selectedMessageIds,
                 inSelectionMode = inSelectionMode,
@@ -1116,8 +1236,8 @@ fun FlashConversationScreen(
                 // the IME via innerPadding; adding it again doubles the inset (ERROR-009).
             )
 
-            // UI-025 empty conversation state
-            if (localMessages.isEmpty()) {
+            // UI-025 empty conversation state (the echo counts: a conversation showing an echo is not empty)
+            if (displayedMessages.isEmpty()) {
                 FlashEmptyState(
                     kind = FlashStateCopy.EmptyKind.ConversationEmpty,
                     modifier = Modifier

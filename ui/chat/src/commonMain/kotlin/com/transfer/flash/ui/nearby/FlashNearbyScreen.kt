@@ -385,6 +385,7 @@ private fun PopulatedContent(
             quietLongEnough = true
         }
     }
+    val sortedPeers = remember(state.peers) { FlashNearbyMath.sortedPeers(state.peers) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         state = listState,
@@ -408,9 +409,9 @@ private fun PopulatedContent(
                 )
             }
         }
-        if (state.peers.isNotEmpty()) {
+        if (sortedPeers.isNotEmpty()) {
             item(key = "label-discovered") { SectionLabel("DISCOVERED") }
-            items(FlashNearbyMath.sortedPeers(state.peers), key = { "peer-${it.id}" }) { peer ->
+            items(sortedPeers, key = { "peer-${it.id}" }) { peer ->
                 // Peers appear and vanish as discovery runs, so the list item itself animates
                 // (an AnimatedVisibility pinned to `visible = true` could never play).
                 PeerRow(
