@@ -1450,6 +1450,8 @@ private fun SwitchRow(
     val colors = FlashTheme.colors
     val haptics = rememberFlashHaptics()
     val interactionSource = remember { MutableInteractionSource() }
+    // OPT-O24-05: Maintain optimistic local state so switch thumb moves instantly (<16ms) without waiting for DataStore disk write
+    var optimisticChecked by remember(checked) { mutableStateOf(checked) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -1460,11 +1462,12 @@ private fun SwitchRow(
             // "double-tap to toggle" affordance; a clickable + contentDescription pair
             // announced the state only at first read and never on change.
             .toggleable(
-                value = checked,
+                value = optimisticChecked,
                 interactionSource = interactionSource,
                 indication = null,
                 role = Role.Switch,
                 onValueChange = { next ->
+                    optimisticChecked = next
                     haptics(FlashHaptic.Tick)
                     onCheckedChange(next)
                 },
@@ -1472,7 +1475,7 @@ private fun SwitchRow(
             .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12)
             .semantics(mergeDescendants = true) {
                 contentDescription = title
-                stateDescription = if (checked) "on" else "off"
+                stateDescription = if (optimisticChecked) "on" else "off"
             },
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1485,7 +1488,7 @@ private fun SwitchRow(
             )
         }
         Spacer(Modifier.width(FlashSpacing.space8))
-        FlashSwitch(checked = checked)
+        FlashSwitch(checked = optimisticChecked)
     }
 }
 
