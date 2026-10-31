@@ -1,5 +1,40 @@
 # Progress Log
 
+## 2026-10-31 - `PERF-A04`: per-ABI APKs and a release script that cannot ship a stale one
+
+### Worked on
+The last open follow-up of the wave: `PERF-A04` decides whether the release ships per-ABI APKs at all (ADR-232 item 9 said
+yes). The ABI splits were reverted when Stream A was reviewed, because `tools/build-release.ps1` hard-coded one file name.
+
+### Changed
+- `app/build.gradle.kts`: `splits.abi` for `arm64-v8a`, `armeabi-v7a`, `x86_64`, `isUniversalApk = true`. The universal APK
+  stays `Flash-<version>.apk`; the per-ABI files are `Flash-<version>-<abi>.apk`.
+- `tools/build-release.ps1`: deletes `app/build/outputs/apk/release` before the Android build, then reads
+  `output-metadata.json` instead of a file name, and fails when the metadata is missing, when a listed APK is absent, and
+  when a listed APK is **older than the build** (the real defect: an APK from 2026-10-20 sat next to the split build and
+  would have been signed and shipped). New `-KeepApkOutput` switch to exercise that check.
+- `docs/release-build.md` (output table, signing section, help block) and `REL-01b`; ADR-243; EXP-093; `PERF-A01` is
+  runnable again; the build stream's review record carries the follow-up.
+
+### Why
+52 MB for a phone that can only use one ABI is the double download; the arm64 build is 16.79 MiB. The scripts' old
+`Test-Path` on one name was also the reason a stale artifact could be published at all.
+
+### Verification
+- `tools/build-release.ps1 -Target android -Apk signed -NoDaemon`: exit 0, 35 s, four APKs aligned, signed and
+  `apksigner verify`ed with the release key (SHA-256 `b695f4d6…`), `SHA256SUMS.txt` regenerated, no temp leftovers.
+- The stale guard was proven by a second run with `-KeepApkOutput`: `BUILD FAILED: app-universal-release-unsigned.apk is
+  older than this build, so a stale APK would be shipped`.
+- Sizes: arm64 17,600,991 B / armv7 11,697,699 B / x86_64 19,075,843 B / universal 54,679,288 B (EXP-093).
+- All four carry `versionCode` 4 - AGP does not offset split codes; that is what a split install needs, so the script prints
+  it instead of failing on it.
+- Not device-verified (`PERF-A01`, `REL-01b`); how an existing 2.1.0 install takes the build - and whether a split install
+  still updates - is unknown here.
+
+### Remaining
+- `PERF-A01`/`REL-01b` on a device, `PERF-A03` (installer smoke test, owner), `PERF-A02` (baseline profile; `:benchmark` still
+  cannot run).
+
 ## 2026-10-31 - Wave 1 data and transfer streams reviewed, merged and corrected
 
 ### Worked on

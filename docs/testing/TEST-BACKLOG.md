@@ -3277,6 +3277,7 @@ Setup for all: phones A and B plus one desktop in one signed v2 group; a third p
 
 ### 4zr Release 2.1.0-beta smoke checklist and hardening (2026-10-09)
 - REL-01 Install the signed APK over a clean phone; app starts; `apksigner verify --print-certs` matches the recorded key. Status: TODO
+- REL-01b (PERF-A04) Run `tools\build-release.ps1 -Target android`; the `dist\<ver>\` folder holds the universal and one signed APK per ABI, all with the same `versionCode`; `apksigner verify --print-certs` matches the recorded key on each; install `Flash-<ver>-arm64-v8a.apk` on an arm64 phone and update over it with the same file; then run the script a second time unchanged and confirm it still ships fresh files (it deletes the output folder first). Source: ADR-232 item 9, PERF-A04. Status: TODO
 - REL-02 Install Flash-2.1.0.msi on Windows; start; pair with the phone; send a file. Status: TODO
 - REL-03 Consumer from JitPack (tag v2.1.0-beta, JDK 17): resolve core-calling for Android and JVM; build. Status: TODO
 - REL-04 FileProvider: open and share a received file, a voice note, a camera capture and an exported log on a phone. Pass: no IllegalArgumentException "Failed to find configured root". Status: TODO
@@ -5105,7 +5106,8 @@ All TODO until the owner has the radios; D03 transmits (owner only). D04 contain
 - **Steps:**
   1. Confirm VR-N76 is remembered in Flash app.
   2. Build update APK: `./gradlew :app:assembleDebug` or use existing build.
-  3. Perform upgrade install preserving app data: `adb install -r app-debug.apk`.
+  3. Perform upgrade install preserving app data: `adb install -r app-universal-debug.apk` (or the matching
+     `app-<abi>-debug.apk`; the ABI splits replaced `app-debug.apk`, ADR-243 - a leftover from an older build is stale).
   4. Launch Flash app.
   5. Navigate to Settings -> Radio Gateway.
 - **Pass:** `rememberedRadioName` ("VR-N76") and `rememberedRadioAddress` are retained across the upgrade without re-pairing or re-scanning.
@@ -6576,13 +6578,13 @@ review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
 
 ### PERF-A01 - Per-ABI APK sideload (was Stream A's own A01)
 - **Area:** Android release packaging
-- **Source:** `OPT-O22-01` (REVERTED by the integrator)
-- **Setup:** Not applicable yet. The ABI splits were reverted because `tools/build-release.ps1:265` reads
-  `app-release-unsigned.apk`, which AGP stops producing once splits are on.
-- **Steps (only if PERF-A04 says yes):** build `:app:assembleRelease`, install `app-arm64-v8a-release-unsigned.apk` on an
-  arm64 phone, launch, place a call, open an encrypted chat.
+- **Source:** `OPT-O22-01` (REVERTED by the integrator, then built 2026-10-31 - see ADR-243)
+- **Setup:** Not needed. The splits are on since 2026-10-31 and `tools/build-release.ps1` collects every output the build reports.
+  They are signed by the script, which also refuses a stale or missing output.
+- **Steps:** run `tools\build-release.ps1 -Target android`, then install `dist\<ver>\Flash-<ver>-arm64-v8a.apk` on an
+  arm64 phone, launch, place a call, open an encrypted chat. (The unsigned per-ABI file works too.)
 - **Pass condition:** no `UnsatisfiedLinkError`, WebRTC initialises, the SQLCipher database opens.
-- **Status:** TODO once the release script ships per-ABI files — approved by ADR-232 item 9 on 2026-10-30.
+- **Status:** TODO, runnable since 2026-10-31 (ADR-243 answered PERF-A04; approved by ADR-232 item 9 on 2026-10-30).
 
 ### PERF-A02 - Regenerate the baseline profile on a device
 - **Area:** startup / ART profiles

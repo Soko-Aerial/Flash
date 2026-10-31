@@ -45,6 +45,18 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+    // O22-01 / PERF-A04 (ADR-232 item 9): ship a universal APK *and* per-ABI ones. The universal
+    // APK stays the plain `Flash-<version>.apk` of the release folder; the per-ABI files are about a
+    // third of the size for side-loading. `tools/build-release.ps1` collects every output the build
+    // reports and fails on a stale one.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
+        }
+    }
     buildFeatures {
         compose = true
     }

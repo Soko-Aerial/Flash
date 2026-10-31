@@ -12,6 +12,7 @@ One script builds everything a release needs: `tools/build-release.ps1` (Windows
 .\tools\build-release.ps1 -Target desktop -UberJar   # plus the portable runnable .jar
 .\tools\build-release.ps1 -Clean                     # Gradle clean first
 .\tools\build-release.ps1 -NoDaemon                  # when output is piped or redirected (CI, a log file)
+.\tools\build-release.ps1 -KeepApkOutput             # do not delete the APK output folder first (see "Signing")
 .\tools\build-release.ps1 -NewKeystore               # one-time: create a release signing key
 ```
 
@@ -31,8 +32,9 @@ Everything goes to `dist\<versionName>\` (git-ignored). For a desktop-only run i
 
 | File | What it is |
 |---|---|
-| `Flash-<ver>-unsigned.apk` | R8-optimised release APK with no signature. Android will not install it until it's signed. It's for signing elsewhere, or for stores that sign for you. |
-| `Flash-<ver>.apk` | The same APK, zip-aligned (16 KB pages) and signed with APK Signature Scheme v2 + v3. apksigner leaves out v1 because `minSdk` is 24. This is the one to install or share. |
+| `Flash-<ver>.apk` | Universal APK: R8-optimised, zip-aligned (16 KB pages) and signed with APK Signature Scheme v2 + v3 (`apksigner` leaves out v1 because `minSdk` is 24). Runs on every ABI; this is the default file to install or share. |
+| `Flash-<ver>-arm64-v8a.apk`, `-armeabi-v7a.apk`, `-x86_64.apk` | The same app restricted to one ABI, roughly a third of the universal size (EXP-80). Same alignment and signature. Android keeps the last split installed, so a device that got one only updates with the same one. |
+| `Flash-<ver>-unsigned.apk`, `Flash-<ver>-<abi>-unsigned.apk` | Unsigned copies of the above (one per variant). Android will not install them until they are signed; they are for signing elsewhere or for stores that sign for you. |
 | `Flash-<ver>.msi`, `Flash-<ver>.exe` | Windows installers with a bundled Java runtime. Per-user install; no admin rights needed. |
 | `Flash-windows-x64-<ver>.jar` | Only with `-UberJar`. It needs Java 21 installed to run. |
 | `SHA256SUMS.txt` | Checksums for every file in the folder. |
@@ -92,10 +94,19 @@ directly.
 
 ## Signing
 
-Gradle doesn't sign anything: `app/build.gradle.kts` has no `signingConfig`, so `assembleRelease` gives
-`app-release-unsigned.apk`. The script copies that file as the unsigned APK, then runs `zipalign -P 16` and
-`apksigner` on a copy to make the signed one. One build gives both, and the key never enters the Gradle build.
-If a `signingConfig` is ever added to Gradle, the script stops and says so, because the unsigned file disappears.
+Gradle doesn't sign anything: `app/build.gradle.kts` has no `signingConfig`, so `assembleRelease` gives unsigned APKs.
+ABI splits are enabled, so the build writes one APK per ABI plus a universal one, and AGP records them in
+`app/build/outputs/apk/release/output-metadata.json`. The script reads that list, copies each file as
+`Flash-<ver>[-<abi>]-unsigned.apk`, then runs `zipalign -P 16` and `apksigner` on a copy to make the signed one. One build
+gives both, and the key never enters the Gradle build.
+
+The script deletes `app\build\outputs\apk\release` before the build, then fails in three cases the plain file name could not
+see: `output-metadata.json` missing (splits off again?), a listed file absent, and **a listed file older than the build
+itself** - a leftover APK from an earlier build would otherwise be signed and shipped. It also prints the shared
+`versionCode`.
+
+If a `signingConfig` is ever added to Gradle, its outputs still come through `output-metadata.json`, but the unsigned files
+would carry AGP's signature too; check before switching.
 
 The key comes from `keystore.properties` in the repo root (git-ignored), or from environment variables that
 override it:
