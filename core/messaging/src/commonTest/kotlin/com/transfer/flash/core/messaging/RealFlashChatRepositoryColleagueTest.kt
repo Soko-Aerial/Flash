@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 
@@ -75,6 +76,8 @@ class RealFlashChatRepositoryColleagueTest {
         }
 
         override fun observeConversation(conversationId: String): Flow<List<MessageEntity>> = flow
+        override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> = flow.map { it.take(limit) }
+        override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int = 0
 
         override suspend fun historyBefore(
             conversationId: String,

@@ -30,6 +30,15 @@ public interface SwarmDao {
     @Query("SELECT * FROM swarm_content WHERE groupId = :groupId ORDER BY createdAtMs DESC")
     public suspend fun loadContentForGroup(groupId: String): List<SwarmContentEntity>
 
+    /**
+     * Lightweight projections omitting manifest (up to 131 KB) and bits BLOBs (OPT-O06-08).
+     */
+    public suspend fun loadAllSummaries(): List<SwarmContentSummary> =
+        loadAllContent().map { it.toSummary() }
+
+    public suspend fun loadSummariesForGroup(groupId: String): List<SwarmContentSummary> =
+        loadContentForGroup(groupId).map { it.toSummary() }
+
     @Query("UPDATE swarm_content SET bits = :bits, bytesDone = :bytesDone, lastProgressAtMs = :nowMs WHERE root = :root AND groupId = :groupId AND bytesDone <= :bytesDone")
     public suspend fun updateBits(root: String, groupId: String, bits: ByteArray, bytesDone: Long, nowMs: Long)
 
