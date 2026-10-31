@@ -419,7 +419,41 @@ fun FlashConversationScreen(
     val permissions = rememberFlashPermissionRequester()
     val uriHandler = LocalUriHandler.current
 
-    var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
+    // OPT-O24-01: Local optimistic echoes overlay pending message bubbles before SQLite commit & Room query emit.
+    var pendingOptimisticEchoes by remember { mutableStateOf<List<FlashMessageUi>>(emptyList()) }
+    var localMessages by remember(state.messages, pendingOptimisticEchoes) {
+        mutableStateOf(state.messages + pendingOptimisticEchoes)
+    }
+
+    // Reconcile pending optimistic echoes against state.messages arrivals
+    LaunchedEffect(state.messages) {
+        if (pendingOptimisticEchoes.isNotEmpty()) {
+            val outgoingTexts = state.messages.filter { it.isMine }.map { it.text }
+            val remaining = mutableListOf<FlashMessageUi>()
+            val consumed = mutableListOf<String>()
+            for (echo in pendingOptimisticEchoes) {
+                val inState = outgoingTexts.count { it == echo.text }
+                val alreadyConsumed = consumed.count { it == echo.text }
+                if (alreadyConsumed < inState) {
+                    consumed.add(echo.text)
+                } else {
+                    remaining.add(echo)
+                }
+            }
+            if (remaining.size != pendingOptimisticEchoes.size) {
+                pendingOptimisticEchoes = remaining
+            }
+        }
+        if (stagedAttachments.any { it.isSending }) {
+            val receivedNames = state.messages.flatMap { msg ->
+                msg.fileAttachments.map { it.fileName } + msg.images.map { it.name }
+            }.toSet()
+            val remaining = stagedAttachments.filterNot { it.isSending && it.name in receivedNames }
+            if (remaining.size != stagedAttachments.size) {
+                stagedAttachments = remaining
+            }
+        }
+    }
     val draftState = remember { FlashConversationDraftState() }
     // #11: whether we've told the peer we're currently typing, so we only send on transitions.
     var isTypingSignalled by remember { mutableStateOf(false) }
@@ -962,10 +996,42 @@ fun FlashConversationScreen(
                     val hasAttachments = stagedAttachments.isNotEmpty()
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
-                        stagedAttachments.forEach { item ->
-                            onSendFile(item.uri, item.name, item.sizeBytes)
+                        val itemsToSend = stagedAttachments
+                        if (itemsToSend.isNotEmpty()) {
+                            // OPT-O24-02: Mark staging tray items with isSending spinner instead of vanishing instantly
+                            stagedAttachments = itemsToSend.map { it.copy(isSending = true) }
+                            coroutineScope.launch {
+                                itemsToSend.forEach { item ->
+                                    onSendFile(item.uri, item.name, item.sizeBytes)
+                                }
+                                delay(4000L)
+                                stagedAttachments = stagedAttachments.filterNot { it.isSending }
+                            }
                         }
                         if (text.isNotEmpty()) {
+                            // OPT-O24-01: UI-local optimistic echo overlay. Displays pending outbox row immediately (<16ms)
+                            // before asynchronous SQLite write and Room table scan complete. Never bypasses durability.
+                            val optimisticId = "opt_${kotlin.random.Random.nextLong().toString(16)}"
+                            val optimisticMsg = FlashMessageUi(
+                                id = optimisticId,
+                                senderName = state.title,
+                                senderInitials = "",
+                                timeLabel = "Just now",
+                                text = text,
+                                isMine = true,
+                                replyTo = quoted?.let { q ->
+                                    com.transfer.flash.core.messaging.model.FlashQuotedReplyUi(
+                                        messageId = q.id,
+                                        senderName = q.senderName,
+                                        textSnippet = FlashPinnedMessageMath.previewSnippet(q.text, maxChars = 120),
+                                    )
+                                },
+                                deliveryStatus = com.transfer.flash.core.messaging.model.FlashMessageStatus.Pending,
+                                groupPosition = com.transfer.flash.core.messaging.model.FlashMessageGroupPosition.SINGLE,
+                                showSenderHeader = false,
+                            )
+                            pendingOptimisticEchoes = pendingOptimisticEchoes + optimisticMsg
+
                             if (quoted != null) {
                                 // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
                                 onSendReply(text, quoted.id, FlashPinnedMessageMath.previewSnippet(quoted.text, maxChars = 120))
@@ -973,7 +1039,6 @@ fun FlashConversationScreen(
                                 onSendText(text)
                             }
                         }
-                        stagedAttachments = emptyList()
                         draftState.text = ""
                         replyingToMessage = null
                         // Sending clears the composer → stop the typing indicator (#11).

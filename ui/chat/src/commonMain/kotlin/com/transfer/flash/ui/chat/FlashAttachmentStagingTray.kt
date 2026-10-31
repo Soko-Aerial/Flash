@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -101,7 +102,7 @@ fun FlashAttachmentStagingTray(
                 )
             }
 
-            if (FlashStagingMath.canAddMore(stagedAttachments.size)) {
+            if (stagedAttachments.none { it.isSending } && FlashStagingMath.canAddMore(stagedAttachments.size)) {
                 item(key = "add_more_tile") {
                     AddMoreTile(onClick = onAddMore)
                 }
@@ -156,21 +157,34 @@ private fun StagedAttachmentCard(
                         modifier = Modifier.size(14.dp),
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(CircleShape)
-                        .background(colors.backgroundSurface)
-                        .clickable(onClick = onRemove)
-                        .semantics { role = Role.Button },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    FlashIcon(
-                        icon = FlashIcons.Close,
-                        contentDescription = "Remove attachment",
-                        tint = colors.textSecondary,
-                        modifier = Modifier.size(12.dp),
-                    )
+                if (item.isSending) {
+                    Box(
+                        modifier = Modifier.size(20.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.5.dp,
+                            color = colors.accentPrimary,
+                        )
+                    }
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(colors.backgroundSurface)
+                            .clickable(onClick = onRemove)
+                            .semantics { role = Role.Button },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FlashIcon(
+                            icon = FlashIcons.Close,
+                            contentDescription = "Remove attachment",
+                            tint = colors.textSecondary,
+                            modifier = Modifier.size(12.dp),
+                        )
+                    }
                 }
             }
 
