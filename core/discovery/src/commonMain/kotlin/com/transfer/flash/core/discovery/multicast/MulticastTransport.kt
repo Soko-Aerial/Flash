@@ -180,6 +180,7 @@ public class MulticastTransport(
     private var lastIdentity: FlashAdvertisedIdentity? = null
     private var lastAdvertisedPort: Int = 0
     private var lastAnnounceAtMs: Long = Long.MIN_VALUE
+    private var lastMulticastSeenAtMs: Long = 0L
 
     /**
      * peer → (serviceName, lastSeenMs). The lease map: a peer is in [directory] only while it is in
@@ -343,6 +344,7 @@ public class MulticastTransport(
             if (known == null && leases.size >= maxPeers) {
                 return@withLock null
             }
+            lastMulticastSeenAtMs = now
             val diff = directory.applySeen(endpoint, now)
             leases[deviceId] = (known ?: PeerLease(endpoint.serviceName, now))
                 .also { it.lastSeenAtMs = now }
@@ -370,7 +372,7 @@ public class MulticastTransport(
     // -- Announcement ----------------------------------------------------------
 
     /** Sends one announcement on every bound interface. No-op while not advertising. */
-    public fun announceNow() {
+    public fun announceNow(forceBroadcast: Boolean = true) {
         // Encode and snapshot under the lock; SEND outside it. A socket write is the one thing here
         // that can block, and a blocked send must not hold up discovery state.
         val outbound = lock.withLock {
@@ -394,7 +396,9 @@ public class MulticastTransport(
             }
             // After the multicast send, never instead of it, and never fatal: an interface with no
             // broadcast address returns false, which is normal and therefore not logged here.
-            if (broadcastEnabled) binding.sendBroadcast(outbound.second)
+            // OPT-O10-07: in the periodic loop, directed broadcast is skipped when multicast is functional
+            // (multicast sightings within 60s) to avoid the AP basic-rate airtime penalty on Wi-Fi.
+            if (broadcastEnabled && forceBroadcast) binding.sendBroadcast(outbound.second)
         }
     }
 
@@ -483,7 +487,10 @@ public class MulticastTransport(
             while (isActive && advertising) {
                 delay(nextAnnounceDelayMs())
                 if (!advertising) return@launch
-                announceNow()
+                val shouldBroadcast = lock.withLock {
+                    timeSourceMs() - lastMulticastSeenAtMs >= BROADCAST_FALLBACK_THRESHOLD_MS
+                }
+                announceNow(forceBroadcast = shouldBroadcast)
             }
         }
     }
@@ -677,6 +684,9 @@ public class MulticastTransport(
         public const val DEFAULT_PEER_LEASE_MS: Long = 60_000L
 
         public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
+
+        /** Fallback to directed broadcast when no multicast packets heard for this duration. */
+        public const val BROADCAST_FALLBACK_THRESHOLD_MS: Long = 60_000L
 
         /** Far above any real LAN of phones and PCs, far below what a spoofing loop produces. */
         public const val DEFAULT_MAX_PEERS: Int = 256
