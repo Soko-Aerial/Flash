@@ -424,7 +424,7 @@ the chain.
 
 ### T Ã¢â‚¬â€ transfer (28)
 
-> **Merged 2026-10-31**, fixes in the commit after (`PERF` follow-ups). Review:
+> **Merged 2026-10-31**, fixes in the commit after (`5ef86ca5`). Review:
 > `logs/streams/transfer/INTEGRATOR-REVIEW.md`. Delivered: `O07-07`, `O07-09`, `O02-10`, `O25-01`, `O07-05`,
 > `O23-04`, `O05-04`/`O05-05`/`O05-08`/`O05-09`, `O02-08`/`O02-09`, `O02-01`, `O07-04`, `O07-06`, `O07-08`,
 > `O28-02`, `O25-07`, `O05-02`/`O05-03`/`O05-10`, `O07-10` (blocked). Merged but **inert without a host caller**
