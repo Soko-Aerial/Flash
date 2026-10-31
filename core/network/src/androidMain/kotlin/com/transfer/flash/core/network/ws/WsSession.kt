@@ -16,6 +16,7 @@ import com.transfer.flash.core.network.FrameAckStage
 import java.util.UUID
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -88,7 +89,9 @@ public class WsSession(
     override suspend fun send(message: ByteArray): FlashResult<Unit> {
         val ok = connection.sendBinary(message)
         return if (ok) {
-            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            if (_frameAcks.subscriptionCount.value > 0) {
+                _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            }
             FlashResult.Success(Unit)
         } else {
             FlashResult.Failure(FlashError.TransferFailed(peerDeviceId.value, "WebSocket sendBinary failed"))
@@ -98,7 +101,9 @@ public class WsSession(
     override suspend fun sendText(text: String): FlashResult<Unit> {
         val ok = connection.sendText(text)
         return if (ok) {
-            _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            if (_frameAcks.subscriptionCount.value > 0) {
+                _frameAcks.tryEmit(FrameAck(UUID.randomUUID().toString(), FrameAckStage.SocketWritten, System.currentTimeMillis()))
+            }
             FlashResult.Success(Unit)
         } else {
             FlashResult.Failure(FlashError.TransferFailed(peerDeviceId.value, "WebSocket sendText failed"))
@@ -112,39 +117,32 @@ public class WsSession(
         onDisconnected(this, reason)
     }
 
-    public fun onTextReceived(text: String) {
-        while (_connectionState.value != FlashConnectionState.Disconnected) {
-            val result = textChannel.trySend(text)
-            if (result.isSuccess || result.isClosed) {
-                return
-            }
-            connection.touchLiveness()
-            try {
-                Thread.sleep(25)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
+    public suspend fun onTextReceived(text: String) {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return
+        try {
+            textChannel.send(text)
+        } catch (_: ClosedSendChannelException) {
+            // Disconnected
         }
     }
 
-    public fun onBinaryReceived(data: ByteArray) {
-        while (_connectionState.value != FlashConnectionState.Disconnected) {
-            val result = binaryChannel.trySend(data)
-            if (result.isSuccess || result.isClosed) {
-                return
-            }
-            // Buffer full (backpressure from disk/consumer).
-            // Refresh connection watchdog timestamps so backpressure does not trigger
-            // a false "watchdog silence timeout" (BUG-03).
-            connection.touchLiveness()
-            try {
-                Thread.sleep(25)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
+    public suspend fun onBinaryReceived(data: ByteArray) {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return
+        try {
+            binaryChannel.send(data)
+        } catch (_: ClosedSendChannelException) {
+            // Disconnected
         }
+    }
+
+    public fun tryEnqueueEarlyText(text: String): Boolean {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return false
+        return textChannel.trySend(text).isSuccess
+    }
+
+    public fun tryEnqueueEarlyBinary(data: ByteArray): Boolean {
+        if (_connectionState.value == FlashConnectionState.Disconnected) return false
+        return binaryChannel.trySend(data).isSuccess
     }
 
     public fun onClosed(reason: String) {
