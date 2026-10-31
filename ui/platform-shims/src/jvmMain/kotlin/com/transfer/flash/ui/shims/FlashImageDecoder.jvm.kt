@@ -129,6 +129,8 @@ internal object JvmImageDecoder : FlashImageDecoder {
 
     /**
      * Extracts the first video frame as a thumbnail using JCodec.
+     * O05-10: Subsamples during YUV extraction before color conversion to minimize heap allocations,
+     * and performs bulk raster data writes to BufferedImage.
      */
     private fun decodeVideo(
         source: String,
@@ -145,24 +147,74 @@ internal object JvmImageDecoder : FlashImageDecoder {
                 val height = pic.height
                 if (width <= 0 || height <= 0) return@runCatching null
 
-                val rgbPic = org.jcodec.common.model.Picture.create(width, height, org.jcodec.common.model.ColorSpace.RGB)
-                org.jcodec.scale.Yuv420pToRgb().transform(pic, rgbPic)
+                val sample = computeInSampleSize(width, height, maxLongEdge).coerceAtLeast(1)
+                val tw = ((width / sample).coerceAtLeast(2) and 1.inv())
+                val th = ((height / sample).coerceAtLeast(2) and 1.inv())
+
+                val (scaledPic, targetW, targetH) = if (sample > 1 && width >= 2 && height >= 2) {
+                    val sub = org.jcodec.common.model.Picture.create(tw, th, org.jcodec.common.model.ColorSpace.YUV420)
+                    val srcY = pic.getPlaneData(0)
+                    val srcU = pic.getPlaneData(1)
+                    val srcV = pic.getPlaneData(2)
+                    val dstY = sub.getPlaneData(0)
+                    val dstU = sub.getPlaneData(1)
+                    val dstV = sub.getPlaneData(2)
+                    if (srcY != null && srcU != null && srcV != null && dstY != null && dstU != null && dstV != null) {
+                        for (y in 0 until th) {
+                            val origRow = (y * sample) * width
+                            val dstRow = y * tw
+                            for (x in 0 until tw) {
+                                dstY[dstRow + x] = srcY[origRow + (x * sample)]
+                            }
+                        }
+                        val halfSrcW = width / 2
+                        val halfDstW = tw / 2
+                        val halfDstH = th / 2
+                        for (y in 0 until halfDstH) {
+                            val origRow = (y * sample) * halfSrcW
+                            val dstRow = y * halfDstW
+                            for (x in 0 until halfDstW) {
+                                val origOffset = origRow + (x * sample)
+                                val dstOffset = dstRow + x
+                                dstU[dstOffset] = srcU[origOffset]
+                                dstV[dstOffset] = srcV[origOffset]
+                            }
+                        }
+                        Triple(sub, tw, th)
+                    } else {
+                        Triple(pic, width, height)
+                    }
+                } else {
+                    Triple(pic, width, height)
+                }
+
+                val rgbPic = org.jcodec.common.model.Picture.create(targetW, targetH, org.jcodec.common.model.ColorSpace.RGB)
+                org.jcodec.scale.Yuv420pToRgb().transform(scaledPic, rgbPic)
                 val data = rgbPic.data[0] ?: return@runCatching null
 
-                val sample = computeInSampleSize(width, height, maxLongEdge).coerceAtLeast(1)
-                val targetW = (width / sample).coerceAtLeast(1)
-                val targetH = (height / sample).coerceAtLeast(1)
-
                 val img = java.awt.image.BufferedImage(targetW, targetH, java.awt.image.BufferedImage.TYPE_INT_RGB)
-                for (y in 0 until targetH) {
-                    val srcY = y * sample
-                    for (x in 0 until targetW) {
-                        val srcX = x * sample
-                        val srcIdx = (srcY * width + srcX) * 3
+                val pixels = (img.raster.dataBuffer as? java.awt.image.DataBufferInt)?.data
+                val totalPixels = targetW * targetH
+                if (pixels != null && pixels.size >= totalPixels) {
+                    for (i in 0 until totalPixels) {
+                        val srcIdx = i * 3
                         val r = (data[srcIdx].toInt() + 128).coerceIn(0, 255)
                         val g = (data[srcIdx + 1].toInt() + 128).coerceIn(0, 255)
                         val b = (data[srcIdx + 2].toInt() + 128).coerceIn(0, 255)
-                        img.setRGB(x, y, (r shl 16) or (g shl 8) or b)
+                        pixels[i] = (r shl 16) or (g shl 8) or b
+                    }
+                } else {
+                    val rowPixels = IntArray(targetW)
+                    for (y in 0 until targetH) {
+                        val rowOffset = y * targetW * 3
+                        for (x in 0 until targetW) {
+                            val srcIdx = rowOffset + x * 3
+                            val r = (data[srcIdx].toInt() + 128).coerceIn(0, 255)
+                            val g = (data[srcIdx + 1].toInt() + 128).coerceIn(0, 255)
+                            val b = (data[srcIdx + 2].toInt() + 128).coerceIn(0, 255)
+                            rowPixels[x] = (r shl 16) or (g shl 8) or b
+                        }
+                        img.setRGB(0, y, targetW, 1, rowPixels, 0, targetW)
                     }
                 }
                 img.toComposeImageBitmap()
