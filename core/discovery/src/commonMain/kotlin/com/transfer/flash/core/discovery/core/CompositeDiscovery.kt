@@ -201,6 +201,9 @@ public class CompositeDiscovery(
     @Volatile private var currentPolicy: DiscoveryModePolicy =
         DiscoveryModePolicy.forMode(FlashDiscoveryMode.STANDARD)
 
+    @Volatile private var screenActive: Boolean = true
+    @Volatile private var userPreferredMode: FlashDiscoveryMode = FlashDiscoveryMode.STANDARD
+
     private val _mergedEvents = MutableSharedFlow<FlashTransportEvent>(
         replay = 0,
         extraBufferCapacity = EXTRA_BUFFER_CAPACITY,
@@ -393,6 +396,23 @@ public class CompositeDiscovery(
     // ---------------------------------------------------------------------
 
     /**
+     * OPT-O10-01: Informs discovery of display power state. When screen turns off and no transfer
+     * or call is in flight, discovery automatically downscales to [FlashDiscoveryMode.ECO] to save
+     * battery and release continuous Wi-Fi radio locks. Restores user-selected mode when screen turns on.
+     */
+    override fun setScreenActive(active: Boolean) {
+        if (screenActive == active) return
+        screenActive = active
+        scope.launch {
+            if (!active) {
+                setModeInternal(FlashDiscoveryMode.ECO)
+            } else {
+                setModeInternal(userPreferredMode)
+            }
+        }
+    }
+
+    /**
      * Switches the discovery mode: stores the mode's [DiscoveryModePolicy],
      * fans it out to EVERY transport's [FlashRadioTransport.setMode] (radios
      * without mode support inherit the interface's no-op default), and reflects
@@ -401,6 +421,13 @@ public class CompositeDiscovery(
      * unchanged — the prefix is purely additive.
      */
     public suspend fun setMode(mode: FlashDiscoveryMode) {
+        userPreferredMode = mode
+        if (screenActive) {
+            setModeInternal(mode)
+        }
+    }
+
+    private suspend fun setModeInternal(mode: FlashDiscoveryMode) {
         currentPolicy = DiscoveryModePolicy.forMode(mode)
         _discoveryMode.value = mode
         lock.withLock { collectingOrStart() }

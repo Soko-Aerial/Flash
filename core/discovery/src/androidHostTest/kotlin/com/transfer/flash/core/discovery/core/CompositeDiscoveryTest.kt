@@ -498,6 +498,25 @@ class CompositeDiscoveryTest {
     }
 
     @Test
+    fun setScreenActive_downscalesToEcoAndRestoresPreferredMode() = runBlocking {
+        harness = Harness("LAN", "WIFI_DIRECT")
+        harness.composite.startAll(40_000, identity)
+        harness.composite.setMode(FlashDiscoveryMode.BOOST)
+        assertEquals(FlashDiscoveryMode.BOOST, harness.composite.discoveryMode.value)
+
+        // Screen turned off: downscale to ECO
+        harness.composite.setScreenActive(false)
+        // Give coroutine a moment to fan out
+        kotlinx.coroutines.yield()
+        assertEquals(FlashDiscoveryMode.ECO, harness.composite.discoveryMode.value)
+
+        // Screen turned on: restore BOOST
+        harness.composite.setScreenActive(true)
+        kotlinx.coroutines.yield()
+        assertEquals(FlashDiscoveryMode.BOOST, harness.composite.discoveryMode.value)
+    }
+
+    @Test
     fun setMode_reflectedInStateMessagePrefix_withoutBreakingSuffix() = runBlocking {
         harness = Harness("LAN")
         harness.composite.startAll(40_000, identity)
