@@ -103,7 +103,8 @@ fun FlashMessageList(
     val motion = FlashTheme.motion
     val coroutineScope = rememberCoroutineScope()
 
-    val initialMessageIds = remember(messages.firstOrNull()?.id) { messages.mapTo(HashSet()) { it.id } }
+    val initialHeadId = messages.firstOrNull()?.id
+    val initialMessageIds = remember(initialHeadId) { messages.mapTo(HashSet()) { it.id } }
 
     val stickThresholdPx = with(LocalDensity.current) { FlashDimensions.chatBottomStickThreshold.toPx() }
     val atBottom = remember(stickThresholdPx) {
@@ -117,8 +118,8 @@ fun FlashMessageList(
     }
 
     // --- UI-021 unseen tracking: arrivals while scrolled up increment the pill counter. ---
-    // BOLT: Key previousTailId on initialMessageIds to prevent state leak across conversation switches
-    var previousTailId by remember(initialMessageIds) { mutableStateOf(messages.lastOrNull()?.id) }
+    // OPT-O03-06: Key previousTailId on initialHeadId instead of the initialMessageIds HashSet to eliminate O(N) set equality check on every recomposition.
+    var previousTailId by remember(initialHeadId) { mutableStateOf(messages.lastOrNull()?.id) }
     var unseenCount by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(messages) {
