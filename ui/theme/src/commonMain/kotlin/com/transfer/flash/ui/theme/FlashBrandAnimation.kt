@@ -7,13 +7,14 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -56,53 +57,63 @@ fun FlashBrandAnimation(
 ) {
     val (boltBreathe, ringPhase) = rememberFlashBrandPhase()
 
-    Canvas(modifier = modifier.fillMaxSize()) {
-        val breathe = boltBreathe.value
-        val phase = ringPhase.value
+    Spacer(
+        modifier = modifier
+            .fillMaxSize()
+            .drawWithCache {
+                val cx = size.width / 2f
+                val cy = size.height / 2f
+                val unit = min(size.width, size.height)
+                val ringBaseRadius = unit * 0.20f
+                val ringStroke = Stroke(width = unit * 0.008f)
+                val glowRadius = unit * 0.30f
+                val bgBrush = if (background) Brush.verticalGradient(listOf(SplashBgTop, SplashBgBottom)) else null
+                val glowBrush = Brush.radialGradient(
+                    colors = listOf(RingColor.copy(alpha = 0.55f), RingColor.copy(alpha = 0f)),
+                    center = Offset(cx, cy),
+                    radius = glowRadius,
+                )
+                val drawUnit = unit * 0.42f // bolt box edge on screen
 
-        if (background) {
-            drawRect(brush = Brush.verticalGradient(listOf(SplashBgTop, SplashBgBottom)))
-        }
+                onDrawBehind {
+                    val breathe = boltBreathe.value
+                    val phase = ringPhase.value
 
-        val cx = size.width / 2f
-        val cy = size.height / 2f
-        val unit = min(size.width, size.height)
-        val ringBaseRadius = unit * 0.20f
+                    if (bgBrush != null) {
+                        drawRect(brush = bgBrush)
+                    }
 
-        // Discovery pulse rings: expand 0.55x -> 1.75x, opacity 0 -> 0.5 -> 0, staggered.
-        for (i in 0 until 3) {
-            val p = (phase + i / 3f) % 1f
-            val eased = PulseEasing.transform(p)
-            val scale = 0.55f + (1.75f - 0.55f) * eased
-            val opacity = if (p < 0.5f) p * 2f * 0.5f else (1f - p) * 2f * 0.5f
-            drawCircle(
-                color = RingColor.copy(alpha = opacity.coerceIn(0f, 0.5f)),
-                radius = ringBaseRadius * scale,
-                center = Offset(cx, cy),
-                style = Stroke(width = unit * 0.008f),
-            )
-        }
+                    // Discovery pulse rings: expand 0.55x -> 1.75x, opacity 0 -> 0.5 -> 0, staggered.
+                    for (i in 0 until 3) {
+                        val p = (phase + i / 3f) % 1f
+                        val eased = PulseEasing.transform(p)
+                        val scale = 0.55f + (1.75f - 0.55f) * eased
+                        val opacity = if (p < 0.5f) p * 2f * 0.5f else (1f - p) * 2f * 0.5f
+                        drawCircle(
+                            color = RingColor.copy(alpha = opacity.coerceIn(0f, 0.5f)),
+                            radius = ringBaseRadius * scale,
+                            center = Offset(cx, cy),
+                            style = ringStroke,
+                        )
+                    }
 
-        // Soft charge glow behind the bolt, breathing with it.
-        val glowAlpha = 0.5f + 0.4f * breathe
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(RingColor.copy(alpha = 0.55f), RingColor.copy(alpha = 0f)),
-                center = Offset(cx, cy),
-                radius = unit * 0.30f,
-            ),
-            radius = unit * 0.30f,
-            center = Offset(cx, cy),
-            alpha = glowAlpha,
-        )
+                    // Soft charge glow behind the bolt, breathing with it.
+                    val glowAlpha = 0.5f + 0.4f * breathe
+                    drawCircle(
+                        brush = glowBrush,
+                        radius = glowRadius,
+                        center = Offset(cx, cy),
+                        alpha = glowAlpha,
+                    )
 
-        // The bolt: gentle breathe scale (1.0 .. 1.045).
-        val boltScale = 1f + 0.045f * breathe
-        val drawUnit = unit * 0.42f // bolt box edge on screen
-        scale(scale = boltScale, pivot = Offset(cx, cy)) {
-            drawBolt(cx, cy, drawUnit)
-        }
-    }
+                    // The bolt: gentle breathe scale (1.0 .. 1.045).
+                    val boltScale = 1f + 0.045f * breathe
+                    scale(scale = boltScale, pivot = Offset(cx, cy)) {
+                        drawBolt(cx, cy, drawUnit)
+                    }
+                }
+            }
+    )
 }
 
 /**
@@ -166,22 +177,12 @@ private data class FlashBrandPhase(val breathe: State<Float>, val phase: State<F
 /** Draws the bolt centered at (cx,cy), filling a [boxSize]-wide 24x24 space. */
 private fun DrawScope.drawBolt(cx: Float, cy: Float, boxSize: Float) {
     val k = boxSize / 24f
-    val path = Path().apply {
-        BOLT_POINTS.forEachIndexed { index, (x, y) ->
-            if (index == 0) moveTo(x, y) else lineTo(x, y)
-        }
-        close()
-    }
     // Position: translate so the 24x24 box is centered, then scale into screen units.
     translate(left = cx - boxSize / 2f, top = cy - boxSize / 2f) {
         scale(scaleX = k, scaleY = k, pivot = Offset.Zero) {
             drawPath(
-                path = path,
-                brush = Brush.linearGradient(
-                    *BoltStops,
-                    start = Offset(4.2f, 2.2f),
-                    end = Offset(19.8f, 21.8f),
-                ),
+                path = BoltPath,
+                brush = BoltBrush,
             )
         }
     }
@@ -219,6 +220,23 @@ private val RingColor = FlashBrandPalette.ring
 internal val BOLT_POINTS = listOf(
     13.6f to 2.2f, 4.2f to 13.9f, 10.8f to 13.9f, 9.4f to 21.8f, 19.8f to 9.7f, 13.2f to 9.7f,
 )
+
+private val BoltPath: Path by lazy {
+    Path().apply {
+        BOLT_POINTS.forEachIndexed { index, (x, y) ->
+            if (index == 0) moveTo(x, y) else lineTo(x, y)
+        }
+        close()
+    }
+}
+
+private val BoltBrush: Brush by lazy {
+    Brush.linearGradient(
+        *BoltStops,
+        start = Offset(4.2f, 2.2f),
+        end = Offset(19.8f, 21.8f),
+    )
+}
 
 private const val PULSE_MS = 2400
 private val PulseEasing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
