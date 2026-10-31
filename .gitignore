@@ -1,7 +1,4 @@
 build/
-# `logs/streams/build/` is Stream A's *log* directory, not a Gradle output directory; without this
-# the whole folder is ignored and an integrator's new file there silently never reaches git.
-!logs/streams/build/
 *.hprof
 *.hprof.p*
 .gradle/
@@ -40,3 +37,13 @@ measurements/
 
 # Server runtime state and local database
 data/
+
+# Stream log folders (`logs/streams/<stream>/`) must always be committable. A stream named `build` or
+# `data` would otherwise be swallowed by the `build/` and `data/` rules above, and its log fragments
+# would silently never reach git (Stream D's logs were invisible to git for exactly this reason).
+# Gitignore is last-match-wins, so this negation has to stay after those rules.
+!logs/streams/*/
+
+# Python bytecode left behind by the benchmark helper scripts
+__pycache__/
+*.pyc

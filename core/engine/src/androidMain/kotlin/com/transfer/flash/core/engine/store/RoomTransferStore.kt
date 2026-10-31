@@ -113,6 +113,15 @@ public class RoomTransferStore(
         transferChunkDao.insertAll(indexes.map { TransferChunkEntity(transferId, it, done = true) })
     }
 
+    /** One transaction for chunks + byte counter (OPT-O06-07) instead of two commits. */
+    override suspend fun recordProgress(transferId: String, indexes: List<Int>, bytesDone: Long) {
+        transferDao.recordProgress(
+            transferId = transferId,
+            chunks = indexes.map { TransferChunkEntity(transferId, it, done = true) },
+            bytesDone = bytesDone,
+        )
+    }
+
     override suspend fun clearDoneChunks(transferId: String) {
         transferChunkDao.deleteChunks(transferId)
     }

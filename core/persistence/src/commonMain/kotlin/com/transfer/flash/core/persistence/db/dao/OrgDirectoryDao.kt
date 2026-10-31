@@ -43,23 +43,16 @@ public interface OrgDirectoryDao {
     public suspend fun listAllMembers(): List<OrgDirectoryMemberEntity>
 
     /**
-     * Projection query avoiding statement BLOB loading (OPT-O06-08).
+     * Projection query that omits the `statementBytes` BLOB, so a listing never walks overflow
+     * pages (OPT-O06-08). Room maps the columns onto [OrgMemberSummary] directly, without ever
+     * materialising an [OrgDirectoryMemberEntity].
      */
-    public suspend fun listMemberSummaries(): List<OrgMemberSummary> =
-        listAllMembers().map {
-            OrgMemberSummary(
-                deviceId = it.deviceId,
-                displayName = it.displayName,
-                displayNameFolded = it.displayNameFolded,
-                departmentId = it.departmentId,
-                role = it.role,
-                subjectPublicKeyFingerprint = it.subjectPublicKeyFingerprint,
-                statementSerial = it.statementSerial,
-                statementIssuedAtMs = it.statementIssuedAtMs,
-                statementDelegationSerial = it.statementDelegationSerial,
-                lastSyncedAtMs = it.lastSyncedAtMs,
-            )
-        }
+    @Query(
+        "SELECT deviceId, displayName, displayNameFolded, departmentId, role, subjectPublicKeyFingerprint, " +
+            "statementSerial, statementIssuedAtMs, statementDelegationSerial, lastSyncedAtMs " +
+            "FROM org_directory_member ORDER BY displayName ASC",
+    )
+    public suspend fun listMemberSummaries(): List<OrgMemberSummary>
 
     @Upsert
     public suspend fun upsertDepartments(departments: List<OrgDepartmentEntity>)

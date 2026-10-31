@@ -31,13 +31,25 @@ public interface SwarmDao {
     public suspend fun loadContentForGroup(groupId: String): List<SwarmContentEntity>
 
     /**
-     * Lightweight projections omitting manifest (up to 131 KB) and bits BLOBs (OPT-O06-08).
+     * Lightweight projection query that omits the `manifest` (up to 131 KB) and `bits` BLOBs, so a
+     * listing never walks overflow pages (OPT-O06-08). Room maps the columns onto
+     * [SwarmContentSummary] directly, without materialising a [SwarmContentEntity].
      */
-    public suspend fun loadAllSummaries(): List<SwarmContentSummary> =
-        loadAllContent().map { it.toSummary() }
+    @Query(
+        "SELECT root, groupId, messageId, role, originId, originKey, fileName, mime, totalSize, pieceSize, " +
+            "bytesDone, state, waitReason, failReason, localTransferId, sourceUri, sourcePersistent, partialKey, " +
+            "finalPath, identitySize, identityModifiedMs, deliveredTo, createdAtMs, lastProgressAtMs, expiresAtMs " +
+            "FROM swarm_content ORDER BY createdAtMs DESC",
+    )
+    public suspend fun loadAllSummaries(): List<SwarmContentSummary>
 
-    public suspend fun loadSummariesForGroup(groupId: String): List<SwarmContentSummary> =
-        loadContentForGroup(groupId).map { it.toSummary() }
+    @Query(
+        "SELECT root, groupId, messageId, role, originId, originKey, fileName, mime, totalSize, pieceSize, " +
+            "bytesDone, state, waitReason, failReason, localTransferId, sourceUri, sourcePersistent, partialKey, " +
+            "finalPath, identitySize, identityModifiedMs, deliveredTo, createdAtMs, lastProgressAtMs, expiresAtMs " +
+            "FROM swarm_content WHERE groupId = :groupId ORDER BY createdAtMs DESC",
+    )
+    public suspend fun loadSummariesForGroup(groupId: String): List<SwarmContentSummary>
 
     @Query("UPDATE swarm_content SET bits = :bits, bytesDone = :bytesDone, lastProgressAtMs = :nowMs WHERE root = :root AND groupId = :groupId AND bytesDone <= :bytesDone")
     public suspend fun updateBits(root: String, groupId: String, bits: ByteArray, bytesDone: Long, nowMs: Long)

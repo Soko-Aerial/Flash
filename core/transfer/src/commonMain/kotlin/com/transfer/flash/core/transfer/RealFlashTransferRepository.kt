@@ -583,15 +583,14 @@ public class RealFlashTransferRepository(
                 val confirmedCount = dispatcher.confirmedCountSnapshot()
                 if (confirmedCount != lastConfirmedCount) {
                     val fresh = dispatcher.confirmedIndexesNotIn(persistedChunks)
-                    if (fresh.isNotEmpty()) {
-                        store?.markChunksDone(transferId, fresh)
+                    // One write for chunks + counter (OPT-O06-07): two commits per progress tick
+                    // doubled WAL frames on the hottest path of a send.
+                    if (fresh.isNotEmpty() || progress.bytesDone != persistedBytesDone) {
+                        store?.recordProgress(transferId, fresh, progress.bytesDone)
                         fresh.forEach { persistedChunks.markReceived(it) }
-                    }
-                    lastConfirmedCount = confirmedCount
-                    if (progress.bytesDone != persistedBytesDone) {
-                        store?.setBytesDone(transferId, progress.bytesDone)
                         persistedBytesDone = progress.bytesDone
                     }
+                    lastConfirmedCount = confirmedCount
                 }
             }
         }

@@ -1954,10 +1954,20 @@ public class RealFlashChatRepository(
     )
 
     override fun closeConversation() {
+        val closing = activeConversationJob
         endOpenConversation()
         activeConversationId = null
         activePageLimit = null
         _conversationState.value = EMPTY_CONVERSATION
+        // A cancelled collector can still deliver one last emission into the state it was writing;
+        // without a second clear the whole (possibly huge) thread stays referenced (O02-02). Only
+        // clear again when no new chat was opened meanwhile, so a fast reopen is not emptied.
+        if (closing != null) {
+            scope.launch(ioDispatcher) {
+                closing.join()
+                if (activeConversationId == null) _conversationState.value = EMPTY_CONVERSATION
+            }
+        }
     }
 
     override fun loadMoreHistory(conversationId: String, count: Int) {
