@@ -91,6 +91,9 @@ class DestinationPolicyTest {
         // Calling writeAt on closed handle must be a safe no-op (drops in-flight chunks after cancel)
         handle.writeAt(0L, byteArrayOf(1, 2, 3))
         handle.flush()
-        assertEquals(0L, targetFile.length())
+        // The open preallocated the capacity (O23-03), so the length stays 100 - but the bytes that
+        // were written through the closed handle must not be there.
+        assertEquals(100L, targetFile.length())
+        assertArrayEquals(ByteArray(3), targetFile.readBytes().copyOf(3))
     }
 }

@@ -14,6 +14,8 @@ import com.transfer.flash.core.hubprotocol.rest.DepartmentSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectoryMemberSyncDto
 import com.transfer.flash.core.hubprotocol.rest.DirectorySyncDto
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
+import com.transfer.flash.core.persistence.db.dao.OrgMemberSummary
+import com.transfer.flash.core.persistence.db.dao.toSummary
 import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
@@ -106,6 +108,8 @@ class OrgDirectorySyncTest {
             members.values.filter { it.departmentId == departmentId }
 
         override suspend fun listAllMembers(): List<OrgDirectoryMemberEntity> = members.values.toList()
+
+        override suspend fun listMemberSummaries(): List<OrgMemberSummary> = members.values.map { it.toSummary() }
 
         override suspend fun upsertDepartments(departments: List<OrgDepartmentEntity>) {
             departments.forEach { this.departments[it.id] = it }

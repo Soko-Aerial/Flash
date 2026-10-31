@@ -2190,3 +2190,67 @@ zero until the distribution decision in PERF-A04. This is why `O22-01` was rever
 - A before/after pair is only worth recording when both halves are forced and the command line is pasted.
 - Not measured here: the stream's `:server:test` claim (7 m 10 s -> 5 m 22 s; PERF-A05), `:server:test` under 4 forks on this
   machine, and the desktop installers' runtime behaviour (PERF-A03).
+
+## EXP-085 - Baseline SQLite query cost at 100k messages (2026-10-30, Stream D)
+
+Folded from `logs/streams/data/experiments.md`. Fixture: `docs/audit/optimization-2026-10-23/bench/db_benchmark.py`,
+schema v20 (before step 22), 1 000 / 10 000 / 100 000 messages over 20 conversations, Windows 11, 8 logical CPUs.
+
+100 000 messages (22.78 MB file): `observeUnreadCounts` (correlated subquery) **1 428.46 ms**, `observeLatestPreviews`
+(full scan + `GROUP BY`) **1 037.98 ms**, a rare `LIKE` **204.01 ms**, a common `LIKE` **1.14 ms**, FTS5 miss 0.12 ms,
+FTS5 common 409.79 ms. `EXPLAIN QUERY PLAN` showed `SCAN <table> | USE TEMP B-TREE FOR ORDER BY` for `dueForDelivery`,
+`observeRecent`, `observeAll`, `restorable`, `loadAllContent` and `searchMembers`.
+
+**Read the numbers as "cost on this fixture", not as device latency**: an 8-core desktop with a warm page cache is not a
+phone, and the harness is not the Room path.
+
+## EXP-086 - The same fixture after step 22 (2026-10-30, Stream D)
+
+Same machine, schema v22 (indexes + rewritten query): `observeUnreadCounts` correlated **1 704.82 ms** vs rewritten
+`LEFT JOIN` **1 018.22 ms** (1.7x). The five ordered queries moved from temp-b-tree full scans to index scans (plan, not
+wall clock). The desktop opener's WAL / `synchronous=NORMAL` / bounded cache / trim listener are configuration, not
+measured here.
+
+**Correction to the plan:** the audit promised "697 ms -> 0.41 ms" for `observeUnreadCounts`; the measured pair is
+1 704 -> 1 018 ms. Both are real, they are different fixtures. Sub-millisecond was never reached.
+
+## EXP-090 - Transfer loopback baseline, 200 MB (2026-10-30, Stream T)
+
+`TransferLoopbackBenchmarkTest.benchmark200MbTransfer` (SendPipeline -> in-memory channel -> ReceivePipeline with
+SHA-256), `dev` at `6f8fe180`, Windows 11, 8 logical CPUs, JVM 25.0.3.
+
+| Metric | 64 KB chunks | 256 KB chunks |
+|---|---|---|
+| Throughput | 57.6 MB/s | 58.3 MB/s |
+| Wall time | 3 472.8 ms | 3 431.5 ms |
+| CPU time | 3 328.1 ms | 3 281.3 ms |
+| Thread heap allocation | 456 MB | 1 018 MB |
+
+SHA-256 over 200 MB (3 200 x 64 KB): Okio `HashingSink` + JCA lookup 895.6 ms / 1.50 MB allocated; a reusable
+`MessageDigest` 828.9 ms / 0 MB.
+
+## EXP-091 - The same loopback after Batch 1-3 (2026-10-31, Stream T)
+
+| Metric | 64 KB chunks | 256 KB chunks |
+|---|---|---|
+| Throughput | 57.6 -> **65.3 MB/s** | 58.3 -> **62.4 MB/s** |
+| Wall time | 3 472.8 -> **3 060.8 ms** | 3 431.5 -> **3 204.1 ms** |
+| CPU time | 3 328.1 -> **2 953.1 ms** | 3 281.3 -> **3 109.4 ms** |
+| Thread heap allocation | 456 -> **253 MB** | 1 018 -> **515 MB** |
+
+SHA-256 baseline 895.6 ms vs reusable digest 644.6 ms. **Caveat:** this is an in-memory loopback on the JVM, where the
+optimised parts (pooling, boxed-index removal, thread-local digests) dominate; a real socket over Wi-Fi adds a bottleneck
+they do not touch, and the pre-pass is still there (ADR-250). Do not carry these percentages over to a device.
+
+## EXP-092 - Resume of a 90 %-complete transfer, seekable source (2026-10-31, Stream T)
+
+`PipelineEndToEndTest`: 100 chunks of 16 KB, 90 sent, then resumed with a `SeekableChunkSource`. 90 chunks skipped,
+10 sent, source opened at offset 1 474 560, both whole-file hashes matched.
+
+**Caveat:** the test *is* a seekable source; the app has none (ADR-252), so on a device the prefix is re-read (without
+hashing). EXP-092 measures the capability, not today's app.
+
+**Addendum (2026-10-31, integrator):** the same feature shipped a defect the suite could not see: `MultiStreamDispatcher`
+treated every source as seekable, so a non-seekable resume labelled the wrong chunks (fix + a payload-asserting test in
+the merge follow-up; `logs/streams/transfer/INTEGRATOR-REVIEW.md` 2.1). `PERF-T02` now exists for the device case.
+

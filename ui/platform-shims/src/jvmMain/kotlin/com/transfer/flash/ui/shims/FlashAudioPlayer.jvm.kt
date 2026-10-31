@@ -49,21 +49,44 @@ public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? =
  */
 internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    @Volatile
     private var clip: Clip? = null
+
+    @Volatile
     private var failed = false
+
+    @Volatile
     private var pendingPlay = false
+
+    /**
+     * True while a preparation is in flight. Set synchronously by whoever starts one, so `play()`
+     * never starts a second concurrent decode (two threads preparing the same clip used to assign
+     * `clip` twice and leak the first clip).
+     */
+    @Volatile
+    private var preparing = true
 
     init {
         // O05-02: Pre-prepare audio asynchronously on Dispatchers.IO to avoid blocking the UI thread on software AAC decode
-        scope.launch {
-            val c = ensurePrepared()
-            if (pendingPlay && c != null) {
-                pendingPlay = false
-                runCatching {
-                    if (c.microsecondPosition >= c.microsecondLength) c.microsecondPosition = 0L
-                    if (!c.isRunning) c.start()
-                }
-            }
+        scope.launch { finishPrepare(ensurePrepared()) }
+    }
+
+    private fun finishPrepare(prepared: Clip?) {
+        preparing = false
+        // A tap that landed during preparation starts playback here instead of on the UI thread.
+        if (pendingPlay) {
+            pendingPlay = false
+            prepared?.let(::startClip)
+        }
+    }
+
+    private fun startClip(c: Clip) {
+        runCatching {
+            // A finished clip parks at its end and `start()` would be a no-op; Android's MediaPlayer
+            // restarts from the beginning instead, so match that.
+            if (c.microsecondPosition >= c.microsecondLength) c.microsecondPosition = 0L
+            if (!c.isRunning) c.start()
         }
     }
 
@@ -135,13 +158,16 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
     }
 
     override fun play() {
-        val c = ensurePrepared() ?: return
-        runCatching {
-            // A finished clip parks at its end and `start()` would be a no-op; Android's MediaPlayer
-            // restarts from the beginning instead, so match that.
-            if (c.microsecondPosition >= c.microsecondLength) c.microsecondPosition = 0L
-            if (!c.isRunning) c.start()
+        clip?.let {
+            startClip(it)
+            return
         }
+        // Not ready yet (still decoding, or the decode failed): let the preparation start playback
+        // when it finishes instead of blocking the UI thread here.
+        pendingPlay = true
+        if (preparing) return
+        preparing = true
+        scope.launch { finishPrepare(ensurePrepared()) }
     }
 
     override fun pause() {
@@ -175,6 +201,7 @@ internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
             }
         }
         clip = null
+        scope.cancel()
     }
 }
 

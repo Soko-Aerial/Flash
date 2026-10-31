@@ -4,7 +4,9 @@ import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.protocol.Base64
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.engine.interop.DesktopEndpointFixture
+import com.transfer.flash.core.persistence.db.dao.SwarmContentSummary
 import com.transfer.flash.core.persistence.db.dao.SwarmDao
+import com.transfer.flash.core.persistence.db.dao.toSummary
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.swarm.driver.SwarmGroupContext
@@ -388,6 +390,12 @@ class SwarmInteropTest {
 
         override suspend fun loadContentForGroup(groupId: String): List<SwarmContentEntity> =
             contents.values.filter { it.groupId == groupId }
+
+        override suspend fun loadAllSummaries(): List<SwarmContentSummary> =
+            contents.values.map { it.toSummary() }
+
+        override suspend fun loadSummariesForGroup(groupId: String): List<SwarmContentSummary> =
+            contents.values.filter { it.groupId == groupId }.map { it.toSummary() }
 
         override suspend fun updateBits(root: String, groupId: String, bits: ByteArray, bytesDone: Long, nowMs: Long) {
             contents.compute(root to groupId) { _, current ->

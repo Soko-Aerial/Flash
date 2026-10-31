@@ -1,5 +1,23 @@
 # Current Handoff
 
+> 2026-10-31 Wave 1 (data + transfer): **both streams reviewed, merged and corrected; both are in `dev`, nothing pushed,
+> nothing device-verified.** Stream D (28 files) gate 1 forced PASS; its three "projections" (`O06-08`) actually still ran a
+> full `SELECT *` and its `recordProgress` had no caller, so the review rewrote the projections as real `@Query`s and wired
+> the transaction through `TransferStore`; `auto_vacuum` was inert (`onCreate` runs after the tables) and is now applied by a
+> one-shot VACUUM, with `incremental_vacuum` in the trim hook; `hashCode` broke its contract with `equals` and is now constant.
+> Stream T (35 files) **broke every resumed send**: the materializer opened at the offset index for *every* source, but no
+> production source is a `SeekableChunkSource`, so a resumed file was sent with every chunk shifted by the skipped prefix
+> (ERROR-893; silent until the receiver's final digest). Fixed in both loops - the skip now lives in `Chunker.openChunkStream`,
+> so label and stream position agree - plus a payload-asserting test; fixing that exposed the endgame re-sending merely queued
+> frames (ERROR-894, 22 frames for 8 chunks), which now waits for everything to reach a wire once before retransmitting. The
+> audio player's double-decode race and a double-counted skip counter fixed too. **Not delivered, recorded, each with a backlog row:**
+> `O05-01`/`O07-01` (a single hash pass needs a wire change — plan §8), `O23-02` (seekable source, `PERF-T05`), `O07-02`
+> (`.part`, `PERF-T06`), `O23-03`'s FAT32 half (`PERF-T07`), `O23-06` (`PERF-T08`), `O27-04` (`PERF-D04`). `PERF-T01`/`T02`
+> (2 GB send/resume) are what close ERROR-893. Rule learned and written into plan §8: **a feature without a host caller is not
+> done — grep for the call site before writing "implemented".** Authority: `logs/streams/{data,transfer}/INTEGRATOR-REVIEW.md`,
+> ADR-240..242/250..255, EXP-085/086/090..092. Next stream stays off the current `dev`; `PERF-A04` (release script must
+> collect per-ABI APKs) and the owner's `PERF-A03` installer smoke test still block a Windows/APK release.
+
 > 2026-10-30 decisions answered: **every open decision of the optimization programme is decided (ADR-232)** — the owner
 > delegated them to the integrator's recommendation, so a stream now *implements* the answer instead of writing
 > `BLOCKED — owner decision`. Summary: splash **keep** (ADR-080 stands; shorten the choreography, never gate it) · FTS5
@@ -145,6 +163,22 @@
 > 2026-10-23 desktop radio round 2: Windows "paired" now means authenticated (remembered is not paired), the scan streams in 2.56 s rounds, the audio twin redirects to the control entry, open failures are shown, pairing uses the callback API. Unit-tested only; **pairing with the radio in pairing mode is unverified** (RADVOICE-11).
 
 > 2026-10-23 desktop radio voice: the Radio voice card now exists on Windows (Winsock RFCOMM to the vendor audio service + Java Sound). Unit-tested; the audio channel opened once on the owner's PC (receive only). Hearing/talking unverified: RADVOICE-12.
+
+## 2026-10-31 (Wave 1 review) — data and transfer streams merged after review, corrected, unit-tested, NOT device-verified, NOT pushed
+
+Merges `3b28e5be` (data) and the transfer merge, fixes `f3154de0` + the transfer follow-up. Gates and defects are in the
+banner above; the point to keep is that both streams looked finished and were not:
+
+- Data: four "optimisations" without a caller (the single-transaction progress DAO and three summary "projections" that
+  still loaded the `statementBytes`/`manifest` BLOBs), `auto_vacuum` in a hook that runs too late, and a `hashCode` that
+  violated its own `equals`. All fixed or wired; `O27-04` never attempted.
+- Transfer: resume misalignment (ERROR-893) for every non-seekable source, an endgame that re-sent queued frames (ERROR-894), a
+  double-counted skip counter, and an audio player that decoded twice and leaked a `Clip`. Fixed. Three further delivered
+  features are inert without a host caller.
+
+Review records: `logs/streams/data/INTEGRATOR-REVIEW.md`, `logs/streams/transfer/INTEGRATOR-REVIEW.md`. Decisions:
+ADR-240..242 (data, with corrections) and ADR-250..255 (transfer; 250/252/254 state what is *not* delivered).
+Backlog: `PERF-D01..D04`, `PERF-T04..T10`; `PERF-A07` is PARTLY DONE. Nothing here is verified on a device.
 
 ## 2026-10-25 (Hub web prototype) — Flash Hub "Atlas" in React + Tailwind, built from the three competition entries (uncommitted, not in Gradle)
 

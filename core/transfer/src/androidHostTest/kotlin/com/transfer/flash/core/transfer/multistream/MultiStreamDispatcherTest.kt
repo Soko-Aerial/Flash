@@ -215,13 +215,14 @@ class MultiStreamDispatcherTest {
             channelsFactory(id, receiver) { dispatcher }
         }
 
-        fun build(): MultiStreamDispatcher = MultiStreamDispatcher(
+        fun build(doneIndexes: List<Int> = emptyList()): MultiStreamDispatcher = MultiStreamDispatcher(
             chunker = Chunker(),
             meta = meta,
             source = ChunkSource { Buffer().write(payload) },
             factory = StreamChannelFactory { id, _ -> channels.firstOrNull { it.id == id } },
             streamCount = streamCount,
             requestedChunkSize = chunkSize,
+            doneIndexes = doneIndexes,
             workerDispatcher = testDispatcher,
         ).also { dispatcher = it }
 
@@ -512,6 +513,43 @@ class MultiStreamDispatcherTest {
         rxDipatcher.close()
         rxExecutor.shutdownNow()
         Unit
+    }
+
+    @Test(timeout = 60_000)
+    fun `resume past a done prefix keeps each chunk's own payload`() = runBlocking {
+        // Regression (O23-02): the dispatcher opened the non-seekable source at byte 0 but labelled
+        // the first frame with the resumed index, so every chunk carried the previous chunk's bytes
+        // and a resumed transfer could only finish with a digest mismatch. The payload is
+        // position-dependent and the assembler is pre-seeded with the done chunks, so the shift
+        // shows up as a wrong whole-file hash instead of a missing write.
+        val h = Harness()
+        val skipped = listOf(0, 1, 2)
+        for (index in skipped) {
+            h.assembler.parts[index] = payload.copyOfRange(index * chunkSize, (index + 1) * chunkSize)
+        }
+
+        val result = h.build(doneIndexes = skipped).send()
+
+        val completed = result as? MultiStreamResult.Completed
+            ?: throw AssertionError(
+                "expected Completed got $result",
+                (result as? MultiStreamResult.Failed)?.let { AssertionError(it.reason) },
+            )
+        // 0..2 stay home. The rest goes exactly once; a second round is legitimate - the receiver
+        // only ACKs every DEFAULT_ACK_EVERY chunks (32), so a 16-chunk resume is finished by the
+        // endgame's duplicate-triggered ACKs. A third round would mean the endgame re-sent before
+        // its own queued output had reached the wire.
+        val pending = 19 - skipped.size
+        assertTrue(
+            "chunksSent=${completed.chunksSent} (pending=$pending) must stay within one duplicate round",
+            completed.chunksSent in pending..(2 * pending),
+        )
+        assertEquals(totalBytes, h.dispatcher.progress.value.bytesDone)
+        assertTrue(
+            "bytesSent=${completed.bytesSent} must match the frames actually sent",
+            completed.bytesSent in (totalBytes - skipped.size * chunkSize.toLong())..(2 * (totalBytes - skipped.size * chunkSize.toLong())),
+        )
+        assertTrue("assembled file differs from the payload", h.assembler.matches(payload))
     }
 
     // ---- cooperative pause (ADR-018) -----------------------------------------------------

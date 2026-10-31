@@ -7118,3 +7118,223 @@ Replacing its `delay(20)`/`delay(100)` synchronisation with real waits is what l
 The named trigger fires (search latency above ~300 ms on a real 100k-message device; a wire/bandwidth complaint; desktop size as
 a complaint; a Play policy warning), or the owner reverses one of the five "keep/defers".
 
+
+## ADR-240 - Room step 22: the five secondary indexes and the desktop SQLite opener (2026-10-31)
+
+Folded from Stream D's fragment (`logs/streams/data/decisions-additions.md`), corrected by the review
+(`logs/streams/data/INTEGRATOR-REVIEW.md`).
+
+### Decision
+1. Room schema step 21 -> 22 adding `outbox(nextAttemptAt)`, `hub_file(createdAtMs)`,
+   `conversations(pinned, sortOrder)`, `transfers(updatedAtMs)` and `swarm_content(createdAtMs)`, because each one
+   backs an `ORDER BY` that SQLite had been serving with a full scan plus a temp B-tree. `O06-05`.
+2. The desktop opener (`JvmFlashDatabaseOpener`) leaves rollback journal + `synchronous=FULL`: WAL,
+   `synchronous=NORMAL`, `busy_timeout=5000`, `cache_size=-4096`, `journal_size_limit=4 MiB`, plus the `MemoryGovernor`
+   trim listener that executes `PRAGMA shrink_memory`. `O02-06`/`O06-04`/`O06-06`.
+3. `PRAGMA auto_vacuum=INCREMENTAL` on a **fresh** database, applied by a one-shot `VACUUM` in the adapter that follows
+   creation; the trim hook runs `PRAGMA incremental_vacuum`. `O23-05` (see the review 2.3: a Room KMP callback has no
+   `onConfigure`, and a `VACUUM` cannot run inside `onCreate`'s transaction, so the pragma alone did nothing).
+4. `observeUnreadCounts` rewritten from a correlated subquery to a `LEFT JOIN` on the cursor row. `O06-01`.
+5. `GroupMemberDao.allActiveMembers()` batched, so the chat-list combine stops issuing one member query per group. `O04-02`.
+
+### Context
+EXP-085 (baseline) and EXP-086 (after) on 100 000 messages. The measured effect of item 4 is 1 704 ms -> 1 018 ms
+(1.7x) in that harness; the audit's "697 ms -> 0.41 ms" is a different scale and must not be quoted as achieved.
+Items 1, 2, 3, 5 were confirmed by `EXPLAIN QUERY PLAN` going from `SCAN ... USE TEMP B-TREE FOR ORDER BY` to index
+scans, not by a wall-clock before/after.
+
+### Consequences
+- Every existing install pays one migration; both migration harnesses validate the step against the exported `22.json`.
+- `auto_vacuum` only converts fresh files, and the converting `VACUUM` runs once right after creation; an existing file
+  stays NONE until some later VACUUM, and its trim hook only reclaims once it is INCREMENTAL. Accepted: an upgrade would
+  rewrite the whole file, which is too slow at start.
+- The index on a write-heavy table (`outbox`) costs one b-tree insert per write; measured worth it, revisit if outbox
+  writes ever show up in a slow-statement log (statement >= 100 ms).
+
+### Revisit when
+A `slow statement` line names one of these tables, or the `O06-05` index set turns out to overlap an existing index on
+the same columns.
+
+
+## ADR-241 - Throttled reactive feeds, monotonic state versions and batched lookups (2026-10-31)
+
+Folded from Stream D, corrected by the review.
+
+### Decision
+1. `throttleLatest(100)` on the receipt and reaction flows of an open conversation; `distinctUntilChanged().conflate()`
+   on the chat-list feeds. `O04-03`, `O06-02`, `O04-04`.
+2. A monotonic `stateVersion` on `FlashConversationUiState` with an `equals` that trusts it, and a **constant**
+   `hashCode` (the review's fix: `equals` mixes version and structure, so no single field is a correct hash). `O14-05`.
+3. `_conversationState` is cleared to `EMPTY_CONVERSATION` on close, and cleared again after the cancelled collector has
+   joined unless another chat was opened meanwhile (a last in-flight emission used to re-publish the thread). `O02-02`.
+4. ONE transaction for chunk completion + byte counter (`recordProgress`), reached through a `TransferStore` default
+   method that Room overrides. `O06-07`/`O07-03` (the DAO existed on the branch without a caller).
+5. `ConversationDao.getByIds` for search, and a `UNION` rewrite of `searchMembers` so the prefix branch is an index
+   seek instead of being defeated by the leading wildcard of the contains branch. `O04-04`, `O06-09`.
+
+### Context
+Inbound receipt bursts re-derived the whole thread map, and both search paths scanned `org_directory_member`.
+
+### Consequences
+- Throttling costs up to 100 ms of visual latency on a reaction or a receipt tick and never loses the final value.
+- A constant `hashCode` is a small cost wherever a state is compared structurally; these states are not map keys.
+- The `UNION` cannot be worse than the `OR`: the contains branch still scans.
+
+### Revisit when
+A reaction or receipt needs to feel instant (drop to 50 ms), or D's summary projections give a state a cheap stable key.
+
+
+## ADR-242 - Bounded history with target preservation, and summary projections (2026-10-31)
+
+Folded from Stream D, corrected by the review.
+
+### Decision
+1. The conversation observation is bounded (`INITIAL_PAGE_SIZE = 100`) and `loadMoreHistory` grows the window.
+2. A `FlashBackStackState.targetMessageId` deep link resolves how many messages are newer than the target
+   (`countNewerThan`) and opens at `maxOf(100, count + 20)`. A stale target degrades to the newest page.
+3. `SwarmContentSummary` and `OrgMemberSummary` exist so a listing can skip the `manifest` (up to 131 KB) and
+   `statementBytes` BLOBs.
+
+### Context
+ADR-232 approved paging with the target requirement; an unbounded `SELECT *` over a long thread kept the whole history in
+memory.
+
+### Consequences
+- **The paging window re-subscribes and re-reads every already loaded row** (`LIMIT n` over newest-first, no keyset).
+  O(k^2) rows over one session, simple, and `PERF-D01` is the check that the UI does not jump.
+- **The summary projections have no caller yet** (review 2.6): the one candidate needs `manifest`, and the two directory
+  callers need `statementBytes`. `PERF-D03` decides between wiring and deleting; until then they deliver nothing.
+
+### Revisit when
+PERF-D01 shows a jump or an unacceptable re-read, or a listing feature needs the projections.
+
+
+## ADR-250 - A single pass for the whole-file hash: **prepared, not delivered** (2026-10-31)
+
+Folded from Stream T (`logs/streams/transfer/decisions-additions.md`), corrected by the review 3.1.
+
+### Decision (as written by the stream)
+Hash the whole file incrementally while slicing chunks instead of running `chunker.hashOnly` first.
+
+### What is actually true
+`MultiStreamDispatcher.send()` still starts with `resolvedDigest = fileSha256Hex ?: chunker.hashOnly(source)` and no
+caller passes a digest, so an outgoing file is still read end to end before the first chunk is re-read and sent. The
+change inside the stream is real but partial: `ChunkStream` no longer re-checks the prefix digest on a resume, and
+`hashOnly` uses a 1 MB buffer.
+
+### Why it cannot be finished without a wire decision
+`FILE_START` carries the whole-file digest and is announced on every channel before any chunk, so the digest has to
+exist up front. A true single pass needs either a new frame carrying the digest after the last chunk (and receivers
+that accept it late) or buffering the file. **Gated in the plan section 8.** `PERF-T04`.
+
+### Consequences
+- REJ-02 is untouched: whole-file verification still happens on both ends.
+- The 5.8 GB -> 1.9 GB figure belongs to ADR-250, not to today's `dev`.
+
+### Revisit when
+N or the owner takes the wire decision, or a device measurement shows the pre-pass is the dominant send delay.
+
+
+## ADR-251 - Hash and write outside the pipeline lock (2026-10-31)
+
+Folded from Stream T.
+
+### Decision
+`ReceivePipeline.onFrame` parses and hashes outside `PlatformLock` and takes the lock only for session lookup, the
+duplicate check, the bit-vector update and the counter update.
+
+### Context
+One monitor serialised every receiver thread's hashing and disk write.
+
+### Consequences
+- The duplicate check is take-before-write, so two streams can write the same index concurrently; the sink's own
+  positional write is internally locked, so a duplicate writes identical bytes to the same offset.
+- The late-duplicate re-check inside the lock returns no event, so a chunk is ACKed exactly once.
+- Chunk payloads are pooled buffers that `onFrame` releases on every path; a caller holding `frame.data` after the
+  call gets a stale array.
+
+### Revisit when
+A sink implementation without its own internal lock is added (then the duplicate window becomes a correctness issue,
+not a benign one).
+
+
+## ADR-252 - `SeekableChunkSource` for resume: **introduced, inert without a host** (2026-10-31)
+
+Folded from Stream T, corrected by the review 3.2.
+
+### Decision
+`SeekableChunkSource.openAt(offset)` plus `startIndex` handling in `ChunkStream`/`SendPipeline`/`MultiStreamDispatcher`,
+so a resume can open at the first missing chunk instead of reading the prefix.
+
+### What is actually true
+No production source implements it: `executeSend` passes `ChunkSource { fileSourceOpener.open(uri) }`, a plain lambda, so
+`source is SeekableChunkSource` is always false in the app (the only implementation is a test class). Resume now
+**skips without hashing** the prefix instead of reading and hashing it, but the I/O is unchanged.
+
+The review also found and fixed the bug this introduced: the dispatcher set `startIndex`/`pos` to the resumed index for
+every source, so a non-seekable source opened at byte 0 while `ChunkStream` was told a later index - every frame carried
+the previous chunk's bytes, and with the digest check skipped on resume the corruption only surfaced as a receiver
+MISMATCH (ERROR-893). The rule now lives in `Chunker.openChunkStream`: seek when the source can, otherwise open at 0 and
+`skip` the prefix, while the dispatcher's label and position stay at the pending index. `PERF-T05`.
+
+### Consequences
+- The skip is back, so resume is correct and unhashed for every source.
+- `PERF-T01`/`PERF-T02` (2 GB send, resume) must assert payloads, not just counters - the stream's resume test only
+  checked indexes and byte counts, which is why the bug passed it.
+
+### Revisit when
+`PERF-T05` adds an `openAt` over the filesystem path.
+
+
+## ADR-253 - Endgame retransmission instead of a 15 s drain (2026-10-31)
+
+Folded from Stream T.
+
+### Decision
+Before the feeds close, the materializer waits (bounded) for every chunk to have reached a wire once, lets the ACK batching
+surface (200 ms), then resends what is still missing, twice at most. `ACK_DRAIN_GRACE_MS` drops 15 s -> 3 s. `O07-06`.
+The 200 ms is measured *after* a bounded settle (2 s) in which every chunk must reach a wire once, because the first
+version counted queued frames as missing (ERROR-894).
+
+### Context
+One lost chunk cost 15 s and a full session teardown.
+
+### Consequences
+- The wait is far shorter than the historical failure, and a lost chunk is recovered without a reconnect.
+- The first version re-sent on a bare 200 ms look at the confirmed vector, which counts merely *queued* frames as missing:
+  a resumed or slow send therefore put its whole queued tail on the wire two or three times (ERROR-894). The settle wait
+  is what makes the retransmission mean "lost", not "not yet sent".
+- The receiver ACKs in batches of 32 (`DEFAULT_ACK_EVERY`), so the last few chunks of a send are normally finished by
+  their duplicate-triggered ACKs. That is by design even when nothing was lost.
+- Not measured on a real slow link: `PERF-T09`, and the duplicate-round bound of a resume is `PERF-T10`.
+
+### Revisit when
+PERF-T09 shows a session ending while chunks are still in flight (raise back toward 5-8 s, do not return to 15 s).
+
+
+## ADR-254 - `.part` staging: **prepared, not delivered** (2026-10-31)
+
+Folded from Stream T, corrected by the review 3.3.
+
+### Decision
+`ReceivePipeline` renames `localPath` to the final name with `FileSystem.SYSTEM.atomicMove` once the file is verified, but
+only when the path ends in `.part`.
+
+### What is actually true
+Nothing in the 1:1 receive path names the destination `.part`; the host passes the final display name. The `.part` users
+in the tree belong to swarm piece storage and the hub file store. So the rename block is dead code today: a cancelled
+receive still leaves its half file under the final name. `PERF-T06`.
+
+### Revisit when
+PERF-T06 gives the host a staging name (or deletes the block).
+
+
+## ADR-255 - `O07-10` (drop TLS on the LAN) stays blocked (2026-10-31)
+
+### Decision
+Do not implement `O07-10`. Recorded as BLOCKED by REJ-01 and AGENTS section 19: LAN peers keep TLS with pinned TOFU
+identities, so an eavesdropper on shared Wi-Fi cannot read or forge a transfer.
+
+### Revisit when
+A measured, credible CPU saving appears that cannot be had any other way.
+

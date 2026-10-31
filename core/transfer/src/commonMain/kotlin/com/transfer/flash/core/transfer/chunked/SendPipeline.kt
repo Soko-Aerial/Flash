@@ -134,17 +134,11 @@ internal class SendPipeline(
         // O23-02: Fast seek directly past any contiguous done prefix when source is SeekableChunkSource
         val firstMissing = (0 until plan.totalChunks).firstOrNull { it !in resumeSet } ?: plan.totalChunks
         val startIndex = if (firstMissing > 0 && source is SeekableChunkSource) firstMissing else 0
+        // Counted here (not in the loop below) because a seekable source opens past the prefix, so
+        // the loop starts at `firstMissing` and never visits those indexes.
         if (startIndex > 0) {
             chunksSkipped = startIndex.toLong()
-            for (i in 0 until startIndex) {
-                val len = if (i == plan.totalChunks - 1) {
-                    val rem = plan.totalBytes % plan.chunkSize
-                    if (rem == 0L) plan.chunkSize.toLong() else rem
-                } else {
-                    plan.chunkSize.toLong()
-                }
-                bytesSkipped += len
-            }
+            bytesSkipped = minOf(plan.totalBytes, startIndex.toLong() * plan.chunkSize)
         }
 
         val stream = chunker.openChunkStream(
@@ -155,7 +149,7 @@ internal class SendPipeline(
             startIndex = startIndex,
         )
         try {
-            var index = startIndex
+            var index = if (startIndex > 0) firstMissing else 0
             while (index < plan.totalChunks) {
                 if (index in resumeSet) {
                     chunksSkipped++
