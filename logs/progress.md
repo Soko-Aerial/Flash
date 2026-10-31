@@ -15,6 +15,8 @@ yes). The ABI splits were reverted when Stream A was reviewed, because `tools/bu
   would have been signed and shipped). New `-KeepApkOutput` switch to exercise that check.
 - `docs/release-build.md` (output table, signing section, help block) and `REL-01b`; ADR-243; EXP-093; `PERF-A01` is
   runnable again; the build stream's review record carries the follow-up.
+- Debug builds split as well (`app-universal-debug.apk`, `app-<abi>-debug.apk`), so the two steps that ran
+  `adb install -r app-debug.apk` were updated.
 
 ### Why
 52 MB for a phone that can only use one ABI is the double download; the arm64 build is 16.79 MiB. The scripts' old
@@ -26,6 +28,8 @@ yes). The ABI splits were reverted when Stream A was reviewed, because `tools/bu
 - The stale guard was proven by a second run with `-KeepApkOutput`: `BUILD FAILED: app-universal-release-unsigned.apk is
   older than this build, so a stale APK would be shipped`.
 - Sizes: arm64 17,600,991 B / armv7 11,697,699 B / x86_64 19,075,843 B / universal 54,679,288 B (EXP-093).
+- `:app:compileDebugKotlin :app:assembleDebug` green (143 s) and the debug variant splits too - four debug APKs, no stale
+  `app-debug.apk` left.
 - All four carry `versionCode` 4 - AGP does not offset split codes; that is what a split install needs, so the script prints
   it instead of failing on it.
 - Not device-verified (`PERF-A01`, `REL-01b`); how an existing 2.1.0 install takes the build - and whether a split install
