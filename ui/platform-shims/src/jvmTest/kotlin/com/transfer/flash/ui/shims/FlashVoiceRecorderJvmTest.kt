@@ -1,9 +1,13 @@
 package com.transfer.flash.ui.shims
 
+import java.io.File
+import java.io.FileOutputStream
+import javax.sound.sampled.AudioSystem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * The parts of the desktop voice recorder that need no microphone.
@@ -98,5 +102,34 @@ class FlashVoiceRecorderJvmTest {
 
         assertFalse(recorder.isRecording)
         assertNull(recorder.stop())
+    }
+
+    @Test
+    fun `writeWavHeader writes valid 44-byte RIFF header readable by AudioSystem`() {
+        val temp = File.createTempFile("flash-voice-test", ".wav")
+        try {
+            // Write 44 dummy bytes for header + 200 bytes of PCM audio (100 samples)
+            val pcmData = ByteArray(200) { (it % 128).toByte() }
+            FileOutputStream(temp).use { out ->
+                out.write(ByteArray(44))
+                out.write(pcmData)
+            }
+            assertEquals(244L, temp.length())
+
+            JvmVoiceRecorder.writeWavHeader(temp, 200L)
+            assertEquals(244L, temp.length())
+
+            val audioStream = AudioSystem.getAudioInputStream(temp)
+            try {
+                assertEquals(44_100f, audioStream.format.sampleRate)
+                assertEquals(16, audioStream.format.sampleSizeInBits)
+                assertEquals(1, audioStream.format.channels)
+                assertEquals(100L, audioStream.frameLength)
+            } finally {
+                audioStream.close()
+            }
+        } finally {
+            temp.delete()
+        }
     }
 }

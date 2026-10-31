@@ -2,6 +2,11 @@ package com.transfer.flash.ui.shims
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -43,8 +48,24 @@ public actual fun rememberFlashAudioPlayer(uri: String?): FlashAudioPlayer? =
  * constructs this directly to prove the degrade-to-silence path never throws.
  */
 internal class JvmAudioPlayer(private val uri: String) : FlashAudioPlayer {
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var clip: Clip? = null
     private var failed = false
+    private var pendingPlay = false
+
+    init {
+        // O05-02: Pre-prepare audio asynchronously on Dispatchers.IO to avoid blocking the UI thread on software AAC decode
+        scope.launch {
+            val c = ensurePrepared()
+            if (pendingPlay && c != null) {
+                pendingPlay = false
+                runCatching {
+                    if (c.microsecondPosition >= c.microsecondLength) c.microsecondPosition = 0L
+                    if (!c.isRunning) c.start()
+                }
+            }
+        }
+    }
 
     private fun ensurePrepared(): Clip? {
         clip?.let { return it }
