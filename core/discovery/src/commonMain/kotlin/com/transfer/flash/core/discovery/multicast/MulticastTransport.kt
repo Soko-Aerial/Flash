@@ -676,7 +676,7 @@ public class MulticastTransport(
          */
         public const val DEFAULT_PEER_LEASE_MS: Long = 60_000L
 
-        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
 
         /** Far above any real LAN of phones and PCs, far below what a spoofing loop produces. */
         public const val DEFAULT_MAX_PEERS: Int = 256
