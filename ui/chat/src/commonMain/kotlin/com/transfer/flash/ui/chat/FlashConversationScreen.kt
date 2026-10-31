@@ -83,6 +83,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.ui.tooling.preview.Preview
 
+private class FlashConversationDraftState(initialText: String = "") {
+    var text by mutableStateOf(initialText)
+}
+
 /** How often "typing…" is repeated while the composer holds text; the receiver forgets it after 6 s (TYPING_EXPIRY_MS). */
 private const val TYPING_KEEPALIVE_MS: Long = 3_000L
 
@@ -416,22 +420,22 @@ fun FlashConversationScreen(
     val uriHandler = LocalUriHandler.current
 
     var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
-    var draft by remember { mutableStateOf("") }
+    val draftState = remember { FlashConversationDraftState() }
     // #11: whether we've told the peer we're currently typing, so we only send on transitions.
     var isTypingSignalled by remember { mutableStateOf(false) }
 
     // #9: seed the composer from the persisted draft the first time it arrives (and the user has
     // not started typing). Keyed on the restored text so a late-arriving draft flow still lands.
     LaunchedEffect(state.draftText) {
-        if (draft.isEmpty() && state.draftText.isNotEmpty()) {
-            draft = state.draftText
+        if (draftState.text.isEmpty() && state.draftText.isNotEmpty()) {
+            draftState.text = state.draftText
         }
     }
     // Persist the in-progress composer text when the screen leaves (navigation / process death).
-    // rememberUpdatedState keeps the dispose closure reading the latest draft, not the initial "".
-    val latestDraft by rememberUpdatedState(draft)
-    DisposableEffect(Unit) {
-        onDispose { onPersistDraft(latestDraft) }
+    // OPT-O03-03: The dispose closure reads directly from stable draftState rather than
+    // reading draft snapshot state in the root ConversationScreen composition scope.
+    DisposableEffect(draftState) {
+        onDispose { onPersistDraft(draftState.text) }
     }
     // Back: the host closes the repository's active conversation inside onBack, after which the typing signal (and, before the
     // draft became id-aware, the draft) could no longer be sent. So stop typing first, then leave.
@@ -918,10 +922,10 @@ fun FlashConversationScreen(
             if (state.selfMembership != FlashSelfMembership.Active) {
                 FlashGroupSelfNotice(membership = state.selfMembership)
             } else FlashComposer(
-                draft = draft,
+                draft = draftState.text,
                 onDraftChanged = {
                     val capped = FlashPinnedMessageMath.capLength(it, com.transfer.flash.core.messaging.protocol.GroupPolicy.MAX_MESSAGE_TEXT_LENGTH)
-                    draft = capped
+                    draftState.text = capped
                     // #11: fire only on transitions (not every keystroke) to keep the wire quiet.
                     val typingNow = capped.isNotBlank()
                     if (typingNow != isTypingSignalled) {
@@ -946,7 +950,7 @@ fun FlashConversationScreen(
                     stagedAttachments = stagedAttachments.filter { it.id != item.id }
                 },
                 onSend = {
-                    val text = draft.trim()
+                    val text = draftState.text.trim()
                     val hasAttachments = stagedAttachments.isNotEmpty()
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
@@ -962,7 +966,7 @@ fun FlashConversationScreen(
                             }
                         }
                         stagedAttachments = emptyList()
-                        draft = ""
+                        draftState.text = ""
                         replyingToMessage = null
                         // Sending clears the composer → stop the typing indicator (#11).
                         if (isTypingSignalled) {
