@@ -80,6 +80,17 @@ class RealFlashChatRepositoryTest {
 
         override fun observeConversation(conversationId: String): Flow<List<MessageEntity>> = flow
 
+        override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> =
+            flow.map { it.take(limit) }
+
+        override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int {
+            val target = messages[targetMessageId] ?: return 0
+            return messages.values.count {
+                it.conversationId == conversationId && it.deletedAt == null &&
+                    (it.sentAt > target.sentAt || (it.sentAt == target.sentAt && it.localId >= target.localId))
+            }
+        }
+
         override suspend fun historyBefore(
             conversationId: String,
             cursorSentAt: Long,

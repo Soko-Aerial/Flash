@@ -72,6 +72,17 @@ internal class InMemoryMessageDao : MessageDao {
                 .sortedWith(compareByDescending<MessageEntity> { it.sentAt }.thenByDescending { it.localId })
         }
 
+    override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> =
+        observeConversation(conversationId).map { it.take(limit) }
+
+    override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int {
+        val target = messages[targetMessageId] ?: return 0
+        return messages.values.count {
+            it.conversationId == conversationId && it.deletedAt == null &&
+                (it.sentAt > target.sentAt || (it.sentAt == target.sentAt && it.localId >= target.localId))
+        }
+    }
+
     /** `... AND deletedAt IS NULL AND (sentAt < :c OR (sentAt = :c AND localId < :id)) ORDER BY ... DESC`. */
     override suspend fun historyBefore(
         conversationId: String,

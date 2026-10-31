@@ -192,6 +192,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
@@ -927,6 +928,7 @@ public class RealFlashChatRepository(
 
     private var activeConversationId: String? = null
     private var activeConversationJob: Job? = null
+    private var activePageLimit: MutableStateFlow<Int>? = null
 
     /** ERROR-087: what the open chat has put on screen and already acknowledged; [endOpenConversation] finishes the difference. */
     private var activeReadState: OpenConversationReadState? = null
@@ -1472,6 +1474,11 @@ public class RealFlashChatRepository(
     }
 
     override fun openConversation(conversationId: String) {
+        openConversation(conversationId, null)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun openConversation(conversationId: String, targetMessageId: String?) {
         // ERROR-087: leave the previous chat properly first, so what it displayed is acknowledged even when its
         // collector was cancelled before it got to write the cursor.
         endOpenConversation()
@@ -1552,10 +1559,23 @@ public class RealFlashChatRepository(
             } else {
                 flowOf(emptyList())
             }
+            val pageLimit = MutableStateFlow(100)
+            if (targetMessageId != null) {
+                val count = messageDao.countNewerThan(conversationId, targetMessageId)
+                if (count > 0) {
+                    pageLimit.value = maxOf(100, count + 20)
+                }
+            }
+            activePageLimit = pageLimit
+
+            val messagesFlow = pageLimit.flatMapLatest { limit ->
+                messageDao.observeConversationPaged(conversationId, limit)
+            }
+
             // Inner combine (5 flows): pure message content — rows + draft + attachment progress +
             // reactions + observable group-delivery aggregates.
             val messageContentFlow = combine(
-                messageDao.observeConversation(conversationId),
+                messagesFlow,
                 draftDao.observeDraft(conversationId),
                 pacedAttachmentProgress,
                 reactionDao.observeForConversation(conversationId).throttleLatest(100L),
@@ -1936,7 +1956,14 @@ public class RealFlashChatRepository(
     override fun closeConversation() {
         endOpenConversation()
         activeConversationId = null
+        activePageLimit = null
         _conversationState.value = EMPTY_CONVERSATION
+    }
+
+    override fun loadMoreHistory(conversationId: String, count: Int) {
+        if (activeConversationId == conversationId) {
+            activePageLimit?.let { it.value += count }
+        }
     }
 
     /**
@@ -6764,8 +6791,8 @@ public class RealFlashChatRepository(
             fun senderOf(row: MessageEntity): String =
                 row.senderName?.ifBlank { null }
                     ?: if (row.senderId == localDeviceId) "You" else "Peer"
-            val messageHits = ArrayList<FlashMessageSearchHitUi>()
-            val fileHits = ArrayList<FlashFileSearchHitUi>()
+            val messageHits = ArrayList<FlashMessageSearchHitUi>(rows.size)
+            val fileHits = ArrayList<FlashFileSearchHitUi>(rows.size)
             for (row in rows) {
                 // The SQL already excludes marker rows from the text match; this keeps one out of a text
                 // hit when it was returned because its FILE NAME matched, which is how a voice note is
