@@ -29,7 +29,8 @@ public enum class WholeFileCheck {
  */
 public object WholeFileVerifier {
 
-    private const val BUFFER_BYTES: Int = 64 * 1024
+    /** O07-01: 1 MB sequential read buffer maximizes NVMe/UFS flash throughput during verification. */
+    private const val BUFFER_BYTES: Int = 1024 * 1024
 
     public fun check(
         path: String?,
@@ -42,14 +43,15 @@ public object WholeFileVerifier {
         val actual = try {
             val accumulator = IncrementalSha256()
             val source = fileSystem.source(path.toPath()).buffer()
+            val buffer = ChunkBufferPool.acquire(BUFFER_BYTES)
             try {
-                val buffer = ByteArray(BUFFER_BYTES)
                 while (true) {
                     val read = source.read(buffer)
                     if (read < 0) break
-                    accumulator.update(buffer, 0, read)
+                    if (read > 0) accumulator.update(buffer, 0, read)
                 }
             } finally {
+                ChunkBufferPool.release(buffer)
                 source.close()
             }
             accumulator.digestHex()

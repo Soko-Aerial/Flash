@@ -1,7 +1,9 @@
-@file:OptIn(ExperimentalAtomicApi::class)
+@file:OptIn(ExperimentalAtomicApi::class, FlashInternalApi::class)
 
 package com.transfer.flash.core.transfer.multistream
 
+import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.perf.FlashThermalStatus
 import com.transfer.flash.core.common.perf.ThermalGovernor
 import com.transfer.flash.core.common.time.SystemTimeSource
@@ -201,12 +203,18 @@ internal class MultiStreamDispatcher(
         }
     }
 
+    // O28-02: Flight telemetry and stall duration instrumentation
+    private var sendStartedMs: Long = 0L
+    private var diskReadMs: Long = 0L
+    private var wireStallMs: Long = 0L
+
     /**
      * Runs the entire multi-stream transfer. Single-use. Inbound receiver feedback (`ACK_BATCH`
      * / `COMPLETE` arriving on any channel) must be pushed via [onInboundFrame].
      */
     suspend fun send(): MultiStreamResult {
         check(started.compareAndSet(false, true)) { "MultiStreamDispatcher is single-use" }
+        sendStartedMs = nowMs()
         resolvedDigest = fileSha256Hex?.let(Sha256::normalizeHex) ?: chunker.hashOnly(source)
 
         return coroutineScope {
@@ -244,7 +252,8 @@ internal class MultiStreamDispatcher(
             // Materializer: sole reader of the strictly-sequential ChunkStream; closes feeds done.
             launch(workerDispatcher) {
                 try {
-                    var pos = 0
+                    val firstIndex = pendingIndexes.firstOrNull() ?: 0
+                    var pos = firstIndex
                     var stream: ChunkStream? = null
                     try {
                         for (index in pendingIndexes) {
@@ -253,21 +262,73 @@ internal class MultiStreamDispatcher(
                             // rest of the file into queues nobody will send.
                             if (deferred.isCompleted) break
                             awaitUnpause()
-                            val s =stream ?: chunker.openChunkStream(
-                                source, meta, plan, resolvedDigest,
+                            val s = stream ?: chunker.openChunkStream(
+                                source = source,
+                                meta = meta,
+                                plan = plan,
+                                expectFileSha256Hex = resolvedDigest,
+                                startIndex = firstIndex,
                             ).also { stream = it }
-                            while (pos < index) {
-                                val skipped = s.next() // defensive skip
-                                ChunkBufferPool.release(skipped.data)
-                                pos++
+                            if (pos < index) {
+                                // O23-02: Positional fast-forward without redundant read/hash
+                                s.skipTo(index)
+                                pos = index
                             }
+                            val readT0 = nowMs()
                             val frame = s.next()
                             pos++
+                            diskReadMs += (nowMs() - readT0)
                             val serialized = ChunkFrame.serialize(frame)
                             ChunkBufferPool.release(frame.data)
+                            val sendT0 = nowMs()
                             feeds[index % effectiveStreams].send(
                                 PreparedFrame(index, serialized),
                             )
+                            val sendElapsed = nowMs() - sendT0
+                            if (sendElapsed > 50L) {
+                                wireStallMs += sendElapsed
+                            }
+                        }
+
+                        // O07-06: Endgame retransmission phase
+                        // Re-slice and re-transmit missing chunks before closing feeds to avoid 15s timeout
+                        var endgameAttempts = 0
+                        while (!deferred.isCompleted && endgameAttempts < 2) {
+                            val missing = terminalLock.withLock {
+                                if (confirmedVector.isComplete()) emptyList() else confirmedVector.missingIndexes()
+                            }
+                            if (missing.isEmpty()) break
+                            delay(200L) // allow in-flight ACKs to arrive
+                            val stillMissing = terminalLock.withLock {
+                                if (confirmedVector.isComplete()) emptyList() else confirmedVector.missingIndexes()
+                            }
+                            if (stillMissing.isEmpty()) break
+                            endgameAttempts++
+                            stream?.closeQuietly()
+                            stream = null
+                            val retryFirst = stillMissing.first()
+                            pos = retryFirst
+                            for (index in stillMissing) {
+                                if (deferred.isCompleted) break
+                                val s = stream ?: chunker.openChunkStream(
+                                    source = source,
+                                    meta = meta,
+                                    plan = plan,
+                                    expectFileSha256Hex = resolvedDigest,
+                                    startIndex = retryFirst,
+                                ).also { stream = it }
+                                if (pos < index) {
+                                    s.skipTo(index)
+                                    pos = index
+                                }
+                                val frame = s.next()
+                                pos++
+                                val serialized = ChunkFrame.serialize(frame)
+                                ChunkBufferPool.release(frame.data)
+                                feeds[index % effectiveStreams].send(
+                                    PreparedFrame(index, serialized),
+                                )
+                            }
                         }
                     } finally {
                         stream?.closeQuietly()
@@ -461,6 +522,16 @@ internal class MultiStreamDispatcher(
         verified: Boolean? = receiverVerifiedField,
     ): MultiStreamResult.Completed {
         emitCompleteFrameOnce(verified ?: true)
+        // O28-02: Structured telemetry probe
+        FlashProbe.emit(
+            "transfer.summary",
+            "id" to meta.transferId,
+            "result" to "completed",
+            "durationMs" to (if (sendStartedMs > 0L) nowMs() - sendStartedMs else 0L),
+            "chunks" to chunksSent,
+            "diskReadMs" to diskReadMs,
+            "wireStallMs" to wireStallMs,
+        )
         return MultiStreamResult.Completed(
             totalChunks = plan.totalChunks,
             chunksSent = chunksSent,
@@ -474,12 +545,23 @@ internal class MultiStreamDispatcher(
         )
     }
 
-    private fun failedLocked(reason: String): MultiStreamResult.Failed =
-        MultiStreamResult.Failed(
+    private fun failedLocked(reason: String): MultiStreamResult.Failed {
+        // O28-02: Structured telemetry probe
+        FlashProbe.emit(
+            "transfer.summary",
+            "id" to meta.transferId,
+            "result" to "failed",
+            "reason" to reason,
+            "durationMs" to (if (sendStartedMs > 0L) nowMs() - sendStartedMs else 0L),
+            "diskReadMs" to diskReadMs,
+            "wireStallMs" to wireStallMs,
+        )
+        return MultiStreamResult.Failed(
             reason = reason,
             deadChannelIds = terminalLock.withLock { deadIds.toList() },
             unconfirmedIndexes = confirmedVector.missingIndexes(),
         )
+    }
 
     private fun failWith(
         deferred: CompletableDeferred<MultiStreamResult>,
@@ -702,7 +784,8 @@ internal class MultiStreamDispatcher(
         /** Retry cadence while the bounded shared queue is full (ERROR-016). */
         const val REDISTRIBUTE_POLL_MS = 5L
 
-        const val WATCH_POLL_MS = 10L
+        /** O07-08: 10 Hz progress polling (100 ms) cuts 90% of StateFlow emissions and collection churn. */
+        const val WATCH_POLL_MS = 100L
 
         /**
          * Watcher cadence while [quietWatcherHint] holds (a voice call is ACTIVE). 4 Hz keeps
@@ -713,10 +796,9 @@ internal class MultiStreamDispatcher(
         const val DEFAULT_COMPLETE_GRACE_MS = 2_000L
 
         /**
-         * Grace after the last worker exits for outstanding ACK_BATCH/COMPLETE frames to
-         * arrive. Covers normal socket-buffer drain lag plus receiver disk-write pacing.
+         * O07-06: Bounded drain grace after endgame retransmission before timeout.
          */
-        const val ACK_DRAIN_GRACE_MS = 15_000L
+        const val ACK_DRAIN_GRACE_MS = 3_000L
     }
 }
 
