@@ -281,8 +281,22 @@ public class RealNsdManagerBridge(
     /** Last successfully enumerated value, returned when a later enumeration throws. */
     @Volatile private var lastLinkFingerprint: String = ""
 
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private val lockExpiryRunnable = Runnable {
+        runCatching {
+            multicastLock?.let { lock ->
+                if (lock.isHeld) {
+                    lock.release()
+                    Log.w(tag, "Multicast lock lease expired after bound (${NsdTransport.DEFAULT_LOCK_LEASE_MS}ms); released to save battery")
+                }
+            }
+            multicastLock = null
+        }
+    }
+
     override fun setMulticastLock(active: Boolean) {
         runCatching {
+            mainHandler.removeCallbacks(lockExpiryRunnable)
             if (active) {
                 if (multicastLock?.isHeld != true) {
                     multicastLock = wifiManager.createMulticastLock("flash-nsd-transport").apply {
@@ -290,6 +304,7 @@ public class RealNsdManagerBridge(
                         acquire()
                     }
                 }
+                mainHandler.postDelayed(lockExpiryRunnable, NsdTransport.DEFAULT_LOCK_LEASE_MS)
             } else {
                 multicastLock?.let { lock ->
                     if (lock.isHeld) lock.release()
@@ -1421,11 +1436,14 @@ public class NsdTransport(
             sleep(browseMs)
             if (!browsing || !coroutineContext.isActive) return
             bridge.stopBrowse() // end of scan burst; radio loss callbacks ignored below
+            // OPT-O10-02: Release multicast lock during ECO idle gap to allow Wi-Fi PHY DTIM power collapse
+            bridge.setMulticastLock(false)
             val idleMs = modePolicy.idleDutyCycleMs
             emitState("ECO idle for ${idleMs ?: 0}ms")
             dutyCyclesCompleted += 1
             val wokeEarly = idleWait(idleMs ?: 0L)
             if (!browsing) return
+            acquireMulticastLockIfNeeded()
             // Budget consumed AFTER the paired idle so a bounded session always
             // ends in idle, never mid-presence-gap (burst→idle invariant).
             if (dutyCyclesCompleted >= maxDutyCycles) {
@@ -1510,6 +1528,9 @@ public class NsdTransport(
      * [NsdManagerBridge.linkFingerprint]) and the heartbeat is already awake.
      */
     private suspend fun presenceTick() {
+        if (browsing && modePolicy.browseDutyCycleMs == null) {
+            acquireMulticastLockIfNeeded()
+        }
         pollLinkFingerprint()
 
         val strategy = resolutionStrategy()
@@ -1929,6 +1950,12 @@ public class NsdTransport(
          * heartbeat exists to prevent.
          */
         private const val EVICTION_GRACE_TICKS: Long = 2L
+
+        /**
+         * OPT-O10-02: Maximum duration the Wi-Fi MulticastLock may be held before automatically expiring.
+         * Prevents indefinite battery drain if browsing is abandoned without clean teardown.
+         */
+        public const val DEFAULT_LOCK_LEASE_MS: Long = 300_000L
 
         private const val EVENT_BUFFER = 64
     }
