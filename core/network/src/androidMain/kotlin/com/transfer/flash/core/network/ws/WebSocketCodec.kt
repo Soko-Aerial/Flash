@@ -108,38 +108,52 @@ public object WebSocketCodec {
         maskPayloadInPlace: Boolean = false,
     ) {
         val maskKey = if (masked) ByteArray(4).also(random::nextBytes) else null
-        val header = ByteArrayOutputStream(14)
-        header.write(0x80 or opcode)
+        val headerBuf = ByteArray(14)
+        var headerLen = 0
+        headerBuf[headerLen++] = (0x80 or opcode).toByte()
         val length = payload.size
         val maskBit = if (masked) 0x80 else 0x00
         when {
-            length < 126 -> header.write(maskBit or length)
+            length < 126 -> {
+                headerBuf[headerLen++] = (maskBit or length).toByte()
+            }
             length <= 0xFFFF -> {
-                header.write(maskBit or 126)
-                header.write((length ushr 8) and 0xFF)
-                header.write(length and 0xFF)
+                headerBuf[headerLen++] = (maskBit or 126).toByte()
+                headerBuf[headerLen++] = ((length ushr 8) and 0xFF).toByte()
+                headerBuf[headerLen++] = (length and 0xFF).toByte()
             }
             else -> {
-                header.write(maskBit or 127)
+                headerBuf[headerLen++] = (maskBit or 127).toByte()
                 for (shift in 56 downTo 0 step 8) {
-                    header.write(((length.toLong() ushr shift) and 0xFFL).toInt())
+                    headerBuf[headerLen++] = (((length.toLong() ushr shift) and 0xFFL).toInt()).toByte()
                 }
             }
         }
         if (maskKey != null) {
-            header.write(maskKey)
+            System.arraycopy(maskKey, 0, headerBuf, headerLen, 4)
+            headerLen += 4
         }
-        output.write(header.toByteArray())
+        output.write(headerBuf, 0, headerLen)
         if (maskKey != null) {
-            val wirePayload = if (maskPayloadInPlace) {
-                payload
+            if (maskPayloadInPlace) {
+                for (index in payload.indices) {
+                    payload[index] = (payload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+                }
+                output.write(payload)
             } else {
-                ByteArray(payload.size) { payload[it] }
+                val chunkSize = minOf(payload.size, 4096)
+                val chunk = ByteArray(chunkSize)
+                var offset = 0
+                while (offset < payload.size) {
+                    val count = minOf(chunk.size, payload.size - offset)
+                    for (i in 0 until count) {
+                        val g = offset + i
+                        chunk[i] = (payload[g].toInt() xor maskKey[g and 3].toInt()).toByte()
+                    }
+                    output.write(chunk, 0, count)
+                    offset += count
+                }
             }
-            for (index in wirePayload.indices) {
-                wirePayload[index] = (wirePayload[index].toInt() xor maskKey[index and 3].toInt()).toByte()
-            }
-            output.write(wirePayload)
         } else {
             output.write(payload)
         }
@@ -187,36 +201,54 @@ public object WebSocketCodec {
             while (true) {
                 val header = readFrameHeader(input, retryableIdle = atMessageStart, maxMessageBytes = maxMessageBytes)
                 atMessageStart = false
-                val payload = readFramePayload(input, header)
+                val inbound = readFramePayload(input, header)
                 when (header.opcode) {
                     OPCODE_CLOSE -> {
-                        val code = if (payload.size >= 2) {
-                            ((payload[0].toInt() and 0xFF) shl 8) or (payload[1].toInt() and 0xFF)
+                        val code = if (inbound.length >= 2) {
+                            ((inbound.buffer[0].toInt() and 0xFF) shl 8) or (inbound.buffer[1].toInt() and 0xFF)
                         } else {
                             1000
                         }
-                        val reason = if (payload.size > 2) {
-                            String(payload, 2, payload.size - 2, Charsets.UTF_8)
+                        val reason = if (inbound.length > 2) {
+                            String(inbound.buffer, 2, inbound.length - 2, Charsets.UTF_8)
                         } else {
                             ""
                         }
-                        ByteArrayPool.release(payload)
+                        if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                         return Message.Close(code, reason)
                     }
 
-                    OPCODE_PING -> return Message.Ping(payload)
-                    OPCODE_PONG -> return Message.Pong(payload)
+                    OPCODE_PING -> {
+                        val payload = if (inbound.isPooled) {
+                            val copy = inbound.buffer.copyOf(inbound.length)
+                            ByteArrayPool.release(inbound.buffer)
+                            copy
+                        } else {
+                            inbound.buffer
+                        }
+                        return Message.Ping(payload)
+                    }
+                    OPCODE_PONG -> {
+                        val payload = if (inbound.isPooled) {
+                            val copy = inbound.buffer.copyOf(inbound.length)
+                            ByteArrayPool.release(inbound.buffer)
+                            copy
+                        } else {
+                            inbound.buffer
+                        }
+                        return Message.Pong(payload)
+                    }
 
                     OPCODE_TEXT, OPCODE_BINARY, OPCODE_CONTINUATION -> {
                         if (header.opcode != OPCODE_CONTINUATION) {
                             if (messageOpcode != -1) {
                                 reset()
-                                ByteArrayPool.release(payload)
+                                if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                                 throw IOException("New WebSocket message started before previous one finished")
                             }
                             messageOpcode = header.opcode
                         } else if (messageOpcode == -1) {
-                            ByteArrayPool.release(payload)
+                            if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                             throw IOException("Continuation frame without a started message")
                         }
                         // Outbound messages are never fragmented, so nearly every message completes in
@@ -226,21 +258,28 @@ public object WebSocketCodec {
                             val opcode = messageOpcode
                             reset()
                             return if (opcode == OPCODE_TEXT) {
-                                val text = String(payload, Charsets.UTF_8)
-                                ByteArrayPool.release(payload)
+                                val text = String(inbound.buffer, 0, inbound.length, Charsets.UTF_8)
+                                if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                                 Message.Text(text)
                             } else {
+                                val payload = if (inbound.isPooled) {
+                                    val copy = inbound.buffer.copyOf(inbound.length)
+                                    ByteArrayPool.release(inbound.buffer)
+                                    copy
+                                } else {
+                                    inbound.buffer
+                                }
                                 Message.Binary(payload)
                             }
                         }
                         // Checked BEFORE the write, so a fragmented message cannot grow past the cap.
-                        if (messageBuffer.size().toLong() + payload.size > maxMessageBytes) {
+                        if (messageBuffer.size().toLong() + inbound.length > maxMessageBytes) {
                             reset()
-                            ByteArrayPool.release(payload)
+                            if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                             throw IOException("WebSocket message exceeds size guard ($maxMessageBytes bytes)")
                         }
-                        messageBuffer.write(payload)
-                        ByteArrayPool.release(payload)
+                        messageBuffer.write(inbound.buffer, 0, inbound.length)
+                        if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
                         if (header.fin) {
                             val data = messageBuffer.toByteArray()
                             val opcode = messageOpcode
@@ -339,10 +378,16 @@ public object WebSocketCodec {
         val opcode = first and 0x0F
         val masked = second and 0x80 != 0
         val length = when (val length7 = second and 0x7F) {
-            126 -> (readByte(input).toLong() shl 8) or readByte(input).toLong()
+            126 -> {
+                val b = readFully(input, 2)
+                (((b[0].toInt() and 0xFF) shl 8) or (b[1].toInt() and 0xFF)).toLong()
+            }
             127 -> {
+                val b = readFully(input, 8)
                 var value = 0L
-                repeat(8) { value = (value shl 8) or readByte(input).toLong() }
+                for (i in 0 until 8) {
+                    value = (value shl 8) or (b[i].toLong() and 0xFFL)
+                }
                 value
             }
             else -> length7.toLong()
@@ -357,33 +402,31 @@ public object WebSocketCodec {
         return FrameHeader(fin = fin, opcode = opcode, masked = masked, length = length)
     }
 
-    private fun readFramePayload(input: InputStream, header: FrameHeader): ByteArray {
+    private class InboundPayload(val buffer: ByteArray, val length: Int, val isPooled: Boolean)
+
+    private fun readFramePayload(input: InputStream, header: FrameHeader): InboundPayload {
         val length = header.length.toInt()
         val maskKey = if (header.masked) readFully(input, 4) else null
-        val payload = if (length <= ByteArrayPool.SIZE_32KB) {
-            // The buffer goes back to the pool in a `finally`: a frame cut short (EOF or timeout mid-payload, i.e. every unexpected
-            // disconnect) used to leak it, and eight such drops emptied the pool for good (2026-10-22 review F3). The copy is taken
-            // inside the block because nothing outside this file releases a received payload.
-            ByteArrayPool.use(length) { pooled ->
+        val (buffer, isPooled) = if (length <= ByteArrayPool.SIZE_32KB) {
+            val pooled = ByteArrayPool.acquire(length)
+            try {
                 readFullyInto(input, pooled, 0, length)
-                if (maskKey != null) {
-                    for (index in 0 until length) {
-                        pooled[index] = (pooled[index].toInt() xor maskKey[index and 3].toInt()).toByte()
-                    }
-                }
-                pooled.copyOf(length)
+            } catch (e: Throwable) {
+                ByteArrayPool.release(pooled)
+                throw e
             }
+            pooled to true
         } else {
-            val buffer = ByteArray(length)
-            readFullyInto(input, buffer, 0, length)
-            if (maskKey != null) {
-                for (index in 0 until length) {
-                    buffer[index] = (buffer[index].toInt() xor maskKey[index and 3].toInt()).toByte()
-                }
-            }
-            buffer
+            val unpooled = ByteArray(length)
+            readFullyInto(input, unpooled, 0, length)
+            unpooled to false
         }
-        return payload
+        if (maskKey != null) {
+            for (index in 0 until length) {
+                buffer[index] = (buffer[index].toInt() xor maskKey[index and 3].toInt()).toByte()
+            }
+        }
+        return InboundPayload(buffer, length, isPooled)
     }
 
     private fun readFully(input: InputStream, size: Int): ByteArray {
