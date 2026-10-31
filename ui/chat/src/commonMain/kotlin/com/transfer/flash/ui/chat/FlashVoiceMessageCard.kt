@@ -155,13 +155,23 @@ object FlashVoiceMath {
     const val MIN_BAR_HEIGHT = 0.12f
 }
 
-/** Bounded LRU cache of bucketed FloatArray waveforms to prevent repeated calculations during scroll (OPT-O05-07). */
+/**
+ * Bounded LRU cache of bucketed FloatArray waveforms to prevent repeated calculations during scroll
+ * (OPT-O05-07).
+ *
+ * The key holds the amplitude list itself rather than a hash of it, so the map compares lists with
+ * `equals` when two hashes collide: an unrelated voice message can never be served another message's
+ * waveform. The list is referenced, not copied, so callers must not mutate a list they hand in (the
+ * worst case is one unreachable entry, not a wrong waveform).
+ */
 internal object FlashWaveformCache {
     private const val MAX_ENTRIES = 64
-    private val cache = LinkedHashMap<Int, FloatArray>(MAX_ENTRIES, 0.75f, true)
+    private data class Key(val amplitudes: List<Int>, val barCount: Int)
+
+    private val cache = LinkedHashMap<Key, FloatArray>(MAX_ENTRIES, 0.75f, true)
 
     fun getOrBucket(amplitudes: List<Int>, barCount: Int): FloatArray {
-        val key = 31 * amplitudes.hashCode() + barCount
+        val key = Key(amplitudes, barCount)
         return synchronized(cache) {
             cache[key] ?: FlashVoiceMath.bucketAmplitudes(amplitudes, barCount).also {
                 if (cache.size >= MAX_ENTRIES) {

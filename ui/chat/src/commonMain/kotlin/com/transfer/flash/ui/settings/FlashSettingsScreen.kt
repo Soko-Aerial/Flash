@@ -967,6 +967,10 @@ fun FlashSettingsScreen(
                             onCheckedChange = { next ->
                                 if (next) showHubContentDisclosure = true else onSetHubContentViaHub(false)
                             },
+                            // Turning this on only asks for confirmation, so the row must not move until
+                            // the setting really changed: a cancelled disclosure would otherwise leave the
+                            // switch on while messages still do not go through the hub.
+                            optimistic = false,
                         )
                         if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.ENTERPRISE, "Department")) ValueRow(
                             iconSpec = FlashIcons.Device,
@@ -1446,12 +1450,23 @@ private fun SwitchRow(
     subtitle: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    /**
+     * OPT-O24-05: whether toggling this row writes the setting immediately.
+     *
+     * True (the normal case) moves the thumb on the spot and drops the local value as soon as the
+     * stored value arrives. False is for a toggle whose change is not the write itself — a row that
+     * only opens a confirmation dialog — because the switch must never show a state that no write is
+     * behind: a cancelled or never-issued write would otherwise leave it on the new position for good
+     * while the stored setting stayed where it was.
+     */
+    optimistic: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val haptics = rememberFlashHaptics()
     val interactionSource = remember { MutableInteractionSource() }
-    // OPT-O24-05: Maintain optimistic local state so switch thumb moves instantly (<16ms) without waiting for DataStore disk write
+    // The latch only exists for a row that writes; it re-syncs whenever the stored value arrives.
     var optimisticChecked by remember(checked) { mutableStateOf(checked) }
+    val shownChecked = if (optimistic) optimisticChecked else checked
     Row(
         Modifier
             .fillMaxWidth()
@@ -1462,12 +1477,12 @@ private fun SwitchRow(
             // "double-tap to toggle" affordance; a clickable + contentDescription pair
             // announced the state only at first read and never on change.
             .toggleable(
-                value = optimisticChecked,
+                value = shownChecked,
                 interactionSource = interactionSource,
                 indication = null,
                 role = Role.Switch,
                 onValueChange = { next ->
-                    optimisticChecked = next
+                    if (optimistic) optimisticChecked = next
                     haptics(FlashHaptic.Tick)
                     onCheckedChange(next)
                 },
@@ -1475,7 +1490,7 @@ private fun SwitchRow(
             .padding(horizontal = FlashSpacing.space12, vertical = FlashSpacing.space12)
             .semantics(mergeDescendants = true) {
                 contentDescription = title
-                stateDescription = if (optimisticChecked) "on" else "off"
+                stateDescription = if (shownChecked) "on" else "off"
             },
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1488,7 +1503,7 @@ private fun SwitchRow(
             )
         }
         Spacer(Modifier.width(FlashSpacing.space8))
-        FlashSwitch(checked = optimisticChecked)
+        FlashSwitch(checked = shownChecked)
     }
 }
 

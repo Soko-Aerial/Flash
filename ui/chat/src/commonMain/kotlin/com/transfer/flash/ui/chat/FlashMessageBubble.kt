@@ -45,9 +45,14 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+// Compile repair, not part of OPT-O03-05's intent: the per-card lambda hoist rewrote the file and
+// voice attachment types from their fully qualified names to their simple names without adding
+// either import. Both names are needed by AttachmentCardItem and VoiceCardItem below.
+import com.transfer.flash.core.messaging.model.FlashFileAttachmentUi
 import com.transfer.flash.core.messaging.model.FlashFileTransferStatus
 import com.transfer.flash.core.messaging.model.FlashMessageGroupPosition
 import com.transfer.flash.core.messaging.model.FlashMessageUi
+import com.transfer.flash.core.messaging.model.FlashVoiceAttachmentUi
 import com.transfer.flash.core.messaging.util.computeMessageGroupPositions
 import com.transfer.flash.core.messaging.util.sampleFlashConversationState
 import com.transfer.flash.ui.avatar.FlashAvatar
@@ -909,8 +914,13 @@ private fun AttachmentCardItem(
     onOpenActions: () -> Unit,
     haptics: (FlashHaptic) -> Unit,
 ) {
-    val onCardClick = remember(file.id, onFileClick) { { onFileClick(file) } }
-    val onActionClick = remember(file.id, file.transferStatus, onPauseTransfer, onResumeTransfer, onFileClick) {
+    // Each closure forwards `file` itself, so the whole attachment is the key: the same transfer id is
+    // re-emitted with a new transferStatus / localUri as it progresses, and a closure cached against
+    // `file.id` alone kept dispatching the action with the attachment as it was when the card was first
+    // composed (onActionClick branches on transferStatus). The data-class key still keeps the closure
+    // across recompositions that do not change this attachment.
+    val onCardClick = remember(file, onFileClick) { { onFileClick(file) } }
+    val onActionClick = remember(file, onPauseTransfer, onResumeTransfer, onFileClick) {
         {
             if (file.transferStatus == FlashFileTransferStatus.Transferring) {
                 onPauseTransfer(file)
@@ -927,11 +937,11 @@ private fun AttachmentCardItem(
             onOpenActions()
         }
     }
-    val onAccept = remember(file.id, onAcceptOffer) { { onAcceptOffer(file) } }
-    val onDecline = remember(file.id, onDeclineOffer) { { onDeclineOffer(file) } }
-    val onPause = remember(file.id, onPauseTransfer) { { onPauseTransfer(file) } }
-    val onResume = remember(file.id, onResumeTransfer) { { onResumeTransfer(file) } }
-    val onCancel = remember(file.id, onCancelTransfer) { { onCancelTransfer(file) } }
+    val onAccept = remember(file, onAcceptOffer) { { onAcceptOffer(file) } }
+    val onDecline = remember(file, onDeclineOffer) { { onDeclineOffer(file) } }
+    val onPause = remember(file, onPauseTransfer) { { onPauseTransfer(file) } }
+    val onResume = remember(file, onResumeTransfer) { { onResumeTransfer(file) } }
+    val onCancel = remember(file, onCancelTransfer) { { onCancelTransfer(file) } }
 
     FlashFileMessageCard(
         attachment = file,
@@ -952,13 +962,19 @@ private fun VoiceCardItem(
     voice: FlashVoiceAttachmentUi,
     isParentOutgoing: Boolean,
     inSelectionMode: Boolean,
-    onSelectToggle: (String) -> Unit,
+    // Compile repair, not part of OPT-O03-05's intent: every other bubble-level callable in this file
+    // (FlashMessageBubble, FlashMessageBubbleUltraLow, lines 142/299/501) and FlashVoiceMessageCard
+    // itself declare this as `() -> Unit` — the message id is already bound by the caller — so the
+    // parameter had the wrong type and neither call site could compile.
+    onSelectToggle: () -> Unit,
     onAcceptOffer: (FlashFileAttachmentUi) -> Unit,
     onResumeTransfer: (FlashFileAttachmentUi) -> Unit,
     onOpenActions: () -> Unit,
     haptics: (FlashHaptic) -> Unit,
 ) {
-    val onActionClick = remember(voice.id, onAcceptOffer, onResumeTransfer) {
+    // Keyed on the whole attachment for the same reason as AttachmentCardItem: onVoiceTransferAction
+    // branches on voice.transferStatus, which changes under the same voice id as the message downloads.
+    val onActionClick = remember(voice, onAcceptOffer, onResumeTransfer) {
         { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) }
     }
     val onLongPress = remember(onOpenActions, haptics) {

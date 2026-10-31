@@ -111,7 +111,9 @@ fun FlashComposer(
     val typography = FlashTheme.typography
     val motion = FlashTheme.motion
     val density = androidx.compose.ui.platform.LocalDensity.current
-    val canSend = (draft.isNotBlank() || stagedAttachments.isNotEmpty()) && enabled
+    // OPT-O24-02: an attachment already marked isSending is waiting on its own send, so it must not
+    // make the composer sendable again — a second tap would hand it to onSendFile a second time.
+    val canSend = (draft.isNotBlank() || stagedAttachments.any { !it.isSending }) && enabled
 
     // --- UI-020 voice recording state (local to the composer) ---
     var recordingPhase by remember { mutableStateOf(FlashRecordingPhase.Idle) }
