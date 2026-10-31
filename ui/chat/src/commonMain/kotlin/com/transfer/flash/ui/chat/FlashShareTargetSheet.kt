@@ -68,6 +68,7 @@ data class FlashShareItemUi(
     val sizeBytes: Long = 0L,
     val mimeType: String = "*/*",
     val id: String = "${uri}_${kotlin.random.Random.nextLong().toString(16)}",
+    val isSending: Boolean = false,
 )
 
 /**
