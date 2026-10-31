@@ -27,7 +27,13 @@ public interface OrgDirectoryDao {
     @Query("SELECT * FROM org_directory_member WHERE subjectPublicKeyFingerprint = :fingerprint")
     public suspend fun findMemberByFingerprint(fingerprint: String): OrgDirectoryMemberEntity?
 
-    @Query("SELECT * FROM org_directory_member WHERE displayNameFolded LIKE :prefix || '%' OR displayNameFolded LIKE '% ' || :prefix || '%' ORDER BY displayName ASC LIMIT :limit")
+    @Query(
+        "SELECT * FROM (" +
+            "SELECT * FROM org_directory_member WHERE displayNameFolded LIKE :prefix || '%' " +
+            "UNION " +
+            "SELECT * FROM org_directory_member WHERE displayNameFolded LIKE '% ' || :prefix || '%' " +
+            ") ORDER BY displayName ASC LIMIT :limit",
+    )
     public suspend fun searchMembers(prefix: String, limit: Int): List<OrgDirectoryMemberEntity>
 
     @Query("SELECT * FROM org_directory_member WHERE departmentId = :departmentId ORDER BY displayName ASC")

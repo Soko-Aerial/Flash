@@ -170,6 +170,7 @@ class RealFlashChatRepositoryColleagueTest {
 
         override fun observeAll(): Flow<List<ConversationEntity>> = flow
         override suspend fun get(id: String): ConversationEntity? = conversations[id]
+        override suspend fun getByIds(ids: List<String>): List<ConversationEntity> = ids.mapNotNull { conversations[it] }
         override suspend fun setArchived(id: String, archived: Boolean) {}
         override suspend fun setPinned(id: String, pinned: Boolean) {}
         override suspend fun setMuted(id: String, muted: Boolean) {}

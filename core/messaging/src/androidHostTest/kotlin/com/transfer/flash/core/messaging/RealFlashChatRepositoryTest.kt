@@ -270,6 +270,9 @@ class RealFlashChatRepositoryTest {
 
         override suspend fun get(id: String): ConversationEntity? = conversations[id]
 
+        override suspend fun getByIds(ids: List<String>): List<ConversationEntity> =
+            ids.mapNotNull { conversations[it] }
+
         override suspend fun setArchived(id: String, archived: Boolean) {
             conversations[id]?.let { conversations[id] = it.copy(archived = archived); flow.value = conversations.values.toList() }
         }
@@ -1941,6 +1944,7 @@ class RealFlashChatRepositoryTest {
                 override suspend fun upsert(conversation: ConversationEntity) = delegate.upsert(conversation)
                 override fun observeAll(): Flow<List<ConversationEntity>> = delegate.observeAll()
                 override suspend fun get(id: String): ConversationEntity? = delegate.get(id)
+                override suspend fun getByIds(ids: List<String>): List<ConversationEntity> = delegate.getByIds(ids)
                 override suspend fun setArchived(id: String, archived: Boolean) = delegate.setArchived(id, archived)
                 override suspend fun setPinned(id: String, pinned: Boolean) = delegate.setPinned(id, pinned)
                 override suspend fun setMuted(id: String, muted: Boolean) = delegate.setMuted(id, muted)
