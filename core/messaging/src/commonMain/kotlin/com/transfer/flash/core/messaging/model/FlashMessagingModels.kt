@@ -621,13 +621,14 @@ public data class FlashConversationUiState(
             hubNotice == other.hubNotice
     }
 
-    override fun hashCode(): Int {
-        if (stateVersion != 0L) return stateVersion.hashCode()
-        var result = header.hashCode()
-        result = 31 * result + messages.hashCode()
-        result = 31 * result + radioPolicy.hashCode()
-        return result
-    }
+    /**
+     * Constant on purpose. [equals] trusts [stateVersion] only when both sides carry one and
+     * falls back to structural comparison otherwise, so a versioned state and an unversioned
+     * (`0`) one can be equal while their structures differ — no single cheap field is a correct
+     * hash for both cases. These states are compared by `StateFlow`/`distinctUntilChanged`, never
+     * used as map keys, so a constant is the contract-safe choice.
+     */
+    override fun hashCode(): Int = 0
 }
 
 /** What the hub notice of a conversation is about (ADR-126). */

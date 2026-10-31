@@ -28,6 +28,18 @@ public interface TransferStore {
     /** Mark the given chunk [indexes] done for [transferId] (insert-or-ignore semantics). */
     public suspend fun markChunksDone(transferId: String, indexes: List<Int>)
 
+    /**
+     * Records confirmed chunks together with the byte counter for [transferId].
+     *
+     * The default issues the two writes in sequence; a database adapter should override it with one
+     * transaction (OPT-O06-07), because the send hot path did one commit per write and every commit
+     * appends a WAL frame.
+     */
+    public suspend fun recordProgress(transferId: String, indexes: List<Int>, bytesDone: Long) {
+        if (indexes.isNotEmpty()) markChunksDone(transferId, indexes)
+        setBytesDone(transferId, bytesDone)
+    }
+
     /** All confirmed (done) chunk rows across every transfer, for warming the receiver done-set (#20). */
     public suspend fun allDoneChunks(): List<ChunkRef>
 

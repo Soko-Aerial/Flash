@@ -85,12 +85,16 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
         // no fallback exists. See FlashSchemaSteps for how to add one.
         .addMigrations(*FlashJvmMigrations.ALL)
         .addCallback(object : RoomDatabase.Callback() {
-            override fun onCreate(connection: SQLiteConnection) {
-                super.onCreate(connection)
+            override fun onConfigure(connection: SQLiteConnection) {
+                super.onConfigure(connection)
+                // O23-05: auto_vacuum only takes effect while the file still has no pages, so it
+                // must run before the tables exist on a fresh database (an onCreate hook is too
+                // late). An existing file keeps NONE until the next VACUUM, hence the
+                // `incremental_vacuum` in the trim hook below.
                 try {
                     connection.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
                 } catch (e: Throwable) {
-                    FlashLog.w("DATABASE", "Failed to set auto_vacuum on create on Desktop: ${e.message}")
+                    FlashLog.w("DATABASE", "Failed to set auto_vacuum on configure on Desktop: ${e.message}")
                 }
             }
 
@@ -116,7 +120,10 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
                     shrink = {
                         try {
                             connection.execSQL("PRAGMA shrink_memory;")
-                            FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory on Desktop")
+                            // Hands at most `cache_size` free pages back to the filesystem; without
+                            // it the auto_vacuum setting above never reclaims anything.
+                            connection.execSQL("PRAGMA incremental_vacuum;")
+                            FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory + incremental_vacuum on Desktop")
                         } catch (e: Throwable) {
                             FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
                         }

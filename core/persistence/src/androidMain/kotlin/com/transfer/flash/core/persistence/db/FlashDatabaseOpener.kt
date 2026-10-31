@@ -63,29 +63,34 @@ public object FlashDatabaseOpener {
             .openHelperFactory(openHelperFactory)
             .addMigrations(*migrations)
             .setQueryCallback(
-                RoomDatabase.QueryCallback { sqlQuery, _ ->
-                    // Telemetry / query callback for debug diagnostics (OPT-O28-05)
-                },
+                RoomDatabase.QueryCallback { sqlQuery, _ -> SlowQueryTelemetry.onQuery(sqlQuery) },
                 queryExecutor,
             )
             .addCallback(object : RoomDatabase.Callback() {
-                override fun onCreate(db: SupportSQLiteDatabase) {
-                    super.onCreate(db)
+                override fun onConfigure(db: SupportSQLiteDatabase) {
+                    super.onConfigure(db)
+                    // O23-05: auto_vacuum takes effect only while the file has no pages yet, so it
+                    // has to run BEFORE Room creates the tables on a fresh database - an onCreate
+                    // hook is already too late and would silently do nothing. On an existing file
+                    // the header stays NONE until the next VACUUM, which is why the trim hook below
+                    // runs `incremental_vacuum` rather than relying on the pragma alone.
                     try {
                         db.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
                     } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to set auto_vacuum on create: ${e.message}")
+                        FlashLog.w("DATABASE", "Failed to set auto_vacuum on configure: ${e.message}")
                     }
                 }
 
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
                     applyPragmas(db, cacheSizeKb, mode.key)
-
                     trim.attach(isOpen = { db.isOpen }, shrink = {
                         runCatching { db.query("PRAGMA shrink_memory;").use { it.moveToFirst() } }
                             .recoverCatching { db.execSQL("PRAGMA shrink_memory;") }
-                        FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory")
+                        // Returns at most `cache_size` free pages to the filesystem per call; without
+                        // it the auto_vacuum setting above never reclaims anything.
+                        runCatching { db.query("PRAGMA incremental_vacuum;").use { it.moveToFirst() } }
+                            .recoverCatching { db.execSQL("PRAGMA incremental_vacuum;") }
                     })
                 }
             })
@@ -194,5 +199,33 @@ internal class DatabaseTrimRegistration(
 
     override fun close() {
         detach()
+    }
+}
+
+/**
+ * Slow-statement telemetry (OPT-O28-05).
+ *
+ * Room reports a statement through the query callback *before* it runs, so a duration can only be
+ * derived from the gap to the next statement on the same thread. Suspend DAO queries and every
+ * other statement run on the single `FlashDbQueryCallback` executor thread that [FlashDatabaseOpener.openEncrypted]
+ * installs, which makes that gap the previous statement's runtime. Only statements at or above
+ * [THRESHOLD_MS] are logged, so the log stays quiet during normal use.
+ */
+private object SlowQueryTelemetry {
+    private const val THRESHOLD_MS = 100L
+
+    private class Pending(val sql: String, val startedNs: Long)
+
+    private val pending = ThreadLocal<Pending?>()
+
+    fun onQuery(sqlQuery: String) {
+        val nowNs = System.nanoTime()
+        pending.get()?.let { previous ->
+            val elapsedMs = (nowNs - previous.startedNs) / 1_000_000
+            if (elapsedMs >= THRESHOLD_MS) {
+                FlashLog.w("DATABASE", "slow statement ${elapsedMs}ms: ${previous.sql.take(180)}")
+            }
+        }
+        pending.set(Pending(sqlQuery, nowNs))
     }
 }
