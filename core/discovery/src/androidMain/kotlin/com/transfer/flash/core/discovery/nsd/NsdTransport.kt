@@ -1006,6 +1006,7 @@ public class NsdTransport(
 
     /** Debounced connectivity-change restart. */
     @Volatile private var networkChangeJob: Job? = null
+    @Volatile private var lastExplicitRestartAtMs: Long = 0L
 
     @Volatile private var observingNetwork = false
 
@@ -1286,6 +1287,9 @@ public class NsdTransport(
     private suspend fun restartAdvertising() {
         if (!advertiseDesired) return
         val identity = lastAdvertisedIdentity ?: return
+        networkChangeJob?.cancel()
+        networkChangeJob = null
+        lastExplicitRestartAtMs = System.currentTimeMillis()
         advertising = false
         acquireMulticastLockIfNeeded()
         // registerAdvertisement releases the registration it replaces.
@@ -1358,6 +1362,9 @@ public class NsdTransport(
      * clean one, re-delivering `onServiceFound` for every service still present.
      */
     override suspend fun restartBrowsing(): FlashResult<Unit> {
+        networkChangeJob?.cancel()
+        networkChangeJob = null
+        lastExplicitRestartAtMs = System.currentTimeMillis()
         val wasBrowsing = browsing
         browsing = false
         browseLoopJob?.cancel()
@@ -1587,6 +1594,11 @@ public class NsdTransport(
         networkChangeJob = activeScope.launch(lane) {
             if (!immediate) {
                 delay(networkChangeDebounceMs)
+            }
+            val elapsed = System.currentTimeMillis() - lastExplicitRestartAtMs
+            if (elapsed < networkChangeDebounceMs) {
+                logInfo("Skipping redundant network change restart: explicitly restarted ${elapsed}ms ago (OPT-O10-06)")
+                return@launch
             }
             if (advertiseDesired) {
                 logInfo("Connectivity changed (immediate=$immediate); re-registering NSD advertisement")
