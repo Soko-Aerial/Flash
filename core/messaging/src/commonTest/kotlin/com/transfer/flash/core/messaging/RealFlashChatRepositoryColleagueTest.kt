@@ -322,6 +322,9 @@ class RealFlashChatRepositoryColleagueTest {
             flowOf(members.values.filter { it.groupId == groupId })
         override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId && it.isActive }
+
+        override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+            members.values.filter { it.isActive }
         override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId }
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =

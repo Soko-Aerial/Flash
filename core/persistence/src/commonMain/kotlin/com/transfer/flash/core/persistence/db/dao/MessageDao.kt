@@ -188,12 +188,13 @@ public interface MessageDao {
      * one observation feeds the whole chat list instead of one flow per row.
      */
     @Query(
-        "SELECT m.conversationId AS conversationId, COUNT(*) AS unread FROM messages m " +
-            "JOIN conversations c ON c.id = m.conversationId " +
-            "WHERE m.senderId != :selfId AND m.deletedAt IS NULL AND (" +
-            "c.lastReadCursor IS NULL OR " +
-            "m.sentAt > (SELECT sentAt FROM messages WHERE localId = c.lastReadCursor)" +
-            ") GROUP BY m.conversationId",
+        "SELECT m.conversationId AS conversationId, COUNT(*) AS unread " +
+            "FROM conversations c " +
+            "LEFT JOIN messages cur ON cur.localId = c.lastReadCursor " +
+            "JOIN messages m ON m.conversationId = c.id " +
+            "WHERE m.senderId != :selfId AND m.deletedAt IS NULL " +
+            "AND (c.lastReadCursor IS NULL OR m.sentAt > cur.sentAt) " +
+            "GROUP BY m.conversationId",
     )
     public fun observeUnreadCounts(selfId: String): Flow<List<ConversationUnread>>
 

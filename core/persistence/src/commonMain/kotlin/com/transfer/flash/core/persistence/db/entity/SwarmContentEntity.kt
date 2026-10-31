@@ -16,6 +16,7 @@ import androidx.room.Index
         Index(value = ["messageId"]),
         Index(value = ["state"]),
         Index(value = ["localTransferId"]),
+        Index(value = ["createdAtMs"]),
     ],
 )
 public data class SwarmContentEntity(

@@ -320,6 +320,10 @@ internal class InMemoryGroupMemberDao : GroupMemberDao {
         members.values.filter { it.groupId == groupId && it.isActive }
             .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
 
+    override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+        members.values.filter { it.isActive }
+            .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))
+
     override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
         members.values.filter { it.groupId == groupId }
             .sortedWith(compareBy({ it.joinedAt }, { it.deviceId }))

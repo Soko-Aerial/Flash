@@ -1222,6 +1222,11 @@ public class RealFlashChatRepository(
             ) { entities, peers, unreadRows, previewRows, typingByConversation ->
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
+                val activeMembersByGroup = if (entities.any { it.isGroup }) {
+                    groupMemberDao?.allActiveMembers().orEmpty().groupBy { it.groupId }
+                } else {
+                    emptyMap()
+                }
                 suspend fun toUiItem(entity: ConversationEntity): FlashChatListItemUi {
                     val displayTitle = if (entity.isGroup) {
                         entity.title.ifBlank { entity.id }
@@ -1232,8 +1237,7 @@ public class RealFlashChatRepository(
                     val presence: FlashPeerPresence
                     val groupOnlineCount: Int
                     if (entity.isGroup) {
-                        val onlineMembers = groupMemberDao
-                            ?.activeMembers(entity.id)
+                        val onlineMembers = activeMembersByGroup[entity.id]
                             .orEmpty()
                             .count { it.deviceId in peers.online }
                         groupOnlineCount = onlineMembers
@@ -7024,7 +7028,7 @@ public class RealFlashChatRepository(
     /** Extracts quoted values from a JSON string array; tolerant of null/blank/legacy rows. */
     private fun decodeReactorIds(json: String?): List<String> {
         if (json.isNullOrBlank()) return emptyList()
-        return Regex("\"([^\"]*)\"").findAll(json).map { it.groupValues[1] }.toList()
+        return JSON_QUOTED_REGEX.findAll(json).map { it.groupValues[1] }.toList()
     }
 
     override fun enterListSelectionMode(conversationId: String) {
@@ -7555,6 +7559,9 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** OPT-O25-04: Cached regex for extracting quoted tokens from JSON string arrays. */
+        private val JSON_QUOTED_REGEX = Regex("\"([^\"]*)\"")
+
         /** ADR-174: a failed automatic pairing with a colleague is not tried again for this long. */
         const val AUTO_PAIR_RETRY_MS: Long = 60_000L
 

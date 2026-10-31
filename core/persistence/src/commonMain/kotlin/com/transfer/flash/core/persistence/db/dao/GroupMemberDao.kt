@@ -17,6 +17,10 @@ public interface GroupMemberDao {
     @Query("SELECT * FROM group_members WHERE groupId = :groupId AND isActive = 1 ORDER BY joinedAt, deviceId")
     public suspend fun activeMembers(groupId: String): List<GroupMemberEntity>
 
+    /** All currently active members across all groups (eliminates N+1 queries in chat-list combine, OPT-O04-02). */
+    @Query("SELECT * FROM group_members WHERE isActive = 1")
+    public suspend fun allActiveMembers(): List<GroupMemberEntity>
+
     /** Every row of the group, leave tombstones included (ADR-044 V1a: `State` carries tombstones). */
     @Query("SELECT * FROM group_members WHERE groupId = :groupId ORDER BY joinedAt, deviceId")
     public suspend fun allMembers(groupId: String): List<GroupMemberEntity>
