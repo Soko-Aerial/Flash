@@ -34,7 +34,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -104,7 +108,8 @@ fun FlashReactionChip(
         }
     }
 
-    val backgroundColor by animateColorAsState(
+    // OPT-O03-02: Keep color and border width animations as State to defer reads into drawBehind
+    val backgroundColorAnim = animateColorAsState(
         targetValue = if (reaction.isSelfReacted) {
             colors.accentPrimary.copy(alpha = 0.14f)
         } else {
@@ -114,7 +119,7 @@ fun FlashReactionChip(
         label = "reactionChipBg",
     )
 
-    val borderColor by animateColorAsState(
+    val borderColorAnim = animateColorAsState(
         targetValue = if (reaction.isSelfReacted) {
             colors.accentPrimary
         } else {
@@ -124,7 +129,7 @@ fun FlashReactionChip(
         label = "reactionChipBorder",
     )
 
-    val borderWidth by animateDpAsState(
+    val borderWidthAnim = animateDpAsState(
         targetValue = if (reaction.isSelfReacted) 1.5.dp else FlashDimensions.borderHairline,
         animationSpec = motion.springSnappySpec(),
         label = "reactionChipBorderWidth",
@@ -146,15 +151,19 @@ fun FlashReactionChip(
         modifier = modifier,
         contentAlignment = Alignment.Center,
     ) {
-        if (puffProgress.value < 1f) {
-            val accent = colors.accentPrimary
-            Canvas(Modifier.matchParentSize().graphicsLayer { alpha = 1f - puffProgress.value }) {
-                val radius = (size.maxDimension / 2f + 8.dp.toPx()) * puffProgress.value
+        // OPT-O03-02: Read puffProgress.value inside Canvas draw block to prevent 15-30 chip recompositions per toggle
+        val accent = colors.accentPrimary
+        Canvas(Modifier.matchParentSize()) {
+            val progress = puffProgress.value
+            if (progress < 1f) {
+                val alpha = (1f - progress).coerceIn(0f, 1f)
+                val radius = (size.maxDimension / 2f + 8.dp.toPx()) * progress
                 val particleRadius = 2.dp.toPx()
-                drawCircle(accent, particleRadius, center = Offset(center.x - radius, center.y))
-                drawCircle(accent, particleRadius, center = Offset(center.x + radius, center.y))
-                drawCircle(accent, particleRadius, center = Offset(center.x, center.y - radius))
-                drawCircle(accent, particleRadius, center = Offset(center.x, center.y + radius))
+                val particleColor = accent.copy(alpha = accent.alpha * alpha)
+                drawCircle(particleColor, particleRadius, center = Offset(center.x - radius, center.y))
+                drawCircle(particleColor, particleRadius, center = Offset(center.x + radius, center.y))
+                drawCircle(particleColor, particleRadius, center = Offset(center.x, center.y - radius))
+                drawCircle(particleColor, particleRadius, center = Offset(center.x, center.y + radius))
             }
         }
 
@@ -167,8 +176,23 @@ fun FlashReactionChip(
                 .sizeIn(minWidth = 36.dp, minHeight = 28.dp)
                 .flashPressScale(interactionSource, pressedScale = 0.94f)
                 .clip(CircleShape)
-                .background(backgroundColor)
-                .border(BorderStroke(borderWidth, borderColor), CircleShape)
+                .drawBehind {
+                    val cornerRadius = CornerRadius(size.height / 2f, size.height / 2f)
+                    drawRoundRect(
+                        color = backgroundColorAnim.value,
+                        cornerRadius = cornerRadius,
+                    )
+                    val strokeWidth = borderWidthAnim.value.toPx()
+                    if (strokeWidth > 0f) {
+                        drawRoundRect(
+                            color = borderColorAnim.value,
+                            topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f),
+                            size = Size(size.width - strokeWidth, size.height - strokeWidth),
+                            cornerRadius = CornerRadius((size.height - strokeWidth) / 2f, (size.height - strokeWidth) / 2f),
+                            style = Stroke(width = strokeWidth),
+                        )
+                    }
+                }
                 .combinedClickable(
                     interactionSource = interactionSource,
                     indication = null,
