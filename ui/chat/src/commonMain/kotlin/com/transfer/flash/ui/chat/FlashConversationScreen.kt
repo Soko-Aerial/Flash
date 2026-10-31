@@ -90,6 +90,17 @@ private class FlashConversationDraftState(initialText: String = "") {
 /** How often "typing…" is repeated while the composer holds text; the receiver forgets it after 6 s (TYPING_EXPIRY_MS). */
 private const val TYPING_KEEPALIVE_MS: Long = 3_000L
 
+/**
+ * Upper bound on how long a staged attachment may show its sending spinner (OPT-O24-02).
+ *
+ * The send reports no completion of its own: a staged *file* item is normally retired when its
+ * durable attachment message arrives (see the staging reconciliation effect below), and an image
+ * message carries no file name to match on, so this bound is what retires an image item. Either way
+ * the spinner is gone within this bound, so a send that never produces a message cannot leave one
+ * that keeps Send disabled.
+ */
+private const val STAGED_SEND_FALLBACK_MS: Long = 4_000L
+
 @Composable
 fun FlashConversationScreen(
     state: FlashConversationUiState,
@@ -419,34 +430,45 @@ fun FlashConversationScreen(
     val permissions = rememberFlashPermissionRequester()
     val uriHandler = LocalUriHandler.current
 
-    // OPT-O24-01: Local optimistic echoes overlay pending message bubbles before SQLite commit & Room query emit.
-    var pendingOptimisticEchoes by remember { mutableStateOf<List<FlashMessageUi>>(emptyList()) }
-    var localMessages by remember(state.messages, pendingOptimisticEchoes) {
-        mutableStateOf(state.messages + pendingOptimisticEchoes)
+    // OPT-O24-01: the optimistic echo overlays the outbox row while the SQLite write and the Room
+    // emit are still in flight. It is presentation only — the durable row is still written by
+    // onSendText / onSendReply below, and nothing here claims a message was stored.
+    var pendingOptimisticEchoes by remember { mutableStateOf<List<FlashOptimisticEcho>>(emptyList()) }
+    var localMessages by remember(state.messages) { mutableStateOf(state.messages) }
+    // The echoes and the rows are combined in the same derivation that renders the list, so an echo
+    // and its own durable row can never be on screen in the same frame. `localMessages` is the durable
+    // list (a local reaction toggle never changes ids), and it is a key, so the captured list cannot
+    // be stale.
+    val displayedMessages = remember(localMessages, pendingOptimisticEchoes) {
+        // Integrator: only concatenate when an echo is actually unmatched. `localMessages + emptyList()`
+        // still copies the whole thread, and this derivation runs on every Room emission — with echoes
+        // in flight almost never and the thread potentially thousands of rows, the copy was the common
+        // case and the echoes the rare one.
+        val unmatched = FlashOptimisticEchoMath.unmatched(localMessages, pendingOptimisticEchoes)
+        if (unmatched.isEmpty()) localMessages else localMessages + unmatched.map { it.message }
     }
 
-    // Reconcile pending optimistic echoes against state.messages arrivals
-    LaunchedEffect(state.messages) {
-        if (pendingOptimisticEchoes.isNotEmpty()) {
-            val outgoingTexts = state.messages.filter { it.isMine }.map { it.text }
-            val remaining = mutableListOf<FlashMessageUi>()
-            val consumed = mutableListOf<String>()
-            for (echo in pendingOptimisticEchoes) {
-                val inState = outgoingTexts.count { it == echo.text }
-                val alreadyConsumed = consumed.count { it == echo.text }
-                if (alreadyConsumed < inState) {
-                    consumed.add(echo.text)
-                } else {
-                    remaining.add(echo)
-                }
-            }
-            if (remaining.size != pendingOptimisticEchoes.size) {
-                pendingOptimisticEchoes = remaining
-            }
+    // Retire echoes whose row has arrived. The list is already correct without this — the effect only
+    // keeps the echo state from growing, and stops a retired echo from coming back if its row is later
+    // deleted.
+    LaunchedEffect(state.messages, pendingOptimisticEchoes) {
+        if (pendingOptimisticEchoes.isEmpty()) return@LaunchedEffect
+        val remaining = FlashOptimisticEchoMath.unmatched(localMessages, pendingOptimisticEchoes)
+        if (remaining.size != pendingOptimisticEchoes.size) {
+            pendingOptimisticEchoes = remaining
         }
+    }
+
+    // OPT-O24-02: retire a staged attachment when its own durable message arrives — the real completion
+    // signal, not a clock. A file attachment carries the file name the tray staged, so the two can be
+    // matched. An image message carries no file name (only a caption), so an image item can only be
+    // retired by the bounded wait in the send handler.
+    // OPT-O24-01 note: this is `state.messages` (the durable rows) on purpose — an optimistic echo is
+    // never a completion signal, or a send that never reached the database would look finished.
+    LaunchedEffect(state.messages) {
         if (stagedAttachments.any { it.isSending }) {
             val receivedNames = state.messages.flatMap { msg ->
-                msg.fileAttachments.map { it.fileName } + msg.images.map { it.name }
+                msg.fileAttachments.map { it.name }
             }.toSet()
             val remaining = stagedAttachments.filterNot { it.isSending && it.name in receivedNames }
             if (remaining.size != stagedAttachments.size) {
@@ -993,28 +1015,44 @@ fun FlashConversationScreen(
                 },
                 onSend = {
                     val text = draftState.text.trim()
-                    val hasAttachments = stagedAttachments.isNotEmpty()
+                    // OPT-O24-02: an item already marked isSending is being sent right now, so it is
+                    // neither a reason to send nor part of what a second tap would send again.
+                    val itemsToSend = stagedAttachments.filterNot { it.isSending }
+                    val hasAttachments = itemsToSend.isNotEmpty()
                     if (text.isNotEmpty() || hasAttachments) {
                         val quoted = replyingToMessage
-                        val itemsToSend = stagedAttachments
                         if (itemsToSend.isNotEmpty()) {
-                            // OPT-O24-02: Mark staging tray items with isSending spinner instead of vanishing instantly
-                            stagedAttachments = itemsToSend.map { it.copy(isSending = true) }
+                            // OPT-O24-02: Keep the item in the tray with a spinner instead of vanishing instantly.
+                            val sendingIds = itemsToSend.mapTo(mutableSetOf()) { it.id }
+                            stagedAttachments = stagedAttachments.map {
+                                if (it.id in sendingIds) it.copy(isSending = true) else it
+                            }
                             coroutineScope.launch {
                                 itemsToSend.forEach { item ->
                                     onSendFile(item.uri, item.name, item.sizeBytes)
                                 }
-                                delay(4000L)
-                                stagedAttachments = stagedAttachments.filterNot { it.isSending }
+                                // onSendFile reports no completion. For a file, the durable attachment
+                                // message arriving in state.messages is the completion signal and retires
+                                // the item (see the staging reconciliation effect above); an image message
+                                // carries no file name to match on, so this wait is what retires it. Either
+                                // way the spinner is gone within this bound, so a send that never produces
+                                // a row cannot leave one behind for ever.
+                                delay(STAGED_SEND_FALLBACK_MS)
+                                stagedAttachments = stagedAttachments.filterNot { it.isSending && it.id in sendingIds }
                             }
                         }
                         if (text.isNotEmpty()) {
-                            // OPT-O24-01: UI-local optimistic echo overlay. Displays pending outbox row immediately (<16ms)
-                            // before asynchronous SQLite write and Room table scan complete. Never bypasses durability.
+                            // OPT-O24-01: the echo appears as soon as this click handler records it — the
+                            // same recomposition — so it is on screen before a durable row could have come
+                            // back from the database. It is presentation only: onSendText / onSendReply
+                            // below still write the outbox row, and nothing here claims one was stored.
                             val optimisticId = "opt_${kotlin.random.Random.nextLong().toString(16)}"
                             val optimisticMsg = FlashMessageUi(
                                 id = optimisticId,
-                                senderName = state.title,
+                                // OPT-O24-01 compile repair: `state.title` does not exist on
+                                // FlashConversationUiState (the title lives on the header). The echo is
+                                // drawn with showSenderHeader = false, so this name is not rendered.
+                                senderName = state.header.title,
                                 senderInitials = "",
                                 timeLabel = "Just now",
                                 text = text,
@@ -1030,7 +1068,12 @@ fun FlashConversationScreen(
                                 groupPosition = com.transfer.flash.core.messaging.model.FlashMessageGroupPosition.SINGLE,
                                 showSenderHeader = false,
                             )
-                            pendingOptimisticEchoes = pendingOptimisticEchoes + optimisticMsg
+                            pendingOptimisticEchoes = pendingOptimisticEchoes + FlashOptimisticEcho(
+                                message = optimisticMsg,
+                                // The outgoing rows that exist right now: only a row outside this set
+                                // can be this echo's durable row.
+                                knownOutgoingIds = localMessages.asSequence().filter { it.isMine }.map { it.id }.toSet(),
+                            )
 
                             if (quoted != null) {
                                 // #8: carry the quoted id + a trimmed preview so the peer renders the quote.
@@ -1097,7 +1140,7 @@ fun FlashConversationScreen(
     ) { innerPadding ->
         Box(modifier = Modifier.fillMaxSize()) {
             FlashMessageList(
-                messages = localMessages,
+                messages = displayedMessages,
                 onOpenMessageActions = { msg -> focusedMessage = msg },
                 selectedMessageIds = selectedMessageIds,
                 inSelectionMode = inSelectionMode,
@@ -1193,8 +1236,8 @@ fun FlashConversationScreen(
                 // the IME via innerPadding; adding it again doubles the inset (ERROR-009).
             )
 
-            // UI-025 empty conversation state
-            if (localMessages.isEmpty()) {
+            // UI-025 empty conversation state (the echo counts: a conversation showing an echo is not empty)
+            if (displayedMessages.isEmpty()) {
                 FlashEmptyState(
                     kind = FlashStateCopy.EmptyKind.ConversationEmpty,
                     modifier = Modifier

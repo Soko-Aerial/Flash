@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -155,9 +154,14 @@ fun FlashMessageList(
     }
 
     // OPT-O24-04: Auto-scroll to tail when keyboard (IME) opens while user is viewing the latest messages.
-    val isImeVisible = WindowInsets.isImeVisible
-    LaunchedEffect(isImeVisible) {
-        if (isImeVisible && atBottom.value) {
+    // Compile repair: `WindowInsets.isImeVisible` is an Android-only API in Compose Multiplatform 1.9.3
+    // (the desktop artifact does not contain it), so the module compiled for Android and not for JVM.
+    // The signal now comes from the `flashImeVisible()` seam, which is the platform's own flag on
+    // Android and always false on desktop. `atBottom.value` is the guard, unchanged — a user scrolled
+    // up in history is not moved.
+    val isImeUp = flashImeVisible()
+    LaunchedEffect(isImeUp) {
+        if (isImeUp && atBottom.value) {
             if (motion.reduceMotion) {
                 listState.scrollToItem(0)
             } else {

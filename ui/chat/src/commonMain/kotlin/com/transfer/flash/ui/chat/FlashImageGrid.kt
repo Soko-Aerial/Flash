@@ -142,18 +142,30 @@ fun FlashImageGrid(
     }
 }
 
+/**
+ * Aspect ratios already decoded, keyed by the image URI, so a tile can reserve the right shape before
+ * its bitmap arrives (OPT-O24-07).
+ *
+ * Entries are **never invalidated**: a ratio is remembered for the life of the process, so the same
+ * URI must keep pointing at the same picture. It is bounded at [MAX_ENTRIES] and evicts the oldest
+ * entry, and every access is guarded like its sibling `FlashWaveformCache`, so a caller that reports a
+ * ratio from a background dispatcher cannot corrupt the map.
+ */
 internal object FlashImageRatioCache {
-    private val entries = LinkedHashMap<String, Float>()
     private const val MAX_ENTRIES = 256
+    private val entries = LinkedHashMap<String, Float>()
+    private val lock = Any()
 
-    operator fun get(key: String): Float? = entries[key]
+    operator fun get(key: String): Float? = synchronized(lock) { entries[key] }
 
     operator fun set(key: String, ratio: Float) {
-        if (entries.size >= MAX_ENTRIES) {
-            val oldest = entries.keys.firstOrNull()
-            if (oldest != null) entries.remove(oldest)
+        synchronized(lock) {
+            if (entries.size >= MAX_ENTRIES) {
+                val oldest = entries.keys.firstOrNull()
+                if (oldest != null) entries.remove(oldest)
+            }
+            entries[key] = ratio
         }
-        entries[key] = ratio
     }
 }
 

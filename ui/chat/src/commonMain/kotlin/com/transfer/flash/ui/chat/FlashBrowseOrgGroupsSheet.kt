@@ -38,7 +38,6 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
 import com.transfer.flash.core.enterprise.EnterpriseJoinRequest
 import com.transfer.flash.core.enterprise.EnterpriseJoinResult
-import kotlinx.coroutines.delay
 import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.settings.FlashHubStatusMath
@@ -78,7 +77,6 @@ public fun FlashBrowseOrgGroupsSheet(
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
-    val motion = FlashTheme.motion
     val scope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -100,13 +98,10 @@ public fun FlashBrowseOrgGroupsSheet(
         isLoading = false
     }
 
-    // OPT-O24-06: Defer initial network load until entrance spring settles to prevent frame drops
-    LaunchedEffect(Unit) {
-        if (!motion.reduceMotion) {
-            delay(FlashMotion.NormalMillis.toLong())
-        }
-        load()
-    }
+    // OPT-O24-06: the sheet loads as soon as it is shown. Deferring this behind a motion preference
+    // (a flat delay for every open, skipped under reduceMotion) made the load's timing depend on an
+    // accessibility setting and was not the entrance animation's real duration.
+    LaunchedEffect(Unit) { load() }
 
     val filteredGroups = remember(allGroups, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -403,7 +398,6 @@ private fun FlashJoinRequestsPanel(
     onDecide: suspend (EnterpriseJoinRequest, Boolean) -> FlashResult<EnterpriseJoinResult>,
 ) {
     val colors = FlashTheme.colors
-    val motion = FlashTheme.motion
     val scope = rememberCoroutineScope()
     var requests by remember(groupId) { mutableStateOf<List<EnterpriseJoinRequest>?>(null) }
     var error by remember(groupId) { mutableStateOf<String?>(null) }
