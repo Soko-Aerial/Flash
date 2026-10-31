@@ -20,6 +20,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -96,42 +100,36 @@ fun FlashQuotedReplyCard(
                 contentDescription = "Replying to ${quotedReply.senderName}: ${quotedReply.textSnippet}. Double tap to jump to message."
             },
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(IntrinsicSize.Min),
-            verticalAlignment = Alignment.CenterVertically,
+                .drawBehind {
+                    val barWidthPx = 3.dp.toPx()
+                    val barRadiusPx = 1.5.dp.toPx()
+                    drawRoundRect(
+                        color = barColor,
+                        topLeft = Offset(0f, 0f),
+                        size = Size(barWidthPx, size.height),
+                        cornerRadius = CornerRadius(barRadiusPx, barRadiusPx),
+                    )
+                }
+                .padding(start = 3.dp + FlashSpacing.space8),
+            verticalArrangement = Arrangement.Center,
         ) {
-            // Left vertical accent indicator bar
-            Box(
-                modifier = Modifier
-                    .width(3.dp)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(1.5.dp))
-                    .background(barColor),
+            FlashText(
+                text = quotedReply.senderName,
+                style = typography.captionEmphasis.copy(fontWeight = FontWeight.SemiBold),
+                color = senderColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-
-            Spacer(modifier = Modifier.width(FlashSpacing.space8))
-
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                FlashText(
-                    text = quotedReply.senderName,
-                    style = typography.captionEmphasis.copy(fontWeight = FontWeight.SemiBold),
-                    color = senderColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                FlashText(
-                    text = quotedReply.textSnippet,
-                    style = typography.captionDefault,
-                    color = snippetColor,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            FlashText(
+                text = quotedReply.textSnippet,
+                style = typography.captionDefault,
+                color = snippetColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
