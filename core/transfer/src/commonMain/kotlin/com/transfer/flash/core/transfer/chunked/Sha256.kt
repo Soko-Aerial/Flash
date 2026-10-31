@@ -41,16 +41,13 @@ public object Sha256 {
 
     /** One-shot digest over one or concatenated byte arrays. */
     public fun digest(vararg chunks: ByteArray): ByteArray {
-        val accumulator = IncrementalSha256()
-        for (chunk in chunks) accumulator.update(chunk)
-        return accumulator.digestRaw()
+        if (chunks.size == 1) return platformSha256(chunks[0], 0, chunks[0].size)
+        return platformSha256(chunks)
     }
 
     /** One-shot digest over a sub-range of a byte array without intermediate copying. */
     public fun digest(bytes: ByteArray, offset: Int, length: Int): ByteArray {
-        val accumulator = IncrementalSha256()
-        accumulator.update(bytes, offset, length)
-        return accumulator.digestRaw()
+        return platformSha256(bytes, offset, length)
     }
 
     /** One-shot digest formatted as lowercase hex. */

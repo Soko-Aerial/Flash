@@ -45,6 +45,20 @@ internal object JvmImageDecoder : FlashImageDecoder {
             size > MAX_CACHED
     }
 
+    /**
+     * O02-08: Clears the in-memory thumbnail cache on memory trim or window idle/minimization.
+     */
+    fun clear() {
+        synchronized(cache) {
+            cache.clear()
+        }
+    }
+
+    /** Returns current number of memoized images in the cache. */
+    fun cachedCount(): Int = synchronized(cache) {
+        cache.size
+    }
+
     override fun decode(
         source: String?,
         isVideo: Boolean,
@@ -82,9 +96,14 @@ internal object JvmImageDecoder : FlashImageDecoder {
         computeInSampleSize: (width: Int, height: Int, maxLongEdge: Int) -> Int,
     ): ImageBitmap? {
         val stream = openStream(source) ?: return null
+        var orientation = 1
         val buffered = stream.use { raw ->
             val input = ImageIO.createImageInputStream(raw) ?: return null
             input.use {
+                // O05-04: Parse EXIF orientation directly from the ImageInputStream before decode,
+                // seeking back to 0. Eliminates the secondary full-file stream open and header scan.
+                orientation = parseExifFromStream(it)
+                it.seek(0)
                 val reader = ImageIO.getImageReaders(it).let { readers ->
                     if (readers.hasNext()) readers.next() else null
                 } ?: return null
@@ -104,13 +123,14 @@ internal object JvmImageDecoder : FlashImageDecoder {
             }
         } ?: return null
 
-        val orientation = readExifOrientation(source)
         val rotated = if (orientation > 1) rotateImage(buffered, orientation) else buffered
         return rotated.toComposeImageBitmap()
     }
 
     /**
      * Extracts the first video frame as a thumbnail using JCodec.
+     * O05-10: Subsamples during YUV extraction before color conversion to minimize heap allocations,
+     * and performs bulk raster data writes to BufferedImage.
      */
     private fun decodeVideo(
         source: String,
@@ -127,24 +147,74 @@ internal object JvmImageDecoder : FlashImageDecoder {
                 val height = pic.height
                 if (width <= 0 || height <= 0) return@runCatching null
 
-                val rgbPic = org.jcodec.common.model.Picture.create(width, height, org.jcodec.common.model.ColorSpace.RGB)
-                org.jcodec.scale.Yuv420pToRgb().transform(pic, rgbPic)
+                val sample = computeInSampleSize(width, height, maxLongEdge).coerceAtLeast(1)
+                val tw = ((width / sample).coerceAtLeast(2) and 1.inv())
+                val th = ((height / sample).coerceAtLeast(2) and 1.inv())
+
+                val (scaledPic, targetW, targetH) = if (sample > 1 && width >= 2 && height >= 2) {
+                    val sub = org.jcodec.common.model.Picture.create(tw, th, org.jcodec.common.model.ColorSpace.YUV420)
+                    val srcY = pic.getPlaneData(0)
+                    val srcU = pic.getPlaneData(1)
+                    val srcV = pic.getPlaneData(2)
+                    val dstY = sub.getPlaneData(0)
+                    val dstU = sub.getPlaneData(1)
+                    val dstV = sub.getPlaneData(2)
+                    if (srcY != null && srcU != null && srcV != null && dstY != null && dstU != null && dstV != null) {
+                        for (y in 0 until th) {
+                            val origRow = (y * sample) * width
+                            val dstRow = y * tw
+                            for (x in 0 until tw) {
+                                dstY[dstRow + x] = srcY[origRow + (x * sample)]
+                            }
+                        }
+                        val halfSrcW = width / 2
+                        val halfDstW = tw / 2
+                        val halfDstH = th / 2
+                        for (y in 0 until halfDstH) {
+                            val origRow = (y * sample) * halfSrcW
+                            val dstRow = y * halfDstW
+                            for (x in 0 until halfDstW) {
+                                val origOffset = origRow + (x * sample)
+                                val dstOffset = dstRow + x
+                                dstU[dstOffset] = srcU[origOffset]
+                                dstV[dstOffset] = srcV[origOffset]
+                            }
+                        }
+                        Triple(sub, tw, th)
+                    } else {
+                        Triple(pic, width, height)
+                    }
+                } else {
+                    Triple(pic, width, height)
+                }
+
+                val rgbPic = org.jcodec.common.model.Picture.create(targetW, targetH, org.jcodec.common.model.ColorSpace.RGB)
+                org.jcodec.scale.Yuv420pToRgb().transform(scaledPic, rgbPic)
                 val data = rgbPic.data[0] ?: return@runCatching null
 
-                val sample = computeInSampleSize(width, height, maxLongEdge).coerceAtLeast(1)
-                val targetW = (width / sample).coerceAtLeast(1)
-                val targetH = (height / sample).coerceAtLeast(1)
-
                 val img = java.awt.image.BufferedImage(targetW, targetH, java.awt.image.BufferedImage.TYPE_INT_RGB)
-                for (y in 0 until targetH) {
-                    val srcY = y * sample
-                    for (x in 0 until targetW) {
-                        val srcX = x * sample
-                        val srcIdx = (srcY * width + srcX) * 3
+                val pixels = (img.raster.dataBuffer as? java.awt.image.DataBufferInt)?.data
+                val totalPixels = targetW * targetH
+                if (pixels != null && pixels.size >= totalPixels) {
+                    for (i in 0 until totalPixels) {
+                        val srcIdx = i * 3
                         val r = (data[srcIdx].toInt() + 128).coerceIn(0, 255)
                         val g = (data[srcIdx + 1].toInt() + 128).coerceIn(0, 255)
                         val b = (data[srcIdx + 2].toInt() + 128).coerceIn(0, 255)
-                        img.setRGB(x, y, (r shl 16) or (g shl 8) or b)
+                        pixels[i] = (r shl 16) or (g shl 8) or b
+                    }
+                } else {
+                    val rowPixels = IntArray(targetW)
+                    for (y in 0 until targetH) {
+                        val rowOffset = y * targetW * 3
+                        for (x in 0 until targetW) {
+                            val srcIdx = rowOffset + x * 3
+                            val r = (data[srcIdx].toInt() + 128).coerceIn(0, 255)
+                            val g = (data[srcIdx + 1].toInt() + 128).coerceIn(0, 255)
+                            val b = (data[srcIdx + 2].toInt() + 128).coerceIn(0, 255)
+                            rowPixels[x] = (r shl 16) or (g shl 8) or b
+                        }
+                        img.setRGB(0, y, targetW, 1, rowPixels, 0, targetW)
                     }
                 }
                 img.toComposeImageBitmap()
@@ -153,63 +223,55 @@ internal object JvmImageDecoder : FlashImageDecoder {
     }
 
     /**
+     * Extracts EXIF orientation (1..8) from an [javax.imageio.stream.ImageInputStream] without loading the entire image.
+     */
+    private fun parseExifFromStream(input: javax.imageio.stream.ImageInputStream): Int = runCatching {
+        if (input.read() != 0xFF || input.read() != 0xD8) return@runCatching 1
+        while (true) {
+            val markerPrefix = input.read()
+            if (markerPrefix == -1) break
+            if (markerPrefix != 0xFF) continue
+            var marker = input.read()
+            while (marker == 0xFF) marker = input.read()
+            if (marker == -1 || marker == 0xDA || marker == 0xD9) break // SOS or EOI
+            val lenHigh = input.read()
+            val lenLow = input.read()
+            if (lenHigh == -1 || lenLow == -1) break
+            val segmentLength = ((lenHigh and 0xFF) shl 8) or (lenLow and 0xFF)
+            if (segmentLength < 2) break
+            val dataLength = segmentLength - 2
+
+            if (marker == 0xE1 && dataLength >= 14) { // APP1 Exif marker
+                val data = ByteArray(dataLength)
+                var readTotal = 0
+                while (readTotal < dataLength) {
+                    val count = input.read(data, readTotal, dataLength - readTotal)
+                    if (count <= 0) break
+                    readTotal += count
+                }
+                if (readTotal == dataLength &&
+                    data[0] == 'E'.code.toByte() && data[1] == 'x'.code.toByte() &&
+                    data[2] == 'i'.code.toByte() && data[3] == 'f'.code.toByte() &&
+                    data[4] == 0.toByte() && data[5] == 0.toByte()
+                ) {
+                    return@runCatching parseTiffOrientation(data, 6)
+                }
+            } else {
+                input.seek(input.streamPosition + dataLength)
+            }
+        }
+        1
+    }.getOrDefault(1)
+
+    /**
      * Extracts EXIF orientation (1..8) from a JPEG file without loading the entire image.
      * Returns 1 (normal orientation) if absent, non-JPEG, or unreadable.
      */
     internal fun readExifOrientation(source: String): Int {
         val stream = openStream(source) ?: return 1
-        return stream.use { input ->
-            runCatching {
-                // Must start with SOI marker: 0xFF, 0xD8
-                if (input.read() != 0xFF || input.read() != 0xD8) return@runCatching 1
-                while (true) {
-                    val markerPrefix = input.read()
-                    if (markerPrefix == -1) break
-                    if (markerPrefix != 0xFF) continue
-                    // ITU T.81 B.1.1.2: a marker may be preceded by any number of 0xFF fill bytes.
-                    // Reading only one of them made the second 0xFF of "FF FF E1" look like the marker,
-                    // so the real marker byte became the segment length's high byte and an APP1 EXIF
-                    // block behind fill bytes was skipped as a bogus 57 KB segment.
-                    var marker = input.read()
-                    while (marker == 0xFF) marker = input.read()
-                    if (marker == -1 || marker == 0xDA || marker == 0xD9) break // SOS or EOI
-                    val lenHigh = input.read()
-                    val lenLow = input.read()
-                    if (lenHigh == -1 || lenLow == -1) break
-                    val segmentLength = ((lenHigh and 0xFF) shl 8) or (lenLow and 0xFF)
-                    if (segmentLength < 2) break
-                    val dataLength = segmentLength - 2
-
-                    if (marker == 0xE1 && dataLength >= 14) { // APP1 Exif marker
-                        val data = ByteArray(dataLength)
-                        var readTotal = 0
-                        while (readTotal < dataLength) {
-                            val count = input.read(data, readTotal, dataLength - readTotal)
-                            if (count <= 0) break
-                            readTotal += count
-                        }
-                        if (readTotal == dataLength &&
-                            data[0] == 'E'.code.toByte() && data[1] == 'x'.code.toByte() &&
-                            data[2] == 'i'.code.toByte() && data[3] == 'f'.code.toByte() &&
-                            data[4] == 0.toByte() && data[5] == 0.toByte()
-                        ) {
-                            return@runCatching parseTiffOrientation(data, 6)
-                        }
-                    } else {
-                        var toSkip = dataLength.toLong()
-                        while (toSkip > 0) {
-                            val skipped = input.skip(toSkip)
-                            if (skipped <= 0) {
-                                if (input.read() == -1) break
-                                toSkip--
-                            } else {
-                                toSkip -= skipped
-                            }
-                        }
-                    }
-                }
-                1
-            }.getOrDefault(1)
+        return stream.use { raw ->
+            val input = ImageIO.createImageInputStream(raw) ?: return@use 1
+            input.use { parseExifFromStream(it) }
         }
     }
 

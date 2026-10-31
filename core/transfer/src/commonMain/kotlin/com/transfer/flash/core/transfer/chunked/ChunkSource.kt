@@ -24,3 +24,11 @@ public fun interface ChunkSource {
      */
     public fun open(): Source
 }
+
+/**
+ * O23-02: A seekable [ChunkSource] that can open directly at a specific byte offset,
+ * eliminating redundant full-file reads and skips during resume.
+ */
+public interface SeekableChunkSource : ChunkSource {
+    public fun openAt(byteOffset: Long): Source
+}

@@ -2,6 +2,7 @@ package com.transfer.flash.core.transfer.chunked
 
 import kotlinx.coroutines.test.runTest
 import okio.Buffer
+import okio.Source
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -179,5 +180,103 @@ class PipelineEndToEndTest {
         assertEquals(true, resumedSender.receiverVerified)
         // ACKs drain after send() exits, so full confirmation is not yet visible in the result.
         assertFalse(resumedCompleted.fullyConfirmedByReceiver)
+    }
+
+    @Test
+    fun `resume mid-file - interrupt at 90 percent with seekable source skips prefix and verifies whole file`() = runTest {
+        val chunker = Chunker()
+        // 100 chunks of 16 KB = 1,638,400 bytes
+        val testBytes = 100L * chunkSize
+        val testPayload = ByteArray(testBytes.toInt()) { ((it * 37) xor (it ushr 3)).toByte() }
+        val meta = FileMeta("resume-90pct", "file-90pct", "video-sample.mp4", testBytes)
+        val plan = chunker.plan(meta, chunkSize)
+        assertEquals(100, plan.totalChunks)
+
+        val killAfterChunks = 90 // 90% interruption
+
+        val assembler = Assembler(plan.totalChunks)
+        var chunkSends = 0
+        val receiver = ReceivePipeline(assembler)
+        val killingSend: suspend (ByteArray) -> Boolean = { frameBytes ->
+            val parsed = ChunkFrame.parse(frameBytes)
+            if (chunkSends >= killAfterChunks && parsed !is ChunkFrame.FileStart) {
+                false
+            } else {
+                if (parsed !is ChunkFrame.FileStart) chunkSends++
+                receiver.onFrame(frameBytes)
+                true
+            }
+        }
+        val killedSender = SendPipeline(chunker, killingSend)
+
+        class TestSeekableSource(val data: ByteArray) : SeekableChunkSource {
+            var openAtCount = 0
+            val openedOffsets = mutableListOf<Long>()
+            override fun openAt(byteOffset: Long): Source {
+                openAtCount++
+                openedOffsets.add(byteOffset)
+                val buf = Buffer()
+                val off = byteOffset.toInt().coerceIn(0, data.size)
+                buf.write(data, off, data.size - off)
+                return buf
+            }
+            override fun open(): Source = openAt(0L)
+        }
+
+        val initialSource = TestSeekableSource(testPayload)
+        val aborted = killedSender.send(meta, initialSource, requestedChunkSize = chunkSize)
+        assertTrue(aborted is SendResult.Aborted)
+        assertEquals(90, (aborted as SendResult.Aborted).chunksSentBeforeFailure)
+        assertEquals(90, assembler.writes)
+
+        val doneIndexes = receiver.doneIndexes(meta.transferId)!!
+        assertEquals(90, doneIndexes.size)
+
+        // Resumed sender with SeekableChunkSource
+        val wire2 = ArrayDeque<ByteArray>()
+        val resumedSender = SendPipeline(chunker) { frameBytes ->
+            wire2.addLast(frameBytes)
+            true
+        }
+
+        val resumeSource = TestSeekableSource(testPayload)
+        val wholeFileHash = Sha256.digestHex(testPayload)
+        val resumed = resumedSender.send(
+            meta,
+            resumeSource,
+            requestedChunkSize = chunkSize,
+            fileSha256Hex = wholeFileHash,
+            doneIndexes = doneIndexes,
+        )
+
+        val resumedCompleted = resumed as SendResult.Completed
+        assertEquals(90, resumedCompleted.chunksSkippedResume)
+        assertEquals(10, resumedCompleted.chunksSent)
+
+        // O23-02 verification: Check that resumeSource opened at startIndex (chunk 90 * 16384)
+        val expectedSeekOffset = 90L * chunkSize
+        assertTrue(resumeSource.openedOffsets.contains(expectedSeekOffset), "Resume source must seek directly to chunk 90 offset ($expectedSeekOffset), opened: ${resumeSource.openedOffsets}")
+
+        var completedFrame: ChunkFrame.Complete? = null
+        while (wire2.isNotEmpty()) {
+            for (event in receiver.onFrame(wire2.removeFirst())) {
+                when (event) {
+                    is ReceiveEvent.SessionStarted -> Unit
+                    is ReceiveEvent.AckBatchReady ->
+                        assertTrue(resumedSender.onFrame(ChunkFrame.serialize(event.frame)))
+                    is ReceiveEvent.Completed -> {
+                        completedFrame = event.frame
+                        assertTrue(resumedSender.onFrame(ChunkFrame.serialize(event.frame)))
+                    }
+                    is ReceiveEvent.Rejected -> throw AssertionError("unexpected $event")
+                }
+            }
+        }
+
+        assertEquals(100, assembler.writes)
+        assertTrue(assembler.matches(testPayload))
+        assertNotNull(completedFrame)
+        assertTrue(completedFrame!!.verified)
+        assertEquals(true, resumedSender.receiverVerified)
     }
 }

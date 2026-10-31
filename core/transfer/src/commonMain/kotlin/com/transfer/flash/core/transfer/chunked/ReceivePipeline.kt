@@ -126,13 +126,13 @@ public class ReceivePipeline(
      *
      * Thread-safe: frames may arrive concurrently from WebSocket and data-channel readers.
      */
-    public fun onFrame(bytes: ByteArray): List<ReceiveEvent> = lock.withLock {
-        when (val frame = ChunkFrame.parse(bytes)) {
-            null -> listOf(ReceiveEvent.Rejected(RejectReason.MALFORMED_FRAME, null))
-            is ChunkFrame.FileStart -> handleFileStart(frame)
+    public fun onFrame(bytes: ByteArray): List<ReceiveEvent> {
+        val frame = ChunkFrame.parse(bytes) ?: return listOf(ReceiveEvent.Rejected(RejectReason.MALFORMED_FRAME, null))
+        return when (frame) {
+            is ChunkFrame.FileStart -> lock.withLock { handleFileStart(frame) }
             is ChunkFrame.Chunk -> handleChunk(frame)
-            is ChunkFrame.AckBatch -> listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId))
-            is ChunkFrame.Complete -> listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId))
+            is ChunkFrame.AckBatch -> lock.withLock { listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId)) }
+            is ChunkFrame.Complete -> lock.withLock { listOf(reject(RejectReason.UNEXPECTED_DIRECTION, frame.transferId)) }
         }
     }
 
@@ -251,89 +251,123 @@ public class ReceivePipeline(
         return events
     }
 
-    private fun handleChunk(frame: ChunkFrame.Chunk): List<ReceiveEvent> {
-        val session = sessions[frame.transferId]
-            ?: return listOf(reject(RejectReason.UNKNOWN_TRANSFER, frame.transferId))
-        if (frame.fileId != session.start.fileId) {
-            return listOf(reject(RejectReason.FILE_ID_MISMATCH, frame.transferId))
-        }
-        if (session.finished) {
-            // Late duplicate after COMPLETE: idempotent silence — sender's mirror
-            // already holds every index once coverage was reached (C5.3 contract).
-            return emptyList()
-        }
-        if (session.awaitingAcceptance) {
-            // #5: offer not yet accepted — never write to disk. A compliant sender parks after
-            // FILE_START and sends nothing here; this only fires for a misbehaving/legacy sender.
-            return listOf(
-                ReceiveEvent.Rejected(RejectReason.AWAITING_ACCEPTANCE, frame.transferId, frame.index),
-            )
-        }
-        val totalChunks = session.start.totalChunks
-        if (frame.index < 0 || frame.index >= totalChunks) {
-            return listOf(
-                ReceiveEvent.Rejected(RejectReason.INDEX_OUT_OF_RANGE, frame.transferId, frame.index),
-            )
-        }
-        val expectedLength = expectedChunkLength(session, frame.index)
-        if (frame.data.size != expectedLength) {
-            return listOf(
-                ReceiveEvent.Rejected(RejectReason.CHUNK_SIZE_MISMATCH, frame.transferId, frame.index),
-            )
-        }
+    private sealed interface ChunkValidation {
+        data class Valid(
+            val session: Session,
+            val alreadyReceived: Boolean,
+            val sink: ChunkSink?,
+        ) : ChunkValidation
+        data class Reject(val events: List<ReceiveEvent>) : ChunkValidation
+    }
 
-        val alreadyReceived = session.vector.isReceived(frame.index)
+    private fun validateChunkUnderLock(frame: ChunkFrame.Chunk): ChunkValidation = lock.withLock {
+        val s = sessions[frame.transferId]
+            ?: return@withLock ChunkValidation.Reject(listOf(reject(RejectReason.UNKNOWN_TRANSFER, frame.transferId)))
+        if (frame.fileId != s.start.fileId) {
+            return@withLock ChunkValidation.Reject(listOf(reject(RejectReason.FILE_ID_MISMATCH, frame.transferId)))
+        }
+        if (s.finished) {
+            // Late duplicate after COMPLETE: idempotent silence
+            return@withLock ChunkValidation.Reject(emptyList())
+        }
+        if (s.awaitingAcceptance) {
+            return@withLock ChunkValidation.Reject(
+                listOf(
+                    ReceiveEvent.Rejected(RejectReason.AWAITING_ACCEPTANCE, frame.transferId, frame.index),
+                ),
+            )
+        }
+        val totalChunks = s.start.totalChunks
+        if (frame.index < 0 || frame.index >= totalChunks) {
+            return@withLock ChunkValidation.Reject(
+                listOf(
+                    ReceiveEvent.Rejected(RejectReason.INDEX_OUT_OF_RANGE, frame.transferId, frame.index),
+                ),
+            )
+        }
+        val expectedLength = expectedChunkLength(s, frame.index)
+        if (frame.data.size != expectedLength) {
+            return@withLock ChunkValidation.Reject(
+                listOf(
+                    ReceiveEvent.Rejected(RejectReason.CHUNK_SIZE_MISMATCH, frame.transferId, frame.index),
+                ),
+            )
+        }
+        ChunkValidation.Valid(
+            session = s,
+            alreadyReceived = s.vector.isReceived(frame.index),
+            sink = s.resolvedSink,
+        )
+    }
+
+    private fun handleChunk(frame: ChunkFrame.Chunk): List<ReceiveEvent> {
+        val validation = validateChunkUnderLock(frame)
+        if (validation is ChunkValidation.Reject) {
+            ChunkBufferPool.release(frame.data)
+            return validation.events
+        }
+        val valid = validation as ChunkValidation.Valid
+        val session = valid.session
+        val alreadyReceived = valid.alreadyReceived
+        val sink = valid.sink
+
+        // O07-04: Compute SHA-256 outside of pipeline PlatformLock to avoid blocking other stream reader threads
         val computed = Sha256.digest(frame.data)
         if (!Sha256.rawEqualsConstantTime(computed, frame.chunkSha256)) {
             // Verify-before-write: reject WITHOUT writing, marking, or ACKing (implicit NACK).
+            ChunkBufferPool.release(frame.data)
             return listOf(
                 ReceiveEvent.Rejected(RejectReason.HASH_MISMATCH, frame.transferId, frame.index),
             )
         }
 
+        // O07-04: Perform disk write outside the global lock
         if (!alreadyReceived) {
-            // R-06 (sweep 2026-10-09): a failed write used to return no event at all, so a full disk, a revoked storage grant or
-            // an I/O error left the chunk un-ACKed, the sender retrying or stalled and the receiver showing no cause. It is now a
-            // typed rejection the host turns into a Failed transfer. Cancellation passes through; an Error (out of memory) is
-            // not an I/O failure and is not caught.
             val failure = try {
-                session.resolvedSink?.write(frame.index, frame.data)
+                sink?.write(frame.index, frame.data)
                 null
             } catch (ce: CancellationException) {
+                ChunkBufferPool.release(frame.data)
                 throw ce
             } catch (e: Exception) {
                 e
             }
             if (failure != null) {
-                // The session is dropped: nothing more is written for it, a later chunk answers UNKNOWN_TRANSFER (which makes the
-                // sender stop), and an identical re-offer opens a fresh session instead of being swallowed as a resume restart.
-                sessions.remove(frame.transferId)
+                ChunkBufferPool.release(frame.data)
+                lock.withLock {
+                    sessions.remove(frame.transferId)
+                }
                 runCatching {
                     FlashLog.w("STORAGE", "chunk write failed transferId=${frame.transferId} index=${frame.index} error=${failure::class.simpleName}")
                 }
                 return listOf(ReceiveEvent.Rejected(RejectReason.WRITE_FAILED, frame.transferId, frame.index))
             }
         }
-        val newlyMarked = session.vector.markReceived(frame.index)
-        if (newlyMarked) session.doneBytes += frame.data.size
-        session.pending.add(frame.index)
+        val dataSize = frame.data.size
+        // O02-01: Recycle payload buffer back to ChunkBufferPool immediately after write
+        ChunkBufferPool.release(frame.data)
 
-        if (session.vector.isComplete()) {
-            val events = ArrayList<ReceiveEvent>(2)
-            if (session.pending.isNotEmpty()) {
-                events.add(buildAck(session, frame.transferId))
+        // Lock briefly only to update bitvector and construct ACK/Complete event
+        return lock.withLock {
+            val currentSession = sessions[frame.transferId] ?: return@withLock emptyList()
+            if (currentSession.finished) return@withLock emptyList()
+            val newlyMarked = currentSession.vector.markReceived(frame.index)
+            if (newlyMarked) currentSession.doneBytes += dataSize
+            currentSession.pending.add(frame.index)
+
+            if (currentSession.vector.isComplete()) {
+                val events = ArrayList<ReceiveEvent>(2)
+                if (currentSession.pending.isNotEmpty()) {
+                    events.add(buildAck(currentSession, frame.transferId))
+                }
+                currentSession.finished = true
+                events.add(buildComplete(currentSession, frame.transferId))
+                events
+            } else if (!newlyMarked || currentSession.pending.size >= ackEvery) {
+                listOf(buildAck(currentSession, frame.transferId))
+            } else {
+                emptyList()
             }
-            session.finished = true
-            events.add(buildComplete(session, frame.transferId))
-            return events
-        }
-        // F41 / ERROR-771: A duplicate / retransmitted chunk must be ACKed immediately so
-        // the sender does not stall until its retry timeout. Progress, bytes, and done-set
-        // are not double-counted (newlyMarked is false, doneBytes unchanged).
-        return if (!newlyMarked || session.pending.size >= ackEvery) {
-            listOf(buildAck(session, frame.transferId))
-        } else {
-            emptyList()
         }
     }
 

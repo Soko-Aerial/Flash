@@ -130,30 +130,64 @@ internal class SendPipeline(
         var bytesSent = 0L
         var chunksSkipped = 0L
         var bytesSkipped = 0L
-        val stream = chunker.openChunkStream(source, meta, plan, expectFileSha256Hex = digest)
-        try {
-            var index = 0
-            while (index < plan.totalChunks) {
-                val frame = stream.next()
-                if (index in resumeSet) {
-                    // Linear-skip: chunk was already read+hashed by the stream; drop silently.
-                    chunksSkipped++
-                    bytesSkipped += frame.data.size
-                    ChunkBufferPool.release(frame.data)
+
+        // O23-02: Fast seek directly past any contiguous done prefix when source is SeekableChunkSource
+        val firstMissing = (0 until plan.totalChunks).firstOrNull { it !in resumeSet } ?: plan.totalChunks
+        val startIndex = if (firstMissing > 0 && source is SeekableChunkSource) firstMissing else 0
+        if (startIndex > 0) {
+            chunksSkipped = startIndex.toLong()
+            for (i in 0 until startIndex) {
+                val len = if (i == plan.totalChunks - 1) {
+                    val rem = plan.totalBytes % plan.chunkSize
+                    if (rem == 0L) plan.chunkSize.toLong() else rem
                 } else {
-                    val ok = send(ChunkFrame.serialize(frame))
-                    ChunkBufferPool.release(frame.data)
-                    if (!ok) {
-                        return SendResult.Aborted(
-                            chunksSentBeforeFailure = chunksSent.toInt(),
-                            failedIndex = index,
-                            resumeCandidates = confirmed!!.doneIndexes(),
-                        )
-                    }
-                    sentVec.markReceived(index)
-                    chunksSent++
-                    bytesSent += frame.data.size
+                    plan.chunkSize.toLong()
                 }
+                bytesSkipped += len
+            }
+        }
+
+        val stream = chunker.openChunkStream(
+            source = source,
+            meta = meta,
+            plan = plan,
+            expectFileSha256Hex = digest,
+            startIndex = startIndex,
+        )
+        try {
+            var index = startIndex
+            while (index < plan.totalChunks) {
+                if (index in resumeSet) {
+                    chunksSkipped++
+                    val len = if (index == plan.totalChunks - 1) {
+                        val rem = plan.totalBytes % plan.chunkSize
+                        if (rem == 0L) plan.chunkSize.toLong() else rem
+                    } else {
+                        plan.chunkSize.toLong()
+                    }
+                    bytesSkipped += len
+                    if (source is SeekableChunkSource) {
+                        stream.skipTo(index + 1)
+                    } else {
+                        val frame = stream.next()
+                        ChunkBufferPool.release(frame.data)
+                    }
+                    index++
+                    continue
+                }
+                val frame = stream.next()
+                val ok = send(ChunkFrame.serialize(frame))
+                ChunkBufferPool.release(frame.data)
+                if (!ok) {
+                    return SendResult.Aborted(
+                        chunksSentBeforeFailure = chunksSent.toInt(),
+                        failedIndex = index,
+                        resumeCandidates = confirmed!!.doneIndexes(),
+                    )
+                }
+                sentVec.markReceived(index)
+                chunksSent++
+                bytesSent += frame.data.size
                 index++
             }
         } finally {

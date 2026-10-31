@@ -29,7 +29,13 @@ public actual fun rememberFlashCameraCaptureLauncher(
     var currentPath by rememberSaveable { mutableStateOf<String?>(null) }
 
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
-        if (!success) return@rememberLauncherForActivityResult
+        if (!success) {
+            // O05-08: User discarded capture; delete the unneeded temp file immediately.
+            currentPath?.let { path -> runCatching { File(path).delete() } }
+            currentPath = null
+            currentUri = null
+            return@rememberLauncherForActivityResult
+        }
         // A restored value can outlive its temp file (the system may clear the cache), so the file is
         // checked rather than the saved path trusted.
         restoredCapture(currentUri, currentPath)?.let(onCaptured)
@@ -42,6 +48,7 @@ public actual fun rememberFlashCameraCaptureLauncher(
             override fun launch() {
                 try {
                     val cacheDir = File(context.cacheDir, "camera_captures").apply { mkdirs() }
+                    pruneOldCameraCaptures(cacheDir)
                     val file = File(cacheDir, "flash_photo_${System.currentTimeMillis()}.jpg")
                     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                     currentUri = uri.toString()
@@ -78,4 +85,18 @@ internal fun restoredCapture(uri: String?, path: String?): FlashPickedFile? {
         size = file.length(),
         isPersistable = true,
     )
+}
+
+/**
+ * O05-08 / O23-04: Prunes abandoned camera captures older than [maxAgeMs] from [cacheDir].
+ */
+internal fun pruneOldCameraCaptures(cacheDir: File, maxAgeMs: Long = 24 * 60 * 60 * 1000L) {
+    runCatching {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        cacheDir.listFiles()?.forEach { file ->
+            if (file.isFile && file.lastModified() < cutoff) {
+                file.delete()
+            }
+        }
+    }
 }
