@@ -116,7 +116,6 @@ class AutoConnectorTest {
             sightings = { rig.sightings.value },
             dial = { d -> rig.dials += d.key; error("boom") },
             log = { rig.logs += it },
-            sweepIntervalMs = 5_000L,
             nowMs = { testScheduler.currentTime },
         )
         rig.see("c")
@@ -204,7 +203,6 @@ class AutoConnectorTest {
             sweepHosts = { hits.value },
             sweepHitDialed = { host -> dialed += host; hits.value = hits.value - host },
             log = { rig.logs += it },
-            sweepIntervalMs = 5_000L,
             nowMs = { testScheduler.currentTime },
         )
         connector.start(hits)

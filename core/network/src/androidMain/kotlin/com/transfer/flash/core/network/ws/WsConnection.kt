@@ -6,6 +6,7 @@ import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
 import com.transfer.flash.core.network.resilience.BoundedSendQueue
 import com.transfer.flash.core.network.resilience.EnqueueResult
+import com.transfer.flash.core.network.resilience.RejectReason
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.Socket
@@ -72,12 +73,19 @@ public class WsConnection(
     public val remoteLabel: String,
     private val listener: Listener,
     private val pingIntervalMs: Long = DEFAULT_PING_INTERVAL_MS,
-    private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
     private val readTimeoutMs: Int = DEFAULT_READ_TIMEOUT_MS,
-    private val nowMs: () -> Long = { monotonicNowMs() },
+    private val livenessTimeoutMs: Long = DEFAULT_LIVENESS_TIMEOUT_MS,
+    /** Keepalive clock (SEC-D26-01): monotonic, so a wall-clock jump is not mistaken for silence. */
+    private val nowMs: () -> Long = ::monotonicNowMs,
     /**
-     * Optional deferred fingerprint: populated when the socket is accepted before the peer's
-     * leaf certificate arrives, checked once it does.
+     * SPKI fingerprint of the peer's TLS leaf, recorded when pin evaluation had to be deferred
+     * because the peer's id was not known during the handshake: an outbound manual-IP dial
+     * (ADR-040) or ANY inbound connection (audit S1). Non-null means the network still owes
+     * `FlashPinVerifier.isPinned` against the id from `FLASH_WS_HELLO` before registering it.
+     *
+     * Still populated on a RESUMED TLS session (ADR-271): `tls.session.peerCertificates` carries
+     * the chain from the handshake the session cache kept, so the fingerprint does not depend on
+     * the trust manager being re-invoked.
      */
     public val deferredPeerLeafFingerprintHex: String? = null,
     /**
@@ -363,7 +371,27 @@ public class WsConnection(
         val result = if (isPriority) sendQueue.enqueuePriority(frame) else sendQueue.enqueue(frame)
         return when (result) {
             is EnqueueResult.Enqueued -> true
-            is EnqueueResult.Rejected -> false
+            is EnqueueResult.Rejected -> when (result.reason) {
+                RejectReason.Closed -> false
+                // A full queue means the WRITER is behind, not that the peer is gone. Reporting
+                // that as `false` is what the transfer path reads as *permanent death of this
+                // channel* (`StreamChannel.sendFrame`), so it returned every un-ACKed chunk of a
+                // perfectly healthy stream to the shared pool whenever the link was slower than
+                // the source. Wait for room instead - the pre-queue write path did exactly that by
+                // blocking on the write lock, only without a bound.
+                RejectReason.QueueFull ->
+                    when (sendQueue.enqueueBlocking(frame, QUEUE_OFFER_TIMEOUT_MS, priority = isPriority)) {
+                        is EnqueueResult.Enqueued -> true
+                        is EnqueueResult.Rejected -> {
+                            FlashLog.w(
+                                TAG,
+                                "WS send queue full for ${QUEUE_OFFER_TIMEOUT_MS}ms remote=$remoteLabel " +
+                                    "opcode=$opcode; failing this frame",
+                            )
+                            false
+                        }
+                    }
+            }
         }
     }
 
@@ -491,5 +519,17 @@ public class WsConnection(
          * the same tick (see [WsKeepalive.confirmClose]).
          */
         private const val STALL_CONFIRM_DELAY_MS: Long = 2_000L
+
+        /**
+         * How long [send] waits for room in [sendQueue] before failing the frame.
+         *
+         * Sized for a writer *stall*, not for a peer's lifetime: the queue holds 64 frames
+         * (~4 MB at the default 64 KB chunk, ~64 MB if the chunker has adapted to its 1 MB
+         * ceiling - and it only adapts upward on a link fast enough to drain that in about a
+         * second), so a bound of a few seconds covers every merely-slow link while still failing
+         * in bounded time if the socket write is genuinely wedged. Pre-queue code applied no bound
+         * at all here.
+         */
+        private const val QUEUE_OFFER_TIMEOUT_MS: Long = 5_000L
     }
 }

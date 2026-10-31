@@ -129,8 +129,14 @@ public class CompositeDiscovery(
          * Default period between automatic sweeps: fast enough that a departed
          * peer disappears at most ~[DEFAULT_SWEEP_INTERVAL_MS] + [DEFAULT_GRACE_MS]
          * after its last real sighting, slow enough to be negligible load.
+         *
+         * REJECTED: raising this to 15 s (OPT-O10-05) — reverted. It inverts the invariant documented
+         * on [browseWatchdogMs] ("must exceed [sweepIntervalMs]", and the watchdog is 10 s), the
+         * claimed wakeup saving is unmeasured, and it makes a departed peer linger longer. Full
+         * reasoning, and what the finding actually needs, in the "Rejected: lengthening the sweep
+         * interval" section of [com.transfer.flash.core.discovery.multicast.MulticastTransport]'s KDoc.
          */
-        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
 
         /**
          * Default [browseWatchdogMs]: two sweep intervals. Long enough that an
@@ -396,9 +402,21 @@ public class CompositeDiscovery(
     // ---------------------------------------------------------------------
 
     /**
-     * OPT-O10-01: Informs discovery of display power state. When screen turns off and no transfer
-     * or call is in flight, discovery automatically downscales to [FlashDiscoveryMode.ECO] to save
-     * battery and release continuous Wi-Fi radio locks. Restores user-selected mode when screen turns on.
+     * Screen-off/on seam: downscales to [FlashDiscoveryMode.ECO] while the display is off and restores
+     * the user's last [setMode] choice when it comes back.
+     *
+     * **Nothing calls this yet** (verified 2026-10-31: no screen-state receiver in the `app` or
+     * `desktop` module; the only references are this file, the interface default and one test). The
+     * wiring is Stream G's wave-3 task — see the `TODO(wave-3)` on [FlashDiscovery.setScreenActive].
+     *
+     * **NOT discovery-only, and the caller owns that guard.** ECO is a whole-mode switch: it changes
+     * [DiscoveryModePolicy] *and* `ConnectionModePolicy` / `ConnectionStrategy.ECO`
+     * (`limitsSessions = true`), which parks and dials sessions differently. Nothing here checks
+     * whether a call or a transfer is in flight, so the caller must not fire this mid-call or
+     * mid-transfer.
+     *
+     * Idempotent (a repeated state returns immediately) and the mode switch itself happens in [scope]
+     * rather than inline, so a caller on the main looper never blocks on transport fan-out.
      */
     override fun setScreenActive(active: Boolean) {
         if (screenActive == active) return
@@ -419,6 +437,10 @@ public class CompositeDiscovery(
      * the mode into the status message prefix (e.g. `"[ECO] Advertising and
      * browsing"`). Existing consumers of [state] keep parsing the suffix
      * unchanged — the prefix is purely additive.
+     *
+     * Also records the mode as the user's preference, which [setScreenActive] restores on screen-on.
+     * While the screen is off the requested mode is remembered but NOT applied — the screen-off
+     * downscale wins until the screen comes back.
      */
     public suspend fun setMode(mode: FlashDiscoveryMode) {
         userPreferredMode = mode

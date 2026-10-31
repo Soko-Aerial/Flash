@@ -48,11 +48,18 @@ internal enum class RejectReason {
  *   every item matters (research: "drop when newer data invalidates older" -
  *   live video/sensors - does not apply). Silent eviction would corrupt FIFO
  *   ordering guarantees C6 relies on for revision/receipt replay.
- * - Not block: a blocked producer holds the caller's coroutine on a dead
- *   peer's queue - deadlock-prone under exactly the failure conditions
+ * - Not block, by default: a blocked producer holds the caller's coroutine on a
+ *   dead peer's queue - deadlock-prone under exactly the failure conditions
  *   (half-open socket) this class exists to survive. Research: fail-fast is
  *   correct when "the caller has a fallback" - here the fallback is the
  *   durable outbox owned by C6.
+ *
+ * [enqueueBlocking] is the bounded exception, for the one caller with NO
+ * fallback: the WebSocket write path, where a rejected frame is read as
+ * *permanent death of that transfer stream* (`StreamChannel` contract) and
+ * throws away every un-ACKed chunk on it. A writer that is simply behind must
+ * not be mistaken for a dead peer (integrator review, 2026-10-31). It waits at
+ * most the caller's own bound and still reports QueueFull once that expires.
  *
  * Thread-safe: multiple producers, single logical consumer (drain loop).
  */
@@ -68,6 +75,10 @@ internal class BoundedSendQueue<T>(
 
     private val lock = ReentrantLock()
     private val notEmpty = lock.newCondition()
+
+    /** Signalled whenever an item leaves the queue, waking producers parked in [enqueueBlocking]. */
+    private val notFull = lock.newCondition()
+
     private val priorityBuffer = ArrayDeque<T>(priorityCapacity)
     private val buffer = ArrayDeque<T>(capacity)
 
@@ -107,8 +118,47 @@ internal class BoundedSendQueue<T>(
      */
     fun poll(): T? = lock.withLock {
         val item = priorityBuffer.pollFirst() ?: buffer.pollFirst()
-        if (item != null) notEmpty.signalAll() // wake any close-waiters' producers
+        if (item != null) {
+            notEmpty.signalAll() // wake any close-waiters' producers
+            notFull.signalAll() // wake producers waiting for room ([enqueueBlocking])
+        }
         item
+    }
+
+    /**
+     * Appends [item] to the normal FIFO queue, or to the high-priority queue when [priority] is
+     * set, waiting up to [timeoutMs] for the drain loop to make room first.
+     *
+     * The caller this exists for is the WebSocket write path: it has no fallback for a rejected
+     * frame, because the transfer dispatcher reads a `false` write as *permanent death of this
+     * channel* and returns its un-ACKed chunks to the shared pool ([EnqueueResult] KDoc). Waiting
+     * is also strictly less blocking than the code it replaced - the pre-queue write path took the
+     * write lock and wrote the frame itself, with no bound at all.
+     *
+     * Returns [EnqueueResult.Enqueued], or [Rejected] with [RejectReason.QueueFull] once
+     * [timeoutMs] elapsed without room (or [RejectReason.Closed] when the queue closed while
+     * waiting).
+     */
+    fun enqueueBlocking(item: T, timeoutMs: Long, priority: Boolean = false): EnqueueResult<T> {
+        // Explicit lock/unlock rather than `withLock`: this body returns from inside an infinite
+        // loop, which an inline lambda's return-type inference cannot express as EnqueueResult<T>.
+        lock.lock()
+        try {
+            var remainingNanos = timeoutMs * 1_000_000
+            while (true) {
+                if (closed) return EnqueueResult.Rejected(RejectReason.Closed)
+                val full = if (priority) priorityBuffer.size >= priorityCapacity else buffer.size >= capacity
+                if (!full) {
+                    if (priority) priorityBuffer.addLast(item) else buffer.addLast(item)
+                    notEmpty.signalAll()
+                    return EnqueueResult.Enqueued(priorityBuffer.size + buffer.size)
+                }
+                if (remainingNanos <= 0) return EnqueueResult.Rejected(RejectReason.QueueFull)
+                remainingNanos = notFull.awaitNanos(remainingNanos)
+            }
+        } finally {
+            lock.unlock()
+        }
     }
 
     /**
@@ -122,7 +172,9 @@ internal class BoundedSendQueue<T>(
             if (remainingNanos <= 0) return@withLock null
             remainingNanos = notEmpty.awaitNanos(remainingNanos)
         }
-        priorityBuffer.pollFirst() ?: buffer.pollFirst()
+        val taken = priorityBuffer.pollFirst() ?: buffer.pollFirst()
+        if (taken != null) notFull.signalAll()
+        taken
     }
 
     /**
@@ -165,6 +217,11 @@ internal class BoundedSendQueue<T>(
         lock.withLock {
             closed = true
             notEmpty.signalAll()
+            // Wake producers parked in [enqueueBlocking] too: without this they sleep out the rest
+            // of their bound and then report [RejectReason.QueueFull], when the truthful answer is
+            // [RejectReason.Closed] and they could have had it at once (integrator review,
+            // 2026-10-31). Matters on the close path of a socket that has senders mid-offer.
+            notFull.signalAll()
         }
     }
 
