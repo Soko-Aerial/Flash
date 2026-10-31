@@ -174,8 +174,7 @@ fun FlashComposer(
             .fillMaxWidth()
             .background(colors.composerSurface)
             .navigationBarsPadding()
-            .imePadding()
-            .animateContentSize(),
+            .imePadding(),
     ) {
         HorizontalDivider(
             color = colors.borderSubtle,
@@ -253,6 +252,7 @@ fun FlashComposer(
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
+                                    .animateContentSize()
                                     .clip(FlashShapes.composerInput)
                                     .background(colors.composerInputBackground)
                                     .border(
