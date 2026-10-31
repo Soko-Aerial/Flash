@@ -60,6 +60,13 @@ Evidence:
 Back in when: `PERF-A04` is answered and `build-release.ps1` + `docs/release-build.md` + `REL-*`
 are updated in the same change; sizes are in EXP-80.
 
+**Done 2026-10-31 (integrator, after ADR-232 item 9):** the splits are in `dev` again, and all three
+conditions hold - the script reads `output-metadata.json` instead of a file name, deletes the output
+folder before the build and refuses an APK older than the build (proven: a second run with
+`-KeepApkOutput` failed with *"… is older than this build, so a stale APK would be shipped"*), and
+`docs/release-build.md` + `REL-01b` describe per-ABI files. Measured: arm64 16.79 MiB vs universal
+52.15 MiB (EXP-093). ADR-243.
+
 ### 2.2 `O22-04` jlink module pruning — invisible to every check available here
 
 What it changed: `desktop/build.gradle.kts` `modules("java.sql", "jdk.unsupported")`, dropping

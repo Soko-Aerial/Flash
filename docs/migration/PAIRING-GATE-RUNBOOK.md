@@ -31,7 +31,8 @@ showed **Pair** instead of **Chat** for the desktop, forever.
    clients. If discovery sees nothing, this is the first suspect, not the last.
 3. **Builds are green** (verified 2026-09-13):
    - `./gradlew :app:assembleDebug` → BUILD SUCCESSFUL, APK at
-     `app\build\outputs\apk\debug\app-debug.apk`
+     `app\build\outputs\apk\debug\app-universal-debug.apk` (per-ABI files sit beside it since the ABI splits, ADR-243;
+     `app-debug.apk` is no longer produced - a leftover from an older build may still be there)
    - `./gradlew :desktop:compileKotlinJvm` → BUILD SUCCESSFUL
 4. **Environment** for the desktop build (every new shell):
    `JAVA_HOME=C:\Users\KaliOxygen\.gradle\jdks\jetbrains_s_r_o_-21-amd64-windows.2` and

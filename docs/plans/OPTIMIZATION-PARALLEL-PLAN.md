@@ -367,10 +367,9 @@ installer size, and one cold `:core:messaging:compileKotlinJvm`. Evidence runs m
 **Status 2026-10-30 Ã¢â‚¬â€ MERGED, reviewed (ADR-231).** 21 of 25 findings landed; see
 `logs/streams/build/INTEGRATOR-REVIEW.md` for the per-finding table and Ã‚Â§6.3.2 for the gate numbers.
 
-- Landed: `O21-01`Ã¢â‚¬Â¦`O21-10`, `O22-02`, `O22-05`, `O20-05`, `O19-04`, `O01-03`/`O28-01` (module only), `O27-01/02/05`.
-- **Not landed Ã¢â‚¬â€ owner decisions, not stream work:** `O22-01` ABI splits (breaks `tools/build-release.ps1:265`; the
-  distributed file is the universal APK anyway Ã¢â€ â€™ PERF-A04), `O22-04` jlink pruning (unverifiable without an installer
-  smoke test Ã¢â€ â€™ PERF-A03), `O22-06` narrowed WebRTC keeps (reverses a documented release-only crash fix), `O22-07`
+- Landed: `O21-01`Ã¢â‚¬Â¦`O21-10`, `O22-02`, `O22-05`, `O20-05`, `O19-04`, `O01-03`/`O28-01` (module only), `O27-01/02/05`. `O22-01` (built 2026-10-31 by the review: ABI splits + the release script reads `output-metadata.json` and fails on a stale or missing output).
+- **Not landed — owner decisions, not stream work:** `O22-04` jlink pruning (unverifiable without an installer
+  smoke test → PERF-A03), `O22-06` narrowed WebRTC keeps (reverses a documented release-only crash fix), `O22-07`
   `:ui:chat` dependency removal (published POM; the file says why they stay).
 - **Not landed Ã¢â‚¬â€ not delivered:** `O19-05` Ã¢â‚¬â€ `-Xshare:auto` is the JVM default and no AppCDS archive is shipped, so
   `O01-06` is **not** closed. Still open.
@@ -624,7 +623,7 @@ The integrator keeps this table current; a stream's own fragment holds its detai
 
 | Stream | Worktree | Batch 1 | Batch 2 | Batch 3 | Merged (`git log --oneline -1`) | Gate | Device checks owed |
 |---|---|---|---|---|---|---|---|
-| A build | `opt-build` | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | `0cc10902` (merge `4da12c9c`) | **PASS** Ã¢â‚¬â€ gate 1 204 s (2,138 tests), gate 2 490 s (1,526 tests, 2 known); 21 of 25 findings kept, 5 reverted (ADR-231, see Ã‚Â§2 of `logs/streams/build/INTEGRATOR-REVIEW.md`) | PERF-A01..A07 (A05/A06 already PASS) |
+| A build | `opt-build` | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | `0cc10902` (merge `4da12c9c`) | **PASS** Ã¢â‚¬â€ gate 1 204 s (2,138 tests), gate 2 490 s (1,526 tests, 2 known); 21 of 25 findings kept, 5 reverted (ADR-231, see Ã‚Â§2 of `logs/streams/build/INTEGRATOR-REVIEW.md`) | PERF-A01..A07 (A05/A06 already PASS; **A04 built by the review 2026-10-31 - four APKs, universal 52.15 MiB vs arm64 16.79 MiB, stale-output guard proven, EXP-093 - so A01 is runnable**) |
 | D data | `opt-data` | Ã¢Ëœâ€˜ | Ã¢â€”Â | Ã¢â€”Â | `f3154de0` (merge `3b28e5be`) | forced gate 1 **PASS** on the merged tree (432 tasks, 5 m 34 s, 2 416 tests, 0 failures; two earlier attempts failed on the test fakes the projection change invalidated, updated in the same follow-up); 28-file diff reviewed, gate 2 forced green except the two known ERROR-106 `:app` rows; `O06-08`/`O27-04` not delivered, 6 defects fixed (`logs/streams/data/INTEGRATOR-REVIEW.md`) | PERF-D01 (paging on a long thread), PERF-D02 (search deep link), PERF-D03 (summary consumer), PERF-D04 (in-memory SQLite) |
 | T transfer | `opt-transfer` | Ã¢Ëœâ€˜ | Ã¢â€”Â | Ã¢Ëœâ€˜ | `01a1d4d9` (merge) | forced gate 1 **PASS** on the merged tree (2 416 tests) and gate 2 forced green except the two expected ERROR-106 `:app` rows (1 673 host tests, `:core:transfer` re-run 375 green after the last edit); a resumed send was misaligned on the branch (fixed, ERROR-893) and the endgame re-sent merely queued frames (fixed, ERROR-894); `O05-01`/`O07-01` not delivered, `O23-02`/`O07-02`/`O23-03` inert without a host caller | PERF-T01 (send a 2 GB file), PERF-T02 (resume), PERF-T04 (one pass), PERF-T05 (seekable source), PERF-T06 (`.part` staging), PERF-T07 (FAT32), PERF-T08 (`saveToGallery`), PERF-T09 (settle/ACK grace), PERF-T10 (no duplicate tail on resume) |
 | U ui | `opt-ui` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-U01 (scroll during transfer) |
@@ -1312,7 +1311,7 @@ of them are now decided in **ADR-232**. A stream that reaches one of these **imp
 | 7 | `OPT-O09-04`/`O09-07` wire | **No wire change now**; N takes the allocation half (`O09-05`, `O09-06`, `O14-02`) | N |
 | 8 | `OPT-O08-03` swarm fairness | **Approved** (age-weighted / deficit round-robin), proved by a multi-device run | S |
 | 9 | `OPT-O22-01` per-ABI APKs (PERF-A04) | **Approved**: per-ABI **and** universal, with the release script collecting outputs and failing on a stale one | integrator |
-| 10 | `PERF-A03` desktop installer | **Run the smoke test** before the next Windows build ships | owner machine |
+| 9 | `OPT-O22-01` per-ABI APKs (PERF-A04) | **Approved and built 2026-10-31** (ADR-243): per-ABI **and** universal, the release script collects what `output-metadata.json` lists and fails on a stale, missing or duplicate-`versionCode` output | integrator |
 | 11 | `PERF-A02` baseline profile | **Deferred** to when G touches startup | Ã¢â‚¬â€ |
 | 12 | `PERF-A07` sleep-based tests | **D's first commit**; it is what allows 2 forks again | D |
 

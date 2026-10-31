@@ -2180,7 +2180,8 @@ write their outputs and the run gets none of it back. On the normal loop the cac
 | `Flash-2.1.0.msi` | 103.6 MB (98.76 MiB), from 123.3 MB before the sqlite strip |
 
 The per-ABI figures are real but the universal APK is what the release script packages today, so the user-visible saving is
-zero until the distribution decision in PERF-A04. This is why `O22-01` was reverted rather than merged.
+zero until the distribution decision in PERF-A04. This is why `O22-01` was reverted rather than merged. (**Superseded
+2026-10-31:** the decision was made and ABI splits ship, see `EXP-093` and ADR-243.)
 
 ### Conclusion
 - Parallel Gradle plus a sane fork count is a genuine win: gate 1 275 s -> 204 s and gate 2 535 s -> 376 s (both forced).
@@ -2254,3 +2255,32 @@ hashing). EXP-092 measures the capability, not today's app.
 treated every source as seekable, so a non-seekable resume labelled the wrong chunks (fix + a payload-asserting test in
 the merge follow-up; `logs/streams/transfer/INTEGRATOR-REVIEW.md` 2.1). `PERF-T02` now exists for the device case.
 
+
+## EXP-093 - Per-ABI and universal APKs after shipping them (2026-10-31, integrator)
+
+### Devices / environment
+Windows 11 (26100), 8 logical CPUs, 20 GB RAM, AGP 9.3.1, JDK 21 JBR, `:app:assembleRelease` alone (no tests). `dev` after the
+ABI splits in `app/build.gradle.kts` (ADR-243).
+
+### Why
+`EXP-80 addendum` measured the split sizes once and recorded that the saving was zero until the release script shipped
+them (`PERF-A04`). That is now built, so re-measure on the same task and check what a user actually downloads.
+
+### Artifacts, forced `:app:assembleRelease`
+| Artifact | Size |
+|---|---|
+| `app-arm64-v8a-release-unsigned.apk` | 17,600,991 B (16.79 MiB) |
+| `app-armeabi-v7a-release-unsigned.apk` | 11,697,699 B (11.16 MiB) |
+| `app-x86_64-release-unsigned.apk` | 19,075,843 B (18.19 MiB) |
+| `app-universal-release-unsigned.apk` | 54,679,288 B (52.15 MiB) |
+
+### Timings
+`:app:assembleRelease` 6 m 53 s on a cold packaging output; 22 s when only the APK output folder is deleted (R8 output reused);
+`tools/build-release.ps1 -Target android -Apk signed` end to end 35 s, four APKs aligned, signed and verified. Packaging is
+paid on every run because the script deletes the folder first - deliberate (ADR-243).
+
+### Conclusion
+- The arm64 file is 32 % of the universal one (was 32.1 % in EXP-80: unchanged), so a phone that can only use one ABI saves
+  about two thirds of the download now that both are published.
+- The universal APK is 54.68 MB against EXP-80's 54.63 MB: +0.05 MB, inside the noise band, no regression to chase.
+- All four carry `versionCode` 4 - AGP does not offset split codes. Still not device-verified: `PERF-A01`, `REL-01b`.

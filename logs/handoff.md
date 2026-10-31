@@ -1,5 +1,12 @@
 # Current Handoff
 
+> 2026-10-31 `PERF-A04` (after the wave): **the release ships per-ABI APKs next to the universal one, and the script can no
+> longer sign a stale artifact.** `tools/build-release.ps1` deletes the APK output folder before the build, reads
+> `output-metadata.json` instead of a hard-coded name, and fails when it is missing, when a listed APK is absent and when one is
+> older than the build itself - proven by a run with `-KeepApkOutput`: *"app-universal-release-unsigned.apk is older than this
+> build, so a stale APK would be shipped"*. arm64 16.79 MiB against the 52.15 MiB universal file. ADR-243, EXP-093, `REL-01b`;
+> `PERF-A01` is runnable.
+>
 > 2026-10-31 Wave 1 (data + transfer): **both streams reviewed, merged and corrected; both are in `dev`, nothing pushed,
 > nothing device-verified.** Gates after the fixes: gate 1 forced PASS (2 416 tests) and gate 2 forced with only the two known
 > ERROR-106 `:app` rows (1 673 host tests; `:core:transfer` re-run 375 green after the last edit). Stream D (28 files) gate 1 forced PASS; its three "projections" (`O06-08`) actually still ran a

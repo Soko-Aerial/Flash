@@ -38,6 +38,11 @@
     open, so the caller waits until the daemon exits hours later. Not needed in a normal
     terminal window.
 
+.PARAMETER KeepApkOutput
+    Keep app\build\outputs\apk\release instead of deleting it before the build. A packaging
+    step that Gradle considers up to date then leaves the old APKs in place, and the stale
+    check is what refuses them. Useful to exercise that check.
+
 .PARAMETER NewKeystore
     Create a new release keystore with keytool and write keystore.properties, then stop.
 #>
@@ -52,6 +57,7 @@ param(
     [switch]$UberJar,
     [switch]$Clean,
     [switch]$NoDaemon,
+    [switch]$KeepApkOutput,
     [switch]$NewKeystore
 )
 
@@ -249,6 +255,16 @@ if ($doDesktop) {
 Write-Step "Building Flash (Android $appVersion, desktop $deskVersion)"
 Write-Note "JDK:   $jdk"
 Write-Note "Tasks: $($tasks -join ' ')"
+if ($doAndroid) {
+    # The APK output folder is deleted before every Android build, so a file from an earlier build
+    # can never be collected, aligned and signed here (PERF-A04). A release build pays the packaging
+    # step again; that is the point. The stale check after the build is the second belt for it, and
+    # -KeepApkOutput lets a caller exercise that check instead.
+    $apkOutputDir = Join-Path $RepoRoot 'app\build\outputs\apk\release'
+    if (-not $KeepApkOutput -and (Test-Path $apkOutputDir)) {
+        Remove-Item -LiteralPath $apkOutputDir -Recurse -Force
+    }
+}
 $started = Get-Date
 Push-Location $RepoRoot
 try {
@@ -262,22 +278,59 @@ New-Item -ItemType Directory -Force -Path $dist | Out-Null
 $produced = @()
 
 if ($doAndroid) {
-    $unsignedSrc = Join-Path $RepoRoot 'app\build\outputs\apk\release\app-release-unsigned.apk'
-    if (-not (Test-Path $unsignedSrc)) {
-        Fail "expected $unsignedSrc. If a signingConfig was added to app/build.gradle.kts, remove it: this script does the signing."
+    # ABI splits are on (app/build.gradle.kts), so AGP writes one APK per ABI plus a universal one
+    # and no plain `app-release-unsigned.apk`. `output-metadata.json` is the build's own list of what
+    # it wrote; collecting from it (instead of a hard-coded name) means a leftover APK from an
+    # earlier build can never be signed and shipped.
+    $apkDir = Join-Path $RepoRoot 'app\build\outputs\apk\release'
+    $metadata = Join-Path $apkDir 'output-metadata.json'
+    if (-not (Test-Path $metadata)) {
+        Fail "expected $metadata. The ABI splits make AGP write it; without it this build cannot be verified."
     }
-    if ($wantUnsigned) {
-        $out = Join-Path $dist "Flash-$appVersion-unsigned.apk"
-        Copy-Item -LiteralPath $unsignedSrc -Destination $out -Force
-        $produced += $out
+    $elements = @((Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json).elements)
+    if ($elements.Count -eq 0) { Fail "$metadata lists no APK" }
+
+    $startedUtc = $started.ToUniversalTime()
+    $codes = @()
+    $artifacts = @()
+    foreach ($element in $elements) {
+        $src = Join-Path $apkDir $element.outputFile
+        if (-not (Test-Path $src)) { Fail "output-metadata.json lists $($element.outputFile) but it is not on disk" }
+        if ((Get-Item -LiteralPath $src).LastWriteTimeUtc -lt $startedUtc) {
+            Fail ("$($element.outputFile) is older than this build, so a stale APK would be shipped. " +
+                "Delete $apkDir and run again.")
+        }
+        $codes += $element.versionCode
+        $abi = @($element.filters | Where-Object { $_.filterType -eq 'ABI' } | ForEach-Object { $_.value })
+        $suffix = if ($abi.Count -gt 0) { '-' + $abi[0] } else { '' }
+        $artifacts += [pscustomobject]@{
+            Source    = $src
+            Universal = ($suffix -eq '')
+            Unsigned  = "Flash-$appVersion$suffix-unsigned.apk"
+            Signed    = "Flash-$appVersion$suffix.apk"
+        }
     }
-    if ($wantSigned) {
-        Write-Step "Signing the APK"
+    if (-not ($artifacts | Where-Object Universal)) { Fail "no universal APK in $metadata" }
+    if (-not ($artifacts | Where-Object { $_.Signed -like '*-arm64-v8a.apk' })) {
+        Fail "no arm64-v8a APK in $metadata, but the release ships per-ABI files as well (ADR-232 item 9)"
+    }
+    # AGP gives the whole split set one versionCode (all four carried 4 when this was built), which is
+    # what a split install needs; report it so a forgotten bump stays visible in the log.
+    Write-Note "versionCode: $(@($codes | Sort-Object -Unique) -join ', ') (shared by the split set)"
+
+    foreach ($artifact in $artifacts) {
+        if ($wantUnsigned) {
+            $out = Join-Path $dist $artifact.Unsigned
+            Copy-Item -LiteralPath $artifact.Source -Destination $out -Force
+            $produced += $out
+        }
+        if (-not $wantSigned) { continue }
+        Write-Step "Signing $(Split-Path -Leaf $artifact.Source)"
         $aligned = Join-Path $dist 'aligned.tmp.apk'
-        $signedOut = Join-Path $dist "Flash-$appVersion.apk"
+        $signedOut = Join-Path $dist $artifact.Signed
         # -P 16: 16 KB page alignment for the uncompressed native libraries (WebRTC, SQLCipher),
         # which Android 15+ devices with 16 KB pages require.
-        Invoke-Native (Join-Path $buildTools 'zipalign.exe') @('-f', '-P', '16', '4', $unsignedSrc, $aligned) 'zipalign'
+        Invoke-Native (Join-Path $buildTools 'zipalign.exe') @('-f', '-P', '16', '4', $artifact.Source, $aligned) 'zipalign'
         $env:FLASH_SIGN_KS_PASS = $signing.StorePassword
         $env:FLASH_SIGN_KEY_PASS = $signing.KeyPassword
         try {

@@ -7338,3 +7338,38 @@ identities, so an eavesdropper on shared Wi-Fi cannot read or forge a transfer.
 ### Revisit when
 A measured, credible CPU saving appears that cannot be had any other way.
 
+
+
+## ADR-243 - Per-ABI *and* universal APKs, and a release script that verifies its own outputs (2026-10-31)
+
+Implements ADR-232 item 9 (`OPT-O22-01`, `PERF-A04`). Folded from Stream A's reverted attempt, built by the integrator.
+
+### Decision
+1. `app/build.gradle.kts` enables `splits.abi` for `arm64-v8a`, `armeabi-v7a` and `x86_64`, **plus** `isUniversalApk`. The
+   universal APK stays `Flash-<version>.apk`, the file every existing instruction names; the per-ABI files are
+   `Flash-<version>-<abi>.apk` (about a third of the size, EXP-80).
+2. `tools/build-release.ps1` deletes `app/build/outputs/apk/release` before the Android build, then reads
+   `app/build/outputs/apk/release/output-metadata.json`, the build's own record, and fails when the file is missing, when a
+   listed APK is absent and **when a listed APK is older than this build** (the old script only `Test-Path`ed one hard-coded
+   name, so a leftover APK from an earlier build would be aligned, signed and shipped).
+
+### Context
+Stream A turned splits on and had to revert them, because `assembleRelease` stops producing `app-release-unsigned.apk`
+and the script read exactly that. The owner answered (ADR-232): per-ABI *and* universal, with the script collecting outputs
+and failing on a stale one.
+
+### Alternatives considered
+- Universal only (today's behaviour): one 54.63 MB file for everyone, double the download for a phone that can only use
+  one ABI.
+- Per-ABI only: small, but links to `Flash-<ver>.apk` and the store-install habit break.
+- Trusting Gradle's exit code instead of the metadata: it cannot detect the stale-file case, which is the actual defect.
+
+### Consequences
+- A release produces four APKs; `SHA256SUMS.txt` covers all of them. Measured at 2.1.0: arm64 16.79 MB, armv7 11.16 MB,
+  x86_64 18.19 MB, universal 52.15 MB.
+- **All four carry the same `versionCode`** (AGP does not offset split codes; it wrote 4 for each). That is what a split
+  install needs - the split set must match - and Android accepts an equal-code update of the same signature. The script
+  prints the code so a forgotten bump stays visible; do not "fix" it by forcing offsets without a device test.
+- A device that installed a split only accepts updates from that same split, so a split install is refreshed from that
+  split and not from the universal APK.
+- APK size per ABI and the update path are now device checks: `PERF-A01`, `REL-01b`.
