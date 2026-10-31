@@ -533,6 +533,7 @@ public class RealFlashTransferRepository(
         fileSize: Long,
         peerName: String,
         peerDeviceId: String? = null,
+        fileSha256Hex: String? = null,
     ) {
         val meta = FileMeta(
             transferId = transferId,
@@ -556,6 +557,7 @@ public class RealFlashTransferRepository(
             feedBufferFrames = transferProfile.feedBufferFrames,
             sharedBufferFrames = transferProfile.sharedBufferFrames,
             doneIndexes = doneIndexes,
+            fileSha256Hex = fileSha256Hex,
             workerDispatcher = workerDispatcher,
             peerDeviceId = peerDeviceId,
         )
@@ -1519,8 +1521,35 @@ public class RealFlashTransferRepository(
             WholeFileCheck.MISMATCH
         }
         when (check) {
-            WholeFileCheck.MATCH -> onIncomingCompleted(transferId, verified = true, localPath = localPath)
-            WholeFileCheck.UNVERIFIABLE -> onIncomingCompleted(transferId, verified = false, localPath = localPath)
+            WholeFileCheck.MATCH -> {
+                // O07-02: Atomically rename .part staging file to final destination once whole-file verification matches
+                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
+                    val target = localPath.removeSuffix(".part")
+                    try {
+                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
+                        target
+                    } catch (_: Exception) {
+                        localPath
+                    }
+                } else {
+                    localPath
+                }
+                onIncomingCompleted(transferId, verified = true, localPath = finalPath)
+            }
+            WholeFileCheck.UNVERIFIABLE -> {
+                val finalPath = if (!localPath.isNullOrBlank() && localPath.endsWith(".part")) {
+                    val target = localPath.removeSuffix(".part")
+                    try {
+                        fileSystem.atomicMove(localPath.toPath(), target.toPath())
+                        target
+                    } catch (_: Exception) {
+                        localPath
+                    }
+                } else {
+                    localPath
+                }
+                onIncomingCompleted(transferId, verified = false, localPath = finalPath)
+            }
             WholeFileCheck.MISMATCH -> {
                 if (!localPath.isNullOrBlank()) {
                     try {

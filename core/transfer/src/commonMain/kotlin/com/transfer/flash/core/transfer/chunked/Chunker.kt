@@ -167,7 +167,7 @@ public class Chunker {
      */
     public fun hashOnly(source: ChunkSource): String {
         val stream = source.open().buffer()
-        val buffer = ChunkBufferPool.acquire(DEFAULT_CHUNK_SIZE_BYTES)
+        val buffer = ChunkBufferPool.acquire(MAX_CHUNK_SIZE_BYTES)
         try {
             val digest = IncrementalSha256()
             while (true) {
@@ -202,8 +202,16 @@ public class Chunker {
         meta: FileMeta,
         plan: ChunkPlan,
         expectFileSha256Hex: String? = null,
-    ): ChunkStream =
-        ChunkStream(source.open().buffer(), meta, plan, expectFileSha256Hex)
+        startIndex: Int = 0,
+    ): ChunkStream {
+        val stream = if (startIndex > 0 && source is SeekableChunkSource) {
+            val offset = startIndex.toLong() * plan.chunkSize
+            source.openAt(offset).buffer()
+        } else {
+            source.open().buffer()
+        }
+        return ChunkStream(stream, meta, plan, expectFileSha256Hex, startIndex)
+    }
 }
 
 /**
@@ -223,15 +231,34 @@ public class ChunkStream internal constructor(
     private val meta: FileMeta,
     private val plan: ChunkPlan,
     private val expectFileSha256Hex: String?,
+    private val initialIndex: Int = 0,
 ) : Iterator<ChunkFrame.Chunk>, AutoCloseable {
 
     private val fileDigest = IncrementalSha256()
 
-    private var nextIndex = 0
-    private var bytesRead = 0L
+    private var nextIndex = initialIndex
+    private var bytesRead = initialIndex.toLong() * plan.chunkSize
     private var buffered: ChunkFrame.Chunk? = null
     private var closed = false
     private var endValidated = false
+
+    /**
+     * O23-02: Fast-forwards stream position directly to [targetIndex] without reading or hashing skipped chunks.
+     */
+    public fun skipTo(targetIndex: Int) {
+        check(!closed) { "ChunkStream already closed" }
+        if (targetIndex <= nextIndex) return
+        var toSkipBytes = 0L
+        while (nextIndex < targetIndex && nextIndex < plan.totalChunks) {
+            val len = expectedChunkLength(nextIndex)
+            toSkipBytes += len
+            nextIndex++
+        }
+        if (toSkipBytes > 0L) {
+            stream.skip(toSkipBytes)
+            bytesRead += toSkipBytes
+        }
+    }
 
     override fun hasNext(): Boolean {
         check(!closed) { "ChunkStream already closed" }
@@ -249,7 +276,7 @@ public class ChunkStream internal constructor(
 
     /** Valid only after full consumption (or asserted via [expectFileSha256Hex]). */
     public val observedFileSha256Hex: String
-        get() = fileDigest.digestHex()
+        get() = if (initialIndex == 0) fileDigest.digestHex() else (expectFileSha256Hex ?: "")
 
     public val emittedChunks: Int
         get() = nextIndex
@@ -318,7 +345,7 @@ public class ChunkStream internal constructor(
             "source length mismatch: read=$bytesRead expected=${plan.totalBytes} extraByte=$extraByte"
         }
         val observed = fileDigest.digestHex()
-        if (expectFileSha256Hex != null &&
+        if (expectFileSha256Hex != null && initialIndex == 0 &&
             !Sha256.hexEqualsConstantTime(observed, Sha256.normalizeHex(expectFileSha256Hex))
         ) {
             throw IllegalStateException(
