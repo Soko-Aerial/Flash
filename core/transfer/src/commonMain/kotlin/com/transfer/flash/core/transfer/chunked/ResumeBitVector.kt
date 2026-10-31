@@ -64,7 +64,8 @@ public class ResumeBitVector(public val totalChunks: Int) {
         require(totalChunks > 0) { "totalChunks must be > 0, was $totalChunks" }
     }
 
-    private val words = LongArray((totalChunks + WORD_BITS - 1) / WORD_BITS)
+    @PublishedApi
+    internal val words: LongArray = LongArray((totalChunks + WORD_BITS - 1) / WORD_BITS)
 
     /** Maintained by [markReceived], [reconcile] and [fromSerialized]; see the class KDoc. */
     private var received: Int = 0
@@ -105,20 +106,35 @@ public class ResumeBitVector(public val totalChunks: Int) {
         return out
     }
 
+    /**
+     * O02-10: Zero-allocation inline visitor over missing chunk indexes in ascending order.
+     */
+    public inline fun forEachMissingIndex(action: (Int) -> Unit) {
+        for (i in 0 until totalChunks) {
+            if (!isReceived(i)) action(i)
+        }
+    }
+
     /** Ascending list of received chunk indexes (what a receiver reports back to a sender). */
     public fun doneIndexes(): List<Int> {
         val out = ArrayList<Int>(receivedCount)
+        forEachDoneIndex { out.add(it) }
+        return out
+    }
+
+    /**
+     * O02-10: Zero-allocation inline visitor over all received chunk indexes in ascending order.
+     * Completely eliminates boxed [java.lang.Integer] and [ArrayList] churn.
+     */
+    public inline fun forEachDoneIndex(action: (Int) -> Unit) {
         for (w in words.indices) {
             var word = words[w]
             val base = w * WORD_BITS
             while (word != 0L) {
-                out.add(base + word.countTrailingZeroBits())
-                // Clears the lowest set bit, so the loop runs once per set bit and empty words cost
-                // nothing — this is what `BitSet.nextSetBit` was doing.
+                action(base + word.countTrailingZeroBits())
                 word = word and (word - 1L)
             }
         }
-        return out
     }
 
     /**
