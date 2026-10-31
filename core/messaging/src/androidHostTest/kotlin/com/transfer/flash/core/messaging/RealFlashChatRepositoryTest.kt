@@ -2034,6 +2034,9 @@ class RealFlashChatRepositoryTest {
             MutableStateFlow(members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt })
         override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId && it.isActive }.sortedBy { it.joinedAt }
+
+        override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+            members.values.filter { it.isActive }.sortedBy { it.joinedAt }
         override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt }
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =

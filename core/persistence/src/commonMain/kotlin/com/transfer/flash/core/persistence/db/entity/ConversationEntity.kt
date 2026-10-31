@@ -1,13 +1,19 @@
 package com.transfer.flash.core.persistence.db.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
  * A conversation. List ordering is `pinned DESC, sortOrder DESC` — [sortOrder] is the
  * recency/activity rank maintained by the repository layer (C6), not by SQL triggers.
  */
-@Entity(tableName = "conversations")
+@Entity(
+    tableName = "conversations",
+    indices = [
+        Index(value = ["pinned", "sortOrder"]),
+    ],
+)
 public data class ConversationEntity(
     @PrimaryKey val id: String,
     val title: String,

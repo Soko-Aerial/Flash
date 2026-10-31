@@ -1,6 +1,7 @@
 package com.transfer.flash.core.persistence.db.entity
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -8,7 +9,12 @@ import androidx.room.PrimaryKey
  * incremented via a single atomic SQL UPDATE so concurrent claimers observe monotonically
  * increasing counts. Removal from the outbox is the commit point of delivery.
  */
-@Entity(tableName = "outbox")
+@Entity(
+    tableName = "outbox",
+    indices = [
+        Index(value = ["nextAttemptAt"]),
+    ],
+)
 public data class OutboxEntity(
     @PrimaryKey val localId: String,
     val attempts: Int = 0,

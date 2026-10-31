@@ -62,7 +62,14 @@ internal class JdbcCipherSQLiteDriver(
         // `withKey` is the fork's cipher-key entry point; the default cipher (ChaCha20) is applied
         // when none is named, and naming one is not required for a per-device store that nothing
         // else has to read.
-        val properties = SQLiteMCConfig.Builder().withKey(key).build().toProperties()
+        // OPT-O06-04: Default SQLite JDBC driver to WAL, synchronous=NORMAL, and bounded cache.
+        val properties = SQLiteMCConfig.Builder().withKey(key).build().toProperties().apply {
+            setProperty("journal_mode", "WAL")
+            setProperty("synchronous", "NORMAL")
+            setProperty("busy_timeout", "5000")
+            setProperty("temp_store", "MEMORY")
+            setProperty("cache_size", "-4096")
+        }
         val connection = DriverManager.getConnection(url, properties)
         return JdbcCipherConnection(connection)
     }

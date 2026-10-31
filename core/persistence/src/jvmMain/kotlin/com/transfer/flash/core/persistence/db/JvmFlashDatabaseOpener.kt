@@ -1,7 +1,16 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.core.persistence.db
 
 import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.SQLiteDriver
+import androidx.sqlite.execSQL
+import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.common.perf.MemoryGovernor
+import com.transfer.flash.core.common.perf.MemoryTrimLevel
+import com.transfer.flash.core.common.perf.MemoryTrimListener
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 
@@ -65,8 +74,9 @@ public fun openEncryptedFlashDatabase(file: File, key: String): FlashDatabase {
  * be "B without C" under the charter, which is why `BundledSQLiteDriver` stays confined to
  * `:memory:` in `jvmTest` and the desktop path goes through [openEncryptedFlashDatabase].
  */
-public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase =
-    Room.databaseBuilder<FlashDatabase>(
+public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase {
+    val trim = JvmDatabaseTrimRegistration()
+    return Room.databaseBuilder<FlashDatabase>(
         name = name,
         factory = FlashDatabaseConstructor::initialize,
     )
@@ -74,5 +84,86 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
         // Every schema bump ships a step (C1.7); without this an older file cannot be opened and
         // no fallback exists. See FlashSchemaSteps for how to add one.
         .addMigrations(*FlashJvmMigrations.ALL)
+        .addCallback(object : RoomDatabase.Callback() {
+            override fun onCreate(connection: SQLiteConnection) {
+                super.onCreate(connection)
+                try {
+                    connection.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
+                } catch (e: Throwable) {
+                    FlashLog.w("DATABASE", "Failed to set auto_vacuum on create on Desktop: ${e.message}")
+                }
+            }
+
+            override fun onOpen(connection: SQLiteConnection) {
+                super.onOpen(connection)
+                val pragmas = listOf(
+                    "PRAGMA journal_mode = WAL;",
+                    "PRAGMA synchronous = NORMAL;",
+                    "PRAGMA busy_timeout = 5000;",
+                    "PRAGMA temp_store = MEMORY;",
+                    "PRAGMA cache_size = -4096;",
+                    "PRAGMA journal_size_limit = 4194304;",
+                )
+                for (pragma in pragmas) {
+                    try {
+                        connection.execSQL(pragma)
+                    } catch (e: Throwable) {
+                        FlashLog.w("DATABASE", "Failed to set SQLite pragma '$pragma' on Desktop: ${e.message}")
+                    }
+                }
+                trim.attach(
+                    isOpen = { true },
+                    shrink = {
+                        try {
+                            connection.execSQL("PRAGMA shrink_memory;")
+                            FlashLog.i("DATABASE", "Executed PRAGMA shrink_memory on Desktop")
+                        } catch (e: Throwable) {
+                            FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
+                        }
+                    },
+                )
+            }
+        })
         .setQueryCoroutineContext(Dispatchers.IO)
         .build()
+        .also { it.trimRegistration = trim }
+}
+
+internal class JvmDatabaseTrimRegistration(
+    private val register: (MemoryTrimListener) -> Unit = MemoryGovernor::registerListener,
+    private val unregister: (MemoryTrimListener) -> Unit = MemoryGovernor::unregisterListener,
+) : AutoCloseable {
+    private var current: MemoryTrimListener? = null
+    private val lock = Any()
+
+    fun attach(isOpen: () -> Boolean, shrink: () -> Unit) {
+        synchronized(lock) {
+            current?.let(unregister)
+            val listener = MemoryTrimListener { level ->
+                if (level == MemoryTrimLevel.RUNNING_LOW ||
+                    level == MemoryTrimLevel.RUNNING_CRITICAL ||
+                    level == MemoryTrimLevel.COMPLETE
+                ) {
+                    try {
+                        if (isOpen()) shrink()
+                    } catch (e: Throwable) {
+                        FlashLog.w("DATABASE", "Failed to execute PRAGMA shrink_memory on Desktop: ${e.message}")
+                    }
+                }
+            }
+            current = listener
+            register(listener)
+        }
+    }
+
+    fun detach() {
+        synchronized(lock) {
+            current?.let(unregister)
+            current = null
+        }
+    }
+
+    override fun close() {
+        detach()
+    }
+}

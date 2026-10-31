@@ -60,6 +60,15 @@ public object FlashDatabaseOpener {
             .openHelperFactory(openHelperFactory)
             .addMigrations(*migrations)
             .addCallback(object : RoomDatabase.Callback() {
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    super.onCreate(db)
+                    try {
+                        db.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
+                    } catch (e: Throwable) {
+                        FlashLog.w("DATABASE", "Failed to set auto_vacuum on create: ${e.message}")
+                    }
+                }
+
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
                     applyPragmas(db, cacheSizeKb, mode.key)
@@ -108,11 +117,11 @@ public object FlashDatabaseOpener {
             "PRAGMA synchronous = NORMAL;",
             "PRAGMA temp_store = MEMORY;",
             "PRAGMA wal_autocheckpoint = 250;",
-            "PRAGMA mmap_size = 2097152;",
+            "PRAGMA journal_size_limit = 4194304;",
         )
         for (pragma in pragmas) {
             try {
-                // Statements that return a result row (e.g. wal_autocheckpoint, mmap_size) throw
+                // Statements that return a result row (e.g. wal_autocheckpoint) throw
                 // IllegalArgumentException on Android when executed with execSQL.
                 // Execute via query with cursor consumption first, falling back to execSQL.
                 val cursor = runCatching { db.query(pragma) }.getOrNull()
@@ -125,7 +134,7 @@ public object FlashDatabaseOpener {
                 FlashLog.w("DATABASE", "Failed to set SQLite pragma '$pragma': ${e.message}")
             }
         }
-        FlashLog.i("DATABASE", "Configured SQLite pragmas (cache_size = -$cacheSizeKb KiB, synchronous = NORMAL, temp_store = MEMORY, wal_autocheckpoint = 250, mmap_size = 2097152) for mode $modeKey")
+        FlashLog.i("DATABASE", "Configured SQLite pragmas (cache_size = -$cacheSizeKb KiB, synchronous = NORMAL, temp_store = MEMORY, wal_autocheckpoint = 250, journal_size_limit = 4194304) for mode $modeKey")
     }
 
     /** Manually detaches the memory trim registration from a database. */

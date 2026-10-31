@@ -18,6 +18,7 @@ import androidx.room.PrimaryKey
     indices = [
         Index(value = ["direction", "fileId"], unique = true),
         Index(value = ["messageId"]),
+        Index(value = ["createdAtMs"]),
     ],
 )
 public data class HubFileEntity(
