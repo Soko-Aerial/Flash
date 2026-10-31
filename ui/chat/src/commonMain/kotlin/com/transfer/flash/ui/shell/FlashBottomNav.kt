@@ -10,7 +10,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -38,11 +37,13 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -296,8 +297,38 @@ fun FlashBottomNav(
                 bottom = FlashBottomNavDefaults.bottomMargin,
             ),
     ) {
-        BoxWithConstraints(
-            Modifier
+        Layout(
+            content = {
+                Box(
+                    Modifier
+                        .clip(FlashShapes.navBar)
+                        .background(colors.accentPrimary.copy(alpha = IndicatorAlpha)),
+                )
+
+                Row(Modifier.fillMaxWidth()) {
+                    items.forEachIndexed { index, item ->
+                        key(item.destination) {
+                            FlashBottomNavItemCell(
+                                item = item,
+                                isSelected = index == selectedIndex,
+                                hopDirection = if (index == selectedIndex) hopDirection else 0,
+                                onClick = {
+                                    haptics(FlashHaptic.Tick)
+                                    onTabSelected(item.destination)
+                                },
+                                onReselect = {
+                                    // Reselect is a real gesture (scroll-to-top), so it earns the
+                                    // same tick the tab switch gets.
+                                    haptics(FlashHaptic.Tick)
+                                    onTabReselected(item.destination)
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            },
+            modifier = Modifier
                 .fillMaxWidth()
                 .height(FlashBottomNavDefaults.barHeight)
                 .shadow(elevation, FlashShapes.navBar, clip = false)
@@ -306,52 +337,37 @@ fun FlashBottomNav(
                 .border(FlashDimensions.borderHairline, colors.borderSubtle, FlashShapes.navBar)
                 .padding(horizontal = CapsuleInnerPadding)
                 .selectableGroup(),
-        ) {
-            val innerWidth = maxWidth
-            val tabWidth = innerWidth / items.size
-            val chipWidth = (tabWidth - ChipGap).coerceAtLeast(0.dp)
+        ) { measurables, constraints ->
+            val innerWidth = constraints.maxWidth
+            val itemCount = items.size
+            val tabWidthPx = if (itemCount > 0) innerWidth.toFloat() / itemCount else 0f
+            val chipGapPx = ChipGap.toPx()
+            val chipWidthPx = (tabWidthPx - chipGapPx).coerceAtLeast(0f)
+            val chipHeightPx = ChipHeight.roundToPx().coerceAtMost(constraints.maxHeight)
 
-            Box(
-                Modifier
-                    .align(Alignment.CenterStart)
-                    .size(width = chipWidth, height = ChipHeight)
-                    .graphicsLayer {
-                        val start = FlashBottomNavMath.indicatorStartPxAt(
-                            barWidthPx = innerWidth.toPx(),
-                            itemCount = items.size,
-                            position = position.value,
-                            indicatorWidthPx = chipWidth.toPx(),
-                        )
-                        translationX = if (isRtl) -start else start
-                        val stretch = FlashBottomNavMath.indicatorStretch(travel.value)
-                        scaleX = stretch
-                        scaleY = FlashBottomNavMath.indicatorSquash(stretch)
-                    }
-                    .clip(FlashShapes.navBar)
-                    .background(colors.accentPrimary.copy(alpha = IndicatorAlpha)),
+            val chipPlaceable = measurables[0].measure(
+                Constraints.fixed(
+                    width = chipWidthPx.toInt(),
+                    height = chipHeightPx,
+                )
             )
+            val rowPlaceable = measurables[1].measure(constraints)
 
-            Row(Modifier.fillMaxWidth()) {
-                items.forEachIndexed { index, item ->
-                    key(item.destination) {
-                        FlashBottomNavItemCell(
-                            item = item,
-                            isSelected = index == selectedIndex,
-                            hopDirection = if (index == selectedIndex) hopDirection else 0,
-                            onClick = {
-                                haptics(FlashHaptic.Tick)
-                                onTabSelected(item.destination)
-                            },
-                            onReselect = {
-                                // Reselect is a real gesture (scroll-to-top), so it earns the
-                                // same tick the tab switch gets.
-                                haptics(FlashHaptic.Tick)
-                                onTabReselected(item.destination)
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
+            layout(innerWidth, constraints.maxHeight) {
+                val chipY = (constraints.maxHeight - chipPlaceable.height) / 2
+                chipPlaceable.placeRelativeWithLayer(0, chipY) {
+                    val start = FlashBottomNavMath.indicatorStartPxAt(
+                        barWidthPx = innerWidth.toFloat(),
+                        itemCount = itemCount,
+                        position = position.value,
+                        indicatorWidthPx = chipWidthPx,
+                    )
+                    translationX = if (isRtl) -start else start
+                    val stretch = FlashBottomNavMath.indicatorStretch(travel.value)
+                    scaleX = stretch
+                    scaleY = FlashBottomNavMath.indicatorSquash(stretch)
                 }
+                rowPlaceable.placeRelative(0, 0)
             }
         }
     }
