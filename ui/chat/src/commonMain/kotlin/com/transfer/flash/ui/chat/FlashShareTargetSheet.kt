@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import com.transfer.flash.core.messaging.model.FlashMessageUi
 import androidx.compose.ui.graphics.SolidColor
@@ -791,15 +792,20 @@ private fun EmptyDiscoveryCard(isScanning: Boolean) {
 @Composable
 private fun ScanningIndicatorRow() {
     val colors = FlashTheme.colors
-    val transition = rememberInfiniteTransition()
-    val pulseAlpha by transition.animateFloat(
-        initialValue = 0.3f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(900),
-            repeatMode = RepeatMode.Reverse,
-        ),
-    )
+    val motion = FlashTheme.motion
+    val pulseAlpha = if (!motion.reduceMotion) {
+        val transition = rememberInfiniteTransition()
+        transition.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(900),
+                repeatMode = RepeatMode.Reverse,
+            ),
+        )
+    } else {
+        null
+    }
 
     Row(
         modifier = Modifier
@@ -813,7 +819,9 @@ private fun ScanningIndicatorRow() {
                 .size(8.dp)
                 .clip(CircleShape)
                 .background(colors.accentPrimary)
-                .alpha(pulseAlpha),
+                .graphicsLayer {
+                    alpha = pulseAlpha?.value ?: 1.0f
+                },
         )
         Spacer(modifier = Modifier.width(8.dp))
         FlashText(
