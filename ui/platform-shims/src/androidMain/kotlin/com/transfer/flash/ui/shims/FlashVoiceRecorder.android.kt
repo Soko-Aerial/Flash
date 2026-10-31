@@ -46,6 +46,7 @@ private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRec
 
     override fun start(): Boolean {
         stopQuietly()
+        pruneOldVoiceFiles(context.cacheDir)
         val file = File(context.cacheDir, "flash-voice-${System.currentTimeMillis()}.m4a")
         @Suppress("DEPRECATION")
         val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -124,5 +125,19 @@ private class AndroidVoiceRecorder(private val context: Context) : FlashVoiceRec
 
     private companion object {
         const val TAG = "FlashVoiceRecorder"
+    }
+}
+
+/**
+ * O05-08 / O23-04: Prunes abandoned voice recording cache files older than [maxAgeMs].
+ */
+internal fun pruneOldVoiceFiles(cacheDir: File, maxAgeMs: Long = 24 * 60 * 60 * 1000L) {
+    runCatching {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        cacheDir.listFiles { _, name -> name.startsWith("flash-voice-") }?.forEach { file ->
+            if (file.isFile && file.lastModified() < cutoff) {
+                file.delete()
+            }
+        }
     }
 }

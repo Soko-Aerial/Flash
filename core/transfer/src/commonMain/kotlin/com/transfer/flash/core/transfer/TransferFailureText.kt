@@ -159,6 +159,10 @@ public object TransferFailureText {
         "Not enough free space to receive this file. It needs ${formatSize(needed)} and only ${formatSize(free)} " +
             "is available. Free up some space, then ask for it to be sent again."
 
+    /** O23-03: Receiver refused an offer larger than FAT32's 4 GB single-file limit. */
+    public fun fat32LimitExceeded(): String =
+        "This file is larger than 4 GB and cannot be saved to a FAT32 storage volume. Choose an internal folder or format the drive to exFAT/NTFS."
+
     /**
      * The sentence for the control-flow reasons the repository stores on a row that is stopped, paused or waiting on
      * purpose (`cancelled by receiver`, `declined`, `paused by sender`, ...). These are not failures, so unlike

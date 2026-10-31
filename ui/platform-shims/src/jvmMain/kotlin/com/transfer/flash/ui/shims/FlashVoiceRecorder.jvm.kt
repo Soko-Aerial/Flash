@@ -4,12 +4,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import java.io.BufferedOutputStream
 import java.io.File
-import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.util.concurrent.atomic.AtomicInteger
-import javax.sound.sampled.AudioFileFormat
 import javax.sound.sampled.AudioFormat
-import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
 import javax.sound.sampled.DataLine
 import javax.sound.sampled.TargetDataLine
@@ -43,7 +41,7 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
 
     private var line: TargetDataLine? = null
     private var drain: Thread? = null
-    private var rawFile: File? = null
+    private var wavFile: File? = null
     private val peak = AtomicInteger(0)
 
     override val isRecording: Boolean get() = line != null
@@ -51,7 +49,8 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
     override fun start(): Boolean {
         stopQuietly()
         peak.set(0)
-        val raw = File(tempDir(), "flash-voice-${System.currentTimeMillis()}.pcm")
+        pruneOldVoiceFiles(tempDir())
+        val wav = File(tempDir(), "flash-voice-${System.currentTimeMillis()}.wav")
         return try {
             val info = DataLine.Info(TargetDataLine::class.java, FORMAT)
             // Throws when no capture device exists — a headless CI box, or a desktop with no mic. The
@@ -61,8 +60,8 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
             target.open(FORMAT)
             target.start()
             line = target
-            rawFile = raw
-            drain = Thread { drainLine(target, raw) }.apply {
+            wavFile = wav
+            drain = Thread { drainLine(target, wav) }.apply {
                 isDaemon = true
                 name = "flash-voice-capture"
                 start()
@@ -71,21 +70,24 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
         } catch (t: Throwable) {
             println("[FlashVoiceRecorder] Voice capture failed to start: $t")
             runCatching { line?.close() }
-            raw.delete()
+            wav.delete()
             line = null
-            rawFile = null
+            wavFile = null
             drain = null
             false
         }
     }
 
     /**
-     * Copies the line into a raw PCM file, tracking the loudest sample seen. Raw first, WAV at the end:
-     * a WAV header carries its own length, which is not known until capture stops.
+     * Streams the line directly into the destination WAV file, first writing a 44-byte placeholder
+     * header, then raw PCM samples while tracking loudest sample seen. On stop(), the 44-byte header
+     * is finalized in-place with RandomAccessFile, avoiding any intermediate temp files or second-pass copies (O05-03).
      */
-    private fun drainLine(target: TargetDataLine, raw: File) {
+    private fun drainLine(target: TargetDataLine, wav: File) {
         runCatching {
-            BufferedOutputStream(FileOutputStream(raw)).use { out ->
+            BufferedOutputStream(FileOutputStream(wav)).use { out ->
+                // Reserve 44 bytes for WAV header
+                out.write(ByteArray(44))
                 val buffer = ByteArray(FORMAT.frameSize * 1024)
                 while (true) {
                     val read = target.read(buffer, 0, buffer.size)
@@ -114,32 +116,25 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
 
     override fun stop(): String? {
         val target = line
-        val raw = rawFile
+        val wav = wavFile
         val worker = drain
         line = null
-        rawFile = null
+        wavFile = null
         drain = null
         if (target == null) return null
         return try {
             // `stop()` then `close()` makes the blocked `read()` return 0, which ends the drain loop;
-            // joining then guarantees the raw file is complete and closed before it is re-read.
+            // joining then guarantees the file is complete and closed before finalizing the header.
             target.stop()
             target.close()
             worker?.join(DRAIN_JOIN_TIMEOUT_MS)
-            if (raw == null || !raw.exists() || raw.length() <= 0L) {
-                raw?.delete()
+            if (wav == null || !wav.exists() || wav.length() <= 44L) {
+                wav?.delete()
                 return null
             }
-            val wav = File(raw.parentFile, raw.nameWithoutExtension + ".wav")
-            FileInputStream(raw).use { input ->
-                AudioSystem.write(
-                    AudioInputStream(input, FORMAT, raw.length() / FORMAT.frameSize),
-                    AudioFileFormat.Type.WAVE,
-                    wav,
-                )
-            }
-            raw.delete()
-            if (wav.exists() && wav.length() > 0L) {
+            val pcmLength = wav.length() - 44L
+            writeWavHeader(wav, pcmLength)
+            if (wav.exists() && wav.length() > 44L) {
                 // `File.toURI()` gives `file:/…`, the same shape `Uri.fromFile` produces on Android, so
                 // the transfer layer sees one URI convention.
                 wav.toURI().toString()
@@ -150,15 +145,15 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
         } catch (t: Throwable) {
             println("[FlashVoiceRecorder] Voice capture stop failed: $t")
             runCatching { target.close() }
-            raw?.delete()
+            wav?.delete()
             null
         }
     }
 
     override fun cancel() {
-        val raw = rawFile
+        val wav = wavFile
         stopQuietly()
-        raw?.delete()
+        wav?.delete()
     }
 
     private fun stopQuietly() {
@@ -174,7 +169,7 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
     private fun tempDir(): File =
         File(System.getProperty("java.io.tmpdir") ?: ".").also { runCatching { it.mkdirs() } }
 
-    private companion object {
+    internal companion object {
         /**
          * Matches the Android encoder's 44.1 kHz / 16-bit so the amplitude scale — and therefore the
          * waveform the shared composer draws — is identical on both platforms. Mono, because a voice
@@ -184,6 +179,81 @@ internal class JvmVoiceRecorder : FlashVoiceRecorder {
 
         /** The drain loop exits as soon as `close()` unblocks `read()`; this only bounds a pathology. */
         const val DRAIN_JOIN_TIMEOUT_MS = 2_000L
+
+        /**
+         * Writes a standard 44-byte RIFF/WAVE header directly into [file] at offset 0 (O05-03).
+         */
+        internal fun writeWavHeader(file: File, pcmDataLength: Long) {
+            val totalDataLen = pcmDataLength + 36
+            val sampleRate = FORMAT.sampleRate.toLong()
+            val channels = FORMAT.channels
+            val byteRate = sampleRate * channels * FORMAT.sampleSizeInBits / 8
+            val blockAlign = channels * FORMAT.sampleSizeInBits / 8
+
+            val header = ByteArray(44)
+            // "RIFF"
+            header[0] = 'R'.code.toByte()
+            header[1] = 'I'.code.toByte()
+            header[2] = 'F'.code.toByte()
+            header[3] = 'F'.code.toByte()
+            // total file length - 8
+            header[4] = (totalDataLen and 0xffL).toByte()
+            header[5] = ((totalDataLen shr 8) and 0xffL).toByte()
+            header[6] = ((totalDataLen shr 16) and 0xffL).toByte()
+            header[7] = ((totalDataLen shr 24) and 0xffL).toByte()
+            // "WAVE"
+            header[8] = 'W'.code.toByte()
+            header[9] = 'A'.code.toByte()
+            header[10] = 'V'.code.toByte()
+            header[11] = 'E'.code.toByte()
+            // "fmt "
+            header[12] = 'f'.code.toByte()
+            header[13] = 'm'.code.toByte()
+            header[14] = 't'.code.toByte()
+            header[15] = ' '.code.toByte()
+            // Subchunk1Size = 16 for PCM
+            header[16] = 16
+            header[17] = 0
+            header[18] = 0
+            header[19] = 0
+            // AudioFormat = 1 (PCM)
+            header[20] = 1
+            header[21] = 0
+            // NumChannels
+            header[22] = channels.toByte()
+            header[23] = 0
+            // SampleRate
+            header[24] = (sampleRate and 0xffL).toByte()
+            header[25] = ((sampleRate shr 8) and 0xffL).toByte()
+            header[26] = ((sampleRate shr 16) and 0xffL).toByte()
+            header[27] = ((sampleRate shr 24) and 0xffL).toByte()
+            // ByteRate
+            header[28] = (byteRate and 0xffL).toByte()
+            header[29] = ((byteRate shr 8) and 0xffL).toByte()
+            header[30] = ((byteRate shr 16) and 0xffL).toByte()
+            header[31] = ((byteRate shr 24) and 0xffL).toByte()
+            // BlockAlign
+            header[32] = blockAlign.toByte()
+            header[33] = 0
+            // BitsPerSample
+            header[34] = FORMAT.sampleSizeInBits.toByte()
+            header[35] = 0
+            // "data"
+            header[36] = 'd'.code.toByte()
+            header[37] = 'a'.code.toByte()
+            header[38] = 't'.code.toByte()
+            header[39] = 'a'.code.toByte()
+            // Subchunk2Size
+            header[40] = (pcmDataLength and 0xffL).toByte()
+            header[41] = ((pcmDataLength shr 8) and 0xffL).toByte()
+            header[42] = ((pcmDataLength shr 16) and 0xffL).toByte()
+            header[43] = ((pcmDataLength shr 24) and 0xffL).toByte()
+
+            RandomAccessFile(file, "rw").use { raf ->
+                raf.seek(0)
+                raf.write(header)
+            }
+        }
     }
 }
 
@@ -206,4 +276,18 @@ internal fun peakOf(buffer: ByteArray, length: Int): Int {
         i += 2
     }
     return loudest
+}
+
+/**
+ * O05-08 / O23-04: Prunes abandoned temporary voice recording files older than [maxAgeMs].
+ */
+internal fun pruneOldVoiceFiles(dir: File, maxAgeMs: Long = 24 * 60 * 60 * 1000L) {
+    runCatching {
+        val cutoff = System.currentTimeMillis() - maxAgeMs
+        dir.listFiles { _, name -> name.startsWith("flash-voice-") }?.forEach { file ->
+            if (file.isFile && file.lastModified() < cutoff) {
+                file.delete()
+            }
+        }
+    }
 }

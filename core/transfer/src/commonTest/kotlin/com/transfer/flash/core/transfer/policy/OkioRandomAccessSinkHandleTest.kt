@@ -38,7 +38,7 @@ class OkioRandomAccessSinkHandleTest {
     }
 
     @Test
-    fun openingHandleDoesNotGrowFileWhenSmaller() {
+    fun openingHandlePreallocatesExpectedSizeSafely() {
         val tempPath = FileSystem.SYSTEM_TEMPORARY_DIRECTORY / "flash-sink-grow-test-${Random.nextLong()}.tmp"
         try {
             // Create an empty file
@@ -46,10 +46,13 @@ class OkioRandomAccessSinkHandleTest {
             assertEquals(0L, FileSystem.SYSTEM.metadata(tempPath).size)
 
             val expectedSize = 5 * 1024 * 1024L // 5 MB
-            // ERROR-067 guard: must NOT pre-allocate/grow via resize()
+            // O23-03: pre-allocates via OS-level fallocate/setLength without Okio heap expansion
             val handle = OkioRandomAccessSinkHandle(tempPath, expectedSize)
-            assertEquals(0L, FileSystem.SYSTEM.metadata(tempPath).size, "Handle must not grow file before writes (ERROR-067)")
-            handle.close()
+            try {
+                assertEquals(expectedSize, FileSystem.SYSTEM.metadata(tempPath).size, "Handle must pre-allocate expected size (O23-03)")
+            } finally {
+                handle.close()
+            }
         } finally {
             FileSystem.SYSTEM.delete(tempPath)
         }

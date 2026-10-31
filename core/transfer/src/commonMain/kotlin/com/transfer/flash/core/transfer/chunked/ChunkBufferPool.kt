@@ -55,6 +55,7 @@ public object ChunkBufferPool {
      */
     public fun release(buffer: ByteArray) {
         val size = buffer.size
+        if (size <= 0) return
         lock.withLock {
             val deque = pools.getOrPut(size) { ArrayDeque() }
             if (deque.size < DEFAULT_MAX_POOLED_PER_SIZE) {

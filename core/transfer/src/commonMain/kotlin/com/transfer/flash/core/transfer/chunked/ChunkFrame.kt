@@ -257,7 +257,20 @@ public sealed class ChunkFrame {
                     payload.string(frame.fileId)
                     payload.i32(frame.indexes.size)
                     // Ascending order is part of the documented format.
-                    frame.indexes.sorted().forEach(payload::i32)
+                    // O25-07: Avoid re-sorting if list is already sorted
+                    val list = frame.indexes
+                    var isSorted = true
+                    for (i in 0 until list.size - 1) {
+                        if (list[i] > list[i + 1]) {
+                            isSorted = false
+                            break
+                        }
+                    }
+                    if (isSorted) {
+                        list.forEach(payload::i32)
+                    } else {
+                        list.sorted().forEach(payload::i32)
+                    }
                 }
 
                 is Complete -> {
@@ -327,9 +340,12 @@ public sealed class ChunkFrame {
                         val index = reader.i32()
                         val dataLength = reader.i32()
                         if (dataLength < 0 || dataLength > MAX_CHUNK_DATA_BYTES) return null
-                        val data = reader.bytes(dataLength) ?: return null
-                        val hash = reader.bytes(Sha256.RAW_LENGTH) ?: return null
-                        if (!reader.exhausted()) return null
+                        val data = reader.bytesPooled(dataLength) ?: return null
+                        val hash = reader.bytes(Sha256.RAW_LENGTH)
+                        if (hash == null || !reader.exhausted()) {
+                            ChunkBufferPool.release(data)
+                            return null
+                        }
                         Chunk(
                             transferId = transferId,
                             fileId = fileId,
@@ -496,6 +512,15 @@ private class Reader(private val buf: ByteArray, start: Int, end: Int) {
     fun bytes(n: Int): ByteArray? {
         need(n)
         val out = buf.copyOfRange(pos, pos + n)
+        pos += n
+        return out
+    }
+
+    fun bytesPooled(n: Int): ByteArray? {
+        need(n)
+        if (n == 0) return ByteArray(0)
+        val out = ChunkBufferPool.acquire(n)
+        buf.copyInto(out, 0, pos, pos + n)
         pos += n
         return out
     }
