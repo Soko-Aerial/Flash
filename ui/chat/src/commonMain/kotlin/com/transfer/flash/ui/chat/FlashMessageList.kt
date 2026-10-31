@@ -357,12 +357,16 @@ private fun FlashDaySeparator(
 
 internal fun flashMessageKey(message: FlashMessageUi): String = message.id
 
-internal fun flashMessageContentType(message: FlashMessageUi): String = when {
-    message.callEvent != null -> if (message.isMine) "callEvent_out" else "callEvent_in"
-    message.images.isNotEmpty() -> if (message.isMine) "image_out" else "image_in"
-    message.voiceAttachments.isNotEmpty() -> if (message.isMine) "voice_out" else "voice_in"
-    message.fileAttachments.isNotEmpty() -> if (message.isMine) "file_out" else "file_in"
-    else -> if (message.isMine) "text_out" else "text_in"
+// OPT-O04-06: Distinguish items with day separators in contentType to prevent slot reuse height mismatches and scroll hitching
+internal fun flashMessageContentType(message: FlashMessageUi): String {
+    val base = when {
+        message.callEvent != null -> if (message.isMine) "callEvent_out" else "callEvent_in"
+        message.images.isNotEmpty() -> if (message.isMine) "image_out" else "image_in"
+        message.voiceAttachments.isNotEmpty() -> if (message.isMine) "voice_out" else "voice_in"
+        message.fileAttachments.isNotEmpty() -> if (message.isMine) "file_out" else "file_in"
+        else -> if (message.isMine) "text_out" else "text_in"
+    }
+    return if (message.daySeparator != null) "${base}_sep" else base
 }
 
 internal fun daySeparatorContentDescription(label: String): String = "Messages from $label"
