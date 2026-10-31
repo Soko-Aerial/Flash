@@ -199,6 +199,11 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v16: hub_group_roster for hub-signed group roster statements (Plan B §10, Phase B4).
         // v17: hub_announcement and hub_announcement_state for organization announcements (Plan A3, ADR-138).
         // v18: hub_file for files sent and received through the organisation hub (ADR-215, ADR-216).
-        public const val DATABASE_VERSION: Int = 21
+        // v19: hub_file.groupId and hub_file.recipients for group hub files (ADR-217).
+        // v20: transfer entity identity persistence across process kills (C-09).
+        // v21: conversation radioPolicy for direct-chat radio fallback consent.
+        // v22: indexes on outbox(nextAttemptAt), hub_file(createdAtMs), conversations(pinned, sortOrder),
+        //      transfers(updatedAtMs), swarm_content(createdAtMs) (OPT-O06-05).
+        public const val DATABASE_VERSION: Int = 22
     }
 }

@@ -2,6 +2,7 @@ package com.transfer.flash.core.persistence.db.entity
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 /**
@@ -11,7 +12,12 @@ import androidx.room.PrimaryKey
  * 1:1 transfer is still listed (and can be retried) after the process was killed. A row written before that has an empty
  * [direction] and is never restored.
  */
-@Entity(tableName = "transfers")
+@Entity(
+    tableName = "transfers",
+    indices = [
+        Index(value = ["updatedAtMs"]),
+    ],
+)
 public data class TransferEntity(
     @PrimaryKey val transferId: String,
     val totalBytes: Long,

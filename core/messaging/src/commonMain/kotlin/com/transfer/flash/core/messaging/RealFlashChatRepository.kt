@@ -190,7 +190,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emitAll
@@ -698,7 +700,7 @@ public class RealFlashChatRepository(
         else combine(hubBridge.droppedUnverified, hubBridge.droppedPlain, hubBridge.droppedStale) { unverified, plain, stale ->
             HubDropCounts(unverified, plain, stale)
         }
-            .stateIn(scope, SharingStarted.Eagerly, HubDropCounts())
+            .stateIn(scope, SharingStarted.WhileSubscribed(5_000), HubDropCounts())
 
     /** What the hub path of a chat needs the user to know: why messages are held, and changed keys (ADR-126). */
     private class HubNoticeInputs(val waiting: Map<String, HubWaitReason>, val changed: Map<String, HubSealingPin>)
@@ -922,9 +924,11 @@ public class RealFlashChatRepository(
 
     private val _conversationState = MutableStateFlow(EMPTY_CONVERSATION)
     override val conversationState: StateFlow<FlashConversationUiState> = _conversationState.asStateFlow()
+    private var conversationStateVersion: Long = 0L
 
     private var activeConversationId: String? = null
     private var activeConversationJob: Job? = null
+    private var activePageLimit: MutableStateFlow<Int>? = null
 
     /** ERROR-087: what the open chat has put on screen and already acknowledged; [endOpenConversation] finishes the difference. */
     private var activeReadState: OpenConversationReadState? = null
@@ -1216,12 +1220,17 @@ public class RealFlashChatRepository(
             combine(
                 conversationDao.observeAll(),
                 displayedPresence,
-                messageDao.observeUnreadCounts(localDeviceId),
-                messageDao.observeLatestPreviews(),
+                messageDao.observeUnreadCounts(localDeviceId).distinctUntilChanged().conflate(),
+                messageDao.observeLatestPreviews().distinctUntilChanged().conflate(),
                 typingFlow,
             ) { entities, peers, unreadRows, previewRows, typingByConversation ->
                 val unreadByConversation = unreadRows.associate { it.conversationId to it.unread }
                 val previewByConversation = previewRows.associate { it.conversationId to it.previewText }
+                val activeMembersByGroup = if (entities.any { it.isGroup }) {
+                    groupMemberDao?.allActiveMembers().orEmpty().groupBy { it.groupId }
+                } else {
+                    emptyMap()
+                }
                 suspend fun toUiItem(entity: ConversationEntity): FlashChatListItemUi {
                     val displayTitle = if (entity.isGroup) {
                         entity.title.ifBlank { entity.id }
@@ -1232,8 +1241,7 @@ public class RealFlashChatRepository(
                     val presence: FlashPeerPresence
                     val groupOnlineCount: Int
                     if (entity.isGroup) {
-                        val onlineMembers = groupMemberDao
-                            ?.activeMembers(entity.id)
+                        val onlineMembers = activeMembersByGroup[entity.id]
                             .orEmpty()
                             .count { it.deviceId in peers.online }
                         groupOnlineCount = onlineMembers
@@ -1466,6 +1474,11 @@ public class RealFlashChatRepository(
     }
 
     override fun openConversation(conversationId: String) {
+        openConversation(conversationId, null)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    override fun openConversation(conversationId: String, targetMessageId: String?) {
         // ERROR-087: leave the previous chat properly first, so what it displayed is acknowledged even when its
         // collector was cancelled before it got to write the cursor.
         endOpenConversation()
@@ -1495,6 +1508,7 @@ public class RealFlashChatRepository(
                     showCallActions = true,
                 ),
                 messages = emptyList(),
+                stateVersion = ++conversationStateVersion,
             )
         } else {
             val seedTitle = peerNameResolver(conversationId)?.ifBlank { null } ?: conversationId
@@ -1510,6 +1524,7 @@ public class RealFlashChatRepository(
                     orgName = orgName,
                 ),
                 messages = emptyList(),
+                stateVersion = ++conversationStateVersion,
             )
         }
 
@@ -1539,17 +1554,31 @@ public class RealFlashChatRepository(
                 }
             }
             val deliveryCountsFlow = if (isGroupConversation) {
-                groupDeliveryDao?.observeDeliveryCounts(conversationId, localDeviceId) ?: flowOf(emptyList())
+                (groupDeliveryDao?.observeDeliveryCounts(conversationId, localDeviceId) ?: flowOf(emptyList()))
+                    .throttleLatest(100L)
             } else {
                 flowOf(emptyList())
             }
+            val pageLimit = MutableStateFlow(100)
+            if (targetMessageId != null) {
+                val count = messageDao.countNewerThan(conversationId, targetMessageId)
+                if (count > 0) {
+                    pageLimit.value = maxOf(100, count + 20)
+                }
+            }
+            activePageLimit = pageLimit
+
+            val messagesFlow = pageLimit.flatMapLatest { limit ->
+                messageDao.observeConversationPaged(conversationId, limit)
+            }
+
             // Inner combine (5 flows): pure message content — rows + draft + attachment progress +
             // reactions + observable group-delivery aggregates.
             val messageContentFlow = combine(
-                messageDao.observeConversation(conversationId),
+                messagesFlow,
                 draftDao.observeDraft(conversationId),
                 pacedAttachmentProgress,
-                reactionDao.observeForConversation(conversationId),
+                reactionDao.observeForConversation(conversationId).throttleLatest(100L),
                 deliveryCountsFlow,
             ) { entities, draftEntity, progressByTransfer, reactionRows, deliveryCounts ->
                 // Index rows by local id so a reply can resolve its quoted message's author/side for
@@ -1760,7 +1789,7 @@ public class RealFlashChatRepository(
                 }
             }.collectLatest { (state, cursors) ->
                 val (newestMessageId, newestInboundId) = cursors
-                _conversationState.value = state
+                _conversationState.value = state.copy(stateVersion = ++conversationStateVersion)
                 // Record what is now on screen BEFORE the suspending writes: collectLatest or a close can cancel
                 // this block between the render and the cursor write, and a message the user was shown must not
                 // stay unread because of that (ERROR-087).
@@ -1927,6 +1956,14 @@ public class RealFlashChatRepository(
     override fun closeConversation() {
         endOpenConversation()
         activeConversationId = null
+        activePageLimit = null
+        _conversationState.value = EMPTY_CONVERSATION
+    }
+
+    override fun loadMoreHistory(conversationId: String, count: Int) {
+        if (activeConversationId == conversationId) {
+            activePageLimit?.let { it.value += count }
+        }
     }
 
     /**
@@ -6735,10 +6772,12 @@ public class RealFlashChatRepository(
             val rows = messageDao.searchMessages(escaped, limit = limit)
             if (rows.isEmpty()) return@withContext FlashChatSearchResultsUi.Empty
             val nowMs = timeSource.nowMs()
+            val convIds = rows.map { it.conversationId }.distinct()
+            val convEntities = conversationDao.getByIds(convIds).associateBy { it.id }
             val titles = HashMap<String, String>()
             suspend fun titleOf(conversationId: String): String {
                 titles[conversationId]?.let { return it }
-                val entity = conversationDao.get(conversationId)
+                val entity = convEntities[conversationId] ?: conversationDao.get(conversationId)
                 val title = if (entity?.isGroup == true) {
                     entity.title.ifBlank { conversationId }
                 } else {
@@ -6752,8 +6791,8 @@ public class RealFlashChatRepository(
             fun senderOf(row: MessageEntity): String =
                 row.senderName?.ifBlank { null }
                     ?: if (row.senderId == localDeviceId) "You" else "Peer"
-            val messageHits = ArrayList<FlashMessageSearchHitUi>()
-            val fileHits = ArrayList<FlashFileSearchHitUi>()
+            val messageHits = ArrayList<FlashMessageSearchHitUi>(rows.size)
+            val fileHits = ArrayList<FlashFileSearchHitUi>(rows.size)
             for (row in rows) {
                 // The SQL already excludes marker rows from the text match; this keeps one out of a text
                 // hit when it was returned because its FILE NAME matched, which is how a voice note is
@@ -7024,7 +7063,7 @@ public class RealFlashChatRepository(
     /** Extracts quoted values from a JSON string array; tolerant of null/blank/legacy rows. */
     private fun decodeReactorIds(json: String?): List<String> {
         if (json.isNullOrBlank()) return emptyList()
-        return Regex("\"([^\"]*)\"").findAll(json).map { it.groupValues[1] }.toList()
+        return JSON_QUOTED_REGEX.findAll(json).map { it.groupValues[1] }.toList()
     }
 
     override fun enterListSelectionMode(conversationId: String) {
@@ -7555,6 +7594,9 @@ public class RealFlashChatRepository(
     }
 
     private companion object {
+        /** OPT-O25-04: Cached regex for extracting quoted tokens from JSON string arrays. */
+        private val JSON_QUOTED_REGEX = Regex("\"([^\"]*)\"")
+
         /** ADR-174: a failed automatic pairing with a colleague is not tried again for this long. */
         const val AUTO_PAIR_RETRY_MS: Long = 60_000L
 

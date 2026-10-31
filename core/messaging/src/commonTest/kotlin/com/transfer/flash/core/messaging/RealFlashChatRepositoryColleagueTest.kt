@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 
@@ -75,6 +76,8 @@ class RealFlashChatRepositoryColleagueTest {
         }
 
         override fun observeConversation(conversationId: String): Flow<List<MessageEntity>> = flow
+        override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> = flow.map { it.take(limit) }
+        override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int = 0
 
         override suspend fun historyBefore(
             conversationId: String,
@@ -170,6 +173,7 @@ class RealFlashChatRepositoryColleagueTest {
 
         override fun observeAll(): Flow<List<ConversationEntity>> = flow
         override suspend fun get(id: String): ConversationEntity? = conversations[id]
+        override suspend fun getByIds(ids: List<String>): List<ConversationEntity> = ids.mapNotNull { conversations[it] }
         override suspend fun setArchived(id: String, archived: Boolean) {}
         override suspend fun setPinned(id: String, pinned: Boolean) {}
         override suspend fun setMuted(id: String, muted: Boolean) {}
@@ -322,6 +326,9 @@ class RealFlashChatRepositoryColleagueTest {
             flowOf(members.values.filter { it.groupId == groupId })
         override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId && it.isActive }
+
+        override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+            members.values.filter { it.isActive }
         override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId }
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =

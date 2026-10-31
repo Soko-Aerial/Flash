@@ -80,6 +80,17 @@ class RealFlashChatRepositoryTest {
 
         override fun observeConversation(conversationId: String): Flow<List<MessageEntity>> = flow
 
+        override fun observeConversationPaged(conversationId: String, limit: Int): Flow<List<MessageEntity>> =
+            flow.map { it.take(limit) }
+
+        override suspend fun countNewerThan(conversationId: String, targetMessageId: String): Int {
+            val target = messages[targetMessageId] ?: return 0
+            return messages.values.count {
+                it.conversationId == conversationId && it.deletedAt == null &&
+                    (it.sentAt > target.sentAt || (it.sentAt == target.sentAt && it.localId >= target.localId))
+            }
+        }
+
         override suspend fun historyBefore(
             conversationId: String,
             cursorSentAt: Long,
@@ -269,6 +280,9 @@ class RealFlashChatRepositoryTest {
         override fun observeAll(): Flow<List<ConversationEntity>> = flow
 
         override suspend fun get(id: String): ConversationEntity? = conversations[id]
+
+        override suspend fun getByIds(ids: List<String>): List<ConversationEntity> =
+            ids.mapNotNull { conversations[it] }
 
         override suspend fun setArchived(id: String, archived: Boolean) {
             conversations[id]?.let { conversations[id] = it.copy(archived = archived); flow.value = conversations.values.toList() }
@@ -516,22 +530,46 @@ class RealFlashChatRepositoryTest {
 
         repository.openConversation("conv-a")
         repository.setMessagePinned("m1", true)
-        kotlinx.coroutines.delay(20)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
+        val m1Time = pinDao.rows["conv-a" to "m1"]?.pinnedAt ?: 0L
+        while (System.currentTimeMillis() <= m1Time) {
+            kotlinx.coroutines.delay(5)
+        }
         repository.setMessagePinned("m2", true)
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m2", "m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
 
         repository.closeConversation()
         repository.openConversation("conv-b")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds.isNotEmpty()) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertTrue("another chat must not see conv-a's pins", repository.conversationState.value.pinnedMessageIds.isEmpty())
 
         repository.openConversation("conv-a")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m2", "m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m2", "m1"), repository.conversationState.value.pinnedMessageIds)
 
         repository.setMessagePinned("m2", false)
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (repository.conversationState.value.pinnedMessageIds != listOf("m1")) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
         assertEquals(listOf("m1"), repository.conversationState.value.pinnedMessageIds)
     }
 
@@ -1917,6 +1955,7 @@ class RealFlashChatRepositoryTest {
                 override suspend fun upsert(conversation: ConversationEntity) = delegate.upsert(conversation)
                 override fun observeAll(): Flow<List<ConversationEntity>> = delegate.observeAll()
                 override suspend fun get(id: String): ConversationEntity? = delegate.get(id)
+                override suspend fun getByIds(ids: List<String>): List<ConversationEntity> = delegate.getByIds(ids)
                 override suspend fun setArchived(id: String, archived: Boolean) = delegate.setArchived(id, archived)
                 override suspend fun setPinned(id: String, pinned: Boolean) = delegate.setPinned(id, pinned)
                 override suspend fun setMuted(id: String, muted: Boolean) = delegate.setMuted(id, muted)
@@ -2010,6 +2049,9 @@ class RealFlashChatRepositoryTest {
             MutableStateFlow(members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt })
         override suspend fun activeMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId && it.isActive }.sortedBy { it.joinedAt }
+
+        override suspend fun allActiveMembers(): List<GroupMemberEntity> =
+            members.values.filter { it.isActive }.sortedBy { it.joinedAt }
         override suspend fun allMembers(groupId: String): List<GroupMemberEntity> =
             members.values.filter { it.groupId == groupId }.sortedBy { it.joinedAt }
         override suspend fun member(groupId: String, deviceId: String): GroupMemberEntity? =
@@ -3427,7 +3469,13 @@ class RealFlashChatRepositoryTest {
 
         repository.deleteMessageForEveryone("theirs")
         repository.deleteMessageForEveryone("own")
-        kotlinx.coroutines.delay(100)
+        kotlinx.coroutines.withTimeout(5_000) {
+            while (messageDao.messages["own"]?.deletedAt == null ||
+                sent.none { it.second is MessageWireFrame.DeleteForEveryone }
+            ) {
+                kotlinx.coroutines.delay(10)
+            }
+        }
 
         assertNull(messageDao.messages["theirs"]!!.deletedAt)
         assertNotNull(messageDao.messages["own"]!!.deletedAt)

@@ -4,6 +4,8 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
+import com.transfer.flash.core.persistence.db.entity.TransferChunkEntity
 import com.transfer.flash.core.persistence.db.entity.TransferEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -19,6 +21,25 @@ public interface TransferDao {
 
     @Query("UPDATE transfers SET bytesDone = :bytesDone WHERE transferId = :transferId")
     public suspend fun setBytesDone(transferId: String, bytesDone: Long)
+
+    @Insert(entity = TransferChunkEntity::class, onConflict = OnConflictStrategy.IGNORE)
+    public suspend fun insertChunks(chunks: List<TransferChunkEntity>)
+
+    /**
+     * Records chunk completions and byte progress within a single atomic SQLite transaction (OPT-O06-07).
+     * Halves transaction commits and WAL headers on active file transfer hot paths.
+     */
+    @Transaction
+    public suspend fun recordProgress(
+        transferId: String,
+        chunks: List<TransferChunkEntity>,
+        bytesDone: Long,
+    ) {
+        if (chunks.isNotEmpty()) {
+            insertChunks(chunks)
+        }
+        setBytesDone(transferId, bytesDone)
+    }
 
     @Query("UPDATE transfers SET status = :status WHERE transferId = :transferId")
     public suspend fun setStatus(transferId: String, status: String)
