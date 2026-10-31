@@ -1,7 +1,8 @@
 # Current Handoff
 
 > 2026-10-31 Wave 1 (data + transfer): **both streams reviewed, merged and corrected; both are in `dev`, nothing pushed,
-> nothing device-verified.** Stream D (28 files) gate 1 forced PASS; its three "projections" (`O06-08`) actually still ran a
+> nothing device-verified.** Gates after the fixes: gate 1 forced PASS (2 416 tests) and gate 2 forced with only the two known
+> ERROR-106 `:app` rows (1 673 host tests; `:core:transfer` re-run 375 green after the last edit). Stream D (28 files) gate 1 forced PASS; its three "projections" (`O06-08`) actually still ran a
 > full `SELECT *` and its `recordProgress` had no caller, so the review rewrote the projections as real `@Query`s and wired
 > the transaction through `TransferStore`; `auto_vacuum` was inert (`onCreate` runs after the tables) and is now applied by a
 > one-shot VACUUM, with `incremental_vacuum` in the trim hook; `hashCode` broke its contract with `equals` and is now constant.
@@ -166,7 +167,7 @@
 
 ## 2026-10-31 (Wave 1 review) — data and transfer streams merged after review, corrected, unit-tested, NOT device-verified, NOT pushed
 
-Merges `3b28e5be` (data) and the transfer merge, fixes `f3154de0` + the transfer follow-up. Gates and defects are in the
+Merges `3b28e5be` (data) and `01a1d4d9` (transfer), fixes `f3154de0` and `5ef86ca5`. Gates and defects are in the
 banner above; the point to keep is that both streams looked finished and were not:
 
 - Data: four "optimisations" without a caller (the single-transaction progress DAO and three summary "projections" that
