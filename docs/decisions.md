@@ -7372,4 +7372,7 @@ and failing on a stale one.
   prints the code so a forgotten bump stays visible; do not "fix" it by forcing offsets without a device test.
 - A device that installed a split only accepts updates from that same split, so a split install is refreshed from that
   split and not from the universal APK.
+- **Debug builds split too** (the DSL is variant-wide): `assembleDebug` now writes `app-<abi>-debug.apk` and
+  `app-universal-debug.apk` instead of `app-debug.apk`. The runbook and backlog steps that named `app-debug.apk` were
+  updated; a leftover file from before the change is stale.
 - APK size per ABI and the update path are now device checks: `PERF-A01`, `REL-01b`.
