@@ -30,6 +30,7 @@ yes). The ABI splits were reverted when Stream A was reviewed, because `tools/bu
 - Sizes: arm64 17,600,991 B / armv7 11,697,699 B / x86_64 19,075,843 B / universal 54,679,288 B (EXP-093).
 - `:app:compileDebugKotlin :app:assembleDebug` green (143 s) and the debug variant splits too - four debug APKs, no stale
   `app-debug.apk` left.
+- `:app:testDebugUnitTest --rerun-tasks`: 87 tests, only the two known ERROR-106 `TransfersUiMapperTest` rows.
 - All four carry `versionCode` 4 - AGP does not offset split codes; that is what a split install needs, so the script prints
   it instead of failing on it.
 - Not device-verified (`PERF-A01`, `REL-01b`); how an existing 2.1.0 install takes the build - and whether a split install
