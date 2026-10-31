@@ -38,6 +38,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.enterprise.EnterpriseDirectoryGroup
 import com.transfer.flash.core.enterprise.EnterpriseJoinRequest
 import com.transfer.flash.core.enterprise.EnterpriseJoinResult
+import kotlinx.coroutines.delay
 import com.transfer.flash.core.enterprise.EnterpriseJoinStatus
 import com.transfer.flash.ui.avatar.FlashAvatar
 import com.transfer.flash.ui.settings.FlashHubStatusMath
@@ -77,6 +78,7 @@ public fun FlashBrowseOrgGroupsSheet(
     modifier: Modifier = Modifier,
 ) {
     val colors = FlashTheme.colors
+    val motion = FlashTheme.motion
     val scope = rememberCoroutineScope()
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -98,7 +100,13 @@ public fun FlashBrowseOrgGroupsSheet(
         isLoading = false
     }
 
-    LaunchedEffect(Unit) { load() }
+    // OPT-O24-06: Defer initial network load until entrance spring settles to prevent frame drops
+    LaunchedEffect(Unit) {
+        if (!motion.reduceMotion) {
+            delay(FlashMotion.NormalMillis.toLong())
+        }
+        load()
+    }
 
     val filteredGroups = remember(allGroups, searchQuery) {
         if (searchQuery.isBlank()) {
@@ -395,6 +403,7 @@ private fun FlashJoinRequestsPanel(
     onDecide: suspend (EnterpriseJoinRequest, Boolean) -> FlashResult<EnterpriseJoinResult>,
 ) {
     val colors = FlashTheme.colors
+    val motion = FlashTheme.motion
     val scope = rememberCoroutineScope()
     var requests by remember(groupId) { mutableStateOf<List<EnterpriseJoinRequest>?>(null) }
     var error by remember(groupId) { mutableStateOf<String?>(null) }
