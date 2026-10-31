@@ -383,45 +383,32 @@ private fun FlashMessageBubbleUltraLow(
             }
             if (message.fileAttachments.isNotEmpty()) {
                 message.fileAttachments.forEach { file ->
-                    FlashFileMessageCard(
-                        attachment = file,
+                    AttachmentCardItem(
+                        file = file,
                         isParentOutgoing = message.isMine,
-                        onCardClick = { onFileClick(file) },
-                        onActionClick = {
-                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
-                                onPauseTransfer(file)
-                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
-                                onResumeTransfer(file)
-                            } else {
-                                onFileClick(file)
-                            }
-                        },
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
-                        onAccept = { onAcceptOffer(file) },
-                        onDecline = { onDeclineOffer(file) },
-                        onPause = { onPauseTransfer(file) },
-                        onResume = { onResumeTransfer(file) },
-                        onCancel = { onCancelTransfer(file) },
+                        onFileClick = onFileClick,
+                        onAcceptOffer = onAcceptOffer,
+                        onDeclineOffer = onDeclineOffer,
+                        onPauseTransfer = onPauseTransfer,
+                        onResumeTransfer = onResumeTransfer,
+                        onCancelTransfer = onCancelTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
                 message.voiceAttachments.forEach { voice ->
-                    FlashVoiceMessageCard(
-                        attachment = voice,
+                    VoiceCardItem(
+                        voice = voice,
                         isParentOutgoing = message.isMine,
-                        onCardClick = {},
-                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
-                        selectionMode = inSelectionMode,
+                        inSelectionMode = inSelectionMode,
                         onSelectToggle = onSelectToggle,
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
+                        onAcceptOffer = onAcceptOffer,
+                        onResumeTransfer = onResumeTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
@@ -642,45 +629,32 @@ private fun FlashBubbleSurface(
             // FlashMessageUi fields it read are gone. A message with images renders them above.
             if (message.fileAttachments.isNotEmpty()) {
                 message.fileAttachments.forEach { file ->
-                    FlashFileMessageCard(
-                        attachment = file,
+                    AttachmentCardItem(
+                        file = file,
                         isParentOutgoing = message.isMine,
-                        onCardClick = { onFileClick(file) },
-                        onActionClick = {
-                            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
-                                onPauseTransfer(file)
-                            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
-                                onResumeTransfer(file)
-                            } else {
-                                onFileClick(file)
-                            }
-                        },
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
-                        onAccept = { onAcceptOffer(file) },
-                        onDecline = { onDeclineOffer(file) },
-                        onPause = { onPauseTransfer(file) },
-                        onResume = { onResumeTransfer(file) },
-                        onCancel = { onCancelTransfer(file) },
+                        onFileClick = onFileClick,
+                        onAcceptOffer = onAcceptOffer,
+                        onDeclineOffer = onDeclineOffer,
+                        onPauseTransfer = onPauseTransfer,
+                        onResumeTransfer = onResumeTransfer,
+                        onCancelTransfer = onCancelTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
             }
             if (message.voiceAttachments.isNotEmpty()) {
                 message.voiceAttachments.forEach { voice ->
-                    FlashVoiceMessageCard(
-                        attachment = voice,
+                    VoiceCardItem(
+                        voice = voice,
                         isParentOutgoing = message.isMine,
-                        onCardClick = {},
-                        onActionClick = { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) },
-                        selectionMode = inSelectionMode,
+                        inSelectionMode = inSelectionMode,
                         onSelectToggle = onSelectToggle,
-                        onLongPress = {
-                            haptics(FlashHaptic.Confirm)
-                            onOpenActions()
-                        },
+                        onAcceptOffer = onAcceptOffer,
+                        onResumeTransfer = onResumeTransfer,
+                        onOpenActions = onOpenActions,
+                        haptics = haptics,
                     )
                     Spacer(modifier = Modifier.height(FlashSpacing.space4))
                 }
@@ -917,6 +891,88 @@ private fun FlashMessageTimestampRow(
             }
         }
     }
+}
+
+@Composable
+private fun AttachmentCardItem(
+    file: FlashFileAttachmentUi,
+    isParentOutgoing: Boolean,
+    onFileClick: (FlashFileAttachmentUi) -> Unit,
+    onAcceptOffer: (FlashFileAttachmentUi) -> Unit,
+    onDeclineOffer: (FlashFileAttachmentUi) -> Unit,
+    onPauseTransfer: (FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (FlashFileAttachmentUi) -> Unit,
+    onCancelTransfer: (FlashFileAttachmentUi) -> Unit,
+    onOpenActions: () -> Unit,
+    haptics: (FlashHaptic) -> Unit,
+) {
+    val onCardClick = remember(file.id, onFileClick) { { onFileClick(file) } }
+    val onActionClick = remember(file.id, file.transferStatus, onPauseTransfer, onResumeTransfer, onFileClick) {
+        {
+            if (file.transferStatus == FlashFileTransferStatus.Transferring) {
+                onPauseTransfer(file)
+            } else if (file.transferStatus == FlashFileTransferStatus.Paused || file.transferStatus == FlashFileTransferStatus.Failed) {
+                onResumeTransfer(file)
+            } else {
+                onFileClick(file)
+            }
+        }
+    }
+    val onLongPress = remember(onOpenActions, haptics) {
+        {
+            haptics(FlashHaptic.Confirm)
+            onOpenActions()
+        }
+    }
+    val onAccept = remember(file.id, onAcceptOffer) { { onAcceptOffer(file) } }
+    val onDecline = remember(file.id, onDeclineOffer) { { onDeclineOffer(file) } }
+    val onPause = remember(file.id, onPauseTransfer) { { onPauseTransfer(file) } }
+    val onResume = remember(file.id, onResumeTransfer) { { onResumeTransfer(file) } }
+    val onCancel = remember(file.id, onCancelTransfer) { { onCancelTransfer(file) } }
+
+    FlashFileMessageCard(
+        attachment = file,
+        isParentOutgoing = isParentOutgoing,
+        onCardClick = onCardClick,
+        onActionClick = onActionClick,
+        onLongPress = onLongPress,
+        onAccept = onAccept,
+        onDecline = onDecline,
+        onPause = onPause,
+        onResume = onResume,
+        onCancel = onCancel,
+    )
+}
+
+@Composable
+private fun VoiceCardItem(
+    voice: FlashVoiceAttachmentUi,
+    isParentOutgoing: Boolean,
+    inSelectionMode: Boolean,
+    onSelectToggle: (String) -> Unit,
+    onAcceptOffer: (FlashFileAttachmentUi) -> Unit,
+    onResumeTransfer: (FlashFileAttachmentUi) -> Unit,
+    onOpenActions: () -> Unit,
+    haptics: (FlashHaptic) -> Unit,
+) {
+    val onActionClick = remember(voice.id, onAcceptOffer, onResumeTransfer) {
+        { onVoiceTransferAction(voice, onAcceptOffer, onResumeTransfer) }
+    }
+    val onLongPress = remember(onOpenActions, haptics) {
+        {
+            haptics(FlashHaptic.Confirm)
+            onOpenActions()
+        }
+    }
+    FlashVoiceMessageCard(
+        attachment = voice,
+        isParentOutgoing = isParentOutgoing,
+        onCardClick = {},
+        onActionClick = onActionClick,
+        selectionMode = inSelectionMode,
+        onSelectToggle = onSelectToggle,
+        onLongPress = onLongPress,
+    )
 }
 
 /** Concise group-delivery progress; invalid/absent aggregates render nothing. */
