@@ -167,7 +167,7 @@ public class AutoConnector(
 
     public companion object {
         /** The sweep cadence all three hosts used before PC2. */
-        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
 
         /** Plan §3.5: "dials first, with a ~1 s budget on a LAN, then sends". */
         public const val DIAL_ON_DEMAND_BUDGET_MS: Long = 1_000L

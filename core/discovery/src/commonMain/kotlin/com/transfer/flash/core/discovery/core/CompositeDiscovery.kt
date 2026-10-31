@@ -130,7 +130,7 @@ public class CompositeDiscovery(
          * peer disappears at most ~[DEFAULT_SWEEP_INTERVAL_MS] + [DEFAULT_GRACE_MS]
          * after its last real sighting, slow enough to be negligible load.
          */
-        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
 
         /**
          * Default [browseWatchdogMs]: two sweep intervals. Long enough that an
