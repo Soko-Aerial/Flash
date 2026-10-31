@@ -36,16 +36,39 @@ internal object FlashTlsContextFactory {
     private val clientCache = ConcurrentHashMap<ClientKey, SSLContext>()
     private val serverCache = ConcurrentHashMap<ServerKey, SSLContext>()
 
+    /**
+     * Identity-keyed wrapper around this host's [KeyManager] array — the local TLS identity.
+     *
+     * A bare `System.identityHashCode(keyManagers)` is not a safe cache key, for two independent
+     * reasons (integrator review, 2026-10-31):
+     * - identity hash codes collide, so an unrelated array can hit a cached [SSLContext] built for
+     *   a different local identity and present the WRONG certificate to a peer;
+     * - the code is derived from an address, and the array it came from is otherwise unreferenced,
+     *   so it can be collected and its code reused — a fresh identity array would then reuse a
+     *   stale context holding a retired (possibly revoked) certificate.
+     *
+     * Holding the array here makes both impossible: [equals] is reference equality on the array
+     * itself and a hash collision can no longer be mistaken for a match. Keeping it strongly
+     * reachable is not a lifetime regression — the cached [SSLContext] already retains it through
+     * its KeyManagers, and [clearCache] drops both together.
+     */
+    private class KeyManagersRef(private val managers: Array<KeyManager>?) {
+        override fun equals(other: Any?): Boolean =
+            other is KeyManagersRef && managers === other.managers
+
+        override fun hashCode(): Int = System.identityHashCode(managers)
+    }
+
     private data class ClientKey(
         val expectedDeviceId: String,
         val pinVerifier: FlashPinVerifier,
-        val keyManagersIdentity: Int,
+        val keyManagersRef: KeyManagersRef,
     )
 
     private data class ServerKey(
         val expectedDeviceId: String?,
         val pinVerifier: FlashPinVerifier,
-        val keyManagersIdentity: Int,
+        val keyManagersRef: KeyManagersRef,
     )
 
     fun clearCache() {
@@ -71,7 +94,7 @@ internal object FlashTlsContextFactory {
         onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): SSLContext {
         if (expectedDeviceId != null && !deferPinWhenDeviceIdUnknown) {
-            val key = ClientKey(expectedDeviceId, pinVerifier, System.identityHashCode(keyManagers))
+            val key = ClientKey(expectedDeviceId, pinVerifier, KeyManagersRef(keyManagers))
             return clientCache.computeIfAbsent(key) {
                 createContext(
                     keyManagers,
@@ -118,7 +141,7 @@ internal object FlashTlsContextFactory {
         onLeafObserved: (leafFingerprintHex: String) -> Unit = {},
     ): SSLContext {
         if (!deferPinWhenDeviceIdUnknown) {
-            val key = ServerKey(expectedDeviceId, pinVerifier, System.identityHashCode(keyManagers))
+            val key = ServerKey(expectedDeviceId, pinVerifier, KeyManagersRef(keyManagers))
             return serverCache.computeIfAbsent(key) {
                 createContext(
                     keyManagers,

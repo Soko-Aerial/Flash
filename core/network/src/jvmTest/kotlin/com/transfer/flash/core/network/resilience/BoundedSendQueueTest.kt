@@ -183,4 +183,73 @@ class BoundedSendQueueTest {
         assertEquals("n1", q.poll())
         assertEquals("n2", q.poll())
     }
+
+    // --- enqueueBlocking: the bounded wait the WebSocket write path relies on (integrator review, 2026-10-31) ---
+
+    @Test
+    fun `enqueueBlocking waits for room and succeeds once the consumer drains`() {
+        val q = BoundedSendQueue<Int>(capacity = 1)
+        assertEquals(EnqueueResult.Enqueued<Int>(1), q.enqueue(1))
+        val drained = CountDownLatch(1)
+        Thread {
+            Thread.sleep(50)
+            q.poll()
+            drained.countDown()
+        }.start()
+
+        val startedAt = System.nanoTime()
+        val result = q.enqueueBlocking(2, 2_000L)
+        val waitedMs = (System.nanoTime() - startedAt) / 1_000_000
+
+        assertTrue("consumer never drained", drained.await(2, TimeUnit.SECONDS))
+        assertEquals(EnqueueResult.Enqueued<Int>(1), result)
+        assertTrue("returned without waiting for room: ${waitedMs}ms", waitedMs >= 30)
+        assertEquals(2, q.poll())
+    }
+
+    @Test
+    fun `enqueueBlocking reports QueueFull once its bound expires, without evicting anything`() {
+        val q = BoundedSendQueue<Int>(capacity = 1)
+        q.enqueue(1)
+
+        val startedAt = System.nanoTime()
+        val result = q.enqueueBlocking(2, 60L)
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+
+        assertEquals(RejectReason.QueueFull, (result as EnqueueResult.Rejected).reason)
+        assertTrue("returned too early: ${elapsedMs}ms", elapsedMs >= 40)
+        assertEquals(1, q.size)
+        assertEquals(1, q.poll())
+        assertNull(q.poll())
+    }
+
+    @Test
+    fun `enqueueBlocking reports Closed promptly when the queue closes while it waits`() {
+        val q = BoundedSendQueue<Int>(capacity = 1)
+        q.enqueue(1)
+        Thread {
+            Thread.sleep(50)
+            q.close()
+        }.start()
+
+        val startedAt = System.nanoTime()
+        val result = q.enqueueBlocking(2, 5_000L)
+        val elapsedMs = (System.nanoTime() - startedAt) / 1_000_000
+
+        assertEquals(RejectReason.Closed, (result as EnqueueResult.Rejected).reason)
+        assertTrue("close did not wake the parked producer: ${elapsedMs}ms", elapsedMs < 2_000)
+    }
+
+    @Test
+    fun `enqueueBlocking respects the priority lane and its own capacity`() {
+        val q = BoundedSendQueue<Int>(capacity = 4, priorityCapacity = 1)
+        q.enqueuePriority(1)
+
+        val result = q.enqueueBlocking(2, 40L, priority = true)
+
+        assertEquals(RejectReason.QueueFull, (result as EnqueueResult.Rejected).reason)
+        assertEquals(1, q.size)
+        // The normal lane still had room the whole time; the priority lane is what was full.
+        assertTrue(q.enqueue(3) is EnqueueResult.Enqueued)
+    }
 }

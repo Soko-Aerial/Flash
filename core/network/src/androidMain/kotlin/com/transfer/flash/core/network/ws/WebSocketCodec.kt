@@ -2,7 +2,6 @@ package com.transfer.flash.core.network.ws
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.perf.ByteArrayPool
-import com.transfer.flash.core.common.perf.use
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.IOException
@@ -292,7 +291,17 @@ public object WebSocketCodec {
                         }
                     }
 
-                    else -> throw IOException("Unsupported WebSocket opcode ${header.opcode}")
+                    else -> {
+                        // Give the pooled buffer back on the way out. An unknown opcode is rejected
+                        // only here, AFTER readFramePayload has already taken one from the pool - the
+                        // header check cannot reject it, because 0x3..0x7 are valid 4-bit values.
+                        // Skipping the release is not a pool drain ([ByteArrayPool.acquire] allocates
+                        // when the pool is empty) and not a disclosure, but it does drop a 16/32 KB
+                        // buffer as garbage instead of wiping and reusing it, on a frame a peer
+                        // chooses to send (integrator review, 2026-10-31).
+                        if (inbound.isPooled) ByteArrayPool.release(inbound.buffer)
+                        throw IOException("Unsupported WebSocket opcode ${header.opcode}")
+                    }
                 }
             }
         }

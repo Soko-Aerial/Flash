@@ -70,6 +70,49 @@ import kotlinx.coroutines.launch
  * composite keeps one endpoint (same address, same port, same device id) and its loss hysteresis
  * means whichever transport reports the peer first wins the right to keep it visible — so adding this
  * transport cannot make a peer that NSD already sees disappear.
+ *
+ * ## Rejected: adaptive suppression of the directed-broadcast fallback (2026-10-31, integrator)
+ *
+ * **REJECTED (OPT-O10-07, reverted).** The proposed optimisation was to skip the directed-broadcast
+ * copy of an announcement while multicast looked "healthy", to avoid the basic-rate airtime cost.
+ * The health signal was "an accepted peer announcement within the last 60 s" ([handleDatagram]).
+ * That signal cannot distinguish a multicast-borne datagram from a broadcast-borne one: the receiving
+ * sockets are bound to the wildcard address, so they accept directed broadcast on the announce port
+ * as well ([MulticastSocketFactory] documents this), and Java exposes no destination address on a
+ * datagram the way it does for a socket with an explicit bind. Broadcasting therefore refreshed the
+ * very counter that suppressed broadcasting.
+ *
+ * On exactly the networks the fallback exists for — multicast filtered but broadcast delivered (see
+ * [DirectedBroadcast]) — devices hear each other *only* by broadcast, so the cycle becomes: broadcast
+ * → suppressed for 60 s → nothing heard → [DEFAULT_PEER_LEASE_MS] (also 60 s) expires the lease →
+ * Lost/Found flap on a ~60-80 s period.
+ *
+ * Making the signal trustworthy needs a wire-format path tag (this datagram arrived by broadcast),
+ * which is a protocol change and therefore an owner decision. Until then the broadcast copy goes out
+ * with every announcement, unconditionally.
+ *
+ * ## Rejected: lengthening the sweep interval (2026-10-31, integrator ruling)
+ *
+ * **REJECTED (OPT-O10-05, reverted).** [DEFAULT_SWEEP_INTERVAL_MS] goes back to 5 s in this module and
+ * in `CompositeDiscovery`; the `AutoConnector` site is the integrator's. Three reasons, in the order
+ * they matter:
+ *
+ * 1. **It breaks a documented invariant.** `CompositeDiscovery`'s `browseWatchdogMs` KDoc says the
+ *    watchdog "Must exceed [sweepIntervalMs] so a transient false (state event racing a start) cannot
+ *    trigger a pointless radio teardown", and calls it "two sweep intervals". The watchdog is 10 s, so
+ *    15 s > 10 s inverts exactly that condition and lets the watchdog tear down a browse that is merely
+ *    waiting for its next sweep. Raising the watchdog to 30 s instead would push dead-radio recovery
+ *    from ~10 s to ~30 s — a worse trade than the wakeups it saves.
+ * 2. **The claimed win is unmeasured.** These loops do real work per tick ([startSweepLoop] runs
+ *    `recoverBindingsIfNeeded()` and [sweepLeases]); three loops at 5 s is 0.6 wakeups per second; and
+ *    no EXP entry on the branch measures the saving.
+ * 3. **User-visible cost.** [presenceGraceMs] is `peerLeaseMs + sweepIntervalMs` (60 s + 15 s = 75 s)
+ *    and `CompositeDiscovery` ages a departed peer over its own sweep interval, so a peer that walked
+ *    away lingers ~10 s longer before it reads as gone.
+ *
+ * The finding itself ("unsynchronised polling sweepers") is real but is not fixed by three
+ * independently larger periods. What it needs is one shared clock/ticker for the three sweepers (this
+ * one, `CompositeDiscovery`'s and `AutoConnector`'s) so they cannot drift into unsynchronised bursts.
  */
 public class MulticastTransport(
     private val socketFactory: MulticastSocketFactory,
@@ -180,7 +223,6 @@ public class MulticastTransport(
     private var lastIdentity: FlashAdvertisedIdentity? = null
     private var lastAdvertisedPort: Int = 0
     private var lastAnnounceAtMs: Long = Long.MIN_VALUE
-    private var lastMulticastSeenAtMs: Long = 0L
 
     /**
      * peer → (serviceName, lastSeenMs). The lease map: a peer is in [directory] only while it is in
@@ -344,7 +386,6 @@ public class MulticastTransport(
             if (known == null && leases.size >= maxPeers) {
                 return@withLock null
             }
-            lastMulticastSeenAtMs = now
             val diff = directory.applySeen(endpoint, now)
             leases[deviceId] = (known ?: PeerLease(endpoint.serviceName, now))
                 .also { it.lastSeenAtMs = now }
@@ -372,7 +413,7 @@ public class MulticastTransport(
     // -- Announcement ----------------------------------------------------------
 
     /** Sends one announcement on every bound interface. No-op while not advertising. */
-    public fun announceNow(forceBroadcast: Boolean = true) {
+    public fun announceNow() {
         // Encode and snapshot under the lock; SEND outside it. A socket write is the one thing here
         // that can block, and a blocked send must not hold up discovery state.
         val outbound = lock.withLock {
@@ -396,9 +437,7 @@ public class MulticastTransport(
             }
             // After the multicast send, never instead of it, and never fatal: an interface with no
             // broadcast address returns false, which is normal and therefore not logged here.
-            // OPT-O10-07: in the periodic loop, directed broadcast is skipped when multicast is functional
-            // (multicast sightings within 60s) to avoid the AP basic-rate airtime penalty on Wi-Fi.
-            if (broadcastEnabled && forceBroadcast) binding.sendBroadcast(outbound.second)
+            if (broadcastEnabled) binding.sendBroadcast(outbound.second)
         }
     }
 
@@ -487,10 +526,7 @@ public class MulticastTransport(
             while (isActive && advertising) {
                 delay(nextAnnounceDelayMs())
                 if (!advertising) return@launch
-                val shouldBroadcast = lock.withLock {
-                    timeSourceMs() - lastMulticastSeenAtMs >= BROADCAST_FALLBACK_THRESHOLD_MS
-                }
-                announceNow(forceBroadcast = shouldBroadcast)
+                announceNow()
             }
         }
     }
@@ -683,10 +719,7 @@ public class MulticastTransport(
          */
         public const val DEFAULT_PEER_LEASE_MS: Long = 60_000L
 
-        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 15_000L
-
-        /** Fallback to directed broadcast when no multicast packets heard for this duration. */
-        public const val BROADCAST_FALLBACK_THRESHOLD_MS: Long = 60_000L
+        public const val DEFAULT_SWEEP_INTERVAL_MS: Long = 5_000L
 
         /** Far above any real LAN of phones and PCs, far below what a spoofing loop produces. */
         public const val DEFAULT_MAX_PEERS: Int = 256

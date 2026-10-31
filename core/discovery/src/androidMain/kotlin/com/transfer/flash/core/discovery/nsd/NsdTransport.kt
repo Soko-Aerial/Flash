@@ -225,7 +225,6 @@ public class RealNsdManagerBridge(
     private val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
-    private var multicastLock: WifiManager.MulticastLock? = null
     private var advertiseListener: NsdManager.RegistrationListener? = null
 
     /**
@@ -281,37 +280,92 @@ public class RealNsdManagerBridge(
     /** Last successfully enumerated value, returned when a later enumeration throws. */
     @Volatile private var lastLinkFingerprint: String = ""
 
+    /** Main-looper handler for the multicast-lock lease timers. */
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
-    private val lockExpiryRunnable = Runnable {
-        runCatching {
-            multicastLock?.let { lock ->
-                if (lock.isHeld) {
-                    lock.release()
-                    Log.w(tag, "Multicast lock lease expired after bound (${NsdTransport.DEFAULT_LOCK_LEASE_MS}ms); released to save battery")
-                }
-            }
-            multicastLock = null
-        }
-    }
+
+    /**
+     * Guards [multicastLock] and [multicastLockExpiry].
+     *
+     * [setMulticastLock] is called from the transport's coroutine lane while the lease expiry runs on
+     * the main looper, and both do a check-then-act on the same field: without one shared lock the
+     * expiry can release/nil a lock that a later acquire installed, and two concurrent acquires can
+     * each decide the field is empty and create a lock. Android's [android.os.Handler] calls
+     * (`postDelayed`/`removeCallbacks`) are deliberately made OUTSIDE this lock — they take the
+     * message-queue lock, and holding ours across them would invert lock order against a caller
+     * synchronised on the queue.
+     */
+    private val multicastLockMutex = Any()
+
+    /** The held multicast lock. Read/written under [multicastLockMutex]; volatile for diagnostics. */
+    @Volatile private var multicastLock: WifiManager.MulticastLock? = null
+
+    /** The lease timer armed for [multicastLock]. Replaced and cancelled together with it. */
+    private var multicastLockExpiry: Runnable? = null
 
     override fun setMulticastLock(active: Boolean) {
         runCatching {
-            mainHandler.removeCallbacks(lockExpiryRunnable)
             if (active) {
-                if (multicastLock?.isHeld != true) {
-                    multicastLock = wifiManager.createMulticastLock("flash-nsd-transport").apply {
-                        setReferenceCounted(false)
-                        acquire()
+                val lock = synchronized(multicastLockMutex) {
+                    val existing = multicastLock
+                    if (existing?.isHeld == true) {
+                        existing
+                    } else {
+                        wifiManager.createMulticastLock("flash-nsd-transport").apply {
+                            setReferenceCounted(false)
+                            acquire()
+                        }.also { multicastLock = it }
                     }
                 }
-                mainHandler.postDelayed(lockExpiryRunnable, NsdTransport.DEFAULT_LOCK_LEASE_MS)
+                armMulticastLockLease(lock)
             } else {
-                multicastLock?.let { lock ->
-                    if (lock.isHeld) lock.release()
+                val released = synchronized(multicastLockMutex) {
+                    multicastLock.also { multicastLock = null }
                 }
-                multicastLock = null
+                cancelMulticastLockLease()
+                if (released?.isHeld == true) released.release()
             }
         }.onFailure { Log.w(tag, "Multicast lock toggle failed", it) }
+    }
+
+    /**
+     * (Re)arms the lease timer for [lock].
+     *
+     * The runnable closes over the instance it was armed for and acts only while that instance is
+     * still the current one, so a stale expiry can never release a lock installed after it was armed.
+     */
+    private fun armMulticastLockLease(lock: WifiManager.MulticastLock) {
+        val expiry = Runnable {
+            val expired = synchronized(multicastLockMutex) {
+                if (multicastLock === lock) {
+                    multicastLock = null
+                    multicastLockExpiry = null
+                    true
+                } else {
+                    false
+                }
+            }
+            if (expired) {
+                if (lock.isHeld) lock.release()
+                Log.w(
+                    tag,
+                    "Multicast lock lease expired after ${NsdTransport.DEFAULT_LOCK_LEASE_MS}ms " +
+                        "with nothing renewing it; released to save battery",
+                )
+            }
+        }
+        val previous = synchronized(multicastLockMutex) {
+            multicastLockExpiry.also { multicastLockExpiry = expiry }
+        }
+        previous?.let { mainHandler.removeCallbacks(it) }
+        mainHandler.postDelayed(expiry, NsdTransport.DEFAULT_LOCK_LEASE_MS)
+    }
+
+    /** Cancels the armed lease timer. Handler calls happen outside [multicastLockMutex] — see there. */
+    private fun cancelMulticastLockLease() {
+        val previous = synchronized(multicastLockMutex) {
+            multicastLockExpiry.also { multicastLockExpiry = null }
+        }
+        previous?.let { mainHandler.removeCallbacks(it) }
     }
 
     override fun advertise(request: AdvertiseRequest, events: AdvertiseEvents): Boolean {
@@ -1021,7 +1075,17 @@ public class NsdTransport(
 
     /** Debounced connectivity-change restart. */
     @Volatile private var networkChangeJob: Job? = null
-    @Volatile private var lastExplicitRestartAtMs: Long = 0L
+
+    /**
+     * Monotonic (nanosecond) timestamp of the last browse/advertise restart *we* performed; `0` while
+     * none has happened.
+     *
+     * Monotonic on purpose: it is compared against [networkChangeDebounceMs], which is waited out with
+     * [delay] — itself monotonic. A wall-clock reading would jump backwards on an NTP correction or a
+     * date change and make the `elapsed` test negative, which used to suppress every network-change
+     * restart until the clock caught up again.
+     */
+    @Volatile private var lastExplicitRestartAtNanos: Long = 0L
 
     @Volatile private var observingNetwork = false
 
@@ -1304,7 +1368,7 @@ public class NsdTransport(
         val identity = lastAdvertisedIdentity ?: return
         networkChangeJob?.cancel()
         networkChangeJob = null
-        lastExplicitRestartAtMs = System.currentTimeMillis()
+        lastExplicitRestartAtNanos = System.nanoTime()
         advertising = false
         acquireMulticastLockIfNeeded()
         // registerAdvertisement releases the registration it replaces.
@@ -1379,7 +1443,7 @@ public class NsdTransport(
     override suspend fun restartBrowsing(): FlashResult<Unit> {
         networkChangeJob?.cancel()
         networkChangeJob = null
-        lastExplicitRestartAtMs = System.currentTimeMillis()
+        lastExplicitRestartAtNanos = System.nanoTime()
         val wasBrowsing = browsing
         browsing = false
         browseLoopJob?.cancel()
@@ -1503,7 +1567,17 @@ public class NsdTransport(
             while (browsing && coroutineContext.isActive && ticks < maxPresenceTicks) {
                 presenceSleep(presenceHeartbeatMs)
                 if (!browsing || !coroutineContext.isActive) return@launch
-                presenceTick()
+                // One throwing tick must not end the heartbeat for good. This loop is the only thing
+                // that retries monitors, re-affirms presence, evicts unmonitored peers, drains the
+                // safety-net sweep and polls the link fingerprint; if it dies, `browsing` stays true
+                // while all of that stops, silently — and, since the multicast lock's lease is renewed
+                // from this tick (OPT-O10-02), the lock is released a lease later while discovery
+                // still believes it is listening.
+                runCatching { presenceTick() }
+                    .onFailure { error ->
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        logWarn("Heartbeat tick failed (${error.javaClass.simpleName}: ${error.message}); continuing")
+                    }
                 ticks += 1
             }
         }
@@ -1526,6 +1600,9 @@ public class NsdTransport(
      * Step 0 polls the local interfaces. It is here rather than on its own timer because a hotspot
      * being switched on produces no callback to hang a timer off (see
      * [NsdManagerBridge.linkFingerprint]) and the heartbeat is already awake.
+     *
+     * Step 0 also re-arms the multicast lock while a continuous browse is running (OPT-O10-02), which
+     * is what makes [NsdTransport.DEFAULT_LOCK_LEASE_MS] a leak guard rather than a browsing bound.
      */
     private suspend fun presenceTick() {
         if (browsing && modePolicy.browseDutyCycleMs == null) {
@@ -1599,6 +1676,12 @@ public class NsdTransport(
      * transition arrives as a burst of callbacks. When [immediate] is true (new network available),
      * debounce is skipped to make discovery restart instantly.
      *
+     * A restart we performed ourselves within the debounce window makes the callback that follows it
+     * redundant, so the debounced path drops it (the "Skipping redundant network change restart"
+     * line). That skip deliberately does NOT apply to the `immediate` path: an immediate restart is
+     * the only notification that a new network became available, because the caller cancels the
+     * debounced job on the way in.
+     *
      * Three sources reach here, all of them necessarily distinct: availability callbacks for a
      * network appearing or disappearing, a shape change on a network that stayed (a mesh roam, which
      * keeps its `Network` object and so fires neither of the first two), and the interface poll for
@@ -1613,13 +1696,20 @@ public class NsdTransport(
         val activeScope = scope ?: return
         networkChangeJob?.cancel()
         networkChangeJob = activeScope.launch(lane) {
+            // The redundancy skip covers the DEBOUNCED path only. `immediate = true` means "a new
+            // network became available" and, because the caller just cancelled the debounced job, this
+            // launch is the ONLY notification of that transition — skipping it would leave discovery
+            // bound to the interface that just went away until the next interface poll.
             if (!immediate) {
                 delay(networkChangeDebounceMs)
-            }
-            val elapsed = System.currentTimeMillis() - lastExplicitRestartAtMs
-            if (elapsed < networkChangeDebounceMs) {
-                logInfo("Skipping redundant network change restart: explicitly restarted ${elapsed}ms ago (OPT-O10-06)")
-                return@launch
+                val lastRestartAtNanos = lastExplicitRestartAtNanos
+                if (lastRestartAtNanos != 0L) {
+                    val elapsedMs = (System.nanoTime() - lastRestartAtNanos) / 1_000_000L
+                    if (elapsedMs < networkChangeDebounceMs) {
+                        logInfo("Skipping redundant network change restart: explicitly restarted ${elapsedMs}ms ago (OPT-O10-06)")
+                        return@launch
+                    }
+                }
             }
             if (advertiseDesired) {
                 logInfo("Connectivity changed (immediate=$immediate); re-registering NSD advertisement")
@@ -1952,8 +2042,19 @@ public class NsdTransport(
         private const val EVICTION_GRACE_TICKS: Long = 2L
 
         /**
-         * OPT-O10-02: Maximum duration the Wi-Fi MulticastLock may be held before automatically expiring.
-         * Prevents indefinite battery drain if browsing is abandoned without clean teardown.
+         * OPT-O10-02: how long the Wi-Fi MulticastLock may go without being re-armed before it is
+         * released automatically.
+         *
+         * What this bound actually covers, stated precisely because the first version of this comment
+         * overclaimed: the lock is re-armed by [NsdTransport.presenceTick] on every heartbeat while
+         * browsing continuously, and the ECO duty cycle releases it explicitly at the end of each
+         * burst. Under normal operation of either mode the timer therefore never fires, and it is NOT
+         * a bound on how long ordinary browsing may hold the lock. It fires in one situation only:
+         * nothing renews AND nothing releases — the heartbeat job that re-arms it is gone (a dead
+         * heartbeat coroutine, or a screen-off/doze state that stops the [lane] running at all) while
+         * `browsing` still reports true, so discovery believes it is listening when it is not.
+         *
+         * It is a last-resort leak guard, not a power policy.
          */
         public const val DEFAULT_LOCK_LEASE_MS: Long = 300_000L
 
