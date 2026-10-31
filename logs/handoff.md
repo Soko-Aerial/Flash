@@ -22,9 +22,10 @@
 > `O05-01`/`O07-01` (a single hash pass needs a wire change — plan §8), `O23-02` (seekable source, `PERF-T05`), `O07-02`
 > (`.part`, `PERF-T06`), `O23-03`'s FAT32 half (`PERF-T07`), `O23-06` (`PERF-T08`), `O27-04` (`PERF-D04`). `PERF-T01`/`T02`
 > (2 GB send/resume) are what close ERROR-893. Rule learned and written into plan §8: **a feature without a host caller is not
-> done — grep for the call site before writing "implemented".** Authority: `logs/streams/{data,transfer}/INTEGRATOR-REVIEW.md`,
-> ADR-240..242/250..255, EXP-085/086/090..092. Next stream stays off the current `dev`; `PERF-A04` (release script must
-> collect per-ABI APKs) and the owner's `PERF-A03` installer smoke test still block a Windows/APK release.
+> done - grep for the call site before writing "implemented".** Authority: `logs/streams/{data,transfer}/INTEGRATOR-REVIEW.md`,
+> ADR-240..242/250..255, EXP-085/086/090..092. Next stream stays off the current `dev`. `PERF-A04` is **done** (ABI splits
+> and a script that refuses a stale APK, ADR-243), so `PERF-A01` is runnable; the owner's `PERF-A03` installer smoke test still
+> blocks a Windows release.
 
 > 2026-10-30 decisions answered: **every open decision of the optimization programme is decided (ADR-232)** — the owner
 > delegated them to the integrator's recommendation, so a stream now *implements* the answer instead of writing
@@ -34,7 +35,7 @@
 > half (D) · BouncyCastle **keeps** (ADR-230) · history paging **approved** and must resolve
 > `FlashBackStackState.targetMessageId` (D) · wire changes **declined** for now, N takes the allocation half only · swarm
 > fairness **approved** (S) · **per-ABI APKs approved** (17.55 MB vs 54.63 MB, universal kept) — the release script must
-> collect outputs *and* fail on a stale one, which unblocks `PERF-A01` · desktop installer smoke test **before the next
+> collect outputs *and* fail on a stale one, which unblocks `PERF-A01` (both built 2026-10-31, ADR-243) · desktop installer smoke test **before the next
 > Windows build ships** · baseline profile deferred · `RealFlashChatRepositoryTest`'s sleeps are **D's first commit**. Plan §12
 > holds the table, §8 now says only `device session`/`owner (ops)` rows still block, and the D/N/G/S prompt blocks were
 > rewritten from "record BLOCKED" to "implement this". **Docs only — nothing built, nothing device-verified, not pushed.**
