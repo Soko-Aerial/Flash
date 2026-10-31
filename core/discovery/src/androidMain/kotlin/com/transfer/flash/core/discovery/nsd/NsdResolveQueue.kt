@@ -137,7 +137,7 @@ internal class NsdResolveQueue(
     }
 
     companion object {
-        const val RESOLVE_TIMEOUT_MS: Long = 6_000L
+        const val RESOLVE_TIMEOUT_MS: Long = 2_000L
 
         /** Reported to [onFailed] when no platform error code exists (timeout, or the call itself threw). */
         const val ERROR_TIMEOUT: Int = -1
