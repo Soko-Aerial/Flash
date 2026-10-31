@@ -605,6 +605,14 @@ fun FlashConversationScreen(
                 if (motion.reduceMotion) {
                     listState.scrollToItem(scrollIndex)
                 } else {
+                    // OPT-O04-07: When target distance > 15 items, pre-jump to within 10 items to prevent
+                    // measuring and laying out hundreds of intervening items during fling animation.
+                    val currentIndex = listState.firstVisibleItemIndex
+                    val distance = kotlin.math.abs(scrollIndex - currentIndex)
+                    if (distance > 15) {
+                        val preJumpIndex = if (scrollIndex > currentIndex) scrollIndex - 10 else scrollIndex + 10
+                        listState.scrollToItem(preJumpIndex)
+                    }
                     listState.animateScrollToItem(scrollIndex)
                 }
                 highlightedMessageId = targetId
