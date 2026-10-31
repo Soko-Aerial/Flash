@@ -182,7 +182,7 @@ class RealFlashTransferRepositoryTest {
     )
 
     /**
-     * [TransferStore] whose resume query parks until released — reproduces the exact window
+     * [TransferStore] whose resume query parks until released â€” reproduces the exact window
      * `sendFile` returns into, where the send coroutine is live but its dispatcher is not
      * registered yet.
      */
@@ -209,7 +209,7 @@ class RealFlashTransferRepositoryTest {
                 override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
                     val parsed = ChunkFrame.parse(frameBytes)
                     if (parsed is ChunkFrame.Chunk) {
-                        chunksOnWire.incrementAndGet()
+                        println("WIRE " + parsed.index + " n=" + chunksOnWire.incrementAndGet())
                         repo.onInboundFrame(
                             ChunkFrame.serialize(
                                 ChunkFrame.AckBatch(parsed.transferId, parsed.fileId, listOf(parsed.index)),
@@ -330,9 +330,10 @@ class RealFlashTransferRepositoryTest {
             object : StreamChannel {
                 override val id: Int = channelId
                 override suspend fun sendFrame(frameBytes: ByteArray): Boolean {
-                    if (ChunkFrame.parse(frameBytes) is ChunkFrame.Chunk) {
+                    val parsed = ChunkFrame.parse(frameBytes)
+                    if (parsed is ChunkFrame.Chunk) {
                         if (gateEntered.compareAndSet(false, true)) gate.await()
-                        chunksOnWire.incrementAndGet()
+                        println("WIRE " + parsed.index + " n=" + chunksOnWire.incrementAndGet())
                     }
                     return true // never ACKs: the transfer cannot finish on its own
                 }
@@ -430,7 +431,7 @@ class RealFlashTransferRepositoryTest {
         assertNull("accept clears the waiting-for-acceptance message", row.errorMessage)
 
         awaitUntil(describe = { "ACCEPT never emitted, saw=$incoming" }) { incoming.contains("accept") }
-        // The host — not the repo — sends RESUME after resolving the sink; no wire frame here.
+        // The host â€” not the repo â€” sends RESUME after resolving the sink; no wire frame here.
         assertEquals(listOf("accept"), incoming.toList())
         assertTrue("accept must not emit an outgoing control frame", outgoing.isEmpty())
     }
@@ -659,7 +660,7 @@ class RealFlashTransferRepositoryTest {
         assertTrue(repo.acceptIncoming(FlashTransferId("ghost")) is FlashResult.Failure)
         assertTrue(repo.declineIncoming(FlashTransferId("ghost")) is FlashResult.Failure)
 
-        // Present but already accepted (Transferring) — the offer gate is closed.
+        // Present but already accepted (Transferring) â€” the offer gate is closed.
         repo.onIncomingOffered("tx-2x", "fx-2x", "a.bin", 1024L, "Pixel", "peer-4")
         assertTrue(repo.acceptIncoming(FlashTransferId("tx-2x")) is FlashResult.Success)
         assertTrue("double-accept is rejected", repo.acceptIncoming(FlashTransferId("tx-2x")) is FlashResult.Failure)

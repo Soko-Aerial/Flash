@@ -12,7 +12,7 @@ import okio.buffer
 // Two okio-3.4.0 constraints shaped the result, both verified against the published artifacts
 // rather than assumed:
 //  * `okio.Closeable` is an `expect interface` in okio's commonMain (its JVM actual is a typealias
-//    to `java.io.Closeable`), and `kotlin.AutoCloseable` is nowhere in okio's common surface — so
+//    to `java.io.Closeable`), and `kotlin.AutoCloseable` is nowhere in okio's common surface â€” so
 //    `use { }` does NOT apply to a `BufferedSource` in common code. [Chunker.hashOnly] therefore
 //    closes in an explicit `finally`.
 //  * `okio.IOException` IS in that common surface, so the best-effort catch in [ChunkStream.close]
@@ -41,32 +41,32 @@ public data class ChunkPlan(
 )
 
 /**
- * Pure chunking logic (C5.4). Default 64 KB chunks, hard bounds [MIN_CHUNK_SIZE_BYTES]–
+ * Pure chunking logic (C5.4). Default 64 KB chunks, hard bounds [MIN_CHUNK_SIZE_BYTES]â€“
  * [MAX_CHUNK_SIZE_BYTES], adaptive sizing from measured throughput ([adaptiveSize]).
  *
  * ## Whole-file hash strategy
  *
  * `FILE_START` carries `fileSha256Hex`, so the digest must exist before the first frame is sent
  * (LocalSend likewise requires sha256 at `/prepare-upload` time:
- * https://github.com/localsend/protocol §4.1). Callers either supply a known hex digest or let
+ * https://github.com/localsend/protocol Â§4.1). Callers either supply a known hex digest or let
  * [hashOnly] run a cheap streaming pre-pass; [openChunkStream] then recomputes the digest during
  * the single chunking pass and cross-checks both passes agree (`expectFileSha256Hex`), which also
- * validates source identity between resume attempts (§18).
+ * validates source identity between resume attempts (Â§18).
  *
  * ## Adaptive curve (researched)
  *
- * Signals: measured recent throughput windows — the same signal rclone's shared
+ * Signals: measured recent throughput windows â€” the same signal rclone's shared
  * `chunksize.Calculator()` adapts on (https://github.com/rclone/rclone/pull/6138) and rsync's
- * historical "adaptive block size… minimum of 700 and maximum of 16K"
+ * historical "adaptive block sizeâ€¦ minimum of 700 and maximum of 16K"
  * (https://lists.samba.org/archive/rsync/2001-November/000595.html). Small chunks bound the
  * retransmit/resume granularity on slow lossy paths (BitTorrent v2 fixed 16 KiB blocks for
  * exactly this: https://blog.libtorrent.org/2020/09/bittorrent-v2/); large chunks amortize
  * per-frame overhead when bandwidth-delay product is high
  * (https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/network_troubleshooting_and_performance_tuning/tuning-tcp-connections-for-high-throughput).
  *
- * Curve: geometric (log-scale) interpolation between anchors — throughput ≤ 256 KiB/s maps to
- * [MIN_CHUNK_SIZE_BYTES]; ≥ 64 MiB/s maps to [MAX_CHUNK_SIZE_BYTES]; between them size grows
- * exponentially with throughput, rounded down to a 4 KiB multiple. Bounds sanity: 16 KB ≈ 11×
+ * Curve: geometric (log-scale) interpolation between anchors â€” throughput â‰¤ 256 KiB/s maps to
+ * [MIN_CHUNK_SIZE_BYTES]; â‰¥ 64 MiB/s maps to [MAX_CHUNK_SIZE_BYTES]; between them size grows
+ * exponentially with throughput, rounded down to a 4 KiB multiple. Bounds sanity: 16 KB â‰ˆ 11Ã—
  * typical 1500 B MTU (far above header-amortization floor) yet well below flash erase-block
  * scales; 256 KB keeps worst-case per-chunk buffering trivial on phone RAM.
  *
@@ -160,7 +160,7 @@ public class Chunker {
      * Streaming hash-only pre-pass (constant memory). Used when the caller has no pre-computed
      * whole-file digest for `FILE_START`.
      *
-     * Closes in an explicit `finally` rather than `use { }` — see the file header: okio 3.4.0's
+     * Closes in an explicit `finally` rather than `use { }` â€” see the file header: okio 3.4.0's
      * `Closeable` is not a `kotlin.AutoCloseable` in common code. The close is best-effort for the
      * same reason [ChunkStream.close] is: this is a read-only pass, the digest is already computed
      * by then, and a close failure must not mask a read failure.
@@ -192,7 +192,7 @@ public class Chunker {
      * chunks are produced.
      *
      * @param expectFileSha256Hex when non-null, exhaustion verifies the streaming digest matches
-     * (throws [IllegalStateException] on mismatch — protects against the source changing between
+     * (throws [IllegalStateException] on mismatch â€” protects against the source changing between
      * the hash pass and the chunk pass, e.g. across a resume).
      * @throws IllegalStateException if the source yields fewer/more bytes than
      * [ChunkPlan.totalBytes], or the cross-check above fails.
@@ -204,9 +204,18 @@ public class Chunker {
         expectFileSha256Hex: String? = null,
         startIndex: Int = 0,
     ): ChunkStream {
-        val stream = if (startIndex > 0 && source is SeekableChunkSource) {
-            val offset = startIndex.toLong() * plan.chunkSize
-            source.openAt(offset).buffer()
+        // `startIndex` means "the stream is positioned at this chunk". A seekable source opens there;
+        // any other source has to be advanced first, or the caller would label frame `startIndex`
+        // with chunk 0's bytes (ERROR-893). The skip reads and discards the prefix - it does not
+        // hash it, which is the whole point of O23-02 - and `initialIndex > 0` then turns the
+        // whole-file digest guard off, because that digest only covers the chunks that are emitted.
+        val offset = startIndex.toLong() * plan.chunkSize
+        val stream = if (startIndex > 0) {
+            if (source is SeekableChunkSource) {
+                source.openAt(offset).buffer()
+            } else {
+                source.open().buffer().also { it.skip(offset) }
+            }
         } else {
             source.open().buffer()
         }
@@ -222,7 +231,7 @@ public class Chunker {
  * and the supertype from `java.io.Closeable` to [AutoCloseable] (`kotlin.AutoCloseable`, stable
  * common API since Kotlin 2.0 and an actual typealias for `java.lang.AutoCloseable` on the JVM).
  * The constructor is `internal`, so the parameter change is not an ABI break; the supertype change
- * is, and it is the same one `policy.RandomAccessSinkHandle` took in 13B-2 — `close()` and `use { }`
+ * is, and it is the same one `policy.RandomAccessSinkHandle` took in 13B-2 â€” `close()` and `use { }`
  * keep working for every consumer in this repo, but a third party who assigned a `ChunkStream` to a
  * `java.io.Closeable` variable is broken. Recorded for Phase 24's release notes.
  */

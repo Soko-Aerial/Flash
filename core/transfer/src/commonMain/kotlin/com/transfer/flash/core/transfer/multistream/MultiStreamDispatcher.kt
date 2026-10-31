@@ -118,6 +118,9 @@ internal class MultiStreamDispatcher(
     private val confirmedCount = AtomicInt(resumeDone.size)
     private val chunksSentTotal = AtomicInt(0)
     private val bytesSentTotal = AtomicLong(0L)
+
+    /** Chunks handed to a wire at least once (resumed ones count as already sent). */
+    private val sentCount = AtomicInt(resumeDone.size)
     private val aliveWorkers = AtomicInt(0)
     private val started = AtomicBoolean(false)
 
@@ -253,6 +256,11 @@ internal class MultiStreamDispatcher(
             launch(workerDispatcher) {
                 try {
                     val firstIndex = pendingIndexes.firstOrNull() ?: 0
+                    // `openChunkStream` positions the stream at `startIndex` (seek, or a read-and-
+                    // discard skip for a non-seekable source; ERROR-893), so both the label and the
+                    // position start at the first pending chunk and the holes are fast-forwarded
+                    // through `skipTo` below.
+                    val startIndex = firstIndex
                     var pos = firstIndex
                     var stream: ChunkStream? = null
                     try {
@@ -267,7 +275,7 @@ internal class MultiStreamDispatcher(
                                 meta = meta,
                                 plan = plan,
                                 expectFileSha256Hex = resolvedDigest,
-                                startIndex = firstIndex,
+                                startIndex = startIndex,
                             ).also { stream = it }
                             if (pos < index) {
                                 // O23-02: Positional fast-forward without redundant read/hash
@@ -294,21 +302,32 @@ internal class MultiStreamDispatcher(
                         // Re-slice and re-transmit missing chunks before closing feeds to avoid 15s timeout
                         var endgameAttempts = 0
                         while (!deferred.isCompleted && endgameAttempts < 2) {
+                            // The endgame is the safety net for frames the wire actually lost, not a
+                            // second pass over frames still queued behind a slow wire or a pause:
+                            // wait, bounded, until every chunk has been handed to a worker once (a
+                            // resumed send would otherwise re-transmit its whole queued tail - twice
+                            // or three times on a big file), then give the ACK batching a moment to
+                            // surface before calling anything missing.
+                            val settleUntil = nowMs() + ENDGAME_SETTLE_MS
+                            while (
+                                !deferred.isCompleted &&
+                                sentCount.load() < plan.totalChunks &&
+                                nowMs() < settleUntil
+                            ) {
+                                delay(PAUSE_POLL_MS)
+                            }
+                            if (!deferred.isCompleted) delay(ENDGAME_ACK_GRACE_MS)
                             val missing = terminalLock.withLock {
                                 if (confirmedVector.isComplete()) emptyList() else confirmedVector.missingIndexes()
                             }
                             if (missing.isEmpty()) break
-                            delay(200L) // allow in-flight ACKs to arrive
-                            val stillMissing = terminalLock.withLock {
-                                if (confirmedVector.isComplete()) emptyList() else confirmedVector.missingIndexes()
-                            }
-                            if (stillMissing.isEmpty()) break
                             endgameAttempts++
                             stream?.closeQuietly()
                             stream = null
-                            val retryFirst = stillMissing.first()
+                            val retryFirst = missing.first()
+                            // Same rule as above: the stream is reopened positioned at the chunk.
                             pos = retryFirst
-                            for (index in stillMissing) {
+                            for (index in missing) {
                                 if (deferred.isCompleted) break
                                 val s = stream ?: chunker.openChunkStream(
                                     source = source,
@@ -659,6 +678,8 @@ internal class MultiStreamDispatcher(
                     if (fromShared) sharedOpen = false else ownOpen = false
                     continue
                 }
+                // A frame reached a wire worker, so it is no longer queued: the endgame's settle
+                // counts it as sent from here on (`sentCount`).
 
                 awaitUnpause()
 
@@ -675,7 +696,10 @@ internal class MultiStreamDispatcher(
                 chunksSentTotal.incrementAndFetch()
                 bytesSentTotal.addAndFetch(chunkBytes(prepared.index))
                 val ok = runCatching { wire.sendFrame(prepared.frameBytes) }.getOrDefault(false)
-                if (ok) continue
+                if (ok) {
+                    sentCount.incrementAndFetch()
+                    continue
+                }
 
                 chunksSentTotal.decrementAndFetch()
                 bytesSentTotal.addAndFetch(-chunkBytes(prepared.index))
@@ -780,6 +804,15 @@ internal class MultiStreamDispatcher(
 
         /** Cooperative-pause poll cadence (ms). */
         const val PAUSE_POLL_MS = 25L
+
+        /** How long the endgame lets queued work reach the wire before retransmitting (ms). */
+        const val ENDGAME_SETTLE_MS = 2_000L
+
+        /**
+         * Extra grace after the settle, before unconfirmed chunks are re-sent: the receiver batches
+         * ACKs ([DEFAULT_ACK_EVERY]), so a just-sent chunk is normally still unacknowledged.
+         */
+        const val ENDGAME_ACK_GRACE_MS = 200L
 
         /** Retry cadence while the bounded shared queue is full (ERROR-016). */
         const val REDISTRIBUTE_POLL_MS = 5L

@@ -85,21 +85,33 @@ public fun openFlashDatabase(name: String, driver: SQLiteDriver): FlashDatabase 
         // no fallback exists. See FlashSchemaSteps for how to add one.
         .addMigrations(*FlashJvmMigrations.ALL)
         .addCallback(object : RoomDatabase.Callback() {
-            override fun onConfigure(connection: SQLiteConnection) {
-                super.onConfigure(connection)
-                // O23-05: auto_vacuum only takes effect while the file still has no pages, so it
-                // must run before the tables exist on a fresh database (an onCreate hook is too
-                // late). An existing file keeps NONE until the next VACUUM, hence the
-                // `incremental_vacuum` in the trim hook below.
+            /**
+             * O23-05: `auto_vacuum` only takes effect on a file with no pages, and Room's `onCreate`
+             * runs after the tables exist. The pragma is therefore only recorded there and applied by
+             * the one-shot VACUUM in [onOpen] (a `VACUUM` cannot run inside the `onCreate`
+             * transaction). An existing file keeps NONE until some later VACUUM, which is why the trim
+             * hook below also issues `incremental_vacuum`.
+             */
+            private var justCreated = false
+
+            override fun onCreate(connection: SQLiteConnection) {
+                super.onCreate(connection)
+                justCreated = true
                 try {
                     connection.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
                 } catch (e: Throwable) {
-                    FlashLog.w("DATABASE", "Failed to set auto_vacuum on configure on Desktop: ${e.message}")
+                    FlashLog.w("DATABASE", "Failed to set auto_vacuum on create on Desktop: ${e.message}")
                 }
             }
 
             override fun onOpen(connection: SQLiteConnection) {
                 super.onOpen(connection)
+                if (justCreated) {
+                    justCreated = false
+                    runCatching { connection.execSQL("VACUUM;") }
+                        .onSuccess { FlashLog.i("DATABASE", "Applied auto_vacuum after create on Desktop") }
+                        .onFailure { FlashLog.w("DATABASE", "VACUUM after create failed on Desktop: ${it.message}") }
+                }
                 val pragmas = listOf(
                     "PRAGMA journal_mode = WAL;",
                     "PRAGMA synchronous = NORMAL;",

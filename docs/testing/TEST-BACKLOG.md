@@ -6644,4 +6644,104 @@ review forced (ADR-231, `logs/streams/build/INTEGRATOR-REVIEW.md`).
   `delete for everyone sends direct action only for the local author` with an explicit wait on the state, then run the suite
   at `maxParallelForks = 2` ten times.
 - **Pass condition:** 688/688 green on every run, with no sleep-based assertion left in those two cases.
+- **Status:** PARTLY DONE - 2026-10-31: `ef66a56a` replaced both fixed delays with explicit waits (the pin case waits for
+  the millisecond to advance, the delete case polls the two conditions it asserts). Still TODO: ten runs at
+  `maxParallelForks = 2`. Per-task forks stay at 1 until then.
+
+## PERF-D01..D04 (2026-10-31) - Stream D (data) after the integrator review
+
+The stream's `backlog-additions.md` was an empty header; these are written by the integrator from
+`logs/streams/data/INTEGRATOR-REVIEW.md`.
+
+### PERF-D01 - Chat list and history paging on a long thread
+- **Area:** `:core:messaging` history paging (`O04-01`)
+- **Source:** `O04-01`, `logs/streams/data/INTEGRATOR-REVIEW.md` §4
+- **Setup:** a phone with a conversation of at least 2 000 messages (import or generate), animation on.
+- **Steps:** open the chat; scroll to the oldest loaded row so `loadMoreHistory` runs; repeat five times; then type in the
+  composer and send one message while older rows are still loading.
+- **Pass condition:** the list never jumps while older rows append, the oldest row count grows, and a send while loading
+  still lands at the bottom. Logcat shows no `slow statement >= 100ms` line during plain scrolling.
+- **Status:** TODO.
+
+### PERF-D02 - Search deep link into a long thread
+- **Area:** search → `targetMessageId` window resolution (`countNewerThan`)
+- **Setup:** the same 5 000-message thread; a search hit for a message 4 000 rows back.
+- **Steps:** tap the hit; repeat from a forwarded card and from a notification for the same chat.
+- **Pass condition:** the target is on screen and pulsing within the first frame set, and the history above it is loadable.
+  A stale target id (delete the message after searching) shows the newest page instead of an empty screen.
+- **Status:** TODO.
+
+### PERF-D03 - The summary projections have no consumer
+- **Area:** `:core:persistence` `OrgMemberSummary` / `SwarmContentSummary` (`O06-08`)
+- **Source:** `logs/streams/data/INTEGRATOR-REVIEW.md` §2.6
+- **Steps:** decide per type: give the projections a caller that does not need `statementBytes` / `manifest`, or delete them.
+- **Pass condition:** no public DAO method without a production caller (or a documented "prepared for <feature>").
+- **Status:** TODO.
+
+### PERF-D04 - In-memory SQLite for the client tests
+- **Area:** test infrastructure (`O27-04`, never attempted by the stream)
+- **Steps:** open the migration/DAO suites against an in-memory database where a file is not the point of the test; keep file
+  databases for the migration chain.
+- **Pass condition:** the persistence suites are faster and still green, with the migration harnesses still on files.
+- **Status:** TODO.
+
+## PERF-T04..T09 (2026-10-31) - Stream T (transfer) after the integrator review
+
+Stream T's own `PERF-T01`..`T03` are in `logs/streams/transfer/backlog-additions.md`; these are the review's additions
+(`logs/streams/transfer/INTEGRATOR-REVIEW.md`).
+
+### PERF-T04 - A real single pass for the whole-file hash
+- **Area:** wire (`O05-01`/`O07-01`, gated in plan §8)
+- **Steps:** design a frame that carries the file digest after the last chunk (or buffer the digest), then drop the
+  `chunker.hashOnly` pre-pass from `MultiStreamDispatcher.send()`.
+- **Pass condition:** an outgoing 2 GB file is read from disk once, measured, with whole-file verification still failing a
+  corrupted receive.
+- **Status:** TODO — needs an owner/wire decision first.
+
+### PERF-T05 - A production `SeekableChunkSource` (`O23-02`)
+- **Area:** `core/engine` host source opener
+- **Steps:** implement `openAt` over the filesystem path (okio `FileHandle.source(offset)`), keep the byte-stream fallback
+  for `content://`, and assert the payload of a resumed send (the old test only checked counters).
+- **Pass condition:** resuming a paused 2 GB send reads only the missing range (measure with a disk counter), file hash
+  matches.
+- **Status:** TODO.
+
+### PERF-T06 - `.part` staging (`O07-02`)
+- **Area:** host destination naming
+- **Steps:** give the receive path a `<name>.part` staging name (or drop the rename in `ReceivePipeline`), and prove a
+  cancelled receive leaves no half file in the user folder.
+- **Pass condition:** a cancelled or failed receive leaves no partial file under the destination name; the finished file is
+  renamed once.
+- **Status:** TODO.
+
+### PERF-T07 - Wire the FAT32 4 GiB check (`O23-03`)
+- **Area:** Android storage probe
+- **Steps:** inject `isFat32Volume` from a volume/mount check on the chosen destination and send a >4 GiB file to a FAT32
+  volume.
+- **Pass condition:** the transfer is refused before it starts with the size reason; the same file succeeds on exFAT.
+- **Status:** TODO.
+
+### PERF-T08 - Buffered `saveToGallery` (`O23-06`)
+- **Area:** gallery export
+- **Steps:** stream the copy through a buffered source/sink in chunks instead of byte by byte.
+- **Pass condition:** a 2 GB export completes with a plausible duration and a matching hash.
+- **Status:** TODO.
+
+### PERF-T09 - Is 3 s of ACK drain grace enough?
+- **Area:** `MultiStreamDispatcher` endgame (`ACK_DRAIN_GRACE_MS`, was 15 s; the settle is `ENDGAME_SETTLE_MS` = 2 s)
+- **Setup:** two devices, a hopeless-ish Wi-Fi link (one bar, 200 ms RTT).
+- **Steps:** send a 500 MB file; repeat on a good link with the receipt side throttled.
+- **Pass condition:** no session ends while chunks are still in flight; the endgame recovers a dropped chunk instead of
+  failing the transfer, and a healthy link reaches the endgame with nothing missing (no duplicates at all).
+- **Source:** ADR-253, ERROR-894.
+- **Status:** TODO.
+
+### PERF-T10 - A resumed send must not put its whole tail on the wire twice
+- **Area:** `MultiStreamDispatcher` endgame settle (ERROR-894)
+- **Setup:** two devices; a file big enough to fill the 8-frame feed buffers (>= 64 MB at the default chunk size).
+- **Steps:** send it, pause mid-file from the Transfers screen for ~10 s, resume, finish.
+- **Pass condition:** the wire totals stay within one duplicate round. Read the sender's `chunksSent` in the completion line
+  (`TRANSFER: transferId=... chunks=...`) against `totalChunks`: `chunksSent <= 2 x pending` (a single round is expected - the
+  receiver only ACKs every 32 chunks). Three rounds or more means the endgame re-sent before its queued output reached the wire.
+- **Source:** ERROR-894, ADR-253.
 - **Status:** TODO.

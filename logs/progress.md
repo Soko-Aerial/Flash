@@ -1,5 +1,59 @@
 # Progress Log
 
+## 2026-10-31 - Wave 1 data and transfer streams reviewed, merged and corrected
+
+### Worked on
+Integrator review of Stream D (`agent/opt-data`, 4 commits, 28 files) and Stream T (`agent/opt-transfer`, 11 commits,
+35 files) of `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md`. Both streams had merged nothing and pushed nothing; the two
+code-review subagents died on a usage limit, so the review was done directly against `git diff dev...<branch>` and forced
+gate runs, exactly as for Stream A (ADR-231).
+
+### Changed
+- Merged both branches `--no-ff` (`3b28e5be` data, then transfer) after reviewing every file the diffs touch.
+- Integrator fixes for data (`f3154de0`): actual `@Query` projections for the summary types, `auto_vacuum` applied by a
+  one-shot VACUUM (a Room KMP callback has no `onConfigure`), `incremental_vacuum` in the trim hook, a real slow-statement
+  reporter, `recordProgress` wired through a `TransferStore` default method, a contract-safe `hashCode`, and the
+  `closeConversation` re-clear after the cancelled collector joins.
+- Integrator fixes for transfer: the **resume misalignment** (ERROR-893, the skip now lives in `Chunker.openChunkStream`
+  so label and stream position agree), the endgame that re-sent merely queued frames (ERROR-894, bounded settle before
+  retransmitting), the double-counted skip counters in `SendPipeline`, and single-flight preparation plus `@Volatile`
+  fields in `JvmAudioPlayer`.
+- Review records `logs/streams/{data,transfer}/INTEGRATOR-REVIEW.md`, new ADR-240..242 and ADR-250..255 (three of which
+  say "prepared, not delivered"), EXP-085/086/090/091/092 folds with caveats, ERROR-891..894.
+- Plan: section 8 gained the one-pass wire gate and a rule ("grep for a caller before writing implemented"), section 9
+  carries the per-stream outcome, section 10 the gate results; backlog `PERF-D01..D04`, `PERF-T04..T09`; `PERF-A07`
+  updated to PARTLY DONE (D replaced the sleeps).
+- `.gitignore`: `!logs/streams/*/` so a stream folder is never swallowed by `build/` or `data/` again (Stream D's whole
+  fragment set was invisible to git), plus `__pycache__/`.
+
+### Why
+Both streams are valuable but neither was mergeable as delivered: one shipped four "optimisations" without a caller
+(`recordProgress` + three "projections" that still loaded the BLOBs), the other shipped three more (seekable source,
+`.part` rename, FAT32 check) and broke resume for every real source. The findings are kept, the dead paths are recorded
+instead of quietly deleted, and each one has a backlog row naming what would make it real.
+
+### Verification
+- Gate 1 forced on the data branch before the merge: PASS, 153 tasks, 7 m 31 s.
+- Gate 1 forced on the merged tree after the fixes: PASS, 432 tasks, 5 m 34 s, 2 416 tests, 0 failures (the three extra
+  modules `:core:enterprise:jvmTest`, `:core:transfer:testAndroidHostTest`'s jvm sibling and the engine/desktop test fakes were
+  added because the projection change touched them).
+- Gate 2 forced on the merged tree: 1 673 android-host tests in `core:messaging`, `core:persistence`, `core:transfer` and
+  `ui:chat` green, plus `app` 85/87 - the two expected ERROR-106 `TransfersUiMapperTest` rows. `:core:transfer` was re-run
+  after the last edit (375 jvm + host tests, 0 failures).
+- New tests: `MultiStreamDispatcherTest.resume past a done prefix keeps each chunk's own payload`.
+- Nothing device-verified. Nothing pushed.
+
+### Remaining
+- `PERF-D01..D04`, `PERF-T04..T09` (backlog), `PERF-T01`/`T02` (2 GB send/resume) - the two transfer rows are the ones
+  that prove ERROR-893 is closed, and `PERF-T09` covers the endgame settle of ERROR-894.
+- `PERF-A04` (release script must collect per-ABI APKs) and the owner's `PERF-A03` installer smoke test still stand before
+  any release.
+- The remaining streams have not started; their base is `dev` after these merges.
+
+### Next AI
+Read `logs/handoff.md`. Do not trust a stream's "implemented" without grepping for a caller (section 8 of the plan). If you
+touch resume, `PERF-T05` (a real `openAt`) is the next real gain there.
+
 ## 2026-10-30 — Optimization audit split into 12 parallel streams (plan only)
 
 ### Worked on

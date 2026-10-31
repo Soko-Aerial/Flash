@@ -6,6 +6,8 @@ import com.transfer.flash.core.common.logging.FlashProbe
 import com.transfer.flash.core.common.model.FlashDeviceId
 import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.persistence.db.dao.OrgDirectoryDao
+import com.transfer.flash.core.persistence.db.dao.OrgMemberSummary
+import com.transfer.flash.core.persistence.db.dao.toSummary
 import com.transfer.flash.core.persistence.db.entity.HubGroupRosterEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDepartmentEntity
 import com.transfer.flash.core.persistence.db.entity.OrgDirectoryMemberEntity
@@ -64,6 +66,8 @@ class OrgPeerResolverTest {
             onListAllMembers()
             return members.values.toList()
         }
+
+        override suspend fun listMemberSummaries(): List<OrgMemberSummary> = members.values.map { it.toSummary() }
 
         override suspend fun upsertDepartments(departments: List<OrgDepartmentEntity>) {}
         override suspend fun deleteDepartments(ids: List<String>) {}

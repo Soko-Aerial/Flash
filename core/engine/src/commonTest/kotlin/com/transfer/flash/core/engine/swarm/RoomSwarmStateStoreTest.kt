@@ -3,7 +3,9 @@ package com.transfer.flash.core.engine.swarm
 import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore.Companion.toEntity
 import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore.Companion.toModel
 import com.transfer.flash.core.engine.swarm.RoomSwarmStateStore.Companion.toRecord
+import com.transfer.flash.core.persistence.db.dao.SwarmContentSummary
 import com.transfer.flash.core.persistence.db.dao.SwarmDao
+import com.transfer.flash.core.persistence.db.dao.toSummary
 import com.transfer.flash.core.persistence.db.entity.SwarmContentEntity
 import com.transfer.flash.core.persistence.db.entity.SwarmTombstoneEntity
 import com.transfer.flash.core.swarm.model.ContentRoot
@@ -259,6 +261,12 @@ class RoomSwarmStateStoreTest {
 
         override suspend fun loadContentForGroup(groupId: String): List<SwarmContentEntity> =
             contents.values.filter { it.groupId == groupId }
+
+        override suspend fun loadAllSummaries(): List<SwarmContentSummary> =
+            contents.values.map { it.toSummary() }
+
+        override suspend fun loadSummariesForGroup(groupId: String): List<SwarmContentSummary> =
+            contents.values.filter { it.groupId == groupId }.map { it.toSummary() }
 
         override suspend fun updateBits(root: String, groupId: String, bits: ByteArray, bytesDone: Long, nowMs: Long) {
             contents[root to groupId]?.let {

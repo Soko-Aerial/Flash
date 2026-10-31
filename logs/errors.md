@@ -14736,3 +14736,133 @@ The suite that failed here passed at 1 fork on the reviewed tree (`dev` gate 2: 
 
 ### Status
 OPEN - test defect, load-dependent; build-side mitigation in place.
+
+## ERROR-891 - Preallocation broke a test that asserted the opposite, and the open handle blocked cleanup on Windows (2026-10-30, Stream T)
+
+### Area
+Storage / preallocation (`O23-03`)
+
+### Symptoms
+`OkioRandomAccessSinkHandleTest.openingHandleDoesNotGrowFileWhenSmaller` failed with `expected:<0> but was:<10000>`, then
+`IOException: failed to delete temp file`.
+
+### Root cause
+The test encoded an old workaround (the size stayed 0 after open, the reason `ERROR-067` existed). With preallocation the
+file is legitimately grown, so the assertion was stale. Because the assertion threw before `close()`, Windows could not
+delete the still-open file afterwards.
+
+### Working fix
+The test asserts the preallocated size and closes the handle in `finally`.
+
+### Status
+RESOLVED (unit test). Not device-verified; the FAT32 half is `PERF-T07`, which is still inert (review 3.4).
+
+## ERROR-892 - A pooled chunk buffer of zero length threw, so an empty chunk could not be parsed (2026-10-31, Stream T)
+
+### Area
+Chunk framing / buffer pooling (`O02-01`)
+
+### Symptoms
+`ChunkFrameGoldenVectorTest` failed on golden vector V6: "chunk empty data: golden bytes did not parse".
+
+### Root cause
+`ChunkBufferPool.acquire(n)` required `n > 0`, but a zero-byte chunk (empty file) asks for exactly that.
+
+### Working fix
+`bytesPooled(0)` returns `ByteArray(0)` without the pool, and `release()` ignores a zero-length buffer.
+
+### Status
+RESOLVED (unit test).
+
+## ERROR-893 - Every resumed send of a file with done chunks labelled its frames with the wrong indexes (2026-10-31, integrator review)
+
+### Area
+`:core:transfer` multi-stream materializer (`O23-02`)
+
+### Symptoms
+Not seen on a device yet. Reasoning chain: a resumed transfer would finish with the receiver's whole-file SHA-256 mismatching
+(`PEER_REPORTED_DAMAGE_MESSAGE` / MISMATCH) although every chunk's own hash verified.
+
+### Environment
+Detected by code review of `agent/opt-transfer` before merge. Reproduced by the new
+`MultiStreamDispatcherTest.resume past a done prefix keeps each chunk's own payload` (fails on the branch, green after the fix).
+
+### Error
+No stack trace; the failure mode is silent data corruption caught only by the final digest.
+
+### Root cause
+The materializer was changed to open the chunk stream at the first pending index and to start its position counter there. That
+is only correct for a `SeekableChunkSource`, and **no production source implements it** (`ChunkSource { opener.open(uri) }` is a
+plain lambda). A non-seekable source opens at byte 0 while `ChunkStream` is told `nextIndex = 90`, so frame 90 carries chunk 0's
+bytes, frame 91 chunk 1's, and so on. The counters still add up, the end-of-stream length check passes, and because
+`initialIndex > 0` the whole-file digest comparison is skipped on the send side - so nothing on the sender notices.
+
+### Failed attempts
+1. The stream's own `resume seeding - doneIndexes skipped, progress starts at resumed bytes` test passed throughout: it asserts
+   indexes and byte counters only, and its payload is uniform enough that a one-chunk shift is invisible.
+
+### Working fix
+`Chunker.openChunkStream` is now the single owner of the rule: `startIndex > 0` opens a `SeekableChunkSource` at the offset and
+otherwise opens at 0 and skips the prefix with `BufferedSource.skip` (read-and-discard: the prefix is deliberately not hashed, which
+is what `O23-02` is for). The dispatcher keeps `startIndex`/`pos` at the first pending index in both loops, so the label and the
+stream position finally agree; `initialIndex > 0` keeps the whole-file digest guard off, because that digest only covers the chunks
+that are actually emitted. New payload-asserting test.
+
+### Verification
+Unit test only (`:core:transfer:jvmTest` and `:core:transfer:testAndroidHostTest`, 234 green). **No device run yet**: `PERF-T02`.
+The same session found that the endgame then re-sent the whole queued tail (ERROR-894).
+
+### Related files
+- `core/transfer/.../multistream/MultiStreamDispatcher.kt`
+- `core/transfer/.../chunked/ChunkSource.kt` (`SeekableChunkSource`)
+- `logs/streams/transfer/INTEGRATOR-REVIEW.md` 2.1
+
+### Status
+OPEN until PERF-T02 passes on two devices.
+
+
+## ERROR-894 - The endgame retransmitted chunks that were merely still queued (2026-10-31, integrator review)
+
+### Area
+`:core:transfer` endgame retransmission (`O07-06`)
+
+### Symptoms
+A resumed (or merely slow) send put the same bytes on the wire two or three times. Seen in
+`RealFlashTransferRepositoryTest.remote pause parks a live sender and remote resume finishes it with the notice cleared`: 22 frames
+for an 8-chunk file instead of 8. Not visible to the user (the receive pipeline dedups and writes once), only as wasted bandwidth.
+
+### Environment
+Detected while fixing ERROR-893. `:core:transfer:testAndroidHostTest`, JVM loopback channels.
+
+### Error
+```text
+java.lang.AssertionError: expected:<8> but was:<22>
+```
+
+### Root cause
+The materializer runs ahead of the wire by the feed buffer depth (8 frames per feed), so when it reaches the endgame almost the whole
+tail is *queued*, not sent. The endgame snapshotted `confirmedVector.missingIndexes()`, waited 200 ms and re-sent whatever was still
+unconfirmed. Queued frames are unconfirmed by definition, so it re-sent the tail, twice (two attempts), while a pause held the workers
+parked. On a phone this hits every resumed transfer whose wire is slower than its storage read.
+
+### Failed attempts
+1. Waiting for the local feed backlog to reach 0 first: the workers pull frames immediately, so the backlog empties while the frames
+   are still unacknowledged on the wire - no improvement.
+2. Waiting for `confirmedCount == totalChunks`: the receiver only ACKs every 32 chunks (`ReceivePipeline.DEFAULT_ACK_EVERY`), so a file
+   with fewer than 32 chunks left would always burn the wait and then re-send anyway.
+
+### Working fix
+A `sentCount` (seeded with the resumed done chunks) is incremented when a worker's `sendFrame` returns true. The endgame now waits,
+bounded to 2 s, until every chunk has been handed to a wire once, then allows a 200 ms `ENDGAME_ACK_GRACE_MS` for the batched ACKs
+before deciding what is missing. Retransmission is still bounded to two attempts, so a genuinely dead wire is recovered as before.
+
+### Verification
+`:core:transfer:testAndroidHostTest` 234 green, including the pause/resume test (8 frames again) and the new payload test. **No device
+run yet**: `PERF-T02`.
+
+### Related files
+- `core/transfer/.../multistream/MultiStreamDispatcher.kt`
+- `core/transfer/.../chunked/ReceivePipeline.kt` (`DEFAULT_ACK_EVERY`)
+
+### Status
+OPEN until PERF-T02 passes on two devices.

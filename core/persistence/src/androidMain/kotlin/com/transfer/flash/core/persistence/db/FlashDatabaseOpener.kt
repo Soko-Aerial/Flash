@@ -67,22 +67,34 @@ public object FlashDatabaseOpener {
                 queryExecutor,
             )
             .addCallback(object : RoomDatabase.Callback() {
-                override fun onConfigure(db: SupportSQLiteDatabase) {
-                    super.onConfigure(db)
-                    // O23-05: auto_vacuum takes effect only while the file has no pages yet, so it
-                    // has to run BEFORE Room creates the tables on a fresh database - an onCreate
-                    // hook is already too late and would silently do nothing. On an existing file
-                    // the header stays NONE until the next VACUUM, which is why the trim hook below
-                    // runs `incremental_vacuum` rather than relying on the pragma alone.
+                /**
+                 * O23-05: `auto_vacuum` only applies to a file that still has no pages, and Room's
+                 * `onCreate` runs AFTER the tables are created - so the pragma is recorded here but
+                 * stays pending until a VACUUM rewrites the file. `VACUUM` cannot run inside the
+                 * `onCreate` transaction, hence the one-shot attempt in [onOpen].
+                 */
+                private var justCreated = false
+
+                override fun onCreate(db: SupportSQLiteDatabase) {
+                    super.onCreate(db)
+                    justCreated = true
                     try {
                         db.execSQL("PRAGMA auto_vacuum = INCREMENTAL;")
                     } catch (e: Throwable) {
-                        FlashLog.w("DATABASE", "Failed to set auto_vacuum on configure: ${e.message}")
+                        FlashLog.w("DATABASE", "Failed to set auto_vacuum on create: ${e.message}")
                     }
                 }
 
                 override fun onOpen(db: SupportSQLiteDatabase) {
                     super.onOpen(db)
+                    if (justCreated) {
+                        justCreated = false
+                        // Applies the pending auto_vacuum value. A brand-new file holds only the
+                        // schema, so this VACUUM is a few pages.
+                        runCatching { db.execSQL("VACUUM;") }
+                            .onSuccess { FlashLog.i("DATABASE", "Applied auto_vacuum after create") }
+                            .onFailure { FlashLog.w("DATABASE", "VACUUM after create failed: ${it.message}") }
+                    }
                     applyPragmas(db, cacheSizeKb, mode.key)
                     trim.attach(isOpen = { db.isOpen }, shrink = {
                         runCatching { db.query("PRAGMA shrink_memory;").use { it.moveToFirst() } }
