@@ -525,14 +525,17 @@ private fun FlashBubbleSurface(
     )
 
     val shape = bubbleShapeFor(message, FlashTheme.minimalChrome)
-    val selectionBorder = if (isHighlighted) {
+    // OPT-O03-13: Hoist and memoize BorderStroke instances to avoid allocation on every recomposition.
+    val highlightBorder = remember(colors.accentPrimary) {
         BorderStroke(1.5.dp, colors.accentPrimary)
-    } else if (isSelected) {
-        BorderStroke(1.5.dp, colors.accentPrimary)
-    } else if (!message.isMine) {
+    }
+    val incomingBorder = remember(colors.chatBorderIncoming) {
         BorderStroke(FlashDimensions.borderHairline, colors.chatBorderIncoming)
-    } else {
-        null
+    }
+    val selectionBorder = when {
+        isHighlighted || isSelected -> highlightBorder
+        !message.isMine -> incomingBorder
+        else -> null
     }
 
     // Custom bubble surface — no Material Surface; clip + background + optional border stroke.
