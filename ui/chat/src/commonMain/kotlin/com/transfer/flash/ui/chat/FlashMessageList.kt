@@ -11,8 +11,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -144,6 +146,18 @@ fun FlashMessageList(
         if (newestMessageId == null || newestMessageId in initialMessageIds) return@LaunchedEffect
         val newest = messages.last()
         if (shouldAutoScrollToNewMessage(isMine = newest.isMine, atBottom = atBottom.value)) {
+            if (motion.reduceMotion) {
+                listState.scrollToItem(0)
+            } else {
+                listState.animateScrollToItem(0)
+            }
+        }
+    }
+
+    // OPT-O24-04: Auto-scroll to tail when keyboard (IME) opens while user is viewing the latest messages.
+    val isImeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && atBottom.value) {
             if (motion.reduceMotion) {
                 listState.scrollToItem(0)
             } else {
