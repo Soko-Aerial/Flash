@@ -98,8 +98,8 @@ public class WsConnection(
     }
 
     public interface Listener {
-        public fun onTextMessage(connection: WsConnection, text: String)
-        public fun onBinaryMessage(connection: WsConnection, data: ByteArray)
+        public suspend fun onTextMessage(connection: WsConnection, text: String)
+        public suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray)
         public fun onConnectionClosed(connection: WsConnection, reason: String)
     }
 

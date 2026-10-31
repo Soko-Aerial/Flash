@@ -23,8 +23,8 @@ class WsConnectionTest {
         val closedLatch = CountDownLatch(1)
         val closedReason = AtomicReference<String>()
         val listener = object : WsConnection.Listener {
-            override fun onTextMessage(connection: WsConnection, text: String) {}
-            override fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
             override fun onConnectionClosed(connection: WsConnection, reason: String) {
                 closedReason.set(reason)
                 closedLatch.countDown()
@@ -56,8 +56,8 @@ class WsConnectionTest {
         val serverSideSocket = server.accept()
 
         val listener = object : WsConnection.Listener {
-            override fun onTextMessage(connection: WsConnection, text: String) {}
-            override fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
+            override suspend fun onTextMessage(connection: WsConnection, text: String) {}
+            override suspend fun onBinaryMessage(connection: WsConnection, data: ByteArray) {}
             override fun onConnectionClosed(connection: WsConnection, reason: String) {}
         }
 
