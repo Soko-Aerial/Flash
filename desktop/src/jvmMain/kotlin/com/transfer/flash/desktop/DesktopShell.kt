@@ -20,6 +20,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -872,7 +873,14 @@ public fun DesktopShell(
 
     // Drag-and-drop: dropping files or folders onto the window sends them to the active peer in
     // Conversation; outside of a conversation it prompts the user to select or open a conversation.
-    DisposableEffect(window, nav.current, conversationState.header) {
+    // OPT-O19-01: Key DropTarget registration strictly on window lifecycle, decoupling dynamic nav and
+    // header state via rememberUpdatedState to avoid recursive teardown/re-registration on every tab switch or typing tick.
+    val currentNav by rememberUpdatedState(nav.current)
+    val currentConversationHeader by rememberUpdatedState(conversationState.header)
+    val currentTwoPane by rememberUpdatedState(twoPane)
+    val currentSelectedChatId by rememberUpdatedState(selectedChatConversationId)
+
+    DisposableEffect(window) {
         val comp = window ?: return@DisposableEffect onDispose {}
         val dropListener = object : DropTargetListener {
             override fun dragEnter(dtde: DropTargetDragEvent) {
@@ -909,7 +917,7 @@ public fun DesktopShell(
                         val files = transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>
                         val fileList = files?.filterIsInstance<File>() ?: emptyList()
                         if (fileList.isNotEmpty()) {
-                            val activePeerId = nav.current.conversationId ?: (if (twoPane) selectedChatConversationId else null)
+                            val activePeerId = currentNav.conversationId ?: (if (currentTwoPane) currentSelectedChatId else null)
                             val allFiles = fileList.flatMap { file ->
                                 if (file.isDirectory) {
                                     file.walkTopDown().filter { it.isFile }.map { subFile ->
@@ -920,12 +928,12 @@ public fun DesktopShell(
                                     listOf(Pair(file, file.name))
                                 }
                             }
-                            if ((nav.current.destination == FlashDestination.Conversation || twoPane) && activePeerId != null) {
+                            if ((currentNav.destination == FlashDestination.Conversation || currentTwoPane) && activePeerId != null) {
                                 allFiles.forEach { (file, relPath) ->
                                     sendFileToPeer(
                                         peerId = activePeerId,
-                                        peerName = conversationState.header.title,
-                                        isGroup = conversationState.header.isGroup,
+                                        peerName = currentConversationHeader.title,
+                                        isGroup = currentConversationHeader.isGroup,
                                         uri = file.toURI().toString(),
                                         displayName = relPath,
                                         size = file.length(),
