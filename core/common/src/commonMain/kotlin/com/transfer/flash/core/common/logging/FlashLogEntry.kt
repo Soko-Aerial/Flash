@@ -4,9 +4,10 @@ package com.transfer.flash.core.common.logging
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 
-/** Severity of a [FlashLogEntry]. Mirrors the i/w/e levels of [FlashLogger]. */
+/** Severity of a [FlashLogEntry]. Mirrors the d/i/w/e levels of [FlashLog]. */
 @FlashInternalApi
 public enum class FlashLogLevel {
+    DEBUG,
     INFO,
     WARN,
     ERROR,
