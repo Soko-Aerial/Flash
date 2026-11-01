@@ -270,7 +270,7 @@ class MailboxQueue(
      */
     override suspend fun fetchPageDetailed(target: String, afterSeq: Long, limit: Int): MailboxPage {
         val wanted = limit.coerceIn(1, 1000)
-        val messages = ArrayList<QueuedMessage>()
+        val messages = ArrayList<QueuedMessage>(wanted)
         val bad = ArrayList<QuarantinedRow>()
         var cursor = afterSeq
         var rounds = 0
@@ -317,7 +317,7 @@ class MailboxQueue(
                 stmt.setLong(3, now)
                 stmt.setInt(4, limit)
                 stmt.executeQuery().use { rs ->
-                    val rows = ArrayList<QueuedMessage>()
+                    val rows = ArrayList<QueuedMessage>(limit)
                     val bad = ArrayList<BadRow>()
                     var scanned = 0
                     var lastSeq = afterSeq
@@ -411,13 +411,14 @@ class MailboxQueue(
     override suspend fun deleteExpired(limit: Int): List<ExpiredRow> {
         val now = clock()
         val rows = database.ioTransaction { conn ->
+            val cap = limit.coerceIn(1, 5000)
             val found = conn.prepareStatement(
                 "SELECT seq, origin_device_id, target_device_id, msg_id, undeliverable_reason FROM mailbox_envelopes WHERE expires_at <= ? ORDER BY expires_at LIMIT ?",
             ).use { stmt ->
                 stmt.setLong(1, now)
-                stmt.setInt(2, limit.coerceIn(1, 5000))
+                stmt.setInt(2, cap)
                 stmt.executeQuery().use { rs ->
-                    val list = ArrayList<Triple<Long, ExpiredRow, Boolean>>()
+                    val list = ArrayList<Triple<Long, ExpiredRow, Boolean>>(cap)
                     while (rs.next()) {
                         val seq = rs.getLong(1)
                         val origin = rs.getString(2)
