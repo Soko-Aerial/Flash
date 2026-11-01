@@ -1017,130 +1017,13 @@ public fun DesktopShell(
     // honest initial value (the scan has not run yet) and resolves to a real 0 on an empty folder.
     val desktopSettings by engine.settings.collectAsState()
     var showRenameDialog by remember { mutableStateOf(false) }
-    var receivedBytes by remember { mutableStateOf<Long?>(null) }
     val enterpriseCredentials by engine.enterpriseTrustStore.credentials.collectAsState()
-    // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
+    // The organisation hub (ADR-120): live status for the hub destination.
     val hubObject = remember(ready) { engine.enterpriseHub }
     val hubStatusFlow = remember(hubObject) {
         hubObject?.status ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.HubStatus?>(null)
     }
     val hubStatus by hubStatusFlow.collectAsState(initial = null)
-    // ADR-126: the sealing key state and the dropped-message counts for the connection details.
-    val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
-    val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
-    val hubDroppedFlow = remember(engine, ready) { if (ready) engine.chats?.hubDropped else null }
-    val hubDroppedFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
-    val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
-    val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks
-        ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
-    val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCredentials) { hubObject?.relinkableGroups()?.size ?: 0 }
-    val orgLeaseFlow = remember(engine, ready) {
-        engine.orgPeerResolver?.lease ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.OrgLease>(com.transfer.flash.core.enterprise.OrgLease.None)
-    }
-    val orgLease by orgLeaseFlow.collectAsState()
-    val orgMismatchFlow = remember(engine, ready) {
-        engine.orgPeerResolver?.identityMismatch ?: kotlinx.coroutines.flow.MutableStateFlow(false)
-    }
-    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
-    val orgTrustState = remember(orgLease, enterpriseCredentials, orgIdentityMismatch) {
-        if (enterpriseCredentials == null) null
-        else {
-            val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
-            FlashHubStatusMath.orgTrustState(
-                lease = orgLease,
-                clockOk = clockOk,
-                hubSupports = true,
-                identityMismatch = orgIdentityMismatch,
-                nowMs = System.currentTimeMillis(),
-            )
-        }
-    }
-    var isEnrollingDevice by remember { mutableStateOf(false) }
-    var enrollDeviceError by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
-        if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
-    }
-    val radioGatewayController = remember {
-        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
-            scope = scope,
-            onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
-        )
-    }
-    val radioUiState by radioGatewayController.state.collectAsState()
-    val settings = remember(engine, ready, receivedBytes, themeMode, trustedPeersByCoordinator, desktopSettings, localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable, hubSealingKeyState, hubDropped, orgTrustState, radioUiState.enabled) {
-        FlashSettingsModel(
-            displayName = localFriendlyName,
-            deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
-            appVersion = engine.appVersionName,
-            protocolVersion = engine.protocolVersionLabel,
-            receivedFilesBytes = receivedBytes,
-            trustedPeerCount = trustedPeersByCoordinator.size,
-            themeMode = themeMode,
-            discoveryMode = desktopSettings.discoveryMode.name,
-            windowsContextMenu = desktopSettings.windowsContextMenu,
-            showWindowsContextMenu = WindowsContextMenuManager.isSupported,
-            dynamicAccent = desktopSettings.dynamicAccent,
-            autoDownloadVoice = desktopSettings.autoDownloadVoice,
-            autoDownloadImage = desktopSettings.autoDownloadImage,
-            autoDownloadVideo = desktopSettings.autoDownloadVideo,
-            autoDownloadFile = desktopSettings.autoDownloadFile,
-            prioritiseVoiceQuality = desktopSettings.prioritiseVoiceQuality,
-            smallerVideoForMany = desktopSettings.smallerVideoForMany,
-            performanceMode = desktopSettings.performanceMode,
-            backgroundTransfers = desktopSettings.closeToTray,
-            saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
-            swarmHelpShare = desktopSettings.swarmHelpShare,
-            swarmKeepFinishedFiles = desktopSettings.swarmKeepFinishedFiles,
-            swarmEnabled = desktopSettings.groupSwarmEnabled,
-            launchAnimation = desktopSettings.launchAnimation,
-            isEnterpriseEnrolled = enterpriseCredentials != null,
-            enterpriseHubUrl = enterpriseCredentials?.hubUrl.orEmpty(),
-            enterpriseDepartment = enterpriseCredentials?.department.orEmpty(),
-            enterpriseRole = enterpriseCredentials?.role ?: "member",
-            enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
-            hubStatus = hubStatus,
-            hubContentViaHub = desktopSettings.hubContentViaHub,
-            hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
-                keyState = hubSealingKeyState,
-                unverified = hubDropped.unverified,
-                readableOff = hubDropped.readableOff,
-                stale = hubDropped.stale,
-            ),
-            hubRelinkableGroups = hubRelinkable,
-            orgTrustState = orgTrustState,
-            radioGatewayEnabled = radioUiState.enabled,
-        )
-    }
-
-    val onEnrollDeviceAction: (String) -> Unit = { link ->
-        val invite = com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link)
-        val hub = engine.enterpriseHub
-        if (invite == null) {
-            enrollDeviceError = "That is not an organisation link. Ask your administrator for a new one."
-        } else if (hub == null) {
-            enrollDeviceError = "Flash is still starting. Try again in a moment."
-        } else {
-            isEnrollingDevice = true
-            enrollDeviceError = null
-            scope.launch {
-                // One verified, atomic enrolment on the shared hub object (CLI-01).
-                val outcome = hub.enroll(invite)
-                isEnrollingDevice = false
-                when (outcome) {
-                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Enrolled -> {
-                        enrollDeviceError = null
-                        snackbarHostState.showSnackbar(
-                            "You joined ${outcome.credentials.hubName.ifBlank { "your organisation" }}",
-                            duration = SnackbarDuration.Long,
-                        )
-                    }
-                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Failed -> {
-                        enrollDeviceError = com.transfer.flash.ui.settings.FlashHubStatusMath.enrollFailureText(outcome.reason)
-                    }
-                }
-            }
-        }
-    }
 
     // UI-046: per-tab scroll state, like the app shell.
     val chatListScroll = rememberLazyListState()
@@ -1759,7 +1642,7 @@ public fun DesktopShell(
                 activeJoinLink = inviteUrl
                 showJoinGroupDialog = true
             },
-            isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+            isEnterpriseEnrolled = enterpriseCredentials != null,
             isLinkedToHub = nav.current.conversationId?.let { chatRepository.isGroupLinkedToHub(it) } ?: false,
             onToggleLinkToHub = { link ->
                 nav.current.conversationId?.let { gid ->
@@ -2037,134 +1920,22 @@ public fun DesktopShell(
                         bottomInset = tabBottomInset,
                     )
                     }
-                    FlashDestination.Settings -> FlashSettingsScreen(
-                        model = settings,
-                        onEditDisplayName = { showRenameDialog = true },
+                    FlashDestination.Settings -> DesktopSettingsDestination(
+                        engine = engine,
+                        ready = ready,
+                        themeMode = themeMode,
                         onThemeModeSelected = onThemeModeSelected,
-                        onDiscoveryModeChanged = { modeStr ->
-                            val mode = runCatching { FlashDiscoveryMode.valueOf(modeStr) }
-                                .getOrDefault(FlashDiscoveryMode.STANDARD)
-                            engine.setDiscoveryMode(mode)
-                        },
-                        onWindowsContextMenuChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(windowsContextMenu = next) } }
-                        },
-                        onDynamicAccentChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(dynamicAccent = next) } }
-                        },
-                        onAutoDownloadVoiceChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(autoDownloadVoice = next) } }
-                        },
-                        onAutoDownloadImageChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(autoDownloadImage = next) } }
-                        },
-                        onAutoDownloadVideoChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(autoDownloadVideo = next) } }
-                        },
-                        onAutoDownloadFileChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(autoDownloadFile = next) } }
-                        },
-                        onPrioritiseVoiceQualityChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(prioritiseVoiceQuality = next) } }
-                        },
-                        onSmallerVideoForManyChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(smallerVideoForMany = next) } }
-                        },
-                        onPerformanceModeSelected = { next ->
-                            scope.launch { engine.updateSettings { it.copy(performanceMode = next) } }
-                        },
-                        onBackgroundTransfersChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(closeToTray = next) } }
-                        },
-                        // Here the same model field is close-to-tray, not an Android foreground-service opt-in, so the
-                        // shared screen must not describe it with ADR-232's Android sentence.
-                        backgroundListenTitle = "Close to tray",
-                        backgroundListenSubtitle = "Closing the window keeps Flash running in the notification area",
-                        onSwarmHelpShareChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(swarmHelpShare = next) } }
-                        },
-                        onSwarmKeepFinishedFilesChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(swarmKeepFinishedFiles = next) } }
-                        },
-                        onSwarmEnabledChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(groupSwarmEnabled = next) } }
-                        },
-                        onLaunchAnimationChanged = { next ->
-                            scope.launch { engine.updateSettings { it.copy(launchAnimation = next) } }
-                        },
-                        onPickSaveLocation = {
-                            val chooser = javax.swing.JFileChooser().apply {
-                                fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
-                                dialogTitle = "Select Received Files Folder"
-                                currentDirectory = engine.canonicalRoot
-                            }
-                            if (chooser.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION) {
-                                val selectedFile = chooser.selectedFile
-                                if (selectedFile != null && selectedFile.isDirectory) {
-                                    scope.launch {
-                                        engine.updateSettings { it.copy(saveLocation = selectedFile.absolutePath) }
-                                        receivedBytes = withContext(Dispatchers.IO) {
-                                            DesktopHelpers.receivedFilesBytes(engine)
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        onRefreshStorageUsage = {
-                            scope.launch {
-                                receivedBytes = withContext(Dispatchers.IO) {
-                                    DesktopHelpers.receivedFilesBytes(engine)
-                                }
-                            }
-                        },
-                        onClearReceivedFiles = {
-                            scope.launch {
-                                withContext(Dispatchers.IO) { DesktopHelpers.clearReceivedFiles(engine) }
-                                // Re-scan rather than assuming zero: the clear is best-effort per
-                                // child (`runCatching`), so a locked file survives it and the card
-                                // must say so instead of claiming the folder is empty.
-                                receivedBytes = withContext(Dispatchers.IO) {
-                                    DesktopHelpers.receivedFilesBytes(engine)
-                                }
-                            }
-                        },
-                        onEnrollDevice = onEnrollDeviceAction,
-                        onDisconnectEnterprise = {
-                            scope.launch {
-                                // CLI-09: tells the hub (or remembers to), clears everything atomically, keeps group links for a later re-enrolment.
-                                val result = engine.enterpriseHub?.unenrol()
-                                snackbarHostState.showSnackbar(
-                                    if (result == null) "Flash is still starting. Try again in a moment."
-                                    else com.transfer.flash.ui.settings.FlashHubStatusMath.unenrolText(result),
-                                    duration = SnackbarDuration.Short,
-                                )
-                            }
-                        },
-                        onLoadApprovals = {
-                            (engine.enterpriseHub?.pendingApprovals() as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
-                        },
-                        onApprove = { approval ->
-                            engine.enterpriseHub?.approve(approval) is com.transfer.flash.core.common.result.FlashResult.Success
-                        },
-                        onRetryHub = { engine.enterpriseHub?.retryNow() },
-                        onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
-                        onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
-                        onRestoreHubGroups = {
-                            scope.launch {
-                                val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0
-                                snackbarHostState.showSnackbar(
-                                    if (restored == 1) "Restored 1 group" else "Restored $restored groups",
-                                    duration = SnackbarDuration.Short,
-                                )
-                            }
-                        },
-                        onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
-                        isEnrollingDevice = isEnrollingDevice,
-                        enrollDeviceError = enrollDeviceError,
-                        radioGatewayController = radioGatewayController,
-                        modifier = Modifier.fillMaxSize(),
-                        listState = settingsScroll,
-                        bottomInset = tabBottomInset,
+                        localFriendlyName = localFriendlyName,
+                        trustedPeersCount = trustedPeersByCoordinator.size,
+                        enterpriseCredentials = enterpriseCredentials,
+                        desktopSettings = desktopSettings,
+                        hubStatus = hubStatus,
+                        onEditDisplayName = { showRenameDialog = true },
+                        snackbarHostState = snackbarHostState,
+                        scope = scope,
+                        settingsScroll = settingsScroll,
+                        tabBottomInset = tabBottomInset,
+                        window = window,
                     )
                 }
             }
@@ -2340,7 +2111,7 @@ public fun DesktopShell(
             FlashCreateGroupSheet(
                 peers = trustedPeerRoster,
                 onDismiss = { showCreateGroup = false },
-                isEnterpriseEnrolled = settings.isEnterpriseEnrolled,
+                isEnterpriseEnrolled = enterpriseCredentials != null,
                 onCreate = { title, memberIds ->
                     scope.launch {
                         val result = chatRepository.createGroup(title, memberIds)
@@ -2386,9 +2157,9 @@ public fun DesktopShell(
         if (showBrowseOrgGroups) {
             val pendingJoins by chatRepository.pendingEnterpriseJoins.collectAsState()
             FlashBrowseOrgGroupsSheet(
-                departmentName = settings.enterpriseDepartment,
+                departmentName = enterpriseCredentials?.department.orEmpty(),
                 onDismiss = { showBrowseOrgGroups = false },
-                onLoadGroups = { chatRepository.fetchEnterpriseDirectoryGroups(settings.enterpriseDepartment) },
+                onLoadGroups = { chatRepository.fetchEnterpriseDirectoryGroups(enterpriseCredentials?.department.orEmpty()) },
                 onJoinGroup = { group -> chatRepository.joinEnterpriseGroup(group.groupId, group.name) },
                 onJoined = { group ->
                     showBrowseOrgGroups = false
@@ -2987,5 +2758,274 @@ internal fun SweepState.toNearbyScan(): NearbyNetworkScan = when (this) {
             SweepRefusal.TOO_SMALL -> NearbyScanBlock.TOO_SMALL
             SweepRefusal.RATE_LIMITED -> NearbyScanBlock.TOO_SOON
         },
+    )
+}
+
+// OPT-O03-10: Dedicated settings destination isolating high-frequency background/telemetry flows
+// (radioUiState at 1-5 Hz, hubDropped, hubSealingKeyState, orgLease, storage usage scan) from
+// root DesktopShell so chats, navigation, and window resizing do not recompose when background flows tick.
+@Composable
+private fun DesktopSettingsDestination(
+    engine: DesktopEngine,
+    ready: Boolean,
+    themeMode: FlashThemeMode,
+    onThemeModeSelected: (FlashThemeMode) -> Unit,
+    localFriendlyName: String,
+    trustedPeersCount: Int,
+    enterpriseCredentials: com.transfer.flash.core.security.enterprise.EnrollmentCredentials?,
+    desktopSettings: DesktopSettings,
+    hubStatus: com.transfer.flash.core.enterprise.HubStatus?,
+    onEditDisplayName: () -> Unit,
+    snackbarHostState: SnackbarHostState,
+    scope: kotlinx.coroutines.CoroutineScope,
+    settingsScroll: androidx.compose.foundation.lazy.LazyListState,
+    tabBottomInset: androidx.compose.ui.unit.Dp,
+    window: java.awt.Window?,
+) {
+    var receivedBytes by remember { mutableStateOf<Long?>(null) }
+    // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
+    val hubObject = remember(ready) { engine.enterpriseHub }
+    // ADR-126: the sealing key state and the dropped-message counts for the connection details.
+    val hubSealingKeyFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.enterprise.HubSealingKeyState.IDLE) }
+    val hubSealingKeyState by (hubObject?.sealingKeys?.state ?: hubSealingKeyFallback).collectAsState()
+    val hubDroppedFlow = remember(engine, ready) { if (ready) engine.chats?.hubDropped else null }
+    val hubDroppedFallback = remember { kotlinx.coroutines.flow.MutableStateFlow(com.transfer.flash.core.messaging.hub.HubDropCounts()) }
+    val hubDropped by (hubDroppedFlow ?: hubDroppedFallback).collectAsState()
+    val hubPreviousLinks by (hubObject?.trustStore?.previousHubLinks
+        ?: remember { kotlinx.coroutines.flow.MutableStateFlow(null) }).collectAsState()
+    val hubRelinkable = remember(hubObject, hubPreviousLinks, enterpriseCredentials) { hubObject?.relinkableGroups()?.size ?: 0 }
+    val orgLeaseFlow = remember(engine, ready) {
+        engine.orgPeerResolver?.lease ?: kotlinx.coroutines.flow.MutableStateFlow<com.transfer.flash.core.enterprise.OrgLease>(com.transfer.flash.core.enterprise.OrgLease.None)
+    }
+    val orgLease by orgLeaseFlow.collectAsState()
+    val orgMismatchFlow = remember(engine, ready) {
+        engine.orgPeerResolver?.identityMismatch ?: kotlinx.coroutines.flow.MutableStateFlow(false)
+    }
+    val orgIdentityMismatch by orgMismatchFlow.collectAsState()
+    val orgTrustState = remember(orgLease, enterpriseCredentials, orgIdentityMismatch) {
+        if (enterpriseCredentials == null) null
+        else {
+            val clockOk = (orgLease as? com.transfer.flash.core.enterprise.OrgLease.Expired)?.reason != com.transfer.flash.core.enterprise.ExpiredReason.CLOCK
+            FlashHubStatusMath.orgTrustState(
+                lease = orgLease,
+                clockOk = clockOk,
+                hubSupports = true,
+                identityMismatch = orgIdentityMismatch,
+                nowMs = System.currentTimeMillis(),
+            )
+        }
+    }
+    var isEnrollingDevice by remember { mutableStateOf(false) }
+    var enrollDeviceError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
+        if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
+    }
+    val radioGatewayController = remember {
+        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
+            scope = scope,
+            onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
+        )
+    }
+    val radioUiState by radioGatewayController.state.collectAsState()
+    val settings = remember(
+        engine, ready, receivedBytes, themeMode, trustedPeersCount, desktopSettings,
+        localFriendlyName, enterpriseCredentials, hubStatus, hubRelinkable,
+        hubSealingKeyState, hubDropped, orgTrustState, radioUiState.enabled
+    ) {
+        FlashSettingsModel(
+            displayName = localFriendlyName,
+            deviceIdShort = engine.localDeviceId.take(8).ifBlank { "00000000" },
+            appVersion = engine.appVersionName,
+            protocolVersion = engine.protocolVersionLabel,
+            receivedFilesBytes = receivedBytes,
+            trustedPeerCount = trustedPeersCount,
+            themeMode = themeMode,
+            discoveryMode = desktopSettings.discoveryMode.name,
+            windowsContextMenu = desktopSettings.windowsContextMenu,
+            showWindowsContextMenu = WindowsContextMenuManager.isSupported,
+            dynamicAccent = desktopSettings.dynamicAccent,
+            autoDownloadVoice = desktopSettings.autoDownloadVoice,
+            autoDownloadImage = desktopSettings.autoDownloadImage,
+            autoDownloadVideo = desktopSettings.autoDownloadVideo,
+            autoDownloadFile = desktopSettings.autoDownloadFile,
+            prioritiseVoiceQuality = desktopSettings.prioritiseVoiceQuality,
+            smallerVideoForMany = desktopSettings.smallerVideoForMany,
+            performanceMode = desktopSettings.performanceMode,
+            backgroundTransfers = desktopSettings.closeToTray,
+            saveLocationLabel = desktopSettings.saveLocation ?: engine.canonicalRoot.absolutePath,
+            swarmHelpShare = desktopSettings.swarmHelpShare,
+            swarmKeepFinishedFiles = desktopSettings.swarmKeepFinishedFiles,
+            swarmEnabled = desktopSettings.groupSwarmEnabled,
+            launchAnimation = desktopSettings.launchAnimation,
+            isEnterpriseEnrolled = enterpriseCredentials != null,
+            enterpriseHubUrl = enterpriseCredentials?.hubUrl.orEmpty(),
+            enterpriseDepartment = enterpriseCredentials?.department.orEmpty(),
+            enterpriseRole = enterpriseCredentials?.role ?: "member",
+            enterpriseRootFingerprint = enterpriseCredentials?.rootFingerprint.orEmpty(),
+            hubStatus = hubStatus,
+            hubContentViaHub = desktopSettings.hubContentViaHub,
+            hubSealing = if (hubObject?.sealingKeys == null) null else com.transfer.flash.ui.settings.FlashHubSealingUi(
+                keyState = hubSealingKeyState,
+                unverified = hubDropped.unverified,
+                readableOff = hubDropped.readableOff,
+                stale = hubDropped.stale,
+            ),
+            hubRelinkableGroups = hubRelinkable,
+            orgTrustState = orgTrustState,
+            radioGatewayEnabled = radioUiState.enabled,
+        )
+    }
+
+    val onEnrollDeviceAction: (String) -> Unit = { link ->
+        val invite = com.transfer.flash.core.hubprotocol.certs.EnrollmentInvite.parseOrNull(link)
+        val hub = engine.enterpriseHub
+        if (invite == null) {
+            enrollDeviceError = "That is not an organisation link. Ask your administrator for a new one."
+        } else if (hub == null) {
+            enrollDeviceError = "Flash is still starting. Try again in a moment."
+        } else {
+            isEnrollingDevice = true
+            enrollDeviceError = null
+            scope.launch {
+                val outcome = hub.enroll(invite)
+                isEnrollingDevice = false
+                when (outcome) {
+                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Enrolled -> {
+                        enrollDeviceError = null
+                        snackbarHostState.showSnackbar(
+                            "You joined ${outcome.credentials.hubName.ifBlank { "your organisation" }}",
+                            duration = SnackbarDuration.Long,
+                        )
+                    }
+                    is com.transfer.flash.core.enterprise.EnrollmentOutcome.Failed -> {
+                        enrollDeviceError = com.transfer.flash.ui.settings.FlashHubStatusMath.enrollFailureText(outcome.reason)
+                    }
+                }
+            }
+        }
+    }
+
+    FlashSettingsScreen(
+        model = settings,
+        onEditDisplayName = onEditDisplayName,
+        onThemeModeSelected = onThemeModeSelected,
+        onDiscoveryModeChanged = { modeStr ->
+            val mode = runCatching { FlashDiscoveryMode.valueOf(modeStr) }
+                .getOrDefault(FlashDiscoveryMode.STANDARD)
+            engine.setDiscoveryMode(mode)
+        },
+        onWindowsContextMenuChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(windowsContextMenu = next) } }
+        },
+        onDynamicAccentChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(dynamicAccent = next) } }
+        },
+        onAutoDownloadVoiceChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(autoDownloadVoice = next) } }
+        },
+        onAutoDownloadImageChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(autoDownloadImage = next) } }
+        },
+        onAutoDownloadVideoChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(autoDownloadVideo = next) } }
+        },
+        onAutoDownloadFileChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(autoDownloadFile = next) } }
+        },
+        onPrioritiseVoiceQualityChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(prioritiseVoiceQuality = next) } }
+        },
+        onSmallerVideoForManyChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(smallerVideoForMany = next) } }
+        },
+        onPerformanceModeSelected = { next ->
+            scope.launch { engine.updateSettings { it.copy(performanceMode = next) } }
+        },
+        onBackgroundTransfersChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(closeToTray = next) } }
+        },
+        backgroundListenTitle = "Close to tray",
+        backgroundListenSubtitle = "Closing the window keeps Flash running in the notification area",
+        onSwarmHelpShareChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(swarmHelpShare = next) } }
+        },
+        onSwarmKeepFinishedFilesChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(swarmKeepFinishedFiles = next) } }
+        },
+        onSwarmEnabledChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(groupSwarmEnabled = next) } }
+        },
+        onLaunchAnimationChanged = { next ->
+            scope.launch { engine.updateSettings { it.copy(launchAnimation = next) } }
+        },
+        onPickSaveLocation = {
+            val chooser = javax.swing.JFileChooser().apply {
+                fileSelectionMode = javax.swing.JFileChooser.DIRECTORIES_ONLY
+                dialogTitle = "Select Received Files Folder"
+                currentDirectory = engine.canonicalRoot
+            }
+            if (chooser.showOpenDialog(window) == javax.swing.JFileChooser.APPROVE_OPTION) {
+                val selectedFile = chooser.selectedFile
+                if (selectedFile != null && selectedFile.isDirectory) {
+                    scope.launch {
+                        engine.updateSettings { it.copy(saveLocation = selectedFile.absolutePath) }
+                        receivedBytes = withContext(Dispatchers.IO) {
+                            DesktopHelpers.receivedFilesBytes(engine)
+                        }
+                    }
+                }
+            }
+        },
+        onRefreshStorageUsage = {
+            scope.launch {
+                receivedBytes = withContext(Dispatchers.IO) {
+                    DesktopHelpers.receivedFilesBytes(engine)
+                }
+            }
+        },
+        onClearReceivedFiles = {
+            scope.launch {
+                withContext(Dispatchers.IO) { DesktopHelpers.clearReceivedFiles(engine) }
+                receivedBytes = withContext(Dispatchers.IO) {
+                    DesktopHelpers.receivedFilesBytes(engine)
+                }
+            }
+        },
+        onEnrollDevice = onEnrollDeviceAction,
+        onDisconnectEnterprise = {
+            scope.launch {
+                val result = engine.enterpriseHub?.unenrol()
+                snackbarHostState.showSnackbar(
+                    if (result == null) "Flash is still starting. Try again in a moment."
+                    else com.transfer.flash.ui.settings.FlashHubStatusMath.unenrolText(result),
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        },
+        onLoadApprovals = {
+            (engine.enterpriseHub?.pendingApprovals() as? com.transfer.flash.core.common.result.FlashResult.Success)?.value
+        },
+        onApprove = { approval ->
+            engine.enterpriseHub?.approve(approval) is com.transfer.flash.core.common.result.FlashResult.Success
+        },
+        onRetryHub = { engine.enterpriseHub?.retryNow() },
+        onDismissHubRevoked = { engine.enterpriseHub?.dismissRevokedNotice() },
+        onSetHubContentViaHub = { enabled -> engine.updateSettings { it.copy(hubContentViaHub = enabled) } },
+        onRestoreHubGroups = {
+            scope.launch {
+                val restored = engine.enterpriseHub?.relinkPreviousGroups() ?: 0
+                snackbarHostState.showSnackbar(
+                    if (restored == 1) "Restored 1 group" else "Restored $restored groups",
+                    duration = SnackbarDuration.Short,
+                )
+            }
+        },
+        onForgetHubGroups = { scope.launch { engine.enterpriseHub?.forgetPreviousGroups() } },
+        isEnrollingDevice = isEnrollingDevice,
+        enrollDeviceError = enrollDeviceError,
+        radioGatewayController = radioGatewayController,
+        modifier = Modifier.fillMaxSize(),
+        listState = settingsScroll,
+        bottomInset = tabBottomInset,
     )
 }
