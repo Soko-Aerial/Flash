@@ -43,13 +43,16 @@ import org.jetbrains.compose.resources.painterResource
 import java.awt.SystemTray
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
+import java.io.BufferedWriter
 import java.io.File
+import java.io.FileWriter
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.util.concurrent.ArrayBlockingQueue
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import java.io.FileWriter
-import java.io.PrintWriter
 
 /**
  * Flash desktop entry point (Phase 21, sub-step 21-3).
@@ -553,6 +556,14 @@ private fun installNativeWebRtcLogging() {
  */
 private val LOG_TIME: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
+private class DesktopLogEntry(
+    val consoleText: String,
+    val fileText: String,
+    val throwable: Throwable?,
+)
+
+// OPT-O20-03: Asynchronous buffered log writer with bounded queue and daemon worker thread.
+// Eliminates caller thread blocking on unbuffered file writes and console monitor locks.
 private fun installDesktopLogSink() {
     val file = try {
         DesktopPaths.stateDir().apply { mkdirs() }
@@ -560,22 +571,81 @@ private fun installDesktopLogSink() {
     } catch (_: Throwable) {
         return
     }
-    val writer = try {
-        PrintWriter(FileWriter(file, false), true)
+    val bufferedWriter = try {
+        BufferedWriter(FileWriter(file, false), 16384)
     } catch (_: Throwable) {
         // Unwritable home directory: keep the default sink rather than fail the launch.
         return
     }
+
+    val queue = ArrayBlockingQueue<DesktopLogEntry>(4096)
+
+    fun writeEntry(entry: DesktopLogEntry) {
+        System.err.println(entry.consoleText)
+        entry.throwable?.printStackTrace(System.err)
+        bufferedWriter.write(entry.fileText)
+        bufferedWriter.newLine()
+        if (entry.throwable != null) {
+            val sw = StringWriter()
+            val pw = PrintWriter(sw)
+            entry.throwable.printStackTrace(pw)
+            pw.flush()
+            bufferedWriter.write(sw.toString())
+        }
+    }
+
+    val worker = Thread({
+        try {
+            while (true) {
+                val entry = queue.take()
+                writeEntry(entry)
+                if (queue.isEmpty()) {
+                    bufferedWriter.flush()
+                }
+            }
+        } catch (_: InterruptedException) {
+            while (true) {
+                val entry = queue.poll() ?: break
+                writeEntry(entry)
+            }
+            try {
+                bufferedWriter.flush()
+                bufferedWriter.close()
+            } catch (_: Throwable) {}
+        } catch (_: Throwable) {
+            // Logging daemon must never crash the app
+        }
+    }, "FlashDesktopLogWorker").apply {
+        isDaemon = true
+        start()
+    }
+
+    Runtime.getRuntime().addShutdownHook(Thread({
+        worker.interrupt()
+        while (true) {
+            val entry = queue.poll() ?: break
+            try {
+                writeEntry(entry)
+            } catch (_: Throwable) {}
+        }
+        try {
+            bufferedWriter.flush()
+            bufferedWriter.close()
+        } catch (_: Throwable) {}
+    }, "FlashDesktopLogFlusher"))
+
     FlashLog.installSink(
         FlashLogSink { level: FlashLogLevel, tag: String, message: String, throwable: Throwable? ->
-            // A logging failure must never reach a caller — same contract as the platform sink.
             try {
-                System.err.println("${level.name.first()}/$tag: $message")
-                throwable?.printStackTrace(System.err)
-                // The file carries wall-clock time (ms) so a call's lines can be lined up with
-                // the phones' logcat; the console keeps the old format.
-                writer.println("${LOG_TIME.format(java.time.LocalTime.now())} ${level.name.first()}/$tag: $message")
-                throwable?.printStackTrace(writer)
+                val nowFormatted = LOG_TIME.format(java.time.LocalTime.now())
+                val consoleLine = "${level.name.first()}/$tag: $message"
+                val fileLine = "$nowFormatted $consoleLine"
+                val entry = DesktopLogEntry(consoleLine, fileLine, throwable)
+                if (!queue.offer(entry)) {
+                    // Queue full under extreme stress: fallback synchronously rather than dropping
+                    writeEntry(entry)
+                    bufferedWriter.flush()
+                }
             } catch (_: Throwable) {
                 // ignore
             }
