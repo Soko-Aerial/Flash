@@ -15109,3 +15109,61 @@ RESOLVED for the 7 measured files. **Rule unchanged and now proven cheap to chec
 PS 5.1 `Get-Content`/`Set-Content` without `-Encoding utf8` on **both** sides — and if a file already looks mangled, reverse the
 bytes and verify the ASCII skeleton instead of assuming it is unrecoverable.
 
+
+## ERROR-935 — Two `TransfersUiMapperTest` rows failed on a clean `dev`, because ADR-220 changed `canRetry` and left both the tests and its KDoc behind
+
+### Date
+2026-11-01
+
+### Area
+Android host unit tests / transfer model (`FlashTransfer.canRetry`) / hub files
+
+### Symptoms
+`:app:testDebugUnitTest` failed with exactly two failures in every suite run since the hub-file retry work, and they were
+being quoted in handoffs as "the pre-existing ERROR-106 baseline". On an untouched `dev` tree (`cc56466c`) the same two
+fail:
+
+```text
+TransfersUiMapperTest > retryableComesFromTheModelPredicate FAILED
+    java.lang.AssertionError
+        at ...TransfersUiMapperTest.retryableComesFromTheModelPredicate(TransfersUiMapperTest.kt:90)
+TransfersUiMapperTest > aHubRowSaysSoAndOffersNoRetry FAILED
+    java.lang.AssertionError: a hub failure is final; a dropped network keeps the row queued
+        at ...TransfersUiMapperTest.aHubRowSaysSoAndOffersNoRetry(TransfersUiMapperTest.kt:166)
+12 tests completed, 2 failed
+```
+
+### Environment
+- `:app:testDebugUnitTest` on `dev` `cc56466c`, Windows, JDK 21 through `tools\flash-gradle.cmd`
+- Not device-specific; no Android runtime involved (pure mapping test)
+
+### Root cause
+Not a regression and not the wave-3 streams: `91b0c69f` (`feat(hubfiles): stop retrying at the hub's 24 h window, let Failed
+hub files be retried`, open item C-07, **ADR-220**) deliberately changed the predicate from `!viaHub` to
+`(!viaHub || state == Failed)`, so a **Failed** hub row now offers Retry. Three things still said the opposite and were not
+updated in that commit: both assertions here, and the `canRetry` KDoc sentence "a hub file fails only for a reason a retry
+cannot change". The attribution to `ERROR-106` was also wrong — that entry is a `:desktop:jvmTest` group-creation failure.
+
+### Failed attempts
+1. Assuming the failures were ERROR-106. They are a different module and a different failure; the label came from older
+   handoff prose and was copied forward.
+2. Reading the tests as the specification. They predate ADR-220, so satisfying them would have reverted a deliberate,
+   owner-approved behaviour change (a Failed hub row must be retryable or the row is stuck for ever).
+
+### Working fix
+The behaviour is right; the tests and the KDoc were stale. `TransfersUiMapperTest` now asserts the ADR-220 truth
+(`retryableComesFromTheModelPredicate` also pins `Queued`/`Paused` hub rows as **not** retryable, which is what "continues
+by itself" means), the second test is renamed `aHubRowSaysSoAndOffersRetryOnlyWhenFailed` and states why, and the KDoc on
+`FlashTransfer.canRetry` describes the add-then-retry path instead of claiming hub failures are final.
+
+### Verification
+`tools\flash-gradle.cmd :app:testDebugUnitTest --tests *TransfersUiMapperTest*` → `BUILD SUCCESSFUL in 21s` (12 tests, 0
+failures). Before the change, the same command on `dev` failed with the two rows above.
+
+### Related files
+- `app/src/test/java/com/transfer/flash/TransfersUiMapperTest.kt`
+- `core/transfer/src/commonMain/kotlin/com/transfer/flash/core/transfer/model/FlashTransfer.kt`
+- `docs/decisions.md` ADR-220, `docs/plans/OPEN-ITEMS-TRACKER-2026-10-21.md` item 7
+
+### Status
+RESOLVED

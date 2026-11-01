@@ -83,8 +83,9 @@ public data class FlashTransfer(
     /**
      * Whether a Retry control can do anything for this row. One predicate for every surface (the Transfers screen and
      * the notification), so none of them guesses (audit 2026-10-20 B-06). A cancelled or declined transfer is a
-     * decision, not a fault; a hub file fails only for a reason a retry cannot change, and a dropped network keeps it
-     * queued so it continues by itself (ADR-216).
+     * decision, not a fault. A hub transfer normally continues by itself — a dropped network leaves it Queued or Paused
+     * and it resumes from disk — but when the hub's own limits end it (the 24 h upload window, an expired ticket) the row
+     * is Failed and Retry is the only way back, so exactly that one hub state offers it (ADR-220, open item C-07).
      */
     public val canRetry: Boolean
         get() = state != FlashTransferState.Cancelled && (!viaHub || state == FlashTransferState.Failed)
