@@ -23,8 +23,14 @@ internal expect object HubFileDisk {
     /** Names (not paths) of the regular files directly inside [directory]; empty when it does not exist. */
     fun list(directory: String): List<String>
 
-    /** Writes [bytes] at [offset] of [path] (created when missing) and syncs before returning. */
+    /** Writes [bytes] at [offset] of [path] (created when missing). */
     fun writeAt(path: String, offset: Long, bytes: ByteArray)
+
+    /** Flushes, syncs to physical storage, and closes any open handle for [path]. */
+    fun syncAndClose(path: String)
+
+    /** Closes any open handle for [path] without syncing. */
+    fun close(path: String)
 
     /** Exactly [length] bytes at [offset]; throws when the file is shorter. */
     fun readAt(path: String, offset: Long, length: Int): ByteArray

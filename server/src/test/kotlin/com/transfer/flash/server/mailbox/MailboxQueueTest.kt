@@ -269,6 +269,20 @@ class MailboxQueueTest {
     }
 
     @Test
+    fun acknowledgeBatchDeletesMultipleRowsInSingleTransaction() = runTest {
+        val q = queue()
+        q.enqueue(msg("b1", origin = "alice", target = "bob"))
+        q.enqueue(msg("b2", origin = "alice", target = "bob"))
+        q.enqueue(msg("b3", origin = "alice", target = "bob"))
+        assertEquals(3, q.pendingCount("bob"))
+
+        val acked = q.acknowledgeBatch("bob", listOf("b1", "b2", "b3"))
+        assertEquals(3, acked.size)
+        assertEquals(0, q.pendingCount("bob"))
+        assertEquals(3L, q.deliveredTotal())
+    }
+
+    @Test
     fun twoSendersWithTheSameMessageIdAreAcknowledgedOneAtATime() = runTest {
         val q = queue()
         q.enqueue(msg("same", origin = "alice", target = "bob"))

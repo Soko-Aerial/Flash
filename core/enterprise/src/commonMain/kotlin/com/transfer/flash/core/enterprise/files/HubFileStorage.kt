@@ -88,12 +88,16 @@ public class DiskHubFileStorage(private val rootDirectory: String) : HubFileStor
     override fun readPart(fileId: String, offset: Long, length: Int): ByteArray = HubFileDisk.readAt(partPath(fileId), offset, length)
 
     override fun deletePart(fileId: String) {
-        HubFileDisk.delete(partPath(fileId))
+        val part = partPath(fileId)
+        HubFileDisk.close(part)
+        HubFileDisk.delete(part)
     }
 
     override fun finishPart(fileId: String): String {
+        val part = partPath(fileId)
         val target = "${dir(DONE)}/${checked(fileId)}$BIN"
-        HubFileDisk.move(partPath(fileId), target)
+        HubFileDisk.syncAndClose(part)
+        HubFileDisk.move(part, target)
         return target
     }
 

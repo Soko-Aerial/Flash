@@ -121,7 +121,7 @@ Result: `server/build/install/server/` — a `bin/server` launcher plus `lib/*.j
 57 jars). Copy that directory to the server and run:
 
 ```bash
-java -Xmx512m -cp '/opt/flash-hub/app/lib/*' com.transfer.flash.server.MainKt serve
+java -Xmx512m -XX:+ExitOnOutOfMemoryError -XX:+UseG1GC -cp '/opt/flash-hub/app/lib/*' com.transfer.flash.server.MainKt serve
 ```
 
 **B. Container image** (builds in-image; needs the whole repository as build context):
@@ -322,7 +322,7 @@ User=flash
 Group=flash
 WorkingDirectory=/opt/flash-hub
 EnvironmentFile=/etc/flash-hub.env
-ExecStart=/usr/bin/java -Xmx512m -cp /opt/flash-hub/app/lib/* com.transfer.flash.server.MainKt serve
+ExecStart=/usr/bin/java -Xmx512m -XX:+ExitOnOutOfMemoryError -XX:+UseG1GC -cp /opt/flash-hub/app/lib/* com.transfer.flash.server.MainKt serve
 Restart=on-failure
 RestartSec=5
 

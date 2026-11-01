@@ -122,8 +122,8 @@ public class OrgDirectorySync(
 
 
     private data class StagedMember(
-        val entity: OrgDirectoryMemberEntity,
-        val subjectPublicKey: String,
+        val member: DirectoryMemberSyncDto,
+        val delegationSerial: Long,
         val isConflict: Boolean = false,
     )
 
@@ -332,43 +332,22 @@ public class OrgDirectorySync(
                         accumulatedRemovedMemberIds.remove(member.deviceId)
                         val delegationSerial = matchingDelegation.serial
 
-                        val spkiBytes = statement.subjectPublicKeyBytes
-                        val fingerprintHex = FlashFingerprint.fingerprint(spkiBytes).joinToString("") { byte ->
-                            (byte.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
-                        }
-                        val folded = foldForSearch(member.displayName.ifBlank { member.deviceId })
-                        val statementBytes = HubRestCodec.encode(statement).encodeToByteArray()
-
-                        val entity = OrgDirectoryMemberEntity(
-                            deviceId = member.deviceId,
-                            displayName = member.displayName.ifBlank { member.deviceId },
-                            displayNameFolded = folded,
-                            departmentId = member.departmentId,
-                            role = member.role,
-                            subjectPublicKeyFingerprint = fingerprintHex,
-                            statementBytes = statementBytes,
-                            statementSerial = statement.statementSerial,
-                            statementIssuedAtMs = statement.issuedAtMs,
-                            statementDelegationSerial = delegationSerial,
-                            lastSyncedAtMs = now,
-                        )
-
                         val existing = accumulatedMembers[member.deviceId]
                         if (existing != null) {
                             if (existing.isConflict) {
                                 // Rule 8 is sticky: K1, K2, K1 must not clear the flag (verifier defect 6).
                                 continue
                             }
-                            if (existing.subjectPublicKey != statement.subjectPublicKey) {
+                            if (existing.member.statement.subjectPublicKey != statement.subjectPublicKey) {
                                 // Rule 8: Same deviceId, two different keys in snapshot -> drop both, mark conflict
                                 accumulatedMembers[member.deviceId] = existing.copy(isConflict = true)
                             } else {
-                                if (statement.statementSerial >= existing.entity.statementSerial) {
-                                    accumulatedMembers[member.deviceId] = StagedMember(entity, statement.subjectPublicKey)
+                                if (statement.statementSerial >= existing.member.statement.statementSerial) {
+                                    accumulatedMembers[member.deviceId] = StagedMember(member, delegationSerial)
                                 }
                             }
                         } else {
-                            accumulatedMembers[member.deviceId] = StagedMember(entity, statement.subjectPublicKey)
+                            accumulatedMembers[member.deviceId] = StagedMember(member, delegationSerial)
                         }
                     }
 
@@ -388,7 +367,36 @@ public class OrgDirectorySync(
         }
 
         // All pages fetched & verified successfully in memory -> Atomic apply to database
-        val membersToUpsert = accumulatedMembers.values.filterNot { it.isConflict }.map { it.entity }
+        // OPT-O16-02: Stream and project entities on-demand during Room insertion instead of
+        // preallocating 20,000 serialized statement byte arrays and folded strings in heap memory.
+        val nonConflicted = accumulatedMembers.values.filterNot { it.isConflict }.toList()
+        val membersToUpsert = object : AbstractList<OrgDirectoryMemberEntity>() {
+            override val size: Int get() = nonConflicted.size
+            override fun get(index: Int): OrgDirectoryMemberEntity {
+                val staged = nonConflicted[index]
+                val member = staged.member
+                val statement = member.statement
+                val spkiBytes = statement.subjectPublicKeyBytes
+                val fingerprintHex = FlashFingerprint.fingerprint(spkiBytes).joinToString("") { byte ->
+                    (byte.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase()
+                }
+                val folded = foldForSearch(member.displayName.ifBlank { member.deviceId })
+                val statementBytes = HubRestCodec.encode(statement).encodeToByteArray()
+                return OrgDirectoryMemberEntity(
+                    deviceId = member.deviceId,
+                    displayName = member.displayName.ifBlank { member.deviceId },
+                    displayNameFolded = folded,
+                    departmentId = member.departmentId,
+                    role = member.role,
+                    subjectPublicKeyFingerprint = fingerprintHex,
+                    statementBytes = statementBytes,
+                    statementSerial = statement.statementSerial,
+                    statementIssuedAtMs = statement.issuedAtMs,
+                    statementDelegationSerial = staged.delegationSerial,
+                    lastSyncedAtMs = now,
+                )
+            }
+        }
         val conflictedIds = accumulatedMembers.filterValues { it.isConflict }.keys
         val clampedGraceDays = responseOfflineGraceDays.coerceIn(
             DirectorySyncDto.MIN_OFFLINE_GRACE_DAYS,

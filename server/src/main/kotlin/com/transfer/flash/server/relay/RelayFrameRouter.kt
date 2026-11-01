@@ -264,10 +264,15 @@ public class RelayFrameRouter(
         val recipients = members.filter { it != origin.deviceId }
         if (!withinByteBudget(origin, send, groupId, copies = recipients.size)) return
         val gate = Semaphore(policy.groupFanoutConcurrency)
+        val preEncodedJson = RelayFrameCodec.encode(
+            RelayFrame.Deliver(from = origin.deviceId, id = send.id, type = send.type, sentAt = send.sentAt, payload = send.payload, group = groupId),
+        )
         val outcomes = coroutineScope {
             recipients.map { member ->
                 async {
-                    gate.withPermit { routeOne(origin.deviceId, member, send.id, send.type, send.sentAt, send.payload, groupId) }
+                    gate.withPermit {
+                        routeOne(origin.deviceId, member, send.id, send.type, send.sentAt, send.payload, groupId, preEncodedJson)
+                    }
                 }
             }.awaitAll()
         }
@@ -310,12 +315,15 @@ public class RelayFrameRouter(
         sentAt: Long,
         payload: String,
         group: String?,
+        preEncodedJson: String? = null,
     ): RouteKind {
         val target = connectionPool.get(recipientId)
         if (target != null) {
-            val deliver = RelayFrame.Deliver(from = originId, id = msgId, type = type, sentAt = sentAt, payload = payload, group = group)
+            val json = preEncodedJson ?: RelayFrameCodec.encode(
+                RelayFrame.Deliver(from = originId, id = msgId, type = type, sentAt = sentAt, payload = payload, group = group),
+            )
             val flight = InFlight(originId, type, payload, sentAt, group, System.nanoTime())
-            when (target.handOffLive(msgId, RelayFrameCodec.encode(deliver), flight, policy.maxInFlightPerSession)) {
+            when (target.handOffLive(msgId, json, flight, policy.maxInFlightPerSession)) {
                 OfferResult.OK -> {
                     metrics.inc(RelayMetrics.FRAMES_OUT, 1, "kind" to "FLASH_DELIVER")
                     metrics.inc(RelayMetrics.MESSAGES, 1, "outcome" to "delivered_live")
@@ -379,23 +387,30 @@ public class RelayFrameRouter(
      */
     private suspend fun handleRecvAck(recipient: RelaySession, ack: RelayFrame.RecvAck) {
         val ackFrom = ack.from?.takeIf { it.isNotBlank() }
-        val candidate = recipient.inFlight[ack.msgId]
-        val flight = if (candidate != null && (ackFrom == null || ackFrom == candidate.origin) && recipient.inFlight.remove(ack.msgId, candidate)) candidate else null
-        if (flight != null) {
-            metrics.ackLatency.observeSeconds((System.nanoTime() - flight.handedAtNanos) / 1_000_000_000.0)
-            notifyDelivered(flight.origin, recipient.deviceId, ack.msgId)
-            return
+        val ids = ack.ids ?: listOf(ack.msgId)
+        val remainingForMailbox = ArrayList<String>(ids.size)
+        for (id in ids) {
+            val candidate = recipient.inFlight[id]
+            val flight = if (candidate != null && (ackFrom == null || ackFrom == candidate.origin) && recipient.inFlight.remove(id, candidate)) candidate else null
+            if (flight != null) {
+                metrics.ackLatency.observeSeconds((System.nanoTime() - flight.handedAtNanos) / 1_000_000_000.0)
+                notifyDelivered(flight.origin, recipient.deviceId, id)
+            } else {
+                remainingForMailbox.add(id)
+            }
         }
-        val rows = try {
-            mailboxQueue.acknowledge(recipient.deviceId, ack.msgId, ackFrom)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            metrics.inc(RelayMetrics.DB_ERRORS, 1, "op" to "ack")
-            logger.error("RECV_ACK handling failed: {}", t.toString())
-            return
+        if (remainingForMailbox.isNotEmpty()) {
+            val rows = try {
+                mailboxQueue.acknowledgeBatch(recipient.deviceId, remainingForMailbox, ackFrom)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                metrics.inc(RelayMetrics.DB_ERRORS, 1, "op" to "ack")
+                logger.error("RECV_ACK handling failed: {}", t.toString())
+                return
+            }
+            rows.forEach { notifyDelivered(it.origin, recipient.deviceId, it.msgId) }
         }
-        rows.forEach { notifyDelivered(it.origin, recipient.deviceId, ack.msgId) }
     }
 
     private fun notifyDelivered(originId: String, recipientId: String, msgId: String) {

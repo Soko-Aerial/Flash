@@ -16,9 +16,12 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.DeflaterOutputStream
+import java.util.zip.GZIPOutputStream
 
 /*
  * The static admin console (ADR-125): a dependency-free single page application served from the hub's own classpath
@@ -86,7 +89,13 @@ val AdminConsoleHeaders = createApplicationPlugin("AdminConsoleHeaders") {
  * directory can never be listed), and the answer carries a strong ETag (SHA-256) so `If-None-Match` gets a 304.
  */
 class StaticAssets(private val root: String) {
-    private class Asset(val bytes: ByteArray, val etag: String, val type: ContentType)
+    private class Asset(
+        val bytes: ByteArray,
+        val etag: String,
+        val type: ContentType,
+        val gzipBytes: ByteArray?,
+        val deflateBytes: ByteArray?,
+    )
 
     private val cache = ConcurrentHashMap<String, Asset>()
 
@@ -100,7 +109,27 @@ class StaticAssets(private val root: String) {
         val bytes = StaticAssets::class.java.classLoader.getResourceAsStream("$root/$key")?.use { it.readNBytes(MAX_ASSET_BYTES + 1) } ?: return null
         if (bytes.size > MAX_ASSET_BYTES) return null
         val etag = "\"" + Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes)).take(27) + "\""
-        return Asset(bytes, etag, type).also { cache[key] = it }
+
+        val isCompressible = type.match(ContentType.Text.Any) ||
+            type.match(ContentType.Application.Json) ||
+            type.match(ContentType.Image.SVG) ||
+            name.endsWith(".js") || name.endsWith(".mjs") || name.endsWith(".css")
+
+        val gzipBytes = if (isCompressible && bytes.size >= 128) {
+            val bos = ByteArrayOutputStream()
+            GZIPOutputStream(bos).use { it.write(bytes) }
+            val compressed = bos.toByteArray()
+            if (compressed.size < bytes.size) compressed else null
+        } else null
+
+        val deflateBytes = if (isCompressible && bytes.size >= 128) {
+            val bos = ByteArrayOutputStream()
+            DeflaterOutputStream(bos).use { it.write(bytes) }
+            val compressed = bos.toByteArray()
+            if (compressed.size < bytes.size) compressed else null
+        } else null
+
+        return Asset(bytes, etag, type, gzipBytes, deflateBytes).also { cache[key] = it }
     }
 
     /** Responds with the asset or 404 / 304. [cacheControl] is `no-store` for the HTML shell and `no-cache` (revalidate) for assets. */
@@ -113,11 +142,27 @@ class StaticAssets(private val root: String) {
         }
         call.response.headers.append(HttpHeaders.ETag, asset.etag)
         call.response.headers.append(HttpHeaders.CacheControl, cacheControl)
+        if (asset.gzipBytes != null || asset.deflateBytes != null) {
+            // Set before any body is chosen, so the 304 carries it too: an answer that depends on Accept-Encoding must say
+            // so on every response, or a shared cache may hand the gzip bytes to a client that asked for identity.
+            call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+        }
         if (call.request.headers[HttpHeaders.IfNoneMatch]?.split(',')?.any { it.trim() == asset.etag } == true) {
             call.respond(HttpStatusCode.NotModified)
             return
         }
-        call.respondBytes(asset.bytes, asset.type)
+        val acceptEncoding = call.request.headers[HttpHeaders.AcceptEncoding].orEmpty()
+        when {
+            acceptEncoding.contains("gzip") && asset.gzipBytes != null -> {
+                call.response.headers.append(HttpHeaders.ContentEncoding, "gzip")
+                call.respondBytes(asset.gzipBytes, asset.type)
+            }
+            acceptEncoding.contains("deflate") && asset.deflateBytes != null -> {
+                call.response.headers.append(HttpHeaders.ContentEncoding, "deflate")
+                call.respondBytes(asset.deflateBytes, asset.type)
+            }
+            else -> call.respondBytes(asset.bytes, asset.type)
+        }
     }
 
     companion object {

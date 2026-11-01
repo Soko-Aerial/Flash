@@ -9,6 +9,7 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.readRawBytes
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.testing.testApplication
 import java.io.File
@@ -19,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -158,6 +160,40 @@ class AdminConsoleWebTest {
         assertConsoleHeaders(again, "304")
         val changed = client.get("/admin/ui/js/main.js") { header("If-None-Match", "\"something-else\"") }
         assertEquals(HttpStatusCode.OK, changed.status)
+    }
+
+    @Test
+    fun anAssetIsCompressedWithGzipOrDeflateWhenAccepted() = testApplication {
+        val hub = build()
+        application { hub.engine.configureApplication(this) }
+        val raw = client.get("/admin/ui/js/main.js")
+        assertEquals(HttpStatusCode.OK, raw.status)
+        assertNull(raw.headers["Content-Encoding"])
+
+        val gzipped = client.get("/admin/ui/js/main.js") { header("Accept-Encoding", "gzip, deflate") }
+        assertEquals(HttpStatusCode.OK, gzipped.status)
+        assertEquals("gzip", gzipped.headers["Content-Encoding"])
+        assertTrue(gzipped.headers["Vary"].orEmpty().contains("Accept-Encoding"))
+        assertTrue(gzipped.readRawBytes().size < raw.readRawBytes().size)
+
+        val deflated = client.get("/admin/ui/js/main.js") { header("Accept-Encoding", "deflate") }
+        assertEquals(HttpStatusCode.OK, deflated.status)
+        assertEquals("deflate", deflated.headers["Content-Encoding"])
+        assertTrue(deflated.readRawBytes().size < raw.readRawBytes().size)
+    }
+
+    @Test
+    fun aNotModifiedAnswerAlsoVariesOnAcceptEncoding() = testApplication {
+        val hub = build()
+        application { hub.engine.configureApplication(this) }
+        val etag = client.get("/admin/ui/js/main.js").headers["ETag"]
+        assertNotNull(etag)
+        val again = client.get("/admin/ui/js/main.js") {
+            header("If-None-Match", etag)
+            header("Accept-Encoding", "gzip")
+        }
+        assertEquals(HttpStatusCode.NotModified, again.status)
+        assertTrue(again.headers["Vary"].orEmpty().contains("Accept-Encoding"))
     }
 
     // ------------------------------------------------------------------------------------------------ the shell
