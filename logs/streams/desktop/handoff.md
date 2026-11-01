@@ -1,5 +1,22 @@
 # Stream E (Desktop) — Handoff Document
 
+## Integration stopping point — 2026-11-01
+- **Branch/worktree:** `agent/opt-desktop`, `E:/FlashWork/opt-desktop`; actual merge-base `baf77753`, delivered tip `00a7a51f`.
+- **Phase:** review complete; repaired code targeted-tested, repairs and corrected fragments still uncommitted/unmerged.
+- **Last verified build:** repaired desktop suite 259 tests in 46 XML suites, zero failures/errors/skips;
+  BUILD SUCCESSFUL in 6m 51s, all 66 tasks executed, exit 0. Exact command in `INTEGRATOR-REVIEW.md`/progress.
+- **Working structural changes:** window-owned current sender, relevant distinct snapshots, derived size class,
+  local Settings collection with root radio owner, background warming/readyPairing, GHOST/hidden workload guards,
+  one-worker logger shutdown, IO operation bounds, observable Windows native reduced motion, lazy icon caches.
+- **Limits:** full geometry can recompose within class; desktop ECO consumers partial; hub presence poll ungated.
+  No first-frame/frame-rate/packet/power/thread/RSS gains measured; Windows detection does not implement macOS/Linux.
+- **Owed:** PERF-E01..E08, including actual AWT drop, stored-ON radio/tray and live Windows visual motion toggle.
+- **Next:** fold corrected records, commit repairs, merge --no-ff, force both gates on merged dev; stop daemons and
+  remove worktree only after green integration (keep branch). No push/deploy/phone/presence/Wave 5 work.
+- **Authority:** `INTEGRATOR-REVIEW.md`, reviewed ADR/error/experiment/backlog fragments.
+
+## SUPERSEDED delivered handoff (preserved; not the current stopping point)
+
 ## Current Branch
 `agent/opt-desktop` (in worktree `E:\FlashWork\opt-desktop`)
 

@@ -159,6 +159,13 @@ public fun DesktopShell(
     onClearExternalShareFiles: () -> Unit = {},
     /** UI-058 H9: a Hub route (`hub/announcement/<id>`, `hub/person/<deviceId>`) to open, set at launch or by a notification. */
     pendingHubRoute: kotlinx.coroutines.flow.MutableStateFlow<String?> = kotlinx.coroutines.flow.MutableStateFlow(null),
+    /** Application-owned in DesktopMain: a tab or tray transition must not recreate a stored-ON radio. */
+    radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController = remember(engine) {
+        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
+            scope = engine.scope,
+            onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
+        )
+    },
 ) {
     val scope = rememberCoroutineScope()
 
@@ -289,7 +296,11 @@ public fun DesktopShell(
     }
 
     // ── Nearby: discovery endpoints + trust store + the Phase 26-3 pairing dialog ──
-    val pairingUi by engine.pairing.pairing.collectAsState()
+    // Never touch a synchronized lazy from composition before boot has warmed it.
+    val pairing = remember(engine, ready) { engine.readyPairing }
+    val pairingUi by remember(pairing) {
+        pairing?.pairing ?: MutableStateFlow<FlashPairingCoordinator.PairingUi?>(null)
+    }.collectAsState()
     // Pairing status — "Connecting to X…", "Paired with X.", "Pairing ended (…)".
     //
     // These went to `println` only, because "the desktop tier has no toast surface yet". That made
@@ -300,14 +311,14 @@ public fun DesktopShell(
     // The log line is kept rather than replaced — `~/.flash/desktop.log` is the artifact a bug report
     // carries, and a message that only ever appeared on screen would be gone by the time anyone
     // looked.
-    LaunchedEffect(engine, snackbarHostState) {
+    LaunchedEffect(pairing, snackbarHostState) {
         // `collectLatest`, NOT `collect`. `showSnackbar` SUSPENDS for the snackbar's whole lifetime,
         // so a plain `collect` processes one message per ~4 s while the rest pile up behind it —
         // and every queued message re-runs `dismiss()` then `showSnackbar()`, which is a cancelling
         // and re-showing loop for as long as messages keep arriving. `collectLatest` cancels the
         // in-flight `showSnackbar` when a newer message lands, which is the "newest wins" behaviour
         // these strings have as Toasts on Android, with no backlog and no churn.
-        engine.pairing.messages.collectLatest { message ->
+        pairing?.messages?.collectLatest { message ->
             FlashLog.i(TAG_PAIRING, message)
             snackbarHostState.showSnackbar(message = message, duration = SnackbarDuration.Short)
         }
@@ -327,8 +338,8 @@ public fun DesktopShell(
     // it" — and that ambiguity is the whole of the 2026-09-14 report ("the request shows on the
     // phone, no dialog on the PC"). Printed on every change, like the dial lines: the next report
     // is a log line instead of an absence.
-    LaunchedEffect(engine) {
-        engine.pairing.pairing.collect { ui ->
+    LaunchedEffect(pairing) {
+        pairing?.pairing?.collect { ui ->
             // FlashLog, not println: this must land in `~/.flash/desktop.log`, which is the artifact
             // that survives a Gradle console rewrite.
             com.transfer.flash.core.common.logging.FlashLog.i(
@@ -358,7 +369,9 @@ public fun DesktopShell(
     // `FlashTrustedPeer`, so a Compose-era UI type must not be part of its published API. A plain
     // map rather than a `derivedStateOf` — it is a short list built from an already-collected state,
     // and the extra state object would only add a way to go stale.
-    val trustedPeersByCoordinator by engine.pairing.trustedPeers.collectAsState()
+    val trustedPeersByCoordinator by remember(pairing) {
+        pairing?.trustedPeers ?: MutableStateFlow<List<FlashTrustedPeer>>(emptyList())
+    }.collectAsState()
 
     // ── Every input is read HERE, in the lambda, and passed in ────────────────────────────────────
     // The body is a call to a pure function so that this cannot go wrong a third time. It has gone
@@ -879,6 +892,9 @@ public fun DesktopShell(
     val currentConversationHeader by rememberUpdatedState(conversationState.header)
     val currentTwoPane by rememberUpdatedState(twoPane)
     val currentSelectedChatId by rememberUpdatedState(selectedChatConversationId)
+    // The sender captures the repository selected at this composition (empty before boot).
+    // Update the whole callback, not only its navigation/header arguments.
+    val currentDropSender by rememberUpdatedState(::sendFileToPeer)
 
     DisposableEffect(window) {
         val comp = window ?: return@DisposableEffect onDispose {}
@@ -930,13 +946,16 @@ public fun DesktopShell(
                             }
                             if ((currentNav.destination == FlashDestination.Conversation || currentTwoPane) && activePeerId != null) {
                                 allFiles.forEach { (file, relPath) ->
-                                    sendFileToPeer(
-                                        peerId = activePeerId,
-                                        peerName = currentConversationHeader.title,
-                                        isGroup = currentConversationHeader.isGroup,
-                                        uri = file.toURI().toString(),
-                                        displayName = relPath,
-                                        size = file.length(),
+                                    currentDropSender(
+                                        activePeerId,
+                                        currentConversationHeader.title,
+                                        currentConversationHeader.isGroup,
+                                        file.toURI().toString(),
+                                        relPath,
+                                        file.length(),
+                                        DesktopHelpers.guessMimeType(relPath),
+                                        0L,
+                                        emptyList(),
                                     )
                                 }
                                 scope.launch {
@@ -1229,9 +1248,9 @@ public fun DesktopShell(
                     engine.pairing.beginPair(id, conversationState.header.title)
                 }
             },
-            localFingerprint = engine.pairing.localFingerprintHex,
+            localFingerprint = pairing?.localFingerprintHex,
             peerFingerprint = nav.current.conversationId?.let { id ->
-                engine.pairing.getPeerFingerprint(id)
+                pairing?.getPeerFingerprint(id)
             },
             onSendText = { chatRepository.sendText(it) },
             onSendReply = { text, replyToId, replyToPreview ->
@@ -1936,6 +1955,7 @@ public fun DesktopShell(
                         settingsScroll = settingsScroll,
                         tabBottomInset = tabBottomInset,
                         window = window,
+                        radioGatewayController = radioGatewayController,
                     )
                 }
             }
@@ -2781,6 +2801,7 @@ private fun DesktopSettingsDestination(
     settingsScroll: androidx.compose.foundation.lazy.LazyListState,
     tabBottomInset: androidx.compose.ui.unit.Dp,
     window: java.awt.Window?,
+    radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController,
 ) {
     var receivedBytes by remember { mutableStateOf<Long?>(null) }
     // The organisation hub (ADR-120): live status, previously linked groups and the content opt-in.
@@ -2819,12 +2840,6 @@ private fun DesktopSettingsDestination(
     var enrollDeviceError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(engine, ready, desktopSettings.saveLocation) {
         if (ready) receivedBytes = withContext(Dispatchers.IO) { DesktopHelpers.receivedFilesBytes(engine) }
-    }
-    val radioGatewayController = remember {
-        com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
-            scope = scope,
-            onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
-        )
     }
     val radioUiState by radioGatewayController.state.collectAsState()
     val settings = remember(

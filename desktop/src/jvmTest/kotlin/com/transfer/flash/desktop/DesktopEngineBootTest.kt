@@ -56,6 +56,13 @@ class DesktopEngineBootTest {
         val booted = testDesktopEngine(receivedRoot = received, stateDir = state)
         engine = booted
 
+        val pairingLazy = DesktopEngine::class.java.getDeclaredField("pairing\$delegate").let { field ->
+            field.isAccessible = true
+            field.get(booted) as Lazy<*>
+        }
+        assertTrue(!pairingLazy.isInitialized(), "constructor must not initialize pairing")
+        assertNull(booted.readyPairing, "UI must not wait for pairing before readiness")
+        assertTrue(!pairingLazy.isInitialized(), "reading the pre-ready view must not initialize pairing")
         booted.start()
 
         val settled = runBlocking {
@@ -80,6 +87,8 @@ class DesktopEngineBootTest {
         assertNull(failure, "DesktopEngine.assemble() failed: $failure")
 
         assertTrue(booted.ready.value, "DesktopEngine reached neither ready nor startError")
+        assertNotNull(booted.readyPairing, "boot warms pairing before publishing readiness")
+        assertTrue(pairingLazy.isInitialized())
     }
 
     private companion object {
