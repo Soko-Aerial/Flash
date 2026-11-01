@@ -54,7 +54,10 @@ and §3.2.
 - **OPT-O16-03 really is unsafe, and the code says so in three places.** `EnterpriseHub.hubOnline` has exactly two writers
   and both are on the poll path; `HubPresence.kt`'s own KDoc states the hub serves presence over REST and **has no presence
   push**; `RelayFrame` has no presence frame (the tunnel carries chat, mail and receipts). With the relay up — the
-  ordinary case — the change aged the only presence source from 30 s to 10 min, and `HubFacade` chooses the `HUB` route
+  ordinary case — the change did not age the only presence source, it **stopped updating it**: the diff wraps the request in
+  `else if (!isRelayOnline)`, so the poll never fetched while the tunnel was up and the 10-minute constant only bounded the
+  relay-state re-read. Staleness was therefore the whole relay session, not ten minutes (this review first wrote "30 s to
+  10 min" and corrected it on re-reading the hunk). `HubFacade` chooses the `HUB` route
   from `hubOnline` (ADR-229). This is Wave 2's `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by
   deleting an invariant the code documents.
 - **OPT-O17-03 is sound because the `Deliver` frame has no per-recipient field.** `RelayFrame.Deliver(from, id, type,
