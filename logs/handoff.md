@@ -72,6 +72,12 @@
 > back `☑`/`◐`/`☐`, so the tracking table lost no state. Six truncated runs in `logs/progress.md` and the deliberate quotes in
 > `ERROR-012`/`ERROR-913` are left as they are: a lost byte cannot be guessed. `AGENTS.md` §29 no longer warns that the plan must be
 > read as a yes/no column.
+>
+> **Where the fold landed:** `d0e4e62b` (line endings of `docs/decisions.md` normalised to the LF `.gitattributes` requires - the file
+> had been committed CRLF, so git flagged it binary and every edit of it produced a whole-file diff) and **`8a30661f`** (the fold
+> itself: logs, ADRs, the backlog rows, the handoff/AGENTS text, the `FlashChatListRowPlatform` KDoc and the encoding repair). Branch
+> `dev` is **2 commits ahead and not pushed**. Any later session that edits `docs/decisions.md` should now get a normal diff; if it does
+> not, check `git ls-files --eol docs/decisions.md` before assuming git is broken.
 
 > 2026-10-31 `PERF-A04` (after the wave): **the release ships per-ABI APKs next to the universal one, and the script can no
 > longer sign a stale artifact.** `tools/build-release.ps1` deletes the APK output folder before the build, reads
