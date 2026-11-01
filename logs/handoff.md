@@ -1,5 +1,18 @@
 # Current Handoff
 
+> 2026-11-01 (later, docs only): **wave 4's prompts corrected and the presence/push/hub-sync question answered on paper;
+> no code changed, nothing built.** Section 11.E and 11.K now state the base (`dev` at `44eed960`, both gates green) and
+> retire the "note the known ERROR-106 failures" instruction - that test passes on this tree (ERROR-106 stays OPEN only
+> because its root cause was never found) - and each carries a "what changed under you in wave 3" section: the
+> `setScreenActive` seam is wired on Android only and its remaining TODO now names E's own `O19-07`, its ECO downscale is
+> not a display hint (the caller owns the guard, and every wave-3 regression lived in a caller), and ADR-298 forbids slowing
+> or suppressing the hub presence poll. K also gets the rule that tagging tests out (`O27-06`) must update the section
+> 6.3/6.3.1 gate commands and counts in the same commit, or a green gate silently covers fewer tests. The recommendation is
+> in `docs/network/PRESENCE-CONNECTIONS-PLAN.md` ("2026-11-01"): the presence poll is a 15 s REST read of up to 4 x 500
+> directory rows with no backoff and no jitter, there is no presence frame on the wire, so the poll's *shape* is right and
+> its *cost* is not; the four fixes that need no wire change come first, FCM is not recommended now (`HIB-07` unverified),
+> and the revisit condition ADR-298 named is a coalesced relay presence delta. `PERF-H08` added to measure the poll.
+>
 > 2026-11-01 Wave 3 (Android battery/lifecycle + hub server): **both streams reviewed against the code, merged into `dev`, and
 > corrected; nothing pushed, nothing device-verified.** Merges `33e82559` (`agent/opt-android`) and `00f7013b` (`agent/opt-hub`).
 > Gate 1 forced on the merged tree (`--rerun-tasks`, 13 suites + the three compile tasks): **PASS — `BUILD SUCCESSFUL in 6m 2s`,

@@ -1047,7 +1047,9 @@ Batch 1: O23-01 per-chunk fsync + open/close in HubFileDisk (1,600 per 50 MB); O
 of exclusive write lock); O18-01 gzip/deflate static assets; O18-02 the 35-request ES module waterfall;
 O17-04 ExitOnOutOfMemoryError in the deploy scripts.
 Batch 2: O17-02 writeChunkFile inside db.withTransaction; O25-02 the O(D*M) directory sync; O25-06 the linear
-memberDeviceIds scan; O16-01 stop-and-wait hub file chunks; O16-03 the 30 s presence poll while the relay is up;
+memberDeviceIds scan; O16-01 stop-and-wait hub file chunks; O16-03 the presence poll while the relay is up (the constant is
+`HubPresenceDefaults.POLL_MS` = 15 s, not the "30 s" this batch list first said - and that finding was REJECTED and
+reverted, ADR-298, so do not re-attempt it without a presence push channel);
 O02-03 the org snapshot heap spike; O27-03 real sockets/Netty in tests.
 Batch 3: O16-02 multi-page sync, O16-04 batched mailbox acks, O18-03 console preloading, O25-09 collection sizing,
 O17-03 group fan-out. DOCUMENT ONLY: O02-07 / O17-01 (the heap cliff is a deployment profile, not source).
@@ -1092,6 +1094,16 @@ STEP 0 — CREATE YOUR WORKTREE FIRST:
 The main tree is the integrator's. Never copy keystore.properties or the .jks. The owner's desktop app may stay open
 during the day; use temp state directories in tests, never ~/.flash.
 
+TREE STATE (2026-11-01): branch from `dev` at `44eed960`. Waves 0-3 are merged and both integration gates (plan section
+6.3) are green on that commit - gate 1 `BUILD SUCCESSFUL in 6m 2s`, 243 of 243 tasks executed, 3 234 tests, 0 failures;
+gate 2 `BUILD SUCCESSFUL in 9m 23s`, 212 of 212 tasks, 1 701 tests (:app:testDebugUnitTest 90), exit 0. There are no
+known-expected test failures on your base, so a failure on your branch is yours: reproduce it on `44eed960` before you
+call anything pre-existing, and name the commit you compared against. Two stale instructions in older copies of these
+prompts are RETIRED: "note the known ERROR-106 failures, do not fix them here" (that test, `:desktop:jvmTest >
+DesktopEngineGroupSessionUpTest`, does not reproduce on `44eed960` - run alone: `BUILD SUCCESSFUL in 34s`, 1 test,
+0 failures; ERROR-106 stays OPEN only because its root cause was never established), and the plan's "expected failures"
+rows for `TransfersUiMapperTest` (historical: fixed by `432ceb52`, ERROR-935).
+
 READ FIRST
 1. AGENTS.md sections 6-13, 24, 31, 35, 36.
 2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "E — desktop".
@@ -1112,6 +1124,26 @@ minimised to tray; O20-03 the synchronous unbuffered console sink; O14-06 the 28
 from independent coroutine/OkHttp/Ktor pools (own it here; do not edit core/network); O24-08 OS reduce-motion.
 NOT YOURS: O19-04/O19-05 (A), O02-08 (T owns ui/platform-shims), O23 desktop bits owned by D.
 
+WHAT CHANGED UNDER YOU IN WAVE 3 - read this before you touch the desktop host
+- `FlashDiscovery.setScreenActive(false|true)` finally has callers, on ANDROID only (stream G, `OPT-O10-01`): the
+  `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` receivers plus a re-check when a transfer finishes with the screen already
+  off. The TODO left on the interface names YOUR finding: "wire the desktop host (minimised to tray). See O19-07."
+- That seam is not a display hint: it downscales discovery to `FlashDiscoveryMode.ECO`, which flows into
+  `DiscoveryModePolicy`, `ConnectionModePolicy` and `ConnectionStrategy.ECO` (`limitsSessions = true`). The caller owns
+  the guard. Android's callers check for a live call, a live transfer and PTT first; a desktop that downscales during a
+  call or a transfer drops a peer. Put the same guard in your caller and write a test for the guard, not only for the
+  downscale.
+- Hub presence (ADR-298): `EnterpriseHub` asks the hub who is online every `HubPresenceDefaults.POLL_MS` (15 s) over
+  REST, reading up to 4 pages of the org people listing, and nothing on the wire pushes presence. Do NOT slow it,
+  suppress it or gate it on window/minimised state - ADR-298 rejects exactly that: `HubFacade` picks the hub route from
+  `hubOnline`, so a stale set misroutes messages for as long as the suppression lasts.
+- The Android background work of wave 3 (bounded wake-lock lease, "Keep listening in the background" honoured in the
+  keepalive worker, re-arming idle foreground-service stop) has no desktop equivalent. Do not port its reasoning here.
+- THE RULE THIS WAVE EARNED: every behaviour regression the wave-3 review caught lived in a CALLER, not in the changed
+  function - a wake lock released while a peer was still connected, an opt-in bypassed behind a worker's fast path, an
+  idle stop that could never fire. For each finding you land, open its callers and write down what they now do
+  differently. A stream's own green tests cannot see a caller.
+
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
 - The window must show its first frame without waiting on disk or crypto; keep the DPAPI key handling unchanged in
@@ -1119,8 +1151,11 @@ RULES
 - Commit only to agent/opt-desktop, small commits with the finding ID. Logs only in logs/streams/desktop/
   (ADR 300-309, ERROR 941-950, EXP 115-119, tests PERF-E*).
 
-VERIFY: :desktop:compileKotlinJvm, :desktop:jvmTest (note the known ERROR-106 failures in your report, do not fix
-them here), and a manual profiler note for navigation (PERF-E01). Then the integration gate (plan section 6.3).
+VERIFY: :desktop:compileKotlinJvm, :desktop:jvmTest (green on your base - see TREE STATE, so a failure is a
+finding, not a baseline), and a manual profiler note for navigation (PERF-E01). Do not add a wall-clock budget assertion
+(ERROR-938: the integration gate runs on a saturated CPU, and an absolute budget there is a coin flip - assert a ratio,
+a bounded wait, or a count). Then the integration gate (plan section 6.3). The integrator re-runs both gates on the
+merged tree afterwards: a "verified green" line in your report describes YOUR tree, so also state what you did not run.
 
 REPORT: per finding the change + what you measured, the gate commands and their last lines, what is left, findings
 that no longer reproduce. Stop the daemon when the session ends.
@@ -1137,6 +1172,16 @@ STEP 0 — CREATE YOUR WORKTREE FIRST:
     Copy-Item .\local.properties E:\FlashWork\opt-kernel\local.properties
     cd E:\FlashWork\opt-kernel
 The main tree is the integrator's. Never copy keystore.properties or the .jks.
+
+TREE STATE (2026-11-01): branch from `dev` at `44eed960`. Waves 0-3 are merged and both integration gates (plan section
+6.3) are green on that commit - gate 1 `BUILD SUCCESSFUL in 6m 2s`, 243 of 243 tasks executed, 3 234 tests, 0 failures;
+gate 2 `BUILD SUCCESSFUL in 9m 23s`, 212 of 212 tasks, 1 701 tests (:app:testDebugUnitTest 90), exit 0. There are no
+known-expected test failures on your base, so a failure on your branch is yours: reproduce it on `44eed960` before you
+call anything pre-existing, and name the commit you compared against. Two stale instructions in older copies of these
+prompts are RETIRED: "note the known ERROR-106 failures, do not fix them here" (that test, `:desktop:jvmTest >
+DesktopEngineGroupSessionUpTest`, does not reproduce on `44eed960` - run alone: `BUILD SUCCESSFUL in 34s`, 1 test,
+0 failures; ERROR-106 stays OPEN only because its root cause was never established), and the plan's "expected failures"
+rows for `TransfersUiMapperTest` (historical: fixed by `432ceb52`, ERROR-935).
 
 READ FIRST
 1. AGENTS.md sections 6-13, 19, 24, 31, 35, 36.
@@ -1156,6 +1201,25 @@ the caller thread; O20-06 compress the diagnostic log export; O15-01 cache the p
 O15-02 one SecureRandom; O15-03 cache Cipher per thread; O15-04 drop the okio HashingSink wrapper in Sha256.digest;
 O25-03 top-level Regex + cached NFKD in foldForSearch/initials; O27-06 tag the heavy crypto tests out of the default sweep.
 
+WHAT CHANGED UNDER YOU IN WAVE 3 - read this before you touch core/common or core/security
+- Every module, both hosts and the `ui:` modules call `FlashLog` / `FlashProbe`. Grep `core/`, `ui/`, `app/` and
+  `desktop/` before changing a signature; keep the enabled paths behaviourally identical.
+- A `FlashProbe` line name or key spelling is an EVIDENCE CONTRACT: `docs/testing/PROBES.md` is the vocabulary and the
+  log-export header, and whoever debugs a device run greps for those exact words. Add a probe or a key; never rename or
+  re-spell one that already exists, and update `PROBES.md` in the same commit if the emitted text changes at all.
+- `O27-06` (tag the heavy crypto tests out of the default sweep) CHANGES THE GATE. Plan section 6.3 / 6.3.1 names the
+  exact commands and the expected counts, so a later green gate would silently cover fewer tests. Update those commands
+  and counts IN THE SAME COMMIT as the tag, name the documented task that still runs the tagged tests, and put the
+  before/after count in your report. No security test may leave every gate: if you tag one, it must still run somewhere
+  the integrator can point at.
+- You land BEFORE S, R and C on purpose: their measurements are taken on YOUR logging and hashing cost. "Source
+  compatible but slower in the disabled path" is the failure mode this stream exists to catch - that is what the
+  microbenchmark note is for. And no unmeasured headline: a number your branch cannot produce is marked NOT MEASURED
+  with the `PERF-K*` test that would produce it, exactly as wave 3 had to withdraw every figure in its reports.
+- THE RULE THIS WAVE EARNED: every behaviour regression the wave-3 review caught lived in a CALLER, not in the changed
+  function. Here that means the disabled-logging path must have no side effects: a message lambda that is no longer
+  evaluated must never have been carrying a state change or an expensive argument construction.
+
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
 - Keep the public API source-compatible: every module calls FlashLog/FlashProbe. If a signature must change, add an
@@ -1167,7 +1231,10 @@ RULES
 
 VERIFY: :core:common:jvmTest, :core:security:jvmTest, :core:common:testAndroidHostTest, plus one host compile
 (:desktop:compileKotlinJvm and :app:compileDebugKotlin) because both call this module. A microbenchmark note for the
-regex and hash changes. Then the integration gate (plan section 6.3).
+regex and hash changes. Do not add a wall-clock budget assertion (ERROR-938: the gate runs on a saturated CPU). Then
+the integration gate (plan section 6.3), with the counts in section 6.3.1 updated if `O27-06` changed what runs. The
+integrator re-runs both gates on the merged tree afterwards: a "verified green" line in your report describes YOUR
+tree, so also state what you did not run.
 
 REPORT: per finding the change + measured before/after (allocs/op, ns/op, or a frame count), the gate commands and
 their last lines, and what is left. Stop the daemon when the session ends.
