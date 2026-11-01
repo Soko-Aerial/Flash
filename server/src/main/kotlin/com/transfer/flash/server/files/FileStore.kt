@@ -194,6 +194,40 @@ class FileStore(
         }
         val now = clock()
         return try {
+            val preCheck = db.withConnection { conn ->
+                val blob = selectBlob(conn, fileId)
+                    ?: return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
+                if (blob.senderDeviceId != sender) {
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_FORBIDDEN, FileMessages.NOT_SENDER)
+                }
+                if (blob.state != FileStates.UPLOADING || now > blob.uploadExpiresAtMs) {
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_UPLOADING)
+                }
+                if (index >= blob.chunkCount) {
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_INDEX)
+                }
+                val expected = expectedChunkBytes(blob, index)
+                if (bytes.size > blob.chunkSize) {
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.CHUNK_TOO_BIG)
+                }
+                if (bytes.size.toLong() != expected) {
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_SIZE)
+                }
+                val stored = selectChunk(conn, fileId, index)
+                if (stored != null) {
+                    return@withConnection if (stored.sha256 == digest && stored.bytes == bytes.size.toLong()) {
+                        FileOutcome.Ok(PutResult(newChunk = false, receivedChunks = blob.receivedChunks))
+                    } else {
+                        FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.CONFLICT_CHUNK)
+                    }
+                }
+                null
+            }
+            if (preCheck != null) return preCheck
+
+            // Write chunk to filesystem outside the database write lock (OPT-O17-02)
+            writeChunkFile(fileId, index, bytes)
+
             db.withTransaction { conn ->
                 val blob = selectBlob(conn, fileId)
                     ?: return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
@@ -203,17 +237,6 @@ class FileStore(
                 if (blob.state != FileStates.UPLOADING || now > blob.uploadExpiresAtMs) {
                     return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_UPLOADING)
                 }
-                if (index >= blob.chunkCount) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_INDEX)
-                }
-                val expected = expectedChunkBytes(blob, index)
-                if (bytes.size > blob.chunkSize) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.CHUNK_TOO_BIG)
-                }
-                if (bytes.size.toLong() != expected) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_SIZE)
-                }
-
                 val stored = selectChunk(conn, fileId, index)
                 if (stored != null) {
                     return@withTransaction if (stored.sha256 == digest && stored.bytes == bytes.size.toLong()) {
@@ -223,7 +246,6 @@ class FileStore(
                     }
                 }
 
-                writeChunkFile(fileId, index, bytes)
                 conn.prepareStatement(
                     "INSERT INTO file_chunk(file_id, idx, bytes, sha256) VALUES (?, ?, ?, ?)",
                 ).use { st ->
