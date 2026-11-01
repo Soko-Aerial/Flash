@@ -653,7 +653,11 @@ public class HubFileTransfers(
                                             break
                                         }
                                     }
-                                    // Data first, synced; then the bit. A crash in between costs one re-download, never a hole.
+                                    // Data first, then the bit. Since OPT-O23-01 the chunk write is no longer fsynced per
+                                    // chunk (the handle is kept open and synced once at the end), so a power loss can
+                                    // leave a set done bit over bytes that never reached the platter. That is not a
+                                    // silent hole: verify() re-reads and re-hashes every chunk before the file counts as
+                                    // done, so the worst case is one full re-download (verifyFailures++ → refetch).
                                     val writeErr = runSuspendCatching {
                                         io { storage.writePart(fileId, layout.plainOffset(index), plain) }
                                     }.exceptionOrNull()

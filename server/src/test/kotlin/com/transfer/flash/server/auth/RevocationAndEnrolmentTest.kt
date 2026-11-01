@@ -95,6 +95,21 @@ class RevocationAndEnrolmentTest {
         }
     }
 
+    /**
+     * Waits for the revocation notification instead of reading the list straight after the call.
+     *
+     * `SqliteRevocationService.fire` dispatches its handlers on `notifyScope` — by design, because kicking a relay
+     * session must not hold the revocation write transaction — so `revoked` is filled *after* `revokeDevice` returns.
+     * The first version of these two tests asserted on the bare list and failed only when the machine was loaded
+     * (`663 tests completed, 2 failed`), which read like a product defect on two consecutive runs. ERROR-934.
+     */
+    private fun Hub.awaitKicks(expected: Int, settleMs: Long = 100, timeoutMs: Long = 5_000): List<String> {
+        val deadline = System.nanoTime() + timeoutMs * 1_000_000
+        while (revoked.size < expected && System.nanoTime() < deadline) Thread.sleep(2)
+        if (revoked.size >= expected) Thread.sleep(settleMs)
+        return revoked.toList()
+    }
+
     // ------------------------------------------------------------------------------------------ revocation
 
     @Test
@@ -110,7 +125,7 @@ class RevocationAndEnrolmentTest {
         assertTrue(hub.revocations.isRevoked(serial, "other-id"), "by serial alone")
         assertTrue(hub.revocations.isRevoked(null, "dev-a"), "by device id alone")
         assertEquals(DeviceStatus.REVOKED, hub.identities.device("dev-a")?.status)
-        assertEquals(listOf("dev-a"), hub.revoked, "the relay is told to kick the device")
+        assertEquals(listOf("dev-a"), hub.awaitKicks(expected = 1), "the relay is told to kick the device")
 
         val restarted = hub.restart()
         assertTrue(restarted.revocations.isRevoked(serial, "x"), "persisted: a restart does not forget a revocation")
@@ -127,7 +142,7 @@ class RevocationAndEnrolmentTest {
         assertTrue(first.changed)
         assertFalse(second.changed)
         assertEquals(version, hub.revocations.current()?.version)
-        assertEquals(1, hub.revoked.size, "listeners fire once")
+        assertEquals(1, hub.awaitKicks(expected = 1).size, "listeners fire once")
     }
 
     @Test
