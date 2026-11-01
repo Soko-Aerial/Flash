@@ -182,6 +182,20 @@ class AdminConsoleWebTest {
         assertTrue(deflated.readRawBytes().size < raw.readRawBytes().size)
     }
 
+    @Test
+    fun aNotModifiedAnswerAlsoVariesOnAcceptEncoding() = testApplication {
+        val hub = build()
+        application { hub.engine.configureApplication(this) }
+        val etag = client.get("/admin/ui/js/main.js").headers["ETag"]
+        assertNotNull(etag)
+        val again = client.get("/admin/ui/js/main.js") {
+            header("If-None-Match", etag)
+            header("Accept-Encoding", "gzip")
+        }
+        assertEquals(HttpStatusCode.NotModified, again.status)
+        assertTrue(again.headers["Vary"].orEmpty().contains("Accept-Encoding"))
+    }
+
     // ------------------------------------------------------------------------------------------------ the shell
 
     @Test

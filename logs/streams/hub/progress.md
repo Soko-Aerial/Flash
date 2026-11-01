@@ -98,9 +98,10 @@ These are correctness runs on the branch, nothing more. Each was executed throug
 7. `:core:enterprise:jvmTest --tests *OrgDirectorySync* *HubFileTransfers*` — exit 0.
 8. `:server:test --tests *RevocationAndEnrolmentTest*` — exit 0 alone.
 
-Later, on the merged tree, the full suites were run: see the integrator review and `logs/progress.md`. Two `:server:test`
-load flakes are documented rather than fixed (`RelayFrameRouterTest.messagesSentWhileTheRecipientConnects...` and
-`RevocationAndEnrolmentTest`, ERROR-934 — the latter was originally marked RESOLVED without any change; it is OPEN).
+The branch-wide run the integrator made before merging (and the §6.3 gate on the merged tree) is recorded in
+`logs/streams/hub/INTEGRATOR-REVIEW.md` and in `logs/progress.md`. One `:server:test` load flake is documented rather than
+fixed (`RelayFrameRouterTest.messagesSentWhileTheRecipientConnects...`); `RevocationAndEnrolmentTest`'s was a test-design
+defect and is fixed in the test (ERROR-934, RESOLVED).
 
 ---
 
