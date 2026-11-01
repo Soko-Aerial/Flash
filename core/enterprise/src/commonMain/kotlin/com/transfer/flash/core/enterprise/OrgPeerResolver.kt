@@ -167,7 +167,8 @@ public class RealOrgPeerResolver(
     override suspend fun refreshFromSnapshot(): Unit = withContext(dispatcher) {
         val currentGen = synchronized(lock) { ++generation }
         val syncState = dao.getSyncState()
-        val members = dao.listAllMembers()
+        // Use projection query to omit large statementBytes BLOBs (OPT-O02-03, OPT-O06-08)
+        val members = dao.listMemberSummaries()
 
         val newIndex = HashMap<String, SnapshotPeer>(members.size)
         for (m in members) {
