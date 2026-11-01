@@ -67,7 +67,11 @@ class OrgPeerResolverTest {
             return members.values.toList()
         }
 
-        override suspend fun listMemberSummaries(): List<OrgMemberSummary> = members.values.map { it.toSummary() }
+        override suspend fun listMemberSummaries(): List<OrgMemberSummary> {
+            listAllMembersCount++
+            onListAllMembers()
+            return members.values.map { it.toSummary() }
+        }
 
         override suspend fun upsertDepartments(departments: List<OrgDepartmentEntity>) {}
         override suspend fun deleteDepartments(ids: List<String>) {}
