@@ -1,69 +1,75 @@
 package com.transfer.flash.desktop
 
-import java.awt.Toolkit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicLong
+import com.sun.jna.Native
+import com.sun.jna.ptr.IntByReference
+import com.sun.jna.win32.StdCallLibrary
+import com.sun.jna.win32.W32APIOptions
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 
 /**
- * Detects whether the host desktop operating system has requested reduced motion / disabled visual animations (OPT-O24-08).
- *
- * - Windows: Queries desktop property `win.clientareaAnimation.enabled` (false = animations disabled in Windows Settings).
- * - macOS: Queries desktop property `apple.awt.reduceMotion`.
- *
- * Uses a property change listener for real-time reactivity and a cached TTL fallback to avoid overhead on composition frames.
+ * Windows' documented SPI_GETCLIENTAREAANIMATION query, using the existing JNA dependency.
+ * Other desktops keep Flash's own motion setting; no unsupported AWT property is treated as
+ * an OS preference. The application collects [preferences] off the UI thread, including while
+ * its window is in the tray. A running Windows preference change is observed within one poll.
  */
 public object DesktopOsReduceMotion {
-    private const val CACHE_TTL_MS = 5_000L
-    private val cachedResult = AtomicBoolean(false)
-    private val lastCheckTime = AtomicLong(0L)
+    private const val SPI_GETCLIENTAREAANIMATION = 0x1042
 
-    init {
-        try {
-            Toolkit.getDefaultToolkit().addPropertyChangeListener("win.clientareaAnimation.enabled") { evt ->
-                val anim = evt.newValue
-                if (anim is Boolean) {
-                    cachedResult.set(!anim)
-                    lastCheckTime.set(System.currentTimeMillis())
-                }
-            }
-        } catch (_: Throwable) {
-            // Headless or unsupported toolkit
-        }
+    internal interface SystemParameters : StdCallLibrary {
+        fun SystemParametersInfoW(action: Int, parameter: Int, value: IntByReference, flags: Int): Boolean
     }
 
-    public fun isReduceMotion(): Boolean {
-        val now = System.currentTimeMillis()
-        val last = lastCheckTime.get()
-        if (now - last < CACHE_TTL_MS && last > 0L) {
-            return cachedResult.get()
-        }
-        val result = queryOsPreference()
-        cachedResult.set(result)
-        lastCheckTime.set(now)
-        return result
+    private val windowsApi: SystemParameters by lazy {
+        Native.load("user32", SystemParameters::class.java, W32APIOptions.UNICODE_OPTIONS)
     }
 
-    internal fun queryOsPreference(): Boolean {
-        try {
-            val os = System.getProperty("os.name", "").lowercase()
-            if (os.contains("win")) {
-                val animEnabled = Toolkit.getDefaultToolkit().getDesktopProperty("win.clientareaAnimation.enabled")
-                if (animEnabled is Boolean) {
-                    return !animEnabled
-                }
-            } else if (os.contains("mac")) {
-                val reduceMotion = Toolkit.getDefaultToolkit().getDesktopProperty("apple.awt.reduceMotion")
-                if (reduceMotion is Boolean) {
-                    return reduceMotion
-                }
-            }
-        } catch (_: Throwable) {
-            // Headless, security manager, or unsupported platform
-        }
-        return false
-    }
+    public val preferences: Flow<Boolean> = desktopReduceMotionPreferences(::queryOsPreference)
 
-    internal fun resetCacheForTesting() {
-        lastCheckTime.set(0L)
+    /** Compatibility query; composition uses [preferences], not this synchronous native call. */
+    public fun isReduceMotion(): Boolean = queryOsPreference() ?: false
+
+    internal fun queryOsPreference(): Boolean? {
+        if (!System.getProperty("os.name", "").startsWith("Windows", ignoreCase = true)) return null
+        return try {
+            val animationsEnabled = IntByReference()
+            clientAreaAnimationsToReduceMotion(
+                windowsApi.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, animationsEnabled, 0),
+                animationsEnabled.value,
+            )
+        } catch (_: Exception) {
+            null
+        } catch (_: LinkageError) {
+            null
+        }
     }
 }
+
+/** A failed query is not "animations disabled" and does not replace the last learned preference. */
+internal fun clientAreaAnimationsToReduceMotion(querySucceeded: Boolean, enabled: Int): Boolean? =
+    if (querySucceeded) enabled == 0 else null
+
+internal fun desktopReduceMotionPreferences(
+    query: () -> Boolean?,
+    pollIntervalMs: Long = 5_000L,
+): Flow<Boolean> = flow {
+    require(pollIntervalMs > 0)
+    var current = false
+    while (true) {
+        val learned = try {
+            query()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        if (learned != null) current = learned
+        emit(current)
+        delay(pollIntervalMs)
+    }
+}.distinctUntilChanged().flowOn(Dispatchers.IO)

@@ -246,8 +246,10 @@ public class DesktopEngine(
 
     /**
      * Updates active window state (OPT-O19-07).
-     * When window is hidden to tray or minimized with no active transfer, call, or PTT session,
-     * discovery is downscaled to ECO mode to silence idle network sweeps and reduce CPU wake-ups.
+     * An idle, hidden window asks CompositeDiscovery for its ECO preset, except in GHOST:
+     * hiding the window must never turn a browse-only desktop into an advertised device.
+     * The desktop transports/planner do not yet consume every ECO knob; this is not a
+     * claim of reduced browsing, session count or power usage.
      */
     public fun setWindowActive(active: Boolean) {
         if (isWindowActive == active) return
@@ -260,11 +262,6 @@ public class DesktopEngine(
      * Guarded: does not downscale to ECO if an active transfer, call, or PTT session is in flight.
      */
     public fun evaluateDiscoveryActiveState() {
-        if (isWindowActive) {
-            FlashLog.i(TAG_WS, "Window active: restoring discovery mode (OPT-O19-07)")
-            discovery.setScreenActive(true)
-            return
-        }
         val hasActiveTransfer = transfers.activeTransfers.value.any {
             it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
                 it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
@@ -272,12 +269,14 @@ public class DesktopEngine(
         val hasActiveCall = calls?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
         val hasActivePtt = ptt?.state?.value?.let { it !is PttFloorState.Idle } == true
 
-        if (!hasActiveTransfer && !hasActiveCall && !hasActivePtt) {
-            FlashLog.i(TAG_WS, "Window inactive and mesh idle: downscaling discovery to ECO (OPT-O19-07)")
-            discovery.setScreenActive(false)
-        } else {
-            FlashLog.i(TAG_WS, "Window inactive with active workload (transfer=$hasActiveTransfer, call=$hasActiveCall, ptt=$hasActivePtt): retaining active discovery mode (OPT-O19-07)")
-        }
+        val screenActive = desktopDiscoveryScreenActive(
+            windowActive = isWindowActive,
+            preferredMode = _discoveryMode.value,
+            hasActiveTransfer = hasActiveTransfer,
+            hasActiveCall = hasActiveCall,
+            hasActivePtt = hasActivePtt,
+        )
+        discovery.setScreenActive(screenActive)
     }
 
     public fun updateSettings(transform: (DesktopSettings) -> DesktopSettings) {
@@ -408,6 +407,11 @@ public class DesktopEngine(
             ephemeralKeyPair = ephemeralKeyPair,
         )
     }
+
+    // Before readiness this view neither initializes the lazy nor waits for its monitor.
+    // assemble() warms pairing before publishing ready; UI consumers use this view.
+    internal val readyPairing: FlashPairingCoordinator?
+        get() = if (_ready.value) pairing else null
 
     // --- Subsystems; non-null once [ready] flips true ---
     //
@@ -645,6 +649,7 @@ public class DesktopEngine(
         updateSettings { it.copy(discoveryMode = mode) }
         scope.launch {
             discoveryImpl?.setMode(mode)
+            evaluateDiscoveryActiveState()
         }
     }
 
@@ -1123,15 +1128,15 @@ public class DesktopEngine(
                         _ready.value = true
                         networkWatcher.start()
 
-                        // OPT-O19-07: Auto-re-evaluate discovery state when background workloads finish while window is inactive
+                        // Re-check on workload START and FINISH: a start must restore an already-idle window.
                         scope.launch {
                             transfers.activeTransfers.map { list ->
                                 list.any {
                                     it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
                                         it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
                                 }
-                            }.distinctUntilChanged().collect { hasActive ->
-                                if (!hasActive && !isWindowActive) {
+                            }.distinctUntilChanged().collect {
+                                if (!isWindowActive) {
                                     evaluateDiscoveryActiveState()
                                 }
                             }
@@ -1139,8 +1144,8 @@ public class DesktopEngine(
                         callsImpl?.let { calling ->
                             scope.launch {
                                 calling.activeCall.map { it != null && it.state != FlashCallState.ENDED }
-                                    .distinctUntilChanged().collect { hasCall ->
-                                        if (!hasCall && !isWindowActive) {
+                                    .distinctUntilChanged().collect {
+                                        if (!isWindowActive) {
                                             evaluateDiscoveryActiveState()
                                         }
                                     }
@@ -1149,8 +1154,8 @@ public class DesktopEngine(
                         pttImpl?.let { pttEngine ->
                             scope.launch {
                                 pttEngine.state.map { it !is PttFloorState.Idle }
-                                    .distinctUntilChanged().collect { hasPtt ->
-                                        if (!hasPtt && !isWindowActive) {
+                                    .distinctUntilChanged().collect {
+                                        if (!isWindowActive) {
                                             evaluateDiscoveryActiveState()
                                         }
                                     }

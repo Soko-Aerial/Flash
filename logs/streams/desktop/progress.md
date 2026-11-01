@@ -1,5 +1,38 @@
 # Stream E (Desktop) — Progress Log
 
+## 2026-11-01 — Integration review and repaired desktop verification
+
+### Worked on / changed
+Reviewed delivered `00a7a51f` against actual base `baf77753`, including completed independent read-only review,
+production callers and tests. Six defects repaired: GHOST/workload START/FINISH/mode-change guards (`ERROR-943`),
+application-root radio lifetime (`ERROR-944`), non-initializing readyPairing composition view (`ERROR-945`), one
+worker owning desktop output/flush/close (`ERROR-946`), documented observable Windows motion preference
+(`ERROR-947`), and current whole DropTarget sender with positional invocation (`ERROR-948`). Added boot, real
+engine, structural ownership, latch/shutdown and motion tests. No radio-driver or wire change/new dependency.
+
+### Why / limits
+The delivered optimizations altered operational lifetimes/privacy and cached a pre-ready repository closure.
+Host correctness does not establish startup/frame/packet/power/thread/RSS gains. EXP-115..119 remain NOT MEASURED,
+with superseded hypotheses preserved and corrected procedures. Geometry still observes width; IO limits bound
+operations, not total threads. Desktop ECO consumers are partial and hub presence polling remains ungated.
+ADR-300..309 and `INTEGRATOR-REVIEW.md` carry the reviewed dispositions.
+
+### Verification
+Forced repaired run through lock from this worktree:
+`powershell.exe -NoProfile -File tools/flash-gradle.ps1 :desktop:jvmTest :desktop:compileKotlinJvm --rerun-tasks --no-build-cache --console=plain`
+**BUILD SUCCESSFUL in 6m 51s**, 66/66 tasks executed, exit 0; **259 tests in 46 XML suites, 0 failures/errors/skips**.
+No code change followed. Includes GHOST/hidden transfer/call START/FINISH fixtures, PTT helper truth table, pairing
+lazy lifetime, root radio/current-sender structural tests, three logger latch tests, observable motion updates
+and an actual read-only Windows native query. Visual motion toggle and radio/AWT hardware behavior were not tested.
+
+### Remaining / next AI
+Repairs uncommitted/unmerged at this entry; finish/fold fragments, commit, merge --no-ff and force both gates on
+merged dev. `PERF-E01..E08` manual/profiling checks are TODO. No push/deploy/phone access/presence/Wave 5 work.
+Preserve ERROR-941 compiler history, superseding its stale direct-call workaround with ERROR-948. Stop daemons
+through lock at session end. The delivered report below is historical, not the current verification contract.
+
+## SUPERSEDED delivered account (preserved; completion and hypothesis claims corrected above)
+
 ## 2026-11-01 — Wave 4 Optimization: Desktop Host, Compose Shell, Startup & Threading
 
 ### Worked on

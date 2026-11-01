@@ -20,8 +20,6 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.transfer.flash.core.common.logging.FlashLog
-import com.transfer.flash.core.common.logging.FlashLogLevel
-import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
@@ -44,11 +42,7 @@ import java.awt.SystemTray
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.BufferedWriter
-import java.io.File
 import java.io.FileWriter
-import java.io.PrintWriter
-import java.io.StringWriter
-import java.util.concurrent.ArrayBlockingQueue
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -100,6 +94,14 @@ public fun main(args: Array<String> = emptyArray()) {
     application {
         val engine = remember { DesktopEngine() }
         engine.start()
+        // Own the controller above the conditional Window and Settings destinations.
+        // A stored-ON gateway starts now and keeps the same manager across tray/tab changes.
+        val radioGatewayController = remember(engine) {
+            com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
+                scope = engine.scope,
+                onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
+            )
+        }
 
         // UI-056 / ADR-080: the launch animation plays once per process, at start-up. The gate lives
         // here, above `if (isWindowVisible)`, because hiding to the tray disposes the window's
@@ -125,6 +127,7 @@ public fun main(args: Array<String> = emptyArray()) {
 
     val trayState = rememberTrayState()
     val desktopSettings by engine.settings.collectAsState()
+    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
     val nav = rememberFlashNavigationState()
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
@@ -339,7 +342,7 @@ public fun main(args: Array<String> = emptyArray()) {
         )
         val effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
         // OPT-O24-08: Honor OS-level accessibility reduce-motion settings alongside app performance mode
-        val reduceMotionResolved = effectivePerformanceMode.reduceMotion || DesktopOsReduceMotion.isReduceMotion()
+        val reduceMotionResolved = effectivePerformanceMode.reduceMotion || osReduceMotion
 
         val baseDensity = androidx.compose.ui.platform.LocalDensity.current
         val effectiveDensity = remember(baseDensity, desktopSettings.uiScale) {
@@ -385,6 +388,7 @@ public fun main(args: Array<String> = emptyArray()) {
                                     externalShareFiles = pendingFilesToShare,
                                     onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
                                     pendingHubRoute = pendingHubRoute,
+                                    radioGatewayController = radioGatewayController,
                                 )
                                 FlashLaunchSplashOverlay(
                                     gate = launchSplash,
@@ -439,7 +443,7 @@ public fun main(args: Array<String> = emptyArray()) {
                 dynamicAccent = desktopSettings.dynamicAccent,
                 hapticsEnabled = false,
                 minimalChrome = toastPerformance.minimalChrome,
-                motion = rememberFlashMotion(toastPerformance.reduceMotion || DesktopOsReduceMotion.isReduceMotion()),
+                motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
             ) {
                 DesktopTransferToastWindow(
                     transfers = toastTransfers,
@@ -545,13 +549,14 @@ private fun installNativeWebRtcLogging() {
 }
 
 /**
- * Tees `FlashLog` to **and** `<stateDir>/desktop.log` (default `~/.flash/desktop.log`).
+ * Tees `FlashLog` to stderr and `<stateDir>/desktop.log` (default `~/.flash/desktop.log`).
  *
  * The file exists because the console is not a reliable record. `:desktop:run` is a Gradle
  * `JavaExec` under a progress renderer that rewrites lines, and stderr from the forked JVM
  * interleaves with Gradle's own output — so a diagnosis has twice now been argued from the
  * *absence* of a line in a pasted console, which is not evidence anyone should have to rely on.
- * The log file is complete, ordered, and identical on every run.
+ * The worker preserves admitted record order; overflow and unwritable output are counted/best-effort,
+ * so the file must not be described as complete or guaranteed durable.
  *
  * Truncated per run (`append = false`) rather than appended: what a hardware run needs is one
  * run's timeline, and an append-only file quietly grows on a machine where the app is relaunched
@@ -561,101 +566,22 @@ private fun installNativeWebRtcLogging() {
  * Deliberately not routed through the engine: `DesktopEngine` is also constructed by tests, which
  * must not write to a user's home directory.
  */
-private val LOG_TIME: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
-
-private class DesktopLogEntry(
-    val consoleText: String,
-    val fileText: String,
-    val throwable: Throwable?,
-)
-
-// OPT-O20-03: Asynchronous buffered log writer with bounded queue and daemon worker thread.
-// Eliminates caller thread blocking on unbuffered file writes and console monitor locks.
 private fun installDesktopLogSink() {
     val file = try {
-        DesktopPaths.stateDir().apply { mkdirs() }
-            .resolve("desktop.log")
+        DesktopPaths.stateDir().apply { mkdirs() }.resolve("desktop.log")
     } catch (_: Throwable) {
         return
     }
-    val bufferedWriter = try {
-        BufferedWriter(FileWriter(file, false), 16384)
+    val output = try {
+        BufferedWriter(FileWriter(file, false), 16_384)
     } catch (_: Throwable) {
         // Unwritable home directory: keep the default sink rather than fail the launch.
         return
     }
-
-    val queue = ArrayBlockingQueue<DesktopLogEntry>(4096)
-
-    fun writeEntry(entry: DesktopLogEntry) {
-        System.err.println(entry.consoleText)
-        entry.throwable?.printStackTrace(System.err)
-        bufferedWriter.write(entry.fileText)
-        bufferedWriter.newLine()
-        if (entry.throwable != null) {
-            val sw = StringWriter()
-            val pw = PrintWriter(sw)
-            entry.throwable.printStackTrace(pw)
-            pw.flush()
-            bufferedWriter.write(sw.toString())
-        }
-    }
-
-    val worker = Thread({
-        try {
-            while (true) {
-                val entry = queue.take()
-                writeEntry(entry)
-                if (queue.isEmpty()) {
-                    bufferedWriter.flush()
-                }
-            }
-        } catch (_: InterruptedException) {
-            while (true) {
-                val entry = queue.poll() ?: break
-                writeEntry(entry)
-            }
-            try {
-                bufferedWriter.flush()
-                bufferedWriter.close()
-            } catch (_: Throwable) {}
-        } catch (_: Throwable) {
-            // Logging daemon must never crash the app
-        }
-    }, "FlashDesktopLogWorker").apply {
-        isDaemon = true
-        start()
-    }
-
+    val sink = DesktopFileLogSink(output)
     Runtime.getRuntime().addShutdownHook(Thread({
-        worker.interrupt()
-        while (true) {
-            val entry = queue.poll() ?: break
-            try {
-                writeEntry(entry)
-            } catch (_: Throwable) {}
-        }
-        try {
-            bufferedWriter.flush()
-            bufferedWriter.close()
-        } catch (_: Throwable) {}
+        // The worker alone drains and closes. Never race it with a second shutdown writer.
+        sink.closeAndAwait()
     }, "FlashDesktopLogFlusher"))
-
-    FlashLog.installSink(
-        FlashLogSink { level: FlashLogLevel, tag: String, message: String, throwable: Throwable? ->
-            try {
-                val nowFormatted = LOG_TIME.format(java.time.LocalTime.now())
-                val consoleLine = "${level.name.first()}/$tag: $message"
-                val fileLine = "$nowFormatted $consoleLine"
-                val entry = DesktopLogEntry(consoleLine, fileLine, throwable)
-                if (!queue.offer(entry)) {
-                    // Queue full under extreme stress: fallback synchronously rather than dropping
-                    writeEntry(entry)
-                    bufferedWriter.flush()
-                }
-            } catch (_: Throwable) {
-                // ignore
-            }
-        },
-    )
+    FlashLog.installSink(sink)
 }
