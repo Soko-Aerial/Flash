@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -107,6 +108,12 @@ public fun main(args: Array<String> = emptyArray()) {
     var currentComposeWindow by remember { mutableStateOf<java.awt.Window?>(null) }
 
     val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
+
+    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
+    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
+        engine.setWindowActive(isWindowVisible && !windowState.isMinimized)
+    }
+
     val trayState = rememberTrayState()
     val desktopSettings by engine.settings.collectAsState()
     val nav = rememberFlashNavigationState()
