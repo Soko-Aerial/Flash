@@ -38,6 +38,7 @@ import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.protocol.PttAudioFrame
 import com.transfer.flash.core.ptt.protocol.PttFrameCodec
 import com.transfer.flash.core.ptt.protocol.PttSessionCodec
@@ -235,6 +236,47 @@ public class DesktopEngine(
     public val settings: StateFlow<DesktopSettings> = _settings.asStateFlow()
     private val _discoveryMode = MutableStateFlow(_settings.value.discoveryMode)
     public val discoveryMode: StateFlow<FlashDiscoveryMode> = _discoveryMode.asStateFlow()
+
+    @Volatile
+    private var isWindowActive: Boolean = true
+
+    public fun isWindowActive(): Boolean = isWindowActive
+
+    /**
+     * Updates active window state (OPT-O19-07).
+     * When window is hidden to tray or minimized with no active transfer, call, or PTT session,
+     * discovery is downscaled to ECO mode to silence idle network sweeps and reduce CPU wake-ups.
+     */
+    public fun setWindowActive(active: Boolean) {
+        if (isWindowActive == active) return
+        isWindowActive = active
+        evaluateDiscoveryActiveState()
+    }
+
+    /**
+     * Re-evaluates discovery active mode based on window state and active workloads (OPT-O19-07).
+     * Guarded: does not downscale to ECO if an active transfer, call, or PTT session is in flight.
+     */
+    public fun evaluateDiscoveryActiveState() {
+        if (isWindowActive) {
+            FlashLog.i(TAG_WS, "Window active: restoring discovery mode (OPT-O19-07)")
+            discovery.setScreenActive(true)
+            return
+        }
+        val hasActiveTransfer = transfers.activeTransfers.value.any {
+            it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+        }
+        val hasActiveCall = calls?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
+        val hasActivePtt = ptt?.state?.value?.let { it !is PttFloorState.Idle } == true
+
+        if (!hasActiveTransfer && !hasActiveCall && !hasActivePtt) {
+            FlashLog.i(TAG_WS, "Window inactive and mesh idle: downscaling discovery to ECO (OPT-O19-07)")
+            discovery.setScreenActive(false)
+        } else {
+            FlashLog.i(TAG_WS, "Window inactive with active workload (transfer=$hasActiveTransfer, call=$hasActiveCall, ptt=$hasActivePtt): retaining active discovery mode (OPT-O19-07)")
+        }
+    }
 
     public fun updateSettings(transform: (DesktopSettings) -> DesktopSettings) {
         val updated = transform(_settings.value)
@@ -1078,6 +1120,40 @@ public class DesktopEngine(
                         _startError.value = null
                         _ready.value = true
                         networkWatcher.start()
+
+                        // OPT-O19-07: Auto-re-evaluate discovery state when background workloads finish while window is inactive
+                        scope.launch {
+                            transfers.activeTransfers.map { list ->
+                                list.any {
+                                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+                                }
+                            }.distinctUntilChanged().collect { hasActive ->
+                                if (!hasActive && !isWindowActive) {
+                                    evaluateDiscoveryActiveState()
+                                }
+                            }
+                        }
+                        callsImpl?.let { calling ->
+                            scope.launch {
+                                calling.activeCall.map { it != null && it.state != FlashCallState.ENDED }
+                                    .distinctUntilChanged().collect { hasCall ->
+                                        if (!hasCall && !isWindowActive) {
+                                            evaluateDiscoveryActiveState()
+                                        }
+                                    }
+                            }
+                        }
+                        pttImpl?.let { pttEngine ->
+                            scope.launch {
+                                pttEngine.state.map { it !is PttFloorState.Idle }
+                                    .distinctUntilChanged().collect { hasPtt ->
+                                        if (!hasPtt && !isWindowActive) {
+                                            evaluateDiscoveryActiveState()
+                                        }
+                                    }
+                            }
+                        }
                     }
                     true
                 }
