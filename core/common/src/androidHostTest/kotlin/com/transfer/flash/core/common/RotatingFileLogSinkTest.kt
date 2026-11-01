@@ -7,6 +7,10 @@ import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.logging.RotatingFileLogSink
 import java.io.File
 import java.nio.file.Files
+import java.io.PrintWriter
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,5 +98,76 @@ class RotatingFileLogSinkTest {
         val s = sink()
         s.writeCrashNow("main", RuntimeException("fatal"))
         assertTrue(text(s).contains("E/CRASH") && text(s).contains("fatal"))
+    }
+
+    @Test
+    fun `flush waits for an entry already taken by the writer`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val s = sink()
+        val blockingThrowable = object : RuntimeException("writer in flight") {
+            override fun printStackTrace(writer: PrintWriter) {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS)) { "writer was not released" }
+                super.printStackTrace(writer)
+            }
+        }
+        s.write(FlashLogLevel.ERROR, "TRANSFER", "in-flight entry", blockingThrowable)
+        assertTrue("writer took the entry", entered.await(10, TimeUnit.SECONDS))
+        val flushing = Thread {
+            try {
+                s.flush()
+                assertTrue("the dequeued entry is on disk when flush returns", text(s).contains("in-flight entry"))
+            } catch (t: Throwable) {
+                failure.set(t)
+            } finally {
+                finished.countDown()
+            }
+        }
+        flushing.start()
+        try {
+            assertFalse("flush cannot finish while formatting is blocked", finished.await(200, TimeUnit.MILLISECONDS))
+        } finally {
+            release.countDown()
+            flushing.join(10_000)
+        }
+        assertTrue("flush completed", finished.await(10, TimeUnit.SECONDS))
+        failure.get()?.let { throw it }
+    }
+
+    @Test
+    fun `export cannot overwrite one of its own rotating source files`() {
+        val s = sink()
+        s.write(FlashLogLevel.INFO, "T", "kept", null)
+        s.flush()
+        var rejected = false
+        try {
+            s.exportGzip(File(dir, "flash-0.log"))
+        } catch (_: IllegalArgumentException) {
+            rejected = true
+        }
+        assertTrue("live log destination is rejected", rejected)
+        assertTrue("source is not truncated", text(s).contains("kept"))
+    }
+
+    @Test
+    fun `exportGzip streams header and logs into valid gzip archive`() {
+        val s = sink()
+        s.write(FlashLogLevel.INFO, "SESSION", "session started", null)
+        s.write(FlashLogLevel.WARN, "TRANSFER", "chunk slow", null)
+        s.flush()
+
+        val exportFile = File(dir, "export.log.gz")
+        s.exportGzip(exportFile, listOf("session.header exportAtMs=1700000000000", "device=Pixel_8"))
+
+        assertTrue("archive exists", exportFile.exists() && exportFile.length() > 0)
+
+        val unzipped = java.util.zip.GZIPInputStream(exportFile.inputStream()).bufferedReader().readText()
+        assertTrue("contains header", unzipped.contains("session.header exportAtMs=1700000000000"))
+        assertTrue("contains device", unzipped.contains("device=Pixel_8"))
+        assertTrue("contains session line", unzipped.contains("I/SESSION: session started"))
+        assertTrue("contains transfer line", unzipped.contains("W/TRANSFER: chunk slow"))
     }
 }

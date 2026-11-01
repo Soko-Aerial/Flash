@@ -20,6 +20,7 @@ private object AndroidLogSink : FlashLogSink {
         throwable: Throwable?,
     ) {
         val priority = when (level) {
+            FlashLogLevel.DEBUG -> Log.DEBUG
             FlashLogLevel.INFO -> Log.INFO
             FlashLogLevel.WARN -> Log.WARN
             FlashLogLevel.ERROR -> Log.ERROR
