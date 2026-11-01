@@ -43,6 +43,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,7 +106,7 @@ data class FlashSettingsModel(
      * process being killed minutes after the screen goes off — and it is also what lets a refused
      * foreground-service promotion be retried at all, since the exemption *is* one of Android 12+'s
      * FGS-start exemptions while a screen-on broadcast is not. Surfaced read-only next to
-     * "Background transfers"; tapping the row opens the system prompt.
+     * "Keep listening in the background"; tapping the row opens the system prompt.
      */
     val ignoringBatteryOptimizations: Boolean = false,
     /**
@@ -295,9 +296,10 @@ object FlashSettingsMath {
             ),
         ),
         NETWORK(
-            "Network & Discovery", "Presence mode, background transfers, and battery settings",
+            "Network & Discovery", "Presence mode, background listening, and battery settings",
             listOf(
-                "Discovery mode", "Standard", "Ghost", "Eco", "Boost", "Background transfers",
+                "Discovery mode", "Standard", "Ghost", "Eco", "Boost",
+                "Keep listening in the background", "Background transfers",
                 "File Explorer context menu", "Unrestricted battery", "Radio gateway (beta)",
             ),
         ),
@@ -473,6 +475,13 @@ fun FlashSettingsScreen(
     enrollDeviceError: String? = null,
     onOpenRadioGateway: (() -> Unit)? = null,
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
+    /**
+     * The row backed by [FlashSettingsModel.backgroundTransfers]. Android's wording names what the switch actually does
+     * there — hold the foreground service up while the mesh is idle (ADR-232). Windows wires the same model field to
+     * close-to-tray, where "the system may still stop it" describes nothing, so the host passes its own words.
+     */
+    backgroundListenTitle: String = "Keep listening in the background",
+    backgroundListenSubtitle: String = "Stay reachable with nobody connected; the system may still stop it",
 ) {
     var query by remember { mutableStateOf("") }
     var showRadioGateway by remember { mutableStateOf(false) }
@@ -748,7 +757,7 @@ fun FlashSettingsScreen(
             StaggerIn(4) {
                 ExpandableSettingsSection(
                     title = "Network & Discovery",
-                    subtitle = "Presence mode, background transfers, and battery settings",
+                    subtitle = "Presence mode, background listening, and battery settings",
                     iconSpec = FlashIcons.Wifi,
                     initiallyExpanded = true,
                     forceExpanded = searching,
@@ -759,9 +768,12 @@ fun FlashSettingsScreen(
                             onSelected = onDiscoveryModeChanged,
                         )
                     }
-                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Background transfers")) SwitchRow(
-                        title = "Background transfers",
-                        subtitle = "Keep sending when you leave the app",
+                    // ADR-232: the old row promised "keep sending when you leave the app", which no foreground service can
+                    // guarantee on every handset (EXP-002: 90 % alive on Samsung, 4 % on Infinix). The row now names what
+                    // the switch actually does — hold the service up while idle — and says so.
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, backgroundListenTitle, "Keep listening in the background", "Background transfers")) SwitchRow(
+                        title = backgroundListenTitle,
+                        subtitle = backgroundListenSubtitle,
                         checked = model.backgroundTransfers,
                         onCheckedChange = onBackgroundTransfersChanged,
                     )
@@ -1610,6 +1622,9 @@ private fun StorageUsageCard(
     onClear: () -> Unit,
 ) {
     val colors = FlashTheme.colors
+    // The host no longer measures received storage during activity start-up (OPT-O01-02 moved that database work off the
+    // main thread), so the card asks for a fresh figure when it appears instead of showing "0 B" until Refresh is tapped.
+    LaunchedEffect(Unit) { onRefresh() }
     val clearEnabled = FlashStorageMath.canClearReceivedFiles(
         totalBytes = model.receivedFilesBytes,
         isLoading = model.storageUsageLoading,

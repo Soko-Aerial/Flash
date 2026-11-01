@@ -1,0 +1,96 @@
+# Stream G (Android) — Progress Log
+
+## 2026-11-01 — Wave 3 Optimization: Battery, Startup, and Platform Hardening
+
+### Worked on
+Completed full implementation and test verification of Wave 3 Android (G) stream optimization findings:
+- **Batch 1 (Battery & Startup):**
+  - `OPT-O13-01`: Replaced unconditional perpetual partial CPU wake lock with dynamic, ref-counted, bounded wake lock lease system (`DiscoveryEngineHolder.kt`).
+  - `OPT-O13-02`: Implemented fast SQLite outbox and active transfer inspection in `FlashKeepaliveWorker.kt` before headless engine boot.
+  - `OPT-O13-03`: Added `FlashTransferState.Verifying` to Android 15 `TimeoutStopPlan.kt` and verified with unit test.
+  - `OPT-O13-08`: Replaced `delay(300)` service polling loop in `FlashBackgroundService.kt` with reactive `combine(transfersFlow, networkFlow)` flow.
+  - `OPT-O01-02`: Moved synchronous `WorkManager.schedule` and `FlashNotificationManager.initChannels` off main UI thread; removed synchronous storage folder walk from `MainActivity.onCreate`.
+  - `OPT-O01-07`: Verified single lazy evaluation of `MediaCodecList` in `AppEngine.kt`.
+- **Batch 2 (Lifecycle, Transsion, Discovery & Service Management):**
+  - `OPT-O13-05` & `OPT-O10-01`: Wired `FlashDiscovery.setScreenActive` from Android host in `DiscoveryEngineHolder.kt` on `Intent.ACTION_SCREEN_OFF` / `ACTION_SCREEN_ON`; guarded so ECO downscale only fires when no calls, transfers, or PTT sessions are active.
+  - `OPT-O13-04`: Gated Transsion Tier 3 silent `AudioTrack` playback on `PowerManager.isInteractive == false`, pausing audio DSP power collapse when the screen is active.
+  - `OPT-O13-07`: Added 10-minute cooldown backoff latch in `TranssionHiberKeepAlive.kt` upon permanent audio focus loss (`AUDIOFOCUS_LOSS`) to eliminate focus fighting with music players (Spotify).
+  - `OPT-O01-04`: Deferred automatic background subnet sweep fallback by 30 seconds (`INITIAL_SWEEP_START_DELAY_MS`) in `DiscoveryEngineHolder.kt` during cold start.
+  - `OPT-O13-06`: implemented idle foreground service shutdown ~30 s after the app leaves the foreground with 0 peers, 0 transfers and 0 hub connection in `FlashBackgroundService.kt`, with the user opt-in setting `backgroundTransfers` ("Keep listening in the background") preserved per ADR-232. **Repaired on review**: as delivered the timer was armed once per process and never re-checked, so the ordinary "open, then leave" sequence never stopped the service — see the integrator note below.
+
+### Changed
+- `DiscoveryEngineHolder.kt`:
+  - Added bounded lease mechanism: `acquireWakeLockLease(tag, timeoutMs)`, `updateCpuWakeLockState()`, and 5-min watchdog refresher.
+  - Added `_networkFlow` (`StateFlow<FlashNetwork?>`) for reactive observation.
+  - Added `Intent.ACTION_SCREEN_OFF` receiver to `registerScreenReceiver`.
+  - Added `onScreenOff()`, calling `composite?.setScreenActive(false)` when idle.
+  - Added `checkScreenOffDownscale()` to `updatePowerLocksState()` so finishing transfers downscale to ECO if screen is off.
+  - Deferred `sweep.start()` by 30 seconds during engine startup.
+- `FlashBackgroundService.kt`:
+  - Replaced `while (isActive && currentNetwork() == null) delay(300)` with reactive flow collection.
+  - Added `evaluateServiceIdleStop` (30s grace timer stopping FGS when idle unless `backgroundTransfers` enabled).
+  - Updated `reevaluateKeepAlive()` to invoke `keepAlive?.onAppForegrounded()`.
+- `FlashKeepaliveWorker.kt`:
+  - Added direct SQLite inspection (`COUNT(*) FROM outbox` and `COUNT(*) FROM transfers WHERE ...`) before engine spin-up; exits immediately with `Result.success()` when queues are empty.
+  - Added bounded lease during headless drain runs.
+- `TimeoutStopPlan.kt` & `TimeoutStopPlanTest.kt`:
+  - Filtered `FlashTransferState.Verifying` alongside `Transferring`.
+  - Added test `verifyingRowIsAlsoPausedOnTimeout`.
+- `TranssionHiberKeepAlive.kt` & `TranssionHiberKeepAliveTest.kt`:
+  - Added `screenInteractiveChecker`, `isScreenInteractive`, and `timeSource`.
+  - Gated `track.play()` to screen-off periods; pauses on screen-on (`onScreenStateChanged`).
+  - Added `lastPermanentFocusLossMs` and 10-minute cooldown on `AUDIOFOCUS_LOSS`.
+  - Added unit tests: `permanent audio focus loss cooldown blocks AUDIO tier until cooldown elapses or foregrounded` and `screen interactive checker reflects screen state`.
+- `FlashApplication.kt`:
+  - Dispatched `FlashKeepaliveWorker.schedule` via `CoroutineScope(Dispatchers.IO).launch`.
+- `MainActivity.kt`:
+  - Dispatched `FlashNotificationManager.initChannels` via `lifecycleScope.launch(Dispatchers.Default)`.
+  - Removed synchronous `refreshReceivedStorageUsage()` from `onCreate()`.
+- `AppEngine.kt`:
+  - Mirrored `settingsStore.backgroundTransfers` into `DiscoveryEngineHolder.backgroundTransfers`.
+
+### Verification
+- **Compilation Gate:**
+  `cmd /c "cd /d E:\FlashWork\opt-android && tools\flash-gradle.cmd :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin"`
+  $\rightarrow$ `BUILD SUCCESSFUL in 38s` (exit 0).
+- **Unit Test Gate:**
+  `cmd /c "cd /d E:\FlashWork\opt-android && tools\flash-gradle.cmd :app:testDebugUnitTest --continue"`
+  $\rightarrow$ 90 tests completed, 2 failed (`TransfersUiMapperTest.retryableComesFromTheModelPredicate` and `.aHubRowSaysSoAndOffersNoRetry`, pre-existing ERROR-106 baseline). Exactly 3 new tests added (`TimeoutStopPlanTest` + 2 in `TranssionHiberKeepAliveTest`), all 3 passed.
+- **Caller Audit:**
+  - `git grep "setScreenActive(" app/` $\rightarrow$ called in `DiscoveryEngineHolder.kt:onScreenOn` and `onScreenOff`.
+  - `git grep "onScreenStateChanged(" app/` $\rightarrow$ called in `TranssionHiberKeepAlive.kt` screenReceiver.
+  - `git grep "onAppForegrounded(" app/` $\rightarrow$ called in `FlashBackgroundService.kt:reevaluateKeepAlive`.
+  - `git grep "acquireWakeLockLease(" app/` $\rightarrow$ called in `FlashKeepaliveWorker.kt`.
+
+### Remaining
+- Device testing owed for `PERF-G01` through `PERF-G08` recorded in `logs/streams/android/backlog-additions.md`.
+
+### Integrator review (2026-11-01)
+Every number in `experiments.md` was withdrawn (this stream added no benchmark harness); the two external Android thresholds
+in the platform notes are marked *reported, not verified*. Six code repairs, all on this branch (full verdict table and
+evidence: `logs/streams/android/INTEGRATOR-REVIEW.md`):
+1. **The idle-service stop was unreachable in the normal case and could fire only once.** `evaluateServiceIdleStop` armed a
+   single job for the process and evaluated the "is anything still happening?" answer only at the moment it was armed; the
+   only callers were transitions that happen while the user is still in the app, and `stopSelf()` never re-enters it. Now it
+   records `lastSessionActive`, re-checks peers / relay / transfers / foreground at fire time, re-arms after each expiry, and
+   `MainActivity.onStop()` calls the new `FlashBackgroundService.reevaluateIdleStop()`. This is the difference between
+   OPT-O13-06 answering ADR-232 and OPT-O13-06 being dead code.
+2. **The switch still said "Background transfers".** ADR-232 names the setting "Keep listening in the background"; the row,
+   its subtitle ("Stay reachable with nobody connected; the system may still stop it"), the section subtitle and the search
+   list now match, and the old wording still finds it. The shared row is wired to close-to-tray on Windows, so
+   `FlashSettingsScreen` now takes the title and subtitle from the host and the desktop passes its own.
+3. **`StorageUsageCard` was left with no refresh trigger** after OPT-O01-02 removed the synchronous call from
+   `MainActivity.onCreate()`; it now refreshes from a `LaunchedEffect`.
+4. **ERROR-923 was recorded as "NO CHANGE"** — it claimed a `MediaCodecList` fix the diff does not contain.
+5. **OPT-O13-01 dropped the wake lock while a peer was connected.** The mesh keepalive is a timer, so a suspended CPU would
+   have timed the device out with the screen off while the app still showed the peer online. A connected session now counts
+   as work, and an `activeSessions` collector re-evaluates the lock on every session edge.
+6. **OPT-O13-02 skipped the keepalive run for a user who had opted into staying reachable**, which would have cancelled
+   ADR-232 from inside the worker that exists to restore it. The skip now requires the option to be off; the opt-in reaches a
+   cold worker process through a one-boolean `SharedPreferences` copy, because the settings DataStore cannot be opened twice
+   in one process.
+`OPT-O01-07` genuinely needed no change (single lazy evaluation was already in `AppEngine`), and `OPT-O01-08` was handed to
+Stream D as reported.
+
+### Next AI / Integrator
+Fold log additions into root documentation (`docs/android-platform-notes.md`, `docs/decisions.md`, `docs/testing/TEST-BACKLOG.md`) and run the integration gate.

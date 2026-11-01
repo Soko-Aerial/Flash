@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.debug
 
 import android.app.Notification
@@ -30,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -227,40 +230,99 @@ class FlashBackgroundService : Service() {
         }
     }
 
+    private var idleStopJob: Job? = null
+
+    /**
+     * The last "does the mesh have work" answer. It is deliberately re-read when the grace period expires: the answer
+     * that armed the timer is [IDLE_STOP_GRACE_MS] old by then, and a peer or the hub may have connected since.
+     */
+    @Volatile
+    private var lastSessionActive: Boolean = true
+
     private fun observeSessionActivity() {
         scope.launch {
-            DiscoveryEngineHolder.transfersFlow.collectLatest { repo: FlashTransferRepository? ->
-                val transfersFlow: StateFlow<List<FlashTransfer>> = repo?.activeTransfers ?: MutableStateFlow(emptyList<FlashTransfer>())
-                while (isActive && DiscoveryEngineHolder.currentNetwork() == null) {
-                    delay(300)
-                }
-                val network = DiscoveryEngineHolder.currentNetwork()
+            combine(
+                DiscoveryEngineHolder.transfersFlow,
+                DiscoveryEngineHolder.networkFlow,
+            ) { repo, network ->
+                Pair(repo, network)
+            }.collectLatest { (repo, network) ->
+                val transfersFlow: StateFlow<List<FlashTransfer>> = repo?.activeTransfers ?: MutableStateFlow(emptyList())
+                val sessionsFlow = network?.activeSessions ?: MutableStateFlow(emptyMap())
                 val calling = DiscoveryEngineHolder.currentCalling()
                 val ptt = DiscoveryEngineHolder.currentPttSession()
 
-                val sessionsFlow = network?.activeSessions ?: MutableStateFlow(emptyMap())
                 val callFlow = calling?.activeCall ?: MutableStateFlow(null)
                 val pttFlow = ptt?.state ?: MutableStateFlow(PttFloorState.Idle)
 
                 combine(transfersFlow, sessionsFlow, callFlow, pttFlow) { transfers, sessions, callState, pttState ->
                     val hasActiveTransfers = transfers.any {
                         it.state == FlashTransferState.Transferring ||
-                        it.state == FlashTransferState.Verifying ||
-                        it.state == FlashTransferState.Queued
+                            it.state == FlashTransferState.Verifying ||
+                            it.state == FlashTransferState.Queued
                     }
                     val hasConnectedPeers = sessions.isNotEmpty()
                     val isCallActive = callState != null && callState.state != FlashCallState.ENDED
                     val isPttActive = pttState !is PttFloorState.Idle
+                    val isHubConnected = DiscoveryEngineHolder.currentEnterpriseHub()?.relay?.state?.value?.isOnline == true
 
-                    val isActive = hasActiveTransfers || hasConnectedPeers || isCallActive || isPttActive
-                    Log.i(TAG, "Session activity evaluated: active=$isActive (activeTransfers=$hasActiveTransfers count=${transfers.size}, peers=${sessions.size}, call=$isCallActive, ptt=$isPttActive)")
+                    val isActive = hasActiveTransfers || hasConnectedPeers || isCallActive || isPttActive || isHubConnected
+                    Log.i(TAG, "Session activity evaluated: active=$isActive (activeTransfers=$hasActiveTransfers count=${transfers.size}, peers=${sessions.size}, call=$isCallActive, ptt=$isPttActive, hub=$isHubConnected)")
                     isActive
                 }.collect { isSessionActive ->
                     keepAlive?.setSessionActive(isSessionActive)
+                    evaluateServiceIdleStop(isSessionActive)
                 }
             }
         }
     }
+
+    /**
+     * Stops the connectedDevice foreground service when 0 peers, 0 transfers, and 0 hub connection exist,
+     * unless the user explicitly enabled "Keep listening in the background" (OPT-O13-06, ADR-232).
+     *
+     * Called on every session-activity change and again from [reevaluateIdleStop] when the app leaves the foreground.
+     * A round that ends without stopping — the app was on screen, or the user has opted in — must leave the service
+     * able to arm again, so the guard tests [Job.isActive] rather than `== null`: a finished job is rearmable, and a
+     * sequence as ordinary as "open Flash with nobody nearby, then leave it" needs exactly that second round.
+     */
+    private fun evaluateServiceIdleStop(isSessionActive: Boolean) {
+        lastSessionActive = isSessionActive
+        // Through the holder's accessor, not the mirror field: a START_STICKY regeneration starts this
+        // service in a process where AppEngine never ran, so the mirror is empty and only the copy the
+        // settings store left on disk knows whether the user opted in (ADR-232).
+        val keepListening = DiscoveryEngineHolder.keepListeningInBackground(this)
+        if (isSessionActive || keepListening) {
+            idleStopJob?.cancel()
+            idleStopJob = null
+            return
+        }
+
+        if (idleStopJob?.isActive == true) return
+        idleStopJob = scope.launch {
+            delay(IDLE_STOP_GRACE_MS)
+            // The live state decides, not the emission that armed the timer: a peer, a transfer or the hub relay may
+            // have arrived in the meantime, and stopping under them would drop what they are waiting for.
+            val stillIdle = !lastSessionActive &&
+                !DiscoveryEngineHolder.keepListeningInBackground(applicationContext) &&
+                DiscoveryEngineHolder.currentEnterpriseHub()?.relay?.state?.value?.isOnline != true &&
+                DiscoveryEngineHolder.currentNetwork()?.activeSessions?.value.isNullOrEmpty() &&
+                !isForegroundInteractive()
+            if (stillIdle) {
+                Log.i(TAG, "Stopping connectedDevice foreground service: 0 peers, 0 transfers, 0 hub connection (OPT-O13-06 / ADR-232)")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                Log.i(TAG, "Idle grace expired but work reappeared; keeping the connectedDevice foreground service")
+            }
+        }
+    }
+
+    private fun isForegroundInteractive(): Boolean = runCatching {
+        val state = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(state)
+        state.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }.getOrDefault(false)
 
     private fun resolveForegroundServiceType(transfers: List<FlashTransfer> = emptyList()): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -438,6 +500,7 @@ class FlashBackgroundService : Service() {
         private const val TAG = "SERVICE"
         private const val CHANNEL_ID = "flash_discovery_bg"
         private const val NOTIFICATION_ID = 41
+        private const val IDLE_STOP_GRACE_MS = 30_000L
 
         const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
         const val EXTRA_TRANSFER_ID = "extra_transfer_id"
@@ -476,7 +539,19 @@ class FlashBackgroundService : Service() {
         }
 
         fun reevaluateKeepAlive() {
-            activeInstance?.keepAlive?.reevaluateTier()
+            activeInstance?.keepAlive?.onAppForegrounded()
+        }
+
+        /**
+         * Re-asks the idle-stop question after the app leaves the foreground.
+         *
+         * [evaluateServiceIdleStop] only runs when the *mesh* changes, and going to the background is not such a change,
+         * so without this call the ordinary sequence "open Flash with nobody nearby, then leave it" never reaches the
+         * idle stop at all: the first round happened while the app was on screen and declined to stop (OPT-O13-06).
+         */
+        fun reevaluateIdleStop() {
+            val current = activeInstance ?: return
+            current.evaluateServiceIdleStop(current.lastSessionActive)
         }
 
         fun setSessionActive(active: Boolean) {

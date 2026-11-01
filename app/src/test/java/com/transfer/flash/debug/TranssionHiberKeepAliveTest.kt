@@ -158,8 +158,65 @@ class TranssionHiberKeepAliveTest {
 
         // Permanent loss (e.g. user plays Spotify / YouTube) -> pauses and attempts fallback without fighting
         keepAlive.onAudioFocusChangeForTesting(AudioManager.AUDIOFOCUS_LOSS)
+        assertTrue(keepAlive.isPermanentFocusLossCooldownActive)
+        assertEquals(KeepAliveTier.NONE, keepAlive.determineBestTier())
 
-        // Gain (e.g. Spotify stops playback) -> resumes
+        // Gain (e.g. Spotify stops playback) -> clears cooldown
         keepAlive.onAudioFocusChangeForTesting(AudioManager.AUDIOFOCUS_GAIN)
+        assertFalse(keepAlive.isPermanentFocusLossCooldownActive)
+    }
+
+    @Test
+    fun `permanent audio focus loss cooldown blocks AUDIO tier until cooldown elapses or foregrounded`() {
+        var currentTime = 1_000_000L
+        val keepAlive = TranssionHiberKeepAlive(
+            context = context,
+            brandResolver = { OemBrand.TRANSSION },
+            bluetoothChecker = { false },
+            sessionActiveChecker = { true },
+            timeSource = { currentTime },
+        )
+
+        assertEquals(KeepAliveTier.AUDIO, keepAlive.determineBestTier())
+
+        // Permanent loss occurs
+        keepAlive.onAudioFocusChangeForTesting(AudioManager.AUDIOFOCUS_LOSS)
+        assertTrue(keepAlive.isPermanentFocusLossCooldownActive)
+        assertEquals(KeepAliveTier.NONE, keepAlive.determineBestTier())
+
+        // 5 minutes later: cooldown still active
+        currentTime += 5 * 60 * 1000L
+        assertTrue(keepAlive.isPermanentFocusLossCooldownActive)
+        assertEquals(KeepAliveTier.NONE, keepAlive.determineBestTier())
+
+        // User re-opens Flash (app foregrounded) -> cooldown cleared
+        keepAlive.onAppForegrounded()
+        assertFalse(keepAlive.isPermanentFocusLossCooldownActive)
+        assertEquals(KeepAliveTier.AUDIO, keepAlive.determineBestTier())
+
+        // Another loss occurs, test 10-minute time expiry
+        keepAlive.onAudioFocusChangeForTesting(AudioManager.AUDIOFOCUS_LOSS)
+        assertTrue(keepAlive.isPermanentFocusLossCooldownActive)
+
+        // 11 minutes later: cooldown expired
+        currentTime += 11 * 60 * 1000L
+        assertFalse(keepAlive.isPermanentFocusLossCooldownActive)
+        assertEquals(KeepAliveTier.AUDIO, keepAlive.determineBestTier())
+    }
+
+    @Test
+    fun `screen interactive checker reflects screen state`() {
+        var screenInteractive = true
+        val keepAlive = TranssionHiberKeepAlive(
+            context = context,
+            brandResolver = { OemBrand.TRANSSION },
+            bluetoothChecker = { false },
+            sessionActiveChecker = { true },
+            screenInteractiveChecker = { screenInteractive },
+        )
+
+        assertTrue(keepAlive.isScreenInteractive)
+        screenInteractive = false
+        assertFalse(keepAlive.isScreenInteractive)
     }
 }
