@@ -405,9 +405,9 @@ public class CompositeDiscovery(
      * Screen-off/on seam: downscales to [FlashDiscoveryMode.ECO] while the display is off and restores
      * the user's last [setMode] choice when it comes back.
      *
-     * **Nothing calls this yet** (verified 2026-10-31: no screen-state receiver in the `app` or
-     * `desktop` module; the only references are this file, the interface default and one test). The
-     * wiring is Stream G's wave-3 task — see the `TODO(wave-3)` on [FlashDiscovery.setScreenActive].
+     * **Android calls it since 2026-11-01** (wave 3, Stream G, `OPT-O10-01`): the screen-state
+     * receivers, plus a re-check when a transfer finishes with the screen already off. The `desktop`
+     * host does not call it yet (stream E's `O19-07`, minimised to tray).
      *
      * **NOT discovery-only, and the caller owns that guard.** ECO is a whole-mode switch: it changes
      * [DiscoveryModePolicy] *and* `ConnectionModePolicy` / `ConnectionStrategy.ECO`

@@ -19,9 +19,10 @@ public interface FlashDiscovery {
     /**
      * Informs discovery of the display power state: `false` on screen-off, `true` on screen-on.
      *
-     * **Nothing calls this yet.** As of 2026-10-31 no screen-state receiver exists in either host
-     * (the Android `app` module or the `desktop` module), so the seam is unwired; the screen-state
-     * receiver is Stream G's wiring task in wave 3. Until then this is inert in every shipped build.
+     * **Wired on Android since 2026-11-01** (wave 3, Stream G, `OPT-O10-01`): `DiscoveryEngineHolder`
+     * calls it from the `ACTION_SCREEN_ON` / `ACTION_SCREEN_OFF` receivers and again when a transfer
+     * finishes with the screen already off. **Not wired on desktop** - that host is still inert, and
+     * the "minimised to tray" case is `O19-07` in stream E.
      *
      * **The mode it selects is NOT discovery-only.** Downscaling uses `FlashDiscoveryMode.ECO`, which
      * goes through `DiscoveryModePolicy` *and* `ConnectionModePolicy` / `ConnectionStrategy.ECO`
@@ -31,6 +32,6 @@ public interface FlashDiscovery {
      * The restore path re-applies the user's last [setMode] choice, not a fixed default, so a mode the
      * operator picked before screen-off is honoured on screen-on.
      */
-    // TODO(wave-3): wire the screen-state receiver in both hosts (Stream G). See OPT-O10-01.
+    // TODO(wave-4, stream E): wire the desktop host (minimised to tray). See O19-07.
     public fun setScreenActive(active: Boolean) {}
 }
