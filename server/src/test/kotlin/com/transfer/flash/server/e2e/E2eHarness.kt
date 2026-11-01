@@ -144,14 +144,14 @@ class E2eHub(
 
     fun restart(): E2eHub {
         stop()
-        // Netty releases the port asynchronously: retry the bind for a moment.
+        // Netty releases the port asynchronously: retry with small backoff (OPT-O27-03).
         var last: Throwable? = null
-        repeat(20) {
+        for (attempt in 0 until 30) {
             try {
                 return start()
             } catch (t: Throwable) {
                 last = t
-                Thread.sleep(250)
+                Thread.sleep((25L * (attempt + 1)).coerceAtMost(100L))
             }
         }
         throw IllegalStateException("hub did not restart on port $port", last)
@@ -212,7 +212,10 @@ class E2eDevice(
     val crypto = E2eCrypto()
     val trust = MemoryEnterpriseTrustStore()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val http = HttpClient(CIO) { install(HttpTimeout) { requestTimeoutMillis = 15_000; connectTimeoutMillis = 5_000 } }
+    private val http = HttpClient(CIO) {
+        install(HttpTimeout) { requestTimeoutMillis = 15_000; connectTimeoutMillis = 5_000 }
+        install(io.ktor.client.plugins.websocket.WebSockets)
+    }
 
     val received = CopyOnWriteArrayList<RelayFrame.Deliver>()
     val acks = CopyOnWriteArrayList<RelayFrame.Ack>()
@@ -244,7 +247,7 @@ class E2eDevice(
                 friendlyName = "Test $id",
                 hubUrl = trust.credentials.value?.hubUrl.orEmpty(),
                 identityProvider = identity,
-                transport = KtorRelayTransport(client = HttpClient(CIO) { install(io.ktor.client.plugins.websocket.WebSockets) }),
+                transport = KtorRelayTransport(client = http),
                 jitter = { max -> jitterCalls += max; 0L },
             )
         },
