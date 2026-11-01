@@ -62,6 +62,10 @@ public interface HubRelayPort {
      */
     public suspend fun recvAck(id: String, from: String? = null): Boolean
 
+    /** Tells the hub the deliveries in [ids] are durably stored in a single batch (OPT-O16-04). */
+    public suspend fun recvAckBatch(ids: List<String>, from: String? = null): Boolean =
+        if (ids.isEmpty()) true else recvAck(ids.first(), from)
+
     /** Sends a typing signal for [conversationId] to [to]. */
     public suspend fun sendTyping(conversationId: String, to: String): Boolean
 }
@@ -175,6 +179,8 @@ public class FlashRelayHubPort(
         client.sendEnvelope(to, FlashEnvelope(id = id, type = type, payloadJson = payload, senderId = client.deviceId, sentAt = sentAt))
 
     override suspend fun recvAck(id: String, from: String?): Boolean = client.acknowledgeReceipt(id, from)
+
+    override suspend fun recvAckBatch(ids: List<String>, from: String?): Boolean = client.acknowledgeReceipts(ids, from)
 
     override suspend fun sendTyping(conversationId: String, to: String): Boolean = client.sendTyping(conversationId, to)
 }

@@ -238,6 +238,22 @@ public class FlashRelayClient(
     }
 
     /**
+     * Tells the hub this device has durably stored the messages in [messageIds] (`FLASH_RECV_ACK` batch, OPT-O16-04).
+     * Deletes the server's mailbox copies in a single batch transaction.
+     */
+    public suspend fun acknowledgeReceipts(messageIds: List<String>, from: String? = null): Boolean {
+        if (!state.value.canSend || messageIds.isEmpty()) return false
+        val frame = if (messageIds.size == 1) {
+            RelayFrame.RecvAck(msgId = messageIds[0], from = from)
+        } else {
+            RelayFrame.RecvAck(msgId = messageIds[0], from = from, ids = messageIds)
+        }
+        return sendLock.withLock {
+            transport.sendFrame(frame)
+        }
+    }
+
+    /**
      * Sends an ephemeral typing indicator with `P-REF-1` wire padding.
      */
     public suspend fun sendTyping(conversationId: String, to: String? = null): Boolean {

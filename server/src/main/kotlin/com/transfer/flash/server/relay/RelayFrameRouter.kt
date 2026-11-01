@@ -387,23 +387,30 @@ public class RelayFrameRouter(
      */
     private suspend fun handleRecvAck(recipient: RelaySession, ack: RelayFrame.RecvAck) {
         val ackFrom = ack.from?.takeIf { it.isNotBlank() }
-        val candidate = recipient.inFlight[ack.msgId]
-        val flight = if (candidate != null && (ackFrom == null || ackFrom == candidate.origin) && recipient.inFlight.remove(ack.msgId, candidate)) candidate else null
-        if (flight != null) {
-            metrics.ackLatency.observeSeconds((System.nanoTime() - flight.handedAtNanos) / 1_000_000_000.0)
-            notifyDelivered(flight.origin, recipient.deviceId, ack.msgId)
-            return
+        val ids = ack.ids ?: listOf(ack.msgId)
+        val remainingForMailbox = ArrayList<String>(ids.size)
+        for (id in ids) {
+            val candidate = recipient.inFlight[id]
+            val flight = if (candidate != null && (ackFrom == null || ackFrom == candidate.origin) && recipient.inFlight.remove(id, candidate)) candidate else null
+            if (flight != null) {
+                metrics.ackLatency.observeSeconds((System.nanoTime() - flight.handedAtNanos) / 1_000_000_000.0)
+                notifyDelivered(flight.origin, recipient.deviceId, id)
+            } else {
+                remainingForMailbox.add(id)
+            }
         }
-        val rows = try {
-            mailboxQueue.acknowledge(recipient.deviceId, ack.msgId, ackFrom)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (t: Throwable) {
-            metrics.inc(RelayMetrics.DB_ERRORS, 1, "op" to "ack")
-            logger.error("RECV_ACK handling failed: {}", t.toString())
-            return
+        if (remainingForMailbox.isNotEmpty()) {
+            val rows = try {
+                mailboxQueue.acknowledgeBatch(recipient.deviceId, remainingForMailbox, ackFrom)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                metrics.inc(RelayMetrics.DB_ERRORS, 1, "op" to "ack")
+                logger.error("RECV_ACK handling failed: {}", t.toString())
+                return
+            }
+            rows.forEach { notifyDelivered(it.origin, recipient.deviceId, it.msgId) }
         }
-        rows.forEach { notifyDelivered(it.origin, recipient.deviceId, ack.msgId) }
     }
 
     private fun notifyDelivered(originId: String, recipientId: String, msgId: String) {
