@@ -33,6 +33,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  *
  * Honest limits, so the next reader does not over-trust this:
  * - 15 minutes is WorkManager's floor for periodic work; this is a safety net, not delivery latency.
+ * - This is also the *inbound* half of the safety net: the session window it opens is the only time an
+ *   otherwise-idle phone can be reached. OPT-O13-02 therefore skips the run only when the outbox and
+ *   the transfer queue are both empty **and** "Keep listening in the background" (ADR-232) is off —
+ *   i.e. only for a person who has said they do not want to stay reachable.
  * - The aggressive OEMs that motivate it (Xiaomi/HyperOS, Transsion, Huawei) also restrict jobs for
  *   an app the user "force stopped" or that lacks autostart — the OEM deep links in
  *   [OemBatteryOptimizationHelper] are the other half of this fix.
@@ -52,8 +56,8 @@ class FlashKeepaliveWorker(
             return Result.success()
         }
 
-        // OPT-O13-02: Check whether outbound work (outbox messages or active transfers) actually exists
-        // before spinning up the entire engine, network sockets, discovery, and power locks.
+        // Does anything actually need a link? Read straight from SQLite (rather than through the
+        // repository) so the question is answered before the engine's database handle exists.
         val dbFile = applicationContext.getDatabasePath(com.transfer.flash.core.persistence.db.FlashDatabase.DATABASE_NAME)
         if (!dbFile.exists()) {
             Log.i(TAG, "keepalive: database does not exist yet; skipping headless engine boot")
@@ -74,8 +78,19 @@ class FlashKeepaliveWorker(
             }
         }.getOrDefault(true)
 
-        if (!hasPendingOutboundWork) {
-            Log.i(TAG, "keepalive: outbox and transfer queues empty; skipping headless engine boot (OPT-O13-02)")
+        // OPT-O13-02: only skip the (expensive) engine boot when nothing is waiting to go out **and**
+        // the person has not asked to stay reachable. The skip saves a full boot — TLS + keystore, the
+        // WebSocket server socket, NSD registration, the encrypted database, power locks — every 15
+        // minutes on a phone with nothing to send. It must never defeat ADR-232's "Keep listening in
+        // the background": that opt-in exists precisely to keep a session window open, and this worker
+        // is the only thing that can re-open one after the system stopped the service.
+        val keepListening = DiscoveryEngineHolder.keepListeningInBackground(applicationContext)
+        if (!hasPendingOutboundWork && !keepListening) {
+            Log.i(
+                TAG,
+                "keepalive: outbox and transfer queues empty and keep-listening is off; " +
+                    "skipping headless engine boot (OPT-O13-02)",
+            )
             return Result.success()
         }
 

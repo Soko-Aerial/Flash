@@ -16,6 +16,22 @@ The integrator will fold these into `docs/decisions.md`.
 3. Leases (`WakeLockLease`) are bounded by a mandatory safety timeout: `WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L`. A 5-minute watchdog refresher refreshes the timeout if work remains active.
 4. When all active workloads and leases complete, `wakeLock.release()` is immediately invoked, allowing the SoC to enter low-power AP suspend.
 
+### Amendment — integrator review, 2026-11-01 (a live session is work)
+Point 2 as delivered omitted the case the lock was originally for. A connected peer is not idle: the mesh keepalive is
+a **timer**, and a suspended CPU runs no timer, so with the lock released a peer would have timed this device out within
+one keepalive window while the app still showed it online — the old KDoc states exactly that ("held to ensure keepalive
+pings are scheduled"). Dropping it would have been a silent background-delivery regression sold as a battery win.
+
+`hasConnectedPeers` (`network.activeSessions` not empty) is now part of `needsWakeLock`, and the lock follows the
+**session** rather than the process: taken when the first peer connects, released when the last leaves, and the idle
+service stop (O13-06) then takes the service down. A second collector on `activeSessions` re-evaluates the lock on every
+session edge — without it the lock could only be re-evaluated when a transfer or call changed, so a phone that connected
+to a peer and then went quiet would never have taken it.
+
+What the optimisation still buys: an isolated phone (no peers, nothing queued) now suspends instead of holding a partial
+wake lock for the life of the process. `PERF-G01` must therefore be run **with a peer connected and without**, since the
+pass condition differs: the lock must be absent in the idle case and present while a session is up.
+
 ---
 
 ## ADR-281 — Pre-Boot SQLite Inspection in FlashKeepaliveWorker (OPT-O13-02)
@@ -27,8 +43,31 @@ The integrator will fold these into `docs/decisions.md`.
 1. In `FlashKeepaliveWorker.doWork()`, inspect SQLite before starting the headless engine:
    - Check if database file exists.
    - Execute fast SQLite scalar queries `SELECT COUNT(*) FROM outbox` and `SELECT COUNT(*) FROM transfers WHERE status IN ('Transferring', 'Verifying', 'Queued', 'Paused') AND dismissed = 0`.
-2. If both counts are 0, return `Result.success()` immediately, without spinning up the engine, binding sockets, or taking wake locks. Both queries hit the rowid B-tree (no scan of the payload), so the cost is two scalar reads on an openable database plus the open itself. **`< 50 ms` was an estimate, not a measurement**; `PERF-G02` records the real per-run duration.
+2. If both counts are 0 **and the person has not switched on "Keep listening in the background"**, return `Result.success()` immediately, without spinning up the engine, binding sockets, or taking wake locks. Both queries hit the rowid B-tree (no scan of the payload), so the cost is two scalar reads on an openable database plus the open itself. **`< 50 ms` was an estimate, not a measurement**; `PERF-G02` records the real per-run duration.
 3. If pending outbound work exists, acquire a bounded lease `DiscoveryEngineHolder.acquireWakeLockLease("keepalive-worker", ...)` and start the engine to drain.
+
+### Amendment — integrator review, 2026-11-01 (the opt-in condition)
+As delivered the skip ignored ADR-232. `FlashKeepaliveWorker` is not only a flush: the session window it opens
+(`SESSION_WINDOW_MS = 45_000`) is the **only** time an otherwise-idle phone can be reached, so skipping every run for an
+opted-in user would quietly cancel the setting the user had just switched on — from inside the very worker whose job is to
+restore what the system stopped.
+
+The condition is now `hasPendingOutboundWork || keepListeningInBackground(applicationContext)`. Reading the opt-in in a
+worker turned out not to be free:
+- `DiscoveryEngineHolder.backgroundTransfers` (the AppEngine mirror) is still `false` in a cold worker process, because
+  nothing calls `AppEngine.start()` there.
+- The worker cannot open `FlashSettingsDataStore` itself: a second DataStore instance for the same file throws *inside a
+  process*, and the UI can be started in that same process later.
+
+So the opt-in is now written by exactly one writer (`DiscoveryEngineHolder.setBackgroundTransfers`, called by AppEngine's
+initial read and its collector) into a one-boolean `SharedPreferences` copy (`flash_flags` /
+`keep_listening_in_background`), and `keepListeningInBackground(context)` answers "live mirror, else that copy". The copy is
+a cache for hosts that never booted AppEngine, never the source of truth; a read failure answers `true`, so a broken read
+costs one engine boot rather than silently switching the opt-in off. `FlashBackgroundService.evaluateServiceIdleStop` uses
+the same accessor for the same reason: a `START_STICKY` regeneration also starts in a process with an empty mirror.
+
+Consequence, recorded honestly: for a user with the opt-in **off** and nothing queued, the background device is not
+reachable — which is what ADR-232 ("stop when idle") already means, now stated in the worker's own KDoc.
 
 ---
 

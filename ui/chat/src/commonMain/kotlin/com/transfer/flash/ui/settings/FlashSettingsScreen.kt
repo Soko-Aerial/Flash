@@ -475,6 +475,13 @@ fun FlashSettingsScreen(
     enrollDeviceError: String? = null,
     onOpenRadioGateway: (() -> Unit)? = null,
     radioGatewayController: com.transfer.flash.ui.radio.RadioGatewayController? = null,
+    /**
+     * The row backed by [FlashSettingsModel.backgroundTransfers]. Android's wording names what the switch actually does
+     * there — hold the foreground service up while the mesh is idle (ADR-232). Windows wires the same model field to
+     * close-to-tray, where "the system may still stop it" describes nothing, so the host passes its own words.
+     */
+    backgroundListenTitle: String = "Keep listening in the background",
+    backgroundListenSubtitle: String = "Stay reachable with nobody connected; the system may still stop it",
 ) {
     var query by remember { mutableStateOf("") }
     var showRadioGateway by remember { mutableStateOf(false) }
@@ -764,9 +771,9 @@ fun FlashSettingsScreen(
                     // ADR-232: the old row promised "keep sending when you leave the app", which no foreground service can
                     // guarantee on every handset (EXP-002: 90 % alive on Samsung, 4 % on Infinix). The row now names what
                     // the switch actually does — hold the service up while idle — and says so.
-                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, "Keep listening in the background", "Background transfers")) SwitchRow(
-                        title = "Keep listening in the background",
-                        subtitle = "Stay reachable with nobody connected; the system may still stop it",
+                    if (FlashSettingsMath.rowVisible(query, FlashSettingsMath.Section.NETWORK, backgroundListenTitle, "Keep listening in the background", "Background transfers")) SwitchRow(
+                        title = backgroundListenTitle,
+                        subtitle = backgroundListenSubtitle,
                         checked = model.backgroundTransfers,
                         onCheckedChange = onBackgroundTransfersChanged,
                     )
