@@ -298,7 +298,8 @@ fun Route.directoryRoutes(
                 // non-hidden departments show counts. Deviation from the plan's "null" recorded in the
                 // A2 report: DepartmentDto counts are non-null Ints on the wire, so 0 keeps old clients working.
                 val visible = directory.listDepartments().filter { DirectoryVisibility.canSeeDepartment(it, actor) }
-                call.respondJson(visible.map { it.toPrivacyDto(directory, actor) })
+                val (memberCounts, groupCounts) = directory.departmentCounts()
+                call.respondJson(visible.map { it.toPrivacyDto(actor, memberCounts, groupCounts) })
             }
         }
 
@@ -557,14 +558,18 @@ private fun Department.toDto(directory: OrganizationDirectory) = DepartmentDto(
 )
 
 /** A2: outsiders of a hidden department get zeroed counts (never the real number); hidden flag always ships. */
-private fun Department.toPrivacyDto(directory: OrganizationDirectory, actor: DirectoryActor): DepartmentDto {
-    val insider = actor.isOrgAdmin || id == actor.departmentId || actor.deviceId in adminDeviceIds
+private fun Department.toPrivacyDto(
+    actor: DirectoryActor,
+    memberCounts: Map<String, Int>,
+    groupCounts: Map<String, Int>,
+): DepartmentDto {
+    val insider = actor.isOrgAdmin || id == actor.departmentId || hasAdmin(actor.deviceId)
     return DepartmentDto(
         id = id,
         name = name,
         adminDeviceIds = adminDeviceIds,
-        memberCount = if (!hidden || insider) directory.memberCount(id) else 0,
-        groupCount = if (!hidden || insider) directory.groupCount(id) else 0,
+        memberCount = if (!hidden || insider) memberCounts[id] ?: 0 else 0,
+        groupCount = if (!hidden || insider) groupCounts[id] ?: 0 else 0,
         hidden = hidden,
     )
 }
