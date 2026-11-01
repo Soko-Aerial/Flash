@@ -21,6 +21,8 @@ services:
     entrypoint:
       - java
       - -Xmx384m
+      - -XX:+ExitOnOutOfMemoryError
+      - -XX:+UseG1GC
       - -XX:MaxMetaspaceSize=192m
       - -cp
       - /app/lib/*
