@@ -12,34 +12,37 @@ The integrator folds these into `docs/testing/TEST-BACKLOG.md`.
 
 ## PERF-G01 — Standby CPU wake lock release (OPT-O13-01)
 - **Area:** Battery / wake locks / AP suspend
-- **Requirement:** With no transfer, call, PTT floor or outstanding lease, the partial CPU wake lock is not held.
+- **Requirement:** With no transfer, call, PTT floor, outstanding lease **and no connected peer**, the partial CPU wake lock is not held; **with a peer connected it is held**, so the session survives screen-off.
 - **Hardware needed:** Physical Android device with a paired peer (Infinix X6882B, a Samsung handset, or the BelFone).
 - **Procedure:**
   1. Open Flash, pair with a nearby device, confirm the link is up.
-  2. Put the app in the background and turn the screen off.
-  3. Leave it idle for 60 minutes.
-  4. `adb shell dumpsys power | grep -A 10 "Wake Locks"`, then `adb shell dumpsys batterystats --charged com.transfer.flash`.
-  5. Repeat steps 1–4 on a build with `updateCpuWakeLockState()` stubbed to the old unconditional acquire, same device, same day.
+  2. **Case A (idle):** turn the peer's Flash off (or move out of range) so no session exists; put Flash in the background and turn the screen off.
+  3. Leave it idle for 60 minutes; `adb shell dumpsys power | grep -A 10 "Wake Locks"`, then `adb shell dumpsys batterystats --charged com.transfer.flash`.
+  4. **Case B (session up):** connect the peer again, background Flash, screen off, 30 minutes. The peer must still show this device online and a message sent from it must arrive; `dumpsys power` must show `flash:ws-mesh` held.
+  5. Repeat steps 2–3 on a build with `updateCpuWakeLockState()` stubbed to the old unconditional acquire, same device, same day.
 - **Pass criteria:**
-  - `flash:ws-mesh` (or the current lock tag) does **not** appear as held for the whole idle window; it must be absent or held for a minority of it.
-  - Recorded: wake-lock held-time and deep-sleep/AP-suspend time, both builds. The change passes if held-time drops and deep-sleep time rises; the absolute figures are the record, not a gate.
-- **Source:** ADR-280, EXP-105
+  - Case A: `flash:ws-mesh` is absent or held for a minority of the window; logcat shows `Released CPU wake lock (mesh idle — AP suspend allowed)`.
+  - Case B: the lock is held for the whole window (`Acquired CPU wake lock (... peers=true ...)`), the link never drops and the message arrives.
+  - Recorded: wake-lock held-time and deep-sleep/AP-suspend time, both builds, case A. The change passes if held-time drops and deep-sleep time rises; the absolute figures are the record, not a gate.
+- **Source:** ADR-280 (including its 2026-11-01 amendment), EXP-105
 - **Status:** TODO
 
 ## PERF-G02 — Keepalive worker fast path with an empty outbox (OPT-O13-02)
-- **Area:** Battery / WorkManager / SQLite
-- **Requirement:** With an empty outbox and no queued transfers, the worker returns without starting the engine.
+- **Area:** Battery / WorkManager / SQLite / background reachability
+- **Requirement:** With an empty outbox, no queued transfers **and "Keep listening in the background" off**, the worker returns without starting the engine; with that setting **on**, it still starts the engine and opens a session window.
 - **Hardware needed:** Physical Android device.
 - **Procedure:**
-  1. Empty every chat outbox and the transfer queue.
+  1. Settings → "Keep listening in the background" **OFF**. Empty every chat outbox and the transfer queue.
   2. `adb shell cmd jobscheduler run -f com.transfer.flash <jobId>` (or wait for the 15-minute run).
   3. `adb logcat -d | grep -i "keepalive"`, and `adb shell dumpsys power | grep -A 5 "Wake Locks"` before and after.
   4. Record the wall-clock time between the job start and the skip log line.
+  5. Repeat with the setting **ON** and the queues still empty: the worker must **not** log the skip line; it must log `keepalive: wake complete sawSession=…` (and take a `keepalive-worker` wake lock lease for the run).
+  6. Repeat step 5 after a cold process death (`adb shell am kill com.transfer.flash`): the same run must still boot, which proves the on-disk copy of the opt-in is read (the in-memory mirror is empty in that process).
 - **Pass criteria:**
-  - The skip log line appears (`outbox and transfer queues empty; skipping headless engine boot`).
-  - No WebSocket server bind and no NSD registration in logcat for that run, and no `flash:*` wake lock taken.
-  - Elapsed time recorded; the earlier "< 100 ms" was a target, not evidence.
-- **Source:** ADR-281, EXP-106
+  - Step 2–4: the skip log line appears (`queues empty and keep-listening is off; skipping headless engine boot`), no WebSocket server bind and no NSD registration in logcat for that run, and no `flash:*` wake lock taken.
+  - Steps 5–6: no skip line, the engine boots and the session window runs even though nothing is queued.
+  - Elapsed times recorded; the earlier "< 100 ms" was a target, not evidence.
+- **Source:** ADR-281 (including its 2026-11-01 amendment), ADR-232, EXP-106
 - **Status:** TODO
 
 ## PERF-G03 — Android 15 FGS timeout during verification (OPT-O13-03)

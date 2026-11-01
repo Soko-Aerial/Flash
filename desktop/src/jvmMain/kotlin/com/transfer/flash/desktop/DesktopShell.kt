@@ -2068,6 +2068,10 @@ public fun DesktopShell(
                         onBackgroundTransfersChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(closeToTray = next) } }
                         },
+                        // Here the same model field is close-to-tray, not an Android foreground-service opt-in, so the
+                        // shared screen must not describe it with ADR-232's Android sentence.
+                        backgroundListenTitle = "Close to tray",
+                        backgroundListenSubtitle = "Closing the window keeps Flash running in the notification area",
                         onSwarmHelpShareChanged = { next ->
                             scope.launch { engine.updateSettings { it.copy(swarmHelpShare = next) } }
                         },

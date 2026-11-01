@@ -288,7 +288,10 @@ class FlashBackgroundService : Service() {
      */
     private fun evaluateServiceIdleStop(isSessionActive: Boolean) {
         lastSessionActive = isSessionActive
-        val keepListening = DiscoveryEngineHolder.backgroundTransfers
+        // Through the holder's accessor, not the mirror field: a START_STICKY regeneration starts this
+        // service in a process where AppEngine never ran, so the mirror is empty and only the copy the
+        // settings store left on disk knows whether the user opted in (ADR-232).
+        val keepListening = DiscoveryEngineHolder.keepListeningInBackground(this)
         if (isSessionActive || keepListening) {
             idleStopJob?.cancel()
             idleStopJob = null
@@ -301,7 +304,7 @@ class FlashBackgroundService : Service() {
             // The live state decides, not the emission that armed the timer: a peer, a transfer or the hub relay may
             // have arrived in the meantime, and stopping under them would drop what they are waiting for.
             val stillIdle = !lastSessionActive &&
-                !DiscoveryEngineHolder.backgroundTransfers &&
+                !DiscoveryEngineHolder.keepListeningInBackground(applicationContext) &&
                 DiscoveryEngineHolder.currentEnterpriseHub()?.relay?.state?.value?.isOnline != true &&
                 DiscoveryEngineHolder.currentNetwork()?.activeSessions?.value.isNullOrEmpty() &&
                 !isForegroundInteractive()

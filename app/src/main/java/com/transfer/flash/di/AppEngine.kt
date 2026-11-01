@@ -243,7 +243,9 @@ class AppEngine @Inject constructor(
                 val isSwarmEnabled = runCatching { settingsStore.groupSwarmEnabled.first() }.getOrDefault(true)
                 DiscoveryEngineHolder.groupSwarmEnabled = isSwarmEnabled
                 val isBackgroundTransfers = runCatching { settingsStore.backgroundTransfers.first() }.getOrDefault(false)
-                DiscoveryEngineHolder.backgroundTransfers = isBackgroundTransfers
+                // ADR-232 / OPT-O13-02: this is the single writer of the opt-in, and it also leaves the
+                // cold-process copy the keepalive worker and a regenerated service read.
+                DiscoveryEngineHolder.setBackgroundTransfers(context, isBackgroundTransfers)
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {
@@ -275,7 +277,9 @@ class AppEngine @Inject constructor(
                             }
                         }
                         scope.launch {
-                            settingsStore.backgroundTransfers.collect { DiscoveryEngineHolder.backgroundTransfers = it }
+                            settingsStore.backgroundTransfers.collect {
+                                DiscoveryEngineHolder.setBackgroundTransfers(context, it)
+                            }
                         }
                         // ERROR-033: same mirroring for the performance tier, read by
                         // CallCoordinator and WsFlashNetwork through lambdas.

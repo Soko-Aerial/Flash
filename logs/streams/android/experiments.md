@@ -11,25 +11,29 @@
 ## EXP-105 — Standby wake lock lease duty cycle (design expectation, NOT measured)
 
 ### Objective
-Establish that `DiscoveryEngineHolder` releases the CPU partial wake lock when transfers, calls and PTT sessions are
-inactive, so the Application Processor can power-collapse in standby.
+Establish that `DiscoveryEngineHolder` releases the CPU partial wake lock when the mesh is genuinely idle — no transfers,
+no calls, no PTT session, no lease **and no connected peer** — so the Application Processor can power-collapse in standby.
 
 ### Code under test
 `DiscoveryEngineHolder.kt` — `updateCpuWakeLockState()`, `acquireWakeLockLease()`, `WAKE_LOCK_TIMEOUT_MS`,
-`WAKE_LOCK_REFRESH_INTERVAL_MS`
+`WAKE_LOCK_REFRESH_INTERVAL_MS`, the `activeSessions` collector
 
 ### What changed
 Baseline held `wakeLock.acquire()` from engine start to engine teardown with no timeout. Now the lock is held only while
-a transfer is `Transferring`/`Verifying`, a call is live, a PTT floor is open, or a bounded lease is outstanding; every
-lease carries a 10-minute safety timeout refreshed by a 5-minute watchdog while work remains.
+a transfer is `Transferring`/`Verifying`, a call is live, a PTT floor is open, a host has taken a bounded lease
+(`FlashKeepaliveWorker` does, for its session window), **or at least one peer session is connected**; every lease carries
+a 10-minute safety timeout refreshed by a 5-minute watchdog while work remains. The peer term was added on review
+(ADR-280 amendment): the mesh keepalive is a timer, a suspended CPU runs no timer, and without it a connected phone would
+drop off the mesh with the screen off — the original reason the lock existed at all.
 
 ### Device test that would measure it
-`PERF-G01`: two-hour screen-off idle standby on an Infinix X6882B and a Samsung device, `dumpsys power` wake-lock totals
-and `dumpsys batterystats` drain, compared against a build with the change reverted on the same day.
+`PERF-G01`: two-hour screen-off idle standby on an Infinix X6882B and a Samsung device — once with no peer connected and
+once with one — `dumpsys power` wake-lock totals and `dumpsys batterystats` drain, compared against a build with the
+change reverted on the same day.
 
 ### Conclusion
-Structural only: a wake lock with a bounded lease cannot outlive the work that justified it. The duty cycle it produces
-is unknown until `PERF-G01`.
+Structural only: a wake lock with a bounded lease cannot outlive the work that justified it, and a connected session is
+such work. The duty cycle it produces is unknown until `PERF-G01`.
 
 ---
 
@@ -43,13 +47,15 @@ Establish the execution time of `FlashKeepaliveWorker.doWork()` on an idle devic
 
 ### What changed
 Baseline always started the headless engine (crypto, TLS, socket bind, NSD registration, AutoConnector) and waited for a
-session before teardown. Now two scalar counts are read first; when both are zero the worker returns `Result.success()`
-without starting the engine. WorkManager's 15-minute period gives four runs an hour, so the old path's ceiling was 4 × 45 s
-of awake time per hour — arithmetic, not a measurement — and the change removes it whenever there is nothing to flush.
+session before teardown. Now two scalar counts are read first; when both are zero **and "Keep listening in the background"
+is off** the worker returns `Result.success()` without starting the engine. WorkManager's 15-minute period gives four runs
+an hour, so the old path's ceiling was 4 × 45 s of awake time per hour — arithmetic, not a measurement — and the change
+removes it whenever there is nothing to flush *and* the person has not asked to stay reachable (ADR-281 amendment).
 
 ### Device test that would measure it
 `PERF-G02`: `adb shell dumpsys jobscheduler` / WorkManager job timing for both paths, plus a `batterystats` diff over six
-hours idle. Baseline figures (45 s awake per run, `~150 mA` peak) are the *old code's own wait*, not an observed draw.
+hours idle, run with the setting off **and** on. Baseline figures (45 s awake per run, `~150 mA` peak) are the *old
+code's own wait*, not an observed draw.
 
 ### Conclusion
 A worker with nothing to do no longer pays for an engine start. How many milliseconds the fast path costs is `PERF-G02`'s

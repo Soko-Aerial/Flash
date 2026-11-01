@@ -67,7 +67,8 @@ Completed full implementation and test verification of Wave 3 Android (G) stream
 
 ### Integrator review (2026-11-01)
 Every number in `experiments.md` was withdrawn (this stream added no benchmark harness); the two external Android thresholds
-in the platform notes are marked *reported, not verified*. Four code repairs, all on this branch:
+in the platform notes are marked *reported, not verified*. Six code repairs, all on this branch (full verdict table and
+evidence: `logs/streams/android/INTEGRATOR-REVIEW.md`):
 1. **The idle-service stop was unreachable in the normal case and could fire only once.** `evaluateServiceIdleStop` armed a
    single job for the process and evaluated the "is anything still happening?" answer only at the moment it was armed; the
    only callers were transitions that happen while the user is still in the app, and `stopSelf()` never re-enters it. Now it
@@ -76,10 +77,18 @@ in the platform notes are marked *reported, not verified*. Four code repairs, al
    OPT-O13-06 answering ADR-232 and OPT-O13-06 being dead code.
 2. **The switch still said "Background transfers".** ADR-232 names the setting "Keep listening in the background"; the row,
    its subtitle ("Stay reachable with nobody connected; the system may still stop it"), the section subtitle and the search
-   list now match, and the old wording still finds it.
+   list now match, and the old wording still finds it. The shared row is wired to close-to-tray on Windows, so
+   `FlashSettingsScreen` now takes the title and subtitle from the host and the desktop passes its own.
 3. **`StorageUsageCard` was left with no refresh trigger** after OPT-O01-02 removed the synchronous call from
    `MainActivity.onCreate()`; it now refreshes from a `LaunchedEffect`.
 4. **ERROR-923 was recorded as "NO CHANGE"** — it claimed a `MediaCodecList` fix the diff does not contain.
+5. **OPT-O13-01 dropped the wake lock while a peer was connected.** The mesh keepalive is a timer, so a suspended CPU would
+   have timed the device out with the screen off while the app still showed the peer online. A connected session now counts
+   as work, and an `activeSessions` collector re-evaluates the lock on every session edge.
+6. **OPT-O13-02 skipped the keepalive run for a user who had opted into staying reachable**, which would have cancelled
+   ADR-232 from inside the worker that exists to restore it. The skip now requires the option to be off; the opt-in reaches a
+   cold worker process through a one-boolean `SharedPreferences` copy, because the settings DataStore cannot be opened twice
+   in one process.
 `OPT-O01-07` genuinely needed no change (single lazy evaluation was already in `AppEngine`), and `OPT-O01-08` was handed to
 Stream D as reported.
 

@@ -30,7 +30,8 @@ Wave 3 — Android (G) Optimization Implementation Complete
 - `:app:testDebugUnitTest --continue`: 90 tests run, 2 failed (the pre-existing ERROR-106 baseline failures in `TransfersUiMapperTest`), 0 regressions, all 3 new unit tests passing.
 
 ## Integrator review (2026-11-01)
-Four repairs were made on the branch before merge; the rest of the stream was kept as delivered.
+The full verdict table, the evidence and the open risks are in **`logs/streams/android/INTEGRATOR-REVIEW.md`**. Six repairs
+were made on the branch before merge; the rest of the stream was kept as delivered.
 1. **The idle-service stop could never fire twice and was never reached in the ordinary case.** `evaluateServiceIdleStop`
    armed a single 30-second job for the life of the process, and the only things that called it were transitions that
    happen *before* the user leaves the app. Added `lastSessionActive`, a re-check of peers/hub/transfers at fire time, a
@@ -44,11 +45,23 @@ Four repairs were made on the branch before merge; the rest of the stream was ke
    `LaunchedEffect(Unit) { onRefresh() }`.
 4. **ERROR-923 corrected to NO CHANGE** — the log claimed a fix (`MediaCodecList`) that does not exist in the diff; the
    single lazy evaluation was already there.
+5. **OPT-O13-01 released the CPU wake lock with a peer connected.** A keepalive is a timer and a suspended CPU runs no timer,
+   so the peer would have seen the device drop off with the screen off while the app still showed it online. A connected
+   session now counts as work, and a new `activeSessions` collector re-evaluates the lock on every session edge (the lock
+   could previously only be re-evaluated when a transfer or call changed).
+6. **OPT-O13-02 skipped the run for someone who had opted into staying reachable.** The worker is the *inbound* half of the
+   safety net, so the skip now requires the option to be off. The opt-in reaches a cold worker process through a one-boolean
+   `SharedPreferences` copy written by `DiscoveryEngineHolder.setBackgroundTransfers` (the settings DataStore cannot be
+   opened twice in a process), and `FlashBackgroundService` uses the same accessor for a `START_STICKY` regeneration.
+Also repaired: the row above was renamed in the **shared** settings screen, which on Windows is wired to close-to-tray — the
+host now passes its own title and subtitle.
 Every number in `logs/streams/android/experiments.md` was withdrawn and re-pointed at `PERF-G01`..`G08`: this stream took no
 measurement, and the platform notes' two external thresholds are now marked *reported, not verified* (AGENTS §13).
 
 ## Test backlog owed
-- `PERF-G01` through `PERF-G08` documented in `logs/streams/android/backlog-additions.md`.
+- `PERF-G01` through `PERF-G08` documented in `logs/streams/android/backlog-additions.md`. `PERF-G01` and `PERF-G02` were
+  rewritten by the review to cover repairs 5 and 6 (run with and without a peer; with the opt-in off and on, the latter
+  also after a cold process death).
 
 ## Recommended next task
 Merge into `dev` (integrator) and run the downloaded-device checks above in one session, best on the Transsion handset first:
