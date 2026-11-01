@@ -506,3 +506,33 @@ certificate lifetime alone - wave 3 has just tuned both.
 
 What not to do: change `POLL_MS` as a performance win (ADR-298), poll the people listing more often "to feel live", or
 gate any of this on window or minimised state.
+
+### 2026-11-01 (owner follow-up) - "the server already holds a socket per device, so why not push the ledger?"
+
+The ledger exists already and is not the hard part: `RelayConnectionPool` keeps `deviceId -> RelaySession`, and every
+`online` flag in the directory is `sessions.containsKey(...)` behind `DirectoryVisibility.presenceVisible(actor, member,
+directory)`. What is new is only the *delivery*, and three constraints decide whether it is a win:
+
+1. **Fan-out.** One connect or disconnect becomes one event per online subscriber, so a phone that flaps (the reconnect
+   storms are real - `ERROR-*` and `PERF-H03`) costs N events x N recipients. The fix is batching plus a debounce on the
+   offline edge, but the roster sizes and churn on real deployments are unmeasured (`PERF-H08`), so this must be sized
+   before it is built.
+2. **The privacy filter is per recipient.** Presence is already gated per viewer by department visibility, so a push is
+   not `broadcastText` with an empty filter: a hidden department's member must not have its liveness revealed. The naive
+   implementation is O(subscribers x roster) per event unless the recipients are grouped by department.
+3. **Snapshot plus delta consistency.** A socket drops, and a client that missed deltas must not keep a wrong set. Deltas
+   therefore need a `seq` and a resync path - the announcements `seq` + changes-feed pattern is the one to copy.
+
+And a limit no push can remove: hub socket presence means "connected to the hub", bounded by the relay's own keepalive
+and timeout. A frozen device (Transsion Hiber, `HIB-10`) can hold the socket open while running nothing, so push makes
+presence **faster, not truer** - which is why the UI has to name the source.
+
+Recommended order, cheaper and safer first:
+
+1. Client discipline: single-flight, jitter, backoff on failure, poll while a consumer exists.
+2. **A delta presence answer** - `GET /directory/presence?since=<seq>` returning the changed device ids, with `ETag` /
+   `304`. No new frame, no fan-out, one small request instead of up to 4 x 500 rows, and the existing poll loop survives
+   almost unchanged. Best value per risk, and it is where a later push plugs in.
+3. The relay push (`PresenceEvent` frame behind a capability token like `ann1`/`fil1`, coalesced about a second, with a
+   debounced offline edge and per-recipient visibility), after which the poll becomes a 2-5 minute reconcile.
+4. UI: name the source.
