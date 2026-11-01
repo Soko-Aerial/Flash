@@ -145,12 +145,17 @@ public sealed interface RelayFrame {
     @Serializable
     @SerialName("FLASH_RECV_ACK")
     public data class RecvAck(
-        public val msgId: String,
+        public val msgId: String = "",
         /**
          * The device that sent [msgId] (the `from` of the delivered frame). Optional and additive (REV-08): two senders may use the
          * same message id, and without it the hub can only acknowledge the oldest stored copy, never both.
          */
         public val from: String? = null,
+        /**
+         * Optional batch of message IDs acknowledged together (OPT-O16-04). When present, the server deletes all
+         * matching mailbox rows in a single batch transaction.
+         */
+        public val ids: List<String>? = null,
     ) : RelayFrame
 
     /**

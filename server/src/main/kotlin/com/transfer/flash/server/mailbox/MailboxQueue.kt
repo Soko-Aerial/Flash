@@ -375,29 +375,40 @@ class MailboxQueue(
         }
     }
 
-    override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> {
+    override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> =
+        acknowledgeBatch(target, listOf(msgId), origin)
+
+    override suspend fun acknowledgeBatch(target: String, msgIds: List<String>, origin: String?): List<AckedRow> {
+        if (msgIds.isEmpty()) return emptyList()
         val rows = database.ioTransaction { conn ->
-            // One row per acknowledgement: the named sender's copy, or the oldest copy when the device did not say whose it was.
-            val found = conn.prepareStatement(
+            val foundRows = ArrayList<Pair<Long, AckedRow>>(msgIds.size)
+            conn.prepareStatement(
                 "SELECT seq, origin_device_id, created_at FROM mailbox_envelopes WHERE target_device_id = ? AND msg_id = ?" +
                     (if (origin != null) " AND origin_device_id = ?" else "") + " ORDER BY seq LIMIT 1",
             ).use { stmt ->
                 stmt.setString(1, target)
-                stmt.setString(2, msgId)
                 if (origin != null) stmt.setString(3, origin)
-                stmt.executeQuery().use { rs ->
-                    if (rs.next()) Triple(rs.getLong(1), rs.getString(2), rs.getLong(3)) else null
+                for (msgId in msgIds) {
+                    stmt.setString(2, msgId)
+                    stmt.executeQuery().use { rs ->
+                        if (rs.next()) {
+                            foundRows.add(rs.getLong(1) to AckedRow(rs.getString(2), msgId, rs.getLong(3)))
+                        }
+                    }
                 }
             }
-            if (found == null) {
-                emptyList()
-            } else {
+            if (foundRows.isNotEmpty()) {
                 conn.prepareStatement("DELETE FROM mailbox_envelopes WHERE seq = ?").use { stmt ->
-                    stmt.setLong(1, found.first)
-                    stmt.executeUpdate()
+                    for ((seq, _) in foundRows) {
+                        stmt.setLong(1, seq)
+                        stmt.addBatch()
+                    }
+                    stmt.executeBatch()
                 }
-                listOf(AckedRow(found.second, msgId, found.third))
             }
+            val result = ArrayList<AckedRow>(foundRows.size)
+            for (p in foundRows) result.add(p.second)
+            result
         }
         if (rows.isNotEmpty()) {
             delivered.addAndGet(rows.size.toLong())

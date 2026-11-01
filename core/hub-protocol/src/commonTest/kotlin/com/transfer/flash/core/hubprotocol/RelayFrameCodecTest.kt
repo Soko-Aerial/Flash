@@ -41,6 +41,7 @@ class RelayFrameCodecTest {
             RelayFrame.Send("dev-2", "m1", "MSG_TEXT", 1, "{\"a\":1}"),
             RelayFrame.Deliver("dev-1", "m1", "MSG_TEXT", 1, "{\"a\":1}", replay = true),
             RelayFrame.RecvAck("m1"),
+            RelayFrame.RecvAck(msgId = "m1", ids = listOf("m1", "m2")),
             RelayFrame.Ack("m1", "dev-2", AckStatus.DUPLICATE_QUEUED, 3, "r"),
             RelayFrame.QueueState("m1", "dev-2", QueueEvent.EXPIRED, 3),
             RelayFrame.Ping(1),
