@@ -53,9 +53,9 @@ in §9; `OPT-O22-03` is the separate gated row.
 | D | **data** | `E:\FlashWork\opt-data` / `agent/opt-data` | 23 | Room/SQLite indexes + PRAGMAs, DAO queries, chat-list state, `RealFlashChatRepository` | 1 |
 | T | **transfer** | `E:\FlashWork\opt-transfer` / `agent/opt-transfer` | 28 | `core:transfer`, media pipeline (`ui:platform-shims`), storage I/O | 2 |
 | U | **ui** | `E:\FlashWork\opt-ui` / `agent/opt-ui` | 28 | Compose stability, chat/conversation responsiveness, optimistic echo | 2 |
-| N | **net** | `E:\FlashWork\opt-net` / `agent/opt-net` | 18 | WebSocket mesh, locks, discovery, presence | 3 |
-| G | **android** | `E:\FlashWork\opt-android` / `agent/opt-android` | 13 | Wake locks, FGS, background workers, Android start-up | 3 |
-| H | **hub** | `E:\FlashWork\opt-hub` / `agent/opt-hub` | 19 | `:server`, console, hub client (`core:enterprise`), hub SQLite | 4 |
+| N | **net** | `E:\FlashWork\opt-net` / `agent/opt-net` | 18 | WebSocket mesh, locks, discovery, presence | 2 — **merged** `8c331229` |
+| G | **android** | `E:\FlashWork\opt-android` / `agent/opt-android` | 13 | Wake locks, FGS, background workers, Android start-up | **3 — next** |
+| H | **hub** | `E:\FlashWork\opt-hub` / `agent/opt-hub` | 19 | `:server`, console, hub client (`core:enterprise`), hub SQLite | **3 — next** |
 | E | **desktop** | `E:\FlashWork\opt-desktop` / `agent/opt-desktop` | 10 | Desktop shell, drop target, toasts, desktop start-up | 4 |
 | K | **kernel** | `E:\FlashWork\opt-kernel` / `agent/opt-kernel` | 10 | `core:common` logging/probes/regex, `core:security` crypto | 4 |
 | S | **swarm** | `E:\FlashWork\opt-swarm` / `agent/opt-swarm` | 14 | `core:swarm` scheduler, HAVE storms, piece storage | 5 |
@@ -170,7 +170,7 @@ other tree compiles with. After A merges, every stream merges `dev` once and reb
 | **0** | **A** | Touches only build files; every later build benefits | Two agents here would both edit `gradle.properties` |
 | **1** | **D** + **T** | Disjoint dirs; D is the 1,700× query win, T is the transfer-freeze cascade | Both are heavy builds; the lock serialises them anyway |
 | **2** | **U** + **N** | Disjoint dirs; U is the 11 FPS → 60 FPS cascade, N is the WhatsApp-style mesh stalls | Neither needs another stream merged; U's optimistic echo is UI-local (§8) |
-| **3** | **G** + **H** | Android battery/background + hub server; no shared file | G's O10 items stay with N — G does not touch `core/discovery` |
+| **3** | **G** + **H** | Android battery/background + hub server; no shared file | G's O10 items stay with N — G does not touch `core/discovery`; it only **calls** `FlashDiscovery.setScreenActive`, which N merged with no caller (`OPT-O10-01`) |
 | **4** | **E** + **K** | Desktop host + shared kernel utilities; both small | K changes `FlashLog`, which every module calls — land it before S/R/C start, so their measurements run on the new logging cost |
 | **5** | **S** + **R** + **C** | The device-gated trio (swarm, radio, calls); each needs phone checks anyway | All three owe device tests, so they interleave with owner test sessions |
 
@@ -979,13 +979,27 @@ O01-04 eager engine assembly + subnet sweep at launch.
 DECIDED (ADR-232, do not record BLOCKED): O13-06 IS approved - the connectedDevice service stops when there is no peer, no
 transfer and no hub connection, plus one opt-in "Keep listening in the background" setting with the honest sentence. O01-01 is
 NOT taken - ADR-080 stands and the splash is never dismissed; change what happens during it, never whether it finishes.
-NOTE: O10-01/O10-02 belong to N. If you need a screen-state signal in discovery, ask N (plan section 4.2).
+NOTE: O10-01/O10-02 were N's and are merged (`8c331229`): `FlashDiscovery.setScreenActive` exists with **no caller** -
+wiring it from the Android host is YOURS (`OPT-O10-01`). You still do not edit `core/discovery`; call the API. Its KDoc
+warns that ECO is a whole-mode switch, so do not fire it mid-call or mid-transfer, and do not treat it as a presence
+source.
 
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- **LESSONS FROM WAVES 1-2 (the integrator paid for these):**
+  - **Grep for a caller before you write "implemented".** Three Wave 1 findings and one Wave 2 finding were "done" and
+    inert: the code existed, compiled and was tested, and no host called it. `git grep '<symbolName>('` outside the tests
+    is the check.
+  - **Never make a test agree with a behaviour change.** Wave 2's `O10-05` raised a sweep interval, broke a test, and was
+    "fixed" by pinning the interval in the test - the test was right and the change was reverted (`ERROR-912`). If a test
+    fails, decide which one is wrong *in the report*, not by editing the assertion.
+  - **The tree you report on must be the tree that compiles.** Wave 2's UI stream reported green gates for a branch whose
+    tip did not build. Run your own gate last, on the tip, and quote the last lines.
+  - **Docs are UTF-8 and stay that way** (`ERROR-013`/`ERROR-913`): edit them with the editor tools, never by round-tripping
+    through PowerShell 5.1 `Get-Content`/`Set-Content` without `-Encoding utf8` on both sides.
 - Verify every Android platform claim against the current official docs before changing behaviour, and write the fact +
-  URL + date into logs/streams/android/platform-notes-additions.md (the integrator folds it into
-  docs/android-platform-notes.md). Never claim background support without a device run.
+  URL + date into `logs/streams/android/platform-notes-additions.md` (the integrator folds it into
+  `docs/android-platform-notes.md`). Never claim background support without a device run.
 - Commit only to agent/opt-android, small commits with the finding ID. Logs only in logs/streams/android/
   (ADR 280-289, ERROR 921-930, EXP 105-109, tests PERF-G*).
 
@@ -1036,6 +1050,17 @@ If you need a server migration, take the next version of its component and recor
 
 RULES
 - Build/test only through: cmd /c "tools\flash-gradle.cmd <tasks>" from your worktree root. Never gradlew.
+- **LESSONS FROM WAVES 1-2 (the integrator paid for these):**
+  - **Grep for a caller before you write "implemented".** Four "finished" findings in Wave 1-2 had no host caller and were
+    inert; `git grep '<symbolName>('` outside the tests is the check.
+  - **Never make a test agree with a behaviour change** (`ERROR-912`): a failing test after a change is a question, not an
+    obstacle. Decide which side is wrong *in the report*.
+  - **The tree you report on must be the tree that compiles.** Quote your own gate's last lines, run on the tip.
+  - **`:server:test` has one documented load flake**
+    (`RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`), green when rerun alone.
+    Rerun it; do not "stabilise" it by relaxing the timing - that is the `ERROR-912` mistake.
+  - **Docs are UTF-8 and stay that way** (`ERROR-013`/`ERROR-913`): edit with the editor tools, never by round-tripping
+    through PowerShell 5.1 `Get-Content`/`Set-Content` without `-Encoding utf8` on both sides.
 - The wire contract is documented: any REST/route change updates docs/protocol-routes.txt (RouteTableContractTest) and
   docs/protocol.md. A hub-file wire change needs an ADR first.
 - Never weaken the sealing, the bearer checks or the per-device limits for speed.
