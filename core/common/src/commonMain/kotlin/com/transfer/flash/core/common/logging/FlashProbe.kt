@@ -255,7 +255,7 @@ public object FlashProbe {
 
     /** Fixed facts about this process for the export header (build, device, local id, switches). Replaces any earlier set. */
     public fun setHeaderFields(fields: List<Pair<String, Any?>>) {
-        headerFields = fields
+        headerFields = fields.toList()
     }
 
     /** Registers the function that renders the live state (sessions, groups) as probe-formatted lines. */
@@ -269,9 +269,10 @@ public object FlashProbe {
      */
     public fun exportHeader(wallClockMs: Long): List<String> {
         val lines = mutableListOf<String>()
+        val fields = headerFields
         val headerSb = StringBuilder("session.header exportAtMs=").append(wallClockMs)
-        for (i in 0 until headerFields.size) {
-            val pair = headerFields[i]
+        for (i in fields.indices) {
+            val pair = fields[i]
             appendField(headerSb, pair.first, pair.second)
         }
         lines += headerSb.toString()

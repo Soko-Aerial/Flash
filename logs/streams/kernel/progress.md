@@ -1,5 +1,37 @@
 # Kernel Stream Progress Log
 
+## 2026-11-01 — Integration review and repaired kernel verification
+
+### Worked on / changed
+Reviewed delivered `6d9c9227` against actual base `baf77753`, code, callers and tests. Four defects repaired:
+immutable copied SPKI map keys (`ERROR-953`), cached Provider selection instead of retained keyed Cipher/Mac
+ThreadLocals (`ERROR-954`), one copied header-field snapshot per probe export (`ERROR-955`), and synchronized
+logger dequeue/format/persist/flush (`ERROR-956`). Export also rejects replacing rotating source files; parse
+operations own fresh KeyFactory instances. Added global-log-state cleanup, Unicode/locale/concurrency and crypto/
+flush regressions. Algorithms, nonce/AAD, pinning and wire bytes are unchanged.
+
+### Why / limits
+The delivered caches could accept invalid mutated SPKI and retain keyed capability; the logger/probe races broke
+export/flush invariants. All performance figures are WITHDRAWN/NOT MEASURED (`EXP-120..124`); no paired harness
+was delivered. Flat/log APIs need appropriate callers; gzip has no app caller. RNG and transfer hashing targets
+are partial, not completed programme-wide. ADR-310..314 and `INTEGRATOR-REVIEW.md` carry the reviewed dispositions.
+
+### Verification
+Forced repaired run through lock from this worktree:
+`powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:jvmTest :core:common:testAndroidHostTest :core:security:jvmTest :core:security:testAndroidHostTest --continue --no-configuration-cache --no-daemon --rerun-tasks --no-build-cache --console=plain`
+**BUILD SUCCESSFUL in 3m 50s**, 32/32 tasks executed, exit 0. Common JVM 19, common Android host 144, security
+JVM 174 (2 documented POSIX-only Windows skips), security Android host 265 in 33 suites: **602 tests, 0 failures/errors**.
+Mutable-SPKI and in-flight-flush regressions failed on delivered code and pass after repair. Only source KDoc
+clarification followed this run. This is targeted verification, not a fresh merged-tree integration gate.
+
+### Remaining / next AI
+Repairs uncommitted/unmerged at this entry; finish/fold fragments, commit, merge --no-ff and force both expanded
+gates on merged dev. Physical/manual `PERF-K01..K05` are TODO. No push/deploy/phone access; no presence or Wave 5
+implementation. Preserve ERROR-951 and supersede ERROR-952's keyed-cache workaround. Stop daemons through lock
+at session end. The delivered report below is historical, not the current verification contract.
+
+## SUPERSEDED delivered account (preserved; performance/completion claims withdrawn)
+
 ## 2026-11-01 — Kernel Stream (K) Optimizations Complete
 
 ### Worked on

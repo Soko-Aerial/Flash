@@ -28,6 +28,27 @@ class SearchFoldingTest {
     }
 
     @Test
+    fun compatibility_normalization_combining_marks_and_non_latin_text_are_preserved() {
+        val cases = listOf(
+            "Ｆｌａｓｈ ① ﬁ" to "flash 1 fi",
+            "Café" to "cafe",
+            "İSTANBUL" to "istanbul",
+            "Straße" to "straße",
+            "ΜΆΡΙΑ" to "μαρια",
+            "東京😀" to "東京😀",
+            "́̈" to "",
+        )
+        for ((input, expected) in cases) assertEquals(expected, foldForSearch(input), input)
+    }
+
+    @Test
+    fun eviction_does_not_change_results() {
+        val first = foldForSearch("Éviction")
+        repeat(1_024) { assertEquals("name $it", foldForSearch("NAME $it")) }
+        assertEquals(first, foldForSearch("Éviction"))
+    }
+
+    @Test
     fun repeatedCallsReturnCachedResultIdentically() {
         val first = foldForSearch("Béatrice Owusu")
         val second = foldForSearch("Béatrice Owusu")

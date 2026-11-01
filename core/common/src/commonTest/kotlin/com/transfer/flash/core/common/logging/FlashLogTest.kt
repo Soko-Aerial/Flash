@@ -19,9 +19,13 @@ class FlashLogTest {
     )
 
     private val records = mutableListOf<LoggedRecord>()
+    private lateinit var previousSink: FlashLogSink
+    private var previousLevel = FlashLogLevel.INFO
 
     @BeforeTest
     fun setUp() {
+        previousSink = FlashLog.sink
+        previousLevel = FlashLog.minLevel()
         records.clear()
         FlashLog.installSink(FlashLogSink { level, tag, message, throwable ->
             records += LoggedRecord(level, tag, message, throwable)
@@ -31,7 +35,8 @@ class FlashLogTest {
 
     @AfterTest
     fun tearDown() {
-        FlashLog.setMinLevel(FlashLogLevel.INFO)
+        FlashLog.setMinLevel(previousLevel)
+        FlashLog.installSink(previousSink)
     }
 
     @Test

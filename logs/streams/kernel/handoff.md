@@ -1,5 +1,23 @@
 # Current Handoff — Kernel Stream (K)
 
+## Integration stopping point — 2026-11-01
+- **Branch/worktree:** `agent/opt-kernel`, `E:/FlashWork/opt-kernel`; actual merge-base `baf77753`, delivered tip `6d9c9227`.
+- **Phase:** review complete; repaired code targeted-tested, repairs and corrected fragments still uncommitted/unmerged.
+- **Last verified build:** repaired worktree, 602 tests, zero failures/errors, two documented POSIX-only skips;
+  BUILD SUCCESSFUL in 3m 50s, all 32 tasks executed, exit 0. Exact command in `INTEGRATOR-REVIEW.md`/progress.
+- **Working structural changes:** level/lambda logging, flat/direct-format probes with stable export snapshot,
+  writer formatting with in-flight-aware flush and stable gzip API, immutable public-key LRU, fresh keyed JCA
+  operations from cached Provider selection, non-keyed SHA reuse, KeyFileVault shared RNG, equivalent cached NFKD.
+- **Rejected approach:** keyed Cipher/Mac ThreadLocals retain keyed capability; ERROR-952 workaround superseded.
+- **Limits:** no performance figure established; gzip has no app caller, RNG/transfer hashing targets partial.
+  Android Share logs remains text/plain. Raw bounded queues do not authorize secret logging or durable-delivery claims.
+- **Owed:** PERF-K01..K05. No physical provider/device verification, push or deployment.
+- **Next:** fold corrected records, commit repairs, merge --no-ff, run both expanded gates on merged dev, then
+  stop daemons and remove this worktree only after green integration (keep branch).
+- **Authority:** `INTEGRATOR-REVIEW.md`, reviewed ADR/error/experiment/backlog fragments.
+
+## SUPERSEDED delivered handoff (preserved; not the current stopping point)
+
 ## Current branch
 `agent/opt-kernel` (worktree `E:\FlashWork\opt-kernel`, branched from `dev` at `44eed960`)
 
