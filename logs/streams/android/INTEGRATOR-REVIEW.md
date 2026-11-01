@@ -146,6 +146,7 @@ now names the `PERF-G*` test that has to establish it. The two external Android 
 
 ## 6. Owed device tests
 
-`PERF-G01`..`PERF-G08` in this stream's `backlog-additions.md`, folded into `docs/testing/TEST-BACKLOG.md` §4zp. `PERF-G01`
+`PERF-G01`..`PERF-G08` in this stream's `backlog-additions.md`, folded into `docs/testing/TEST-BACKLOG.md` as the
+`PERF-G01..G08` section at the end of the file (§4zp was already the radio link tooling). `PERF-G01`
 and `PERF-G02` were rewritten to cover the two repairs above — `PERF-G01` now runs with **and** without a connected peer, and
 `PERF-G02` runs with the opt-in **off** (skip) and **on**, including after a cold process death (boot).

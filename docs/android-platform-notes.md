@@ -833,3 +833,82 @@ Therefore, Flash's custom Jetpack Compose list is the primary recommended design
    - *Status:* **UNPROVEN**.
    - When an analog FM signal breaks squelch on the radio receiver, does the radio route discriminator audio into the Bluetooth SCO uplink (acting as a microphone stream to a connected smartphone/PC)?
    - When paired to a wireless headset (radio as AG), it routes audio to the headset speaker. But when paired to a phone, whether the radio functions as an audio source for received RF is **UNPROVEN**.
+
+## 2026-11-01 - Wake locks, screen state, FGS idleness and audio focus (Stream G, ADR-280..285)
+
+Platform facts the Wave 3 Android stream relied on. Each is marked **verified** (the page was opened and says this),
+**reported** (believed true, no source opened) or **not checked**, per §13 of `AGENTS.md`.
+
+### Android version / API level
+- `WakeLock.acquire(long timeout)`: API 1.
+- `PowerManager.isInteractive()`: API 20 (replaced the deprecated `isScreenOn()`).
+- `RECEIVER_NOT_EXPORTED` for context-registered receivers: required from API 34 (behaviour published with Android 14).
+- `Service.onTimeout(int, int)` for a `dataSync` foreground service: API 35 (Android 15).
+- Audio focus (`AUDIOFOCUS_LOSS`, `AUDIOFOCUS_REQUEST_FAILED`): API 8, reworked in API 26.
+
+### 1. `PowerManager.WakeLock.acquire(long timeout)` - **verified**
+https://developer.android.com/reference/android/os/PowerManager.WakeLock#acquire(long) (fetched 2026-11-01)
+
+Acquires the lock and guarantees release after the given timeout if the caller has not released it. A safety timeout is what
+keeps a leaked lock from blocking AP suspend when a background task fails or aborts.
+
+- **Not verified:** that Play/Vitals penalise a continuous background wake lock past a specific hour threshold. No policy page
+  stating such a number was opened; the project's reason to bound the lock rests on the leak argument alone.
+- **Project implication:** `DiscoveryEngineHolder` applies `WAKE_LOCK_TIMEOUT_MS = 10 min` to every acquisition and holds
+  bounded leases for background workers (ADR-280). The lock is now released when the last peer session, transfer, call, PTT
+  floor or lease goes.
+
+### 2. `PowerManager.isInteractive()` - **verified**
+https://developer.android.com/reference/android/os/PowerManager#isInteractive() (fetched 2026-11-01)
+
+`true` when the device is interactive — the screen is on and able to show content.
+
+- **Project implication:** gates the discovery downscale to ECO (ADR-283) and the Transsion keep-alive audio (ADR-285). Note
+  it is not the same question as "is the app foreground": a device can be interactive with Flash in the background, which is
+  why `FlashBackgroundService`'s idle stop asks both.
+
+### 3. Context-registered screen receivers need `RECEIVER_NOT_EXPORTED` - **verified**
+https://developer.android.com/about/versions/14/behavior-changes-14#context-registered-broadcasting (fetched 2026-11-01)
+
+Apps targeting API 34+ must pass `RECEIVER_EXPORTED` or `RECEIVER_NOT_EXPORTED` when registering a receiver from a context.
+Protected system broadcasts — `ACTION_SCREEN_ON`, `ACTION_SCREEN_OFF`, `ACTION_USER_PRESENT` — are the
+`ContextCompat.RECEIVER_NOT_EXPORTED` case (they are sent by the system, never by another app).
+
+- **Project implication:** `DiscoveryEngineHolder` and `TranssionHiberKeepAlive` both register with
+  `ContextCompat.RECEIVER_NOT_EXPORTED`. Left off, the registration throws on API 34+, which would have taken the whole
+  screen-state feature down on the devices it matters most for.
+
+### 4. Android 15 `dataSync` foreground-service hard timeout - **verified**
+https://developer.android.com/about/versions/15/behavior-changes-15#data-sync-timeout (fetched 2026-11-01)
+
+A `dataSync` foreground service has a cumulative 6-hour budget per 24 hours. At the limit the system calls
+`Service.onTimeout(int, int)` and the app has a few seconds to stop the service; failing to call `stopSelf()` is an ANR or a
+crash.
+
+- **Project implication:** `FlashBackgroundService.onTimeout` must pause every transfer the plan names before `stopSelf()`.
+  `TimeoutStopPlan` now counts `Verifying` as well as `Transferring` (ADR-282) — a multi-gigabyte file spends longer hashing
+  than the row says it is "transferring", and that is exactly where the budget can land.
+
+### 5. Google Play policy on `connectedDevice` foreground services - **verified** (policy sentence), **reported** (standby claim)
+https://support.google.com/googleplay/android-developer/answer/13392821 (fetched 2026-11-01)
+
+`FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` may only be maintained while actively communicating or interacting with an external
+connected device, so holding it indefinitely with nothing connected is a policy violation.
+
+- **Reported, not verified:** that holding it also keeps the process out of the `RESTRICTED`/`RARE` App Standby buckets.
+  Plausible, but no page opened says so. The policy sentence alone justifies the idle stop.
+- **Project implication:** `FlashBackgroundService.evaluateServiceIdleStop` stops the service after a 30 s grace period with
+  no sessions, transfers, calls, PTT or online hub relay and no foreground interactivity — unless the user opted into "Keep
+  listening in the background" (ADR-284). The timer is re-armed from `MainActivity.onStop`, re-reads the live state when it
+  expires, and can re-arm after a declined round.
+
+### 6. Audio focus: a lost focus must not be re-requested at once - **verified**
+https://developer.android.com/media/optimize/audio-focus (fetched 2026-11-01)
+
+When another app takes audio focus the system sends `AUDIOFOCUS_LOSS`; a permanent loss means stop playing and do not
+immediately ask for focus again. Thrashing focus makes the other app's playback stutter or pause.
+
+- **Project implication:** `TranssionHiberKeepAlive` arms a 10-minute cooldown on `AUDIOFOCUS_LOSS` or a refused request,
+  during which it falls back to the Bluetooth-scan or network-traffic shield, and clears the cooldown when the app is
+  foregrounded (ADR-285). Residual, stated for the record: during that window the shield it would have used is spent, so a
+  Transsion device may freeze — the right trade against interrupting the user's music, but not a free one.

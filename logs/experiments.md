@@ -2421,3 +2421,189 @@ code was always fresh. That is a deliberate trade (5 s of possible staleness for
 
 ### Conclusion
 KEEP, requantified. The count is arithmetic; a real IPC measurement would need a Binder trace, which nobody has run.
+
+---
+
+## 2026-11-01 - Wave 3 (Stream G, Android): EXP-105..EXP-108, none of them measured
+
+Every entry below is a **design expectation** written from the code diff. The first version of the stream's file asserted
+currents ("15-35 mA"), durations ("< 35 ms") and duty cycles ("< 5 %", "> 90 % deep sleep") that no device produced; those
+numbers are withdrawn and each entry names the `PERF-G0n` test in `docs/testing/TEST-BACKLOG.md` that would establish one.
+Nothing here may be quoted as a measurement until that test runs (§23; same treatment as Wave 2's `EXP-095`..`098`).
+
+### EXP-105 - Standby wake lock lease duty cycle (design expectation, NOT measured)
+
+**Objective.** Establish that `DiscoveryEngineHolder` releases the CPU partial wake lock when the mesh is genuinely idle — no
+transfers, no calls, no PTT session, no lease **and no connected peer** — so the AP can power-collapse in standby.
+
+**Code under test.** `updateCpuWakeLockState()`, `acquireWakeLockLease()`, `WAKE_LOCK_TIMEOUT_MS`,
+`WAKE_LOCK_REFRESH_INTERVAL_MS`, the `activeSessions` collector.
+
+**What changed.** The baseline held `wakeLock.acquire()` from engine start to teardown with no timeout. The lock is now held
+only while a transfer is `Transferring`/`Verifying`, a call is live, a PTT floor is open, a host holds a bounded lease
+(`FlashKeepaliveWorker` does, for its session window), **or at least one peer session is connected**. The peer term was added
+on review (ADR-280 amendment): the mesh keepalive is a timer, a suspended CPU runs no timer, so without it a connected phone
+would drop off the mesh with the screen off — the original reason the lock existed.
+
+**Device test that would measure it.** `PERF-G01`: two-hour screen-off idle standby on an Infinix X6882B and a Samsung, once
+with no peer and once with one, `dumpsys power` wake-lock totals and `dumpsys batterystats` drain against a reverted build on
+the same day.
+
+**Conclusion.** Structural only: a wake lock with a bounded lease cannot outlive the work that justified it, and a connected
+session is such work. The duty cycle it produces is unknown until `PERF-G01`.
+
+---
+
+### EXP-106 - Headless keepalive worker fast path (design expectation, NOT measured)
+
+**Objective.** Establish the execution time of `FlashKeepaliveWorker.doWork()` on an idle device with an empty outbox.
+
+**Code under test.** The pre-boot `SELECT COUNT(*)` checks in `FlashKeepaliveWorker.kt`.
+
+**What changed.** The baseline always started the headless engine (crypto, TLS, socket bind, NSD registration, AutoConnector)
+and waited for a session before teardown. Two scalar counts are now read first; when both are zero **and "Keep listening in
+the background" is off** the worker returns `Result.success()` without starting the engine. WorkManager's 15-minute period
+gives four runs an hour, so the old path's ceiling was 4 x 45 s of awake time per hour — arithmetic, not a measurement — and
+the change removes it whenever there is nothing to flush and the person has not asked to stay reachable (ADR-281 amendment).
+
+**Device test that would measure it.** `PERF-G02`: `dumpsys jobscheduler` / WorkManager job timing for both paths plus a
+`batterystats` diff over six idle hours, with the setting off and on. The baseline figures (45 s awake per run, ~150 mA peak)
+are the old code's own wait, not an observed draw.
+
+**Conclusion.** A worker with nothing to do no longer pays for an engine start. How many milliseconds the fast path costs is
+`PERF-G02`'s answer.
+
+---
+
+### EXP-107 - Transsion Tier 3 audio gating when the screen is on (design expectation, NOT measured)
+
+**Objective.** Establish that `TranssionHiberKeepAlive` keeps the silent `AudioTrack` paused while the screen is interactive.
+
+**Code under test.** `startAudio()`, `onScreenStateChanged()`, the `ACTION_SCREEN_ON`/`ACTION_SCREEN_OFF` receiver.
+
+**What changed.** Tier 3 played the silent PCM loop for as long as the session was active. `play()` now happens only when
+`PowerManager.isInteractive` is false: `startAudio()` reads it before playing, `onScreenStateChanged(true)` pauses, and
+`onScreenStateChanged(false)` resumes if the session is still active and no permanent-focus-loss cooldown is running. The
+Hiber freezer only freezes with the screen off (see the Transsion notes), so nothing is given up.
+
+**Device test that would measure it.** `PERF-G04`: `dumpsys audio` for the owning client and a `batterystats` drain comparison
+with the screen on and the app foregrounded for 30 minutes, gating on versus off. The audio-path current it saves is unknown.
+
+**Conclusion.** The audio path is idle whenever it cannot help. Any mAh figure quoted for it is unmeasured.
+
+---
+
+### EXP-108 - Subnet sweep deferral during cold start (design expectation, NOT measured)
+
+**Objective.** Establish that a cold start no longer floods the local /24 with TCP connect probes while SQLite and the first
+frame are being prepared.
+
+**Code under test.** `DiscoveryEngineHolder.kt`, `INITIAL_SWEEP_START_DELAY_MS = 30_000L`.
+
+**What changed.** `sweep.start()` ran at engine start — up to 254 probes against port 45822 alongside database open and
+Compose's first frame. The automatic fallback sweep now starts 30 s later; mDNS/NSD discovery, cached routes and an explicit
+"Scan network" are unaffected and still immediate.
+
+**Device test that would measure it.** `PERF-G07`: a Perfetto/systrace start-up trace on a cold start with a cleared cache,
+comparing probe-start timestamps and first-frame time against the reverted build.
+
+**Conclusion.** Two sources of contention no longer overlap by construction. The launch-time saving is `PERF-G07`'s to state.
+
+---
+
+## 2026-11-01 - Wave 3 (Stream H, hub): EXP-110..EXP-114, none of them measured
+
+The stream's file printed tables ("14.8 ms -> 0.18 ms", "42.5 MB -> 3.8 MB", "-94 % frames") that it never took: no benchmark
+harness was added to the branch, and every suite it named as the environment (`FileStoreTest`, `HubFileTransfersTest`,
+`RelayFrameRouterTest`, ...) is a correctness test that asserts nothing about time or heap. Every figure is **withdrawn**; each
+entry states what changed, what it should do, and the measurement that would have to establish it.
+
+### EXP-110 - Chunk write lock hold time (`OPT-O17-02`) - NOT MEASURED
+
+**What changed.** `FileStore.putChunk` used to write the chunk's bytes to disk **inside** `db.withTransaction`, so every 1 MiB
+write held SQLite's single writer while the filesystem worked. The bytes are now staged to a uniquely named `chunk-*.part`
+outside the transaction, and the transaction renames them into place and records the row.
+
+**What it should do.** Shorten the exclusive write window to "one rename plus one insert", so concurrent writers (mailbox,
+presence, directory) are not queued behind disk I/O.
+
+**Atomicity, stated precisely (integrator).** The stream's first version wrote and moved the file before opening the
+transaction, which gave up "a committed `file_chunk` row implies a present chunk file" — a crash in between left a row whose
+download would 500, and `complete()` checks counts and byte totals, not file presence. The integrator's repair keeps the
+saving and moves the publish inside the transaction before the row insert (ADR-290). SQLite's single writer makes
+check+rename atomic for this purpose.
+
+**Measurement that would establish it.** `:server:test` with `System.nanoTime()` around `withTransaction` for 1 000 sequential
+1 MiB chunks, plus a two-thread contention run comparing a small mailbox write against a concurrent upload. Neither exists;
+`PERF-H05` records it as owed, `PERF-H07` covers the crash half.
+
+**Conclusion.** Structural: disk latency is no longer inside the writer lock. The size of the win is unmeasured.
+
+---
+
+### EXP-111 - Bounded concurrent chunk pipeline (`OPT-O16-01`) - NOT MEASURED
+
+**What changed.** `HubFileTransfers` uploads and downloads up to `CHUNK_CONCURRENCY = 3` chunks at once over a `Channel<Int>`
+instead of one chunk per round trip.
+
+**What it should do.** Keep roughly three requests in flight, so per-chunk round-trip latency stops being the throughput
+ceiling on a link whose bandwidth-delay product exceeds one chunk.
+
+**Measurement that would establish it.** `PERF-H02`: a 50 MiB upload through the real Ktor host on a link with an injected
+50 ms RTT, concurrency 1 versus 3, six runs each, reporting throughput and peak RSS. The earlier table (3 350 ms -> 1 220 ms,
+"2.75x") was written without that harness and is withdrawn.
+
+**Conclusion.** The pipeline is bounded (three chunk buffers, not the whole file) and correctness is covered by the existing
+tests. The speedup is unmeasured and will depend on latency.
+
+---
+
+### EXP-112 - Directory sync streaming (`OPT-O16-02`, `OPT-O25-02`) - NOT MEASURED
+
+**What changed.** The server's sync generation computes department counts once (O(M+D)) instead of a nested scan per member,
+and the client stages `StagedMember` as it reads each page instead of materialising the whole page's derived data first.
+
+**What it should do.** Remove an allocation spike proportional to page size on the client at large organisations, and shorten
+server generation time on the member x department term.
+
+**Measurement that would establish it.** `PERF-H01`: a 20 000-member / 100-department fixture, a `-Xmx256m` server JVM,
+recording generation time and client peak heap (`MemoryMXBean` peak before/after `applySyncBatch`). The old table's
+"480 ms -> 65 ms" and "42.5 MB -> 3.8 MB" came from no such run.
+
+**Conclusion.** Complexity is genuinely lower on the department-count path (visible in the code, not inferred from timing).
+The heap effect is unmeasured.
+
+---
+
+### EXP-113 - Group fan-out frame encoding (`OPT-O17-03`) - NOT MEASURED
+
+**What changed.** `RelayFrameRouter.handleGroupSend` encodes the outbound frame once and reuses the encoded text for every
+recipient instead of re-serialising per member.
+
+**What it should do.** Make fan-out cost proportional to socket writes rather than to (members x serialisation). Sound
+because `RelayFrame.Deliver` carries nothing recipient-specific; the write is still per recipient.
+
+**Measurement that would establish it.** `PERF-H06`: 500 fake sessions, time `handleGroupSend` and count allocations with
+Flight Recorder (`jdk.ObjectAllocationSample`), once with reuse and once with per-recipient encoding. The old "8.2 ms ->
+0.4 ms, -95 %" figures were not measured.
+
+---
+
+### EXP-114 - Batched mailbox receipt acknowledgements (`OPT-O16-04`) - NOT MEASURED, AND NOT REACHED
+
+**What changed.** The server accepts a `RecvAck` frame carrying up to 100 message ids and deletes them in one transaction
+(`MailboxQueue.acknowledgeBatch`); `FlashRelayClient.acknowledgeReceipts` splits a longer list into frames of at most 100,
+the codec's own limit.
+
+**What is not true.** `HubChatBridge.handleInbound` still acknowledges one delivery at a time and no product path calls
+`acknowledgeReceipts(ids)`. A device draining a mailbox therefore sends the same number of frames it always did, and the
+"-94 % frames / 200 -> 10-12" table described a client that does not exist. The transport is built; the drain is batched;
+the client's ack pattern is not (ADR-296).
+
+**Fix needed before it can help.** Have `HubChatBridge`/the mailbox drain collect acknowledged ids per batch and call
+`acknowledgeReceipts` once per drain. That is a messaging-side change, left to the next stream rather than smuggled in here.
+
+**Measurement that would establish it.** `PERF-H04` plus a mailbox fixture: 200 queued messages, counting inbound frames and
+`ioTransaction` calls on the server for (a) today's per-delivery ack, (b) a batched drain.
+
+**Conclusion.** Server-side batching exists and is tested. The advertised saving does not happen yet.
