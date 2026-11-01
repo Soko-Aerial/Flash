@@ -43,3 +43,50 @@ Ran `:core:common:testAndroidHostTest` via `tools\flash-gradle.cmd`. 124 tests c
 
 ### Status
 RESOLVED
+
+
+## ERROR-952 — SunJCE InvalidAlgorithmParameterException: Cannot reuse iv for GCM encryption on cached ThreadLocal Cipher
+
+### Date
+2026-11-01
+
+### Area
+Cryptographic Primitives / AES-GCM (`core:security`)
+
+### Symptoms
+`:core:security:jvmTest` failed during `HubFileSealingTest`:
+```text
+HubFileSealingTest[jvm] > resealingIsDeterministicSoAResumedUploadRepeatsItsBytes[jvm] FAILED
+    java.security.InvalidAlgorithmParameterException: Cannot reuse iv for GCM encryption
+        at java.base/com.sun.crypto.provider.GaloisCounterMode.init(GaloisCounterMode.java:147)
+        at java.base/com.sun.crypto.provider.GaloisCounterMode.engineInit(GaloisCounterMode.java:289)
+        at java.base/javax.crypto.Cipher.init(Cipher.java:1493)
+        at java.base/javax.crypto.Cipher.init(Cipher.java:1422)
+        at com.transfer.flash.core.security.crypto.PlatformCrypto_jvmKt.aesGcmSeal(PlatformCrypto.jvm.kt:119)
+        at com.transfer.flash.core.security.enterprise.HubFileSealing.sealChunk(HubFileSealing.kt:160)
+        at com.transfer.flash.core.security.enterprise.HubFileSealingTest.resealingIsDeterministicSoAResumedUploadRepeatsItsBytes(HubFileSealingTest.kt:110)
+```
+
+### Environment
+- Branch: `agent/opt-kernel`
+- Commit compared against: `44eed960`
+- JDK: OpenJDK / JBR 21 on Windows
+
+### Root cause
+In Java 8u60+, Oracle SunJCE's `GaloisCounterMode.init(ENCRYPT_MODE, ...)` tracks the previous key and IV used by that specific `Cipher` instance. If `init` in `ENCRYPT_MODE` is called on the *same* `Cipher` instance with the identical `(key, IV)` pair consecutively, SunJCE raises `InvalidAlgorithmParameterException("Cannot reuse iv for GCM encryption")` to enforce NIST SP 800-38D. When `PlatformCrypto.aesGcmSeal` was optimized to cache `Cipher.getInstance(AES_GCM)` in a `ThreadLocal`, consecutive calls sealing the same deterministic chunk (such as chunk 0 during upload resume verification in `resealingIsDeterministicSoAResumedUploadRepeatsItsBytes`) re-initialized the same Cipher object with identical key and nonce, triggering the exception.
+
+### Failed attempts
+None.
+
+### Working fix
+In both `PlatformCrypto.jvm.kt` and `PlatformCrypto.android.kt`, wrapped `aesGcmCipher.get()!!.init(...)` in a `try-catch` block catching `InvalidAlgorithmParameterException`. On the rare path where identical parameters are reused consecutively on the same thread, instantiate a fresh `Cipher.getInstance(AES_GCM)`, update the `ThreadLocal`, and initialize it. Normal traffic (monotonic nonces or random IVs) incurs zero provider lookups and zero allocations.
+
+### Verification
+Ran `:core:security:jvmTest` and `:core:security:testAndroidHostTest`. 170 tests in `jvmTest` and 33 test suites in `androidHostTest` passed with 0 failures.
+
+### Related files
+- `core/security/src/jvmMain/kotlin/com/transfer/flash/core/security/crypto/PlatformCrypto.jvm.kt`
+- `core/security/src/androidMain/kotlin/com/transfer/flash/core/security/crypto/PlatformCrypto.android.kt`
+
+### Status
+RESOLVED
