@@ -16,7 +16,7 @@ Completed full implementation and test verification of Wave 3 Android (G) stream
   - `OPT-O13-04`: Gated Transsion Tier 3 silent `AudioTrack` playback on `PowerManager.isInteractive == false`, pausing audio DSP power collapse when the screen is active.
   - `OPT-O13-07`: Added 10-minute cooldown backoff latch in `TranssionHiberKeepAlive.kt` upon permanent audio focus loss (`AUDIOFOCUS_LOSS`) to eliminate focus fighting with music players (Spotify).
   - `OPT-O01-04`: Deferred automatic background subnet sweep fallback by 30 seconds (`INITIAL_SWEEP_START_DELAY_MS`) in `DiscoveryEngineHolder.kt` during cold start.
-  - `OPT-O13-06`: Implemented idle foreground service shutdown after 30 seconds with 0 peers, 0 transfers, and 0 hub connection in `FlashBackgroundService.kt`, with user opt-in setting `backgroundTransfers` ("Keep listening in the background") preserved per ADR-232.
+  - `OPT-O13-06`: implemented idle foreground service shutdown ~30 s after the app leaves the foreground with 0 peers, 0 transfers and 0 hub connection in `FlashBackgroundService.kt`, with the user opt-in setting `backgroundTransfers` ("Keep listening in the background") preserved per ADR-232. **Repaired on review**: as delivered the timer was armed once per process and never re-checked, so the ordinary "open, then leave" sequence never stopped the service — see the integrator note below.
 
 ### Changed
 - `DiscoveryEngineHolder.kt`:
@@ -63,7 +63,25 @@ Completed full implementation and test verification of Wave 3 Android (G) stream
   - `git grep "acquireWakeLockLease(" app/` $\rightarrow$ called in `FlashKeepaliveWorker.kt`.
 
 ### Remaining
-- Device testing owed for `PERF-G01` through `PERF-G06` recorded in `logs/streams/android/backlog-additions.md`.
+- Device testing owed for `PERF-G01` through `PERF-G08` recorded in `logs/streams/android/backlog-additions.md`.
+
+### Integrator review (2026-11-01)
+Every number in `experiments.md` was withdrawn (this stream added no benchmark harness); the two external Android thresholds
+in the platform notes are marked *reported, not verified*. Four code repairs, all on this branch:
+1. **The idle-service stop was unreachable in the normal case and could fire only once.** `evaluateServiceIdleStop` armed a
+   single job for the process and evaluated the "is anything still happening?" answer only at the moment it was armed; the
+   only callers were transitions that happen while the user is still in the app, and `stopSelf()` never re-enters it. Now it
+   records `lastSessionActive`, re-checks peers / relay / transfers / foreground at fire time, re-arms after each expiry, and
+   `MainActivity.onStop()` calls the new `FlashBackgroundService.reevaluateIdleStop()`. This is the difference between
+   OPT-O13-06 answering ADR-232 and OPT-O13-06 being dead code.
+2. **The switch still said "Background transfers".** ADR-232 names the setting "Keep listening in the background"; the row,
+   its subtitle ("Stay reachable with nobody connected; the system may still stop it"), the section subtitle and the search
+   list now match, and the old wording still finds it.
+3. **`StorageUsageCard` was left with no refresh trigger** after OPT-O01-02 removed the synchronous call from
+   `MainActivity.onCreate()`; it now refreshes from a `LaunchedEffect`.
+4. **ERROR-923 was recorded as "NO CHANGE"** — it claimed a `MediaCodecList` fix the diff does not contain.
+`OPT-O01-07` genuinely needed no change (single lazy evaluation was already in `AppEngine`), and `OPT-O01-08` was handed to
+Stream D as reported.
 
 ### Next AI / Integrator
 Fold log additions into root documentation (`docs/android-platform-notes.md`, `docs/decisions.md`, `docs/testing/TEST-BACKLOG.md`) and run the integration gate.

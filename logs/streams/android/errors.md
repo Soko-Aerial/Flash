@@ -78,13 +78,17 @@ Compiler warning in `:app:compileDebugKotlin`: `'static field TRIM_MEMORY_RUNNIN
 - Branch: `agent/opt-android`
 
 ### Root cause
-API 35 deprecates certain ComponentCallbacks2 granular constants in favor of broader memory management tiers.
+API 35 deprecates some `ComponentCallbacks2` memory constants in favour of broader tiers. The constants are still what
+the pre-API-35 path maps from, so the deprecation is not something to remove.
 
 ### Working fix
-Retained standard mapping for compatibility with older Android releases while suppressing obsolete warnings or using standard when branches.
+**Nothing was changed for this.** The warning stays: `FlashApplication.kt` is byte-identical to `dev` on this branch, and
+the deprecated constants are still what the mapping needs on older releases. (The first version of this entry claimed a
+fix — "retained standard mapping … while suppressing obsolete warnings or using standard when branches" — that does not
+exist in the diff; corrected here so nobody looks for it.)
 
 ### Verification
-`:app:compileDebugKotlin` builds cleanly.
+`:app:compileDebugKotlin` builds cleanly *with the warning present*.
 
 ### Status
-RESOLVED
+NO CHANGE — accepted warning, not a defect

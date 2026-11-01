@@ -21,14 +21,36 @@ Wave 3 — Android (G) Optimization Implementation Complete
 - `OPT-O13-04`: Transsion Tier 3 silent `AudioTrack` paused when screen is interactive (`PowerManager.isInteractive == true`).
 - `OPT-O13-07`: 10-minute cooldown on permanent audio focus loss in `TranssionHiberKeepAlive` to prevent fighting music players.
 - `OPT-O01-04`: Deferred automatic background subnet sweep fallback by 30 seconds during cold start.
-- `OPT-O13-06`: ConnectedDevice FGS auto-stop after 30s idle with 0 peers/transfers/hub unless user enabled background listening setting.
+- `OPT-O13-06`: the `connectedDevice` FGS stops ~30 s after the app leaves the foreground with nobody connected, nothing
+  queued and no hub session, unless the user enabled "Keep listening in the background" (ADR-232). Re-checked at fire time
+  and re-armed on every evaluation (integrator repair — see below).
 
 ## Verification results
 - `:app:compileDebugKotlin` and `:app:compileDebugAndroidTestKotlin`: PASS (exit code 0).
 - `:app:testDebugUnitTest --continue`: 90 tests run, 2 failed (the pre-existing ERROR-106 baseline failures in `TransfersUiMapperTest`), 0 regressions, all 3 new unit tests passing.
 
+## Integrator review (2026-11-01)
+Four repairs were made on the branch before merge; the rest of the stream was kept as delivered.
+1. **The idle-service stop could never fire twice and was never reached in the ordinary case.** `evaluateServiceIdleStop`
+   armed a single 30-second job for the life of the process, and the only things that called it were transitions that
+   happen *before* the user leaves the app. Added `lastSessionActive`, a re-check of peers/hub/transfers at fire time, a
+   re-armable timer, and `FlashBackgroundService.reevaluateIdleStop()` called from `MainActivity.onStop()`. Without this,
+   OPT-O13-06 shipped as dead code and the ADR-232 sentence would have been untrue.
+2. **The settings copy contradicted ADR-232.** The switch still read "Background transfers" with the old subtitle; it is now
+   "Keep listening in the background" / "Stay reachable with nobody connected; the system may still stop it", and the
+   section's subtitle and row search list mention both names so searching the old word still finds it.
+3. **`StorageUsageCard` was left refreshing nothing.** Removing the synchronous `refreshReceivedStorageUsage()` from
+   `MainActivity.onCreate()` (OPT-O01-02) dropped the only trigger, so the card would have shown zeros. Added
+   `LaunchedEffect(Unit) { onRefresh() }`.
+4. **ERROR-923 corrected to NO CHANGE** — the log claimed a fix (`MediaCodecList`) that does not exist in the diff; the
+   single lazy evaluation was already there.
+Every number in `logs/streams/android/experiments.md` was withdrawn and re-pointed at `PERF-G01`..`G08`: this stream took no
+measurement, and the platform notes' two external thresholds are now marked *reported, not verified* (AGENTS §13).
+
 ## Test backlog owed
-- `PERF-G01` through `PERF-G06` documented in `logs/streams/android/backlog-additions.md`.
+- `PERF-G01` through `PERF-G08` documented in `logs/streams/android/backlog-additions.md`.
 
 ## Recommended next task
-Integrator review and merge of `agent/opt-android` into `dev`.
+Merge into `dev` (integrator) and run the downloaded-device checks above in one session, best on the Transsion handset first:
+`PERF-G04`/`G05` decide whether the Tier 3 audio gating and the focus cooldown actually stop the Hiber freezer.
+

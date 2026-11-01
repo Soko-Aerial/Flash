@@ -1,73 +1,102 @@
 # Stream G (Android) — Experiment Log
 
----
-
-## EXP-105 — Standby Wake Lock Lease Duty Cycle & AP Suspend Evaluation
-
-### Objective
-Verify that `DiscoveryEngineHolder` releases the CPU partial wake lock when transfers, calls, and PTT sessions are inactive, allowing Application Processor (AP) power collapse in standby.
-
-### Code under test
-`DiscoveryEngineHolder.kt:2980-3025` (`updateCpuWakeLockState()`, `acquireWakeLockLease()`)
-
-### Measurement methodology
-1. Static call graph tracing across all wake lock acquire/release paths.
-2. Device test specification (`PERF-G01`): screen-off 2-hour idle standby with `dumpsys power | grep -A 10 "Wake Locks"` and `dumpsys batterystats`.
-
-### Baseline vs Optimized
-- Baseline: `wakeLock.acquire()` held permanently (100% wake lock time, 0% deep sleep while process running). Continuous drain: 15–35 mA.
-- Optimized: Wake lock held only during active file transfer, WebRTC call, PTT session, or active lease. When mesh is idle, wake lock is released immediately. Standby CPU wake lock time drops to < 5%, deep sleep > 90%.
-
-### Conclusion
-Eliminates continuous AP wake lock in standby. Bounded leases ensure unreleased background tasks cannot keep CPU awake indefinitely.
+> **Read this banner first.** Nothing in this file was measured. These four entries are *design expectations* written
+> from the code diff, and the first version of them asserted currents ("15–35 mA", "12–20 mA"), durations ("< 35 ms") and
+> duty cycles ("< 5 %", "> 90 % deep sleep") that no device produced. Those numbers are **withdrawn**; each entry now says
+> what the change should do and names the device test in `docs/testing/TEST-BACKLOG.md` that has to establish it. Nothing
+> here may be quoted as a measurement until that test runs (§23, and the Wave 2 precedent `EXP-095`..`098`).
 
 ---
 
-## EXP-106 — Headless Keepalive Worker Fast-Path: Empty Outbox SQLite Check vs Full Engine Spin-Up
+## EXP-105 — Standby wake lock lease duty cycle (design expectation, NOT measured)
 
 ### Objective
-Measure execution duration and battery consumption of `FlashKeepaliveWorker.doWork()` on an idle device with an empty outbox.
+Establish that `DiscoveryEngineHolder` releases the CPU partial wake lock when transfers, calls and PTT sessions are
+inactive, so the Application Processor can power-collapse in standby.
 
 ### Code under test
-`FlashKeepaliveWorker.kt:53-76`
+`DiscoveryEngineHolder.kt` — `updateCpuWakeLockState()`, `acquireWakeLockLease()`, `WAKE_LOCK_TIMEOUT_MS`,
+`WAKE_LOCK_REFRESH_INTERVAL_MS`
 
-### Baseline vs Optimized
-- Baseline: Full engine spin-up, TLS generation, WebSocket server socket bind, NSD service registration, AutoConnector launch, 45-second wait on `activeSessions.first()`, followed by full engine teardown. Awake time: 45,000 ms per run $\times 4$ runs/hr = 180 s/hr. Current draw: ~150 mA active radio/CPU.
-- Optimized: Fast SQLite query `SELECT COUNT(*) FROM outbox` and `SELECT COUNT(*) FROM transfers ...`. Both return 0. Immediate return `Result.success()`. Awake time: < 35 ms per run. Current draw: negligible (< 0.05 mAh/day).
+### What changed
+Baseline held `wakeLock.acquire()` from engine start to engine teardown with no timeout. Now the lock is held only while
+a transfer is `Transferring`/`Verifying`, a call is live, a PTT floor is open, or a bounded lease is outstanding; every
+lease carries a 10-minute safety timeout refreshed by a 5-minute watchdog while work remains.
+
+### Device test that would measure it
+`PERF-G01`: two-hour screen-off idle standby on an Infinix X6882B and a Samsung device, `dumpsys power` wake-lock totals
+and `dumpsys batterystats` drain, compared against a build with the change reverted on the same day.
 
 ### Conclusion
-Complete elimination of 180s/hr awake time and 7.5 mAh/hr battery drain when the outbox has no pending work.
+Structural only: a wake lock with a bounded lease cannot outlive the work that justified it. The duty cycle it produces
+is unknown until `PERF-G01`.
 
 ---
 
-## EXP-107 — Transsion Tier 3 AudioTrack Power Collapse When Screen is ON
+## EXP-106 — Headless keepalive worker fast path (design expectation, NOT measured)
 
 ### Objective
-Verify that `TranssionHiberKeepAlive` pauses the silent `AudioTrack` when the screen is active (`PowerManager.isInteractive == true`).
+Establish the execution time of `FlashKeepaliveWorker.doWork()` on an idle device with an empty outbox.
 
 ### Code under test
-`TranssionHiberKeepAlive.kt:530-610`
+`FlashKeepaliveWorker.kt` — the pre-boot `SELECT COUNT(*)` checks
 
-### Baseline vs Optimized
-- Baseline: Silent `AudioTrack` plays 1600-byte PCM loop continuously while screen is on, keeping audio DSP, DAC, and audio mixer threads active (12–20 mA drain).
-- Optimized: `AudioTrack` only calls `.play()` when screen is turned off (`Intent.ACTION_SCREEN_OFF`). Screen-on immediately calls `.pause()`, allowing audio DSP power collapse.
+### What changed
+Baseline always started the headless engine (crypto, TLS, socket bind, NSD registration, AutoConnector) and waited for a
+session before teardown. Now two scalar counts are read first; when both are zero the worker returns `Result.success()`
+without starting the engine. WorkManager's 15-minute period gives four runs an hour, so the old path's ceiling was 4 × 45 s
+of awake time per hour — arithmetic, not a measurement — and the change removes it whenever there is nothing to flush.
+
+### Device test that would measure it
+`PERF-G02`: `adb shell dumpsys jobscheduler` / WorkManager job timing for both paths, plus a `batterystats` diff over six
+hours idle. Baseline figures (45 s awake per run, `~150 mA` peak) are the *old code's own wait*, not an observed draw.
 
 ### Conclusion
-Saves 12–20 mA on Transsion devices while user is actively using the app.
+A worker with nothing to do no longer pays for an engine start. How many milliseconds the fast path costs is `PERF-G02`'s
+answer.
 
 ---
 
-## EXP-108 — Subnet Sweep Probe Deferral During Cold Start
+## EXP-107 — Transsion Tier 3 audio gating when the screen is on (design expectation, NOT measured)
 
 ### Objective
-Verify that cold start does not immediately flood the local /24 subnet with TCP connect probes.
+Establish that `TranssionHiberKeepAlive` keeps the silent `AudioTrack` paused while the screen is interactive.
 
 ### Code under test
-`DiscoveryEngineHolder.kt:2260-2268` (`INITIAL_SWEEP_START_DELAY_MS = 30_000L`)
+`TranssionHiberKeepAlive.kt` — `startAudio()`, `onScreenStateChanged()`, the `ACTION_SCREEN_ON`/`ACTION_SCREEN_OFF` receiver
 
-### Baseline vs Optimized
-- Baseline: `sweep.start()` started immediately at launch, triggering up to 254 TCP connect attempts on port 45822 concurrently with SQLite database initialization and Compose first frame rendering.
-- Optimized: Subnet sweep fallback deferred by 30 seconds. Initial launch uses fast mDNS/NSD discovery and cached routes; background sweep only starts if discovery remains unresolved after 30 seconds.
+### What changed
+Tier 3 used to play the silent PCM loop for as long as the session was active. Now `play()` happens only when
+`PowerManager.isInteractive` is false: `startAudio()` reads it before playing, `onScreenStateChanged(true)` pauses, and
+`onScreenStateChanged(false)` resumes if the session is still active and no permanent-focus-loss cooldown is running.
+The Hiber freezer that the tier defends against only freezes with the screen off (EXP / HIB notes), so nothing is lost.
+
+### Device test that would measure it
+`PERF-G04` on a Transsion handset: `dumpsys audio` for the owning client and a `batterystats` drain comparison with the
+screen on and the app foregrounded for 30 minutes, gating on versus off. The audio-path current it saves is unknown.
 
 ### Conclusion
-Reduces socket and coroutine contention during the first 30 seconds of app execution.
+The audio path is idle whenever it cannot help. Any mAh figure quoted for it is unmeasured.
+
+---
+
+## EXP-108 — Subnet sweep deferral during cold start (design expectation, NOT measured)
+
+### Objective
+Establish that a cold start no longer floods the local /24 with TCP connect probes while SQLite and the first frame are
+being prepared.
+
+### Code under test
+`DiscoveryEngineHolder.kt` — `INITIAL_SWEEP_START_DELAY_MS = 30_000L`
+
+### What changed
+`sweep.start()` used to run at engine start, up to 254 probes against port 45822 alongside database open and Compose's
+first frame. The automatic fallback sweep now starts 30 s later; mDNS/NSD discovery, cached routes and an explicit
+"Scan network" are unaffected and still immediate.
+
+### Device test that would measure it
+`PERF-G07`: `Perfetto`/`systrace` start-up trace, cold start with a cleared cache, comparing probe-start timestamps and
+first-frame time against the reverted build.
+
+### Conclusion
+Two sources of contention no longer overlap by construction. The launch-time saving is `PERF-G07`'s to state.

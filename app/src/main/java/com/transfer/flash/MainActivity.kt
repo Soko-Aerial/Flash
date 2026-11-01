@@ -405,7 +405,8 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         // Bug 6: launch while this activity is user-visible. Android 12+ rejects most foreground-
         // service starts from the background, so engine startup must not launch this asynchronously.
-        // Do not stop in onStop: the service is what keeps discovery and mesh sessions alive there.
+        // onStop does not stop the service outright: it only lets an idle mesh (no peer, no transfer, no hub relay,
+        // and no "Keep listening in the background" opt-in) do so after a grace period — ADR-232.
         FlashBackgroundService.start(this)
         // Bug 7: notifications must be suppressed only while we're genuinely on screen — not
         // merely while the process lives (the service keeps the process alive across onStop).
@@ -419,6 +420,10 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         FlashNotificationManager.appForeground = false
         DiscoveryEngineHolder.setUiStarted(false)
+        // OPT-O13-06: leaving the screen is not a change of mesh state, so the idle-stop timer is asked again here.
+        // With nobody connected and nothing queued it lowers the service's foreground profile 30 s from now; a return
+        // to the foreground (onStart restarts the service) or a peer arriving in that window cancels the stop.
+        FlashBackgroundService.reevaluateIdleStop()
     }
 
     override fun onDestroy() {
@@ -567,7 +572,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-
 
     private fun refreshReceivedStorageUsage() {
         receivedStorageJob?.cancel()
@@ -807,7 +811,7 @@ fun FlashApp(
     pendingJoinLink: MutableStateFlow<String?> = MutableStateFlow(null),
     pendingEnrollLink: MutableStateFlow<String?> = MutableStateFlow(null),
     pendingHubRoute: MutableStateFlow<String?> = MutableStateFlow(null),
-    /** Bug 6: fired when the user turns ON the Settings "Background transfers" toggle (host-owned). */
+    /** Bug 6: fired when the user turns ON the Settings "Keep listening in the background" toggle (host-owned). */
     onEnableBackgroundTransfers: () -> Unit = {},
     /** ERROR-031 / D7: activity-published battery-optimisation exemption, refreshed on resume. */
     ignoringBatteryOptimizations: MutableStateFlow<Boolean> = MutableStateFlow(false),

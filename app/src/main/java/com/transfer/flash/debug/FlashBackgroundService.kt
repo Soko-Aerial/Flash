@@ -232,6 +232,13 @@ class FlashBackgroundService : Service() {
 
     private var idleStopJob: Job? = null
 
+    /**
+     * The last "does the mesh have work" answer. It is deliberately re-read when the grace period expires: the answer
+     * that armed the timer is [IDLE_STOP_GRACE_MS] old by then, and a peer or the hub may have connected since.
+     */
+    @Volatile
+    private var lastSessionActive: Boolean = true
+
     private fun observeSessionActivity() {
         scope.launch {
             combine(
@@ -273,8 +280,14 @@ class FlashBackgroundService : Service() {
     /**
      * Stops the connectedDevice foreground service when 0 peers, 0 transfers, and 0 hub connection exist,
      * unless the user explicitly enabled "Keep listening in the background" (OPT-O13-06, ADR-232).
+     *
+     * Called on every session-activity change and again from [reevaluateIdleStop] when the app leaves the foreground.
+     * A round that ends without stopping — the app was on screen, or the user has opted in — must leave the service
+     * able to arm again, so the guard tests [Job.isActive] rather than `== null`: a finished job is rearmable, and a
+     * sequence as ordinary as "open Flash with nobody nearby, then leave it" needs exactly that second round.
      */
     private fun evaluateServiceIdleStop(isSessionActive: Boolean) {
+        lastSessionActive = isSessionActive
         val keepListening = DiscoveryEngineHolder.backgroundTransfers
         if (isSessionActive || keepListening) {
             idleStopJob?.cancel()
@@ -282,15 +295,22 @@ class FlashBackgroundService : Service() {
             return
         }
 
-        if (idleStopJob == null) {
-            idleStopJob = scope.launch {
-                delay(IDLE_STOP_GRACE_MS)
-                val stillKeepListening = DiscoveryEngineHolder.backgroundTransfers
-                if (!stillKeepListening && !isForegroundInteractive()) {
-                    Log.i(TAG, "Stopping connectedDevice foreground service: 0 peers, 0 transfers, 0 hub connection (OPT-O13-06 / ADR-232)")
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
-                }
+        if (idleStopJob?.isActive == true) return
+        idleStopJob = scope.launch {
+            delay(IDLE_STOP_GRACE_MS)
+            // The live state decides, not the emission that armed the timer: a peer, a transfer or the hub relay may
+            // have arrived in the meantime, and stopping under them would drop what they are waiting for.
+            val stillIdle = !lastSessionActive &&
+                !DiscoveryEngineHolder.backgroundTransfers &&
+                DiscoveryEngineHolder.currentEnterpriseHub()?.relay?.state?.value?.isOnline != true &&
+                DiscoveryEngineHolder.currentNetwork()?.activeSessions?.value.isNullOrEmpty() &&
+                !isForegroundInteractive()
+            if (stillIdle) {
+                Log.i(TAG, "Stopping connectedDevice foreground service: 0 peers, 0 transfers, 0 hub connection (OPT-O13-06 / ADR-232)")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            } else {
+                Log.i(TAG, "Idle grace expired but work reappeared; keeping the connectedDevice foreground service")
             }
         }
     }
@@ -517,6 +537,18 @@ class FlashBackgroundService : Service() {
 
         fun reevaluateKeepAlive() {
             activeInstance?.keepAlive?.onAppForegrounded()
+        }
+
+        /**
+         * Re-asks the idle-stop question after the app leaves the foreground.
+         *
+         * [evaluateServiceIdleStop] only runs when the *mesh* changes, and going to the background is not such a change,
+         * so without this call the ordinary sequence "open Flash with nobody nearby, then leave it" never reaches the
+         * idle stop at all: the first round happened while the app was on screen and declined to stop (OPT-O13-06).
+         */
+        fun reevaluateIdleStop() {
+            val current = activeInstance ?: return
+            current.evaluateServiceIdleStop(current.lastSessionActive)
         }
 
         fun setSessionActive(active: Boolean) {
