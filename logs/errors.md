@@ -15167,3 +15167,485 @@ failures). Before the change, the same command on `dev` failed with the two rows
 
 ### Status
 RESOLVED
+
+
+## ERROR-921 — `Unresolved reference 'state'` on `pttEngine` in `DiscoveryEngineHolder`
+
+### Date
+2026-11-01
+
+### Area
+Android host / PTT engine wiring (Stream G, Wave 3)
+
+### Symptoms
+`app:compileDebugKotlin` failed at `DiscoveryEngineHolder.kt:2995` on `pttEngine?.state?.value`:
+`Unresolved reference 'state'`.
+
+### Environment
+- Branch `agent/opt-android`; Gradle 8.13 / AGP 8.9.1 / Kotlin 2.1.10.
+
+### Root cause
+Package mismatch, not a missing API. The file imported `com.transfer.flash.core.ptt.state.PttFloorState` while
+`FlashPtt.state` is `StateFlow<com.transfer.flash.core.ptt.floor.PttFloorState>`, so the property type could not be resolved
+on the imported one.
+
+### Working fix
+Import `com.transfer.flash.core.ptt.floor.PttFloorState` (and use `PttFloorState.Idle` from it).
+
+### Verification
+`:app:compileDebugKotlin` exit 0.
+
+### Status
+RESOLVED
+
+
+## ERROR-922 — `FlashDatabase` was not `Closeable`, so the keepalive worker's `.use { }` did not compile
+
+### Date
+2026-11-01
+
+### Area
+Android host / `FlashKeepaliveWorker` SQLite pre-check (Stream G, Wave 3)
+
+### Symptoms
+`app:compileDebugKotlin` failed at `FlashKeepaliveWorker.kt:63`:
+`Argument type mismatch: actual type is 'FlashDatabase', but 'Closeable?' was expected`.
+
+### Environment
+- Branch `agent/opt-android`; Room 2.7.0-alpha13 / Kotlin 2.1.10.
+
+### Root cause
+The Room database type is not `java.io.Closeable` in this KMP setup, so Kotlin's `use {}` extension does not apply to it.
+
+### Working fix
+`try { ... } finally { runCatching { db.close() } }` instead of `.use {}`.
+
+### Verification
+`:app:compileDebugKotlin` exit 0.
+
+### Status
+RESOLVED
+
+
+## ERROR-923 — Deprecated `TRIM_MEMORY_*` constants: a warning, and the "fix" recorded for it did not exist
+
+### Date
+2026-11-01
+
+### Area
+Android host / `FlashApplication` memory callbacks (Stream G, Wave 3)
+
+### Symptoms
+`app:compileDebugKotlin` warning: `'static field TRIM_MEMORY_RUNNING_CRITICAL: Int' is deprecated. Deprecated in Java.`
+
+### Environment
+- Branch `agent/opt-android`; SDK 35 / Kotlin 2.1.10.
+
+### Root cause
+API 35 deprecates some `ComponentCallbacks2` memory constants. The constants are still what the pre-35 mapping needs, so the
+deprecation is not something to remove.
+
+### Failed attempts
+The stream's first version of this entry recorded a fix ("retained standard mapping ... while suppressing obsolete warnings
+or using standard when branches") that exists nowhere in the diff; `FlashApplication.kt` is byte-identical to `dev` on that
+branch. Corrected by the integrator so nobody goes looking for the change.
+
+### Working fix
+**None, deliberately.** The warning is accepted.
+
+### Verification
+`:app:compileDebugKotlin` builds cleanly with the warning present.
+
+### Status
+NO CHANGE — accepted warning, not a defect
+
+
+## ERROR-924 — Stream G released the CPU wake lock while a peer was still connected
+
+### Date
+2026-11-01
+
+### Area
+Android / battery / mesh keepalive (OPT-O13-01, ADR-280)
+
+### Symptoms
+Found on integrator review, before merge. The new `needsWakeLock` was `transfer || call || ptt || lease`, so a phone with a
+connected peer and nothing else going on released the partial wake lock once the screen went off.
+
+### Root cause
+The optimisation treated "connected peer" as idle. It is not: the mesh keepalive is a **timer**, and a suspended application
+processor runs no timer, so the peer would time this device out inside one keepalive window while the app still showed it
+online. The lock's own KDoc said why it existed — "held to ensure keepalive pings are scheduled" — and the stream's tests
+could not see the regression because no test exercises the caller.
+
+### Working fix
+`hasConnectedPeers` (`network.activeSessions` non-empty) is part of `needsWakeLock`, **and** a second collector on
+`activeSessions` re-evaluates the lock on every session edge; without it the lock could only be re-evaluated when a transfer
+or call changed, so a phone that connected and then went quiet would never take it. The lock now follows the session: taken
+when the first peer connects, released when the last leaves.
+
+### Verification
+Unit-tested on the branch; no device run. `PERF-G01` runs the standby test with and without a connected peer.
+
+### Related files
+- `app/src/main/kotlin/.../DiscoveryEngineHolder.kt`
+- `ADR-280` (with its amendment), `EXP-105`
+
+### Status
+RESOLVED (repaired before merge; device check `PERF-G01` owed)
+
+
+## ERROR-925 — Stream G's keepalive fast path defeated the "Keep listening in the background" setting
+
+### Date
+2026-11-01
+
+### Area
+Android / WorkManager / background reachability (OPT-O13-02, ADR-281, ADR-232)
+
+### Symptoms
+Found on integrator review, before merge. The worker returned `Result.success()` whenever the outbox and transfer queue were
+empty, regardless of the user's opt-in.
+
+### Root cause
+The worker was treated as a pure outbound flush. It is also the **inbound** half of the safety net: the session window it
+opens (`SESSION_WINDOW_MS = 45_000`) is the only time an otherwise-idle phone can be reached, so skipping every run would
+quietly cancel the setting the user had just switched on — from inside the worker whose job is to restore what the system
+stopped.
+
+### Problems met while fixing it
+Reading the opt-in in a worker process is not free: the `AppEngine` mirror `backgroundTransfers` is `false` there (nothing
+calls `AppEngine.start()`), and the worker cannot open `FlashSettingsDataStore` itself, because a second DataStore for the
+same file throws **inside a process** and the UI may later start in that same process.
+
+### Working fix
+The condition is now `hasPendingOutboundWork || keepListeningInBackground(context)`. The opt-in has exactly one writer
+(`DiscoveryEngineHolder.setBackgroundTransfers`, fed by AppEngine's initial read and its collector), which also leaves a
+one-boolean `SharedPreferences` copy (`flash_flags` / `keep_listening_in_background`);
+`keepListeningInBackground(context)` answers "live mirror, else that copy" and defaults to `true` when the read fails, so a
+broken read costs one engine boot rather than silently switching the setting off. `FlashBackgroundService.evaluateServiceIdleStop`
+uses the same accessor, because a `START_STICKY` regeneration also starts with an empty mirror.
+
+### Verification
+Unit-tested; no device run. `PERF-G02` runs the worker with the opt-in off, on, and on after a cold process death.
+
+### Status
+RESOLVED (repaired before merge; `PERF-G02` owed)
+
+
+## ERROR-926 — The idle foreground-service stop could never fire in the case it was written for
+
+### Date
+2026-11-01
+
+### Area
+Android / foreground service / Play policy (OPT-O13-06, ADR-284)
+
+### Symptoms
+Found on integrator review, before merge. "Open Flash with nobody nearby, then leave it" — the exact case the finding
+describes — never stopped the `connectedDevice` service. And if the single attempt had fired once, it could not fire again
+for the life of the process.
+
+### Root cause
+The job was armed once per process, the question "is anything still happening?" was evaluated at **arming** time, and the only
+callers were mesh transitions, which happen while the user is still in the app. Backgrounding is not a mesh change, and
+`stopSelf()` never re-enters the evaluation.
+
+### Working fix
+`lastSessionActive` is recorded; peers, relay, transfers and foreground interactivity are re-checked **at fire time**;
+the timer re-arms after each expiry; and `MainActivity.onStop()` calls the new
+`FlashBackgroundService.reevaluateIdleStop()`.
+
+### Verification
+Unit-tested; no device run. `PERF-G08` covers the three arms (idle stop, work reappearing, opt-in on).
+
+### Status
+RESOLVED (repaired before merge; `PERF-G08` owed)
+
+
+## ERROR-927 — Two host-level side effects of Stream G's refactor (the Windows settings row, the storage card that never refreshed)
+
+### Date
+2026-11-01
+
+### Area
+Shared settings UI / Android Settings storage card (Stream G, Wave 3)
+
+### Symptoms
+1. With ADR-232's rename in place, `DesktopShell` — which wires the **same shared model field** to `closeToTray` — would have
+   described close-to-tray as an Android foreground-service opt-in on Windows.
+2. OPT-O01-02 removed the synchronous `refreshReceivedStorageUsage()` call from `MainActivity.onCreate()` (correctly: it was
+   a directory walk on the launch path) but nothing replaced it, so the Settings storage card showed `0 B` until Refresh was
+   tapped.
+
+### Root cause
+The settings screen is shared, so one host's copy change is the other host's wrong copy; and removing a call from a launch
+path needs a new trigger, not just a deletion.
+
+### Working fix
+`FlashSettingsScreen` takes `backgroundListenTitle` / `backgroundListenSubtitle` (defaults are the Android copy, and the search
+index still matches "Background transfers"); the desktop passes "Close to tray" / "Closing the window keeps Flash running in
+the notification area". The storage card refreshes from a `LaunchedEffect(Unit)`.
+
+### Verification
+Unit-tested; no device or desktop run.
+
+### Status
+RESOLVED (repaired before merge)
+
+
+## ERROR-931 — A reflection test failed when `OPT-O25-02` pre-indexed the group visibility check
+
+### Date
+2026-11-01
+
+### Area
+Server / directory privacy (Stream H, Wave 3)
+
+### Symptoms
+`DirectoryPrivacyTest > everyDirectoryReadRouteConsultsDirectoryVisibility` failed with
+`AssertionError: Route handler did not invoke DirectoryVisibility.canSeeGroup`.
+
+### Root cause
+`OPT-O25-02` replaced the per-group call with `directory.listVisibleGroupsWithPrivacy(actor)`. The architecture test looks for
+the literal `DirectoryVisibility.canSeeGroup(...)` invocation in the route handler, so the guard was still there — in a
+different file — but the test could no longer see it.
+
+### Working fix
+Keep the explicit `filter { DirectoryVisibility.canSeeGroup(it, actor, directory) }` in `DirectoryRoutes.kt` while retaining
+the pre-indexed `memberDeviceIds` membership check inside the visibility check. The guard stays visible to the test that
+exists to prove every route has it.
+
+### Verification
+`:server:test --tests *DirectoryPrivacyTest*` green.
+
+### Status
+RESOLVED
+
+
+## ERROR-932 — The concurrent chunk pipeline cancelled its workers, truncating resume progress
+
+### Date
+2026-11-01
+
+### Area
+Client hub file transfers (`OPT-O16-01`)
+
+### Symptoms
+`E2eHubFileTransferContractTest > anUploadAndADownloadCutHalfWayResumeOnTheRealHub` failed with
+`AssertionError: expected:<2> but was:<0>` — the interrupted transfer resumed from chunk 0.
+
+### Root cause
+The pipeline in `HubFileTransfers.kt` (the `Channel<Int>` + worker `launch` block) cancelled every worker the moment one of
+them failed, so a worker in the middle of committing chunks 0 and 1 threw `CancellationException` before recording them.
+
+### Failed attempts
+The first version of this entry blamed `StreamingHubFileSource.kt`. That file is untouched on the branch
+(`git diff dev..HEAD -- core/engine` is empty).
+
+### Working fix
+`workers.joinAll()` after the channel is drained: a failing worker sets `terminalError` under `stateMutex`, the others finish
+the chunk they hold and stop pulling new indices, so every committed chunk reaches the state file. Both loops (upload and
+download) do this.
+
+### Verification
+`:server:test --tests *E2eHubFileTransferContractTest*` green.
+
+### Status
+RESOLVED
+
+
+## ERROR-933 — A local write failure during a hub download was reported as terminal instead of resumable
+
+### Date
+2026-11-01
+
+### Area
+Client hub file transfers (`OPT-O16-01`, `OPT-O23-01`)
+
+### Symptoms
+`HubFileTransfersTest > aChunkIsMarkedDoneOnlyAfterItsBytesAreWritten` failed with
+`AssertionError: Expected Interrupted, actual Failed`.
+
+### Root cause
+A failed `storage.writePart` / `save()` set the terminal error without the interrupted flag, so a transient storage error
+discarded a partially downloaded file that could have resumed. (The first version of this entry named `HubFileBinding.kt`;
+`core/engine` is untouched on the branch.)
+
+### Working fix
+The download worker sets `terminalError` **and** `terminalIsInterrupted = true`, so the outcome is
+`HubDownloadOutcome.Interrupted` and the done-set survives for the next attempt.
+
+### Verification
+`:core:enterprise:jvmTest --tests *HubFileTransfersTest*` green.
+
+### Status
+RESOLVED
+
+
+## ERROR-934 — `RevocationAndEnrolmentTest` read the kick list before the asynchronous revocation handlers could fill it
+
+### Date
+2026-11-01
+
+### Area
+Server / auth / revocation notifications (`OPT-O25-10`)
+
+### Symptoms
+Under a loaded parallel `:server:test` run:
+`AssertionError: listeners fire once expected:<1> but was:<0>`, and the sibling
+`expected:<[dev-a]> but was:<[]>`.
+
+### Root cause
+`SqliteRevocationService.fire` runs its handlers inside `notifyScope.launch { ... }` **by design** — kicking a relay session
+must not hold the revocation write transaction — so a test that inspects the handler's list on the next line is guaranteed
+to race. A loaded machine merely exposes it.
+
+### Failed attempts
+The first version of this entry left it OPEN as a "documented flake". That was wrong on the facts: it is a test-design
+defect, and leaving it OPEN made every future `:server:test` run look like it might have a revocation bug.
+
+### Working fix
+Test-side only: `Hub.awaitKicks(expected, settleMs = 100, timeoutMs = 5_000)` waits (bounded) for the handler to fire, then
+holds a 100 ms settle window so "fires **once**" is still asserted rather than "at least once". Production untouched.
+
+### Verification
+Full `:server:test` green (664 tests); see `logs/streams/hub/INTEGRATOR-REVIEW.md`.
+
+### Status
+RESOLVED (test-side; the asynchronous notification path is unchanged)
+
+
+## ERROR-936 — A compressed console asset answered 304 without `Vary: Accept-Encoding`
+
+### Date
+2026-11-01
+
+### Area
+Admin console static assets (`OPT-O18-01`)
+
+### Symptoms
+Found on integrator review, before merge. `StaticAssets.respond` appended `Vary: Accept-Encoding` only on the two branches
+that chose a compressed body; the `If-None-Match` branch returned 304 before either of them ran.
+
+### Root cause
+The 304 was treated as "no body, no negotiation", but a 304 revalidates a **representation**: a client or intermediary cache
+holding the gzip variant and one holding the identity variant share the same ETag, so an answer that does not vary on
+`Accept-Encoding` lets the wrong representation be reused.
+
+### Working fix
+`Vary` is set as soon as the asset is known to have a compressed variant, i.e. **before** the 304 branch. New test
+`aNotModifiedAnswerAlsoVariesOnAcceptEncoding`.
+
+### Verification
+`:server:test --tests *AdminConsoleWebTest*` green, including the new test. Not browser-verified.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminConsoleWeb.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/admin/AdminConsoleWebTest.kt`
+
+### Status
+RESOLVED (unit-tested; not device- or browser-verified)
+
+
+## ERROR-937 — `CachedMailboxStatsTest.aFailingRefreshKeepsTheLastNumbersAndIsRetried` failed under suite load
+
+### Date
+2026-11-01
+
+### Area
+Server observability tests (`CachedMailboxStatsTest`)
+
+### Symptoms
+The integrator's first full `:server:test` run on `agent/opt-hub`: 664 tests, 1 failed —
+`AssertionError: expected:<11> but was:<10>` at `CachedMailboxStatsTest.kt:86`. Alone, the test passed.
+
+### Root cause
+Not the branch's product code (`git diff dev..HEAD -- server/src/main/kotlin/.../observability/` is empty). It is the
+documented flake at `docs/audit/optimization-2026-10-23/00-baseline.md:14`: the test polled a **wall-clock** deadline
+(`System.currentTimeMillis() + 5_000`) for a refresh that `CachedMailboxStats` dispatches to `Dispatchers.IO`. When the rest
+of the suite saturates those threads, the deadline expires before the refresh starts.
+
+### Failed attempts
+Leaving it as "green when rerun alone", which is what the audit recorded — and which makes every future `:server:test` run
+look like it might have a mailbox regression.
+
+### Working fix
+Test-side, using an existing constructor parameter: the test builds the cache with
+`scope = CoroutineScope(Dispatchers.Unconfined)`, so the refresh runs on the calling thread. The polling loop and the sleep
+are gone, and the test now asserts the product's real semantics — the read that starts a refresh still serves the old
+snapshot, the next read serves the new numbers. Production behaviour and the production scope are unchanged.
+
+### Verification
+`:server:test --tests *CachedMailboxStatsTest*` green; the full `:server:test` afterwards green.
+
+### Related files
+- `server/src/test/kotlin/com/transfer/flash/server/observability/CachedMailboxStatsTest.kt`
+
+### Status
+RESOLVED (test-side)
+
+## ERROR-938 — `ORGT-U16` failed the merge gate on a wall-clock budget, not on the product
+
+### Date
+2026-11-01
+
+### Area
+`:core:enterprise` jvmTest / directory sync performance budget (Stream H's `OPT-O16-02`, Integrator)
+
+### Symptoms
+The forced gate 1 on the merged `dev` (`00f7013b`, all ten `jvmTest` suites + `:desktop:compileKotlinJvm` +
+`:app:compileDebugKotlin` + `:app:compileDebugAndroidTestKotlin`, `--rerun-tasks`) reported
+`BUILD FAILED in 9m 31s` with exactly one failure:
+
+```text
+OrgDirectorySyncTest[jvm] > ORGT-U16 5,000-member sync time and memory budget test[jvm] FAILED
+    java.lang.AssertionError: 5,000 member sync took 27192 ms (budget: 25000 ms)
+```
+
+`:core:enterprise:jvmTest` itself was 276 tests, 1 failed. Every other task in the gate passed.
+
+### Root cause
+Not the product and not the merge. The same test, run alone on the same tree with `--rerun-tasks`, reports
+
+```text
+ORGT-U16: 5,000 members sync took 5949 ms
+ORGT-U16: Second conditional sync (0 changes) took 1 ms
+```
+
+— four and a half times under the budget. The assertion is a **wall clock** in a suite the gate runs beside ten other
+modules on eight cores, and the sync's work is 5,000 software-ECDSA verifications, i.e. pure CPU that every other Gradle
+worker in the gate competes with. It is the flake already known as `ORGT-U16` (`AGENTS.md` memory note
+`hub-files-p2`). Stream H's `OPT-O16-02` changed only *when* the per-member projection is computed (deferred into an
+`AbstractList.get`); the verify loop is untouched, and the measured figure alone is well inside the old budget.
+
+### Why the test was still wrong
+A time budget that only holds when the machine is idle is a false alarm generator: this run made a green merge look
+broken, and the next stream's integrator would have chased a directory-sync regression that does not exist. Raising the
+number alone would keep the same fragility at a bigger constant.
+
+The same pattern exists elsewhere in the gated suites and all of them passed in this run, so they are recorded here rather
+than changed: `BoundedSendQueueTest` (three elapsed-time assertions), `JmdnsResolveStormTest`,
+`RelayConnectionPoolTest` (three), `RelayDeliveryContractTest`, `RelayFrameRouterTest` and `RelayLoadTest`. Each should be
+a ratio or a bounded wait, not a wall clock, before it is trusted on a loaded machine.
+
+### Working fix
+Test-side only; production and the budget's meaning are unchanged. The fixture-building loop (which signs 5,000 statements
+on the same cores moments before the sync verifies 5,000) is now timed, and the assertion is
+`durationMs <= maxOf(25_000L, fixtureMs * 8)`: the absolute 25 s smoke check stays, and a loaded machine scales the
+allowance by its own measured crypto cost (alone: 5,904 ms sync against a 2,075 ms fixture, a ratio of 2.85, so the
+absolute bound is what applied). A real slowdown — quadratic staging, a re-verification per page — still fails it, and the
+figure is printed on every run for the record. The real performance number is `PERF-H01`.
+
+### Verification
+`:core:enterprise:jvmTest --tests *OrgDirectorySyncTest*` green (31 tests, 0 failures) with
+`ORGT-U16: 5,000 members sync took 5904 ms (fixture 2075 ms)`; the full gate 1 re-run after this fix is recorded in
+`logs/progress.md`.
+
+### Related files
+- `core/enterprise/src/sharedTest/kotlin/com/transfer/flash/core/enterprise/OrgDirectorySyncTest.kt`
+- `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §6.3 (the gate), §10 (the H row)
+- `PERF-H01` in `docs/testing/TEST-BACKLOG.md`
+
+### Status
+RESOLVED (test-side; `PERF-H01` still owns the real measurement)

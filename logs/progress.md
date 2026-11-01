@@ -1,5 +1,86 @@
 # Progress Log
 
+## 2026-11-01 - Wave 3 merge: Stream G (Android) and Stream H (hub), both reviewed and repaired
+
+### Worked on
+Merging wave 3 of the optimization programme into `dev` after an independent verification of every finding against **the code, the
+callers and the tests**, not against the streams' reports. Per-finding verdicts: `logs/streams/android/INTEGRATOR-REVIEW.md`
+(12 findings) and `logs/streams/hub/INTEGRATOR-REVIEW.md` (18 findings).
+
+### Changed
+- **Stream G merged as `33e82559`** (tip `2f3bd669`). Android battery, lifecycle and startup: bounded ref-counted CPU wake-lock
+  leases (`WAKE_LOCK_TIMEOUT_MS = 10 min`), a pre-boot SQLite check in the keepalive worker, `Verifying` counted in
+  `TimeoutStopPlan`, a reactive `networkFlow`/`transfersFlow` in place of the `delay(300)` poll, async scheduling / channel init /
+  storage scanning taken off the launch path, screen-off ECO through `setScreenActive` (this closes Wave 2's `OPT-O10-01`
+  handoff), Transsion silent-audio screen gating, a 10-minute audio-focus cooldown, a 30 s deferral of the automatic subnet sweep,
+  and an idle foreground-service auto-stop. 10 of 12 kept, **4 repaired during review**, 1 needed no change (`MediaCodecList` was
+  already behind `by lazy`; the stream's reported "fix" for it exists nowhere in the diff, ERROR-923), 1 deferred to Stream D.
+  Nothing was rejected or reverted.
+- **Stream H merged as `00f7013b`** (tip `200474a4`). Hub server, relay, directory and console: the chunk write staged outside
+  SQLite's single writer, a bounded three-chunk pipeline, a per-run chunk handle cache with one fsync at the end, an indexed
+  delegation-revocation JOIN, precompressed gzip/deflate console assets with `modulepreload`, single-encoded group fan-out, O(M+D)
+  department counts and O(1) roster checks, batched mailbox receipt acks, a streaming member projection during directory sync, and
+  the deployment baseline document. 16 of 18 kept, **4 repaired during review**, **`OPT-O16-03` rejected and reverted**
+  (`8b622a9b`, ADR-298), 1 kept as a document only.
+- Corrections folded into the canonical logs: this entry, `logs/errors.md` (ERROR-921..927, ERROR-931..938), `docs/decisions.md`
+  (ADR-280..286, ADR-290..299), `logs/experiments.md` (EXP-105..108 and EXP-110..114 all retitled NOT MEASURED),
+  `docs/android-platform-notes.md` (six platform facts, each with URL, date and a verified/reported mark),
+  `docs/testing/TEST-BACKLOG.md` (`PERF-G01`..`G08`, `PERF-H01`..`H07`), and the plan's §6.3 "expected failures" note, which is
+  now historical: `432ceb52` fixed both `TransfersUiMapperTest` rows (ERROR-935).
+
+### Why
+This is the plan's rule for a stream merge (`docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §6.3): the reports are the streams' own
+account of their work, and a merge is the first place they can be checked against the code.
+
+### Verification
+- **Gate 1 forced on the merged tree (`--rerun-tasks --continue`): PASS** - `BUILD SUCCESSFUL in 6m 2s`, 243 of 243 actionable tasks
+  executed, exit 0. The 13 suites: `:core:common` 9, `:core:security` 170 (2 documented POSIX-only skips), `:core:persistence` 85,
+  `:core:messaging` 382, `:core:transfer` 141, `:core:swarm` 151, `:core:network` 339, `:ui:chat` 730, `:ui:theme` 58,
+  `:ui:callui` 103, `:core:enterprise` 276, `:core:hub-protocol` 126, `:server:test` 664 - **3 234 tests, 0 failures**, plus
+  `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` and `:app:compileDebugAndroidTestKotlin`.
+- **Gate 2 forced on the same tree:** **PASS** - `BUILD SUCCESSFUL in 9m 23s`, 212 of 212 tasks executed, 1 701 tests, 0 failures: `:core:messaging` 688, `:core:persistence` 53, `:ui:chat` 705, `:core:enterprise` 165, `:app:testDebugUnitTest` 90. The two `TransfersUiMapperTest` rows the plan's baseline lists as *expected* failures now pass (`432ceb52`, ERROR-935), so gate 2 exits 0 for the first time in this programme..
+- **The first gate-1 run on this tree failed** (`BUILD FAILED in 9m 31s`), on one test only: `OrgDirectorySyncTest[jvm] > ORGT-U16`,
+  `5,000 member sync took 27192 ms (budget: 25000 ms)`. Run alone on the same tree it reports 5 949 ms (5 904 ms after the repair) -
+  a 4.6x inflation from the gate's CPU saturation, not a regression: Stream H's `OPT-O16-02` only moved the per-member projection
+  behind an `AbstractList.get` and left the verify loop untouched. **ERROR-938.**
+- **What the review found that the reports did not.** Four of the kept findings were *incomplete in a way that would have shipped a
+  regression rather than a saving*: the wake lock was released with a peer still connected (ERROR-924), the keepalive fast path
+  bypassed the "Keep listening in the background" opt-in (ERROR-925), the idle FGS stop was unreachable and one-shot (ERROR-926), a
+  committed `file_chunk` row could outlive its chunk file (ADR-290), and an unbounded ack batch would have been rejected whole by
+  `RelayFrameCodec`, making every ack a permanent redelivery (ADR-296). Two further defects came from reading the code rather than
+  the report - `Vary: Accept-Encoding` missing on 304s (ERROR-936) and the `CachedMailboxStatsTest` wall-clock flake (ERROR-937) -
+  and `HubFileTransfers` carried a comment that `OPT-O23-01` had made false.
+- **Every numeric headline in both streams is withdrawn** (each stream's §4): no benchmark harness exists on either branch, so
+  `EXP-105`..`108` and `EXP-110`..`114` now state what is structurally true and name the `PERF-G*`/`PERF-H*` test that must measure
+  the rest.
+
+### Problems
+The merged tree's gate 1 was red on a test whose budget was a wall clock. Reproduced as a flake (27 192 ms under load against
+5 949 ms alone on the same tree, about 4.6x), with the same pattern present but passing in `BoundedSendQueueTest`,
+`JmdnsResolveStormTest`, `RelayConnectionPoolTest`, `RelayDeliveryContractTest`, `RelayFrameRouterTest` and `RelayLoadTest`.
+
+### Fix
+Test-side only, `maxOf(25_000L, fixtureMs * 8)`: the fixture's own 5 000 signatures are timed in the same process moments before the
+sync verifies the same 5 000, so the allowance scales with the machine's measured crypto cost while a genuine superlinear slowdown
+still fails it. ERROR-938 records it, and the other wall-clock assertions are listed there rather than changed in this merge.
+
+### Remaining
+- Nothing here is device- or server-verified. `PERF-G01`..`G08` and `PERF-H01`..`H07` are owed in
+  `docs/testing/TEST-BACKLOG.md`.
+- Carried into `dev` deliberately: `OPT-O16-04` is ahead of its caller (`HubChatBridge` still acks one message at a time, so the
+  batching saving does not happen yet); a paused hub download holds a descriptor until it resumes or is deleted; the console devices
+  page can show partial search results while its later pages load; `OPT-O18-01` keeps three copies of each console asset in memory
+  (capped at 2 MB each); G's `observeSessionActivity` does not re-evaluate on a hub relay state change, so a hub that connects and
+  does nothing else will not re-arm the idle-stop timer; and G's audio-focus cooldown genuinely spends the Transsion Hiber shield for
+  its ten minutes (ADR-285) - it must not be read as "the shield is always on".
+- Still open from wave 2 and untouched by this wave: `OPT-O14-03` (Stream D), `OPT-O03-07`/`O03-09` (G), `O25-05` video half (C),
+  `O05-07` repository half (M), and `ui/chat/compose_compiler_config.conf` (ADR-260) wired into no build file.
+
+### Next AI
+Wave 3 is merged, both gates are green and nothing is pushed. The next streams in the plan's order are E (desktop), then K, S, R and C
+(§10). Two rules this wave earned: a "verified green" line in a stream report describes the stream's tree and must be re-run on the
+merged tree, and a finding that adds a caller has to be read from the caller's side - every regression this review caught lived there.
+
 ## 2026-10-31 - Wave 2 merge: Stream U (UI) and Stream N (network/discovery), both reviewed and repaired
 
 ### Worked on

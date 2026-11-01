@@ -6877,3 +6877,190 @@ because the number the stream attached to it came from a test that times nothing
 - **Note:** `LanRouteChooser`'s snapshot cache has a 5 s TTL and no invalidation hook, so a route change can be up to 5 s
   stale. Record whether (b) ever shows a dial going out of the old interface.
 - **Status:** TODO.
+
+---
+
+## PERF-G01..G08 (2026-11-01) - Stream G (Android) after the integrator review
+
+From `logs/streams/android/INTEGRATOR-REVIEW.md`. The stream's own `PERF-G01`..`G08` are kept, with `G01` and `G02`
+rewritten to cover the two repairs: the CPU wake lock now follows a live **session**, and the keepalive skip now honours the
+ADR-232 opt-in. Every pass condition is an observable state or a same-device comparison against the reverted build; the
+numbers the stream first wrote ("< 50 ms", "> 90 % deep sleep") were never measured and are gone. Nothing here has run on a
+device.
+
+### PERF-G01 - The CPU wake lock follows the session, not the process
+- **Area:** battery / wake locks / AP suspend (`OPT-O13-01`, ADR-280 and its 2026-11-01 amendment)
+- **Source:** `EXP-105`; `logs/streams/android/INTEGRATOR-REVIEW.md` §3.1.
+- **Setup:** a physical Android device and a paired peer (Infinix X6882B, a Samsung handset, or the BelFone).
+- **Steps:** (a) with no session - peer's Flash off - background Flash, screen off, 60 minutes; read `adb shell dumpsys power`
+  and `dumpsys batterystats --charged com.transfer.flash`. (b) connect the peer, background Flash, screen off, 30 minutes;
+  the peer must still show this device online and a message from it must arrive. (c) repeat (a) on a build with
+  `updateCpuWakeLockState()` stubbed back to the unconditional acquire, same device, same day.
+- **Pass condition:** (a) `flash:ws-mesh` absent or held for a minority of the window, with
+  `Released CPU wake lock (mesh idle - AP suspend allowed)` in logcat; (b) the lock is held for the whole window
+  (`Acquired CPU wake lock (... peers=true ...)`), the link never drops and the message arrives. Record held-time and
+  deep-sleep time for both builds in (a): a drop in held-time with a rise in deep sleep is the result, and the figures are
+  the record, not a gate.
+- **Status:** TODO.
+
+### PERF-G02 - The keepalive worker skips only when the user has not asked to stay reachable
+- **Area:** battery / WorkManager / SQLite / background reachability (`OPT-O13-02`, ADR-281 and its amendment, ADR-232)
+- **Source:** `EXP-106`; `logs/streams/android/INTEGRATOR-REVIEW.md` §3.2.
+- **Setup:** a physical Android device.
+- **Steps:** (a) Settings -> "Keep listening in the background" **OFF**, empty outbox and transfer queue; force a run with
+  `adb shell cmd jobscheduler run -f com.transfer.flash <jobId>` (or wait for the 15-minute period); watch logcat and
+  `dumpsys power`. (b) Repeat with the setting **ON** and the queues still empty. (c) Repeat (b) after
+  `adb shell am kill com.transfer.flash`, so the run starts in a cold process where the in-memory mirror is empty.
+- **Pass condition:** (a) the skip line appears (`queues empty and keep-listening is off; skipping headless engine boot`),
+  no WebSocket bind and no NSD registration for that run, no `flash:*` wake lock taken. (b) and (c) no skip line: the engine
+  boots and the session window runs even though nothing is queued - (c) proves the opt-in is read from its on-disk copy.
+  Record the elapsed time; the stream's "< 100 ms" was a target, not evidence.
+- **Status:** TODO.
+
+### PERF-G03 - Android 15 FGS timeout during verification pauses instead of killing
+- **Area:** storage / transfer resilience / Android 15 `dataSync` timeout (`OPT-O13-03`, ADR-282)
+- **Source:** `docs/android-platform-notes.md` (Android 15 hard timeout); `logs/streams/android/errors.md`.
+- **Setup:** an Android 15 (API 35) device or emulator.
+- **Steps:** start a multi-GB send or receive, wait until chunk transfer ends and the row enters `Verifying`, then
+  `adb shell cmd activity timeout-service com.transfer.flash`; check the row, reopen the app and resume.
+- **Pass condition:** the row is stored `Paused` with reason `SERVICE_TIMEOUT` (not `Failed`), and verification completes
+  after resuming with the hash intact.
+- **Status:** TODO.
+
+### PERF-G04 - Transsion Tier 3 silent audio is gated on the screen being off
+- **Area:** battery / Transsion Hiber freezer / audio (`OPT-O13-04`, ADR-285)
+- **Source:** `EXP-107`; `docs/android-platform-notes.md`.
+- **Setup:** a Transsion handset (Infinix X6882B or Tecno Camon 20) with the audio tier forced.
+- **Steps:** connect a peer so the tier starts; screen ON -> expect the pause line; screen OFF -> expect the resume line;
+  leave the screen off for 30 minutes with `adb logcat | grep -i hiber` running.
+- **Pass condition:** `PLAYSTATE_PAUSED` while interactive and `PLAYSTATE_PLAYING` only while non-interactive, and no Hiber
+  freeze of the Flash UID while the screen is off with a session active. The current it saves is unmeasured.
+- **Status:** TODO.
+
+### PERF-G05 - Flash does not fight a music player for audio focus
+- **Area:** audio / UX / Transsion keep-alive (`OPT-O13-07`, ADR-285)
+- **Source:** `logs/streams/android/INTEGRATOR-REVIEW.md` §5 (the cooldown spends the shield while it waits).
+- **Setup:** a Transsion handset with Spotify or YouTube Music installed.
+- **Steps:** start music, then connect/disconnect a peer a few times so the tier is re-evaluated; watch
+  `adb logcat | grep -i TranssionHiber`.
+- **Pass condition:** `AUDIOFOCUS_LOSS` is followed by the 10-minute cooldown log and **no** further focus request until the
+  cooldown ends or the app is foregrounded; music is never interrupted.
+- **Status:** TODO.
+
+### PERF-G06 - Discovery drops to ECO on screen-off, except while work is live
+- **Area:** network / discovery / screen lifecycle (`OPT-O13-05`, `OPT-O10-01`, ADR-283)
+- **Source:** `logs/streams/android/INTEGRATOR-REVIEW.md` §2 (closes the Wave 2 handoff: `setScreenActive` now has callers).
+- **Setup:** any physical Android device with a peer nearby; preferred mode `STANDARD`.
+- **Steps:** screen OFF -> expect `downscaling discovery to ECO` and `setScreenActive(false)` reaching `CompositeDiscovery`;
+  screen ON -> expect the preferred-mode restore; then start a transfer and turn the screen off mid-transfer.
+- **Pass condition:** the two calls arrive on the right edges, the in-transfer case does **not** downscale (it downscales
+  when the transfer finishes), and the peer stays discoverable in all three. There is no percentage target.
+- **Status:** TODO.
+
+### PERF-G07 - The automatic subnet sweep waits for cold start to settle
+- **Area:** startup / discovery / sockets (`OPT-O01-04`, ADR-286)
+- **Source:** `EXP-108`; `INITIAL_SWEEP_START_DELAY_MS = 30_000L`.
+- **Setup:** any physical Android device on a LAN where mDNS finds a peer.
+- **Steps:** force-stop, clear logcat, cold start; note the first probe relative to process start; then press "Scan network"
+  immediately after launch.
+- **Pass condition:** no automatic subnet probe within the first 30 s, an explicit scan still probes immediately, and the
+  peer is still found by NSD in the usual couple of seconds. The launch-time saving is `PERF-G07`'s to state, and it is
+  currently unknown.
+- **Status:** TODO.
+
+### PERF-G08 - The idle foreground service stops, and the opt-in keeps it up
+- **Area:** service / Play policy / settings (`OPT-O13-06`, ADR-232, ADR-284)
+- **Source:** `logs/streams/android/INTEGRATOR-REVIEW.md` §3.3 (the stop was unreachable and one-shot as delivered).
+- **Setup:** any physical Android device, best on one that shows the FGS notification.
+- **Steps:** (a) no peers, nothing queued, hub offline: open Flash, press Home, keep the screen on. (b) Repeat, connecting a
+  peer inside the 30 s window. (c) Repeat (a) with "Keep listening in the background" ON.
+- **Pass condition:** (a) `Idle grace expired ... Stopping connectedDevice foreground service` about 30 s later and no
+  foreground notification left (`dumpsys activity services com.transfer.flash`); reopening Flash starts it again.
+  (b) `Idle grace expired but work reappeared; keeping ...` and the service survives. (c) the service stays up. Also check
+  the row reads "Keep listening in the background" with the subtitle "Stay reachable with nobody connected; the system may
+  still stop it", and that searching "background transfers" still finds it.
+- **Status:** TODO.
+
+---
+
+## PERF-H01..H07 (2026-11-01) - Stream H (hub) after the integrator review
+
+From `logs/streams/hub/INTEGRATOR-REVIEW.md`. No benchmark harness was added anywhere on that branch, so every figure its
+report carried is withdrawn and each test below names the number that has to replace it. `PERF-H04` now says explicitly
+that the client still acks one message at a time, and `PERF-H07` covers the repaired `putChunk`.
+
+### PERF-H01 - A 20 000-member directory sync on a low-memory Android phone
+- **Area:** enterprise directory sync / memory footprint (`OPT-O16-02`, `OPT-O25-02`, `OPT-O02-03`; ADR-295/297)
+- **Source:** `EXP-112`; `logs/streams/hub/INTEGRATOR-REVIEW.md` §4.
+- **Setup:** an entry-level device (2 GB RAM) enrolled on a hub whose directory holds 20 000 members.
+- **Steps:** fresh install, enrol, let the sync run to completion through the UI while watching `adb logcat` for
+  `OutOfMemoryError`, GC storms and ANR, with `adb shell dumpsys meminfo com.transfer.flash` during and after; then search a
+  member by name.
+- **Pass condition:** the sync completes without `OutOfMemoryError` or an ANR, the profile shows the full member count and
+  search finds a member. Record peak heap, duration and longest GC pause - the stream's "below 32 MB / 100 ms" were written
+  before any device ran it.
+- **Status:** TODO.
+
+### PERF-H02 - A 500 MB hub file over WAN, cleanly and after a pause
+- **Area:** sealed file transfer / WAN throughput and the three-chunk pipeline (`OPT-O16-01`, `OPT-O23-01`; ADR-291/292)
+- **Source:** `EXP-111`; the "2.5x-3.5x" and "14.9 -> 41.0 MB/s" are withdrawn.
+- **Setup:** a hub on the internet, an Android client on 4G/5G (50-80 ms RTT), a 500 MB file.
+- **Steps:** upload through the hub and download to a second device; record elapsed time, throughput and the `hubfile.*`
+  probes; repeat with a pause and resume mid-file.
+- **Pass condition:** the file arrives with a matching hash after the clean download and after the pause/resume; the
+  pipeline never deadlocks, never stalls longer than one RTT window and never drops the relay. Throughput is recorded, not
+  gated. Also watch the descriptor count (`adb shell ls /proc/<pid>/fd | wc -l`) across several paused downloads, because
+  ADR-292 keeps one handle per paused transfer.
+- **Status:** TODO.
+
+### PERF-H03 - Relay scale soak with the production JVM profile
+- **Area:** server scalability / memory (`OPT-O02-07`, `OPT-O17-01`, `OPT-O17-04`; ADR-299)
+- **Source:** `docs/deploy/HUB-SERVER-DEPLOYMENT.md`; the per-connection figures there are estimates.
+- **Setup:** a Linux host running the production profile (`-Xmx2g`, `-XX:+UseG1GC`, `-XX:+ExitOnOutOfMemoryError`).
+- **Steps:** ramp to 1 000 sessions, hold an hour with a steady message rate; repeat at 5 000; record resident heap, GC
+  pauses, socket drops and tail relay latency.
+- **Pass condition:** no `OutOfMemoryError`, no restart, no mass socket drop, every session's messages delivered. Record
+  heap per connection so ADR-299's estimate can be replaced by a measurement.
+- **Status:** TODO.
+
+### PERF-H04 - Mailbox drain after a long offline period
+- **Area:** mailbox relay (`OPT-O16-04`, ADR-296)
+- **Source:** `logs/streams/hub/INTEGRATOR-REVIEW.md` §3.2 - the batched ack exists but **no product path sends a batch**.
+- **Setup:** two devices and a hub; one offline long enough for its mailbox to fill.
+- **Steps:** queue ~1 000 messages for the offline device, reconnect over flaky cellular, watch
+  `adb logcat | grep -iE "mailbox|recv_ack"` and the hub's audit lines.
+- **Pass condition:** every message arrives exactly once, a reconnect immediately afterwards redelivers nothing, and the
+  drain completes. Record the time and the frame count: today the client sends one ack per message, so a batching saving
+  here would mean `HubChatBridge` grew a batched drain.
+- **Status:** TODO.
+
+### PERF-H05 - Chunk writer lock hold time (harness first)
+- **Area:** server / SQLite write concurrency (`OPT-O17-02`, ADR-290)
+- **Source:** `EXP-110`; the "14.8 ms -> 0.18 ms" is withdrawn. The harness does not exist yet.
+- **Steps:** write a timed harness in `:server:test`: 1 000 sequential 1 MiB `putChunk` calls, then a two-thread contention
+  case (a small mailbox write against a continuous upload) recording the mailbox write's latency distribution.
+- **Pass condition:** the mailbox write is not blocked for the duration of a chunk's disk write on the staged build. Report
+  the hold time for both builds; no percentage is assumed.
+- **Status:** TODO.
+
+### PERF-H06 - Group fan-out serialises once
+- **Area:** relay fan-out / CPU (`OPT-O17-03`, ADR-294)
+- **Source:** `EXP-113`; the "8.2 ms -> 0.4 ms" is withdrawn.
+- **Setup:** `:server:test` with 500 fake sessions and Flight Recorder.
+- **Steps:** time `RelayFrameRouter.handleGroupSend` and sample allocations with `jdk.ObjectAllocationSample`, once with the
+  shared encoded frame and once with per-recipient encoding.
+- **Pass condition:** one encode per fan-out is observed (a single serialisation in the allocation sample) and every
+  recipient still receives the frame. Report both timings.
+- **Status:** TODO.
+
+### PERF-H07 - A killed hub never leaves a chunk row without its file
+- **Area:** server / durability (`OPT-O17-02` as repaired, `OPT-O23-01`; ADR-290/292)
+- **Source:** `logs/streams/hub/INTEGRATOR-REVIEW.md` §3.1; the stream's own version did not cover the staged write.
+- **Setup:** a hub whose process can be killed, plus a client uploading a multi-chunk file.
+- **Steps:** `kill -9` the hub mid-upload at several different chunk boundaries; restart and resume; then complete the file
+  and download it back.
+- **Pass condition:** after every kill the hub starts, and for every index the file either has its `file_chunk` row and a
+  readable chunk file or neither - never a row whose chunk file is missing (`GET /api/v1/files/{id}` plus a download
+  attempt per received index). No `chunk-*.part` file survives a resumed upload, and the completed download matches the
+  source byte for byte.
+- **Status:** TODO.

@@ -917,6 +917,31 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Optimization programme Wave 3 merged: Stream G (Android battery/lifecycle) and Stream H (hub server), both reviewed against the
+code, merged into `dev` (`33e82559`, `00f7013b`), NOT device-verified, NOT pushed (2026-11-01).** Gate 1 forced on the merged tree:
+**PASS** (`BUILD SUCCESSFUL`, 243 of 243 tasks executed, 6 m 2 s, 3 234 tests across 13 suites, 0 failures, 2 documented POSIX-only
+skips). Gate 2 forced on the same tree: **PASS** - `BUILD SUCCESSFUL in 9m 23s`, 212 of 212 tasks executed, 1 701 tests, 0 failures: `:core:messaging` 688, `:core:persistence` 53, `:ui:chat` 705, `:core:enterprise` 165, `:app:testDebugUnitTest` 90. The two `TransfersUiMapperTest` rows the plan's baseline lists as *expected* failures now pass (`432ceb52`, ERROR-935), so gate 2 exits 0 for the first time in this programme.. G: 10 of 12 findings kept (4 of them repaired during review), one needed no change
+(`MediaCodecList` was already lazy), one deferred to Stream D — nothing rejected. Three of the repairs were behaviour regressions the
+stream's own tests could not see, because each lived in a caller: the bounded wake lock was **released while a peer was still
+connected** (the KDoc says it exists so keepalive pings are scheduled, and a suspended AP runs no timer), the keepalive worker's fast
+path returned `Result.success()` **regardless of ADR-232's "Keep listening in the background" opt-in**, cancelling the setting from
+inside the worker that exists to honour it, and the idle foreground-service stop **could not fire in the case it was written for**
+("open Flash with nobody nearby, then leave it") and could not re-arm once it had. H: 16 of 18 kept (4 repaired), **`OPT-O16-03`
+rejected and reverted** (`8b622a9b`, ADR-298 — presence has no push channel, so suppressing the poll ages `hubOnline` from 30 s to
+10 min and `HubFacade` chooses the `HUB` route from it: Wave 2's `O10-05` failure mode again), one document-only. Two H repairs fixed
+invariants the changes themselves broke: a committed `file_chunk` row could **outlive its chunk file** (the rename into place now
+happens inside the transaction), and an ack batch of more than 100 ids would have been **rejected whole** by `RelayFrameCodec`,
+turning every ack into a permanent redelivery — and `OPT-O16-04` is still **transport-only**, no product path sends a batch.
+Two defects neither report mentioned were found on review (`Vary: Accept-Encoding` missing on 304s; the `CachedMailboxStatsTest`
+wall-clock flake, repaired test-side) plus a comment that had become a lie. Every numeric headline in both streams is **withdrawn**;
+`EXP-105`..`108` and `EXP-110`..`114` are retitled NOT MEASURED and name the `PERF-G*`/`PERF-H*` test that would produce the number,
+and `ADR-280`..`286`/`290`..`299` carry the structural claim only. **`OPT-O10-01` is closed**: `setScreenActive` has callers now
+(`onScreenOn`/`onScreenOff` plus the transfer-finish re-check). The gate found one thing of its own: `ORGT-U16`'s absolute 25 s budget
+failed at 27 192 ms under the gate's CPU saturation and passed at 5 904 ms alone, so the assertion is now
+`maxOf(25_000, fixtureMs * 8)` — ERROR-938 — and the other wall-clock assertions in the gated suites are recorded there, unchanged.
+Owed: `PERF-G01`..`G08` and `PERF-H01`..`H07` in `docs/testing/TEST-BACKLOG.md`. Authority:
+`logs/streams/{android,hub}/INTEGRATOR-REVIEW.md`, `logs/progress.md`.
+
 **Optimization programme Wave 2 merged: Stream U (UI) and Stream N (network/discovery), both reviewed against the code, merged into `dev`
 (`b9c2ed60`, `8c331229`), NOT device-verified, NOT pushed (2026-10-31/11-01).** Gate 1 forced on the merged tree: **PASS** (`BUILD
 SUCCESSFUL`, 161 of 161 tasks executed, 5 m 5 s, exit 0). **The U branch tip did not compile** — four break classes (the extracted
@@ -934,9 +959,9 @@ is withdrawn and requantified (`EXP-095`..`098`, `EXP-100`..`102`; `ADR-260`..`2
 **false**: a resumed TLS 1.3 session never re-invokes the trust manager, corrected in `docs/security.md` §7 too). Authority:
 `logs/streams/{ui,net}/INTEGRATOR-REVIEW.md`, `logs/progress.md`. Owed: `PERF-U01`..`U06` and `PERF-N01`..`N03` in
 `docs/testing/TEST-BACKLOG.md` — including two U **behaviour changes** a device must confirm (the desktop loses swipe-to-archive; opening the
-keyboard at the bottom of a chat now scrolls the thread). Open handoffs: `OPT-O10-01` (`setScreenActive`) is merged but **nothing calls it**
-(Stream G, wave 3, with two KDoc caveats); `OPT-O14-03` (Stream D); `OPT-O03-07`/`O03-09` (G), `O25-05` video half (C), `O05-07` repository half
-(M); and `ui/chat/compose_compiler_config.conf` (ADR-260) is committed but **wired into no build file**, so it does nothing yet. Also
+keyboard at the bottom of a chat now scrolls the thread). `OPT-O10-01` was **closed by Wave 3's Stream G**, which wired
+`setScreenActive` to the screen receivers. Open handoffs: `OPT-O14-03` (Stream D); `OPT-O03-07`/`O03-09` (still G, not attempted by wave 3),
+`O25-05` video half (C), `O05-07` repository half (M); and `ui/chat/compose_compiler_config.conf` (ADR-260) is committed but **wired into no build file**, so it does nothing yet. Also
 recorded: `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` was **entirely double-encoded** by the commit that fixed the T stream
 (`5ef86ca5`); it was **repaired losslessly on 2026-11-01** against the pre-corruption revision `6f8fe180` (1 322 lines came back
 byte-identical, ASCII skeletons compared equal, every `☑`/`◐`/`☐` recovered), so the earlier "read it as a yes/no column" warning no

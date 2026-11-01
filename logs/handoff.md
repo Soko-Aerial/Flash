@@ -1,5 +1,63 @@
 # Current Handoff
 
+> 2026-11-01 Wave 3 (Android battery/lifecycle + hub server): **both streams reviewed against the code, merged into `dev`, and
+> corrected; nothing pushed, nothing device-verified.** Merges `33e82559` (`agent/opt-android`) and `00f7013b` (`agent/opt-hub`).
+> Gate 1 forced on the merged tree (`--rerun-tasks`, 13 suites + the three compile tasks): **PASS — `BUILD SUCCESSFUL in 6m 2s`,
+> 243 of 243 actionable tasks executed, 3 234 tests, 0 failures** (2 documented POSIX-only skips). Gate 2 forced:
+> **PASS** - `BUILD SUCCESSFUL in 9m 23s`, 212 of 212 tasks executed, 1 701 tests, 0 failures: `:core:messaging` 688, `:core:persistence` 53, `:ui:chat` 705, `:core:enterprise` 165, `:app:testDebugUnitTest` 90. The two `TransfersUiMapperTest` rows the plan's baseline lists as *expected* failures now pass (`432ceb52`, ERROR-935), so gate 2 exits 0 for the first time in this programme..
+>
+> **Stream G: 10 of 12 kept (4 repaired here), 1 needed no change, 1 deferred to Stream D; nothing rejected.** Three of the repairs
+> are behaviour regressions the stream's tests could not see, because each lived in a caller: the bounded wake lock was **released
+> while a peer was still connected** (its KDoc says it exists so keepalive pings are scheduled, and a suspended AP runs no timer,
+> so the peer would have timed this device out while the app showed it online - now `hasConnectedPeers` plus a collector on
+> `activeSessions`); the keepalive worker's fast path returned `Result.success()` **regardless of ADR-232's "Keep listening in the
+> background" opt-in**, cancelling the setting from inside the worker that exists to honour it (the condition is now
+> `hasPendingOutboundWork || keepListeningInBackground(context)`, with one writer and a one-boolean `SharedPreferences` copy
+> because a cold worker process has neither `AppEngine.start()` nor a second `DataStore`); and the idle foreground-service stop
+> **could not fire in the case it was written for** ("open Flash with nobody nearby, then leave it", then `stopSelf()` never
+> re-entering the evaluation - now `lastSessionActive`, a live re-check at fire time, re-arming, and `MainActivity.onStop()` ->
+> `reevaluateIdleStop()`). Two smaller repairs: the shared settings row described close-to-tray as an Android foreground-service
+> opt-in on Windows (now `backgroundListenTitle`/`backgroundListenSubtitle`), and the storage card showed `0 B` until Refresh was
+> tapped because `OPT-O01-02` removed its only refresh call (now a `LaunchedEffect(Unit)`). **`OPT-O10-01` is closed** -
+> `setScreenActive` finally has callers.
+>
+> **Stream H: 16 of 18 kept (4 repaired), `OPT-O16-03` REJECTED AND REVERTED (`8b622a9b`, ADR-298), 1 kept as a document only.**
+> `O16-03` suppressed the presence poll while the relay was up; `HubPresence`'s own KDoc says the hub serves presence over REST and
+> has no presence push, `RelayFrame` has no presence frame, and `HubFacade` chooses the `HUB` route from `hubOnline` (ADR-229) - so
+> with the relay up, the ordinary case, the change aged the only presence source from 30 s to 10 min. That is Wave 2's
+> `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by deleting a documented invariant. Two of the kept changes
+> broke an invariant in the code they touched: `putChunk` wrote the chunk file **before** opening the transaction, so a crash left a
+> committed `file_chunk` row whose file was gone and `complete()` checks counts, not file presence - the write is still outside the
+> writer, but it now stages to a uniquely named `chunk-*.part` and renames into place **inside** the transaction before the row
+> insert (ADR-290); and the batched mailbox ack had no length bound while `RelayFrameCodec` rejects a frame with more than 100 ids
+> **as a whole**, so a drain longer than 100 would have thrown on its own ack and the hub would have redelivered forever (now split
+> at `MAX_RECV_ACK_IDS` - and note **`OPT-O16-04` is transport-only**: `HubChatBridge` still acks one delivery at a time, so the
+> advertised saving does not happen yet, ADR-296). Two defects the report did not mention: `Vary: Accept-Encoding` was missing on
+> **304** answers (ERROR-936), and `CachedMailboxStatsTest` was still the documented wall-clock flake, now injected with
+> `Dispatchers.Unconfined` (ERROR-937). `RevocationAndEnrolmentTest` failed 2/663 under load because `SqliteRevocationService.fire`
+> dispatches on `notifyScope` by design; a bounded `awaitKicks()` keeps "fires **once**" as the assertion (ERROR-934).
+>
+> **Every numeric headline in both streams is withdrawn** - "15-35 mA", "< 35 ms", "2 100 ms -> 8 ms", "14.9 -> 41.0 MB/s",
+> "TTI 3.5 s -> 150 ms", "-94 % transactions" and the rest. Neither branch added a benchmark harness, and every suite named under
+> their Verification tables asserts correctness, not time, heap or frame counts. `EXP-105`..`108` and `EXP-110`..`114` are now
+> NOT MEASURED and name the `PERF-G*`/`PERF-H*` test that would produce the number; `ADR-280`..`286`/`290`..`299` carry the
+> structural claim only, with ADR-292 stating both durability directions and ADR-299 marking its figures as estimates.
+>
+> **The gate found one thing of its own.** The first gate-1 run on the merged tree was `BUILD FAILED in 9m 31s` on
+> `OrgDirectorySyncTest[jvm] > ORGT-U16` alone: `5,000 member sync took 27192 ms (budget: 25000 ms)`. Same tree, run alone:
+> 5 949 ms. A 4.6x inflation from CPU saturation, not a regression (`OPT-O16-02` only moved the per-member projection behind an
+> `AbstractList.get`; the verify loop is untouched). The assertion is now `maxOf(25_000L, fixtureMs * 8)` - the machine's own
+> measured crypto cost sets the allowance, a real superlinear slowdown still fails - **ERROR-938**, which also lists the other
+> wall-clock assertions in the gated suites (`BoundedSendQueueTest`, `JmdnsResolveStormTest`, `RelayConnectionPoolTest`,
+> `RelayDeliveryContractTest`, `RelayFrameRouterTest`, `RelayLoadTest`) as recorded-not-changed.
+>
+> Owed: `PERF-G01`..`G08` and `PERF-H01`..`H07` in `docs/testing/TEST-BACKLOG.md`. Open risks carried in: `OPT-O16-04` ahead of its
+> caller; a paused hub download holds one descriptor until it resumes or is deleted; the console devices page can show partial
+> search results while later pages load; three copies of each console asset in memory (2 MB cap each); G's `observeSessionActivity`
+> does not re-evaluate on a hub relay state change, so a hub that connects and does nothing else will not re-arm the idle-stop
+> timer; and G's audio-focus cooldown genuinely spends the Transsion Hiber shield for ten minutes (ADR-285). Authority:
+> `logs/streams/{android,hub}/INTEGRATOR-REVIEW.md`, `logs/progress.md`.
+
 > 2026-10-31 Wave 2 (UI + network/discovery): **both streams reviewed against the code, merged into `dev`, and corrected; nothing pushed,
 > nothing device-verified.** Merges `b9c2ed60` (`agent/opt-ui`) and `8c331229` (`agent/opt-net`). Gate 1 forced on the merged tree
 > (`--rerun-tasks`, ten `jvmTest` suites incl. `:core:discovery` and `:core:hub-protocol`, `:desktop:compileKotlinJvm`,
@@ -251,6 +309,34 @@
 > 2026-10-23 desktop radio round 2: Windows "paired" now means authenticated (remembered is not paired), the scan streams in 2.56 s rounds, the audio twin redirects to the control entry, open failures are shown, pairing uses the callback API. Unit-tested only; **pairing with the radio in pairing mode is unverified** (RADVOICE-11).
 
 > 2026-10-23 desktop radio voice: the Radio voice card now exists on Windows (Winsock RFCOMM to the vendor audio service + Java Sound). Unit-tested; the audio channel opened once on the owner's PC (receive only). Hearing/talking unverified: RADVOICE-12.
+
+## 2026-11-01 (Wave 3 review) - Android battery/lifecycle and hub server streams merged after review, corrected, unit-tested, NOT device-verified, NOT pushed
+
+Merges `33e82559` (G, tip `2f3bd669`) and `00f7013b` (H, tip `200474a4`). Gate results, the reverted `O16-03` and the withdrawn
+numbers are in the banner above. What a new agent needs to keep:
+
+- **Both streams looked finished and each shipped regressions into a caller.** G's wake lock taught "connected peer = idle" (it
+  is not: the keepalive is a timer), its keepalive fast path quietly cancelled the user's opt-in, and its idle stop could never
+  fire where it was needed. H's chunk write gave up "a committed row implies a present file", and its ack batch would have made
+  acks self-defeating above 100 ids. **Grep the callers before believing a saving.**
+- **G's tree is the one place in wave 3 where a documented invariant was not in danger** - nothing was reverted; the three
+  repairs were additions the finding omitted (peers as work, the opt-in as work, a live re-check). H's `O16-03` was the wave's
+  second unmeasured saving bought by deleting an invariant; ADR-298 records it as rejected so it is not retried.
+- **`OPT-O10-01` is closed** (`setScreenActive` has callers), which empties the last of wave 2's handoffs to G. Still open and
+  assigned elsewhere: `OPT-O14-03` (D), `OPT-O03-07`/`O03-09` (G, not attempted), `O25-05` video half (C), `O05-07` repository
+  half (M), and `ui/chat/compose_compiler_config.conf` (ADR-260) wired into no build file.
+- **`OPT-O16-04` is transport-only.** The wire frame, the server transaction and the 100-id client split all exist and are tested;
+  `HubChatBridge.handleInbound` still acks one delivery at a time, so nothing is faster until the drain collects ids. Do not
+  report hub ack batching as a working optimisation.
+- **The gate is the thing that found ERROR-938**, not a stream. If a future gate run fails on one wall-clock assertion while every
+  other suite is green, measure the test alone on the same tree before touching product code.
+- Files a next agent is most likely to need: `app/src/main/java/com/transfer/flash/debug/DiscoveryEngineHolder.kt` (wake lock,
+  screen receiver, `keepListeningInBackground`), `app/src/main/java/com/transfer/flash/debug/FlashBackgroundService.kt` (idle stop,
+  `onTimeout`), `server/src/main/kotlin/com/transfer/flash/server/files/FileStore.kt` (staged chunk write), `RelayFrameCodec.kt` +
+  `HubChatBridge` (the ack batch gap), `core/enterprise/.../HubFileTransfers.kt` (handle cache, `verify()`), and
+  `core/enterprise/src/sharedTest/.../OrgDirectorySyncTest.kt` (the repaired budget).
+- Reviews: `logs/streams/android/INTEGRATOR-REVIEW.md`, `logs/streams/hub/INTEGRATOR-REVIEW.md`. Decisions: ADR-280..286,
+  ADR-290..299. Backlog: `PERF-G01`..`G08`, `PERF-H01`..`H07`. Nothing here is verified on a device or a deployed hub.
 
 ## 2026-10-31 (Wave 1 review) — data and transfer streams merged after review, corrected, unit-tested, NOT device-verified, NOT pushed
 

@@ -7561,3 +7561,326 @@ socket close, so every reconnect (Wi-Fi roaming, wake from Doze, a momentary fad
 ### Consequences
 Reconnects can resume instead of doing a full handshake; the session caches are what make that possible. The stream's "~32 ms -> ~3 ms"
 is unmeasured - the test it cites times nothing (see `EXP-100`). `PERF-N01` is the measurement.
+
+## ADR-280 - The CPU wake lock follows the session, and every lease is bounded (2026-11-01, Stream G; amended by the integrator)
+
+### Decision
+`DiscoveryEngineHolder` manages its `PARTIAL_WAKE_LOCK` through `updateCpuWakeLockState()`, mirroring `updateWifiLockState()`:
+held while work exists — a transfer that is Transferring or Verifying, a call that has not ended, the PTT session floor,
+a live session (`network.activeSessions` non-empty) or an active `WakeLockLease` — and released the moment the last of them
+goes. Every lease carries `WAKE_LOCK_TIMEOUT_MS = 10 min`, refreshed by a 5-minute watchdog while its work is still live.
+
+### Context
+The lock was acquired once at engine start, with no timeout, and released only at full teardown, so an idle phone never
+reached AP suspend. How much battery that cost is **not measured here**: `PERF-G01` is the device test (`dumpsys power` and
+`batterystats`, with and without a peer connected), and the stream's "< 50 ms" / "> 90 % deep sleep" figures were withdrawn.
+
+### Amendment (integrator, 2026-11-01) - a live session is work
+As delivered, `needsWakeLock` did not include a connected peer, which is the case the lock was originally for. The mesh
+keepalive is a **timer**, and a suspended CPU runs no timer: with the lock released, a connected peer would have timed this
+device out inside one keepalive window while the app still showed it online — a silent background-delivery regression sold
+as a battery win. The old KDoc said as much ("held to ensure keepalive pings are scheduled").
+
+`hasConnectedPeers` is now part of `needsWakeLock` and a second collector on `activeSessions` re-evaluates the lock on every
+session edge; without it the lock could only be re-evaluated when a transfer or call changed, so a phone that connected to a
+peer and then went quiet would never take it. What the optimisation still buys: an isolated phone (no peers, nothing queued)
+suspends instead of holding a lock for the life of the process. `PERF-G01` therefore has to be run both ways.
+
+---
+
+## ADR-281 - The keepalive worker looks at SQLite first, and honours the user's opt-in (2026-11-01, Stream G; amended by the integrator)
+
+### Decision
+`FlashKeepaliveWorker.doWork()` runs two scalar rowid-count queries (`outbox`, and `transfers` in Transferring / Verifying /
+Queued / Paused and not dismissed) before booting anything. Nothing pending **and** the person has not switched on "Keep
+listening in the background" means `Result.success()` with no engine, no socket bind and no wake lock. Otherwise it takes a
+bounded lease and starts the engine to drain.
+
+### Context
+The worker booted the whole `DiscoveryEngineHolder` stack and waited `SESSION_WINDOW_MS = 45_000` every 15 minutes even with
+an empty outbox and no queued transfers: a 180 s/hour awake ceiling by arithmetic, with the real per-run time unmeasured
+(`PERF-G02`).
+
+### Amendment (integrator, 2026-11-01) - the skip may not swallow ADR-232
+The worker is not only a flush: the window it opens is the **only** time an otherwise-idle phone can be reached, so skipping
+every run for an opted-in user would cancel the setting from inside the worker whose job is to restore what the system
+stopped. The condition is now `hasPendingOutboundWork || keepListeningInBackground(applicationContext)`.
+
+Reading that opt-in in a worker is not free. `DiscoveryEngineHolder.backgroundTransfers` is still `false` in a cold worker
+process (nothing calls `AppEngine.start()` there), and the worker cannot open `FlashSettingsDataStore` itself: a second
+DataStore for the same file throws **inside a process**, and the UI may later start in that same process. So the opt-in is
+written by exactly one writer (`setBackgroundTransfers`, fed by AppEngine's initial read and its collector) into a
+one-boolean `SharedPreferences` copy (`flash_flags` / `keep_listening_in_background`), and `keepListeningInBackground(context)`
+answers "live mirror, else that copy", defaulting to `true` on a read failure (a broken read costs one engine boot rather
+than silently switching the setting off). `FlashBackgroundService.evaluateServiceIdleStop` uses the same accessor, because a
+`START_STICKY` regeneration also starts with an empty mirror.
+
+Consequence, stated plainly: for a user with the opt-in **off** and nothing queued, the background device is not reachable —
+which is what ADR-232 ("stop when idle") already meant.
+
+---
+
+## ADR-282 - `Verifying` counts for the Android 15 `dataSync` timeout (2026-11-01, Stream G)
+
+### Decision
+`TimeoutStopPlan.of` inspects `Verifying` as well as `Transferring`, so a transfer that is re-hashing when the 6-hour limit
+lands is paused with `SERVICE_TIMEOUT` and saved for automatic resumption instead of being killed mid-verification.
+
+### Context
+On Android 15 (API 35) a `dataSync` foreground service has a cumulative 6-hour budget; `onTimeout` asked the plan which rows
+must be paused, and `Verifying` was not one of them, so a large file could reach the limit during its whole-file SHA-256 and
+be stopped with no state saved. Device check `PERF-G03`.
+
+---
+
+## ADR-283 - Screen-off downscales discovery to ECO, except while work is live (2026-11-01, Stream G)
+
+### Decision
+`DiscoveryEngineHolder` registers `ACTION_SCREEN_OFF` (with `RECEIVER_NOT_EXPORTED`) beside the existing `SCREEN_ON` /
+`USER_PRESENT` registration. On screen-off, if no transfer, call or PTT session is active, it calls
+`composite?.setScreenActive(false)`; an active workload holds the current mode and the downscale happens when that workload
+finishes and the screen is still non-interactive (`PowerManager.isInteractive`). Screen-on restores the user's preferred
+`STANDARD`/`BOOST` mode and re-arms discovery.
+
+### Context
+The screen receiver only listened for the screen coming on, so a phone locked in a pocket kept its `STANDARD`/`BOOST` tickers
+and sweeps running. The "> 3,500 wakeups/hr" first written here was an estimate and is withdrawn; `PERF-G06` counts them.
+This closes the Wave 2 handoff note: `FlashDiscovery.setScreenActive` existed but had no Android caller.
+
+---
+
+## ADR-284 - The `connectedDevice` foreground service stops when idle, and comes back (2026-11-01, Stream G; repaired by the integrator)
+
+### Decision
+`FlashBackgroundService.evaluateServiceIdleStop` arms a 30-second grace timer whenever sessions, transfers, calls, PTT and hub
+relay all reach zero. At expiry the **live** state decides (no active session, no transfers, no online hub, `activeSessions`
+empty, process no longer foreground-interactive); if it still holds, `stopForeground(STOP_FOREGROUND_REMOVE)` + `stopSelf()`,
+and `onStart` brings the service back on return to the app. The question is asked on every mesh-activity change **and again
+from `MainActivity.onStop`**. "Keep listening in the background" bypasses the stop; the Settings row now carries that name
+(it used to say "Background transfers") and the honest subtitle that the system may still stop it (ADR-232, EXP-002).
+
+### Context
+The `connectedDevice` type was held indefinitely with nothing connected, which is the Google Play Android 14+ FGS policy
+shape and keeps the app out of the `RESTRICTED`/`RARE` standby buckets.
+
+### Repair (integrator, 2026-11-01)
+As delivered the stop was effectively unreachable and one-shot. Backgrounding is not a mesh change, so the ordinary sequence
+"open Flash with nobody nearby, then leave it" only evaluated while the app was on screen and declined; and a finished timer
+could never re-arm (`idleStopJob?.isActive` is now the guard), so one declined round disarmed the mechanism for the life of
+the process. `MainActivity.onStop` and the re-armable timer are what make it fire at all. `PERF-G08` covers all three arms.
+
+---
+
+## ADR-285 - Transsion keep-alive audio only while the screen is off, with an audio-focus cooldown (2026-11-01, Stream G)
+
+### Decision
+`TranssionHiberKeepAlive` observes `PowerManager.isInteractive`: the silent `AudioTrack` plays only while the screen is off,
+pauses on screen-on and resumes on screen-off if the session is still active. `AUDIOFOCUS_LOSS` (or a refused request) arms
+`PERMANENT_FOCUS_LOSS_COOLDOWN_MS = 10 min`, during which `determineBestTier()` skips the AUDIO tier and falls back to the
+Bluetooth-scan or network-traffic shield; `onAppForegrounded()` clears the cooldown.
+
+### Context
+The Hiber freezer only freezes apps with the screen off (`IMPORT_SCREEN_OFF_FLAG = 389052`), so keeping the audio path powered
+while the screen was on bought nothing; and background session changes re-requested focus without backoff, pausing or
+stuttering a music player. The drain the first half saves is unmeasured (`PERF-G04`); the music-player behaviour is
+`PERF-G05`. Known residual: during the cooldown the shield is spent waiting, so a Transsion device may freeze in that window.
+
+---
+
+## ADR-286 - The automatic subnet sweep waits 30 s after cold start (2026-11-01, Stream G)
+
+### Decision
+`DiscoveryEngineHolder.ensureStarted` defers `sweep.start()` by `INITIAL_SWEEP_START_DELAY_MS = 30_000L`. An explicit
+"Scan network" and ordinary mDNS/NSD discovery stay immediate; only the automatic fallback sweep waits.
+
+### Context
+Cold start launched up to 254 TCP probes while SQLite was opening and the first Compose frame was rendering. The launch-time
+saving is not measured (`PERF-G07`), and the cost is a slower join for a peer that only the sweep can find — by 30 s at most,
+and only on a cold start, since a peer found by mDNS is unaffected.
+
+---
+
+## ADR-290 - Chunk bytes are staged outside the SQLite writer and published inside it (2026-11-01, Stream H; repaired by the integrator)
+
+### Decision
+`FileStore.putChunk` does its validation and its megabyte write outside `db.withTransaction`, into a uniquely named
+`chunk-*.part` in the file's own directory. The transaction then re-validates, atomically **renames** the staged file into
+place (a metadata operation in the same directory, not a second copy) and inserts the `file_chunk` row. A throw after the
+rename deletes the published file; the staging file is always removed. A unique name matters because `OPT-O16-01` keeps three
+chunks in flight and a retry can race the attempt it retries.
+
+### Context
+SQLite in WAL mode has one writer, so a 1 MiB disk write inside the transaction queued every other server write (relay,
+mailbox, directory, device registration) behind chunk uploads.
+
+### Repair (integrator, 2026-11-01)
+As committed the branch wrote and moved the file **before** opening the transaction, which gave up "a committed `file_chunk`
+row implies a present chunk file": a crash in between left a row whose download would 500 — and `complete()` checks counts and
+byte totals, not file presence, so the file would even have been sealed. Staging outside and publishing inside keeps the
+expensive I/O off the writer and the visibility switch inside the transaction. SQLite's single writer makes check+rename
+atomic for this purpose. Crash test: `PERF-H07`; writer-hold measurement: `PERF-H05`.
+
+### Alternatives rejected
+Faster storage with the write inside the transaction (fails on loaded cloud volumes); a detached async chunk writer (same
+orphan problem plus unbounded queues).
+
+---
+
+## ADR-291 - Three chunks in flight for hub file transfers (2026-11-01, Stream H)
+
+### Decision
+`HubFileTransfers` moves hub file chunks through a bounded worker pool (`CHUNK_CONCURRENCY = 3`) with sliding-window
+dispatch, synchronising source reads and updating the done bitset per chunk under one mutex.
+
+### Context
+Stop-and-wait cost one round trip per 1 MiB chunk: on a 50 ms RTT link, 100 sequential round trips for 100 MB of pure idle.
+
+### Why, and what is not claimed
+Three chunks keep a latency-bound link busy while bounding heap to three buffers instead of the whole file, and correctness
+is unchanged (seal + verify before write, done bit under the mutex). "2.5x-3.5x over WAN" and the `EXP-111` table
+(3 350 ms -> 1 220 ms) were **withdrawn** on 2026-11-01: no harness produced them. `PERF-H02` is the measurement. The 50 ms
+example is arithmetic on a hypothetical link, not a run.
+
+### Alternatives rejected
+A single multipart stream (no per-chunk resume, no per-chunk sealing); unbounded `launch` (buffer flood, OOM risk).
+
+---
+
+## ADR-292 - One handle per part file and one fsync per transfer: the durability cost, stated (2026-11-01, Stream H)
+
+### Decision
+`HubFileDisk` (jvm and android actuals) keeps one `RandomAccessFile` per part file open across chunk writes and performs a
+single `fd.sync()` when the transfer finishes (`finishPart` -> `syncAndClose`). Delete, move and `close` evict the handle
+first. `verify()` re-reads and re-seals every chunk from offset 0 before a download is called finished.
+
+### Context
+Each chunk used to open, seek, write, `fsync` and close the part file, and `replaceAtomically` (the state rewrite that
+follows each chunk) fsynced too — roughly 1 600 fsyncs of each file for a 50 MB transfer at 32 KiB chunks. The per-fsync cost
+is unmeasured; the "1-5 ms / 3.2 s" first written here came from no run.
+
+### Cost, in both directions
+1. The last chunk bytes may not be on the platter while their done bit is. `verify()` turns that into
+   `HubFileError.Integrity` -> one full refetch (`verifyFailures++`), never a silently accepted corrupt file.
+2. The state file lost its own `out.fd.sync()`, so after a power loss the done set can also lag **behind** the data — the
+   cheaper direction: a few chunks are fetched again.
+
+Neither direction produces a file the app calls complete and then cannot open; both cost re-download. A reader looking for
+"durable at chunk N" will not find it and must not assume it. Residual: an interrupted (paused) transfer holds its
+descriptor until it resumes, finishes or is deleted — one per paused transfer, bounded in practice but not capped. Revisit if
+a user can queue many paused hub downloads.
+
+---
+
+## ADR-293 - Delegation revocation history in one indexed join (2026-11-01, Stream H)
+
+### Decision
+`SqliteRevocationService.revokeDelegation` inspects the certificate history of the revoked serials with one
+`INNER JOIN hub_delegations d ON c.delegation_serial = d.serial` instead of one query per serial.
+
+### Context
+Revocation walked every revoked serial and queried its chain individually — an N+1 loop inside the write transaction. The
+join holds the writer for one statement instead. How much that shortens the hold is unmeasured (`PERF-H05`-adjacent); the
+"~2 100 ms -> ~8 ms" is withdrawn.
+
+---
+
+## ADR-294 - One encoded frame per group fan-out (2026-11-01, Stream H)
+
+### Decision
+`RelayFrameRouter.handleGroupSend` encodes the `Deliver` frame once and reuses the text for every recipient.
+
+### Context and soundness
+Fan-out re-serialised the identical payload per member on the relay dispatcher thread. `RelayFrame.Deliver` has **no
+per-recipient field** — the frame is identical for every member — so one encoding is valid for all of them; the socket write
+is still per recipient. The timing/allocation saving is unmeasured (`PERF-H06`); "8.2 ms -> 0.4 ms" is withdrawn.
+
+---
+
+## ADR-295 - O(M+D) directory sync, O(1) roster checks, no intermediate strings (2026-11-01, Stream H)
+
+### Decision
+`OrganizationDirectory.getSyncChanges` computes department member counts once (one aggregate) instead of scanning members per
+department; `GroupCharter`/`Department` cache `memberSet`/`adminSet` lazily so membership is `Set.contains`; known-size
+collections are pre-sized; `utf8ByteCount` counts a UTF-8 budget without building intermediate strings.
+
+### Why
+At 20 000 members and 100 departments the nested count was O(D·M) and roster checks were linear scans run per frame. Two
+complexity classes genuinely drop — O(D·M) -> O(M+D) and O(n) -> O(1) per check — and that is visible in the code, not
+inferred from timing. The "over 80 % faster generation" headline is unmeasured and withdrawn; `PERF-H01` is the measurement.
+
+---
+
+## ADR-296 - Batched mailbox receipt acks: the transport exists, the caller does not (2026-11-01, Stream H; capped by the integrator)
+
+### Decision
+`RelayFrame.RecvAck` gains an additive optional `ids: List<String>?`; `MailboxStore`/`MailboxQueue` gain
+`acknowledgeBatch` (one transaction, JDBC batch deletes); `handleRecvAck` applies a batch under the same per-device budget;
+`FlashRelayClient.acknowledgeReceipts` splits a list into frames of at most `MAX_RECV_ACK_IDS = 100`.
+
+### The cap is load-bearing
+`RelayFrameCodec` rejects a frame with more than 100 ids **as a whole**, so an uncapped list would have made the client throw
+on its own ack and the hub redeliver the same messages for ever, on any drain longer than 100. The client therefore splits at
+the codec's own limit.
+
+### Honest scope
+No product path sends a batch today: `HubChatBridge.handleInbound` still acks one delivery at a time. Until the drain
+collects ids, the change is neutral. `PERF-H04` records the owed measurement. The wire change is additive and optional, so an
+old client's single-id ack and an old server reading `msgId` both keep working.
+
+---
+
+## ADR-297 - Streaming member projection during directory sync (2026-11-01, Stream H)
+
+### Decision
+`OrgDirectorySync` stages `StagedMember(member, delegationSerial)` per page without pre-serialising `statementBytes` or
+computing SPKI fingerprints, and projects `OrgDirectoryMemberEntity` lazily as Room inserts the rows.
+
+### Context and what is not claimed
+A full sync built every member's serialised statement and fingerprint before applying the page. Peak heap should now scale
+with the page rather than the directory — a structural claim. The "35-45 MB -> < 4 MB" figures came from no run and are
+withdrawn; `PERF-H01` (20 000 members on a 2 GB device) is the measurement. Failure atomicity is preserved: the batch is
+still one Room transaction, so a failure rolls the whole page set back.
+
+---
+
+## ADR-298 - REJECTED: suppressing the presence REST poll while the relay is connected (2026-11-01, Stream H)
+
+### Status
+**Rejected by the integrator and reverted (`8b622a9b`).** Kept because the reasoning is instructive, not because it stands.
+
+### What was proposed
+`OPT-O16-03` slowed `GET /directory/presence` to once per 10 minutes (`RELAY_ONLINE_PRESENCE_POLL_MS = 600_000L`) whenever
+`relay.state.value.isOnline`, on the claim that the connected tunnel delivers presence another way.
+
+### Why it is false here
+- `EnterpriseHub.hubOnline` has exactly two writers: the poll, and the clear-on-unenrolled path. Nothing else sets it.
+- `HubPresence.kt` states in its own KDoc that the hub serves presence over REST and **has no presence push**; `RelayFrame`
+  carries chat, mail and receipts — no presence frame.
+- So with the relay up, the ordinary case, the only presence source aged from 30 s to 10 min, and `HubFacade` picks the
+  `HUB` route from `hubOnline` (ADR-229), so a colleague appearing or disappearing would be routed wrongly for up to ten
+  minutes.
+
+This is Wave 2's `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by deleting an invariant the code
+documents. The uncited "120 radio activations/hour" and the "95 %" saving are withdrawn with it.
+
+### What would make it revisitable
+A hub->client roster presence event on the relay feeding `hubOnline`, after which the poll can become a minutes-scale
+reconcile. That is a wire change and an owner decision.
+
+---
+
+## ADR-299 - A deployment profile, not a code fix, for hub connection scale (2026-11-01, Stream H)
+
+### Decision
+The hub's behaviour under large connection counts is treated as a deployment profile: the systemd and Docker templates and
+`docs/deploy/HUB-SERVER-DEPLOYMENT.md` mandate `-Xmx2g`, `-XX:+UseG1GC` and `-XX:+ExitOnOutOfMemoryError`, and say what each
+is for.
+
+### Why
+G1 keeps pause times tolerable with many sockets, `ExitOnOutOfMemoryError` turns a wedged half-alive process into a restart,
+and 2 GB is the size the templates document. The failure mode (OOM under load) becomes legible instead of opaque.
+
+### The figures are estimates
+"~350 KB per connection", "~1.75 GB at 5 000 connections" and "a cliff at ~1 200 with `-Xmx512m`" were never produced by a
+load run — `RelayLoadTest` exists but was not driven to those counts. `PERF-H03` records the owed soak. The configuration
+baseline stands regardless of the exact numbers.
