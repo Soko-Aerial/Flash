@@ -3,6 +3,7 @@
 package com.transfer.flash.core.common.logging
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.PrintWriter
@@ -12,6 +13,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.zip.GZIPOutputStream
 
 /**
  * Keeps Flash's own log on the device so a failure that happened while nobody was watching `adb logcat` can still be read
@@ -35,7 +37,15 @@ public class RotatingFileLogSink(
     queueCapacity: Int = 4_096,
 ) : FlashLogSink {
 
-    private val queue = ArrayBlockingQueue<String>(queueCapacity)
+    private class LogEntry(
+        val timestampMs: Long,
+        val level: FlashLogLevel,
+        val tag: String,
+        val message: String,
+        val throwable: Throwable?,
+    )
+
+    private val queue = ArrayBlockingQueue<LogEntry>(queueCapacity)
     private val dropped = java.util.concurrent.atomic.AtomicLong(0)
     private val format = ThreadLocal.withInitial { SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.US) }
 
@@ -64,11 +74,24 @@ public class RotatingFileLogSink(
     }
 
     private fun enqueue(level: FlashLogLevel, tag: String, message: String, throwable: Throwable?) {
-        val sb = StringBuilder(message.length + 48)
-        sb.append(format.get()!!.format(Date(clock()))).append(' ').append(level.name.first()).append('/').append(tag).append(": ")
-        sb.append(redact(message))
-        if (throwable != null) sb.append('\n').append(redact(stackTrace(throwable)))
-        if (!queue.offer(sb.toString())) dropped.incrementAndGet()
+        if (!queue.offer(LogEntry(clock(), level, tag, message, throwable))) {
+            dropped.incrementAndGet()
+        }
+    }
+
+    private fun formatEntry(entry: LogEntry): String {
+        val sb = StringBuilder(entry.message.length + 64)
+        sb.append(format.get()!!.format(Date(entry.timestampMs)))
+            .append(' ')
+            .append(entry.level.name.first())
+            .append('/')
+            .append(entry.tag)
+            .append(": ")
+        sb.append(redact(entry.message))
+        if (entry.throwable != null) {
+            sb.append('\n').append(redact(stackTrace(entry.throwable)))
+        }
+        return sb.toString()
     }
 
     /** Writes a fatal crash straight to the file (the writer thread may not get another turn), then returns. */
@@ -98,16 +121,45 @@ public class RotatingFileLogSink(
     public fun files(): List<File> =
         (keep - 1 downTo 0).map { File(dir, "flash-$it.log") }.filter { it.isFile && it.length() > 0 }
 
+    /**
+     * Exports all rotating log files plus optional header lines into a single gzip-compressed file.
+     * Streams directly through [GZIPOutputStream], cutting file size by ~90% and avoiding
+     * uncompressed duplication on disk.
+     */
+    public fun exportGzip(destination: File, headerLines: List<String> = emptyList()) {
+        destination.parentFile?.mkdirs()
+        flush()
+        GZIPOutputStream(FileOutputStream(destination).buffered(16384)).use { gzip ->
+            val writer = gzip.bufferedWriter(Charsets.UTF_8)
+            for (line in headerLines) {
+                writer.write(line)
+                writer.write("\n")
+            }
+            writer.flush()
+            val logFiles = files()
+            for (file in logFiles) {
+                file.inputStream().buffered(16384).use { input ->
+                    input.copyTo(gzip)
+                }
+            }
+            gzip.finish()
+        }
+    }
+
     private val lock = Any()
 
     private fun runWriter() {
         while (!stopped) {
             try {
                 val first = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
-                val batch = ArrayList<String>(64)
-                batch += first
-                queue.drainTo(batch, 255)
-                appendLines(batch)
+                val rawBatch = ArrayList<LogEntry>(64)
+                rawBatch += first
+                queue.drainTo(rawBatch, 255)
+                val lines = ArrayList<String>(rawBatch.size)
+                for (i in 0 until rawBatch.size) {
+                    lines += formatEntry(rawBatch[i])
+                }
+                appendLines(lines)
             } catch (_: InterruptedException) {
                 return
             } catch (_: Throwable) {
@@ -117,11 +169,15 @@ public class RotatingFileLogSink(
     }
 
     private fun drainQueue() {
-        val batch = ArrayList<String>()
-        queue.drainTo(batch)
+        val rawBatch = ArrayList<LogEntry>()
+        queue.drainTo(rawBatch)
+        val lines = ArrayList<String>(rawBatch.size + 1)
+        for (i in 0 until rawBatch.size) {
+            lines += formatEntry(rawBatch[i])
+        }
         val lost = dropped.getAndSet(0)
-        if (lost > 0) batch += "${format.get()!!.format(Date(clock()))} W/LOG: $lost line(s) dropped (log queue was full)"
-        if (batch.isNotEmpty()) appendLines(batch)
+        if (lost > 0) lines += "${format.get()!!.format(Date(clock()))} W/LOG: $lost line(s) dropped (log queue was full)"
+        if (lines.isNotEmpty()) appendLines(lines)
     }
 
     private fun appendLines(lines: List<String>) = synchronized(lock) {
@@ -129,21 +185,23 @@ public class RotatingFileLogSink(
         // Rotate per LINE, not per batch: the writer appends up to 256 queued lines at once (and flush() drains the whole
         // queue), so checking the size only before the batch let one file grow by a whole batch past maxFileBytes and broke
         // the documented bound of keep * maxFileBytes. A file now overshoots by at most one line.
-        var out: FileOutputStream? = null
+        var out: BufferedOutputStream? = null
         try {
             var size = current.length()
             for (l in lines) {
                 if (size >= maxFileBytes) {
+                    out?.flush()
                     out?.close()
                     out = null
                     rotate()
                     size = 0L
                 }
                 val bytes = (l + '\n').toByteArray(Charsets.UTF_8)
-                val stream = out ?: FileOutputStream(current, true).also { out = it }
+                val stream = out ?: BufferedOutputStream(FileOutputStream(current, true), 8192).also { out = it }
                 stream.write(bytes)
                 size += bytes.size
             }
+            out?.flush()
         } finally {
             out?.close()
         }

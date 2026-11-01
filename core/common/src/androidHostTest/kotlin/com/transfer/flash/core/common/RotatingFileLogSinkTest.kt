@@ -95,4 +95,23 @@ class RotatingFileLogSinkTest {
         s.writeCrashNow("main", RuntimeException("fatal"))
         assertTrue(text(s).contains("E/CRASH") && text(s).contains("fatal"))
     }
+
+    @Test
+    fun `exportGzip streams header and logs into valid gzip archive`() {
+        val s = sink()
+        s.write(FlashLogLevel.INFO, "SESSION", "session started", null)
+        s.write(FlashLogLevel.WARN, "TRANSFER", "chunk slow", null)
+        s.flush()
+
+        val exportFile = File(dir, "export.log.gz")
+        s.exportGzip(exportFile, listOf("session.header exportAtMs=1700000000000", "device=Pixel_8"))
+
+        assertTrue("archive exists", exportFile.exists() && exportFile.length() > 0)
+
+        val unzipped = java.util.zip.GZIPInputStream(exportFile.inputStream()).bufferedReader().readText()
+        assertTrue("contains header", unzipped.contains("session.header exportAtMs=1700000000000"))
+        assertTrue("contains device", unzipped.contains("device=Pixel_8"))
+        assertTrue("contains session line", unzipped.contains("I/SESSION: session started"))
+        assertTrue("contains transfer line", unzipped.contains("W/TRANSFER: chunk slow"))
+    }
 }
