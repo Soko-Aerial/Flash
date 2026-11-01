@@ -264,10 +264,15 @@ public class RelayFrameRouter(
         val recipients = members.filter { it != origin.deviceId }
         if (!withinByteBudget(origin, send, groupId, copies = recipients.size)) return
         val gate = Semaphore(policy.groupFanoutConcurrency)
+        val preEncodedJson = RelayFrameCodec.encode(
+            RelayFrame.Deliver(from = origin.deviceId, id = send.id, type = send.type, sentAt = send.sentAt, payload = send.payload, group = groupId),
+        )
         val outcomes = coroutineScope {
             recipients.map { member ->
                 async {
-                    gate.withPermit { routeOne(origin.deviceId, member, send.id, send.type, send.sentAt, send.payload, groupId) }
+                    gate.withPermit {
+                        routeOne(origin.deviceId, member, send.id, send.type, send.sentAt, send.payload, groupId, preEncodedJson)
+                    }
                 }
             }.awaitAll()
         }
@@ -310,12 +315,15 @@ public class RelayFrameRouter(
         sentAt: Long,
         payload: String,
         group: String?,
+        preEncodedJson: String? = null,
     ): RouteKind {
         val target = connectionPool.get(recipientId)
         if (target != null) {
-            val deliver = RelayFrame.Deliver(from = originId, id = msgId, type = type, sentAt = sentAt, payload = payload, group = group)
+            val json = preEncodedJson ?: RelayFrameCodec.encode(
+                RelayFrame.Deliver(from = originId, id = msgId, type = type, sentAt = sentAt, payload = payload, group = group),
+            )
             val flight = InFlight(originId, type, payload, sentAt, group, System.nanoTime())
-            when (target.handOffLive(msgId, RelayFrameCodec.encode(deliver), flight, policy.maxInFlightPerSession)) {
+            when (target.handOffLive(msgId, json, flight, policy.maxInFlightPerSession)) {
                 OfferResult.OK -> {
                     metrics.inc(RelayMetrics.FRAMES_OUT, 1, "kind" to "FLASH_DELIVER")
                     metrics.inc(RelayMetrics.MESSAGES, 1, "outcome" to "delivered_live")
