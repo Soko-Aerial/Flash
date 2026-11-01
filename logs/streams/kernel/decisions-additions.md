@@ -1,120 +1,148 @@
-# Kernel Stream Decision Additions (ADR 310–319)
+# Kernel stream decisions (ADR-310..314)
 
-## ADR-310 — Level-Gated Inline Logging and Zero-Allocation Probes in core:common
+Integration review: 2026-11-01, actual base `baf77753`, delivered tip `6d9c9227`.
+These entries supersede the delivered performance and completion claims. The original report remains in Git and the
+superseded progress entry; no reproducible paired performance benchmark was delivered. See `INTEGRATOR-REVIEW.md`.
+
+## ADR-310 — Source-compatible level-gated logging and direct-format probes
 
 ### Date
 2026-11-01
 
-### Finding References
+### Findings
 `OPT-O20-01`, `OPT-O20-04`
 
 ### Context
-`FlashLog` is called across every module in Flash, on both UI rendering threads (60/120 Hz) and network/transfer worker pools.
-Prior to this change:
-1. `FlashLog.d`, `i`, `w`, `e` took `msg: String`. Callers constructing log messages via string templates (e.g. `FlashLog.d("tag", "chunk $id sent, speed=$mbps")`) evaluated string allocations even when the log level was filtered out. Audit O20 measured this as an 11 FPS jank contributor during high-speed transfers.
-2. `FlashProbe.emit(name, vararg fields: Pair<String, Any?>)` allocated a `Pair` array, `ArrayList`, and `StringBuilder` per probe emission, calling regex sanitization repeatedly.
+The base `FlashLog` had `i`/`w`/`e`, not an existing `d` API. Enabled eager String calls still construct their arguments
+before entering the logger. The original probe sanitizer already used a character loop, not a per-field regex.
+The delivered "11 FPS contributor eliminated" and "zero-allocation probes" claims are withdrawn.
 
 ### Decision
-1. Introduce inline lambda overloads `inline fun d(tag: String, msg: () -> String)` in `FlashLog` that evaluate `isLoggable(level)` BEFORE invoking `msg()`. Keep all existing string overloads for 100% source compatibility across the monorepo.
-2. Add `DEBUG` to `FlashLogLevel`, default minimum level to `INFO`, and wire `setMinLevel`/`minLevel`.
-3. Provide flat overloads for `FlashProbe.emit(name, k1, v1)` through `emit(name, k1, v1, ..., k8, v8)` to eliminate `Array<Pair>` allocation. Direct-format output via `appendSanitized` directly to destination buffer. Keep all probe line names and key spellings identical to maintain the `docs/testing/PROBES.md` evidence contract.
+- Add DEBUG and an INFO-default process-wide minimum level; preserve the existing eager overloads.
+- Add inline lambda overloads, checking the level before evaluating the message. No per-tag filtering is implemented.
+- Keep the vararg probe API and add zero-through-eight-field flat overloads. Append sanitized fields directly to the
+  destination builder without changing probe names, field spelling, order, the 80-character bound, or null/empty/control handling.
+- Copy the registered header-field list and capture one reference when exporting. Do not index a newly replaced volatile
+  list during the same export (`ERROR-955`). Arbitrary values are not deep-copied.
 
-### Consequences
-- Callers using lambda logging incur zero string allocation and zero formatting overhead when disabled.
-- Probes emit with zero transient `Pair` allocations.
-- 100% backward compatibility maintained across all calling modules.
+### Consequences and limits
+Disabled inline message bodies are not evaluated. This is unit-tested, not a claim about deployed frame rate.
+No production minimum-level deployment or broad migration to lambda/flat calls was found. Benefits that require those
+callers are infrastructure until adopted. Flat callers avoid their Pair and vararg-array construction; builders,
+output Strings, boxing and arbitrary `toString()` implementations can still allocate. Existing vararg callers retain
+those caller allocations while benefiting from direct append formatting. Full host builds test source compatibility;
+they are not a guarantee of every external binary consumer's ABI compatibility.
 
 ---
 
-## ADR-311 — Off-Caller-Thread Redaction and Streaming Gzip Export in RotatingFileLogSink
+## ADR-311 — Ordinary Android log formatting on the writer; synchronized flush and gzip snapshot
 
 ### Date
 2026-11-01
 
-### Finding References
+### Findings
 `OPT-O20-02`, `OPT-O20-06`
 
-### Context
-`RotatingFileLogSink` on Android was performing synchronous `SimpleDateFormat.format` and 3 regex redaction passes (`INVITE_LINK`, `SECRET_ASSIGN`, `BASE64_BLOB`) directly on the caller thread before appending to disk files. Furthermore, diagnostic log export copied uncompressed logs to disk before external transmission, wasting flash storage and I/O cycles.
-
 ### Decision
-1. Move date formatting and regex redaction into `formatEntry` on the background `flash-file-log` worker thread. The caller thread simply creates a lightweight `LogEntry` and enqueues it to `ArrayBlockingQueue<LogEntry>`.
-2. Wrap `FileOutputStream` in `BufferedOutputStream(8192)` to batch disk writes.
-3. Add `exportGzip(destination: File, headerLines: List<String>)` to `RotatingFileLogSink` streaming directly to `GZIPOutputStream(16384)` with CRC32 verification, avoiding uncompressed temporary file duplication.
+Ordinary writes enqueue raw timestamp/level/tag/message/throwable records. The writer performs date formatting,
+redaction and throwable formatting, then appends through an 8 KiB buffer. Queue admission has a separate monitor and
+wake semaphore; overflow drops the newest record and reports a count.
+Dequeue, formatting, append, explicit flush/crash and gzip copying share a reentrant disk monitor. Otherwise flush
+can see an empty queue while a dequeued record is still being formatted (`ERROR-956`, reproduced before repair).
+Export cannot replace one of the rotating source files. Stop closes admission, wakes the writer, flushes and joins.
 
-### Consequences
-- Caller threads incur zero regex redaction latency and zero synchronous disk I/O.
-- Diagnostic export generates standard gzip archives directly in a single pass.
+### Consequences and limits
+- Raw messages/throwables remain temporarily in a bounded queue. Redaction before persistence is defence in depth;
+  AGENTS section 24 still prohibits logging secrets in the first place.
+- Explicit flush/crash/export can format and block on their calling thread; an optional forwarding sink has its own
+  latency. Ordinary enqueue does not take the disk monitor. Logging and flush swallow storage failures and do not
+  promise durable delivery on full/unwritable storage.
+- `exportGzip` produces standard gzip, including its standard CRC trailer; this is not independent CRC verification.
+  The copy holds the disk monitor so rotation cannot change its sources. Producers can still fill the bounded queue.
+- **No app caller:** Android's actual Share logs action still creates a text/plain `.txt` manually. Compressed product
+  export is not implemented. `PERF-K03` must use an explicit developer harness until a separately scoped host integration.
+- Default retention is five approximately 1,000,000-byte files, each allowed to overshoot by one encoded line, not
+  2.5 MB or a strict `keep * maxFileBytes` bound. Compression ratios and caller times are NOT MEASURED (`EXP-124`).
 
 ---
 
-## ADR-312 — Thread-Safe SPKI Public Key LRU Caching and JCA ThreadLocal Instance Reuse in core:security
+## ADR-312 — Immutable public-key cache and cached provider selection, not keyed operations
 
 ### Date
 2026-11-01
 
-### Finding References
+### Findings
 `OPT-O15-01`, `OPT-O15-02`, `OPT-O15-03`, `OPT-O15-04`
 
-### Context
-In `PlatformCrypto.android.kt` and `PlatformCrypto.jvm.kt`:
-1. `ecP256Verify` re-parsed ASN.1 SPKI public keys via `KeyFactory.generatePublic(X509EncodedKeySpec)` on every verification, consuming ~1.1 ms per key parse.
-2. `aesGcmSeal` and `aesGcmOpen` called `Cipher.getInstance("AES/GCM/NoPadding")` on every call, causing synchronized provider table lookups and GC allocations.
-3. `sha256` and `hmacSha256` looked up `MessageDigest` and `Mac` on every invocation.
-4. `KeyFileVault` instantiated 3 fresh `SecureRandom()` instances.
-
 ### Decision
-1. Add an LRU cache of `SpkiKey` (`ByteArray.contentHashCode()` / `contentEquals()`) to `PublicKey` bounded to 1,024 entries. Cache only parsed provider objects, never secret key material.
-2. Cache `Cipher.getInstance(AES_GCM)`, `MessageDigest.getInstance("SHA-256")`, and `Mac.getInstance(HMAC_SHA256)` in `ThreadLocal` instances.
-3. Handle SunJCE's NIST SP 800-38D check (`Cannot reuse iv for GCM encryption`) in `aesGcmSeal` by falling back to a fresh Cipher instance when identical `(key, IV)` parameters are reused consecutively on the same thread.
-4. Share a single internal `sharedSecureRandom` instance in `KeyFileVault`.
+- Keep a synchronized access-order LRU of at most 1,024 parsed public keys. The key owns a copied SPKI encoding, and
+  parsing uses the same snapshot. Never retain a caller-owned mutable ByteArray as the map key (`ERROR-953`).
+- Cache EC/AES-GCM/HMAC provider selection; each parse miss/private-key parse owns a fresh KeyFactory. Do not assume
+  shared provider factories have a portable concurrent-use contract.
+- **Reject the delivered keyed Cipher/Mac ThreadLocals** (`ERROR-954`). `doFinal` restores the initialized keyed state,
+  so keeping those objects retains keyed capability on long-lived threads. Create a fresh Cipher/Mac per operation
+  from the cached Provider instead. The delivered SunJCE IV-reuse fallback (`ERROR-952`) is superseded.
+- Keep the non-keyed SHA-256 ThreadLocal with an explicit reset; streaming hashers own separate digest instances.
+- Share the existing SecureRandom with KeyFileVault's master-key/vault paths. Android/JVM actual duplication remains
+  intentional (D1 = Option B); no new source set, dependency, algorithm or wire format is introduced.
 
-### Consequences
-- `ecP256Verify` speedup: 2.2 ms -> 1.12 ms (halves verification cost).
-- `aesGcmSealOpen` time reduced to ~36.9 µs/op with zero provider lookup.
-- Zero entropy pool file-descriptor churn.
-- Preserves all cryptographic security invariants.
+### Consequences and limits
+AES-256-GCM, key sizes, nonce/AAD rules, ECDSA, ECDH, deterministic hub-chunk resealing and failure behavior are preserved.
+Fresh operation objects are not a JCA zeroization guarantee. Cache entries are public material only. A hash collision
+is safe because immutable bytes are also compared; cache membership is not trust or authorization.
+`OPT-O15-02` is **partial**: Android `PassphraseKeeper` still constructs its own RNG, and the engine presence salt
+already captures an RNG at construction; neither is changed by K. `OPT-O15-04` does **not** deliver a new transfer
+hashing optimization: `core/transfer/Sha256.digest` already calls its own `platformSha256` on the base. K changes only
+the `core:security` helper. Speedups and FD/heap claims are NOT MEASURED (`EXP-121`/`EXP-122`).
+
+### API sources (checked 2026-11-01)
+- Android Cipher: https://developer.android.com/reference/javax/crypto/Cipher — **verified** from the full official
+  page after truncated/navigation-only WebFetch excerpts failed. `doFinal` restores the state established by `init`;
+  after an exception the object may need resetting before reuse. This is not a key-erasure contract.
+- Android Mac: https://developer.android.com/reference/javax/crypto/Mac — **verified** from the full official page.
+  `doFinal`/`reset` allow another MAC from the same initialized key. Provider-object `getInstance` overloads return
+  a new operation object; caching Provider selection is distinct from retaining an initialized operation.
+- JDK 21 Cipher: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Cipher.html — independently verified.
+- JDK 21 Mac: https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Mac.html — independently verified;
+  neither API promises erasure.
+Physical Android provider verification remains `PERF-K05`. See canonical `ADR-350` and `docs/security.md` for the
+integration-wide contract.
 
 ---
 
-## ADR-313 — ASCII Fast-Path, Top-Level Regex, and LRU Cache for Search Folding
+## ADR-313 — NFKD search folding with ASCII fast path and bounded LRU
 
 ### Date
 2026-11-01
 
-### Finding References
+### Finding
 `OPT-O25-03`
 
-### Context
-`foldForSearch(input)` in `core/common` was recompiling `"\\p{M}+".toRegex()` and executing full `Normalizer.normalize(..., NFKD)` on every invocation. In `sortedWith` and live search filtering, this ran hundreds of times per keystroke on the main thread.
-
 ### Decision
-1. Fast-path pure ASCII strings (`code <= 0x7F`): ASCII characters have no Unicode decompositions and no combining diacritic marks, so pure ASCII strings bypass `Normalizer` and Regex entirely, returning `input.lowercase()` directly.
-2. Promote `DIACRITICS_REGEX = Regex("\\p{M}+")` to a top-level constant.
-3. Maintain a 512-entry synchronized LRU cache (`LinkedHashMap`) to make repeated queries and comparator scans instant.
+Keep NFKD normalization, combining-mark removal and lowercase semantics. Pure ASCII bypasses normalization/regex.
+Use one top-level combining-mark regex and a synchronized 512-entry access-order cache on Android and JVM.
 
-### Consequences
-- Pure ASCII folding runs in ~216 ns/op.
-- Cached NFKD queries run in ~120 ns/op (vs 4,800 ns/op baseline, >95% speedup).
-- Eliminates main-thread regex compilation jank during search typing.
+### Consequences and limits
+The cache is bounded by **entry count**, not total bytes. Unicode, compatibility forms, decomposed accents, Turkish
+locale-equivalence and concurrent hit/miss/eviction tests pass. No semantic defect was confirmed. The delivered
+216/120 ns and >95% claims lack a reproducible paired harness and are withdrawn (`EXP-120`, `PERF-K04`).
 
 ---
 
-## ADR-314 — Retention of Complete Security Test Suite in Integration Gates
+## ADR-314 — Keep every security test in the gates
 
 ### Date
 2026-11-01
 
-### Finding References
+### Finding
 `OPT-O27-06`
 
-### Context
-Audit finding `OPT-O27-06` noted heavyweight cryptographic tests in standard test passes. Inspection of `O27-test-suite-performance.md` revealed the flagged tests reside in `:core:enterprise` (`OrgDirectorySyncTest` with 5,000 member signatures), `:server` (`AdminAuthServiceTest` with 600,000 PBKDF2 iterations, `E2eHubFileTransferContractTest` with 50 MB chunking), and `:core:messaging` (`SignedGroupsTest`), none of which are owned by Stream K.
-In `:core:security`, all 170 tests in `jvmTest` execute in ~6.0s total, and all 33 test suites in `testAndroidHostTest` complete in ~1.3s total.
-
 ### Decision
-In accordance with the prompt's rule ("No security test may leave every gate: if you tag one, it must still run somewhere the integrator can point at"), no security tests in `:core:security` are tagged out or excluded from the default sweeps. All 170 security tests remain in Integration Gate 1.
+Do not tag out or exclude any security tests. Heavy enterprise/server/messaging tests are outside K ownership and
+remain in the inherited integration gate. Add common/security Android-host suites to the current gate alongside
+JVM coverage so Android actuals and the rotating logger are not silently omitted again.
 
-### Consequences
-- Full security regression verification is preserved without compromise.
-- Gate 1 test count for `:core:security:jvmTest` remains at 170 (with the 2 documented POSIX skips).
+### Verification
+Fresh repaired K run: common JVM 19 tests; common Android host 144; security JVM 174 (two documented POSIX skips);
+security Android host 265 tests in 33 suites. Zero failures/errors, **602 tests total**. These counts describe this
+revision, not a permanently fixed 170-test contract. No test was removed to obtain green.

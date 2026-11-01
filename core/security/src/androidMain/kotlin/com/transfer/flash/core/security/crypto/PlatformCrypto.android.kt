@@ -1,6 +1,5 @@
 package com.transfer.flash.core.security.crypto
 
-import java.security.InvalidAlgorithmParameterException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
@@ -36,10 +35,16 @@ private const val GCM_TAG_BITS = 128
 private val secureRandom = SecureRandom()
 internal val sharedSecureRandom: SecureRandom = secureRandom
 
-private val ecKeyFactory: KeyFactory = KeyFactory.getInstance("EC")
+// Cache provider selection, not keyed Cipher/Mac instances: doFinal retains their
+// initialized key state. Fresh operations also avoid provider-specific IV reuse state.
+private val ecProvider = KeyFactory.getInstance("EC").provider
+private val aesGcmProvider = Cipher.getInstance(AES_GCM).provider
+private val hmacSha256Provider = Mac.getInstance(HMAC_SHA256).provider
 
-private class SpkiKey(private val bytes: ByteArray) {
+private class SpkiKey(encoded: ByteArray) {
+    private val bytes = encoded.copyOf()
     private val hashCode = bytes.contentHashCode()
+    fun keySpec(): X509EncodedKeySpec = X509EncodedKeySpec(bytes)
     override fun hashCode(): Int = hashCode
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -56,8 +61,11 @@ private fun getOrParsePublicKey(encoded: ByteArray): java.security.PublicKey {
     synchronized(spkiLock) {
         spkiCache[key]?.let { return it }
     }
-    val parsed = ecKeyFactory.generatePublic(X509EncodedKeySpec(encoded))
+    // Parse the same immutable snapshot used by the map key. KeyFactory's provider
+    // has no portable concurrent-use contract, so each miss owns its factory.
+    val parsed = KeyFactory.getInstance("EC", ecProvider).generatePublic(key.keySpec())
     synchronized(spkiLock) {
+        spkiCache[key]?.let { return it }
         if (spkiCache.size >= 1024) {
             val it = spkiCache.iterator()
             if (it.hasNext()) {
@@ -70,16 +78,8 @@ private fun getOrParsePublicKey(encoded: ByteArray): java.security.PublicKey {
     return parsed
 }
 
-private val aesGcmCipher: ThreadLocal<Cipher> = ThreadLocal.withInitial {
-    Cipher.getInstance(AES_GCM)
-}
-
 private val sha256Digest: ThreadLocal<MessageDigest> = ThreadLocal.withInitial {
     MessageDigest.getInstance("SHA-256")
-}
-
-private val hmacSha256Mac: ThreadLocal<Mac> = ThreadLocal.withInitial {
-    Mac.getInstance(HMAC_SHA256)
 }
 
 internal actual fun sha256(data: ByteArray): ByteArray {
@@ -99,7 +99,7 @@ internal actual class Sha256Stream actual constructor() {
 }
 
 internal actual fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {
-    val mac = hmacSha256Mac.get()!!
+    val mac = Mac.getInstance(HMAC_SHA256, hmacSha256Provider)
     mac.init(SecretKeySpec(key, HMAC_SHA256))
     return mac.doFinal(data)
 }
@@ -116,18 +116,8 @@ internal actual fun aesGcmSeal(
     aad: ByteArray,
     plaintext: ByteArray,
 ): ByteArray {
-    val cipher = try {
-        val c = aesGcmCipher.get()!!
-        c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, AES), GCMParameterSpec(GCM_TAG_BITS, nonce))
-        c
-    } catch (_: InvalidAlgorithmParameterException) {
-        // SunJCE enforces IV uniqueness per GaloisCounterMode instance in ENCRYPT_MODE.
-        // Fall back to a fresh Cipher when resealing with identical (key, IV) on the same thread.
-        val fresh = Cipher.getInstance(AES_GCM)
-        aesGcmCipher.set(fresh)
-        fresh.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, AES), GCMParameterSpec(GCM_TAG_BITS, nonce))
-        fresh
-    }
+    val cipher = Cipher.getInstance(AES_GCM, aesGcmProvider)
+    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, AES), GCMParameterSpec(GCM_TAG_BITS, nonce))
     cipher.updateAAD(aad)
     return cipher.doFinal(plaintext)
 }
@@ -138,7 +128,7 @@ internal actual fun aesGcmOpen(
     aad: ByteArray,
     ciphertext: ByteArray,
 ): ByteArray {
-    val cipher = aesGcmCipher.get()!!
+    val cipher = Cipher.getInstance(AES_GCM, aesGcmProvider)
     cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, AES), GCMParameterSpec(GCM_TAG_BITS, nonce))
     cipher.updateAAD(aad)
     return cipher.doFinal(ciphertext)
@@ -184,7 +174,7 @@ internal actual fun ecP256ExportPrivateKeyPkcs8(privateKey: PlatformEcPrivateKey
     privateKey.encoded // software keys only — Keystore handles throw here by design
 
 internal actual fun ecP256ParsePrivateKeyPkcs8(encoded: ByteArray): PlatformEcPrivateKey =
-    ecKeyFactory.generatePrivate(PKCS8EncodedKeySpec(encoded))
+    KeyFactory.getInstance("EC", ecProvider).generatePrivate(PKCS8EncodedKeySpec(encoded))
 
 internal actual fun ecP256SharedSecret(
     privateKey: PlatformEcPrivateKey,
