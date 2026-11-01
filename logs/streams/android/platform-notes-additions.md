@@ -1,7 +1,8 @@
 # Stream G (Android) — Platform Notes Additions
 
-The platform notes in this file document verified Android platform facts gathered during Wave 3 optimization work.
-The integrator will fold these into `docs/android-platform-notes.md`.
+These are the Android platform facts Wave 3 relied on, each marked *verified* (the page was opened and says this) or
+*reported* (believed true, no source opened) per AGENTS.md §13. The integrator folds them into
+`docs/android-platform-notes.md`, keeping the markers.
 
 ---
 
@@ -9,7 +10,7 @@ The integrator will fold these into `docs/android-platform-notes.md`.
 - **API level:** Added in API level 1
 - **Official documentation:** [https://developer.android.com/reference/android/os/PowerManager.WakeLock#acquire(long)](https://developer.android.com/reference/android/os/PowerManager.WakeLock#acquire(long))
 - **Date verified:** 2026-11-01
-- **Platform fact:** `acquire(long timeout)` acquires the wake lock and guarantees release after the specified timeout if the caller has not already released it. Android Vitals and Google Play policy explicitly flag apps with stuck indefinite wake locks (> 1 hour continuous background wake lock) as bad behavior. A safety timeout is essential to prevent permanent AP suspend block if background tasks fail or abort.
+- **Platform fact (verified against the reference page):** `acquire(long timeout)` acquires the wake lock and guarantees release after the specified timeout if the caller has not already released it. A safety timeout is what prevents a leaked lock from blocking AP suspend when a background task fails or aborts. *(Reported, not verified:* that Play/Vitals penalise a continuous background wake lock beyond a specific hour threshold — no policy page stating such a number was opened. The project's reason to bound the lock stands on the leak argument alone.)
 - **Project implication:** `DiscoveryEngineHolder` now enforces `WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L` on all wake lock acquisitions and manages bounded leases for background workers.
 
 ---
@@ -45,8 +46,8 @@ The integrator will fold these into `docs/android-platform-notes.md`.
 - **API level:** API level 34 (Android 14)
 - **Official documentation:** [https://support.google.com/googleplay/android-developer/answer/13392821](https://support.google.com/googleplay/android-developer/answer/13392821)
 - **Date verified:** 2026-11-01
-- **Platform fact:** `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` may only be maintained while actively communicating or interacting with an external connected device. Holding a `connectedDevice` foreground service indefinitely with 0 connected devices is a direct policy violation and prevents Android from placing the process into App Standby buckets (`RESTRICTED` / `RARE`).
-- **Project implication:** Implemented `evaluateServiceIdleStop` in `FlashBackgroundService`: after a 30-second grace period with 0 connected peers, 0 active transfers, and 0 enterprise relay connections, the service stops itself unless the user explicitly opted into the "Keep listening in the background" setting (`backgroundTransfers`).
+- **Platform fact (verified against the support page):** `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` may only be maintained while actively communicating or interacting with an external connected device, so holding it indefinitely with 0 connected devices is a policy violation. *(Reported, not verified:* that it also prevents the process from entering the `RESTRICTED`/`RARE` App Standby buckets — plausible, but no page opened says so. The policy sentence alone justifies the idle stop.)
+- **Project implication:** Implemented `evaluateServiceIdleStop` in `FlashBackgroundService`: after a 30-second grace period with 0 connected peers, 0 active transfers and no online hub relay, and only if the process is no longer foreground-interactive, the service stops itself — unless the user opted into "Keep listening in the background" (`backgroundTransfers`). The timer is re-armed from `MainActivity.onStop`, re-checks the live state when it expires, and is rearmable after a declined round (integrator repair; ADR-284).
 
 ---
 
