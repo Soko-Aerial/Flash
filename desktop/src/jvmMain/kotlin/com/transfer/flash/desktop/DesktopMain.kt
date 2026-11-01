@@ -43,6 +43,9 @@ import java.awt.SystemTray
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import java.io.File
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -383,8 +386,34 @@ public fun main(args: Array<String> = emptyArray()) {
     run {
         val toastReady by engine.ready.collectAsState()
         val toastRepo = if (toastReady) engine.transfers else null
-        val noTransfers = remember { kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.transfer.flash.core.transfer.model.FlashTransfer>()) }
-        val toastTransfers by (toastRepo?.activeTransfers ?: noTransfers).collectAsState()
+        // OPT-O19-02: Observe a distinct, filtered flow of candidate transfers (Offered inbound or Failed retryable outbound)
+        // instead of the raw activeTransfers StateFlow. This eliminates 10-100 Hz EDT recompositions during active transfers.
+        val toastTransfersFlow = remember(toastRepo) {
+            val flow = toastRepo?.activeTransfers ?: flowOf(emptyList())
+            flow.map { list ->
+                list.filter {
+                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered &&
+                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Receiving) ||
+                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Failed &&
+                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Sending &&
+                        it.canRetry)
+                }
+            }.distinctUntilChanged { old, new ->
+                if (old.size != new.size) return@distinctUntilChanged false
+                old.indices.all { i ->
+                    val o = old[i]
+                    val n = new[i]
+                    o.id == n.id &&
+                        o.state == n.state &&
+                        o.fileName == n.fileName &&
+                        o.peerName == n.peerName &&
+                        o.direction == n.direction &&
+                        o.errorMessage == n.errorMessage &&
+                        o.canRetry == n.canRetry
+                }
+            }
+        }
+        val toastTransfers by toastTransfersFlow.collectAsState(initial = emptyList())
         val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
         val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
         FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
