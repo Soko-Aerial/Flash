@@ -20,5 +20,7 @@ public data class TimeoutPlan(
  */
 public object TimeoutStopPlan {
     public fun of(transfers: Collection<FlashTransfer>): TimeoutPlan =
-        TimeoutPlan(toPause = transfers.filter { it.state == FlashTransferState.Transferring })
+        TimeoutPlan(toPause = transfers.filter {
+            it.state == FlashTransferState.Transferring || it.state == FlashTransferState.Verifying
+        })
 }

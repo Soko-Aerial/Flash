@@ -9,6 +9,9 @@ import com.transfer.flash.core.common.perf.MemoryGovernor
 import com.transfer.flash.core.common.perf.MemoryTrimLevel
 import com.transfer.flash.debug.FlashKeepaliveWorker
 import dagger.hilt.android.HiltAndroidApp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @HiltAndroidApp
 class FlashApplication : Application() {
@@ -22,9 +25,11 @@ class FlashApplication : Application() {
         // First, so the engine's startup lines and a crash during it are kept.
         fileLog = installAndroidFileLog(java.io.File(filesDir, "logs"))
         AndroidThermalGovernor.install(this)
-        // ADR-041: safety net for a process the user (or an OEM killer) ended — see the worker's
-        // KDoc for what it deliberately does not do.
-        FlashKeepaliveWorker.schedule(this)
+        // ADR-041 / OPT-O01-02: offload WorkManager scheduling to background thread to avoid
+        // blocking UI thread on androidx.work.workdb Room initialization during cold start.
+        CoroutineScope(Dispatchers.IO).launch {
+            FlashKeepaliveWorker.schedule(this@FlashApplication)
+        }
     }
 
     override fun onTrimMemory(level: Int) {
