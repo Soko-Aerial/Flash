@@ -338,7 +338,8 @@ public fun main(args: Array<String> = emptyArray()) {
             systemDark = isSystemInDarkTheme(),
         )
         val effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
-        val reduceMotionResolved = effectivePerformanceMode.reduceMotion
+        // OPT-O24-08: Honor OS-level accessibility reduce-motion settings alongside app performance mode
+        val reduceMotionResolved = effectivePerformanceMode.reduceMotion || DesktopOsReduceMotion.isReduceMotion()
 
         val baseDensity = androidx.compose.ui.platform.LocalDensity.current
         val effectiveDensity = remember(baseDensity, desktopSettings.uiScale) {
@@ -438,7 +439,7 @@ public fun main(args: Array<String> = emptyArray()) {
                 dynamicAccent = desktopSettings.dynamicAccent,
                 hapticsEnabled = false,
                 minimalChrome = toastPerformance.minimalChrome,
-                motion = rememberFlashMotion(toastPerformance.reduceMotion),
+                motion = rememberFlashMotion(toastPerformance.reduceMotion || DesktopOsReduceMotion.isReduceMotion()),
             ) {
                 DesktopTransferToastWindow(
                     transfers = toastTransfers,
