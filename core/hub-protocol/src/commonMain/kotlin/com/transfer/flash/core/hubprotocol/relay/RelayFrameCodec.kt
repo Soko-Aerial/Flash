@@ -117,7 +117,13 @@ public object RelayFrameCodec {
                 if (frame.sentAt <= 0) return bad("sentAt")
                 if (utf8Size(frame.payload) > HubContract.MAX_PAYLOAD_BYTES) return Decoded.Rejected(RejectReason.PAYLOAD_TOO_LARGE)
             }
-            is RelayFrame.RecvAck -> if (!id(frame.msgId)) return bad("msgId")
+            is RelayFrame.RecvAck -> {
+                if (frame.ids != null) {
+                    if (frame.ids.isEmpty() || frame.ids.size > 100 || frame.ids.any { !id(it) }) return bad("ids")
+                } else {
+                    if (!id(frame.msgId)) return bad("msgId")
+                }
+            }
             is RelayFrame.Ack -> if (!id(frame.id)) return bad("id")
             is RelayFrame.QueueState -> if (!id(frame.id)) return bad("id")
             is RelayFrame.Meta -> {

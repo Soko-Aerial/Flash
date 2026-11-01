@@ -18,7 +18,11 @@ import com.transfer.flash.core.security.enterprise.HubFileLayout
 import com.transfer.flash.core.security.enterprise.HubFileSealing
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -338,29 +342,92 @@ public class HubFileTransfers(
                     }
                 }
 
-                for (index in 0 until layout.chunkCount) {
-                    if (state.done[index]) continue
-                    val cipher = when (val sealed = retrying { sealedChunk(index) }) {
-                        is HubFileResult.Ok -> sealed.value
-                        is HubFileResult.Err -> return if (sealed.error.transient) interrupted(sealed.error) else fail(sealed.error)
-                    }
-                    val chunkSha = HubFileHasher().also { it.update(cipher) }.digestHex()
-                    when (val put = retrying { api.putChunk(request.hubUrl, fileId, index, cipher, chunkSha) }) {
-                        is HubFileResult.Ok -> {
-                            state.done.set(index)
-                            save()?.let { return interrupted(it) }
-                            onProgress(progress())
-                        }
-                        is HubFileResult.Err -> when {
-                            put.error.transient -> return interrupted(put.error)
-                            put.error == HubFileError.Conflict -> return finishFromStatus() ?: fail(HubFileError.Conflict)
-                            put.error == HubFileError.NotFound && restarts < MAX_RESTARTS -> {
-                                restarts++
-                                restart()?.let { return interrupted(it) }
-                                break
+                val missing = (0 until layout.chunkCount).filter { !state.done[it] }
+                if (missing.isNotEmpty()) {
+                    val pending = Channel<Int>(Channel.UNLIMITED)
+                    missing.forEach { pending.trySend(it) }
+                    pending.close()
+
+                    val sourceMutex = Mutex()
+                    val stateMutex = Mutex()
+                    var terminalError: HubFileError? = null
+                    var terminalIsInterrupted = false
+                    var conflictFromStatus: HubUploadOutcome? = null
+                    var needsRestart = false
+
+                    val concurrency = minOf(CHUNK_CONCURRENCY, missing.size)
+                    coroutineScope {
+                        val workers = List(concurrency) {
+                            launch {
+                                for (index in pending) {
+                                    if (terminalError != null || needsRestart) break
+                                    val cipher = when (val sealed = retrying {
+                                        sourceMutex.withLock { sealedChunk(index) }
+                                    }) {
+                                        is HubFileResult.Ok -> sealed.value
+                                        is HubFileResult.Err -> {
+                                            stateMutex.withLock {
+                                                if (terminalError == null) {
+                                                    terminalError = sealed.error
+                                                    terminalIsInterrupted = sealed.error.transient
+                                                }
+                                            }
+                                            break
+                                        }
+                                    }
+                                    val chunkSha = HubFileHasher().also { it.update(cipher) }.digestHex()
+                                    when (val put = retrying { api.putChunk(request.hubUrl, fileId, index, cipher, chunkSha) }) {
+                                        is HubFileResult.Ok -> {
+                                            stateMutex.withLock {
+                                                state.done.set(index)
+                                                val saveErr = save()
+                                                if (saveErr != null) {
+                                                    if (terminalError == null) {
+                                                        terminalError = saveErr
+                                                        terminalIsInterrupted = true
+                                                    }
+                                                } else {
+                                                    onProgress(progress())
+                                                }
+                                            }
+                                        }
+                                        is HubFileResult.Err -> {
+                                            stateMutex.withLock {
+                                                if (terminalError == null && !needsRestart) {
+                                                    when {
+                                                        put.error == HubFileError.Conflict -> {
+                                                            conflictFromStatus = finishFromStatus()
+                                                            if (conflictFromStatus == null) {
+                                                                terminalError = HubFileError.Conflict
+                                                                terminalIsInterrupted = false
+                                                            }
+                                                        }
+                                                        put.error == HubFileError.NotFound && restarts < MAX_RESTARTS -> {
+                                                            restarts++
+                                                            needsRestart = true
+                                                        }
+                                                        else -> {
+                                                            terminalError = put.error
+                                                            terminalIsInterrupted = put.error.transient
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            break
+                                        }
+                                    }
+                                }
                             }
-                            else -> return fail(put.error)
                         }
+                        workers.joinAll()
+                    }
+                    val conflict = conflictFromStatus
+                    if (conflict != null) return conflict
+                    val err = terminalError
+                    if (err != null) return if (terminalIsInterrupted) interrupted(err) else fail(err)
+                    if (needsRestart) {
+                        restart()?.let { return interrupted(it) }
+                        continue
                     }
                 }
                 if (!state.created) continue // restarted inside the chunk loop
@@ -558,18 +625,70 @@ public class HubFileTransfers(
                 if (missingBytes + SPACE_MARGIN_BYTES > usable) {
                     return interrupted(HubFileError.NoSpace(missingBytes + SPACE_MARGIN_BYTES, usable))
                 }
-                for (index in 0 until layout.chunkCount) {
-                    if (state.done[index]) continue
-                    val plain = when (val got = fetchAndOpen(index)) {
-                        is HubFileResult.Ok -> got.value
-                        is HubFileResult.Err -> return if (got.error.transient) interrupted(got.error) else fail(got.error)
+                val missing = (0 until layout.chunkCount).filter { !state.done[it] }
+                if (missing.isNotEmpty()) {
+                    val pending = Channel<Int>(Channel.UNLIMITED)
+                    missing.forEach { pending.trySend(it) }
+                    pending.close()
+
+                    val stateMutex = Mutex()
+                    var terminalError: HubFileError? = null
+                    var terminalIsInterrupted = false
+
+                    val concurrency = minOf(CHUNK_CONCURRENCY, missing.size)
+                    coroutineScope {
+                        val workers = List(concurrency) {
+                            launch {
+                                for (index in pending) {
+                                    if (terminalError != null) break
+                                    val plain = when (val got = fetchAndOpen(index)) {
+                                        is HubFileResult.Ok -> got.value
+                                        is HubFileResult.Err -> {
+                                            stateMutex.withLock {
+                                                if (terminalError == null) {
+                                                    terminalError = got.error
+                                                    terminalIsInterrupted = got.error.transient
+                                                }
+                                            }
+                                            break
+                                        }
+                                    }
+                                    // Data first, then the bit. Since OPT-O23-01 the chunk write is no longer fsynced per
+                                    // chunk (the handle is kept open and synced once at the end), so a power loss can
+                                    // leave a set done bit over bytes that never reached the platter. That is not a
+                                    // silent hole: verify() re-reads and re-hashes every chunk before the file counts as
+                                    // done, so the worst case is one full re-download (verifyFailures++ → refetch).
+                                    val writeErr = runSuspendCatching {
+                                        io { storage.writePart(fileId, layout.plainOffset(index), plain) }
+                                    }.exceptionOrNull()
+                                    if (writeErr != null) {
+                                        stateMutex.withLock {
+                                            if (terminalError == null) {
+                                                terminalError = HubFileError.LocalStorage("write")
+                                                terminalIsInterrupted = true
+                                            }
+                                        }
+                                        break
+                                    }
+                                    stateMutex.withLock {
+                                        state.done.set(index)
+                                        val saveErr = save()
+                                        if (saveErr != null) {
+                                            if (terminalError == null) {
+                                                terminalError = saveErr
+                                                terminalIsInterrupted = true
+                                            }
+                                        } else {
+                                            onProgress(progress())
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        workers.joinAll()
                     }
-                    // Data first, synced; then the bit. A crash in between costs one re-download, never a hole.
-                    runSuspendCatching { io { storage.writePart(fileId, layout.plainOffset(index), plain) } }
-                        .exceptionOrNull()?.let { return interrupted(HubFileError.LocalStorage("write")) }
-                    state.done.set(index)
-                    save()?.let { return interrupted(it) }
-                    onProgress(progress())
+                    val err = terminalError
+                    if (err != null) return if (terminalIsInterrupted) interrupted(err) else fail(err)
                 }
                 when (val verified = verify()) {
                     is HubFileResult.Ok -> {
@@ -734,5 +853,8 @@ public class HubFileTransfers(
 
         /** Free space kept on top of the missing bytes before a download continues. */
         const val SPACE_MARGIN_BYTES = 8L * 1024 * 1024
+
+        /** Max concurrent chunk HTTP requests in flight (OPT-O16-01). */
+        const val CHUNK_CONCURRENCY = 3
     }
 }

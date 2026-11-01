@@ -194,55 +194,93 @@ class FileStore(
         }
         val now = clock()
         return try {
-            db.withTransaction { conn ->
+            val preCheck = db.withConnection { conn ->
                 val blob = selectBlob(conn, fileId)
-                    ?: return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
+                    ?: return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
                 if (blob.senderDeviceId != sender) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_FORBIDDEN, FileMessages.NOT_SENDER)
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_FORBIDDEN, FileMessages.NOT_SENDER)
                 }
                 if (blob.state != FileStates.UPLOADING || now > blob.uploadExpiresAtMs) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_UPLOADING)
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_UPLOADING)
                 }
                 if (index >= blob.chunkCount) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_INDEX)
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_INDEX)
                 }
                 val expected = expectedChunkBytes(blob, index)
                 if (bytes.size > blob.chunkSize) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.CHUNK_TOO_BIG)
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_TOO_LARGE, FileMessages.CHUNK_TOO_BIG)
                 }
                 if (bytes.size.toLong() != expected) {
-                    return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_SIZE)
+                    return@withConnection FileOutcome.Refused(HubErrorCodes.ERR_BAD_REQUEST, FileMessages.CHUNK_SIZE)
                 }
-
                 val stored = selectChunk(conn, fileId, index)
                 if (stored != null) {
-                    return@withTransaction if (stored.sha256 == digest && stored.bytes == bytes.size.toLong()) {
+                    return@withConnection if (stored.sha256 == digest && stored.bytes == bytes.size.toLong()) {
                         FileOutcome.Ok(PutResult(newChunk = false, receivedChunks = blob.receivedChunks))
                     } else {
                         FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.CONFLICT_CHUNK)
                     }
                 }
-
-                writeChunkFile(fileId, index, bytes)
-                conn.prepareStatement(
-                    "INSERT INTO file_chunk(file_id, idx, bytes, sha256) VALUES (?, ?, ?, ?)",
-                ).use { st ->
-                    st.setString(1, fileId)
-                    st.setInt(2, index)
-                    st.setLong(3, bytes.size.toLong())
-                    st.setString(4, digest)
-                    st.executeUpdate()
-                }
-                conn.prepareStatement(
-                    "UPDATE file_blob SET received_chunks = received_chunks + 1, received_bytes = received_bytes + ? " +
-                        "WHERE file_id = ?",
-                ).use { st ->
-                    st.setLong(1, bytes.size.toLong())
-                    st.setString(2, fileId)
-                    st.executeUpdate()
-                }
-                FileOutcome.Ok(PutResult(newChunk = true, receivedChunks = blob.receivedChunks + 1))
+                null
             }
+            if (preCheck != null) return preCheck
+
+            // OPT-O17-02: the megabyte write happens *outside* SQLite's writer, which is a single writer for the whole
+            // database — but the chunk only becomes visible *inside* the transaction, so the invariant that a committed
+            // `file_chunk` row implies a present chunk file (relied on by `complete()`, by every download and by the
+            // "no row ⇒ no file" cleanup) still holds. Staging is a temp file in the same directory, so the publish is an
+            // atomic rename, not a copy.
+            val staged = stageChunkFile(fileId, bytes)
+            var published: File? = null
+            val outcome = try {
+                db.withTransaction { conn ->
+                    val blob = selectBlob(conn, fileId)
+                        ?: return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_NOT_FOUND, FileMessages.NO_SUCH_FILE)
+                    if (blob.senderDeviceId != sender) {
+                        return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_FORBIDDEN, FileMessages.NOT_SENDER)
+                    }
+                    if (blob.state != FileStates.UPLOADING || now > blob.uploadExpiresAtMs) {
+                        return@withTransaction FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.NOT_UPLOADING)
+                    }
+                    val stored = selectChunk(conn, fileId, index)
+                    if (stored != null) {
+                        return@withTransaction if (stored.sha256 == digest && stored.bytes == bytes.size.toLong()) {
+                            FileOutcome.Ok(PutResult(newChunk = false, receivedChunks = blob.receivedChunks))
+                        } else {
+                            FileOutcome.Refused(HubErrorCodes.ERR_CONFLICT, FileMessages.CONFLICT_CHUNK)
+                        }
+                    }
+
+                    published = publishChunkFile(staged, fileId, index)
+
+                    conn.prepareStatement(
+                        "INSERT INTO file_chunk(file_id, idx, bytes, sha256) VALUES (?, ?, ?, ?)",
+                    ).use { st ->
+                        st.setString(1, fileId)
+                        st.setInt(2, index)
+                        st.setLong(3, bytes.size.toLong())
+                        st.setString(4, digest)
+                        st.executeUpdate()
+                    }
+                    conn.prepareStatement(
+                        "UPDATE file_blob SET received_chunks = received_chunks + 1, received_bytes = received_bytes + ? " +
+                            "WHERE file_id = ?",
+                    ).use { st ->
+                        st.setLong(1, bytes.size.toLong())
+                        st.setString(2, fileId)
+                        st.executeUpdate()
+                    }
+                    FileOutcome.Ok(PutResult(newChunk = true, receivedChunks = blob.receivedChunks + 1))
+                }
+            } catch (t: Throwable) {
+                // The transaction rolled back (or its commit failed): put the directory back the way it was, leaving
+                // neither a stray `.part` nor a chunk file with no row behind.
+                published?.let { runCatching { Files.deleteIfExists(it.toPath()) } }
+                throw t
+            } finally {
+                runCatching { Files.deleteIfExists(staged.toPath()) }
+            }
+            outcome
         } catch (t: Throwable) {
             log.warn("file put {}#{} failed: {}", fileId.take(8), index, t.message)
             FileOutcome.Failed(t)
@@ -578,17 +616,28 @@ class FileStore(
         )
     }
 
-    private fun writeChunkFile(fileId: String, index: Int, bytes: ByteArray) {
+    /**
+     * Writes [bytes] to a uniquely named temporary file in the file's own directory — the expensive part of an upload,
+     * done outside the database writer (OPT-O17-02). A unique name matters because the upload pipeline keeps three
+     * chunks in flight (OPT-O16-01) and a retry can race the attempt it is retrying.
+     */
+    private fun stageChunkFile(fileId: String, bytes: ByteArray): File {
         val dir = fileDir(fileId)
         if (!dir.isDirectory && !dir.mkdirs()) throw IOException("could not create ${dir.name}")
-        val target = chunkFile(fileId, index)
-        val part = File(dir, "$index.part")
+        val part = Files.createTempFile(dir.toPath(), "chunk-", ".part").toFile()
         Files.write(part.toPath(), bytes)
+        return part
+    }
+
+    /** Atomically renames a staged chunk into place. Called inside the transaction, so it is a metadata operation. */
+    private fun publishChunkFile(staged: File, fileId: String, index: Int): File {
+        val target = chunkFile(fileId, index)
         try {
-            Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            Files.move(staged.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         } catch (_: Exception) {
-            Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            Files.move(staged.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
+        return target
     }
 
     private fun deleteFileDir(fileId: String) {

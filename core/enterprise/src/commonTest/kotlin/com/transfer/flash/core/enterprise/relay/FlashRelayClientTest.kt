@@ -237,6 +237,25 @@ class FlashRelayClientTest {
     }
 
     @Test
+    fun testAcknowledgeReceiptsSendsBatchRecvAck() = runTest {
+        val transport = FakeRelayTransport()
+        transport.setState(RelaySessionState.CONNECTED)
+
+        val client = FlashRelayClient(
+            deviceId = "dev-alice-001",
+            friendlyName = "Alice",
+            hubUrl = "ws://127.0.0.1:8443/flash-relay",
+            transport = transport,
+        )
+
+        assertTrue(client.acknowledgeReceipts(listOf("m1", "m2", "m3")))
+
+        assertEquals(1, transport.sentFrames.size)
+        val ack = transport.sentFrames[0] as RelayFrame.RecvAck
+        assertEquals(listOf("m1", "m2", "m3"), ack.ids)
+    }
+
+    @Test
     fun testAcknowledgeReceiptRefusedWhenNotConnected() = runTest {
         val transport = FakeRelayTransport()
         transport.setState(RelaySessionState.SUSPENDED)

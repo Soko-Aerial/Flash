@@ -29,6 +29,12 @@ interface MailboxStore {
      */
     suspend fun acknowledge(target: String, msgId: String, origin: String? = null): List<AckedRow>
 
+    /**
+     * Deletes [target]'s stored copies of [msgIds] in a single batch (OPT-O16-04).
+     */
+    suspend fun acknowledgeBatch(target: String, msgIds: List<String>, origin: String? = null): List<AckedRow> =
+        msgIds.flatMap { acknowledge(target, it, origin) }
+
     /** Deletes up to [limit] expired rows and returns them so the senders can be told. */
     suspend fun deleteExpired(limit: Int = 500): List<ExpiredRow>
 
@@ -40,6 +46,7 @@ interface MailboxStore {
         override suspend fun enqueue(message: MailboxMessage, ttlOverrideMs: Long?): EnqueueResult = EnqueueResult.Unavailable
         override suspend fun fetchPage(target: String, afterSeq: Long, limit: Int): List<QueuedMessage> = emptyList()
         override suspend fun acknowledge(target: String, msgId: String, origin: String?): List<AckedRow> = emptyList()
+        override suspend fun acknowledgeBatch(target: String, msgIds: List<String>, origin: String?): List<AckedRow> = emptyList()
         override suspend fun deleteExpired(limit: Int): List<ExpiredRow> = emptyList()
     }
 }

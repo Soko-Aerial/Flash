@@ -72,7 +72,10 @@ data class Department(
     val adminDeviceIds: List<String> = emptyList(),
     val version: Long = 0L,
     val hidden: Boolean = false,
-)
+) {
+    val adminSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { adminDeviceIds.toSet() }
+    fun hasAdmin(deviceId: String): Boolean = deviceId in adminSet
+}
 
 /**
  * Group charter defining visibility, scope, admins and members. An EMPTY [departmentId] is an organisation-wide group
@@ -87,7 +90,14 @@ data class GroupCharter(
     val adminDeviceIds: List<String> = emptyList(),
     val memberDeviceIds: List<String> = emptyList(),
     val version: Long = 0L,
-)
+) {
+    val memberSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { memberDeviceIds.toSet() }
+    val adminSet: Set<String> by lazy(LazyThreadSafetyMode.NONE) { adminDeviceIds.toSet() }
+
+    fun hasMember(deviceId: String): Boolean = deviceId in memberSet
+    fun hasAdmin(deviceId: String): Boolean = deviceId in adminSet
+    fun isMemberOrAdmin(deviceId: String): Boolean = hasMember(deviceId) || hasAdmin(deviceId)
+}
 
 /**
  * Member record registered in a department (an empty [departmentId] is a departmentless member).
@@ -188,11 +198,11 @@ object DirectoryVisibility {
     /** Group predicate with the hidden-department filter (A2 §3.1): outsiders lose groups of hidden departments. */
     fun canSeeGroup(group: GroupCharter, actor: DirectoryActor, directory: OrganizationDirectory): Boolean {
         if (actor.isOrgAdmin) return true
-        if (group.memberDeviceIds.contains(actor.deviceId) || group.adminDeviceIds.contains(actor.deviceId)) return true
+        if (group.isMemberOrAdmin(actor.deviceId)) return true
         val deptId = group.departmentId
         if (deptId.isBlank()) return true
         val dept = directory.getDepartment(deptId)
-        if (dept != null && actor.deviceId in dept.adminDeviceIds) return true
+        if (dept != null && dept.hasAdmin(actor.deviceId)) return true
         // Members of the department itself are insiders even when they are not group members.
         if (deptId == actor.departmentId) return true
         if (dept != null && dept.hidden) return false
@@ -793,7 +803,7 @@ class OrganizationDirectory(
     }
 
     fun canManage(group: GroupCharter, actor: DirectoryActor): Boolean = lock.read {
-        actor.isOrgAdmin || group.adminDeviceIds.contains(actor.deviceId) ||
+        actor.isOrgAdmin || group.hasAdmin(actor.deviceId) ||
             departments[group.departmentId]?.let { isDepartmentAdmin(it, actor) } == true
     }
 
@@ -889,6 +899,12 @@ class OrganizationDirectory(
     fun memberCount(departmentId: String): Int = lock.read { members.values.count { it.departmentId == departmentId } }
 
     fun groupCount(departmentId: String): Int = lock.read { groups.values.count { it.departmentId == departmentId } }
+
+    /** Batch counts for all departments in a single read lock acquisition (OPT-O25-02). */
+    fun departmentCounts(): Pair<Map<String, Int>, Map<String, Int>> = lock.read {
+        members.values.groupingBy { it.departmentId }.eachCount() to
+            groups.values.groupingBy { it.departmentId }.eachCount()
+    }
 
     fun pendingCount(groupId: String): Int =
         lock.read { joinRequests.values.count { it.groupId == groupId && it.status == JoinRequestStatus.PENDING } }
@@ -1150,11 +1166,11 @@ class OrganizationDirectory(
     }
 
     private fun isDepartmentAdmin(dept: Department, actor: DirectoryActor): Boolean =
-        dept.adminDeviceIds.contains(actor.deviceId) ||
+        dept.hasAdmin(actor.deviceId) ||
             (actor.role == MemberRole.DEPT_ADMIN && actor.departmentId == dept.id)
 
     private fun isMemberOrAdminOf(group: GroupCharter, deviceId: String): Boolean =
-        group.memberDeviceIds.contains(deviceId) || group.adminDeviceIds.contains(deviceId)
+        group.isMemberOrAdmin(deviceId)
 
     /**
      * Scope rule for a non-member: same department, or an organisation-wide group (blank department), which every
@@ -1252,12 +1268,18 @@ class OrganizationDirectory(
 
         // Filter departments visible to actor
         val visibleDepts = departments.values.filter { DirectoryVisibility.canSeeDepartment(it, actor) }
-        val changedDepts = visibleDepts.filter { it.version > effectiveSince }.map {
+        val toSyncDepts = visibleDepts.filter { it.version > effectiveSince }
+        val memberCounts = if (toSyncDepts.isNotEmpty()) {
+            members.values.groupingBy { it.departmentId }.eachCount()
+        } else {
+            emptyMap()
+        }
+        val changedDepts = toSyncDepts.map {
             DepartmentSyncDto(
                 id = it.id,
                 name = it.name,
                 headDeviceIds = it.adminDeviceIds,
-                memberCount = members.values.count { m -> m.departmentId == it.id },
+                memberCount = memberCounts[it.id] ?: 0,
                 hidden = it.hidden,
             )
         }
@@ -1291,7 +1313,7 @@ class OrganizationDirectory(
         // A page ends at `limit` rows OR when its encoded members reach the byte budget, whichever comes first (DIR-04): the
         // hub never emits a body its own client is defined to refuse. The first row of a page is always taken so the cursor advances.
         val pageSize = limit.coerceIn(1, 1000)
-        val memberDtos = ArrayList<DirectoryMemberSyncDto>()
+        val memberDtos = ArrayList<DirectoryMemberSyncDto>(pageSize)
         var lastConsumed: DepartmentMember? = null
         var consumed = 0
         var unsigned = 0
@@ -1314,7 +1336,7 @@ class OrganizationDirectory(
                     online = isOnline(m.deviceId),
                 )
             } else null
-            val cost = if (dto != null) HubRestCodec.encode(dto).toByteArray(Charsets.UTF_8).size else 0
+            val cost = if (dto != null) utf8ByteCount(HubRestCodec.encode(dto)) else 0
             if (consumed > 0 && spentBytes + cost > memberBudgetBytes) { hasMore = true; break }
             if (dto != null) { memberDtos += dto; spentBytes += cost } else unsigned++
             consumed++
@@ -1603,4 +1625,35 @@ class OrganizationDirectory(
             return OrganizationDirectory(db, clock, presence)
         }
     }
+}
+
+/**
+ * Calculates UTF-8 byte length without allocating a ByteArray (OPT-O25-02).
+ */
+private fun utf8ByteCount(s: String): Int {
+    var count = 0
+    var i = 0
+    val len = s.length
+    while (i < len) {
+        val ch = s[i]
+        when {
+            ch < '\u0080' -> {
+                count++
+                i++
+            }
+            ch < '\u0800' -> {
+                count += 2
+                i++
+            }
+            ch.isHighSurrogate() && i + 1 < len && s[i + 1].isLowSurrogate() -> {
+                count += 4
+                i += 2
+            }
+            else -> {
+                count += 3
+                i++
+            }
+        }
+    }
+    return count
 }
