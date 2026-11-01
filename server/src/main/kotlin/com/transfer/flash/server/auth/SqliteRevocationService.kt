@@ -274,13 +274,17 @@ class SqliteRevocationService(
             // each relay frame): their serials are revoked here, the devices stay UNREVOKED by id so they can enrol again under the new
             // delegation with a fresh invitation. A certificate the registry cannot attribute to a delegation is revoked with its device.
             for (delegation in list.revokedDelegationSerials) {
-                val devices = conn.query("SELECT device_id FROM hub_devices WHERE delegation_serial = ?", delegation) { it.getString(1) }
-                for (id in devices) {
-                    for (serial in conn.query("SELECT serial FROM hub_cert_history WHERE device_id = ?", id) { it.getLong(1) }) {
-                        insert(conn, "SERIAL", serial.toString(), "delegation $delegation revoked", now, "root")
-                    }
-                    fallenDevices += id
-                }
+                conn.update(
+                    """
+                    INSERT OR IGNORE INTO hub_revocations(kind, subject, reason, revoked_at, revoked_by)
+                    SELECT 'SERIAL', CAST(hch.serial AS TEXT), ?, ?, 'root'
+                    FROM hub_devices hd
+                    JOIN hub_cert_history hch ON hd.device_id = hch.device_id
+                    WHERE hd.delegation_serial = ?
+                    """.trimIndent(),
+                    "delegation $delegation revoked", now, delegation,
+                )
+                fallenDevices += conn.query("SELECT device_id FROM hub_devices WHERE delegation_serial = ?", delegation) { it.getString(1) }
             }
             true
         }
