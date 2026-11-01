@@ -1,5 +1,23 @@
 # Current Handoff
 
+> **2026-11-01 — Wave 4 integration IN PROGRESS.** Review and repair commits are complete: desktop E
+> **`b2b61b92`** (delivered `00a7a51f`), kernel K **`22a53994`** (delivered `6d9c9227`), both based on actual
+> common base **`baf77753`**. Main `dev` has not merged either stream at this entry. Targeted repaired verification:
+> desktop **259 tests**, kernel **602 tests**, zero failures/errors, two documented POSIX-only skips in kernel.
+> **No expanded merged-tree gate has run yet.** Canonical decisions/errors/experiments/backlog/probe/platform/security/
+> accessibility records are being folded; `logs/progress.md` carries commands and evidence limits.
+>
+> **Next:** merge K first, then E, each with `--no-ff` and both forced plan §6.3 gates. §6.2 allows either order;
+> K's existing `cbf7b8df` classifier-test fix is a prerequisite for the expanded common Android-host coverage, so do
+> not omit that suite or cherry-pick only to hide an E-only stale expectation. E repaired six ownership/caller defects;
+> K repaired four, rejecting keyed Cipher/Mac ThreadLocals while keeping Provider selection. No security/wire downgrade.
+> Performance headlines are WITHDRAWN/NOT MEASURED. Physical/manual checks **PERF-E01..E08, PERF-K01..K05 are TODO**.
+> No push/deployment/device session/presence/Wave 5 implementation authorized. Stop Gradle daemons through the lock at
+> session end; remove E/K worktrees only after green integration and a clean tree, keeping their branches.
+> Authority: `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`, plan §6.3/§10, `logs/progress.md`.
+>
+> Older banners below are historical; their branch/base/unfinished-work statements do not override this current entry.
+
 > 2026-11-01 (later, docs only): **wave 4's prompts corrected and the presence/push/hub-sync question answered on paper;
 > no code changed, nothing built.** Section 11.E and 11.K now state the base (`dev` at `44eed960`, both gates green) and
 > retire the "note the known ERROR-106 failures" instruction - that test passes on this tree (ERROR-106 stays OPEN only

@@ -2802,6 +2802,69 @@ Built and unit-tested; **none of these have been run on a device**. Design: `doc
 - **Source:** ADR-218, performance and accessibility sections of `docs/ui/search-ui.md`.
 - **Status:** TODO
 
+## 4.W4. Wave 4 desktop/kernel functional checks (reviewed 2026-11-01)
+
+Automated repaired suites pass, but every check below is still **TODO**. Record date, commit, OS/API/provider,
+hardware/settings and actual evidence; use isolated non-sensitive developer data. No phone/radio/call session without
+owner authorization. Measurements follow functionality, in section 5/Wave 4 profiling; no absolute FPS/power promise.
+
+### PERF-E03 — Hidden-window GHOST, workload START/FINISH and liveness (OPT-O19-07)
+- **Setup:** desktop plus paired peer on real LAN, discovery packet/log capture; STANDARD/BOOST/ECO/GHOST, real
+  transfers/calls/PTT available. Authorized session only.
+- **Steps:** hide idle STANDARD then restore; while already hidden start/finish transfer, verification, call and PTT
+  separately. Select GHOST hidden; hide/restore already GHOST. With hub relay connected, observe REST presence as
+  another hub peer comes/goes. CPU/power comparison is optional measurement after these behavior checks.
+- **Pass:** idle non-GHOST effectively downscales ECO; workload START restores/preserves selected mode and FINISH
+  reevaluates. GHOST stays GHOST with no new advertising. Restore returns selected mode; transfers/calls/PTT remain
+  live; hub presence poll stays ungated. Record packets/sessions separately: connectionPolicy reads selected mode and
+  not every ECO knob has a desktop consumer. Effective-mode change alone is not a power/packet result.
+- **Source:** ADR-305/298, ERROR-943, EXP-117; DesktopDiscoveryDownscaleTest, activity-helper truth table.
+- **Status:** TODO (automated transitions pass; physical packet/PTT/liveness not run).
+
+### PERF-E06 — Actual AWT drop uses current repository/destination
+- **Setup:** real desktop window, two paired peers and a group, small non-sensitive files, pre-ready interval and
+  send/message logs. Isolated data; never clear the owner's install.
+- **Steps:** navigate A/B/group/non-chat tabs, drop into current conversation, repeat just after readiness and after
+  minimize/restore; try pre-ready/non-chat drop.
+- **Pass:** allowed drop inserts/sends to current peer/group, never pre-boot EmptyFlashChatRepository or prior closure.
+  Pre-ready/non-chat drop cannot silently send to obsolete target; DropTargets do not accumulate.
+- **Source:** ADR-300, ERROR-941 (superseded), ERROR-948; DesktopCompositionOwnershipTest.
+- **Status:** TODO (structural regression/compilation pass; actual AWT event not run).
+
+### PERF-E07 — Stored-ON radio survives tab/window/tray lifetime
+- **Setup:** supported desktop/radio hardware in explicitly authorized session; stored master ON in isolated settings,
+  manager/link logs; radio driver unchanged.
+- **Steps:** launch without visiting Settings; observe initialization. Switch tabs, open/close Settings,
+  minimize/tray/restore; deliberately toggle OFF/ON and exit.
+- **Pass:** stored ON starts from application root without Settings; tab/window lifetime never creates/disables/disposes
+  controller. OFF releases, ON publishes one manager; existing radio messaging/voice preserved.
+- **Source:** ADR-303, ERROR-944; composition ownership and radio controller tests.
+- **Status:** TODO (host checks pass; hardware not run).
+
+### PERF-E08 — Live Windows reduced motion reaches window/toast
+- **Setup:** real Windows, Flash reduced motion OFF, visible main window/toast; manually use system Animation effects.
+- **Steps:** toggle OS animation OFF/ON without resize/tab change, repeat hidden/restore; enable Flash reduced motion
+  and repeat. Separately use failed-query fixture; record five-second poll/update latency.
+- **Pass:** successful BOOL zero disables motion; main window/toast observe preference during polling/update cycle
+  without unrelated event. Flash setting wins by OR; later unknown retains learned state, initial unknown falls back.
+  No Linux/macOS OS detection inferred.
+- **Source:** ADR-308, ERROR-947; DesktopOsReduceMotionTest; official SystemParametersInfoW checked 2026-11-01,
+  URL in docs/ui/accessibility.md.
+- **Status:** TODO (mapping/Flow/read-only Windows API query pass; visual toggle not run).
+
+### PERF-K05 — Physical Android JCA parity and failure recovery
+- **Setup:** authorized physical supported Android API/provider session, test-only vectors, repaired JVM outputs,
+  all security suites retained. Record provider/algorithm; never export keys or copy keystore.properties/.jks.
+- **Steps:** AES-256-GCM vectors, bad tag/AAD, changed-key recovery, identical immutable hub-chunk reseal, HMAC key
+  changes, ECDSA/ECDH and mutated-SPKI rejection; repeat concurrently. Compare one-shot/independent streaming SHA.
+  Inspect operation lifetime separately: correctness tests do not prove zeroization.
+- **Pass:** vectors/failures match reference; failure cannot contaminate later operations; invalid SPKI cannot retrieve
+  cached valid key; immutable-chunk reseal deterministic. No keyed Cipher/Mac ThreadLocal/global cache, no
+  algorithm/key-size/nonce/AAD/pin/wire downgrade, no security suite excluded from every gate. Report provider-specific
+  outcomes honestly; no erasure/zeroization conclusion from output alone.
+- **Source:** ADR-312/314/350, ERROR-952 (superseded), ERROR-953/954; official Android/JDK Cipher/Mac references.
+- **Status:** TODO (JVM/Android-host parity/concurrency pass; physical providers not run).
+
 ## 5. Measurements — do these last
 
 They replace every *(measure)* estimate in the plans and decide tuning. Record each in `logs/experiments.md`.
@@ -2823,6 +2886,21 @@ They replace every *(measure)* estimate in the plans and decide tuning. Record e
 ## Results log
 
 Newest first. One entry per test session: date, build, devices, tests run, result, and links (ERROR/EXP).
+
+### 2026-11-01 — Wave 4 repaired host verification (not a device/performance result)
+- **Code / commits:** E delivered 00a7a51f plus reviewed repairs committed as b2b61b92; K delivered 6d9c9227 plus
+  reviewed repairs committed as 22a53994; both base baf77753. These targeted runs preceded the repair commits;
+  E had no later source change, K only a later KDoc clarification. Expanded merged-tree gates not yet run at this entry.
+- **Environment:** Windows/JBR 21, machine lock. No physical Android/radio/call session or real app launch.
+- **Automated results:** E forced desktop JVM/compile **259 tests**, zero failures/errors/skips; 66/66 tasks,
+  BUILD SUCCESSFUL in 6m 51s. K forced common/security JVM + Android-host **602 tests**, zero failures/errors,
+  two documented POSIX-only Windows skips; 32/32 tasks, BUILD SUCCESSFUL in 3m 50s. Commands in logs/progress.md.
+- **Scope:** GHOST/hidden edges, boot/structural ownership, logger latch/shutdown and motion mapping/Flow/native read;
+  mutable-SPKI/header/flush regressions, Unicode/locale/concurrency and crypto parity/key-change/failure/reseal.
+  A read-only Windows query is not a live visual toggle check; Android-host is not physical Android provider behavior.
+- **Backlog outcome:** **PERF-E01..E08 and PERF-K01..K05 remain TODO.** Automated prerequisites passed, not the whole
+  manual test. EXP-115..124 numeric claims remain WITHDRAWN/NOT MEASURED. ERROR-943..948/953..956 statuses are in
+  logs/errors.md; full review in logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md.
 
 ### 2026-10-14 — ORGT-B01 device check (agent session at owner request; owner to confirm)
 
@@ -7076,3 +7154,103 @@ that the client still acks one message at a time, and `PERF-H07` covers the repa
 - **Pass condition:** the numbers are recorded and they confirm or refute the recommendation's arithmetic (a full poll is
   up to 4 requests of 500 rows, every 15 s: order 1-2 MB/min). No wall-clock assertion (ERROR-938).
 - **Status:** TODO.
+
+## 5.W4. Wave 4 paired profiling (reviewed 2026-11-01; do after functional checks)
+
+Every numeric headline in EXP-115..124 is WITHDRAWN/NOT MEASURED. Host correctness is not timing/frame/CPU/heap/
+compression evidence. Use base `baf77753` and repaired tree on the same hardware/provider/settings, reproducible
+workloads and isolated data. Record exact commit, command/harness, warmup, distributions and retained bytes.
+Do not clear the owner's install or copy signing keys/configuration. Physical sessions require named authorization.
+Full delivered/superseded procedures remain in `logs/streams/{desktop,kernel}/backlog-additions.md`.
+
+### PERF-E01 — Paired desktop startup, crypto and icon profiling
+- **Setup:** supported Windows desktop, identical isolated saved state/settings/JDK on base and repaired tree;
+  profiler records process start, first Compose frame and readiness separately; cold/warm repeats.
+- **Steps:** inspect EC generation, vault/DPAPI, pairing and icon rasterization on EDT/Compose/IO. Use isolated fresh
+  and paired state, inspect common icons at available DPI; record distributions rather than fastest launch.
+- **Pass:** unconditional composition does not initialize/wait on pre-ready pairing; assembly warms before readiness.
+  Common icon requests do not eagerly rasterize large sizes; pairing/discovery work when ready. Report actual latency/
+  allocations, not immediate-first-frame or integrated high-DPI guarantee. Linux needs its own result; no macOS claim.
+- **Source:** ADR-304/309, ERROR-945, EXP-115; DesktopEngineBootTest, DesktopTaskbarBadgeManagerTest.
+- **Status:** TODO.
+
+### PERF-E02 — Resize, navigation, collection and prompt behavior/profile
+- **Setup:** real Compose/AWT desktop window, recomposition tooling, peer offering files; OS/UI scale/pixel-to-dp
+  conversion recorded; same base/repaired workload.
+- **Steps:** resize within/across 600/840dp, switch Chats/Transfers/Settings/Hub, update radio/hub telemetry, send offer/
+  retryable failure during progress churn; inspect taskbar icons at available DPI. Functional checks before profiling.
+- **Pass:** geometry follows width; class changes only at thresholds. Navigation does not reinstall window-owned
+  DropTarget. Settings-only collection local without breaking owners. Relevant prompt/actions update, not byte/speed
+  churn. Record class-consumer versus full-geometry recompositions; no zero-root or timed-debounce claim.
+- **Source:** ADR-300..303/309, EXP-116; DesktopNotificationManagerTest, DesktopTransferToastModelTest.
+- **Status:** TODO.
+
+### PERF-E04 — Real-process logger admission, overflow, shutdown and profile
+- **Setup:** isolated developer desktop process with production sink and controlled slow Writer/console fixture;
+  preserve owner's desktop.log; paired base/repaired latency workload.
+- **Steps:** identifiable records/throwables from eight producers; normal throughput, overflow and blocked output.
+  Graceful exit after tail record; separately timeout close then release writer. Capture admission latency, accepted/
+  dropped counts/order and write/flush/close owner. Functional assertions before profiling.
+- **Pass:** producers never write output; sole worker owns write/flush/close. Non-overflow graceful exit drains accepted
+  queue order; overflow drops newest/counts it. Timeout neither closes under worker nor adds writer. Actual buffer
+  16,384 characters; prior FileWriter internally buffered. Failures/forced kill best-effort, no all-lines guarantee.
+- **Source:** ADR-306, ERROR-946, EXP-118; DesktopFileLogSinkTest (three latch tests pass).
+- **Status:** TODO.
+
+### PERF-E05 — Dispatcher concurrency versus whole-process thread/RSS inventory
+- **Setup:** same desktop/JDK/workloads base/repaired; JMX/thread dumps/RSS, stack settings, IO property and native/
+  network pools recorded. Repeat user-supplied IO property.
+- **Steps:** inventory idle and transfer/call/radio threads; separately instrument active operations on limited engine
+  IO view. Compare measured concurrency/thread/memory changes, not estimates.
+- **Pass:** IO default 16 only if unset; limited view admits <=8 concurrent operations in that view. User property
+  preserved; workloads complete. Total JVM threads separate; no under-20 cap or fixed per-thread memory promise.
+  Investigate actual growth/leaks, not the mere existence of other pools.
+- **Source:** ADR-307, EXP-119.
+- **Status:** TODO.
+
+### PERF-K01 — Logging/probe caller behavior, allocations and frame impact
+- **Setup:** physical supported Android and desktop developer harness, actual LAN mesh; representative eager/lambda
+  logs and vararg/flat probes, same sink/rate/workload base/repaired. Authorized session/isolated data.
+- **Steps:** disabled DEBUG lambda incrementing counter, enabled DEBUG and eager Strings; flat 0..8 fields versus
+  vararg including null/control/Unicode/long values. Capture allocations/gfxinfo/frame timing/latency; distinguish
+  current product callers from synthetic migrated callers.
+- **Pass:** disabled body counter zero; enabled/eager and flat/vararg bytes/order/bounds/levels preserved. Flat avoids
+  Pair/vararg-array, not builders/Strings/boxing. Report actual caller mix/latency/jank/allocation; no predetermined
+  FPS gain, <1 FPS loss or unimplemented 100MB/s Wi-Fi Direct requirement.
+- **Source:** ADR-310, ERROR-955, EXP-123; FlashLogTest, FlashProbeTest, docs/testing/PROBES.md.
+- **Status:** TODO.
+
+### PERF-K02 — Public-key cache and realistic crypto/directory profiling
+- **Setup:** same Android/desktop hardware, provider/JDK/API recorded; isolated 5,000-member directory plus cache
+  hit/miss/eviction >1,024-key fixtures, paired base/repaired runs.
+- **Steps:** parse/verify/whole-sync separately, cold/warm/churn; copied/mutated invalid SPKI, bad signatures and
+  concurrency. Profile AES seal/open separately, HMAC key changes, SHA and KeyFileVault RNG/FD using test-only material.
+- **Pass:** membership never bypasses verification/trust; invalid mutated bytes rejected; sync/output bytes match base.
+  Report distributions/CPU/thermal/allocations/FD without 50%/doubled-throughput/<20s guarantee. Separate security
+  hashing from transfer hashing and unchanged Android PassphraseKeeper RNG. Combined seal+open is not individual timing.
+- **Source:** ADR-312, ERROR-953/954/938, EXP-121/122; parity/concurrency tests.
+- **Status:** TODO.
+
+### PERF-K03 — Physical Android logger/flush/rotation and explicit developer gzip export
+- **Setup:** supported physical Android and developer harness explicitly calling exportGzip (no app caller); isolated
+  log dir and writable/slow/failing outputs, standard gzip decoder. Defaults five ~1,000,000-byte files plus at most one
+  encoded-line overshoot each; no strict total-byte/2.5MB claim.
+- **Steps:** sanitized logs/header, rotation, enqueue during export, block dequeued throwable before flush; reject
+  destination replacing source. Decode/compare stable header/chronological snapshot; inspect temp files/latency/size/
+  drops; exercise crash/stop/full storage without secrets. Functional assertions before compression profiling.
+- **Pass:** flush accounts for in-flight dequeued records; export sources cannot rotate during copy/be overwritten.
+  Standard decoder checks gzip CRC/bytes, not an independent CRC mechanism. No uncompressed export tempfile in harness;
+  slow export may overflow/drop newest/count it, explicit calls may block. Report failures/content/size/time without
+  durable-delivery/flash-wear guarantees. Product Android Share logs remains text/plain .txt.
+- **Source:** ADR-311, ERROR-956, EXP-124; RotatingFileLogSinkTest, AGENTS.md §24.
+- **Status:** TODO.
+
+### PERF-K04 — Paired NFKD folding semantics and bounded-cache profiling
+- **Setup:** same Android/desktop hardware, ASCII/accented/decomposed/compatibility/Turkish-I/Greek/Cyrillic/CJK/emoji/
+  long strings; locale, warmup, hit/miss mix, concurrency and >512 unique entries recorded.
+- **Steps:** compare every result to NFKD + mark removal + lowercase base; profile cold misses/warm hits/ASCII/concurrent
+  eviction separately; measure retained bytes, not just entries.
+- **Pass:** same semantics including locale changes, safe concurrent churn. Publish reproducible timings/allocations;
+  no cross-date audit comparison/>95% promise. 512 entries is not total-String-byte bound.
+- **Source:** ADR-313, EXP-120; SearchFoldingTest, SearchFoldingConcurrencyTest.
+- **Status:** TODO (Unicode/locale/concurrency host checks pass; physical/performance not run).

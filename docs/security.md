@@ -4,6 +4,33 @@
 
 ---
 
+## JCA operation lifetime and public-key cache — Wave 4 review (2026-11-01, ADR-312/350)
+
+- **Cache provider selection, not initialized keyed operations.** Android/JVM `PlatformCrypto` obtains a fresh
+  `Cipher`/`Mac` from the selected `Provider` per keyed operation, and a fresh `KeyFactory` per parse. `Cipher.doFinal`
+  restores the state established by `init`; `Mac.doFinal`/`reset` permits another MAC from the same initialized key.
+  Those APIs do not promise key erasure, so a long-lived keyed ThreadLocal is not a provider cache (`ERROR-954`).
+  Fresh operation objects also do **not** establish portable zeroization; ordinary application/provider/GC lifetime
+  limits remain. The non-keyed SHA-256 ThreadLocal is reset; streaming hashers own independent digest instances.
+- The synchronized public-key LRU has at most 1,024 entries. Its map key owns an immutable copied SPKI encoding, and
+  parsing uses that exact snapshot (`ERROR-953`). Hashes select buckets; immutable byte equality decides identity.
+  Cache membership never replaces signature verification, peer authorization, pairing or TLS pin checks.
+- AES-256-GCM, key sizes, ECDSA/ECDH, nonce/AAD rules and wire formats are unchanged. Deterministic hub-file resealing
+  applies only to the **same immutable chunk**, never changed plaintext with a reused key/nonce. No security suite
+  is removed from every gate; common/security Android-host suites are explicit alongside JVM coverage (`ADR-314`).
+- Raw log records can remain temporarily in bounded queues. Redaction before persistence is defence in depth, not
+  permission to enqueue secrets; AGENTS.md §24's secret-logging prohibition still applies. Queue overflow, storage
+  failure, forced termination and shutdown timeouts preclude a durable-log-delivery guarantee.
+
+**Official contracts verified 2026-11-01:**
+[Android Cipher](https://developer.android.com/reference/javax/crypto/Cipher),
+[Android Mac](https://developer.android.com/reference/javax/crypto/Mac),
+[JDK 21 Cipher](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Cipher.html),
+[JDK 21 Mac](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Mac.html).
+Initial Android WebFetch excerpts were truncated/navigation-only; full official-page extraction subsequently verified
+those method contracts and Provider-object factory overloads. Host parity/concurrency tests verify behavior, not
+zeroization. Physical Android providers remain `PERF-K05` TODO; performance figures remain NOT MEASURED.
+
 ## 1. Threat model (v1 scope)
 
 | Asset | Threat | Mitigation | Where |

@@ -917,6 +917,18 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Optimization programme Wave 4 reviewed and repair-committed, integration IN PROGRESS (2026-11-01):** desktop E
+`b2b61b92`, kernel K `22a53994`, both actual base `baf77753`. At this entry neither is merged; targeted forced
+verification PASS: desktop 259 tests, kernel 602, zero failures/errors (2 documented POSIX-only Windows skips in K).
+E repaired six caller/lifetime defects; K repaired four and rejected keyed Cipher/Mac ThreadLocals in favor of Provider
+selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade or zeroization guarantee. All numeric
+headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production integration. Canonical reviewed
+records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124. Owed PERF-E01..E08/PERF-K01..K05.
+**Next: K then E, each --no-ff merge and both expanded plan §6.3 gates.** K's existing classifier correction is needed
+by newly included common Android-host coverage; no suite may be dropped. No merged-tree gate yet, no push/deploy/
+device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
+`logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
+
 **Optimization programme Wave 3 merged: Stream G (Android battery/lifecycle) and Stream H (hub server), both reviewed against the
 code, merged into `dev` (`33e82559`, `00f7013b`), NOT device-verified, NOT pushed (2026-11-01).** Gate 1 forced on the merged tree:
 **PASS** (`BUILD SUCCESSFUL`, 243 of 243 tasks executed, 6 m 2 s, 3 234 tests across 13 suites, 0 failures, 2 documented POSIX-only

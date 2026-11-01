@@ -28,6 +28,25 @@ Rules (AGENTS.md section 24 applies in full):
 - `skewMs` = the author's `sentAt` minus this device's clock at receipt. Positive: the author's clock is ahead.
 - `FlashProbe.emit` never throws.
 
+## Wave 4 API and snapshot contract — reviewed 2026-11-01 (ADR-310/311)
+
+The existing vararg `emit(name, "key" to value, ...)` API and event vocabulary remain. Flat overloads for zero through
+eight fields avoid Pair/vararg-array construction only at callers using those overloads. Direct append preserves field
+spelling/order and sanitizer output: null/empty becomes `-`, whitespace/ISO controls become `_`, and a value is bounded
+to 80 UTF-16 characters. Builders, output Strings, boxing and arbitrary `toString()` may still allocate. The original
+sanitizer was already a character loop, not a regex. No broad production caller migration or FPS benefit is established.
+
+`setHeaderFields` copies list membership; an export captures one reference and cannot mix replaced lists mid-format
+(ERROR-955). Values are not deep-copied. `FlashLog` keeps eager String overloads and adds INFO-default process-wide
+filtering plus inline lambdas: disabled bodies are not evaluated, but eager arguments remain eager. The optional tag
+parameter does not implement per-tag filtering. Never change event names/fields to make tests pass.
+
+Ordinary file-log calls can enqueue raw bounded records; redaction before persistence is defence in depth, not permission
+to log secrets. Explicit flush/crash/export may block. Flush accounts for already-dequeued entries (ERROR-956); queue
+overflow/storage failure/forced termination still preclude durable delivery. Gzip is a developer API with no app caller;
+normal Android Share logs remains text/plain `.txt`. `PERF-K01`/`PERF-K03` are TODO; host tests verify byte/snapshot/
+flush contracts, not device logging latency, compression, wear or frame rate.
+
 ## Session header and snapshot (export)
 
 **Android:** Settings, "Export logs" writes, after the first `Flash log export; ...` line, a block built by

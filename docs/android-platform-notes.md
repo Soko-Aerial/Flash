@@ -1,5 +1,34 @@
 # Android Platform Notes
 
+## 2026-11-01 — JCA reset preserves initialized capability; cache Provider selection, not keyed operations (ADR-312/350)
+
+### Android version / APIs
+- Supported Android API 24+; `javax.crypto.Cipher`, `javax.crypto.Mac`, Provider-object `getInstance` overloads.
+- The referenced method/factory contracts are available since API 1. Physical provider behavior is not established
+  by Android-host tests running on the Windows JDK.
+
+### Official sources and verified facts
+- https://developer.android.com/reference/javax/crypto/Cipher — **verified 2026-11-01** from the full official page:
+  `doFinal` resets to the state established by `init`, making the object available for more encryption/decryption.
+  After an exception it may need resetting before reuse. No key-erasure contract is stated.
+- https://developer.android.com/reference/javax/crypto/Mac — **verified 2026-11-01** from the full official page:
+  `doFinal`/`reset` permits another MAC from the same initialized key. Provider-object factories create new operation
+  objects; keeping the Provider is distinct from retaining an initialized operation.
+- Independently verified JDK 21 references:
+  https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Cipher.html and
+  https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Mac.html.
+- **Failed extraction preserved:** initial WebFetch excerpts contained navigation/truncated text, not the requested
+  Android method bodies. Direct full-page HTML text extraction subsequently found the actual contracts; the initial
+  excerpts alone were not evidence.
+
+### Project implication / verification limits
+Reject keyed Cipher/Mac ThreadLocals (`ERROR-954`). Both PlatformCrypto actuals cache Provider selection and use fresh
+keyed operations/factories; only non-keyed SHA reuse is retained/reset. Immutable copied SPKI cache keys prevent
+caller mutation from changing lookup identity (`ERROR-953`). No algorithm/key-size/nonce/AAD/pin/wire downgrade.
+Fresh JCA objects are not a portable zeroization guarantee. Host parity, key-change, failure, identical-immutable-chunk
+reseal and concurrency tests pass; physical supported API/provider combinations remain `PERF-K05` TODO. No throughput,
+FD, thermal or allocation improvement is measured by those correctness tests.
+
 ## 2026-10-24 - MediaProjection screen sharing: consent is single-use, the FGS type is mandatory, and the callback is the only revocation signal (ADR-102, UI-050g)
 
 ### Android version / API level

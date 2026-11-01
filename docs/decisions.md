@@ -7890,3 +7890,235 @@ and 2 GB is the size the templates document. The failure mode (OOM under load) b
 "~350 KB per connection", "~1.75 GB at 5 000 connections" and "a cliff at ~1 200 with `-Xmx512m`" were never produced by a
 load run — `RelayLoadTest` exists but was not driven to those counts. `PERF-H03` records the owed soak. The configuration
 baseline stands regardless of the exact numbers.
+
+---
+
+## Wave 4 reviewed decisions — 2026-11-01
+
+Actual common base: `baf77753`; delivered E tip `00a7a51f`, K tip `6d9c9227`. The entries below fold the reviewed
+stream decisions, not their superseded performance claims. At initial recording, repairs are targeted-tested in the
+worktrees and not yet merged; merge/gate evidence belongs in `logs/progress.md` and plan §10. Full dispositions and
+preserved history: `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md` and each stream's fragments.
+
+## ADR-300 — Window-owned DropTarget with an updated whole sender (OPT-O19-01)
+
+### Decision / context
+Retain `DisposableEffect(window)` and updated navigation/header/pane/chat state. Also retain
+`rememberUpdatedState(::sendFileToPeer)` and invoke the current function positionally with all arguments/defaults.
+The local sender captures the current chat repository: pre-boot `EmptyFlashChatRepository` is not a forwarding
+proxy. Updating only peer/header values leaves the DropTarget using that obsolete repository (`ERROR-948`).
+ERROR-941's direct-call workaround is superseded: named arguments are illegal for function-type invocation,
+but positional invocation preserves the updated closure without that compiler error.
+
+### Verification / limits
+Structural ownership regression passes. Actual AWT drop/navigation/pre-boot behavior: `PERF-E06` TODO.
+Registration lifecycle is narrowed, not a measured frame/allocation gain.
+
+## ADR-301 — Distinct notification-relevant transfer snapshots (OPT-O19-02)
+
+### Decision
+Filter toast rows to actionable Offered/retryable Failed transfers, then distinct relevant fields. Notifications
+distinct id/state/fileName/peerName/direction/errorMessage, ignoring byte/speed/ETA churn. This is distinctness,
+not timed throttling/debouncing. No measured 100 Hz emission rate or comparator defect was established.
+
+### Verification / limits
+Host suite passes; actual prompt/action/notification behavior remains `PERF-E02` TODO.
+
+## ADR-302 — Narrow size-class invalidation, not all resize recompositions (OPT-O19-03)
+
+### Context / decision
+Base already read `LocalWindowInfo.containerSize` and density with an AWT first-frame fallback, not raw window.width
+as its live width source. Remember a derived width-size class; class consumers invalidate at 600/840 dp boundaries.
+Full pane geometry still observes actual width and may recompose/layout within a class. No zero-root-recomposition
+claim. Compile/host checks pass; resize profiling remains `PERF-E02` NOT MEASURED.
+
+## ADR-303 — Settings-local collection without moving controller lifetime (OPT-O03-10)
+
+### Decision
+Collect Settings-only flows in `DesktopSettingsDestination`; enterprise sheet values in their consumers. Preserve
+radio controller ownership at application root, above the conditional window, using engine.scope; pass it down.
+Stored ON initializes without visiting Settings; tabs/minimization/tray do not recreate/dispose it (`ERROR-944`).
+Moving StateFlow collection does not authorize moving an operational owner's initialization/lifetime.
+
+### Verification / limits
+Structural ownership regression passes. Radio startup/tab/tray hardware check: `PERF-E07` TODO. No driver change.
+
+## ADR-304 — Background crypto warming and non-initializing composition view (OPT-O19-06, OPT-O01-05)
+
+### Decision
+Lazy crypto/ephemeral key/pairing initialize during background assembly before readiness/discovery. Unconditional
+composition uses nullable readyPairing, returning null before readiness, with keyed flows/effects/fingerprints.
+Premature lazy access can generate on UI or wait on another thread's lazy monitor: by lazy alone was insufficient
+(`ERROR-945`). Ready user actions can use the coordinator. Key/vault/pairing formats remain unchanged.
+
+### Verification / limits
+Boot regression proves constructor/pre-ready view do not initialize pairing and post-ready view does. First-frame
+latency is NOT MEASURED; no immediate-frame guarantee. `PERF-E01` TODO.
+
+## ADR-305 — Guard GHOST and every workload edge in desktop idle downscaling (OPT-O19-07)
+
+### Decision
+Use existing screen-active seam for window visibility/minimization. Active window, selected GHOST, Transferring/
+Verifying row, non-ENDED call or non-Idle PTT prevents downscale. Reevaluate workload START and FINISH and mode
+changes while inactive. Restore selected mode when active. Minimized GHOST must never become advertising ECO
+(`ERROR-943`). Hub REST presence poll remains ungated (ADR-298).
+
+### Inherited limits
+Desktop connectionPolicy still reads selected mode; JmDNS/multicast honor advertising but not all Composite ECO
+browse knobs. Mode transitions alone prove neither quieter sweeps, reduced power, fewer sessions nor desktop
+disconnection. The delivered "downscale drops sessions" explanation is not established by these callers.
+
+### Verification
+Real host-engine tests cover idle/restore/GHOST and transfer/call START/FINISH; helper truth table covers PTT.
+Packet/liveness/power and real PTT checks remain `PERF-E03` TODO.
+
+## ADR-306 — One owner for asynchronous desktop output and shutdown (OPT-O20-03)
+
+### Decision
+DesktopFileLogSink producers offer raw Entry records to bounded queue 4096; overflow drops newest/counts it. One
+worker formats, writes console/file, flushes and closes. Actual file writer buffer is 16,384 characters, not 8 KB.
+The old FileWriter also had internal buffering; the entire baseline was not unbuffered.
+Shutdown closes admission and joins that worker. Timeout returns false, never writes/closes under an in-flight
+record or starts a second writer (`ERROR-946`). Output failures remain best-effort diagnostics.
+
+### Verification / limits
+Latch tests cover dequeued record, overflow and timeout without premature close. Raw records are temporarily
+retained. No all-lines guarantee under overflow/disk failure/forced kill. Real process checks: `PERF-E04` TODO.
+
+## ADR-307 — Host coroutine concurrency bounds, not total JVM-thread cap (OPT-O14-06)
+
+### Decision
+If unset, set kotlinx.coroutines.io.parallelism=16 before initialization; engine IO view uses limitedParallelism(8).
+Networking/native/other JVM pools remain. These operation-concurrency bounds are not a cap of 16/20 total threads.
+No measured 28–34 to under-20 saving is established; `PERF-E05` TODO.
+
+## ADR-308 — Documented observable Windows reduced motion (OPT-O24-08)
+
+### Decision
+Replace unsupported AWT property names/non-observable atomic preference with SystemParametersInfoW,
+SPI_GETCLIENTAREAANIMATION=0x1042, 32-bit BOOL output using existing JNA. Only successful query with output zero
+means animations disabled. Failure is unknown. Cold IO Flow polls every five seconds, distincts values and preserves
+last learned value on failure. Collect Compose state above conditional window; main window/toast combine with
+Flash's setting. No new dependency. Mac/Linux OS detection is not implemented; in-app setting still works.
+
+### Source / verification
+Verified official source, checked 2026-11-01:
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow
+BOOL output, Vista+ API, zero uiParam/flags for read-only query. Mapping/observable-update tests and real read-only
+Windows query pass. Runtime visual toggle/window/toast check: `PERF-E08` TODO. ERROR-947 supersedes AWT/macOS claims.
+
+## ADR-309 — Lazy common and large taskbar icon caches (OPT-O19-06, OPT-O01-05)
+
+### Decision / limits
+Common 16/24/32/48/64 and large 96/128/256 caches are both lazy. Production getBaseIcons requests common sizes.
+getAllBaseIcons can request large sizes but has no caller: high-DPI selection is not integrated/proven. Counts/cache
+identity tests pass; DPI/clarity/startup profiling remains `PERF-E01`/`PERF-E02` TODO.
+
+## ADR-310 — Source-compatible level-gated logging and direct-format probes (OPT-O20-01, OPT-O20-04)
+
+### Context
+The base `FlashLog` had `i`/`w`/`e`, not an existing `d` API. Enabled eager String calls still construct their arguments
+before entering the logger. The original probe sanitizer already used a character loop, not a per-field regex.
+The delivered "11 FPS contributor eliminated" and "zero-allocation probes" claims are withdrawn.
+
+### Decision
+- Add DEBUG and an INFO-default process-wide minimum level; preserve the existing eager overloads.
+- Add inline lambda overloads, checking the level before evaluating the message. No per-tag filtering is implemented.
+- Keep the vararg probe API and add zero-through-eight-field flat overloads. Append sanitized fields directly to the
+  destination builder without changing probe names, field spelling, order, the 80-character bound, or null/empty/control handling.
+- Copy the registered header-field list and capture one reference when exporting. Do not index a newly replaced volatile
+  list during the same export (`ERROR-955`). Arbitrary values are not deep-copied.
+
+### Consequences / limits
+Disabled inline message bodies are not evaluated. This is unit-tested, not a claim about deployed frame rate.
+No production minimum-level deployment or broad migration to lambda/flat calls was found. Benefits requiring those
+callers are infrastructure until adopted. Flat callers avoid their Pair and vararg-array construction; builders,
+output Strings, boxing and arbitrary `toString()` can still allocate. Existing vararg callers retain their caller
+allocations. Host builds test source compatibility, not every external binary consumer's ABI compatibility.
+
+## ADR-311 — Android writer formatting with synchronized flush and gzip snapshot (OPT-O20-02, OPT-O20-06)
+
+### Decision
+Ordinary writes enqueue raw timestamp/level/tag/message/throwable records. The writer normally performs date,
+redaction and throwable formatting, then appends through an 8 KiB buffer. Admission has a separate monitor/wake
+semaphore; overflow drops newest/counts it. Dequeue, formatting, append, explicit flush/crash and gzip copying share
+a reentrant disk monitor so flush cannot miss a dequeued record (`ERROR-956`). Export cannot replace a rotating
+source. Stop closes admission, wakes the writer, flushes and joins.
+
+### Consequences / limits
+Raw messages/throwables remain temporarily in a bounded queue; AGENTS §24 still forbids secret logging. Explicit
+flush/crash/export can format/block on their caller; a forwarding sink has its own latency. Storage failures are
+best-effort, not durable delivery. Gzip includes the standard CRC trailer, not independent verification. A stable
+copy holds the disk monitor while producers can fill/overflow the queue. `exportGzip` has **no app caller**: Android
+Share logs still manually creates text/plain `.txt`. `PERF-K03` uses an explicit developer harness. Retention is five
+approximately 1,000,000-byte files with one encoded-line overshoot each, not 2.5 MB or a strict total-byte bound.
+All compression/caller-time/flash-wear headlines remain NOT MEASURED (`EXP-124`).
+
+## ADR-312 — Immutable public-key cache and Provider selection, not keyed operations (OPT-O15-01..04)
+
+### Decision
+- Keep a synchronized access-order LRU of at most 1,024 parsed public keys. Each map key owns copied SPKI bytes and
+  parsing uses that exact snapshot (`ERROR-953`); never retain mutable caller equality data.
+- Cache EC/AES-GCM/HMAC Provider selection; each parse owns a fresh KeyFactory. Do not assume shared factories have
+  a portable concurrent-use contract.
+- Reject delivered keyed Cipher/Mac ThreadLocals (`ERROR-954`). Fresh keyed operations use the cached Provider;
+  `doFinal`/`reset` leaves initialized capability, not erasure. ERROR-952's replacement-Cipher workaround is superseded.
+- Retain/reset only non-keyed SHA-256 ThreadLocal; streaming hashers own separate digests. KeyFileVault shares the
+  existing SecureRandom. Android/JVM actual duplication remains intentional (D1 = Option B).
+
+### Consequences / limits
+AES-256-GCM, key sizes, nonce/AAD, ECDSA/ECDH and identical immutable hub-chunk resealing are preserved. Fresh objects
+are not a zeroization guarantee. Immutable byte equality handles hash collisions; public cache membership is not
+trust/authorization. `O15-02` is partial: Android PassphraseKeeper still creates its own RNG, while engine presence
+salt already captured one on the base. `O15-04` changes the security helper, not transfer Sha256/platformSha256 or
+IncrementalSha256/HashingSink. No new source set/dependency/algorithm/wire format; no speed/FD/heap improvement measured.
+
+### Official sources — verified 2026-11-01
+https://developer.android.com/reference/javax/crypto/Cipher and https://developer.android.com/reference/javax/crypto/Mac:
+full-page extraction verified initialized-state reset/same-key reuse and Provider-object factories returning new
+operations, after navigation-only/truncated WebFetch excerpts failed. Independently verified JDK 21:
+https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Cipher.html and
+https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/crypto/Mac.html. Neither promises erasure.
+Physical Android provider parity is `PERF-K05` TODO. See ADR-350 and `docs/security.md` for the shared contract.
+
+## ADR-313 — NFKD folding with ASCII fast path and bounded LRU (OPT-O25-03)
+
+### Decision / limits
+Preserve NFKD, combining-mark removal and lowercase; ASCII bypasses normalization/regex. Android/JVM use one
+top-level combining-mark regex and synchronized 512-entry access-order cache. The bound is entries, not total bytes.
+Unicode, compatibility forms, decomposed accents, Turkish-locale equivalence and concurrent hit/miss/eviction tests
+pass. No semantic defect confirmed. Delivered 216/120 ns and >95% claims lack a paired harness and are withdrawn
+(`EXP-120`, `PERF-K04`).
+
+## ADR-314 — Retain every security test and cover Android actuals (OPT-O27-06)
+
+### Decision / verification
+Do not tag out/exclude any security tests. Enterprise/server/messaging coverage remains in the inherited gate.
+Explicitly add common/security Android-host suites alongside JVM coverage so classifier/actual/logger tests are not
+silently omitted. Repaired K targeted run: common JVM 19, common Android host 144, security JVM 174 (two documented
+POSIX skips), security Android host 265 in 33 suites; **602 tests, zero failures/errors**. Counts describe that
+revision, not a fixed 170-test contract. No test removed to obtain green.
+
+## ADR-350 — Optimization must preserve keyed-operation and immutable-identity lifetimes
+
+### Date / status
+2026-11-01; integrator security decision, accepted for reviewed Wave 4 repairs. No primitive or wire change.
+
+### Context / alternatives
+K cached initialized Cipher/Mac instances on long-lived threads and retained mutable caller SPKI bytes as cache keys.
+Correct crypto output did not prove safe ownership. Retaining keyed operations, replacing one only on IV-reuse error,
+and sharing mutable equality data are rejected. Removing all caches was unnecessary: public material, provider
+selection and non-keyed digest reuse have distinct lifetimes.
+
+### Decision
+Cache Provider selection, not keyed capability; create fresh keyed operation/factory instances. Public-key cache
+keys own immutable encodings and parsing/equality use the same snapshot. Cache hits never bypass verification,
+pairing, pinning or authorization. Keep all security tests; add Android-host actual coverage. Never lower algorithm,
+key-size, nonce/AAD, TLS/pinning or wire guarantees for an allocation headline.
+
+### Consequences / verification
+Fresh operation lifetime is not guaranteed zeroization of application/provider/GC-managed memory. Android and JDK
+contracts independently verified 2026-11-01 (ADR-312) reset to initialized state, not erasure. Initial Android excerpt
+failures are preserved, not credited as evidence. Host parity/concurrency/mutation regressions pass; physical provider
+behavior remains `PERF-K05` TODO. Numeric benefits are NOT MEASURED. Raw bounded log queues never authorize secret
+logging. Revisit only with a separately reviewed, measured alternative preserving these ownership/security invariants.
