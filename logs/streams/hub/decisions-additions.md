@@ -2,20 +2,35 @@
 
 Reserved range: ADR-290 to ADR-299.
 
-## ADR-290 — Physical Chunk Writes Outside SQLite Transaction in FileStore (OPT-O17-02)
+## ADR-290 — Chunk bytes staged outside the SQLite writer, published inside it (OPT-O17-02)
 
 ### Decision
-In `FileStore.putChunk`, stream and write the physical chunk bytes to disk (temporary file + rename) **before** entering `db.withTransaction`. Inside the database transaction, strictly execute metadata inserts into the `file_chunk` table. If the transaction fails, clean up the written file.
+In `FileStore.putChunk`, the validation pass and the megabyte write happen outside `db.withTransaction`: the bytes are
+staged to a uniquely named `chunk-*.part` file in the file's own directory. The transaction then re-validates, atomically
+**renames** the staged file into place (a metadata operation in the same directory, not a second copy) and inserts the
+`file_chunk` row. If the transaction throws, the published file is deleted again and the staging file removed.
+
+**Integrator repair.** The branch as delivered wrote the chunk file *before* opening the transaction and never renamed
+inside it, which broke the invariant "a committed `file_chunk` row implies a present chunk file" (a crash in between left a
+row whose download would 500, and `complete()` verifies counts and byte totals, not file presence). Staging-then-rename
+keeps the expensive I/O outside the writer lock and the visibility switch inside the transaction.
 
 ### Context
-`FileStore.putChunk` previously called `writeChunkFile(fileId, index, bytes)` inside `db.withTransaction { conn ->`. Writing a 1 MiB chunk to disk took 5–25 ms. Because SQLite in WAL mode allows only one concurrent writer, holding the transaction open during disk I/O completely blocked all other database writes on the server (chat relays, mailbox enqueues, directory sync, device registrations) for the duration of every chunk write.
+`FileStore.putChunk` used to call `writeChunkFile(fileId, index, bytes)` inside `db.withTransaction`. SQLite in WAL mode
+has one writer at a time, so every chunk upload held the writer for the duration of a 1 MiB disk write and queued every
+other write on the server (relay, mailbox, directory, device registration) behind it.
 
 ### Alternatives considered
-- Keeping writes inside transaction with faster storage: Fails on spinning disks or loaded cloud volumes.
-- Asynchronous detached chunk writes: Risked orphaned database metadata if server crashed before disk write completed.
+- Keeping the write inside the transaction with faster storage — fails on loaded cloud volumes.
+- Writing the file completely outside and only recording it afterwards — the branch's first attempt; loses the row⇒file
+  invariant (see above).
+- Asynchronous detached chunk writes — same orphan problem, plus unbounded queues.
 
 ### Why selected
-Writing the file first and validating its integrity before taking the database transaction reduces exclusive write lock hold time from ~15 ms to ~0.2 ms per chunk (>98% reduction), eliminating monorepo write lock starvation while maintaining full consistency.
+The large, unpredictable cost (disk write) leaves the lock; the cheap, must-be-atomic part (rename + row) stays inside it.
+The lock hold time should drop from "one disk write" to "one rename plus an insert". **The size of that drop is
+unmeasured** — the "14.8 ms → 0.18 ms, -98.8 %" of `EXP-110` was written without a benchmark; `PERF-H05` is the owed
+measurement.
 
 ---
 
@@ -32,115 +47,207 @@ Dispatch hub file chunk uploads and downloads using a bounded worker pool (`CHUN
 - Unbounded coroutine launch: Floods network buffers and risks out-of-memory errors.
 
 ### Why selected
-A concurrency limit of 3 in-flight chunks achieves 2.5x–3.5x throughput improvement over WAN while bounding heap memory to ~3 MiB of in-flight buffers. Preserves SHA-256 verify-before-write, resume bitset tracking, and end-to-end sealing.
+Three chunks in flight keep a latency-bound link busy while bounding heap to three chunk buffers instead of the whole file. Correctness is unchanged: each chunk is sealed and verified before it is written, and the done bitset is updated under one mutex per chunk.
+
+**The throughput claim is unmeasured.** “2.5×–3.5× over WAN” and the `EXP-111` table (3 350 ms → 1 220 ms) were written with no benchmark harness; `PERF-H02` is the owed measurement. The 50 ms RTT example above is arithmetic on a hypothetical link, not a run.
 
 ---
 
-## ADR-292 — Persistent Handle and Deferred Fsync in HubFileDisk (OPT-O23-01)
+## ADR-292 — Persistent handle and deferred fsync in HubFileDisk (OPT-O23-01)
 
 ### Decision
-Keep the file handle open across chunk writes in `HubFileDisk` and eliminate per-chunk `fsync` (`fd.sync()`). Perform a single flush and sync upon final transfer completion in `save()`.
+Keep one `RandomAccessFile` handle per part file open across chunk writes in `HubFileDisk` (jvm and android actuals) and
+perform a single `fd.sync()` when the transfer finishes (`finishPart` → `syncAndClose`). Delete, move and `close` evict the
+handle first.
 
 ### Context
-Writing a 50 MB sealed file (1,600 x 32 KiB chunks) was opening, seeking, writing, `fsync`ing, and closing the physical file descriptor 1,600 times. Each `fsync` took 1–5 ms, spending over 3.2 seconds on disk sync operations alone.
+Every chunk write used to open the part file, seek, write, `fsync` and close it; `replaceAtomically` (the state-file
+rewrite that follows each chunk) also fsynced. For a 50 MB sealed file at 32 KiB chunks that is ~1 600 fsyncs of the data
+file plus ~1 600 of the state file. **How long each fsync costs is unmeasured** — the "1–5 ms / 3.2 s" first written here
+came from no run (`EXP-110`'s banner).
 
-### Alternatives considered
-- Fsyncing every N chunks: Still incurs periodic disk stalls.
-- Relying entirely on OS page cache without final fsync: Risks corruption on sudden power loss before file close.
+### Cost, stated honestly (integrator review)
+Removing fsync changes what a power loss can do, in two ways:
+
+1. **The last chunk bytes may not be on the platter** while the done bit for them is. `verify()` re-reads and re-hashes
+   every chunk from offset 0 before a download counts as finished, so this surfaces as `HubFileError.Integrity` → one full
+   refetch (`verifyFailures++`), never as a silently accepted corrupt file. The comment at the download worker says so.
+2. **The state file itself is no longer synced** (`replaceAtomically` lost its `out.fd.sync()`), so after a power loss the
+   done set can also lag *behind* the data — the cheaper direction: a few chunks are fetched again.
+
+Neither direction produces a file the app calls complete and then fails to open; both cost re-download. A reader looking for
+"the write is durable at chunk N" will not find it, and should not assume it.
+
+Residual limit: an interrupted (paused) transfer keeps its handle open until it resumes, finishes or is deleted, so the
+cache can hold one descriptor per paused transfer. Bounded in practice, but not capped — worth revisiting if a user can
+queue many paused hub downloads.
 
 ### Why selected
-Intermediate chunk writes write to the open file descriptor while OS dirty page buffering handles batch writeback. A single final `fsync` on transfer finish guarantees durability on disk before marking the file complete.
+Intermediate writes go to the open descriptor and the OS writeback batches them; one sync at the end is enough for the
+only durability boundary the design actually needs (the finished file).
 
 ---
 
-## ADR-293 — Indexed Delegation Revocation History Join (OPT-O25-10)
+## ADR-293 — Indexed delegation revocation history join (OPT-O25-10)
 
 ### Decision
-In `RevocationService.revokeDelegation`, query certificate history using an `INNER JOIN hub_delegations d ON c.delegation_serial = d.serial` under a single query, rather than executing N separate SQL queries per revoked certificate.
+`SqliteRevocationService.revokeDelegation` inspects the certificate history of the revoked serials with one `INNER JOIN
+hub_delegations d ON c.delegation_serial = d.serial` instead of one query per serial.
 
 ### Context
-When revoking a delegation, the server looped over all revoked certificate serials and executed an individual query per serial to inspect its delegation chain. In organizations with thousands of enrolled devices, this N+1 query loop held an exclusive SQLite write lock for ~2.1 seconds, freezing all hub traffic.
+Revoking a delegation walked every revoked certificate serial and queried its chain individually — an N+1 loop holding the
+write transaction for the whole walk.
 
 ### Why selected
-Consolidates N queries into a single index-backed JOIN, dropping write lock hold time from ~2,100 ms to ~8 ms (>99% reduction).
+One index-backed join instead of N queries inside the same transaction, so the writer is held for one statement rather than
+N round trips. **How much that shortens the hold is unmeasured**; the “~2 100 ms → ~8 ms” first written here came from no run.
 
 ---
 
-## ADR-294 — Single Pre-Encoded Frame Reuse in Group Fan-Out (OPT-O17-03)
+## ADR-294 — Single pre-encoded frame for group fan-out (OPT-O17-03)
 
 ### Decision
-In `RelayFrameRouter.handleGroupSend`, encode `RelayFrame.Deliver` to JSON text once, and reuse the pre-encoded string across all N recipients during fan-out dispatch.
+`RelayFrameRouter.handleGroupSend` encodes the `Deliver` frame to JSON once and reuses the text for every recipient.
 
 ### Context
-For a group with 500 members, the router previously called `offerFrame(session, deliver)` per member, which repeatedly serialized the exact same payload into JSON 500 times on the relay dispatcher thread.
+Fan-out called `offerFrame(session, deliver)` per member, re-serialising the identical payload for each one on the relay
+dispatcher thread.
 
 ### Why selected
-Cuts JSON serialization CPU time and transient string allocations by 99.8% during large group message broadcasts.
+One encode per message instead of one per member — true by construction. The latency and allocation saving (“8.2 ms → 0.4 ms”,
+“-95 %”) was **not measured** (`PERF-H06` is the owed measurement). The write itself still happens per recipient; only the
+serialisation is shared.
 
 ---
 
-## ADR-295 — O(M+D) Directory Sync and O(1) Group Roster Checks (OPT-O25-02, OPT-O25-06, OPT-O25-09)
+## ADR-295 — O(M+D) directory sync and O(1) group roster checks (OPT-O25-02, OPT-O25-06, OPT-O25-09)
 
 ### Decision
-1. Precompute department member counts in `OrganizationDirectory.getSyncChanges` using a batched count query, reducing directory sync complexity from $O(D \cdot M)$ to $O(M + D)$.
-2. Provide lazy `memberSet` and `adminSet` on `GroupCharter` and `Department` for $O(1)$ membership lookups instead of scanning linear lists.
-3. Pre-allocate collections (`ArrayList(pageSize)`, `ArrayList(limit)`) across directory and mailbox routes.
-4. Calculate UTF-8 byte budgets without allocating intermediate strings (`utf8ByteCount`).
+1. `OrganizationDirectory.getSyncChanges` computes department member counts once (one aggregate over the department table)
+   instead of scanning the member list per department.
+2. `GroupCharter` and `Department` cache `memberSet`/`adminSet` (lazy) so membership checks are `Set.contains` rather than
+   `List.contains`.
+3. Collections whose size is known are pre-sized (`ArrayList(pageSize)`, `ArrayList(limit)`).
+4. UTF-8 byte budgets are counted without building intermediate strings (`utf8ByteCount`).
 
 ### Context
-Linear list membership checks and nested department counts caused quadratic algorithmic bottlenecks on 20,000-member directory syncs.
+At 20 000 members and 100 departments the nested count was O(D·M), and roster checks were linear scans run per frame.
 
 ### Why selected
-Reduces directory sync generation latency by over 80% on large enterprise directories while eliminating intermediate string garbage.
+Two complexity classes genuinely drop, and that is visible in the code rather than inferred from timing: O(D·M) → O(M+D),
+and O(n) → O(1) per membership check. The “over 80 % faster generation” headline is **unmeasured** and withdrawn;
+`PERF-H01` is the owed measurement.
 
 ---
 
-## ADR-296 — Batched Mailbox Receipt Acknowledgments (OPT-O16-04)
+## ADR-296 — Batched mailbox receipt acknowledgements (OPT-O16-04)
 
 ### Decision
-Extend `RelayFrame.RecvAck` with optional additive `ids: List<String>? = null`, and implement `acknowledgeBatch` in `MailboxStore` and `MailboxQueue` using a single database transaction and JDBC batch deletes (`addBatch` / `executeBatch`).
+`RelayFrame.RecvAck` gains an additive optional `ids: List<String>? = null` (the codec caps the list at 100 ids).
+`MailboxStore`/`MailboxQueue` gain `acknowledgeBatch`, deleting the ids in one transaction with JDBC batch deletes, and
+`RelayFrameRouter.handleRecvAck` applies one batch under the same per-device mailbox budget. The client's
+`FlashRelayClient.acknowledgeReceipts` splits a list into frames of at most 100 ids.
 
 ### Context
-When a client reconnected after being offline, draining 200 mailbox messages sent 200 individual `FLASH_RECV_ACK` frames and triggered 200 individual SQLite `DELETE` transactions on the server.
+A reconnecting client acknowledged each delivered message with its own `FLASH_RECV_ACK` frame, each causing its own delete
+transaction on the server.
 
 ### Why selected
-Reduces WebSocket framing overhead by >85% and collapses 200 separate write transactions into a single SQLite transaction, preserving exactly-once delivery guarantees.
+The server can now retire a mailbox drain in a handful of transactions instead of one per message, and the wire change is
+additive: an old client's single-id ack is still valid, and an old server reads `msgId`.
+
+**What is not true yet.** No product path sends a batch — `HubChatBridge.handleInbound` still acks one delivery at a time.
+Until the drain collects ids and calls `acknowledgeReceipts(ids)`, the advertised saving does not happen and the change is
+neutral at best. The integrator also had to cap the batch at 100 ids: an uncapped list would have been rejected whole by the
+codec, silently turning every ack into a redelivery.
 
 ---
 
-## ADR-297 — Streaming Member Entity Projection During Directory Sync (OPT-O16-02)
+## ADR-297 — Streaming member projection during directory sync (OPT-O16-02)
 
 ### Decision
-In `OrgDirectorySync`, stage lightweight `StagedMember(member, delegationSerial)` objects without pre-serializing `statementBytes` or computing SPKI fingerprints during the multi-page fetch loop. Project `OrgDirectoryMemberEntity` on-demand via a lazy `AbstractList` during Room database insertion.
+`OrgDirectorySync` stages `StagedMember(member, delegationSerial)` for each page without pre-serialising `statementBytes` or
+computing SPKI fingerprints, and projects `OrgDirectoryMemberEntity` lazily as Room inserts the rows.
 
 ### Context
-Staging 20,000 member DTOs across 100 pages previously pre-allocated 20,000 byte arrays, folded strings, and fingerprints in JVM/ART heap, causing a 35–45 MB heap spike and risking `OutOfMemoryError` on 2 GB Android devices.
+A full sync staged every member of every page with its serialised statement and fingerprint already built.
 
 ### Why selected
-Preserves failure atomicity while flattening peak heap consumption from ~45 MB to < 4 MB. Room streams each entity directly into SQLite one row at a time.
+The per-member derived data is produced one row at a time instead of for a whole page up front, so peak heap should scale
+with the page rather than with the directory. Whether that removes a dangerous spike on a 2 GB device is **unmeasured** —
+the “35–45 MB → < 4 MB” figures were not produced by any run (`PERF-H01` covers it). Failure atomicity is preserved:
+the batch is still applied in one Room transaction.
 
 ---
 
-## ADR-298 — Relay-Active Presence REST Poll Suppression (OPT-O16-03)
+## ADR-298 — REJECTED: relay-active presence REST poll suppression (OPT-O16-03)
 
-### Decision
-In `EnterpriseHub`, downscale HTTP GET `/directory/presence` polling to 10 minutes (`RELAY_ONLINE_PRESENCE_POLL_MS = 600_000L`) whenever the persistent WebSocket relay tunnel is active and healthy (`relay.state.value.isOnline`).
+### Status
+**REJECTED by the integrator and reverted (`8b622a9b`).** The entry is kept because the reasoning is instructive, not
+because the decision stands.
 
-### Context
-The client previously executed an HTTP presence poll every 30 seconds even while the WebSocket relay tunnel was actively connected, triggering 120 cellular radio state promotions per hour.
+### What was proposed
+In `EnterpriseHub`, downscale HTTP `GET /directory/presence` polling to 10 minutes
+(`RELAY_ONLINE_PRESENCE_POLL_MS = 600_000L`) whenever the relay WebSocket is connected (`relay.state.value.isOnline`), on
+the claim that the connected tunnel delivers presence another way.
 
-### Why selected
-Eliminates 95% of background presence radio activations while maintaining fresh presence state.
+### Why it was rejected
+The claim is false in this codebase, and the change makes presence *worse* exactly where it matters:
+
+- `EnterpriseHub.hubOnline` has exactly two writers: the poll itself, and the clear-on-unenrolled path. Nothing else sets it.
+- `HubPresence.kt` says in its own KDoc that the hub serves presence over REST and “has no presence push”, and `RelayFrame`
+  carries no presence frame — the tunnel delivers chat, mail and receipts, not who-is-online.
+- So with the relay up (the ordinary case), the only source of presence was slowed from 30 s to 10 min. `HubFacade` picks
+  the `HUB` path from `hubOnline` (ADR-229's ordering), so a colleague appearing or disappearing would be routed wrongly for
+  up to ten minutes.
+
+This is the same failure mode as Wave 2's `O10-05`/`O10-07`: an unmeasured saving bought by removing an invariant the code
+documents. A correct version needs the hub to push presence over the relay first; that is a wire change and an owner
+decision, not a stream's optimisation.
+
+### What would make it revisitable
+A hub→client presence event on the relay (roster member connect/disconnect) with `hubOnline` updated from it. Then the poll
+becomes a reconcile at minutes scale and this optimisation is safe.
+
+### Superseded detail (for the record)
+- Context as written: a poll every 30 s while the tunnel was connected, “triggering 120 cellular radio state promotions per
+  hour” — itself unmeasured.
+- Claimed effect as written: “eliminates 95 % of background presence radio activations” — withdrawn.
 
 ---
 
-## ADR-299 — Hub Server Capacity Profile and Deployment Baseline (OPT-O02-07, OPT-O17-01)
+## ADR-299 — Hub server capacity profile and deployment baseline (OPT-O02-07, OPT-O17-01)
 
 ### Decision
-Document that the Hub server capacity cliff under 5,000 concurrent WebSocket connections is a deployment configuration profile rather than a code defect. Mandate `-Xmx2g`, `-XX:+UseG1GC`, and `-XX:+ExitOnOutOfMemoryError` in server deployment profiles and documentation.
+Treat the hub's memory behaviour under large connection counts as a deployment profile rather than a code defect: the
+deployment templates and documentation mandate `-Xmx2g`, `-XX:+UseG1GC` and `-XX:+ExitOnOutOfMemoryError`, and say what each
+one is for.
 
 ### Context
-Audits OPT-O02-07 and OPT-O17-01 noted that with 5,000 concurrent WebSocket sessions (~350 KB per connection including Netty buffers, SSL engine context, and coroutine continuation frames), the server requires ~1.75 GB resident heap. Deploying with `-Xmx512m` hits a capacity cliff at ~1,200 connections.
+Audits OPT-O02-07 and OPT-O17-01 flagged that a hub started with a small heap hits a connection-count ceiling long before the
+code stops working, and that the failure mode (OOM under load) is opaque.
 
 ### Why selected
-Tuning JVM options in deployment templates (`deploy/templates/systemd/flash-hub.service`, `deploy/templates/docker/docker-compose.yml`) provides predictable, resilient operation without compromising connection buffering or security.
+The three flags are cheap, standard and make the failure legible: G1 keeps pause times tolerable with many sockets,
+`ExitOnOutOfMemoryError` turns a wedged half-alive process into a restart, and 2 GB is the size the templates document.
+
+**The numbers are estimates, not measurements.** “~350 KB per connection”, “~1.75 GB at 5 000 connections” and “a cliff
+at ~1 200 with `-Xmx512m`” were never produced by a load run — `RelayLoadTest` exists but was not driven to those counts.
+`PERF-H03` records the owed measurement. The configuration baseline stands regardless of the exact figures.
+
+---
+
+## Integrator note
+
+Every percentage in this file that is not backed by a command in `logs/streams/hub/` was withdrawn on 2026-11-01 and
+replaced by the structural claim plus the test that would establish the number. Two changes were **reverted or corrected**:
+`OPT-O16-03` (ADR-298, rejected) and the `FileStore` ordering in `OPT-O17-02` (ADR-290, repaired).
+
+---
+
+## Owed measurements
+
+`PERF-H01`..`PERF-H07` in `logs/streams/hub/backlog-additions.md` (folded into `docs/testing/TEST-BACKLOG.md`). The ones
+that would replace an estimate in this file: `PERF-H05` (writer lock hold, ADR-290), `PERF-H02` (WAN throughput, ADR-291),
+`PERF-H01` (directory sync memory, ADR-295/297), `PERF-H06` (fan-out encode, ADR-294) and `PERF-H03` (connection scale,
+ADR-299). `PERF-H07` covers the crash consistency `ADR-290`'s repair and `ADR-292`'s deferred fsync both touch.

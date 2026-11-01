@@ -41,10 +41,16 @@ Enterprise Hub File Transfers (OPT-O16-01)
 `AssertionError: expected:<2> but was:<0>` (interrupted transfer resumed from chunk 0 instead of chunk 2).
 
 ### Root cause
-In `StreamingHubFileSource.kt`, the bounded worker pipeline for concurrent chunk uploads cancelled worker coroutines immediately upon budget exhaustion (`workers.forEach { it.cancel() }`). If workers were in the middle of completing or committing chunks 0 and 1, the immediate cancellation threw `CancellationException` before the completed chunks could be acknowledged and recorded in the database progress state.
+The concurrent upload pipeline lives in `HubFileTransfers.kt` (the `Channel<Int>` + `List(concurrency) { launch { ... } }`
+block), **not** in `StreamingHubFileSource.kt` — that file is untouched on this branch (`git diff dev..HEAD -- core/engine`
+is empty; the first version of this entry named the wrong file). The pipeline originally cancelled the workers the moment one
+of them failed (`it.cancel()`), so a worker in the middle of committing chunks 0 and 1 threw `CancellationException` before
+those chunks were recorded, and the resume started from chunk 0.
 
 ### Working fix
-Replaced immediate cancellation with `workers.joinAll()`. When the byte budget is reached, workers stop pulling new chunk indices from the channel and cleanly finish in-flight chunks before completing the `HubUploadOutcome.Interrupted` result.
+`workers.joinAll()` after the channel is drained: a failing worker sets `terminalError` under `stateMutex`, the others finish
+the chunk they hold and then stop pulling new indices, so every committed chunk reaches the state file. (`HubFileTransfers.kt`
+now has two such loops — upload and download, lines ~422 and ~688.)
 
 ### Verification
 `:server:test --tests *E2eHubFileTransferContractTest*` passed cleanly (exit 0).
@@ -67,10 +73,14 @@ Engine Hub File Binding / Local Storage Contract (OPT-O16-01, OPT-O23-01)
 `AssertionError: Expected Interrupted, actual Failed`.
 
 ### Root cause
-When `LocalStorage.writePart` encounters an I/O fault, it wraps the failure in `LocalStorageException(transient = false)`. In `HubFileBinding.kt`, non-transient storage exceptions defaulted to `HubDownloadOutcome.Failed`. However, the hub file transfer specification requires disk write interruptions to produce `HubDownloadOutcome.Interrupted` so that subsequent transfers can resume from the last valid chunk.
+A local disk write failure during a download was classified as `Failed` (terminal) rather than `Interrupted` (resumable), so
+a transient storage error discarded a partially downloaded file that could have resumed. Again the code is in
+`HubFileTransfers.kt`, not `HubFileBinding.kt` — `core/engine` is untouched on this branch; the first version of this entry
+named a file the change never touched.
 
 ### Working fix
-Explicitly set `terminalIsInterrupted = true` on `LocalStorageException` or `IOException` during `writePart` and `save` calls in `HubFileBinding.kt`.
+In the download worker, a failed `storage.writePart` or `save()` sets `terminalError` **and** `terminalIsInterrupted = true`,
+so the outcome is `HubDownloadOutcome.Interrupted` and the done-set survives for the next attempt.
 
 ### Verification
 `:core:enterprise:jvmTest --tests *HubFileTransfersTest*` passed cleanly (exit 0).
@@ -93,14 +103,29 @@ In full 663-test `:server:test` run under heavy parallel CPU load, `RevocationAn
 `AssertionError: listeners fire once expected:<1> but was:<0>`.
 
 ### Root cause
-In `SqliteRevocationService.kt:393`, `fire(deviceId, serial, reason)` executes registered revocation handlers asynchronously inside `notifyScope.launch(Dispatchers.Default) { ... }`. When 663 test suites saturate JVM worker threads simultaneously, the test assertion at line 130 executed before `Dispatchers.Default` scheduled the background coroutine. Running the test in isolation passes instantly in < 2 seconds (`BUILD SUCCESSFUL in 20s`).
-Per project rule and lessons from Waves 1-2 (`ERROR-912`), production concurrency behavior must not be artificially degraded or relaxed to mask load-dependent test scheduling.
+`SqliteRevocationService.fire` (line ~393) runs the registered handlers inside `notifyScope.launch { ... }`, so the list the
+test inspects is filled *after* `revokeDevice` returns. Under a saturated JVM the coroutine is scheduled late and the
+assertion runs first. Both failing tests in the full run (663 tests, 2 failed) have this shape:
+`revokingTwiceChangesNothingAndDoesNotBumpTheVersion` (`expected:<1> but was:<0>`) and
+`revokingADeviceRevokesItsIdAndEveryCertificateSerial...` (`expected:<[dev-a]> but was:<[]>`).
+Per the project rule and the `ERROR-912` lesson, the production concurrency behaviour must not be degraded to make a test
+pass — so the fix belongs in the test.
+
+### Failed attempt
+The first version of this entry recorded "nothing was changed" and left the entry OPEN as a documented flake. That was
+wrong on the facts: `fire()` deliberately dispatches on `notifyScope` (kicking a relay session must not hold the revocation
+write transaction), so a test that reads the handler's list on the next line is **guaranteed** to be racy — it is a
+test-design defect that a loaded machine merely exposes, and leaving it OPEN made every future `:server:test` run look
+like it might have a revocation bug.
 
 ### Working fix
-Confirmed test is 100% deterministic and passes when rerun alone (`tools\flash-gradle.cmd :server:test --tests *RevocationAndEnrolmentTest*`). Documented load profile in accordance with the documented load flake rule for `:server:test`.
+Fixed on the **test** side, production untouched: `RevocationAndEnrolmentTest` gained
+`private fun Hub.awaitKicks(expected, settleMs = 100, timeoutMs = 5_000)`, which waits for the handler to fire (bounded),
+then holds a 100 ms settle window so "listeners fire **once**" is still asserted rather than merely "at least once". Both
+failing tests now use it (`revokingADeviceRevokes...` line 113 and `revokingTwiceChangesNothing...`).
 
 ### Verification
-`:server:test --tests *RevocationAndEnrolmentTest*` passed with exit code 0.
+`:server:test` in full: see the integrator run recorded in `logs/streams/hub/progress.md`.
 
 ### Status
-RESOLVED
+RESOLVED (test-side; the asynchronous notification path is unchanged).
