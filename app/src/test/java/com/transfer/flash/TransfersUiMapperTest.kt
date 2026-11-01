@@ -87,7 +87,12 @@ class TransfersUiMapperTest {
     fun retryableComesFromTheModelPredicate() {
         assertFalse(domain(state = FlashTransferState.Cancelled).toUiItem().retryable)
         assertTrue(domain(state = FlashTransferState.Failed).toUiItem().retryable)
-        assertFalse(domain(state = FlashTransferState.Failed).copy(viaHub = true).toUiItem().retryable)
+        // ADR-220 (open item C-07): a Failed hub row IS retryable — the hub's own limits (the 24 h upload window, an
+        // expired ticket) turn the row Failed, and Retry is exactly what puts it back in the queue. Everything else
+        // hub-side continues by itself, so it offers no Retry.
+        assertTrue(domain(state = FlashTransferState.Failed).copy(viaHub = true).toUiItem().retryable)
+        assertFalse(domain(state = FlashTransferState.Queued).copy(viaHub = true).toUiItem().retryable)
+        assertFalse(domain(state = FlashTransferState.Paused).copy(viaHub = true).toUiItem().retryable)
         assertEquals(domain(state = FlashTransferState.Failed).canRetry, domain(state = FlashTransferState.Failed).toUiItem().retryable)
     }
 
@@ -160,10 +165,12 @@ class TransfersUiMapperTest {
     }
 
     @Test
-    fun aHubRowSaysSoAndOffersNoRetry() {
+    fun aHubRowSaysSoAndOffersRetryOnlyWhenFailed() {
         val failed = domain(state = FlashTransferState.Failed, errorMessage = "too large").copy(viaHub = true).toUiItem()
         assertEquals("Through the hub", failed.transportLabel)
-        assertFalse("a hub failure is final; a dropped network keeps the row queued", failed.retryable)
+        assertTrue("a Failed hub row is the one hub row a retry can move (ADR-220)", failed.retryable)
+        val cancelled = domain(state = FlashTransferState.Cancelled).copy(viaHub = true).toUiItem()
+        assertFalse("a cancelled hub row is a decision, not a fault", cancelled.retryable)
         val direct = domain(state = FlashTransferState.Failed).toUiItem()
         assertNull(direct.transportLabel)
         assertTrue(direct.retryable)
