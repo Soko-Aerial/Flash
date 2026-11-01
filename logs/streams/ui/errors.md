@@ -1,5 +1,11 @@
 # Error & Diagnostic Log — Stream U (UI)
 
+> **SUPERSEDED (§27) — the review is `logs/streams/ui/INTEGRATOR-REVIEW.md`; the canonical entries are in `dev`'s
+> `logs/errors.md`.** Both entries below are kept and marked RESOLVED, but neither was reachable from the branch tip as
+> written (see the banner in this folder's `progress.md`). `ERROR-901`'s effect is a frame-timing observation no test can
+> see, so its device check is `PERF-U01`; `ERROR-902`'s "eliminating height jumping" half is unproven and the review's
+> corrected `EXP-097` says so.
+
 ## ERROR-901 — IME Resize Jitter from Nested Spring Animation
 
 ### Area

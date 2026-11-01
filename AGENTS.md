@@ -917,6 +917,32 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
+**Optimization programme Wave 2 merged: Stream U (UI) and Stream N (network/discovery), both reviewed against the code, merged into `dev`
+(`b9c2ed60`, `8c331229`), NOT device-verified, NOT pushed (2026-10-31/11-01).** Gate 1 forced on the merged tree: **PASS** (`BUILD
+SUCCESSFUL`, 161 of 161 tasks executed, 5 m 5 s, exit 0). **The U branch tip did not compile** — four break classes (the extracted
+`FlashMessageBubble` composables lost their `AttachmentUi` imports and copied `onSelectToggle` with the wrong type; `FlashConversationScreen`
+used `it.fileName` and `state.title`; `FlashMessageList` used `WindowInsets.isImeVisible` in `commonMain`), so the stream's "verified green"
+lines describe a tree that is not this one, and its "698 tests" is this programme's `:ui:chat:testAndroidHostTest` **pre-branch baseline**
+(measured 730 jvm / 705 androidHost after repair). 21 of 26 U findings kept, 7 repaired during review (stale per-card closures keyed on
+`file.id`; the optimistic echo matched by text alone and folded into the durable list; an in-flight attachment re-enabling send; two
+unsynchronised caches), `O24-06` reverted, 4 handed to G/C/M. N: 11 of 15 kept, 6 repaired, **`O10-05` and `O10-07` rejected and reverted**
+(the first inverted `CompositeDiscovery`'s documented browse-watchdog invariant for an unmeasured saving; the second's "multicast is healthy"
+signal cannot see what it claims, so on a broadcast-only network it suppressed the very fallback that network needs), `O14-03` to D,
+`O09-04`/`O09-07` declined per ADR-232. Five N defects the report did not mention were found and fixed — the worst being that a **full send
+queue returned `sendFrame == false`, which the dispatcher reads as permanent death of that channel**. Every numeric headline in both streams
+is withdrawn and requantified (`EXP-095`..`098`, `EXP-100`..`102`; `ADR-260`..`265`, `ADR-270`/`271` — `ADR-271`'s "pinning 100 % intact" is
+**false**: a resumed TLS 1.3 session never re-invokes the trust manager, corrected in `docs/security.md` §7 too). Authority:
+`logs/streams/{ui,net}/INTEGRATOR-REVIEW.md`, `logs/progress.md`. Owed: `PERF-U01`..`U06` and `PERF-N01`..`N03` in
+`docs/testing/TEST-BACKLOG.md` — including two U **behaviour changes** a device must confirm (the desktop loses swipe-to-archive; opening the
+keyboard at the bottom of a chat now scrolls the thread). Open handoffs: `OPT-O10-01` (`setScreenActive`) is merged but **nothing calls it**
+(Stream G, wave 3, with two KDoc caveats); `OPT-O14-03` (Stream D); `OPT-O03-07`/`O03-09` (G), `O25-05` video half (C), `O05-07` repository half
+(M); and `ui/chat/compose_compiler_config.conf` (ADR-260) is committed but **wired into no build file**, so it does nothing yet. Also
+recorded: `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` was **entirely double-encoded** by the commit that fixed the T stream
+(`5ef86ca5`); it was **repaired losslessly on 2026-11-01** against the pre-corruption revision `6f8fe180` (1 322 lines came back
+byte-identical, ASCII skeletons compared equal, every `☑`/`◐`/`☐` recovered), so the earlier "read it as a yes/no column" warning no
+longer applies to it. The same damage still sits in **older entries** of `docs/decisions.md` and `logs/progress.md` —
+`ERROR-913` in `logs/errors.md` carries the measured scope and the repair recipe.
+
 **Radio page redesign v2 (2026-10-28, visual only): BUILT, unit-tested and seen on screen in the desktop demo, NOT
 device-verified, NOT committed.** The owner's "the radio page looks weird" is fixed by replacing eight equal outlined cards with the
 Hub tab's language: one station plate (radio name, state dot + sentence, next step, master switch on the same row), two attention

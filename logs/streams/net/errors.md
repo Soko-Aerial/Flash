@@ -1,5 +1,10 @@
 # Error Log — NET (N) Stream
 
+> **SUPERSEDED (§27) — the review is `logs/streams/net/INTEGRATOR-REVIEW.md`; the canonical entries are in `dev`'s
+> `logs/errors.md`.** `ERROR-911` stands (RESOLVED). **`ERROR-912` is OBSOLETE**: the "fix" it describes pinned the test's
+> sweep interval to hide the behaviour change from `OPT-O10-05`, which was itself rejected and reverted. The failing test
+> was the correct signal. See the canonical `ERROR-912` entry for why that matters.
+
 ## ERROR-911 — WsConnection Missing peerPublicKeyEncoded Property
 
 ### Date

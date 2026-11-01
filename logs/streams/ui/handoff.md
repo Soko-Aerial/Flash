@@ -1,5 +1,10 @@
 # Current Handoff — Stream U (UI)
 
+> **SUPERSEDED (§27) — the review is `logs/streams/ui/INTEGRATOR-REVIEW.md`; the live handoff is `dev`'s
+> `logs/handoff.md`.** The branch was merged as `b9c2ed60` after seven repairs and one revert (`OPT-O24-06`), and the
+> tree at this branch's tip did not compile, so nothing here about "verified" results should be relied on. The owed device
+> checks are `PERF-U01`..`U06` in `dev`'s `docs/testing/TEST-BACKLOG.md`, not the single `PERF-U01` named below.
+
 ## Current branch
 `agent/opt-ui` (based on `dev` at `979e9c75`)
 

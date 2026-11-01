@@ -1,5 +1,78 @@
 # Current Handoff
 
+> 2026-10-31 Wave 2 (UI + network/discovery): **both streams reviewed against the code, merged into `dev`, and corrected; nothing pushed,
+> nothing device-verified.** Merges `b9c2ed60` (`agent/opt-ui`) and `8c331229` (`agent/opt-net`). Gate 1 forced on the merged tree
+> (`--rerun-tasks`, ten `jvmTest` suites incl. `:core:discovery` and `:core:hub-protocol`, `:desktop:compileKotlinJvm`,
+> `:app:compileDebugKotlin`): **PASS — `BUILD SUCCESSFUL`, 161 of 161 tasks executed, 5 m 5 s, exit 0.** Gate 2 forced (host suites +
+> `:app:testDebugUnitTest`): **the three host suites are green — `:ui:chat` 705, `:core:messaging` 688, `:core:persistence` 53, zero
+> failures — and the build still exits 1 on exactly the two pre-existing ERROR-106 `TransfersUiMapperTest` rows named in the plan's
+> §6.3.1 baseline** (`retryableComesFromTheModelPredicate`, `aHubRowSaysSoAndOffersNoRetry`; 87 tests, 2 failed). The KDoc fix that
+> landed after gate 2 put `:ui:chat` through one more forced run (gate 2b): 730 `jvmTest` / 705 `testAndroidHostTest`, zero failures.
+>
+> **Stream U's branch tip does not compile, so none of its "verified" lines describe what was merged.** Four break classes, each a
+> different kind of mistake: the extracted `FlashMessageBubble` composables (63 imports, no `AttachmentUi` import, no star import)
+> referenced `FlashFileAttachmentUi`/`FlashVoiceAttachmentUi` unqualified ten times; the copied `onSelectToggle` parameter had type
+> `(String) -> Unit` where every other site and the callee use `() -> Unit`; `FlashConversationScreen` used `it.fileName` (the property is
+> `name`) and `state.title` (it is `state.header.title`); `FlashMessageList` used `WindowInsets.isImeVisible` in `commonMain`, which does
+> not exist in the Compose Multiplatform 1.9.3 desktop artifact. The "698 tests" it reported is this programme's **pre-branch baseline**
+> for `:ui:chat:testAndroidHostTest` (measured at `54ff4737`); after repair the suites are **730 (`jvmTest`) and 705
+> (`testAndroidHostTest`)**, forced.
+>
+> 21 of 26 U findings kept, 7 repaired during review, `O24-06` **reverted**, 4 handed off. The seven repairs are all the kind a compile
+> cannot show: the hoisted per-card closures were keyed on `file.id` while `FlashFileAttachmentUi` carries live transfer state, so a card
+> whose first emission had `localUri == null` kept opening nothing after the download arrived; the optimistic echo matched rows **by text
+> alone** and was concatenated into the durable list, so any re-emission of an old outgoing row with the same text retired a fresh echo
+> (now one echo per new row id, with `displayedMessages` a render-time derivation); an already-sending attachment re-enabled the composer's
+> send, so a second tap handed it to `onSendFile` again; `FlashWaveformCache` keyed on a hash without comparing amplitudes (a collision
+> would draw another message's waveform); `FlashImageRatioCache` was an unsynchronised map written from a decode callback; and
+> `displayedMessages` copied the whole thread on every Room emission even with no echo in flight. `O24-06` (the sheet's load deferral)
+> is reverted because it made the load's timing depend on `reduceMotion` and on a constant that is not the entrance animation's duration,
+> and did nothing at all under reduce-motion - the case the finding is about.
+>
+> **Two U changes alter what a user can do and the stream's logs present them as pure performance work:** the desktop loses
+> **swipe-to-archive** (`isSwipeToDismissSupported` is false on desktop, so the archive path is now long-press → selection mode → Archive,
+> `PERF-U02`), and **opening the keyboard at the bottom of a chat now scrolls the thread** (`PERF-U03`).
+>
+> **Stream N: 11 of 15 kept, 6 repaired, two REJECTED and reverted.** `O10-05` (sweep 5 s → 15 s) inverted `CompositeDiscovery`'s
+> documented `browseWatchdogMs (10 s) > sweepIntervalMs` invariant for an unmeasured saving - and `ERROR-912` is the tell: the constant's
+> change broke `AutoConnectorTest`, and the "fix" pinned the interval **in the test** to hide it. `O10-07`'s "multicast is healthy" signal
+> cannot distinguish a multicast datagram from a broadcast one (the receiving sockets are wildcard-bound), so on a broadcast-only network
+> broadcasting refreshed the very counter that suppressed broadcasting: a Lost/Found flap every ~60-80 s, on exactly the networks the
+> broadcast fallback exists for. `O14-03` is handed to Stream D; `O09-04`/`O09-07` stay declined per ADR-232.
+>
+> **Five N defects the report did not mention were found and fixed.** The worst: a full queue returned `false` from `WsConnection.send`,
+> but `StreamChannel.sendFrame`'s contract is that `false` means **permanent death of that channel** - the dispatcher would have marked a
+> merely-behind writer's lane dead and returned its un-ACKed chunks to the pool. There is now a bounded waiting enqueue (5 s,
+> `Rejected(QueueFull)` on expiry) with `notFull` signalled on close/poll; **do not undo the distinction between "behind" and "dead".**
+> Also: the suspending send dropped the liveness stamp only the read coroutine can make (a consumer slower than the 25 s watchdog had a
+> healthy but backpressured connection closed as *silent*); the `SSLContext` cache was keyed on `System.identityHashCode(keyManagers)`,
+> so an identity-hash collision could present **the wrong certificate** (now `KeyManagersRef`, compared by reference identity); the
+> multicast-lock lease raced its own renewal across two threads; and the duplicate-restart skip swallowed the only notification that a
+> genuinely new network had appeared.
+>
+> **Every numeric headline in both streams is withdrawn and requantified** — `EXP-095`..`098` and `EXP-100`..`102` in `logs/experiments.md`.
+> `253 → 1 Binder calls` is a /24 count, not a measurement; `88 % handshake latency` cites a test that times nothing; `83.3 % MulticastLock
+> release` cites a code path; `< 1 ms dispatch` cites a test that does not exist. **`ADR-271`'s "pinning and identity verification remain
+> 100 % intact" is false as written**: on a resumed TLS 1.3 session the trust manager is not re-invoked, so the pin is enforced at session
+> *creation*, not per connection. Corrected in `docs/decisions.md` (ADR-271) and `docs/security.md` §7. `ADR-270` now carries the
+> full-queue rule. `ADR-260`'s `compose_compiler_config.conf` is committed but **wired into no `build.gradle.kts`**, so it is inert -
+> wire it alone, in its own commit (`PERF-U06`).
+>
+> Authority: `logs/streams/ui/INTEGRATOR-REVIEW.md`, `logs/streams/net/INTEGRATOR-REVIEW.md`, the canonical `logs/*`, ADR-260..265 and
+> ADR-270/271. **Owed device checks: `PERF-U01`..`U06`, `PERF-N01`..`N03`** in `docs/testing/TEST-BACKLOG.md`; `PERF-U01` is the single
+> test that replaces every withdrawn number. Open, unowned: `OPT-O10-01` (`setScreenActive` is merged but **nothing calls it** - Stream G,
+> wave 3, and its KDoc warns that ECO is a *whole-mode* switch so a caller must not fire it mid-call or mid-transfer); `OPT-O03-07`/
+> `O03-09` (G), `O25-05` video-grid half (C), `O05-07` repository `decodeVoiceMeta` half (M). Both worktrees are removed; the branches
+> `agent/opt-ui` and `agent/opt-net` are kept. **Not pushed.**
+>
+> **Documentation corpus de-mojibaked in the same session (`ERROR-913`).** The plan file's non-ASCII text had been destroyed by the
+> PS-5.1 round-trip `ERROR-012` describes, applied wholesale at `5ef86ca5`; measured scope was **507 lines in 7 files**, including two
+> Kotlin sources (comment text only). Reversing the byte round-trip per non-ASCII run - ASCII skeleton required identical, plan
+> cross-checked against `6f8fe180` (1 322 of 1 335 lines byte-exact, the rest the lines added since) - repaired 1 330 lines and brought
+> back `☑`/`◐`/`☐`, so the tracking table lost no state. Six truncated runs in `logs/progress.md` and the deliberate quotes in
+> `ERROR-012`/`ERROR-913` are left as they are: a lost byte cannot be guessed. `AGENTS.md` §29 no longer warns that the plan must be
+> read as a yes/no column.
+
 > 2026-10-31 `PERF-A04` (after the wave): **the release ships per-ABI APKs next to the universal one, and the script can no
 > longer sign a stale artifact.** `tools/build-release.ps1` deletes the APK output folder before the build, reads
 > `output-metadata.json` instead of a hard-coded name, and fails when it is missing, when a listed APK is absent and when one is
@@ -6777,8 +6850,8 @@ logging "No IPv4 gateway on any LAN network" when the list is empty. Its card co
 - `app/.../lan/LanController.kt:94` never refreshes `LanUiState.localAddresses` after a roam. Legacy
   TCP dev-console path only; deferred.
 - `docs/session-prompt.md:36-45` is stale (E:-drive paths, "~271 tests").
-- `FlashDevConsoleScreen.kt:316` still contains pre-existing mojibake (`â†’`, UTF-8 read as Latin-1).
-  The `â€¦` at the old :327 went out with the gateway rewrite. Use plain ASCII when editing this file.
+- `FlashDevConsoleScreen.kt:316` still contains pre-existing mojibake (`→`, UTF-8 read as Latin-1).
+  The `…` at the old :327 went out with the gateway rewrite. Use plain ASCII when editing this file.
 
 ### Recommended next task
 **Task #4 — UI de-bloat**, one finding at a time, highest Belfone value first:
@@ -7649,11 +7722,11 @@ Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 - **Next execution step:** the migration is still documentation-only. Actual implementation must start from the beginning (Phase 06 groundwork per D1=B), then proceed in order. Do not attempt PHASE-21/22 implementation until Phases 06–20 land.
 
 ## Component status
-- **UI-034 (Adaptive layouts):** `IMPLEMENTED` in `ui/adaptive/FlashAdaptiveLayouts.kt` â€” two-pane not yet consumed by screens (integration pending).
-- **UI-038/039/041 (A11y/Haptics/Micro):** `IMPLEMENTED` â€” `FlashFeedback.kt` haptic choke point, 15 call sites migrated, a11y fixes applied.
-- **UI-042/043 (Performance/Stress):** `IMPLEMENTED` â€” `FlashStressTestScreen.kt` harness; device measurements PENDING.
-- **UI-024/031/032:** `IMPLEMENTED` â€” integration wiring items in Deferred block below.
-- **UI-023, UI-028/029/030, UI-025â€“027, UI-021/022, UI-020, UI-019:** `IMPLEMENTED` â€” device verification pending.
+- **UI-034 (Adaptive layouts):** `IMPLEMENTED` in `ui/adaptive/FlashAdaptiveLayouts.kt` — two-pane not yet consumed by screens (integration pending).
+- **UI-038/039/041 (A11y/Haptics/Micro):** `IMPLEMENTED` — `FlashFeedback.kt` haptic choke point, 15 call sites migrated, a11y fixes applied.
+- **UI-042/043 (Performance/Stress):** `IMPLEMENTED` — `FlashStressTestScreen.kt` harness; device measurements PENDING.
+- **UI-024/031/032:** `IMPLEMENTED` — integration wiring items in Deferred block below.
+- **UI-023, UI-028/029/030, UI-025–027, UI-021/022, UI-020, UI-019:** `IMPLEMENTED` — device verification pending.
 - **UI-018 (Media viewer):** `VERIFIED` on device.
 - **UI-017 (Image message & grid layout):** `IMPLEMENTED` in `FlashImageGrid.kt`, `FlashMessagingModels.kt`, `FlashMessageBubble.kt`.
 - **UI-016 (File message card):** `IMPLEMENTED` in `FlashFileMessageCard.kt`, `FlashMessagingModels.kt`, `FlashMessageBubble.kt`.
@@ -7671,15 +7744,15 @@ Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 
 ## Working features
 - Full modular multi-module library architecture (`com.transfer.flash:*`).
-- Group chat header (UI-028): initials collage avatar (2/3/4+ layouts from seeded palette), "N members Â· M online" subtitle, named typing ("Alex and Sam are typingâ€¦"), transport/encryption glyphs, group Search action. Header fully de-Materialed (custom icon buttons, drawn divider, FlashText).
-- System states family (UI-025/026/027): screen-specific empty states with P2P copy + "Find devices" CTA, layout-matched skeletons (delay-guarded, reduce-motion-safe, decorative semantics), severity-split error panels (red failure vs neutral offline) with single Retry â€” wired into chat list and conversation screens.
-- Chat scroll engine + jump pill (UI-021/022): auto-scroll at bottom & on own sends, unseen counter with floating "N new messages" accent pill (tap â†’ animated jump + reset), reverseLayout bottom pinning through image resizes, keyboard-safe position retention.
+- Group chat header (UI-028): initials collage avatar (2/3/4+ layouts from seeded palette), "N members · M online" subtitle, named typing ("Alex and Sam are typing…"), transport/encryption glyphs, group Search action. Header fully de-Materialed (custom icon buttons, drawn divider, FlashText).
+- System states family (UI-025/026/027): screen-specific empty states with P2P copy + "Find devices" CTA, layout-matched skeletons (delay-guarded, reduce-motion-safe, decorative semantics), severity-split error panels (red failure vs neutral offline) with single Retry — wired into chat list and conversation screens.
+- Chat scroll engine + jump pill (UI-021/022): auto-scroll at bottom & on own sends, unseen counter with floating "N new messages" accent pill (tap → animated jump + reset), reverseLayout bottom pinning through image resizes, keyboard-safe position retention.
 - Voice recording interface (UI-020): hold mic to record, slide-left arms cancel (error-tinted bar), slide-up locks into persistent panel with trash/pause/send, live timer + Canvas amplitude strip, demo-mode capture producing real `FlashVoiceAttachmentUi` payloads.
-- Voice message playback card (`FlashVoiceMessageCard`, UI-019): 40-bar discrete waveform with tap-to-seek + drag scrub, 48dp play/pause/download/retry badge, Telegram-style remainingâ†”duration label, 1Ã—/1.5Ã—/2Ã— speed pill, demo-mode playback ticker (real audio deferred pending Media3 ADR).
-- Full-screen media viewer (`FlashMediaViewer`, UI-018): pinch/double-tap anchored zoom (1Ã—â€“4Ã—, rubber-band), pan, vertical drag-to-dismiss with backdrop fade + page scale, HorizontalPager album carousel, auto-hiding chrome (counter `n / m`, close, Save/Share/Forward), sample-size-guarded decode, always-dark backdrop token.
+- Voice message playback card (`FlashVoiceMessageCard`, UI-019): 40-bar discrete waveform with tap-to-seek + drag scrub, 48dp play/pause/download/retry badge, Telegram-style remaining↔duration label, 1×/1.5×/2× speed pill, demo-mode playback ticker (real audio deferred pending Media3 ADR).
+- Full-screen media viewer (`FlashMediaViewer`, UI-018): pinch/double-tap anchored zoom (1×–4×, rubber-band), pan, vertical drag-to-dismiss with backdrop fade + page scale, HorizontalPager album carousel, auto-hiding chrome (counter `n / m`, close, Save/Share/Forward), sample-size-guarded decode, always-dark backdrop token.
 - Adaptive Image Collage & Grid Layout (`FlashImageGrid`): 1, 2, 3, 4, and 5+ image mosaics with clamped aspect ratios ($0.5$ to $2.0$), micro-gap gutters ($2.5\text{dp}$), bubble contour corner masking, and $+N$ overflow chips.
 - Experimental WebSocket Mesh Transfer: Full file viewing, sharing, and device export capabilities (`WsFileActions`, `FileProvider`, SAF `CreateDocument` picker, click-to-open cards).
-- Redesigned 24Ã—24 Custom Vector Icon Set: 46 Flash-owned vector icons with 2.0dp stroke weight, generous optical bounding boxes, and scaled default UI sizing (24dp).
+- Redesigned 24×24 Custom Vector Icon Set: 46 Flash-owned vector icons with 2.0dp stroke weight, generous optical bounding boxes, and scaled default UI sizing (24dp).
 - Complete Edge-to-Edge System Bar and Insets Safety: Status bar cutout clearance across headers/toolbars, and navigation bar/keyboard clearance across composer and sheets.
 - Rich in-bubble file message cards (`FlashFileMessageCard`) with color-coded file extension badges (PDF, ZIP, Code, Audio, Video, Image, Document), circular transfer progress rings, and real-time throughput metrics (MB/s speed & ETA countdown).
 - Animated delivery status glyphs (`FlashDeliveryStatusIcon`) for 5 transit lifecycle states (Pending, Sent, Delivered, Read, Failed) with 1-tap retry interaction.
@@ -7703,7 +7776,7 @@ Previous build reference: 644 tests / 0 failures (2026-08-24, ERROR-016 fix).
 
 ## In progress
 - **KMP migration docs (docs/migration/):** PHASE-12–22 authored & grounded; PHASE-23 (interop matrix) and PHASE-24 (publishing) authored but NOT yet grounded/logged. D8=_pending_ (owner answer needed before any Option B desktop UI).
-- **UI-028 (Group header):** IMPLEMENTED â€” device verification pending.
+- **UI-028 (Group header):** IMPLEMENTED — device verification pending.
 - **UI-025/026/027 (states):** device verification pending.
 - **UI-021/022, UI-020, UI-019:** device verification pending.
 
@@ -7724,8 +7797,8 @@ PHASE-22 grep sweep — no ungrounded tokens remain (tabActiveBg, surfaceApp, ro
 
 ## Deferred / pending integration (do not forget)
 **Master plans:**
-- **PART 1 â€” Core:** `docs/core-upgrade-plan.md` **v2 ACTIVE** â€” D2/D3/D4/D5 approved (ADR-010); D1 + D6 open; execution phases P0â€“P8 defined.
-- **PART 2 â€” Pages:** `docs/ui-page-plan.md` â€” bottom nav shell (Chats/Transfers/Nearby/Settings + Send FAB), page-by-page specs P1â€“P5 with core-API dependencies, integration checklist.
+- **PART 1 — Core:** `docs/core-upgrade-plan.md` **v2 ACTIVE** — D2/D3/D4/D5 approved (ADR-010); D1 + D6 open; execution phases P0–P8 defined.
+- **PART 2 — Pages:** `docs/ui-page-plan.md` — bottom nav shell (Chats/Transfers/Nearby/Settings + Send FAB), page-by-page specs P1–P5 with core-API dependencies, integration checklist.
 
 All items below are absorbed into those two documents:
 - UI-031 badge/sheet wiring into header; `isVerified` passes false until pairing lands.
@@ -7757,13 +7830,13 @@ If the user wants to continue from Phase 12 as requested, start with **PHASE-12 
 
 ## DEVICE TESTING BACKLOG (for owner)
 Priority order; each item = install latest debug APK, exercise, report pass/fail:
-1. **UI-019 Voice playback**: tap voice card â†’ play/pause animated morph, seek by tap, drag scrub, speed pill cycle, remainingâ†”duration label swap.
-2. **UI-020 Recording**: hold mic â†’ bar+timer+amplitude; slide-left = red "release to cancel"; slide-up = lock panel (trash/pause/send); release sends; short tap discards.
-3. **ERROR-009/010/011 regressions**: keyboard-open has NO blank band; context menu dismisses on FIRST scrim tap + âœ• button.
-4. **UI-021/022 Scrolling**: peer message while scrolled up â†’ "N new messages" pill; tap jumps to bottom; auto-scroll on own send.
-5. **UI-023 Search**: header search icon â†’ type query â†’ counter + prev/next jump with in-bubble highlight; close restores.
-6. **UI-025â€“027 States**: empty chat list ("Find devices" CTA), skeleton loading, error panel retry.
-7. **UI-028/029 Group**: collage avatar + "15 members Â· 4 online" subtitle + named typing; group avatar tap â†’ members sheet.
+1. **UI-019 Voice playback**: tap voice card → play/pause animated morph, seek by tap, drag scrub, speed pill cycle, remaining↔duration label swap.
+2. **UI-020 Recording**: hold mic → bar+timer+amplitude; slide-left = red "release to cancel"; slide-up = lock panel (trash/pause/send); release sends; short tap discards.
+3. **ERROR-009/010/011 regressions**: keyboard-open has NO blank band; context menu dismisses on FIRST scrim tap + ✕ button.
+4. **UI-021/022 Scrolling**: peer message while scrolled up → "N new messages" pill; tap jumps to bottom; auto-scroll on own send.
+5. **UI-023 Search**: header search icon → type query → counter + prev/next jump with in-bubble highlight; close restores.
+6. **UI-025–027 States**: empty chat list ("Find devices" CTA), skeleton loading, error panel retry.
+7. **UI-028/029 Group**: collage avatar + "15 members · 4 online" subtitle + named typing; group avatar tap → members sheet.
 8. **UI-030 Banner**: connection banner states (toggle sample data); transport badge chip.
 9. **UI-031 Encryption badge/sheet** (once wired).
 10. **UI-032 Pairing dialog** (once wired to discovery).

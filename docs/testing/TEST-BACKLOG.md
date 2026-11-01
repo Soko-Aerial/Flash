@@ -6747,3 +6747,133 @@ Stream T's own `PERF-T01`..`T03` are in `logs/streams/transfer/backlog-additions
   receiver only ACKs every 32 chunks). Three rounds or more means the endgame re-sent before its queued output reached the wire.
 - **Source:** ERROR-894, ADR-253.
 - **Status:** TODO.
+
+## PERF-U01..U06 (2026-10-31) - Stream U (UI) after the integrator review
+
+The stream's own `PERF-U01` is below, rewritten to cover the whole delivered set (it named only the fling); `U02`..`U06`
+are the review's additions and come from `logs/streams/ui/INTEGRATOR-REVIEW.md` §4 and §5.
+
+### PERF-U01 - The delivered UI optimisations do not cost fluidity
+- **Area:** `:ui:chat` draw-phase reads, `contentType` reuse, quoted-reply single pass, bottom-nav single-pass `Layout`,
+  splash per-frame constructions (ADR-262..265, `EXP-095`..`EXP-098`)
+- **Source:** the stream's `PERF-U01`, broadened by `logs/streams/ui/INTEGRATOR-REVIEW.md` §5.
+- **Setup:** Infinix X6882B or BelFone SCP810, animation on, a conversation with 500+ messages spanning attachments,
+  quoted replies, day separators and voice notes.
+- **Steps:** (a) fling the list at full speed from tail to head and back, especially across calendar-day boundaries;
+  (b) send a message and watch the bubble appear, then confirm it is replaced by the durable row with no flicker or
+  duplicate; (c) play a 30 s voice note and scroll during playback; (d) scroll a chat with 30 images, both already-decoded
+  and never-seen-this-session, and watch the height of each image placeholder; (e) cold-start the app and watch the splash.
+- **Pass condition:** no frame > 16.6 ms at the 90th percentile (Android Studio GPU profiler or Macrobenchmark
+  `frameDurationCpuMs`) during (a); the echo bubble appears where the durable row will be and never coexists with it (b);
+  the waveform bars and the duration label advance without the card stuttering (c). (d) may still shift on a **first**
+  pass over an image - that is `EXP-098`'s honest limit, not a failure; a shift on a **second** pass is a failure.
+- **Note:** the `EXP-095`/`EXP-096` "0 B per frame"/"90-100 % recomposition reduction" figures are withdrawn as unmeasured;
+  this test is what replaces them.
+- **Status:** TODO.
+
+### PERF-U02 - The desktop can still archive a chat without swiping (behaviour change)
+- **Area:** `FlashChatListRow` / `isSwipeToDismissSupported` (ADR-… `OPT-O04-05`)
+- **Source:** `logs/streams/ui/INTEGRATOR-REVIEW.md` §4.1.
+- **Setup:** Windows desktop build, a chat list with at least three chats.
+- **Steps:** try to swipe a row with the mouse or trackpad (expected: nothing happens - desktop no longer allocates a
+  `SwipeToDismissBox` per row); then long-press a row → selection mode → Archive in the selection action bar; repeat for
+  Unarchive.
+- **Pass condition:** the swipe is gone by design and the selection-mode Archive/Unarchive path works from the desktop
+  without a mouse-capture problem. If the selection path is unreachable or broken, this change must be reverted - it
+  removed a gesture and this is the path that makes the removal acceptable.
+- **Status:** TODO.
+
+### PERF-U03 - Opening the keyboard at (nearly) the bottom of a chat scrolls to the newest message
+- **Area:** the IME-visibility auto-scroll (`OPT-O24-04`, new `FlashImeVisibility` seam)
+- **Source:** `logs/streams/ui/INTEGRATOR-REVIEW.md` §4.2.
+- **Setup:** Android phone, a chat with several screens of history.
+- **Steps:** (a) scroll to the very bottom, tap the composer, let the keyboard open; (b) scroll up ~3 screens, tap the
+  composer; (c) scroll to *almost* the bottom (one short flick away), tap the composer; (d) do (a) with reduce-motion on;
+  (e) open the keyboard on the desktop build (expected: no scroll - desktop has no IME inset).
+- **Pass condition:** (a) animates to the newest message; (b) does not move; (c) is the ambiguous case - record which way
+  it goes and whether it looks wrong, because the `atBottom` guard is read before the inset is applied; (d) still scrolls
+  (or deliberately does not, consistently); (e) never scrolls.
+- **Status:** TODO.
+
+### PERF-U04 - An echo whose durable row never arrives (open risk, decide the fix)
+- **Area:** the optimistic echo overlay (`FlashOptimisticEchoMath`), ADR-261
+- **Source:** `logs/streams/ui/INTEGRATOR-REVIEW.md` §5.
+- **Setup:** a paired phone; a way to make `onSendText` drop the message without writing a row (e.g. hub/radio path
+  down, or a send made while the outbox is full).
+- **Steps:** send a message under that condition; wait; look for a `Pending` bubble with no durable row behind it;
+  leave and re-enter the chat.
+- **Pass condition:** either the echo is retired (a signal now exists) or the behaviour is written down as accepted.
+  The overlay has no way to learn a send failed, so today the bubble can sit there for the session. **This is not a
+  bug to fix with a timeout** - a timeout would remove a bubble whose row is merely slow, which is the normal case on a
+  loaded device. The fix is a completion/failure signal on `onSendText` (an interface change, owner's call).
+- **Status:** TODO.
+
+### PERF-U05 - A silently-dropped settings write leaves the switch lying
+- **Area:** the optimistic settings switch (`OPT-O24-05`)
+- **Source:** `logs/streams/ui/INTEGRATOR-REVIEW.md` §5.
+- **Setup:** Android phone, Settings screen, TalkBack on.
+- **Steps:** flip a setting whose write can fail (e.g. a setting persisted through the engine while the service is not
+  running); make the write fail; watch the switch and listen to the announcement.
+- **Pass condition:** a **failed** write snaps the switch back to the stored value (the local state is keyed on `checked`,
+  so a parent value change resets it). A write that is dropped with no value change at all leaves the switch visually on
+  while the setting is off, and `stateDescription` announces the optimistic state to the screen reader at the same time.
+  Record which of the two happened; the second is the risk.
+- **Status:** TODO.
+
+### PERF-U06 - Wiring `compose_compiler_config.conf` (not wired anywhere)
+- **Area:** `:ui:chat` build file; `ui/chat/compose_compiler_config.conf`
+- **Source:** ADR-260, `logs/streams/ui/INTEGRATOR-REVIEW.md` §5.
+- **Steps:** add the file to `:ui:chat`'s `composeCompiler { stabilityConfigurationFiles.add(...) }` **alone**, in its own
+  commit, so a stale-UI regression can be attributed to it.
+- **Pass condition:** after wiring, a message that changes only in a way the config declares stable (a new `List` with
+  equal contents) still recomposes the list; i.e. no stale UI. Then run `PERF-U01`'s fling again and compare.
+- **Note:** declaring `kotlin.collections.*` stable is an unverified promise to the compiler and its failure mode is a
+  stale UI, not a crash. Do not wire it as a drive-by change inside another task.
+- **Status:** TODO.
+
+## PERF-N01..N03 (2026-10-31) - Stream N (network/discovery) after the integrator review
+
+From `logs/streams/net/INTEGRATOR-REVIEW.md`. `N`'s own `PERF-N01` (handshake latency) is kept as `N01` and rewritten,
+because the number the stream attached to it came from a test that times nothing.
+
+### PERF-N01 - Reconnect handshake latency on two real phones
+- **Area:** TLS session resumption and the per-peer `SSLContext` cache (ADR-271)
+- **Source:** `EXP-100`; `logs/streams/net/INTEGRATOR-REVIEW.md` §4.
+- **Setup:** two phones on one Wi-Fi network, both already paired.
+- **Steps:** connect them; force a disconnect (turn Wi-Fi off for ~5 s and back on, or move out of range and return);
+  capture both devices' logcat with the `CONNECTION` and `TLS` tags across the reconnect; repeat five times; then repeat
+  the whole thing after a **cold app start** on both, where no session can be cached.
+- **Pass condition:** each post-disconnect reconnect is visibly faster than a cold-start handshake, and the peer's pinned
+  identity is still enforced (no unpinned peer is admitted). **Do not** treat ~3 ms as the target - the stream's
+  "~28-35 ms → ~2.5-4.0 ms, ~88 %" came from a loopback test that times nothing, so there is no baseline to hit yet.
+  Record the actual numbers; that is what the next `EXP` entry needs.
+- **Status:** TODO.
+
+### PERF-N02 - A chat message stays instant while a transfer saturates the uplink
+- **Area:** the priority lane in `BoundedSendQueue` (ADR-270, `OPT-O09-01`/`O14-01`)
+- **Source:** `EXP-101`; `logs/streams/net/INTEGRATOR-REVIEW.md` §4.
+- **Setup:** two phones, one sending a 500 MB file to the other.
+- **Steps:** during the transfer, send text messages at a steady rate from the sender; also let a keepalive interval pass
+  (watch for a spurious disconnect); repeat with the receiving phone's screen off.
+- **Pass condition:** messages appear at the receiver while the transfer is running, and the connection is not dropped
+  during the transfer. The stream's "< 1 ms" is withdrawn - the property to look for is *ordering and liveness*, not a
+  number. A `WS send queue full for 5000ms` line in logcat is the failure this test is looking for: it means the wait
+  expired and the frame was rejected, so the message was lost rather than delayed.
+- **Status:** TODO.
+
+### PERF-N03 - Discovery liveness on a flat/broadcast-only network, and a network switch
+- **Area:** `MulticastTransport` health/broadcast fallback (the rejected `OPT-O10-07`), `LanRouteChooser`'s 5 s snapshot
+  TTL (`OPT-O10-03`), `NsdTransport` restart debounce (`OPT-O10-06`), the multicast-lock lease (`OPT-O10-02`)
+- **Source:** `logs/streams/net/INTEGRATOR-REVIEW.md` §2 and §3.4/§3.5; `EXP-102`.
+- **Setup:** (a) an access point or router with **client isolation or multicast blocked**, so peers can only find each
+  other over broadcast; (b) a phone with Wi-Fi and mobile data both up, and a second AP of the same SSID if available.
+- **Steps:** (a) start both phones on that network and watch `DISCOVERY` for at least five minutes without touching
+  either; (b) with both devices connected, switch the phone from one AP/SSID to another (or Wi-Fi off → back on) and
+  time how long until the peer is Found again; (c) repeat (a) with the phone's screen off for two minutes.
+- **Pass condition:** (a) the peer does not alternate Found/Lost - the rejected `O10-07` would have produced a flap every
+  ~60-80 s on exactly this network, which is why it was reverted; (b) a new network produces a discovery restart (the
+  duplicate-restart skip must not swallow the *first* notification of a network that is genuinely new); (c) the multicast
+  lock is held while it is needed and released when browsing stops, and no `MulticastLock` leak appears.
+- **Note:** `LanRouteChooser`'s snapshot cache has a 5 s TTL and no invalidation hook, so a route change can be up to 5 s
+  stale. Record whether (b) ever shows a dial going out of the old interface.
+- **Status:** TODO.

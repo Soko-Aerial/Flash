@@ -235,7 +235,7 @@ Owner approved (2026-08-22):
 - Phase P0 executed same session: `FlashProtocol`/`FlashEnvelope`, `FlashLogger` ring buffer, `FlashTimeSource`/`FlashIdGenerator` (:core:common), Hilt graph skeleton + `FlashApplication`, GitHub Actions CI (C0.6), UI-040 sound system (`FlashSounds`) implemented in :ui:theme.
 
 ### Context
-Hilt chosen over Koin (compile-time safety, standard tooling) and manual DI (brittle at scale); verified compatible with AGP 9.3.1/Kotlin 2.2.10 via research (Dagger â‰¥2.59 requires AGP â‰¥9 â€” satisfied). Sounds chosen opt-in/off to match reduce-motion philosophy (motion/a11y-first app) until owner opts in.
+Hilt chosen over Koin (compile-time safety, standard tooling) and manual DI (brittle at scale); verified compatible with AGP 9.3.1/Kotlin 2.2.10 via research (Dagger ≥2.59 requires AGP ≥9 — satisfied). Sounds chosen opt-in/off to match reduce-motion philosophy (motion/a11y-first app) until owner opts in.
 
 ### Alternatives considered
 Koin (runtime-only error detection), manual AppContainer (fine now, brittle later); asset-based sounds (ships binaries for what synthesis covers), default-on tones (rejected by a11y philosophy).
@@ -249,7 +249,7 @@ Capability-flag version negotiation if a second protocol consumer appears (Windo
 Owner approved (2026-08-22) during the core-plan iteration session:
 - **D2:** SQLCipher full-database at-rest encryption, key wrapped in AndroidKeyStore.
 - **D3:** SHA-256 (java.security, zero deps) for chunk/message hashes and fingerprints.
-- **D4:** Frame-level E2E implemented in C2 â€” ECDH P-256 â†’ HKDF â†’ AES-GCM per paired peer, layered on TLS.
+- **D4:** Frame-level E2E implemented in C2 — ECDH P-256 → HKDF → AES-GCM per paired peer, layered on TLS.
 - **D5:** Mesh relay is post-v1; v1 = direct P2P only (hop-count seams reserved).
 - Plan `docs/core-upgrade-plan.md` rewritten to **v2**: fine-grained research-first steps, UI-dependency inventory, continuous identity-aware discovery, resilient network upgrades, multi-stream transfer, exhaustive messaging API surface.
 
@@ -257,7 +257,7 @@ Owner approved (2026-08-22) during the core-plan iteration session:
 UI roadmap complete on sample data; the finished screens define exact required inputs (`isVerified`, presence, typing names, transfer telemetry, pairing events). Core must be a reusable library (no app/UI deps) and every implementation step must begin with cited web research.
 
 ### Alternatives considered
-Keystore-wrapped field encryption only (rejected â€” weaker than owner-approved full-database option); BLAKE3 (deferred â€” zero-dep SHA-256 sufficient until benchmarks say otherwise); mesh relay in v1 (rejected â€” scope).
+Keystore-wrapped field encryption only (rejected — weaker than owner-approved full-database option); BLAKE3 (deferred — zero-dep SHA-256 sufficient until benchmarks say otherwise); mesh relay in v1 (rejected — scope).
 
 ### Revisit when
 D1 (Hilt vs Koin vs manual) still needs explicit sign-off before C0.5; D6 (sound feedback) blocks UI-040. Benchmarks may revisit hash choice after EXP entries exist.
@@ -280,7 +280,7 @@ AGENTS.md 34 requires M3 as infrastructure only and every visible identity eleme
 - Pre-existing Material usages flagged for later cleanup: material3.IconButton in FlashReplyDock, CircularProgressIndicator in FlashFileIconBadge (both predate this ADR), HorizontalDivider, Scaffold.
 
 
-## ADR-008 â€” Modular Multi-Library Architecture & Standalone Component Hosting
+## ADR-008 — Modular Multi-Library Architecture & Standalone Component Hosting
 
 ### Decision
 Transition the Flash codebase from a single `:app` monolithic module into a suite of decoupled, standalone Android/Kotlin library modules (`:core:common`, `:core:discovery`, `:core:network`, `:core:transfer`, `:ui:theme`, `:ui:chat`, `:ui:transfer`) with `:app` serving as the runnable showcase application. Each library module will be independently buildable, testable, and publishable to Maven repositories via the Gradle `maven-publish` plugin under the group `com.transfer.flash`.
@@ -291,9 +291,9 @@ The owner requested that Flash's components be usable individually by third-part
 - UI components (Flash Pulse design system tokens, custom icons, message bubbles, chat list, composer) can be consumed independently with pluggable backend repositories.
 
 ### Alternatives considered
-- Single-module architecture with package-level separation â€” rejected (cannot publish individual artifacts; risks accidental coupling between UI and low-level networking).
-- Monolithic single SDK library (`flash-sdk`) â€” rejected (forces UI consumers to pull in networking/sockets, and forces headless users to pull in Compose runtime).
-- Fine-grained multi-module library suite (`:core:*`, `:ui:*`, `:app`) â€” selected.
+- Single-module architecture with package-level separation — rejected (cannot publish individual artifacts; risks accidental coupling between UI and low-level networking).
+- Monolithic single SDK library (`flash-sdk`) — rejected (forces UI consumers to pull in networking/sockets, and forces headless users to pull in Compose runtime).
+- Fine-grained multi-module library suite (`:core:*`, `:ui:*`, `:app`) — selected.
 
 ### Why this was selected
 - **Independent Consumption**: Developers can pull `com.transfer.flash:core-transfer` for headless file transfer or `com.transfer.flash:ui-chat` for custom messaging UI.
@@ -306,22 +306,22 @@ When preparing the first public Maven release or when extracting pure JVM/KMP mo
 
 ---
 
-## ADR-007 â€” Experimental WebSocket transfer side track (hand-rolled RFC 6455, multi-peer)
+## ADR-007 — Experimental WebSocket transfer side track (hand-rolled RFC 6455, multi-peer)
 
 ### Decision
 An experimental WebSocket-based transfer path lives in `wstransfer/` (`WebSocketCodec`, `WsConnection`, `WsTransferServer`, `WsTransferClient`, `WsTransferManager`) plus `ui/transfer/WsTransferScreen.kt`. It is a **side track at the owner's request** and does NOT replace the main LAN/TCP+TLS protocol plan. The RFC 6455 codec (upgrade handshake, masking, frame parse/serialize, fragmentation reassembly) is hand-rolled in pure Kotlin; no new Gradle dependency was added.
 
 ### Context
-The owner asked for WebSocket-based transfer that lets 3+ devices pair and connect to each other with simple file transfer, explicitly "not part of our main design". OkHttp 4.12.0 exists in the Gradle cache only as a leftover of the reverted Stream SDK experiment, and OkHttp's WebSocket is client-only â€” every Flash device must be both server and client, so OkHttp alone could not satisfy the requirement.
+The owner asked for WebSocket-based transfer that lets 3+ devices pair and connect to each other with simple file transfer, explicitly "not part of our main design". OkHttp 4.12.0 exists in the Gradle cache only as a leftover of the reverted Stream SDK experiment, and OkHttp's WebSocket is client-only — every Flash device must be both server and client, so OkHttp alone could not satisfy the requirement.
 
 ### Alternatives considered
-- OkHttp WebSocket client + separate WS server library â€” rejected (two dependencies, client/server split, and OkHttp has no server).
-- `org.java_websocket` (TooTallNate) â€” rejected for now (new dependency; keep zero-dep until this track proves useful).
-- Extend line-based `LanSession` â€” rejected (owner explicitly requested WebSocket framing).
+- OkHttp WebSocket client + separate WS server library — rejected (two dependencies, client/server split, and OkHttp has no server).
+- `org.java_websocket` (TooTallNate) — rejected for now (new dependency; keep zero-dep until this track proves useful).
+- Extend line-based `LanSession` — rejected (owner explicitly requested WebSocket framing).
 
 ### Why this was selected
 - Zero new dependencies (AGENTS.md dependency rule); codec is pure JVM and unit-tested (RFC 6455 reference accept-key vector, masked/unmasked round trips, 16/64-bit lengths, fragmentation, close/ping).
-- Server (port 45822 preferred) + client on every device â†’ any device can pair with any number of peers; peers keyed by device ID with outbound-preferred primary connection and inbound fallback, so a 3-device full mesh works.
+- Server (port 45822 preferred) + client on every device → any device can pair with any number of peers; peers keyed by device ID with outbound-preferred primary connection and inbound fallback, so a 3-device full mesh works.
 - File bytes ride ordered binary frames between `FLASH_FILE_START` / `FLASH_FILE_END` text frames; receiver writes to `filesDir/ws-received/` and answers `FLASH_FILE_ACK` with byte-count verification.
 
 ### Revisit when
@@ -329,18 +329,18 @@ If this track graduates to the main design: add TLS (wss://), real pairing/trust
 
 ---
 
-## ADR-006 â€” Custom `FlashBubbleShape` concave tail geometry (UI-005)
+## ADR-006 — Custom `FlashBubbleShape` concave tail geometry (UI-005)
 
 ### Decision
-Message bubbles use a Flash-owned `Shape` (`FlashBubbleShape` in `ui/theme/FlashShapes.kt`) producing `Outline.Generic(Path)`: three circular corners plus one concave cubic-BÃ©zier "pulse scoop" (8dp) on the sender-facing bottom corner, mirrored in RTL via `LayoutDirection`. Grouped messages (`TOP`/`MIDDLE`) are fully rounded 20dp. No third-party bubble library.
+Message bubbles use a Flash-owned `Shape` (`FlashBubbleShape` in `ui/theme/FlashShapes.kt`) producing `Outline.Generic(Path)`: three circular corners plus one concave cubic-Bézier "pulse scoop" (8dp) on the sender-facing bottom corner, mirrored in RTL via `LayoutDirection`. Grouped messages (`TOP`/`MIDDLE`) are fully rounded 20dp. No third-party bubble library.
 
 ### Context
 The master plan forbids generic `RoundedCornerShape` rectangles as final bubbles, and the provisional zero-radius-corner tail read as a broken rectangle. UI-005 required real grouped geometry with a distinct silhouette.
 
 ### Alternatives considered
-- Zero-radius corner tail (provisional) â€” rejected (accidental look).
-- SmartToolFactory/Compose-Bubble library â€” rejected (dependency for one path, canvas-shadow style conflicts with Flash no-shadow policy).
-- `graphics-shapes` morphing â€” rejected for now; revisit only if UI-006 research justifies it.
+- Zero-radius corner tail (provisional) — rejected (accidental look).
+- SmartToolFactory/Compose-Bubble library — rejected (dependency for one path, canvas-shadow style conflicts with Flash no-shadow policy).
+- `graphics-shapes` morphing — rejected for now; revisit only if UI-006 research justifies it.
 
 ### Why this was selected
 Zero new dependencies; clips/borders follow the path; RTL-correct; one path per measure; gives Flash a silhouette detail not used by reference apps.
@@ -350,18 +350,18 @@ UI-006 insertion animation research or UI-045 quality gate suggests morphing sha
 
 ---
 
-## ADR-005 â€” Flash Pulse visual identity (UI-001)
+## ADR-005 — Flash Pulse visual identity (UI-001)
 
 ### Decision
-Flash premium chat UI uses the **Flash Pulse** design system: teal pulse accent (`#0D9488` light / `#1FB8A6` dark), graphite neutrals, spark amber for transfer/status only, layered dark surfaces (void + surface0â€“3). Tokens live in `ui/theme/`. Chat UI must not use `MaterialTheme.colorScheme` for visible styling.
+Flash premium chat UI uses the **Flash Pulse** design system: teal pulse accent (`#0D9488` light / `#1FB8A6` dark), graphite neutrals, spark amber for transfer/status only, layered dark surfaces (void + surface0–3). Tokens live in `ui/theme/`. Chat UI must not use `MaterialTheme.colorScheme` for visible styling.
 
 ### Context
 UI-001 research compared Material You-as-primary, Stream-look scaffold (ADR-003 era), and an original palette. Owner requires distinct identity per ADR-004.
 
 ### Alternatives considered
-- Material dynamic color as primary â€” rejected (brand loss).
-- Retain Stream-look `#005FFF` blue â€” rejected (clone risk, wrong P2P story).
-- Flash Pulse teal + graphite â€” selected.
+- Material dynamic color as primary — rejected (brand loss).
+- Retain Stream-look `#005FFF` blue — rejected (clone risk, wrong P2P story).
+- Flash Pulse teal + graphite — selected.
 
 ### Why this was selected
 Distinct from major messaging apps; supports local/P2P semantics; documented light + dark palettes; optional `dynamicAccent` tints accent only (UI-036 foundation).
@@ -371,7 +371,7 @@ UI-045 quality gate or owner requests rebrand; UI-036 adds user-facing dynamic a
 
 ---
 
-## ADR-004 â€” Premium chat UI: research-first, custom Flash design system
+## ADR-004 — Premium chat UI: research-first, custom Flash design system
 
 ### Decision
 Flash premium messaging UI will be built component-by-component using a **research-first** workflow documented in `docs/ui/`. Material 3 is infrastructure only; the visible chat experience must use Flash-owned design, motion, icons, and interactions. No proprietary chat SDK/source (Stream etc.).
@@ -380,33 +380,33 @@ Flash premium messaging UI will be built component-by-component using a **resear
 The product requires Telegram/Signal/WhatsApp-level polish with Flash's own visual identity and P2P-aware UX. Prior exploratory conversation UI exists but is provisional and must not bypass per-component research.
 
 ### Alternatives considered
-- Continue Stream-look clean-room scaffold as final UI â€” rejected (does not meet originality/premium component bar).
-- Copy Telegram/Stream visuals â€” rejected (legal and product identity).
-- Single-pass Material 3 chat screen â€” rejected (generic, not premium).
-- Research-first custom system with documented UI-001â€“UI-045 sequence â€” selected.
+- Continue Stream-look clean-room scaffold as final UI — rejected (does not meet originality/premium component bar).
+- Copy Telegram/Stream visuals — rejected (legal and product identity).
+- Single-pass Material 3 chat screen — rejected (generic, not premium).
+- Research-first custom system with documented UI-001–UI-045 sequence — selected.
 
 ### Why this was selected
 - Matches owner requirement for documented research per component.
 - Keeps networking independent of UI.
-- Enables continuity across AI sessions via `docs/ui/` and AGENTS.md Â§34.
+- Enables continuity across AI sessions via `docs/ui/` and AGENTS.md §34.
 
 ### Revisit when
 UI-045 quality gate passes and owner accepts premium chat UI for release; or if a licensed third-party UI kit is explicitly approved in writing.
 
-## ADR-003 â€” Clean-room Stream visual parity; no Stream SDK or source incorporation
+## ADR-003 — Clean-room Stream visual parity; no Stream SDK or source incorporation
 
 ### Decision
 Flash chat UI will match Stream Chat Android's premium conversation appearance through a Flash-owned design system and clean-room Compose components. Flash will **not** copy Stream source code, vendor Stream modules, or depend on Stream Maven artifacts.
 
 ### Context
-The reference repo at `E:\Flash-reference-repos\stream-chat-android` is publicly visible but licensed under Stream.io's proprietary **Stream License**, not Apache/MIT. That license requires a Stream customer relationship, forbids sublicensing or distributing Stream source, and explicitly prohibits using Stream software to develop products that compete with Stream Chat (Section 6). Flash is a P2P LAN/Wiâ€‘Fi Direct chat product and therefore falls under the competitive-use restriction.
+The reference repo at `E:\Flash-reference-repos\stream-chat-android` is publicly visible but licensed under Stream.io's proprietary **Stream License**, not Apache/MIT. That license requires a Stream customer relationship, forbids sublicensing or distributing Stream source, and explicitly prohibits using Stream software to develop products that compete with Stream Chat (Section 6). Flash is a P2P LAN/Wi‑Fi Direct chat product and therefore falls under the competitive-use restriction.
 
 ### Alternatives considered
-- Copy `stream-chat-android-compose` sources into Flash and adapt models â€” rejected (license + competitive-use).
-- Add `io.getstream:stream-chat-android-compose` as a Gradle dependency â€” rejected (same license on published artifacts).
-- Use Stream SDK with a Flash network adapter â€” rejected unless Stream grants a written competitive carve-out.
-- Generic Material 3 dynamic theming â€” rejected (does not match Stream's fixed brand/chrome design system).
-- Clean-room UI with side-by-side visual verification against the compose sample â€” selected.
+- Copy `stream-chat-android-compose` sources into Flash and adapt models — rejected (license + competitive-use).
+- Add `io.getstream:stream-chat-android-compose` as a Gradle dependency — rejected (same license on published artifacts).
+- Use Stream SDK with a Flash network adapter — rejected unless Stream grants a written competitive carve-out.
+- Generic Material 3 dynamic theming — rejected (does not match Stream's fixed brand/chrome design system).
+- Clean-room UI with side-by-side visual verification against the compose sample — selected.
 
 ### Why this was selected
 - Keeps Flash legally independent while still targeting Stream-level visual polish.
@@ -7376,3 +7376,188 @@ and failing on a stale one.
   `app-universal-debug.apk` instead of `app-debug.apk`. The runbook and backlog steps that named `app-debug.apk` were
   updated; a leftover file from before the change is stale.
 - APK size per ABI and the update path are now device checks: `PERF-A01`, `REL-01b`.
+
+---
+
+## ADR-260 - A Compose stability configuration file for collections and domain models: **authored, wired into nothing** (2026-10-31, Stream U)
+
+### Decision
+`ui/chat/compose_compiler_config.conf` lists `kotlin.collections.*` and the two domain model packages as stable classes for the
+Compose compiler's strong skipping.
+
+### Context
+`ComposeChatRepository` feeds the screen `List` instances that are structurally equal but referentially new on every Room emission.
+Strong skipping compares parameters with `===` for classes it believes are unstable, so an unstable `List` defeats skipping on
+`FlashMessageList` and `FlashConversationScreen` even when nothing changed.
+
+### Status — read this before wiring it
+**The file is added to no `build.gradle.kts`.** It is inert: no build reads it, so the promise is not in effect anywhere. The stream
+had listed five packages as stable; the merged file lists only the two it reasoned about, and its header says plainly that:
+- declaring `kotlin.collections.*` stable is an **unverified promise to the compiler**, and the failure mode of a wrong promise is a
+  stale UI (a changed list that does not recompose), not a crash;
+- wiring it is a build-file change and must land **alone**, so a stale-UI regression can be attributed to it.
+
+### Revisit when
+Someone owns `:ui:chat`'s build file and can wire it with a device test alongside. Device check owed: `PERF-U06`.
+
+---
+
+## ADR-261 - An optimistic echo is a UI-local overlay, never a durability claim (2026-10-31, Stream U)
+
+### Decision
+A sent message is drawn immediately as a `Pending` bubble from an in-memory overlay (`pendingOptimisticEchoes`), while the durable
+row is still written by `onSendText` / `RealFlashChatRepository` as before. An echo is never marked `Sent`, never written to Room and
+never counted as delivered.
+
+### Context
+Without a local echo the composer blanks and no bubble exists while SQLite commits, WAL fsyncs and Room re-runs the thread query -
+tens to hundreds of milliseconds on a loaded handset, which reads as a lost message.
+
+### How the overlay is retired (the part that matters)
+The stream merged a version that matched echoes to rows **by text alone** and concatenated the overlay into `localMessages`. Both
+are wrong in the same direction: any re-emission of an *old* outgoing row with the same text silently retires a fresh echo, and
+folding the overlay into the durable list makes the two indistinguishable to every other consumer in the screen (search, pinned
+messages, selection, Message Info). As merged:
+- `FlashOptimisticEchoMath.unmatched` consumes **one echo per new outgoing row id** carrying the same text, where "new" means the id
+  was not in the outgoing-id set captured when the echo was made. Sending the same text twice retires one echo per row; an unrelated
+  emission cannot retire one early.
+- `displayedMessages` is a render-time derivation, so an echo and its own durable row can never be on screen in the same frame;
+  `localMessages` stays the durable list that every other consumer reads.
+- The echo is recorded **before** `onSendText` is called (otherwise the durable row could already be in the known-id set and the echo
+  would never match).
+
+### Consequences / open risk
+`onSendText` reports no failure, so an echo whose row never appears is never retired and a `Pending` bubble can sit at the bottom of
+the thread for the session. Fixing that properly needs a completion/failure signal on the callback (an interface change), not a
+timeout - a timeout would remove a bubble whose row is merely slow, which is the normal case on a loaded device. `PERF-U04`.
+
+The stream's "<16 ms" render figure is unmeasured and is withdrawn (see `EXP-096`).
+
+---
+
+## ADR-262 - A single-pass `Layout` for the floating bottom-nav pill (2026-10-31, Stream U)
+
+### Decision
+`FlashBottomNav` replaces `BoxWithConstraints` with a custom single-pass `Layout`: the chip is measured with fixed constraints and
+placed with `placeRelativeWithLayer`, and the translation/scale are applied in the layer-update phase.
+
+### Context
+`BoxWithConstraints` is a `SubcomposeLayout`: it defers its children's composition to the layout pass and keeps an independent
+subcomposition slot table purely to read `maxWidth`. The pill needs no subcomposition - it needs the parent width, which a custom
+`Layout` already has.
+
+### Consequences
+One fewer subcomposition slot table on every bottom-nav recomposition. No behaviour change (the pill's geometry and hit area are
+unchanged).
+
+---
+
+## ADR-263 - Quoted reply cards drop `IntrinsicSize.Min` (2026-10-31, Stream U)
+
+### Decision
+`FlashQuotedReplyCard`'s `Row(Modifier.height(IntrinsicSize.Min))` plus a vertical accent `Box` becomes a single-pass
+`Column(Modifier.drawBehind { drawRoundRect(...) }.padding(start = 3.dp + space8))`.
+
+### Context
+`IntrinsicSize.Min` forces a second measurement pass over every child. In a list of quoted replies, multi-line body text was measured
+twice per card on every fling frame. `drawBehind` draws the accent line at the height the single pass already produced.
+
+### Consequences
+Half the text measurement per card. The accent line's geometry is now the card's own height by construction - it cannot disagree
+with the measured height, which is what the `IntrinsicSize.Min` version was buying.
+
+---
+
+## ADR-264 - The voice card's 10 Hz tick moves out of composition (2026-10-31, Stream U)
+
+### Decision
+`playedBarCount: () -> Int` is passed to `FlashVoiceWaveform` and read inside the `Canvas` draw block; the duration label updates at
+the second boundary through `derivedStateOf`; parsed waveforms are memoised in `FlashWaveformCache`.
+
+### Context
+Audio position updates every 100 ms. Reading `elapsedMs` in the card's composable body invalidated the whole card subtree ten times a
+second for a label that changes once a second.
+
+### Consequences
+A tick now invalidates draw (the waveform) and at most one small composable per second. The stream's "90-100 % recomposition
+reduction" is unmeasured and is withdrawn (see `EXP-096`).
+
+`FlashWaveformCache` is keyed on `(amplitudes, barCount)` - initially on a hash of the amplitudes without comparing them, which
+would have drawn another message's waveform on a collision.
+
+---
+
+## ADR-265 - A distance-bounded pre-jump before `animateScrollToItem` (2026-10-31, Stream U)
+
+### Decision
+When a search or quote jump target is more than 15 items away, `scrollToItem(preJumpIndex)` fast-forwards to within 10 items and
+only then runs `animateScrollToItem`.
+
+### Context
+An unconstrained `animateScrollToItem` across hundreds of items makes `LazyColumn` compose, measure and place every intermediate
+item, which drops frames on the main thread during a deep jump.
+
+### Consequences
+Deep jumps skip the intermediate items. The pre-jump lives inside the non-`reduceMotion` branch, so under reduce-motion the jump is
+a plain `scrollToItem` - correct, and worth knowing before "fixing" it. The `> 15` threshold and the `10`-item lead are constants with
+no measurement behind them; `PERF-U01` covers the felt result.
+
+---
+
+## ADR-270 - A priority-aware bounded send queue decouples socket writes from caller coroutines (2026-10-31, Stream N)
+
+### Decision
+1. `WsConnection` owns a `BoundedSendQueue<OutboundFrame>` (capacity 64, `priorityCapacity` 32), identical in `androidMain` and
+   `jvmMain`.
+2. Interactive frames - `sendText`, pings, PONGs, keepalives - go through the priority lane and leapfrog bulk frames.
+3. Bulk file chunks go through the normal lane.
+4. Physical socket writes move to a `writerLoop()` that drains the queue, so a caller never blocks on TCP backpressure.
+
+### Context
+Outbound frames previously held a monitor lock across the raw `OutputStream.write()`. When a large chunk filled the socket buffer,
+every other frame - a chat message, a keepalive, a delivery receipt - waited behind it, which is what `OPT-O09-01` / `OPT-O14-01`
+reported.
+
+### Consequence that must not be undone
+A full queue must **not** be reported as a channel failure. `StreamChannel.sendFrame` returns `Boolean` and the dispatcher reads
+`false` as **permanent death of that channel** (it marks the lane dead and returns its un-ACKed chunks to the pool). Returning
+`false` on "queue full" would therefore have killed a merely-behind writer's lane. The merged code waits, bounded to
+`QUEUE_OFFER_TIMEOUT_MS = 5_000L`, and only then rejects with `Rejected(QueueFull)`; `notFull` is signalled whenever an item leaves
+the queue and on close. Any future change to this path must preserve that distinction.
+
+### Consequences
+Callers never block on socket I/O; ordering within a lane is preserved. The stream's "< 1 ms dispatch" figure cited a test that does
+not exist and is withdrawn (see `EXP-101`). Whether a chat message feels instant while a 200 MB transfer saturates the uplink is
+`PERF-N02`.
+
+---
+
+## ADR-271 - Per-peer `SSLContext` caching so reconnects resume the TLS session (2026-10-31, Stream N; **security claim corrected by the integrator**)
+
+### Decision
+1. `FlashTlsContextFactory` caches `SSLContext` instances in `ConcurrentHashMap`s: `clientCache` keyed on
+   `ClientKey(expectedDeviceId, pinVerifier, KeyManagersRef(keyManagers))`, `serverCache` likewise.
+2. `sessionTimeout = 86400` and `sessionCacheSize = 256` on both the client and server session contexts.
+3. `deferredPeerLeafFingerprintHex` is carried on `WsConnection` and read by the hosts (`WsFlashNetwork`, `JvmWsFlashNetwork`) and by
+   the transfer client/server, which populate it, so the peer's leaf fingerprint is still available to the pin check when the handshake
+   did not surface it.
+
+### Context
+A fresh `SSLContext` per connect meant TLS session caches - which are scoped to the `SSLContext` instance - were discarded on every
+socket close, so every reconnect (Wi-Fi roaming, wake from Doze, a momentary fade) paid a full ECDHE + ECDSA handshake.
+
+### Corrections to the stream's own text
+- **The cache key is not `keyManagersIdentity`.** It is `KeyManagersRef`, compared by **reference identity** (`managers === other.managers`).
+  The stream's first version keyed on `System.identityHashCode(keyManagers)`, on which an identity-hash collision would have presented
+  **the wrong certificate**. The reference-equality wrapper removes that class of failure; do not "simplify" it back to a hash.
+- **"Strict TOFU certificate pinning and identity verification guarantees remain 100% intact" is false as written.** On a resumed
+  TLS 1.3 session the trust manager is **not re-invoked**: Java's session cache returns the established session before the
+  `X509TrustManager` runs. What still holds is that the pin is checked at the point the session is created and that the resumed
+  session is reachable only through the cached `SSLContext`, whose key includes `expectedDeviceId` and `pinVerifier`. That is
+  *enforcement at session reuse*, not a per-connection callback, and this ADR must not be cited as the latter. `docs/security.md`
+  carries the same correction.
+- `deferredPeerLeafFingerprintHex` is a `WsConnection` **constructor parameter**, not something `WsConnection` computes.
+
+### Consequences
+Reconnects can resume instead of doing a full handshake; the session caches are what make that possible. The stream's "~32 ms -> ~3 ms"
+is unmeasured - the test it cites times nothing (see `EXP-100`). `PERF-N01` is the measurement.

@@ -1,5 +1,14 @@
 # Architecture Decision Records — NET (N) Stream
 
+> **SUPERSEDED (§27) — the review is `logs/streams/net/INTEGRATOR-REVIEW.md`; the canonical ADRs are ADR-270/271 in `dev`'s
+> `docs/decisions.md`.** Three corrections to **ADR-271** as written below: the cache key is **`KeyManagersRef`,
+> compared by reference identity**, not `keyManagersIdentity` (the stream's original keyed on
+> `System.identityHashCode(keyManagers)`, on which a collision would have presented the wrong certificate); its
+> **"100 % intact"** pinning claim is **false** - a resumed TLS 1.3 session never re-invokes the trust manager; and its
+> Decision 3 (computing `deferredPeerLeafFingerprintHex` in `WsConnection`) was **not implemented** - that field is still
+> a constructor parameter. **ADR-270**'s "< 1 ms dispatch" is unmeasured. Also note the rule ADR-270 now carries: a full
+> queue must never be reported as `sendFrame == false`, because the dispatcher reads that as a permanently dead channel.
+
 ## ADR-270 — Priority-Aware BoundedSendQueue Decoupling Socket Writes from Caller Locks
 
 ### Context

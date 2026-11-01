@@ -1,5 +1,12 @@
 # Performance Experiments & Measurements — NET (N) Stream
 
+> **SUPERSEDED (§27) — the review is `logs/streams/net/INTEGRATOR-REVIEW.md`; the canonical entries are in `dev`'s
+> `logs/experiments.md`.** All three entries below attach numbers that no run produced: `EXP-100` cites a test that
+> **times nothing** (so "~88 %" and "~2.5-4.0 ms" have no source); `EXP-101` cites a test that **does not exist** in the
+> tree (`WsConnectionTest.sendText leapfrogs bulk binary payloads via priority queue`); `EXP-102`'s "253 → 1" is
+> arithmetic on a /24 (254 hosts) with the snapshot's 5 s TTL ignored. The mechanisms are real and are kept; the numbers
+> are withdrawn in the canonical entries.
+
 ## EXP-100 — TLS Session Resumption Latency & CPU Reduction (OPT-O09-02)
 
 ### Setup

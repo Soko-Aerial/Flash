@@ -2284,3 +2284,140 @@ paid on every run because the script deletes the folder first - deliberate (ADR-
   about two thirds of the download now that both are published.
 - The universal APK is 54.68 MB against EXP-80's 54.63 MB: +0.05 MB, inside the noise band, no regression to chase.
 - All four carry `versionCode` 4 - AGP does not offset split codes. Still not device-verified: `PERF-A01`, `REL-01b`.
+
+---
+
+## EXP-095 - Launch brand animation: per-frame constructions removed (2026-10-31, Stream U; corrected by the integrator)
+
+### What is proven, by reading `ui/theme/.../FlashBrandAnimation.kt`
+The finding was that the 2.4 s launch animation rebuilt its `Path` and three `Brush`es every frame. In the merged code:
+`BoltPath` and `BoltBrush` are file-level `by lazy` singletons (lines 224 and 233), and the background and glow brushes are built
+inside `drawWithCache` (line 63), so they are re-created only when the drawn size changes. The per-frame constructions the finding
+named are gone.
+
+### What is NOT proven (the stream claimed "exactly 0 B per frame, 100% elimination")
+No allocation-counting test and no profiler trace exists, on the branch or on `dev`. Nothing in a JVM or Android-host unit suite can
+measure per-frame allocation in Compose, so "0 B" could not have been measured by the runs the stream reported. Treat the
+elimination as structural, not measured.
+
+### Conclusion
+KEEP, with the number withdrawn. `PERF-U01` (scroll/fling frame timing on a device) is the check that would say whether cold-start
+jank actually dropped.
+
+---
+
+## EXP-096 - Voice note card: the 10 Hz playback tick no longer recomposes the card (2026-10-31, Stream U; corrected by the integrator)
+
+### What is proven, by reading `ui/chat/.../FlashVoiceMessageCard.kt`
+`elapsedMs` is no longer read in `FlashVoiceMessageCard`'s body: the card's reads sit inside lambdas and effects, the waveform reads
+the playhead inside its draw phase, and the duration label goes through `derivedStateOf` on a string whose value changes once a
+second. So a 10 Hz tick invalidates draw (waveform) and at most one small composable per second (label), not the card subtree.
+
+### What is NOT proven (the stream claimed "0 recompositions", "90% reduction")
+There is no recomposition-counting instrumentation in the repo, and the suites the stream ran (`:ui:chat:jvmTest`,
+`:ui:chat:testAndroidHostTest`) assert no recomposition counts. A percentage cannot come from them.
+
+### Conclusion
+KEEP. The mechanism is real; the percentage is withdrawn. The device check that would show it is `PERF-U01`.
+
+---
+
+## EXP-097 - A day-separated chat row is now its own `contentType` (2026-10-31, Stream U; corrected by the integrator)
+
+### What is proven, by reading `ui/chat/.../FlashMessageList.kt:379`
+`flashMessageContentType` appends `"_sep"` when `message.daySeparator != null`. Before, a row with a ~40 dp day header and one
+without shared the identical reuse key, so Compose's slot table reused an inadequately sized slot at every date boundary and forced a
+remeasure. The keys now differ.
+
+### What is NOT proven (the stream claimed it "eliminates height jumping during fast scroll")
+"Eliminating" is a device-scroll observation nobody has made. The stream's own setup named `FlashStressTestScreen` - a debug
+screen, not a measured run.
+
+### Conclusion
+KEEP. `PERF-U01` (fling a long history across several day boundaries on a mid-range handset) is the check that would confirm it.
+
+---
+
+## EXP-098 - Image aspect ratio reserved before the decode (2026-10-31, Stream U; corrected by the integrator)
+
+### What is proven, by reading `ui/chat/.../FlashImageGrid.kt:154-210`
+`FlashImageRatioCache` (bounded `LinkedHashMap`, 256 entries, guarded by `synchronized`) is consulted at line 186 before the async
+decode starts and written at 210 after it, so a picture that has **already been decoded once in this process** renders at its true
+ratio on the first frame instead of animating from the 4:3 placeholder. That is the layout-shift case the finding named.
+
+### What is NOT proven (the stream claimed it "completely eliminates Cumulative Layout Shift on cached images")
+The first pass over any as-yet-undecoded image still shows the placeholder ratio and still shifts. So "on cached images" is the
+honest half of the claim and "completely" is not. The KDoc now also states the cache's real limit: entries are never invalidated, so
+a URI reused for a different picture keeps the old ratio for the life of the process.
+
+### Conclusion
+KEEP, claim narrowed. `PERF-U01` covers the visual side.
+
+---
+
+## EXP-100 - TLS session resumption on reconnect: what the test actually shows (2026-10-31, Stream N; corrected by the integrator)
+
+### Setup
+`TofuTlsHandshakeTest.sessionResumptionReusesSessionAndSucceeds` on the JVM host: a loopback client/server pair, TLS 1.3, ECDHE.
+The test performs a full handshake, then a second handshake against the same `SSLContext`, and asserts that the second session
+**is valid and carries the same server fingerprint** (`s.session.isValid == true`, `fingerprintOf(s) == serverFpHex`).
+
+### What is proven
+(1) Reusing a cached `SSLContext` does resume: the second handshake succeeds and yields a valid session with the pinned server
+identity. (2) The resumption is carried by the session caches configured in `FlashTlsContextFactory` (`sessionTimeout = 86400`,
+`sessionCacheSize = 256`, on both the client and server contexts). Per-peer `SSLContext` caching is the precondition that makes
+resumption possible at all: before this change the context was rebuilt per connect and every handshake was full.
+
+### What is NOT proven (the stream claimed "~88% handshake latency reduction, ~28-35 ms -> ~2.5-4.0 ms")
+**The test times nothing.** It has no clock, no repetition and no assertion on duration, so those four numbers come from nowhere
+that a reviewer can check. Localhost loopback is also the wrong place to measure a handshake that a phone pays for over Wi-Fi:
+there is no radio, no RTT and no packet loss.
+
+### Secondary finding, not a latency number
+On a resumed TLS 1.3 session the trust manager is **not re-invoked** - Java's session cache returns the session before the
+`X509TrustManager` runs. `ADR-269`'s / `ADR-271`'s "trust is 100% strictly enforced on every connection" was wrong as written;
+corrected in `docs/decisions.md`. In practice the pin is still enforced because the resumed session is keyed by the peer identity
+and the cached `SSLContext` (see the `KeyManagersRef` cache key), but the enforcement is at *session reuse*, not at a
+per-connection callback.
+
+### Conclusion
+KEEP, numbers withdrawn. `PERF-N01` (two phones, handshake latency on reconnect after a forced disconnect) is the measurement.
+
+---
+
+## EXP-101 - Priority send queue: bulk chunks yield to a chat frame (2026-10-31, Stream N; corrected by the integrator)
+
+### What is proven, by reading the code
+`BoundedSendQueue` (capacity 64, `priorityCapacity` 32) keeps a separate `priorityBuffer` drained before the bulk buffer, and
+`WsConnection` routes frames through it (`enqueueBlocking(frame, QUEUE_OFFER_TIMEOUT_MS = 5_000L, priority = …)`, line 387 with
+`writerLoop()` at 402). A chat frame therefore cannot queue behind 64 bulk chunks, which is what the finding asked for.
+
+### What is NOT proven (the stream claimed "< 1 ms dispatch latency" and cited
+`WsConnectionTest.sendText leapfrogs bulk binary payloads via priority queue`)
+**That test does not exist in the repo.** The claim has no evidence behind it. What a unit test could show - and what the queue's
+own tests do show - is the *ordering*; the latency of the first write on a real socket is a device measurement.
+
+### Conclusion
+KEEP, the latency number and its citation withdrawn. Whether a chat message feels instant while a 200 MB transfer saturates the
+uplink is `PERF-N02`.
+
+---
+
+## EXP-102 - Subnet sweep IPC: the count is arithmetic, not a measurement (2026-10-31, Stream N; corrected by the integrator)
+
+### What the change is, by reading `core/network/src/androidMain/.../LanRouteChooser.kt`
+`getSnapshot()` caches candidates, subnet links and unmanaged subnets for `CACHE_TTL_MS = 5_000L`, so the `ConnectivityManager`
+lookups and the interface traversal happen once per 5 s window instead of once per probed address.
+
+### The arithmetic (and what it is not)
+A `/24` sweep probes 254 host addresses, not 253 (the stream's figure omits one); the old code called `chooseRoute()` per address,
+so the old cost is ~254 `ConnectivityManager` round-trips and ~254 interface traversals per sweep. New cost: one capture per 5 s.
+The stream's "253 -> 1, 99.6%" is that division with a wrong numerator and with the TTL ignored - a 15 s sweep at a 5 s TTL is
+three captures, not one. **No Binder counter was read**; nothing in the repo counts IPC calls.
+
+### Behaviour change worth knowing
+The cache is TTL-only: there is no `invalidate()` call, so a route changed by a network switch can be up to 5 s stale. The previous
+code was always fresh. That is a deliberate trade (5 s of possible staleness for ~254 avoided lookups) but it is a change.
+
+### Conclusion
+KEEP, requantified. The count is arithmetic; a real IPC measurement would need a Binder trace, which nobody has run.

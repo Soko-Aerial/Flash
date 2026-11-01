@@ -1,5 +1,17 @@
 # Stream U (UI) — Progress Log
 
+> **SUPERSEDED (§27) — read the review first: `logs/streams/ui/INTEGRATOR-REVIEW.md`.**
+>
+> This copy is kept as written. Everything in it was produced **before** the branch tip, which **does not compile**: the
+> extracted composables in `FlashMessageBubble` lost their `AttachmentUi` imports and copied a parameter with the wrong
+> type, `FlashConversationScreen` used two properties that do not exist, and `FlashMessageList` used an Android-only
+> `WindowInsets` API in `commonMain`. The "Verification" and "Verified Gate Test Results" lines below therefore cannot
+> describe `1ddd5306`, and the "698 tests" figure is this programme's pre-branch baseline, not a result of this work.
+>
+> Every finding was re-checked against the code; the corrected record is the canonical `dev` logs:
+> `logs/progress.md`, `logs/errors.md`, `logs/experiments.md`, `docs/decisions.md` (ADR-260..265) and
+> `docs/testing/TEST-BACKLOG.md` (`PERF-U01`..`U06`).
+
 ## 2026-10-31 — Stream U Performance Optimization (Batches 1 & 2 Complete)
 
 ### Worked on
