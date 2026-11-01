@@ -331,7 +331,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         maybeRequestNotificationPermission()
         installScreenCaptureSupport()
-        FlashNotificationManager.initChannels(this)
+        // OPT-O01-02: initialize notification channels off the main thread to avoid blocking Binder IPCs on launch.
+        lifecycleScope.launch(Dispatchers.Default) {
+            FlashNotificationManager.initChannels(this@MainActivity)
+        }
         // Bug 7: a notification tap can cold-start the activity (no onNewIntent on cold
         // start) — consume the launch intent here too.
         pendingNotificationConversation.value =
@@ -386,7 +389,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
-        refreshReceivedStorageUsage()
+        // OPT-O01-02: Defer recursive scanReceivedFilesBytes() to on-demand navigation in Settings
     }
 
     override fun onResume() {

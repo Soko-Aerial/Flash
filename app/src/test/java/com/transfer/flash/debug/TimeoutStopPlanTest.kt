@@ -47,6 +47,19 @@ class TimeoutStopPlanTest {
     }
 
     @Test
+    fun verifyingRowIsAlsoPausedOnTimeout() {
+        val transfers = listOf(
+            transfer("t1", FlashTransferState.Verifying),
+            transfer("t2", FlashTransferState.Completed),
+            transfer("t3", FlashTransferState.Transferring),
+        )
+
+        val plan = TimeoutStopPlan.of(transfers)
+
+        assertEquals(listOf("t1", "t3"), plan.toPause.map { it.id.value })
+    }
+
+    @Test
     fun emptyListProducesEmptyPlan() {
         assertTrue(TimeoutStopPlan.of(emptyList()).toPause.isEmpty())
     }

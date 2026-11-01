@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.debug
 
 import android.content.Context
@@ -50,8 +52,37 @@ class FlashKeepaliveWorker(
             return Result.success()
         }
 
+        // OPT-O13-02: Check whether outbound work (outbox messages or active transfers) actually exists
+        // before spinning up the entire engine, network sockets, discovery, and power locks.
+        val dbFile = applicationContext.getDatabasePath(com.transfer.flash.core.persistence.db.FlashDatabase.DATABASE_NAME)
+        if (!dbFile.exists()) {
+            Log.i(TAG, "keepalive: database does not exist yet; skipping headless engine boot")
+            return Result.success()
+        }
+
+        val hasPendingOutboundWork = runCatching {
+            val db = com.transfer.flash.core.engine.store.EncryptedDatabaseRecovery.openRecoveringLostKey(applicationContext)
+            try {
+                val sqlite = db.openHelper.readableDatabase
+                val outboxCount = sqlite.compileStatement("SELECT COUNT(*) FROM outbox").simpleQueryForLong()
+                val activeTransferCount = sqlite.compileStatement(
+                    "SELECT COUNT(*) FROM transfers WHERE status IN ('Transferring', 'Verifying', 'Queued', 'Paused') AND dismissed = 0"
+                ).simpleQueryForLong()
+                outboxCount > 0L || activeTransferCount > 0L
+            } finally {
+                runCatching { db.close() }
+            }
+        }.getOrDefault(true)
+
+        if (!hasPendingOutboundWork) {
+            Log.i(TAG, "keepalive: outbox and transfer queues empty; skipping headless engine boot (OPT-O13-02)")
+            return Result.success()
+        }
+
+        val lease = DiscoveryEngineHolder.acquireWakeLockLease("keepalive-worker", SESSION_WINDOW_MS + DRAIN_WINDOW_MS)
         val started = runCatching { DiscoveryEngineHolder.ensureStarted(applicationContext) }
         if (started.isFailure) {
+            lease.release()
             Log.w(TAG, "keepalive: engine start failed", started.exceptionOrNull())
             // Transient by assumption (no network yet, radio busy): let WorkManager back off.
             return Result.retry()
@@ -72,6 +103,7 @@ class FlashKeepaliveWorker(
             }
             Log.i(TAG, "keepalive: wake complete sawSession=$sawSession")
         } finally {
+            lease.release()
             // We started it, so we put it back: an engine left running headless would hold the
             // partial wake lock (ERROR-025/026 acquires it for the engine's lifetime) every 15
             // minutes forever, which is exactly the battery drain this app must not cause.

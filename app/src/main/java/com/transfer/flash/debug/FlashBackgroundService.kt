@@ -1,3 +1,5 @@
+@file:OptIn(com.transfer.flash.core.common.annotation.FlashInternalApi::class)
+
 package com.transfer.flash.debug
 
 import android.app.Notification
@@ -30,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -227,40 +230,76 @@ class FlashBackgroundService : Service() {
         }
     }
 
+    private var idleStopJob: Job? = null
+
     private fun observeSessionActivity() {
         scope.launch {
-            DiscoveryEngineHolder.transfersFlow.collectLatest { repo: FlashTransferRepository? ->
-                val transfersFlow: StateFlow<List<FlashTransfer>> = repo?.activeTransfers ?: MutableStateFlow(emptyList<FlashTransfer>())
-                while (isActive && DiscoveryEngineHolder.currentNetwork() == null) {
-                    delay(300)
-                }
-                val network = DiscoveryEngineHolder.currentNetwork()
+            combine(
+                DiscoveryEngineHolder.transfersFlow,
+                DiscoveryEngineHolder.networkFlow,
+            ) { repo, network ->
+                Pair(repo, network)
+            }.collectLatest { (repo, network) ->
+                val transfersFlow: StateFlow<List<FlashTransfer>> = repo?.activeTransfers ?: MutableStateFlow(emptyList())
+                val sessionsFlow = network?.activeSessions ?: MutableStateFlow(emptyMap())
                 val calling = DiscoveryEngineHolder.currentCalling()
                 val ptt = DiscoveryEngineHolder.currentPttSession()
 
-                val sessionsFlow = network?.activeSessions ?: MutableStateFlow(emptyMap())
                 val callFlow = calling?.activeCall ?: MutableStateFlow(null)
                 val pttFlow = ptt?.state ?: MutableStateFlow(PttFloorState.Idle)
 
                 combine(transfersFlow, sessionsFlow, callFlow, pttFlow) { transfers, sessions, callState, pttState ->
                     val hasActiveTransfers = transfers.any {
                         it.state == FlashTransferState.Transferring ||
-                        it.state == FlashTransferState.Verifying ||
-                        it.state == FlashTransferState.Queued
+                            it.state == FlashTransferState.Verifying ||
+                            it.state == FlashTransferState.Queued
                     }
                     val hasConnectedPeers = sessions.isNotEmpty()
                     val isCallActive = callState != null && callState.state != FlashCallState.ENDED
                     val isPttActive = pttState !is PttFloorState.Idle
+                    val isHubConnected = DiscoveryEngineHolder.currentEnterpriseHub()?.relay?.state?.value?.isOnline == true
 
-                    val isActive = hasActiveTransfers || hasConnectedPeers || isCallActive || isPttActive
-                    Log.i(TAG, "Session activity evaluated: active=$isActive (activeTransfers=$hasActiveTransfers count=${transfers.size}, peers=${sessions.size}, call=$isCallActive, ptt=$isPttActive)")
+                    val isActive = hasActiveTransfers || hasConnectedPeers || isCallActive || isPttActive || isHubConnected
+                    Log.i(TAG, "Session activity evaluated: active=$isActive (activeTransfers=$hasActiveTransfers count=${transfers.size}, peers=${sessions.size}, call=$isCallActive, ptt=$isPttActive, hub=$isHubConnected)")
                     isActive
                 }.collect { isSessionActive ->
                     keepAlive?.setSessionActive(isSessionActive)
+                    evaluateServiceIdleStop(isSessionActive)
                 }
             }
         }
     }
+
+    /**
+     * Stops the connectedDevice foreground service when 0 peers, 0 transfers, and 0 hub connection exist,
+     * unless the user explicitly enabled "Keep listening in the background" (OPT-O13-06, ADR-232).
+     */
+    private fun evaluateServiceIdleStop(isSessionActive: Boolean) {
+        val keepListening = DiscoveryEngineHolder.backgroundTransfers
+        if (isSessionActive || keepListening) {
+            idleStopJob?.cancel()
+            idleStopJob = null
+            return
+        }
+
+        if (idleStopJob == null) {
+            idleStopJob = scope.launch {
+                delay(IDLE_STOP_GRACE_MS)
+                val stillKeepListening = DiscoveryEngineHolder.backgroundTransfers
+                if (!stillKeepListening && !isForegroundInteractive()) {
+                    Log.i(TAG, "Stopping connectedDevice foreground service: 0 peers, 0 transfers, 0 hub connection (OPT-O13-06 / ADR-232)")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+        }
+    }
+
+    private fun isForegroundInteractive(): Boolean = runCatching {
+        val state = android.app.ActivityManager.RunningAppProcessInfo()
+        android.app.ActivityManager.getMyMemoryState(state)
+        state.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+    }.getOrDefault(false)
 
     private fun resolveForegroundServiceType(transfers: List<FlashTransfer> = emptyList()): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
@@ -438,6 +477,7 @@ class FlashBackgroundService : Service() {
         private const val TAG = "SERVICE"
         private const val CHANNEL_ID = "flash_discovery_bg"
         private const val NOTIFICATION_ID = 41
+        private const val IDLE_STOP_GRACE_MS = 30_000L
 
         const val ACTION_CANCEL_TRANSFER = "com.transfer.flash.action.CANCEL_TRANSFER"
         const val EXTRA_TRANSFER_ID = "extra_transfer_id"
