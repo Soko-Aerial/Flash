@@ -200,7 +200,9 @@ public class DesktopEngine(
      */
     private val autoAcceptIncoming: Boolean = false,
 ) : FlashEngine, FlashReadiness {
-    public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // OPT-O14-06: Bound engine background scope concurrency via Dispatchers.IO.limitedParallelism(8).
+    // Prevents idle thread fragmentation across independent engine subsystems and coroutines.
+    public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(8))
 
     private val _ready = MutableStateFlow(false)
 

@@ -79,6 +79,12 @@ public fun main(args: Array<String> = emptyArray()) {
         System.setProperty("skiko.fps", "60")
     }
 
+    // OPT-O14-06: Cap default Dispatchers.IO thread pool to 16 threads (default is 64 on modern multi-core PCs).
+    // Reduces idle thread footprint and stack memory allocation without bottlenecking file I/O or networking.
+    if (System.getProperty("kotlinx.coroutines.io.parallelism") == null) {
+        System.setProperty("kotlinx.coroutines.io.parallelism", "16")
+    }
+
     // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
     // Before the log sink on purpose (ERROR-744): the sink truncates `desktop.log`, and a duplicate launch used to
     // wipe the running instance's log, the file a bug report depends on.
