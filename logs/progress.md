@@ -1,5 +1,59 @@
 # Progress Log
 
+## 2026-11-01 — Wave 4 review committed; desktop/kernel integration prepared
+
+### Worked on
+Reviewed E (`agent/opt-desktop`, delivered `00a7a51f`) and K (`agent/opt-kernel`, delivered `6d9c9227`) against the
+actual common base `baf77753`, current implementation, production callers and tests. Independent read-only desktop
+review completed; kernel review and caller verification completed in the integration session. These are reviewed
+repairs, not acceptance of the streams' own completion/performance headlines.
+
+### Changed / why
+- Desktop repairs committed as **`b2b61b92`**: six caller/lifetime defects repaired — minimized GHOST and hidden
+  workload START/FINISH/mode changes; application-root radio ownership; nullable non-initializing readyPairing;
+  sole-worker log write/flush/close; documented observable Windows reduced motion; updated whole DropTarget sender.
+  Ten audit IDs retained in nine action groups, no entire finding rejected. ERROR-943..948; ADR-300..309.
+- Kernel repairs committed as **`22a53994`**: four defects repaired — immutable copied SPKI map keys; Provider
+  selection rather than initialized keyed Cipher/Mac ThreadLocals; stable copied probe-header membership; synchronized
+  logger dequeue/format/append/flush/export. Fresh KeyFactory per parse and gzip source-overwrite rejection refine
+  these fixes. Ten audit IDs reviewed; RNG and transfer-hashing targets remain partial, gzip is API-only. ERROR-953..956;
+  ADR-310..314 and integrator ADR-350. No algorithm, key-size, nonce/AAD, pinning or wire change.
+- Canonical records fold the reviewed errors (including preserved ERROR-941/942/951/952), withdrawn experiments
+  EXP-115..124, decisions, platform/security/accessibility notes, probe API contract and PERF-E01..E08/PERF-K01..K05.
+  Stream fragments preserve the original delivered accounts under SUPERSEDED/WITHDRAWN.
+- Plan §6.3 now explicitly retains inherited discovery/enterprise/hub-protocol/server/Android-test-compilation coverage
+  and adds desktop JVM plus common/security Android-host suites. No security test tagged out. Both commands force
+  execution with `--rerun-tasks --no-build-cache --no-configuration-cache --continue`.
+- **Merge order: K then E**, permitted by plan §6.2. K's delivered classifier-test correction (`cbf7b8df`, ERROR-951)
+  is needed by the newly included common Android-host suite. Landing K first avoids splitting that commit or running a
+  known stale expectation on an E-only tree; it does not drop coverage. Both merges must run both expanded gates.
+
+### Verification
+Targeted repaired runs through the machine lock, before integration:
+- E: `powershell.exe -NoProfile -File tools/flash-gradle.ps1 :desktop:jvmTest :desktop:compileKotlinJvm --rerun-tasks --no-build-cache --console=plain`
+  — **BUILD SUCCESSFUL in 6m 51s**, 66/66 tasks executed, exit 0; **259 tests in 46 XML suites, zero failures/errors/skips**.
+  No source change followed that run.
+- K: `powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:jvmTest :core:common:testAndroidHostTest :core:security:jvmTest :core:security:testAndroidHostTest --continue --no-configuration-cache --no-daemon --rerun-tasks --no-build-cache --console=plain`
+  — **BUILD SUCCESSFUL in 3m 50s**, 32/32 tasks executed, exit 0; **602 tests**: common JVM 19, common Android host 144,
+  security JVM 174 (two documented POSIX-only Windows skips), security Android host 265 in 33 suites. Zero failures/errors.
+  Only a source KDoc clarification followed that run.
+- Mutable-SPKI and in-flight Android-flush regressions failed on delivered behavior and pass repaired. Desktop fixtures
+  cover GHOST/hidden transfer/call edges, boot lifetime, structural radio/sender ownership and logger latch ownership;
+  Windows mapping/Flow and a read-only native query pass. Physical behavior and visual OS-toggle acceptance not tested.
+- Full official Android Cipher/Mac contracts independently verified 2026-11-01 after initial navigation-only/truncated
+  WebFetch excerpts failed. They reset to initialized capability, not erasure. Fresh operations do not prove zeroization.
+  Microsoft SystemParametersInfoW contract verified 2026-11-01. Sources are in ADR-308/312 and platform/accessibility docs.
+- Repair commits and whitespace checks succeeded. Earlier safety-classifier service timeouts prevented execution of some
+  staging calls; normal tooling later succeeded. No bypass or user-denial override used.
+
+### Remaining / next AI
+At this entry neither stream is merged, and **no expanded merged-tree gate has run**. Merge repaired K with `--no-ff`,
+force both §6.3 gates and record exact tested hash/commands/XML counts/skips/exit; then merge repaired E and repeat.
+Every numeric performance headline remains NOT MEASURED; API infrastructure is not a deployed caller optimization.
+Manual/device tests remain TODO in the backlog. No push, deployment, phone/radio/call session, presence implementation
+or Wave 5 work. Update the live handoff/plan/AGENTS state after gates, stop daemons through the lock, and remove only
+clean worktrees after their merges are green. Reviews: `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`.
+
 ## 2026-11-01 - Wave 4 prompts corrected, and the presence/push/hub-sync recommendation recorded (docs only)
 
 ### Worked on

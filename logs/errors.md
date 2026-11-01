@@ -15658,3 +15658,263 @@ figure is printed on every run for the record. The real performance number is `P
 
 ### Status
 RESOLVED (test-side; `PERF-H01` still owns the real measurement)
+
+---
+
+## Wave 4 review errors — 2026-11-01
+
+Actual common base `baf77753`; delivered E `00a7a51f`, K `6d9c9227`; repaired commits E `b2b61b92`, K `22a53994`.
+Windows/JBR 21 host verification only. Full delivered diagnostics, failed approaches and corrected review records are
+preserved in `logs/streams/{desktop,kernel}/errors.md`. The entries below fold their root causes/statuses, not the
+superseded completion/performance claims. Manual/physical checks remain in `docs/testing/TEST-BACKLOG.md`.
+
+## ERROR-941 — Named function-type arguments broke the desktop DropTarget; direct-call workaround superseded
+
+### Date / area / environment
+2026-11-01; desktop Compose/AWT, Kotlin/JVM desktop stream E.
+
+### Symptoms / error
+`DesktopShell.kt:935`: `Named arguments are prohibited for function types. No parameter with name 'peerId' found.`
+
+### Root cause / failed attempt
+Calling the updated function value with named arguments is illegal. The delivered Function2/stable-function explanation
+was inaccurate: the actual sender has more than two parameters and captures the current repository. Named invocation failed.
+
+### Delivered fix / integration correction
+The stream removed `rememberUpdatedState` and called the local function directly; compilation passed but left a stale
+repository-capturing closure in the window-owned DropTarget. ERROR-948 restores the whole updated sender with positional
+invocation. Compiler success is not closure-lifetime verification. Original diagnostic/workaround preserved in E's fragment.
+
+### Verification / related files / status
+Repaired desktop forced run 259 tests, zero failures/errors/skips. `DesktopShell.kt`, `DesktopCompositionOwnershipTest.kt`;
+ADR-300, PERF-E06. **SUPERSEDED by ERROR-948**; actual AWT drop remains TODO.
+
+## ERROR-942 — Settings extraction lost shared hub telemetry and used the wrong credential type
+
+### Date / area / environment
+2026-11-01; desktop Settings/shell, Kotlin/JVM desktop stream E.
+
+### Symptoms / error
+`Unresolved reference 'hubStatus'` at `DesktopShell.kt:1714`; `Unresolved reference 'EnterpriseCredentials'`.
+
+### Root cause / failed attempts
+Hub destination also needed the root hubStatus; Settings-only extraction removed it. Actual type is
+`com.transfer.flash.core.security.enterprise.EnrollmentCredentials?`. No other failed attempt recorded.
+
+### Working fix / verification
+Retain root hubStatus for Hub, forward it to Settings, use EnrollmentCredentials. Desktop compilation/tests passed;
+repaired forced suite 259 tests, zero failures. `DesktopShell.kt`, `DesktopEngine.kt`. **RESOLVED**.
+
+## ERROR-943 — Minimized GHOST advertised and hidden workload START did not reevaluate discovery
+
+### Date / area / environment
+2026-11-01; desktop discovery caller, delivered E, Windows/JBR 21.
+
+### Symptoms / root cause
+Inactive selected GHOST became effective advertising ECO. Completion-only observers missed transfer/call/PTT START while
+already hidden. Idle-window logic ignored privacy and all workload/mode-change edges. No measured session-drop/power cause.
+
+### Failed approach / working fix
+Completion-only downscale and an unguarded inactive GHOST were rejected. Guard active window, selected GHOST,
+Transferring/Verifying, non-ENDED call and non-Idle PTT. Reevaluate START/FINISH and selected-mode changes while inactive.
+Desktop connectionPolicy still reads selected mode and not every ECO browse knob has a desktop consumer; hub polling unchanged.
+
+### Verification / related files / status
+Real engine idle/restore/GHOST/hidden mode and transfer/call edges, PTT truth table pass in 259-test forced suite.
+`DesktopEngine.kt`, `DesktopDiscoveryActivity.kt`, `DesktopDiscoveryDownscaleTest.kt`; ADR-305, PERF-E03.
+**OPEN — code fixed/host-tested; physical packet/PTT/liveness checks TODO.**
+
+## ERROR-944 — Settings-local radio controller changed operational initialization/lifetime
+
+### Date / area / environment
+2026-11-01; desktop Compose ownership, delivered E, Windows host.
+
+### Symptoms / root cause
+Stored radio ON depended on visiting Settings; navigation/conditional window could recreate/dispose the operational owner.
+Moving flow collection did not authorize moving the controller. The Settings-owned approach is rejected.
+
+### Working fix
+Keep controller at application root above conditional window with engine.scope; pass it down. Stored ON initializes without
+Settings, tabs/tray/minimization preserve it, intentional OFF/application shutdown retain release behavior. Driver unchanged.
+
+### Verification / related files / status
+Structural ownership/controller tests pass in desktop suite. `DesktopMain.kt`, `DesktopShell.kt`,
+`DesktopCompositionOwnershipTest.kt`; ADR-303, PERF-E07. **OPEN — code fixed/host-tested; hardware startup/tab/tray TODO.**
+
+## ERROR-945 — Unconditional composition still initialized or awaited lazy pairing
+
+### Date / area / environment
+2026-11-01; desktop boot/composition, delivered E, Windows/JBR 21.
+
+### Symptoms / root cause / failed approach
+Composition read engine.pairing before readiness: by-lazy could initialize on UI or block on background assembly's monitor.
+Background warming alone did not remove this caller; an immediate-frame claim was unsupported.
+
+### Working fix
+Nullable non-initializing readyPairing plus keyed nullable flows/effects/fingerprints. Assembly warms pairing before readiness;
+ready user actions can use it normally.
+
+### Verification / related files / status
+Boot test checks uninitialized lazy at construction/pre-ready view and available coordinator at readiness; forced suite green.
+`DesktopEngine.kt`, `DesktopShell.kt`, `DesktopEngineBootTest.kt`; ADR-304, PERF-E01.
+**RESOLVED (host lifetime regression verified); first-frame profiling TODO/NOT MEASURED.**
+
+## ERROR-946 — Desktop async logger shutdown competed with an in-flight output writer
+
+### Date / area / environment
+2026-11-01; desktop log output/close ownership, delivered E, Windows host.
+
+### Symptoms / root cause / failed approach
+Queue emptiness was mistaken for completed output while worker held a dequeued record. Shutdown/producer output ownership
+could close/write concurrently, truncate or write after close. Another shutdown flusher is rejected.
+
+### Working fix
+DesktopFileLogSink queues raw bounded records. Sole worker owns format/write/flush/close. Shutdown closes admission and joins;
+timeout returns false without another writer or closing under the worker. Overflow drops newest/counts it. Actual buffer:
+16,384 characters; prior FileWriter internally buffered. Failures/forced kill remain best-effort, not all-lines delivery.
+
+### Verification / related files / status
+Three latch regressions: in-flight entry, overflow and close timeout; sole-owner write/flush/close assertions pass.
+`DesktopFileLogSink.kt`/Test, `DesktopMain.kt`; ADR-306, PERF-E04.
+**OPEN — code fixed/host-tested; real-process exit/output check TODO.**
+
+## ERROR-947 — Unsupported AWT motion properties/non-observable state did not establish Windows preference
+
+### Date / area / environment
+2026-11-01; desktop accessibility, Windows 11/JBR 21, existing JNA, delivered E.
+
+### Symptoms / root cause / failed approach
+Undocumented property names plus atomic/TTL state neither establish the OS preference nor notify Compose. Claimed macOS
+support was not proven. Unsupported AWT detection is superseded.
+
+### Working fix
+SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION=0x1042, 32-bit BOOL via IntByReference. Successful zero means OFF;
+failed query unknown. Cold five-second IO Flow distincts values, retains learned state on failure; root Compose collection
+above conditional window; window/toast OR OS and Flash preferences. No new dependency; Windows-only OS detection.
+
+### Verification / related files / status
+Mapping, Flow/failure-retention and read-only real Windows API query pass. Microsoft official contract checked 2026-11-01,
+URL in ADR-308 and `docs/ui/accessibility.md`. `DesktopOsReduceMotion.kt`/Test, `DesktopMain.kt`; PERF-E08.
+**OPEN — host/native query verified; live visual toggle/window/toast TODO.**
+
+## ERROR-948 — Window-owned DropTarget retained a pre-boot repository sender
+
+### Date / area / environment
+2026-11-01; desktop drag/drop closure, delivered E, Windows host.
+
+### Symptoms / root cause / failed attempt
+Sender captures current chats; pre-boot chats is EmptyFlashChatRepository, not a forwarding proxy. Long-lived effect's direct
+local sender capture stayed stale despite updated header/peer. ERROR-941's direct-call workaround caused this gap.
+
+### Working fix
+`rememberUpdatedState(::sendFileToPeer)` updates whole closure; invoke positionally with all parameters/defaults. Preserve
+window-owned registration and current target/navigation guards; no named function-type arguments.
+
+### Verification / related files / status
+Structural updated-sender regression and compilation pass in 259-test suite. `DesktopShell.kt`,
+`DesktopCompositionOwnershipTest.kt`; ADR-300, PERF-E06. **OPEN — code fixed/host-tested; actual AWT drop/navigation/pre-ready TODO.**
+
+## ERROR-951 — BelFone classifier expectation was stale after ULTRA_LOW was added
+
+### Date / area / environment
+2026-11-01; common Android-host classifier tests, Windows; base `baf77753`, delivered fix `cbf7b8df`.
+
+### Symptoms / error
+`FlashPerformanceClassifierTest > belfone_is_low FAILED`
+`java.lang.AssertionError: expected:<LOW> but was:<ULTRA_LOW>`
+
+### Root cause / failed attempts
+Root production commit `051504a9d6cdccaeba0fdff0609cc41d826ef4f6` (2026-10-11) added RAM <=2048/API <=27 ULTRA_LOW;
+Android-host expectation stayed LOW and old gates did not include that suite. No failed attempt recorded.
+
+### Working fix / verification
+Rename/assert belfone_is_ultra_low/BelFone-class and add API28/1800MB standard LOW case. Original 124-test common-host
+run passed; repaired K common-host 144/full 602 tests pass. Gate expansion now retains this coverage. K merges first because
+this delivered test-only correction is its prerequisite, not an E production regression.
+`FlashPerformanceClassifierTest.kt`; ADR-314. **RESOLVED**.
+
+## ERROR-952 — Cached SunJCE Cipher rejected deterministic immutable-chunk resealing
+
+### Date / area / environment
+2026-11-01; security AES-GCM actuals, delivered K, Windows/JBR 21 SunJCE.
+
+### Symptoms / error
+`HubFileSealingTest > resealingIsDeterministicSoAResumedUploadRepeatsItsBytes FAILED`
+`java.security.InvalidAlgorithmParameterException: Cannot reuse iv for GCM encryption`
+
+### Root cause / delivered failed design
+Reinitializing same cached Cipher consecutively with identical key/nonce triggered its same-instance reuse guard. Delivered
+replacement-on-exception workaround restored output but retained the new initialized keyed operation; its zero-allocation
+headline was unsupported. Full original stack/diagnosis preserved in K's errors fragment.
+
+### Working fix / verification / status
+ERROR-954 removes keyed caches, caches Provider selection, creates fresh operations. Deterministic resealing remains ONLY
+identical immutable hub chunks, never changed plaintext with reused key/nonce. Reseal/parity/failure tests pass; no erasure
+promise. Both PlatformCrypto actuals, HubFileSealingTest; ADR-312/350, PERF-K05. **SUPERSEDED by ERROR-954**.
+
+## ERROR-953 — Mutable SPKI map key retrieved a valid PublicKey for invalid encoded bytes
+
+### Date / area / environment
+2026-11-01; security Android/JVM actuals, delivered K, Windows/JBR 21.
+
+### Symptoms / evidence / root cause
+Test-only regression populated valid cache then performed hash-preserving caller-array mutation; invalid SPKI still retrieved
+valid PublicKey. Regression failed delivered behavior. Map equality data was mutable while initial hash was cached.
+No physical exploit/stolen-key claim. Retaining caller bytes as identity is rejected.
+
+### Working fix / verification / related files / status
+Copy immutable key encoding; parse same snapshot and compare content under synchronized 1,024-entry public-key LRU.
+Cache never replaces signature verification/trust. Regression passes JVM/Android-host; full K 602 tests, zero failures/errors.
+Both PlatformCrypto actuals, PlatformCryptoParityTest; ADR-312, PERF-K05.
+**RESOLVED (host regression verified); physical provider verification TODO.**
+
+## ERROR-954 — Keyed Cipher/Mac ThreadLocals retained initialized capability
+
+### Date / area / environment
+2026-11-01; JCA ownership in Android/JVM actuals, delivered K, Windows/JBR 21.
+
+### Symptoms / evidence / root cause / failed approach
+Static review found initialized keyed operations retained after doFinal/reset. Android/JDK contracts restore initialized state,
+not erasure; correct output alone cannot prove absence of retained capability. Caching keyed operations was mistaken for Provider
+selection; ERROR-952's replacement workaround still retained it. Keyed ThreadLocals are rejected.
+
+### Working fix
+Cache EC/AES-GCM/HMAC Provider selection only; fresh Cipher/Mac per keyed call, fresh KeyFactory per parse. Retain/reset non-keyed
+SHA ThreadLocal; independent streaming digests. No algorithm/key-size/nonce/AAD/pin/wire change or zeroization promise.
+
+### Verification / related files / status
+AES failure/key-change, HMAC key-change, immutable-chunk reseal/parity/concurrency tests pass in K's 602-test run. Source/API
+ownership check is separate from correctness tests. Android Cipher/Mac full pages independently verified 2026-11-01 after initial
+navigation-only/truncated WebFetch failed; JDK21 independently verified; neither promises erasure. URLs in ADR-312/350 and
+`docs/android-platform-notes.md`. Both PlatformCrypto actuals and parity/concurrency tests; PERF-K05.
+**RESOLVED (keyed caches removed/host-tested); physical provider TODO.**
+
+## ERROR-955 — Probe header export mixed replaced lists and retained mutable membership
+
+### Date / area / environment
+2026-11-01; FlashProbe common code/Android-host tests, delivered K, Windows host.
+
+### Symptoms / root cause / failed approach
+Repeated volatile indexing could mix snapshots or index beyond a replacement list when a value's toString replaced registration.
+Caller-owned list membership was also retained. Volatile visibility is not whole-export consistency.
+
+### Working fix / verification / related files / status
+Copy list membership on registration, capture one reference per export. Values not deep-copied; names/order/bounds/sanitizer bytes
+unchanged. Replacing-toString and cleared-list regressions plus flat/vararg byte equivalence pass; full K green.
+`FlashProbe.kt`, `FlashProbeTest.kt`; ADR-310, PERF-K01. **RESOLVED (host-tested).**
+
+## ERROR-956 — Android file-log flush missed an already-dequeued entry
+
+### Date / area / environment
+2026-11-01; Android rotating logger on Windows Android-host, delivered K.
+
+### Symptoms / evidence / root cause / failed approach
+Latch blocks throwable formatting after dequeue; delivered flush saw empty queue and returned before persistence. Regression
+failed delivered behavior. Dequeue/format was outside storage monitor; path-only export snapshot could also rotate during copy.
+Queue-empty-as-persisted approach rejected.
+
+### Working fix / verification / related files / status
+Same reentrant monitor covers dequeue/format/append/flush/crash/gzip copy; separate admission monitor. Gzip destination cannot
+replace rotating source. Explicit calls may block, slow copy can fill bounded queue/drop newest/count it; storage failures remain
+best-effort. In-flight flush and source-overwrite regressions pass; K 602 tests, zero failures/errors, two POSIX skips.
+`RotatingFileLogSink.kt`/Test; ADR-311, EXP-124, PERF-K03. **RESOLVED (host-tested); physical storage TODO.**

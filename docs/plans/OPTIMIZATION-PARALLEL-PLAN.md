@@ -185,25 +185,32 @@ finding is lower-risk first and let the other resolve against it.
 
 ### 6.3 The integration gate
 
-Run it on the merged `dev` after every merge, through the lock. It is **two commands**, not one:
+Run it on the merged `dev` after every merge, through the lock. It is **two commands**, not one. The current
+commands below preserve the coverage added by Waves 2 and 3 and add desktop tests (E) plus common/security Android
+actuals (K). Force every verification run; record the command, tested commit, XML counts/skips and exit status.
 
 ```text
-cmd /c "tools\flash-gradle.cmd :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --continue --console=plain"
+powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :core:discovery:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :core:enterprise:jvmTest :core:hub-protocol:jvmTest :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
 ```
 
 ```text
-cmd /c "tools\flash-gradle.cmd :core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest :ui:chat:testAndroidHostTest :app:testDebugUnitTest --continue --console=plain"
+powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest :ui:chat:testAndroidHostTest :core:enterprise:testAndroidHostTest :app:testDebugUnitTest --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
 ```
 
 The second command exists because a `jvmTest`-only gate **never runs the data stream's main safety net**:
 `RealFlashChatRepositoryTest` lives in `core/messaging/src/androidHostTest` (688 tests with the rest of that source
-set), and `TransfersUiMapperTest` lives in `app/src/test`. Both were found missing from the first draft of this gate on
-2026-10-30, which is exactly the kind of gap a baseline run is for.
+set at the baseline), and `TransfersUiMapperTest` lives in `app/src/test`. Both were found missing from the first
+draft on 2026-10-30. Wave 4 also found the common Android classifier test stale (`ERROR-951`); that suite and security
+Android actuals/rotating logger coverage must not be omitted again. No security test is tagged out by K (`ADR-314`).
+These task lists are coverage contracts, not a fixed test-count promise or a performance comparison with the narrower
+historical baseline in §6.3.1.
 
-Add `:server:test` when H merged, `:core:enterprise:jvmTest` when H merged, `:core:radio:jvmTest` when R merged,
-`:core:calling:jvmTest`/`:core:ptt:jvmTest` when C merged, and `:app:compileDebugAndroidTestKotlin` when G merged.
-After a Room or server-migration merge, run `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` (+ the server
-`MigratorTest`) **again on the merged result**: two individually green migrations can still collide.
+H's `:server:test`/`:core:enterprise:jvmTest`, N's `:core:discovery:jvmTest`/`:core:hub-protocol:jvmTest`, G's
+`:app:compileDebugAndroidTestKotlin`, and enterprise Android-host coverage are now explicit in the commands. Add
+`:core:radio:jvmTest` when R merges and `:core:calling:jvmTest`/`:core:ptt:jvmTest` when C merges; those streams are
+not implemented by this integration. After a Room or server-migration merge, run `FlashMigrationsChainTest` +
+`FlashJvmMigrationsTest` (+ the server `MigratorTest`) **again on the merged result**: two individually green
+migrations can still collide. E and K change no schema.
 
 #### 6.3.1 Baseline — measured 2026-10-30 on `dev` at `54ff4737`
 
@@ -559,27 +566,34 @@ the admin console tests. A migration change also re-runs the server `MigratorTes
 
 ### E — desktop (10)
 
-`O19-01` the recursive AWT `DropTarget` registration · `O19-02` the transfer toast observing 100 Hz at idle ·
-`O19-03` the window-width container read during resize · `O03-10` the desktop shell root invalidation from eight
-StateFlows · `O19-06` + `O01-05` the blocking constructor (DPAPI, keys, disk) · `O19-07` idle discovery downscaling
-when minimised to tray · `O20-03` the synchronous unbuffered console sink · `O14-06` the 28–34 threads the desktop
-spawns at idle from independent coroutine/OkHttp/Ktor pools (E owns the desktop tree; it does not edit
-`core/network`) · `O24-08` OS reduce-motion · `O19-04`/`O19-05` are A's (build).
+**Reviewed 2026-11-01**, delivered `00a7a51f`, repaired `b2b61b92`, actual base `baf77753`. Ten audit IDs retained
+in nine action groups; six caller/lifetime defects repaired (ERROR-943..948). Current dispositions, not the original
+numeric hypotheses: window-owned DropTarget with updated whole sender; notification-relevant distinct snapshots
+(not timed debounce); class-only derived invalidation (full geometry still observes width); Settings-local collection
+with application-root radio; background warming and nullable readyPairing; lazy common/large icons (large getter
+uncalled); guarded GHOST/hidden workload START/FINISH/mode changes; sole-worker output/flush/close; dispatcher
+operation bounds (not total threads); documented observable Windows motion. `O19-04`/`O19-05` remain A's.
+Hub presence polling unchanged. No immediate frame, zero-root-recomposition, macOS motion, power or memory headline.
 
-**Verify:** `:desktop:compileKotlinJvm`, `:desktop:jvmTest`, and a manual frame profiler note (`PERF-E01`).
+**Verify:** forced desktop JVM/compile targeted PASS, 259 tests. Both expanded integration gates after merge;
+PERF-E01..E08 owed. EXP-115..119 NOT MEASURED; ADR-300..309 and desktop INTEGRATOR-REVIEW.md are authority.
 
 ### K — kernel (10)
 
-`O20-01` `inline fun FlashLog.d(tag, msg: () -> String)` + level check before the lambda (the 11 FPS contributor) ·
-`O20-04` `FlashProbe` vararg pair allocation and repeated sanitisation · `O20-02` move the rotating sink's three regex
-redactions + date formatting off the caller thread · `O20-06` compress the diagnostic log export ·
-`O15-01` cache the parsed SPKI in `ecP256Verify` (halves signature verification) · `O15-02` one `SecureRandom` ·
-`O15-03` cache `Cipher.getInstance("AES/GCM/NoPadding")` per thread · `O15-04` drop the okio `HashingSink` wrapper in
-`Sha256.digest` · `O25-03` top-level `Regex` + cached NFKD folding in `foldForSearch`/initials · `O27-06` keep the
-heavy crypto tests out of the default sweep (tag + a documented task).
+**Reviewed 2026-11-01**, delivered `6d9c9227`, repaired `22a53994`, actual base `baf77753`. Ten audit IDs reviewed,
+four defects repaired (ERROR-953..956). Current dispositions: INFO-default level gate/inline lambdas with existing eager
+APIs; flat 0..8-field/direct-format probes and stable header snapshot; ordinary Android writer formatting with synchronized
+flush/export; gzip API only (no app caller); immutable copied-SPKI public-key LRU; shared KeyFileVault RNG (Android
+PassphraseKeeper unchanged/outside scope); **Provider selection, not initialized keyed Cipher/Mac caches**; non-keyed
+security SHA reuse/independent streaming (transfer helper/wrappers unchanged); NFKD/ASCII/512-entry LRU.
+No broad caller migration, zero-total-allocation/FPS/50%-verification headline or portable zeroization guarantee.
+**O27-06 retains every security test**; common/security Android actual coverage is explicit in gates, none tagged out.
 
-**Verify:** `:core:common:jvmTest`, `:core:security:jvmTest`, and a JMH-style microbenchmark note for the regex and
-hash changes. `FlashLog` is called by every module: keep the public API source-compatible.
+**Merge order for this wave: K then E**, allowed by §6.2: K's delivered `cbf7b8df` repairs ERROR-951's stale classifier
+expectation in the newly covered common Android-host suite. Do not omit coverage or split the correction to hide it.
+**Verify:** forced common/security JVM + Android-host targeted PASS, 602 tests (2 documented POSIX-only skips).
+Both expanded gates after each merge; PERF-K01..K05 owed. EXP-120..124 WITHDRAWN/NOT MEASURED;
+ADR-310..314/350 and kernel INTEGRATOR-REVIEW.md are authority. Public logging API stays source-compatible.
 
 ### S — swarm (14)
 

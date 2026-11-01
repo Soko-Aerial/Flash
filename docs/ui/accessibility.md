@@ -8,6 +8,29 @@
 
 ---
 
+## Windows reduced-motion integration — reviewed 2026-11-01 (ADR-308, ERROR-947)
+
+**Implemented and host/native-query tested; live visual toggle not verified (`PERF-E08`).** This desktop integration
+changes no chat layout, motion tokens, Android accessibility behavior or dependency.
+
+- Use existing JNA to call `SystemParametersInfoW` with `SPI_GETCLIENTAREAANIMATION = 0x1042`, zero `uiParam`/flags,
+  and a 32-bit BOOL output (`IntByReference`). Only a successful query whose output is zero means animation is off.
+  A failed query is unknown, not an affirmative reduced-motion preference.
+- A cold Flow queries off the UI thread every five seconds, emits distinct values and preserves the last learned
+  preference on later failures. Compose collects it at application root above the conditional main window.
+  Main-window and toast motion combine the OS preference with Flash's setting by OR.
+- Rejected approach: undocumented AWT property names and non-observable atomic/TTL state neither establish the
+  Windows preference nor notify Compose. The delivered macOS detection claim is superseded; this implementation
+  detects Windows only. Existing in-app reduced motion remains available elsewhere.
+- Mapping, observable-update/failure-retention tests and a read-only query against the real Windows API passed.
+  Manually changing Windows Animation effects must still be checked with the main window/toast and hide/restore,
+  without another recomposition event. A successful native read is not visual acceptance.
+
+**Verified official source, checked 2026-11-01:**
+https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-systemparametersinfow — output BOOL,
+`SPI_GETCLIENTAREAANIMATION`, Vista+/Server 2008+ API. Record host/build/settings and actual visual outcome in
+`PERF-E08`; no blanket Linux/macOS OS-preference support is claimed.
+
 ## Component
 
 Accessibility layer across chat composables: semantics coverage (content/state

@@ -1,5 +1,114 @@
 # Experiments Log
 
+## Wave 4 experiments reviewed 2026-11-01 — all numeric headlines NOT MEASURED
+
+Base `baf77753`; delivered E `00a7a51f`, K `6d9c9227`; repaired E `b2b61b92`, K `22a53994`. Host correctness tests
+are not performance evidence. No reproducible same-host paired harness establishes the delivered time/FPS/allocation/
+compression/power/thread/RSS headlines. Original setups, figures and hypotheses are preserved under SUPERSEDED/WITHDRAWN
+in `logs/streams/{desktop,kernel}/experiments.md`. The canonical entries below state actual structural results and the
+owed procedures, not a measured before/after. Physical/manual measurements go last; no devices tested in this session.
+
+## EXP-115 — Desktop cold start, crypto and icon lifetime — NOT MEASURED
+- **Date / findings:** 2026-11-01; OPT-O19-06/OPT-O01-05, ADR-304/309.
+- **Structural result:** assembly warms crypto/pairing before readiness; nullable readyPairing prevents unconditional UI
+  lazy initialization/wait (ERROR-945). Common/large icon caches both lazy; getAllBaseIcons is uncalled.
+- **Withdrawn hypothesis:** immediate first-frame skeleton and blanket Windows/macOS guarantee. Removing one premature
+  access does not remove every startup wait or integrate high-DPI selection.
+- **Owed:** PERF-E01, paired supported-host cold/warm process-start/first-frame/readiness, EDT/Compose/IO/vault/icon stacks.
+  Record hardware/JDK/settings and distributions; Linux needs its own check, no macOS OS integration inferred.
+- **Status:** NOT MEASURED; boot/cache host assertions pass, no first-frame/heap/allocation result.
+
+## EXP-116 — Desktop resize, navigation and collection — NOT MEASURED
+- **Date / findings:** 2026-11-01; OPT-O19-01/03, OPT-O03-10, ADR-300..303.
+- **Structural result:** base already uses Compose containerSize/density. Derived class narrows class-consumer invalidation;
+  full geometry still observes width. Settings-local collection preserves root operational radio. DropTarget updates whole
+  repository-capturing sender; notification filtering is distinctness, not timed debounce.
+- **Withdrawn hypothesis:** zero root/per-pixel recompositions and an entirely raw-AWT-width baseline.
+- **Owed:** PERF-E02 class versus full-geometry/navigation/prompt/DPI profiling; PERF-E06 actual AWT drop; PERF-E07 radio
+  startup/tab/tray lifetime. Same host/base/repaired workload and pixel-to-dp settings.
+- **Status:** NOT MEASURED; no frame/recomposition/allocation measurement.
+
+## EXP-117 — Desktop hidden discovery and liveness — NOT MEASURED
+- **Date / finding:** 2026-11-01; OPT-O19-07, ADR-305/298.
+- **Structural result:** actual STANDARD/BOOST/ECO/GHOST modes; active-window/GHOST/transfer-verification/call/PTT guards,
+  hidden START/FINISH/mode-change reevaluation. GHOST never downscales to advertising ECO (ERROR-943).
+- **Limits:** connectionPolicy reads selected mode; desktop consumers do not honor every Composite ECO browse knob.
+  Effective-mode transitions prove neither quieter packets, power savings nor dropped sessions. Hub REST poll unchanged.
+- **Owed:** PERF-E03 physical LAN packet/workload/liveness checks then paired CPU/power measurements, not HIGH/BALANCED
+  labels or completion-only fixtures.
+- **Status:** NOT MEASURED; real-host state fixtures pass, no packet/power/session saving measured.
+
+## EXP-118 — Desktop async logger admission/output/shutdown — NOT MEASURED
+- **Date / finding:** 2026-11-01; OPT-O20-03, ADR-306, ERROR-946.
+- **Structural result:** raw bounded 4,096-record queue; one worker owns format/write/flush/close; shutdown closes admission
+  and joins without competing output owner. Actual BufferedWriter is 16,384 characters; old FileWriter internally buffered.
+- **Withdrawn setup/hypothesis:** entirely unbuffered baseline, 8 KB writer, immediate return/no dropped lines/frame gains.
+  Overflow drops newest/counts it; failures/forced kill/timeout prevent an all-lines guarantee.
+- **Owed:** PERF-E04 real-process slow output/overflow/graceful tail/timeout and paired caller-latency/output profiling.
+- **Status:** NOT MEASURED; three latch ownership tests pass, no FPS/throughput/caller-latency result.
+
+## EXP-119 — Desktop dispatcher versus total thread/RSS inventory — NOT MEASURED
+- **Date / finding:** 2026-11-01; OPT-O14-06, ADR-307.
+- **Structural result:** default IO parallelism 16 only if unset; engine IO view limitedParallelism(8). These bound
+  operations in those views, not every JVM/native/network thread. Base IO pool not literally unbounded.
+- **Withdrawn figures:** 28–34 threads to under 20, ~1 MB saved per thread. No measured host count/memory comparison.
+- **Owed:** PERF-E05 paired idle/load thread names, active operations, stack settings and RSS; preserve user IO property.
+- **Status:** NOT MEASURED; no total-process thread cap or memory guarantee.
+
+## EXP-120 — NFKD/ASCII search folding/cache — NOT MEASURED; delivered figures WITHDRAWN
+- **Date / finding:** 2026-11-01; OPT-O25-03, ADR-313.
+- **Structural result:** top-level combining-mark regex, ASCII fast path, synchronized 512-entry access-order LRU;
+  NFKD/mark-removal/lowercase unchanged. Unicode/compatibility/Turkish-locale/concurrent eviction tests pass. Entry
+  limit is not total bytes.
+- **Withdrawn method/figures:** uncommitted 20,000-iteration/1,000-warmup account, 216 ns ASCII/120 ns cached accent,
+  >95%/97.5% comparisons to older ~4,800 ns audit estimate. Cross-date estimates are not paired evidence or UI/server gains.
+- **Owed:** PERF-K04 same host/base/repaired inputs/warmup/caller mix, cold/warm/concurrent eviction and retained bytes.
+- **Status:** NOT MEASURED; delivered method/figures preserved in kernel fragment.
+
+## EXP-121 — Public-key parsing cache — NOT MEASURED; delivered figures WITHDRAWN
+- **Date / finding:** 2026-11-01; OPT-O15-01, ADR-312, ERROR-953.
+- **Structural result:** up to 1,024 parsed public keys, immutable copied SPKI identity and same parse snapshot. Hit avoids
+  parse, not signature verification/authorization. Mutation regression failed delivered code and passes repaired.
+- **Withdrawn method/figures:** uncommitted 2,000-verification/200-warmup account, 1,121,621 ns (~1.12 ms), 50%/doubled
+  throughput against older 0.8–1.5 ms parse/~2.2 ms verify audit. No realistic sync speed established.
+- **Owed:** PERF-K02 paired cache-hit/miss/eviction and directory profiles; test-only keys/provider/hardware recorded.
+- **Status:** NOT MEASURED.
+
+## EXP-122 — Provider selection/non-keyed digest reuse — NOT MEASURED; delivered figures WITHDRAWN
+- **Date / findings:** 2026-11-01; OPT-O15-03/04, ADR-312/350, ERROR-954.
+- **Structural result:** keyed Cipher/Mac ThreadLocals rejected; Provider selection retained, fresh keyed operations and
+  KeyFactory per parse. Non-keyed security SHA ThreadLocal reset/retained; independent streaming digests. KeyFileVault
+  shares RNG; Android PassphraseKeeper and transfer hashing remain separate/unchanged targets.
+- **Withdrawn figures:** uncommitted 2,000 combined AES seal+open and 10,000 SHA iteration account; 73,800 ns combined
+  cannot establish individually measured 36.9 us seal/open. 5,517 ns SHA/zero Cipher allocation/transfer-speed claims
+  unsupported; repaired calls create fresh operations. Fresh JCA objects do not guarantee zeroization.
+- **Owed:** PERF-K02/05 paired per-operation profiles and physical provider failure/key-change/immutable-chunk reseal.
+- **Status:** NOT MEASURED; algorithms/key sizes/nonce/AAD/pins/wire unchanged.
+
+## EXP-123 — Probe/log caller mix and allocations — NOT MEASURED; delivered figures WITHDRAWN
+- **Date / finding:** 2026-11-01; OPT-O20-04, ADR-310, ERROR-955.
+- **Structural result:** flat 0..8 fields avoid Pair/vararg-array at those callers; vararg callers remain. Direct sanitizer
+  preserves bytes/order/80-character bound. Original sanitizer already looped, not regex. Header membership copied,
+  one export snapshot. Disabled inline log lambda body not evaluated; eager String arguments constructed first.
+- **Withdrawn figures:** 4*24+48=144+ bytes to zero is unverified object-size arithmetic, not allocation profiling;
+  builders/Strings/boxing/arbitrary toString still allocate. No broad caller migration or 11-FPS contributor eliminated.
+- **Owed:** PERF-K01 actual eager/lambda/flat/vararg enabled/disabled mix, byte equivalence and host/device allocation/frame
+  profiling. Do not use unimplemented Wi-Fi Direct or fixed FPS-loss promise.
+- **Status:** NOT MEASURED.
+
+## EXP-124 — Android file-log formatting/flush/gzip API — NOT MEASURED; delivered figures WITHDRAWN
+- **Date / findings:** 2026-11-01; OPT-O20-02/06, ADR-311, ERROR-956.
+- **Structural result:** ordinary raw bounded queue, writer normally formats/redacts; flush/crash/export may block/format
+  on caller and forwarding sink adds cost. Shared dequeue/format/append/export monitor fixes in-flight flush; destination
+  cannot overwrite source. Slow export can overflow queue/drop newest/count it. Append buffer 8 KiB; underlying export
+  buffers 16 KiB. Default retention five ~1,000,000-byte files, each with one encoded-line overshoot.
+- **Withdrawn figures:** ~80 us to <1 us, 100 KB to ~12 KB, 2.5 MB/strict retention bound, separate CRC32 verification,
+  unblocked caller/flash-wear claims. Gzip has its standard CRC trailer, not independent validation. No app caller:
+  Android Share logs still creates text/plain .txt.
+- **Owed:** PERF-K03 explicit developer gzip/physical logger fixtures for content/rotation/in-flight flush/overflow/full
+  storage and measured bytes/time. Absence of temporary file is not wear or durability evidence.
+- **Status:** NOT MEASURED; host snapshot/flush/gzip assertions pass, no physical storage/latency/compression measurement.
+
 ## EXP-079 — Android APK Size and Native Library ABI Breakdown
 
 ### Date
