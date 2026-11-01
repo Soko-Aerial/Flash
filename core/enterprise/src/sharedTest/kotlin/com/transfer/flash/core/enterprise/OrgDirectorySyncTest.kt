@@ -717,6 +717,9 @@ class OrgDirectorySyncTest {
         val sharedSubjectCrypto = TestCrypto()
         val spki = Base64.encode(sharedSubjectCrypto.identityPublicKeyEncoded)
 
+        // Timed on purpose: this loop signs 5,000 statements on this machine in this process, immediately before the sync
+        // verifies 5,000, so it is a load-invariant reference for the budget asserted below (ERROR-938).
+        val fixtureStartNs = System.nanoTime()
         for (i in 1..5000) {
             val unsigned = OrgMemberStatement(
                 deviceId = "dev-$i",
@@ -738,6 +741,7 @@ class OrgDirectorySyncTest {
                 ),
             )
         }
+        val fixtureMs = (System.nanoTime() - fixtureStartNs) / 1_000_000
 
         // Split into 10 pages of 500 members each
         for (p in 0 until 10) {
@@ -766,9 +770,20 @@ class OrgDirectorySyncTest {
         assertTrue(outcome is OrgSyncOutcome.Success)
         assertEquals(5000, outcome.membersUpserted)
         assertEquals(5000, dao.members.size)
-        // Memory/time budget: 5,000 members verified and staged should complete in under 25,000 ms on JVM (software ECDSA ~2ms/member)
-        assertTrue(durationMs < 25000, "5,000 member sync took $durationMs ms (budget: 25000 ms)")
-        println("ORGT-U16: 5,000 members sync took $durationMs ms")
+        // Time budget: 5,000 members verified and staged should complete in under 25,000 ms on JVM (software ECDSA
+        // ~2 ms/member). That absolute figure is a smoke check, not a benchmark - it is a wall clock on a machine whose
+        // speed nobody controls, and the integration gate runs this suite beside ten other modules on eight cores. On
+        // 2026-11-01 the same code measured **5,949 ms alone and 27,192 ms under the gate**, so an absolute-only budget
+        // fails on load and says nothing about the product. The budget therefore also accepts a multiple of this test's
+        // own fixture cost, which is the same crypto on the same cores moments earlier: a genuine slowdown (quadratic
+        // staging, a re-verification per page) still blows through it, while a busy machine cannot (ERROR-938). The real
+        // performance figure is `PERF-H01`.
+        assertTrue(
+            durationMs <= maxOf(25_000L, fixtureMs * 8),
+            "5,000 member sync took $durationMs ms; the fixture's own 5,000 signatures took $fixtureMs ms " +
+                "(budget: 25 s, or 8x the fixture)",
+        )
+        println("ORGT-U16: 5,000 members sync took $durationMs ms (fixture $fixtureMs ms)")
 
         // Benchmark second conditional sync (0 changes)
         fakeApi.pages.add(
