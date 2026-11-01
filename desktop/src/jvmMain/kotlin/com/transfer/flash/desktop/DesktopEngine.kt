@@ -306,10 +306,16 @@ public class DesktopEngine(
      * 26-3 work. Falls back LOUDLY to an in-memory identity if the vault is unreadable — see
      * [PersistedFlashCrypto]'s degradation contract.
      */
-    public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
+    // OPT-O19-06 / OPT-O01-05: Make crypto, ephemeralKeyPair, and pairing lazy so DesktopEngine
+    // constructor on the main/EDT thread does not perform synchronous DPAPI unwraps, EC key generation,
+    // or SHA-256 fingerprinting before the first Compose window frame renders.
+    public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto by lazy {
         com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir, identityVault)
+    }
 
-    private val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
+    private val ephemeralKeyPair by lazy {
+        crypto.generateEphemeralEcdhKeyPair()
+    }
 
     /**
      * Desktop pairing (Phase 26-3, ADR-035): the SAME `DefaultFlashPairingProtocol` and
@@ -320,42 +326,44 @@ public class DesktopEngine(
      * `sendToPeer` mirrors the app host's contract: non-blocking, returns false when there is no
      * live session (the coordinator uses that for its "couldn't reach" feedback).
      */
-    override val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
-        localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
-            com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
-        ),
-        localDeviceId = identity.deviceId.value,
-        localName = effectiveFriendlyName(),
-        localModel = "desktop",
-        // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
-        ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
-        trustStore = trustStoreImpl,
-        observedPeerPin = observedPeerPins::get,
-        scope = scope,
-        sendToPeer = { peerId, text ->
-            val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
-            if (session != null) {
-                session.connection.sendTextAsync(text)
-                true
-            } else {
-                // Logged on BOTH branches, like the app host, because this boolean IS the
-                // user-visible "Couldn't reach …" — and the interesting half is the set of ids we do
-                // hold sessions for. A session registered under the peer's WS-hello id cannot be
-                // found by an endpoint id that differs, and a miss that prints only the id it looked
-                // for is indistinguishable from "we never connected at all" (2026-09-14: the
-                // desktop's discovery found the phone and Pair still said it could not reach it).
-                FlashLog.w(
-                    TAG_WS,
-                    "Pairing sendToPeer id=$peerId has NO session; " +
-                        "active sessions=${networkImpl?.activeSessions?.value?.keys?.map { it.value } ?: "none"}",
-                    null,
-                )
-                false
-            }
-        },
-        crypto = crypto,
-        ephemeralKeyPair = ephemeralKeyPair,
-    )
+    override val pairing: FlashPairingCoordinator by lazy {
+        FlashPairingCoordinator(
+            localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
+                com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
+            ),
+            localDeviceId = identity.deviceId.value,
+            localName = effectiveFriendlyName(),
+            localModel = "desktop",
+            // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
+            ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
+            trustStore = trustStoreImpl,
+            observedPeerPin = observedPeerPins::get,
+            scope = scope,
+            sendToPeer = { peerId, text ->
+                val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+                if (session != null) {
+                    session.connection.sendTextAsync(text)
+                    true
+                } else {
+                    // Logged on BOTH branches, like the app host, because this boolean IS the
+                    // user-visible "Couldn't reach …" — and the interesting half is the set of ids we do
+                    // hold sessions for. A session registered under the peer's WS-hello id cannot be
+                    // found by an endpoint id that differs, and a miss that prints only the id it looked
+                    // for is indistinguishable from "we never connected at all" (2026-09-14: the
+                    // desktop's discovery found the phone and Pair still said it could not reach it).
+                    FlashLog.w(
+                        TAG_WS,
+                        "Pairing sendToPeer id=$peerId has NO session; " +
+                            "active sessions=${networkImpl?.activeSessions?.value?.keys?.map { it.value } ?: "none"}",
+                        null,
+                    )
+                    false
+                }
+            },
+            crypto = crypto,
+            ephemeralKeyPair = ephemeralKeyPair,
+        )
+    }
 
     // --- Subsystems; non-null once [ready] flips true ---
     //
@@ -1215,6 +1223,13 @@ public class DesktopEngine(
             ensureOpen()
         }
         boot("assemble entered")
+
+        // OPT-O19-06 / OPT-O01-05: Warm crypto, ephemeral keypair, and pairing on background thread (Dispatchers.IO)
+        // so DPAPI unwrap, EC key generation, and SHA-256 fingerprinting do not block main UI thread.
+        val warmedCrypto = crypto
+        val warmedEphemeralKey = ephemeralKeyPair
+        val warmedPairing = pairing
+        boot("crypto and pairing warmed")
 
         // Audit S3: TLS is mandatory. A failure lands in [startError] (the shell shows it with a
         // retry); there is no plaintext fallback.
