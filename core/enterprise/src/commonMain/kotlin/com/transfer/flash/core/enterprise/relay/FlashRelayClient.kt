@@ -239,18 +239,25 @@ public class FlashRelayClient(
 
     /**
      * Tells the hub this device has durably stored the messages in [messageIds] (`FLASH_RECV_ACK` batch, OPT-O16-04).
-     * Deletes the server's mailbox copies in a single batch transaction.
+     * Deletes the server's mailbox copies one batch transaction per frame.
+     *
+     * Ids go out in frames of at most [MAX_RECV_ACK_IDS]: `RelayFrameCodec` rejects a longer `ids` list outright, so an
+     * uncapped batch covering a whole mailbox would be refused whole and every message would be redelivered instead of
+     * deleted.
      */
     public suspend fun acknowledgeReceipts(messageIds: List<String>, from: String? = null): Boolean {
         if (!state.value.canSend || messageIds.isEmpty()) return false
-        val frame = if (messageIds.size == 1) {
-            RelayFrame.RecvAck(msgId = messageIds[0], from = from)
-        } else {
-            RelayFrame.RecvAck(msgId = messageIds[0], from = from, ids = messageIds)
+        var allSent = true
+        for (batch in messageIds.chunked(MAX_RECV_ACK_IDS)) {
+            val frame = if (batch.size == 1) {
+                RelayFrame.RecvAck(msgId = batch[0], from = from)
+            } else {
+                RelayFrame.RecvAck(msgId = batch[0], from = from, ids = batch)
+            }
+            val sent = sendLock.withLock { transport.sendFrame(frame) }
+            allSent = allSent && sent
         }
-        return sendLock.withLock {
-            transport.sendFrame(frame)
-        }
+        return allSent
     }
 
     /**
@@ -386,6 +393,12 @@ public class FlashRelayClient(
 
         /** How often an idle client (not enrolled, no address, or revoked) looks again. */
         public const val IDLE_POLL_MS: Long = 5_000L
+
+        /**
+         * Most message ids one `FLASH_RECV_ACK` frame may carry. `RelayFrameCodec` refuses anything above this (it caps
+         * the list at 100), so batches must be split rather than sent whole.
+         */
+        public const val MAX_RECV_ACK_IDS: Int = 100
     }
 }
 
