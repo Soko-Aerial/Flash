@@ -160,29 +160,42 @@ export function mountDevices(container, ctx) {
     state.department = deptSel.value;
   }
 
+  let loadSeq = 0;
   async function load() {
+    const seq = ++loadSeq;
     mount(tableHost, skeleton('table', 8));
     const progress = h('p', { class: 'muted', role: 'status', 'aria-live': 'polite' });
     tableHost.appendChild(progress);
     try {
-      const rows = [];
-      for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
-        const page = await api.get('/devices', { query: { limit: PAGE, offset } });
-        rows.push(...page);
-        progress.textContent = t('devices.loading', { n: rows.length });
-        if (stopped) return;
-        if (page.length < PAGE) break;
-      }
-      all = rows;
+      const firstPage = await api.get('/devices', { query: { limit: PAGE, offset: 0 } });
+      if (stopped || seq !== loadSeq) return;
+      all = firstPage.slice();
       loaded = true;
       departments = await api.get('/departments').catch(() => departments);
+      if (stopped || seq !== loadSeq) return;
       fillDepartments();
       apply();
-      if (rows.length >= MAX_ROWS) toast(t('devices.truncated', { n: MAX_ROWS }), { kind: 'warning' });
       if (ctx.segments[1]) openDevice(ctx.segments[1]);
+
+      if (firstPage.length >= PAGE) {
+        for (let offset = PAGE; offset < MAX_ROWS; offset += PAGE) {
+          const page = await api.get('/devices', { query: { limit: PAGE, offset } });
+          if (stopped || seq !== loadSeq) return;
+          if (!page || page.length === 0) break;
+          all.push(...page);
+          fillDepartments();
+          apply();
+          if (page.length < PAGE) break;
+        }
+        if (all.length >= MAX_ROWS) toast(t('devices.truncated', { n: MAX_ROWS }), { kind: 'warning' });
+      }
     } catch (e) {
-      if (stopped) return;
-      mount(tableHost, errorState(e, load));
+      if (stopped || seq !== loadSeq) return;
+      if (!loaded) {
+        mount(tableHost, errorState(e, load));
+      } else {
+        toastError(e);
+      }
     }
   }
 
