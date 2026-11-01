@@ -24,7 +24,9 @@
 > **Stream H: 16 of 18 kept (4 repaired), `OPT-O16-03` REJECTED AND REVERTED (`8b622a9b`, ADR-298), 1 kept as a document only.**
 > `O16-03` suppressed the presence poll while the relay was up; `HubPresence`'s own KDoc says the hub serves presence over REST and
 > has no presence push, `RelayFrame` has no presence frame, and `HubFacade` chooses the `HUB` route from `hubOnline` (ADR-229) - so
-> with the relay up, the ordinary case, the change aged the only presence source from 30 s to 10 min. That is Wave 2's
+> with the relay up, the ordinary case, the change did not age the only presence source but **stopped updating it**: the
+> diff skipped the fetch outright (`else if (!isRelayOnline)`), so `hubOnline` froze for the whole relay session - not ten
+> minutes, as this banner first said. That is Wave 2's
 > `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by deleting a documented invariant. Two of the kept changes
 > broke an invariant in the code they touched: `putChunk` wrote the chunk file **before** opening the transaction, so a crash left a
 > committed `file_chunk` row whose file was gone and `complete()` checks counts, not file presence - the write is still outside the

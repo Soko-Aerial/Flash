@@ -7856,9 +7856,12 @@ still one Room transaction, so a failure rolls the whole page set back.
 - `EnterpriseHub.hubOnline` has exactly two writers: the poll, and the clear-on-unenrolled path. Nothing else sets it.
 - `HubPresence.kt` states in its own KDoc that the hub serves presence over REST and **has no presence push**; `RelayFrame`
   carries chat, mail and receipts — no presence frame.
-- So with the relay up, the ordinary case, the only presence source aged from 30 s to 10 min, and `HubFacade` picks the
-  `HUB` route from `hubOnline` (ADR-229), so a colleague appearing or disappearing would be routed wrongly for up to ten
-  minutes.
+- So with the relay up the only presence source stopped updating completely: the delivered code read
+  `} else if (!isRelayOnline) {` around the request, so while the tunnel stayed up the poll **never fetched** and
+  `hubOnline` kept whatever it last held. The 600 000 ms constant only bounded how often the relay state was re-read, so the
+  staleness was not "ten minutes" but the whole length of the relay session - and `HubFacade` picks the `HUB` route from
+  `hubOnline` (ADR-229), so a colleague appearing or disappearing stayed mis-routed for that entire time. (This review
+  first recorded it as "30 s to 10 min", which understated it; corrected on reading the reverted hunk.)
 
 This is Wave 2's `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by deleting an invariant the code
 documents. The uncited "120 radio activations/hour" and the "95 %" saving are withdrawn with it.

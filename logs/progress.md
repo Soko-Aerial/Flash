@@ -21,7 +21,8 @@ callers and the tests**, not against the streams' reports. Per-finding verdicts:
   delegation-revocation JOIN, precompressed gzip/deflate console assets with `modulepreload`, single-encoded group fan-out, O(M+D)
   department counts and O(1) roster checks, batched mailbox receipt acks, a streaming member projection during directory sync, and
   the deployment baseline document. 16 of 18 kept, **4 repaired during review**, **`OPT-O16-03` rejected and reverted**
-  (`8b622a9b`, ADR-298), 1 kept as a document only.
+  (`8b622a9b`, ADR-298 - presence has no push channel, and the code skipped the fetch outright while the relay was up, so
+  `hubOnline` froze for the whole relay session), 1 kept as a document only.
 - Corrections folded into the canonical logs: this entry, `logs/errors.md` (ERROR-921..927, ERROR-931..938), `docs/decisions.md`
   (ADR-280..286, ADR-290..299), `logs/experiments.md` (EXP-105..108 and EXP-110..114 all retitled NOT MEASURED),
   `docs/android-platform-notes.md` (six platform facts, each with URL, date and a verified/reported mark),

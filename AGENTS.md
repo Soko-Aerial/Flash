@@ -927,8 +927,9 @@ connected** (the KDoc says it exists so keepalive pings are scheduled, and a sus
 path returned `Result.success()` **regardless of ADR-232's "Keep listening in the background" opt-in**, cancelling the setting from
 inside the worker that exists to honour it, and the idle foreground-service stop **could not fire in the case it was written for**
 ("open Flash with nobody nearby, then leave it") and could not re-arm once it had. H: 16 of 18 kept (4 repaired), **`OPT-O16-03`
-rejected and reverted** (`8b622a9b`, ADR-298 — presence has no push channel, so suppressing the poll ages `hubOnline` from 30 s to
-10 min and `HubFacade` chooses the `HUB` route from it: Wave 2's `O10-05` failure mode again), one document-only. Two H repairs fixed
+rejected and reverted** (`8b622a9b`, ADR-298 — presence has no push channel, and the code did not slow the poll down but
+**skipped the fetch entirely** while the relay was up (`else if (!isRelayOnline)`), so `hubOnline` froze for the whole relay
+session and `HubFacade` routed on it: Wave 2's `O10-05` failure mode again), one document-only. Two H repairs fixed
 invariants the changes themselves broke: a committed `file_chunk` row could **outlive its chunk file** (the rename into place now
 happens inside the transaction), and an ack batch of more than 100 ids would have been **rejected whole** by `RelayFrameCodec`,
 turning every ack into a permanent redelivery — and `OPT-O16-04` is still **transport-only**, no product path sends a batch.
