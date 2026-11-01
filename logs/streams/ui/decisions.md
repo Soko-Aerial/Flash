@@ -1,5 +1,11 @@
 # Architectural Decisions — Stream U (UI)
 
+> **SUPERSEDED (§27) — the review is `logs/streams/ui/INTEGRATOR-REVIEW.md`; the canonical ADRs are ADR-260..265 in `dev`'s
+> `docs/decisions.md`.** Three corrections to what follows: **ADR-260**'s config file is wired into **no build file**, so
+> it does nothing yet; **ADR-261** merged a version that matched echoes by text and concatenated them into the durable
+> list, which the review replaced with the one-echo-per-new-row-id rule (its "<16 ms" is unmeasured); and **ADR-264**'s
+> "90-100 %" is unmeasured.
+
 ## ADR-260 — Compose Compiler Stability Configuration for Collections and Domain Models
 
 ### Decision

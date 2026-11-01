@@ -1,11 +1,11 @@
-# Optimization programme Ã¢â‚¬â€ parallel streams, worktrees and kickoff prompts
+# Optimization programme — parallel streams, worktrees and kickoff prompts
 
 Written 2026-10-30 for the owner. Source of the work: `docs/audit/optimization-2026-10-23/` (211 findings;
 ledger = `findings-ledger.md`, evidence = `O01..O28*.md`, compounding model = `compounding.md`, refused ideas =
 `rejected.md`).
 
-**Read `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` Ã‚Â§3 (machine rules) and Ã‚Â§8 (log fragments) before starting a
-stream.** This file adds the *split*; it does not replace that protocol, AGENTS.md Ã‚Â§6Ã¢â‚¬â€œÃ‚Â§13/Ã‚Â§35/Ã‚Â§36, or the audit's
+**Read `docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md` §3 (machine rules) and §8 (log fragments) before starting a
+stream.** This file adds the *split*; it does not replace that protocol, AGENTS.md §6–§13/§35/§36, or the audit's
 own evidence.
 
 ---
@@ -13,9 +13,9 @@ own evidence.
 ## 1. What this split is for
 
 Twelve **directory-disjoint** streams. Two streams in the same wave never edit the same file, so a
-`git merge --no-ff` of one into `dev` cannot collide with the other Ã¢â‚¬â€ except in the canonical logs, which no
-stream edits (Ã‚Â§5.1). Where a file *must* be shared by design (`core/engine`, `core/messaging/*`, `ui/chat`,
-`app/*`, `desktop/*`), Ã‚Â§4.2 names one owning stream **per file** and the other streams work in new files or in a
+`git merge --no-ff` of one into `dev` cannot collide with the other — except in the canonical logs, which no
+stream edits (§5.1). Where a file *must* be shared by design (`core/engine`, `core/messaging/*`, `ui/chat`,
+`app/*`, `desktop/*`), §4.2 names one owning stream **per file** and the other streams work in new files or in a
 carved-out subpackage.
 
 A stream is sized for one agent over a few sessions: **batch 1** = quick wins (hours), **batch 2** = the real fix
@@ -28,14 +28,14 @@ A stream is sized for one agent over a few sessions: **batch 1** = quick wins (h
 | Fact | Value | Consequence |
 |---|---|---|
 | Machine | 8 logical CPUs, ~20 GB RAM, one Gradle build at a time (`Global\FlashGradleBuild` lock) | 2 agents comfortable, 3 workable, 4 mostly wait for the lock |
-| `E:` free | ~69.9 GB | Worktrees and their `build/` output fit; ~3Ã¢â‚¬â€œ4 GB per *built* tree |
+| `E:` free | ~69.9 GB | Worktrees and their `build/` output fit; ~3–4 GB per *built* tree |
 | A worktree checkout | 38 MB of tracked files | Creating a worktree is cheap; **building** it is the cost |
-| Main tree | `C:\Users\KaliOxygen\Downloads\Flash` Ã¢â‚¬â€ the **integrator's** tree, `dev` at `7dab9a57` when this plan was written (the commit that adds this file is its child) | Streams never edit it |
+| Main tree | `C:\Users\KaliOxygen\Downloads\Flash` — the **integrator's** tree, `dev` at `7dab9a57` when this plan was written (the commit that adds this file is its child) | Streams never edit it |
 | Audit base commit | `4dcc7fad` (2026-10-23), **before** the radio data/voice and screen-share work now on `dev` | Every finding must be re-verified against today's code before it is worked |
 | Verification style | Most findings are `STATIC-ARITHMETIC`, only ~20 are `MEASURED` | Measure before and after; a finding that no longer reproduces is closed as `NO LONGER REPRODUCES`, not "fixed" |
-| Build gate | `cmd /c "tools\flash-gradle.cmd <tasks>"` (AGENTS Ã‚Â§36) | Never `gradlew`; exit 75 = someone else is building |
+| Build gate | `cmd /c "tools\flash-gradle.cmd <tasks>"` (AGENTS §36) | Never `gradlew`; exit 75 = someone else is building |
 
-**The audit is a claim, not evidence about this tree.** Several of its recommendations are refused by policy (Ã‚Â§8), and
+**The audit is a claim, not evidence about this tree.** Several of its recommendations are refused by policy (§8), and
 the code has moved since `4dcc7fad`. A stream's first act on a finding is to open the file and confirm the defect
 still exists; if it does not, record that and move on.
 
@@ -45,7 +45,7 @@ still exists; if it does not, record that and move on.
 
 Counts are findings from the ledger: the twelve streams sum to **210** and the gated row makes **211**, which is what
 the ledger lists. Two gated findings are counted inside their own stream (`O07-10` in T, `O08-03` in S) and are marked
-in Ã‚Â§9; `OPT-O22-03` is the separate gated row.
+in §9; `OPT-O22-03` is the separate gated row.
 
 | # | Stream | Worktree / branch | Findings | Domain focus | Wave |
 |---|---|---|---|---|---|
@@ -61,9 +61,9 @@ in Ã‚Â§9; `OPT-O22-03` is the separate gated row.
 | S | **swarm** | `E:\FlashWork\opt-swarm` / `agent/opt-swarm` | 14 | `core:swarm` scheduler, HAVE storms, piece storage | 5 |
 | R | **radio** | `E:\FlashWork\opt-radio` / `agent/opt-radio` | 7 | `core:radio` read loop, framing, pendingAcks | 5 |
 | C | **calls** | `E:\FlashWork\opt-calls` / `agent/opt-calls` | 15 | WebRTC capture/codec, PTT audio, call UI | 5 |
-| Ã¢â‚¬â€ | gated | Ã¢â‚¬â€ | 1 | `OPT-O22-03` (BouncyCastle removal) needs an ADR (Ã‚Â§8) | Ã¢â‚¬â€ |
+| — | gated | — | 1 | `OPT-O22-03` (BouncyCastle removal) needs an ADR (§8) | — |
 
-Why these boundaries and not the audit's O01Ã¢â‚¬â€œO28: the audit is organised by *symptom*, the streams by *directory*.
+Why these boundaries and not the audit's O01–O28: the audit is organised by *symptom*, the streams by *directory*.
 Two audit domains can share a directory (O03 and O24 both live in `ui/chat`), and one audit domain can span five
 directories (O25). Merging is decided by files, not by symptoms.
 
@@ -105,14 +105,14 @@ change is truly needed there, **writes a request into their own log fragment** a
 | `ui/theme/**` (splash composable) | U (canvas allocations), G (splash timing) | **U** | G changes *when* the splash is shown (`FlashLaunchSplashProcess`), U changes *what it draws*. |
 | `app/**` | G, R, C | **G** | R owns `app/**/radio/**`; C owns `app/**/calling/**` and `app/**/ptt/**`. |
 | `desktop/**` | E, R | **E** | R owns `desktop/**/radio*/**`. |
-| `logs/*`, `docs/testing/TEST-BACKLOG.md`, `docs/decisions.md`, `AGENTS.md` Ã‚Â§29, `docs/security.md`, `docs/testing/PROBES.md`, `docs/android-platform-notes.md` | everyone | **integrator** | Streams write only `logs/streams/<stream>/*` (Ã‚Â§5.1). |
-| `docs/protocol.md`, `docs/protocol-routes.txt`, `RouteTableContractTest` | H; N and D for a wire/DB note | **H** | A wire-format change is gated (Ã‚Â§8) and H regenerates the route list. |
+| `logs/*`, `docs/testing/TEST-BACKLOG.md`, `docs/decisions.md`, `AGENTS.md` §29, `docs/security.md`, `docs/testing/PROBES.md`, `docs/android-platform-notes.md` | everyone | **integrator** | Streams write only `logs/streams/<stream>/*` (§5.1). |
+| `docs/protocol.md`, `docs/protocol-routes.txt`, `RouteTableContractTest` | H; N and D for a wire/DB note | **H** | A wire-format change is gated (§8) and H regenerates the route list. |
 
 ### 4.3 The standing rules every stream prompt repeats
 
 1. New logic goes in **new files**; an existing large file gets a minimal hook, never a reformat.
 2. No new dependency, no new Gradle module, no wire-format change, no Room/schema change (D holds step 22),
-   no new permission, no new probe namespace Ã¢â‚¬â€ all of those are **A's**, **H's** or the owner's, and are requested.
+   no new permission, no new probe namespace — all of those are **A's**, **H's** or the owner's, and are requested.
 3. One build at a time, through `tools\flash-gradle.cmd`.
 4. The phone is a single-owner resource: no stream touches it. Everything needing a device goes to the backlog.
 5. Commit only to `agent/opt-<stream>`, small commits, never to `dev`/`main`, never force-push, never `git stash`
@@ -128,7 +128,7 @@ inserts at the top; two agents doing that means the last writer deletes the othe
 Each stream writes **only** into `logs/streams/<stream>/` in the same format the canonical file uses:
 
 ```text
-logs/streams/<stream>/progress.md          (one "## YYYY-MM-DD Ã¢â‚¬â€ <title>" block per session)
+logs/streams/<stream>/progress.md          (one "## YYYY-MM-DD — <title>" block per session)
 logs/streams/<stream>/errors.md            (ERROR-NNN from the stream's reserved block)
 logs/streams/<stream>/experiments.md       (EXP-NNN from the stream's reserved block, before/after numbers)
 logs/streams/<stream>/backlog-additions.md (device/manual checks still owed, PERF-<x>NN)
@@ -136,8 +136,8 @@ logs/streams/<stream>/decisions-additions.md (ADR-NNN from the stream's reserved
 logs/streams/<stream>/probes-additions.md  (only if the stream adds a probe)
 ```
 
-The integrator folds them into the canonical files at each merge (that is the documented exception to AGENTS Ã‚Â§6Ã¢â‚¬â€œÃ‚Â§10
-and it needs the owner's yes Ã¢â‚¬â€ protocol Ã‚Â§9 question 3). A fragment that never gets folded is still the record.
+The integrator folds them into the canonical files at each merge (that is the documented exception to AGENTS §6–§10
+and it needs the owner's yes — protocol §9 question 3). A fragment that never gets folded is still the record.
 
 ### 5.2 Commits
 
@@ -153,7 +153,7 @@ git -C E:\FlashWork\opt-<stream> fetch origin (or: git -C <main tree> rev-parse 
 git -C E:\FlashWork\opt-<stream> merge dev        # merge, never rebase: verified history is not rewritten
 ```
 
-A merge that touches a file the stream has also modified means the ownership map (Ã‚Â§4) was breached Ã¢â‚¬â€ stop and ask
+A merge that touches a file the stream has also modified means the ownership map (§4) was breached — stop and ask
 the integrator, do not resolve it locally.
 
 ---
@@ -168,14 +168,14 @@ other tree compiles with. After A merges, every stream merges `dev` once and reb
 | Wave | Streams (start together) | Why together | Why not more |
 |---|---|---|---|
 | **0** | **A** | Touches only build files; every later build benefits | Two agents here would both edit `gradle.properties` |
-| **1** | **D** + **T** | Disjoint dirs; D is the 1,700Ãƒâ€” query win, T is the transfer-freeze cascade | Both are heavy builds; the lock serialises them anyway |
-| **2** | **U** + **N** | Disjoint dirs; U is the 11 FPS Ã¢â€ â€™ 60 FPS cascade, N is the WhatsApp-style mesh stalls | Neither needs another stream merged; U's optimistic echo is UI-local (Ã‚Â§8) |
-| **3** | **G** + **H** | Android battery/background + hub server; no shared file | G's O10 items stay with N Ã¢â‚¬â€ G does not touch `core/discovery` |
-| **4** | **E** + **K** | Desktop host + shared kernel utilities; both small | K changes `FlashLog`, which every module calls Ã¢â‚¬â€ land it before S/R/C start, so their measurements run on the new logging cost |
+| **1** | **D** + **T** | Disjoint dirs; D is the 1,700× query win, T is the transfer-freeze cascade | Both are heavy builds; the lock serialises them anyway |
+| **2** | **U** + **N** | Disjoint dirs; U is the 11 FPS → 60 FPS cascade, N is the WhatsApp-style mesh stalls | Neither needs another stream merged; U's optimistic echo is UI-local (§8) |
+| **3** | **G** + **H** | Android battery/background + hub server; no shared file | G's O10 items stay with N — G does not touch `core/discovery` |
+| **4** | **E** + **K** | Desktop host + shared kernel utilities; both small | K changes `FlashLog`, which every module calls — land it before S/R/C start, so their measurements run on the new logging cost |
 | **5** | **S** + **R** + **C** | The device-gated trio (swarm, radio, calls); each needs phone checks anyway | All three owe device tests, so they interleave with owner test sessions |
 
 **Recommended: two agents.** Three works if the owner can process three reports a week. Four mostly queues on the
-build lock (protocol Ã‚Â§5 says the same).
+build lock (protocol §5 says the same).
 
 ### 6.2 Merge order inside a wave
 
@@ -205,14 +205,14 @@ Add `:server:test` when H merged, `:core:enterprise:jvmTest` when H merged, `:co
 After a Room or server-migration merge, run `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` (+ the server
 `MigratorTest`) **again on the merged result**: two individually green migrations can still collide.
 
-#### 6.3.1 Baseline Ã¢â‚¬â€ measured 2026-10-30 on `dev` at `54ff4737`
+#### 6.3.1 Baseline — measured 2026-10-30 on `dev` at `54ff4737`
 
 Both commands were run forced (`--rerun-tasks`), on Windows, after this plan's commit, before any stream started.
 
 | Command | Result | Wall clock |
 |---|---|---|
-| 1 Ã¢â‚¬â€ ten `jvmTest` suites + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **BUILD SUCCESSFUL**, 2,138 tests, 0 failed, 0 errors, **2 skipped** | 4 m 43 s |
-| 2 Ã¢â‚¬â€ three `testAndroidHostTest` suites + `:app:testDebugUnitTest` | 1,526 tests, **2 failed** (both expected, below), 0 errors | 8 m 55 s |
+| 1 — ten `jvmTest` suites + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **BUILD SUCCESSFUL**, 2,138 tests, 0 failed, 0 errors, **2 skipped** | 4 m 43 s |
+| 2 — three `testAndroidHostTest` suites + `:app:testDebugUnitTest` | 1,526 tests, **2 failed** (both expected, below), 0 errors | 8 m 55 s |
 
 | Suite | Tests | Failed |
 |---|---|---|
@@ -231,10 +231,10 @@ Both commands were run forced (`--rerun-tasks`), on Windows, after this plan's c
 | `:ui:chat:testAndroidHostTest` | 698 | 0 |
 | `:app:testDebugUnitTest` | 87 | **2** |
 
-**Expected failures Ã¢â‚¬â€ do not chase, and do not "fix" one without reading ERROR-106 (open):**
+**Expected failures — do not chase, and do not "fix" one without reading ERROR-106 (open):**
 
-- `TransfersUiMapperTest.retryableComesFromTheModelPredicate` Ã¢â‚¬â€ bare `java.lang.AssertionError`.
-- `TransfersUiMapperTest.aHubRowSaysSoAndOffersNoRetry` Ã¢â‚¬â€ `AssertionError: a hub failure is final; a dropped network
+- `TransfersUiMapperTest.retryableComesFromTheModelPredicate` — bare `java.lang.AssertionError`.
+- `TransfersUiMapperTest.aHubRowSaysSoAndOffersNoRetry` — `AssertionError: a hub failure is final; a dropped network
   keeps the row queued`.
 
 Both are pre-existing on `dev` before any stream exists. A merge that changes the count is the signal; a stream that
@@ -252,17 +252,17 @@ Any **new** failure after a merge belongs to the stream that merged: it gets an 
 block, and the integrator does not merge the next stream until the gate is back to the baseline above.
 
 At the end of a session a stream runs `cmd /c "tools\flash-gradle.cmd --stop"` so an idle daemon does not hold
-2Ã¢â‚¬â€œ4 GB.
+2–4 GB.
 
-#### 6.3.2 After the Wave 0 merge (Stream A, 2026-10-30) Ã¢â‚¬â€ and the rule it taught the gate
+#### 6.3.2 After the Wave 0 merge (Stream A, 2026-10-30) — and the rule it taught the gate
 
 Stream A changed build configuration only, so its merge is where the gate's own numbers must be re-established. All four
 runs below are forced (`--rerun-tasks`), same machine, through the lock, same task set:
 
 | Gate | `dev` before the merge | `agent/opt-build` as delivered | `dev` after review |
 |---|---|---|---|
-| 1 Ã¢â‚¬â€ ten `jvmTest` + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **275 s**, 2,138 tests, 0 failed, 2 skips | **467 s**, same tests | **204 s** (`--no-build-cache`), same tests Ã¢â‚¬â€ **316 s** if the run also fills the cache |
-| 2 Ã¢â‚¬â€ three host suites + `:app:testDebugUnitTest` | **535 s**, 1,526 tests, 2 expected failures | **429 s** | **490 s** at one fork per task, same 2 failures (two forks for host suites gives 376 s and is 114 s faster, but flaked ERROR-873, so it is not the shipped setting) |
+| 1 — ten `jvmTest` + `:desktop:compileKotlinJvm` + `:app:compileDebugKotlin` | **275 s**, 2,138 tests, 0 failed, 2 skips | **467 s**, same tests | **204 s** (`--no-build-cache`), same tests — **316 s** if the run also fills the cache |
+| 2 — three host suites + `:app:testDebugUnitTest` | **535 s**, 1,526 tests, 2 expected failures | **429 s** | **490 s** at one fork per task, same 2 failures (two forks for host suites gives 376 s and is 114 s faster, but flaked ERROR-873, so it is not the shipped setting) |
 
 Two rules follow, and they apply to every stream from now on:
 
@@ -270,10 +270,10 @@ Two rules follow, and they apply to every stream from now on:
    unforced (almost every compile up-to-date) while the baseline it compared against was forced. Recorded as ERROR-872.
    Paste the command line with every number.
 2. **`--rerun-tasks` pays for build-cache *stores* without getting lookups back.** A forced run has nothing to reuse, so
-   the cache only writes Ã¢â‚¬â€ about **112 s** across gate 1's 153 tasks. For an evidence run whose only purpose is wall
+   the cache only writes — about **112 s** across gate 1's 153 tasks. For an evidence run whose only purpose is wall
    clock, add `--no-build-cache`; for the normal loop leave the cache on, which is where it pays.
 
-Net after review: gate 1 Ã¢Ë†â€™26 %, gate 2 Ã¢Ë†â€™8 % against the forced baseline (about 694 s against 810 s for the pair). Gate 2's
+Net after review: gate 1 −26 %, gate 2 −8 % against the forced baseline (about 694 s against 810 s for the pair). Gate 2's
 larger win needs per-task forks, which wait for `PERF-A07` (the two sleep-based tests of ERROR-873).
 
 Stream A's outcome: 21 of 25 findings merged; `O22-01` (ABI splits), `O22-04` (jlink pruning), `O22-06` (WebRTC keep rules)
@@ -286,12 +286,12 @@ settings corrected. Authority: **ADR-231**, the per-finding table in `logs/strea
 
 | Resource | Used today | A | D | T | U | N | G | H | E | K | S | R | C |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| ADR | 229 | 230Ã¢â‚¬â€œ239 | 240Ã¢â‚¬â€œ249 | 250Ã¢â‚¬â€œ259 | 260Ã¢â‚¬â€œ269 | 270Ã¢â‚¬â€œ279 | 280Ã¢â‚¬â€œ289 | 290Ã¢â‚¬â€œ299 | 300Ã¢â‚¬â€œ309 | 310Ã¢â‚¬â€œ319 | 320Ã¢â‚¬â€œ329 | 330Ã¢â‚¬â€œ339 | 340Ã¢â‚¬â€œ349 |
-| ERROR | 870 | 871Ã¢â‚¬â€œ880 | 881Ã¢â‚¬â€œ890 | 891Ã¢â‚¬â€œ900 | 901Ã¢â‚¬â€œ910 | 911Ã¢â‚¬â€œ920 | 921Ã¢â‚¬â€œ930 | 931Ã¢â‚¬â€œ940 | 941Ã¢â‚¬â€œ950 | 951Ã¢â‚¬â€œ960 | 961Ã¢â‚¬â€œ970 | 971Ã¢â‚¬â€œ980 | 981Ã¢â‚¬â€œ990 |
-| EXP | 79 | 80Ã¢â‚¬â€œ84 | 85Ã¢â‚¬â€œ89 | 90Ã¢â‚¬â€œ94 | 95Ã¢â‚¬â€œ99 | 100Ã¢â‚¬â€œ104 | 105Ã¢â‚¬â€œ109 | 110Ã¢â‚¬â€œ114 | 115Ã¢â‚¬â€œ119 | 120Ã¢â‚¬â€œ124 | 125Ã¢â‚¬â€œ129 | 130Ã¢â‚¬â€œ134 | 135Ã¢â‚¬â€œ139 |
-| Room schema | 21 | Ã¢â‚¬â€œ | **22** | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ |
-| Test prefix | Ã¢â‚¬â€œ | `PERF-A` | `PERF-D` | `PERF-T` | `PERF-U` | `PERF-N` | `PERF-G` | `PERF-H` | `PERF-E` | `PERF-K` | `PERF-S` | `PERF-R` | `PERF-C` |
-| Probe area | Ã¢â‚¬â€œ | Ã¢â‚¬â€œ | existing `db.*` | existing `transfer.*` | Ã¢â‚¬â€œ | existing net names | existing app names | existing `hub.*` | existing desktop names | existing `log.*` | existing `swarm.*` | existing `radio.*` | existing call names |
+| ADR | 229 | 230–239 | 240–249 | 250–259 | 260–269 | 270–279 | 280–289 | 290–299 | 300–309 | 310–319 | 320–329 | 330–339 | 340–349 |
+| ERROR | 870 | 871–880 | 881–890 | 891–900 | 901–910 | 911–920 | 921–930 | 931–940 | 941–950 | 951–960 | 961–970 | 971–980 | 981–990 |
+| EXP | 79 | 80–84 | 85–89 | 90–94 | 95–99 | 100–104 | 105–109 | 110–114 | 115–119 | 120–124 | 125–129 | 130–134 | 135–139 |
+| Room schema | 21 | – | **22** | – | – | – | – | – | – | – | – | – | – |
+| Test prefix | – | `PERF-A` | `PERF-D` | `PERF-T` | `PERF-U` | `PERF-N` | `PERF-G` | `PERF-H` | `PERF-E` | `PERF-K` | `PERF-S` | `PERF-R` | `PERF-C` |
+| Probe area | – | – | existing `db.*` | existing `transfer.*` | – | existing net names | existing app names | existing `hub.*` | existing desktop names | existing `log.*` | existing `swarm.*` | existing `radio.*` | existing call names |
 
 Integrator takes 991+ (ERROR), 350+ (ADR), 140+ (EXP). Only D may bump the Room schema; a stream that believes it
 needs a schema change stops and asks. Server migrations are H's alone, and it records the component version it took
@@ -300,9 +300,9 @@ in its fragment.
 ## 8. Findings that must NOT be implemented as written
 
 The audit lists 211 defects, not 211 things to do. These are gated, obsolete, or not code at all. A stream that
-reaches one of these writes it into its fragment as `BLOCKED Ã¢â‚¬â€ needs owner decision` and moves to the next finding.
+reaches one of these writes it into its fragment as `BLOCKED — needs owner decision` and moves to the next finding.
 
-> **All of the "owner" rows below were answered on 2026-10-30 Ã¢â‚¬â€ see Ã‚Â§12 and ADR-232.** Only the rows marked
+> **All of the "owner" rows below were answered on 2026-10-30 — see §12 and ADR-232.** Only the rows marked
 > `device session` and `owner (ops)` still block: those need hardware or a deployment, not a decision.
 
 | Finding | Why it is gated | Who decides |
@@ -319,8 +319,8 @@ reaches one of these writes it into its fragment as `BLOCKED Ã¢â‚¬â€ 
 | `OPT-O02-07` / `OPT-O17-01` server heap cliff | Deployment profile (JVM flags, connection budget), not source. H documents the numbers the owner must deploy. | owner (ops) |
 | `OPT-O11-01`, `OPT-O11-03`, `OPT-O12-06` codec changes | Need real devices, and O11 changes the vendored `webrtc-kmp` fork that is republished (ADR-103). | device session |
 | `OPT-O26-06` "voice clips over the 1200 baud data channel" | **Obsolete.** ADR-210/ADR-225 put audio on the vendor SBC Bluetooth channel; REJ-06 rejects packet-radio voice on Shannon grounds. Mark it and do not build it. | already decided |
-| `OPT-O24-01` optimistic echo | Allowed, **only** as a UI-local pending overlay: the outbox row must still be written before the bubble shows "sent", or a crash loses the message (AGENTS Ã‚Â§18). | U implements with that constraint |
-| `OPT-O05-01`/`OPT-O07-01` "one pass for the whole-file hash" | **Wire shape.** `FILE_START` carries the digest and is sent before any chunk, so the value must exist up front; a real single pass needs a new frame (digest after the fact) or buffering. T delivered neither Ã¢â‚¬â€ see `logs/streams/transfer/INTEGRATOR-REVIEW.md` Ã‚Â§3.1. Revisit with an N/owner answer. | owner + wire ADR |
+| `OPT-O24-01` optimistic echo | Allowed, **only** as a UI-local pending overlay: the outbox row must still be written before the bubble shows "sent", or a crash loses the message (AGENTS §18). | U implements with that constraint |
+| `OPT-O05-01`/`OPT-O07-01` "one pass for the whole-file hash" | **Wire shape.** `FILE_START` carries the digest and is sent before any chunk, so the value must exist up front; a real single pass needs a new frame (digest after the fact) or buffering. T delivered neither — see `logs/streams/transfer/INTEGRATOR-REVIEW.md` §3.1. Revisit with an N/owner answer. | owner + wire ADR |
 
 **Learned in the D/T review (2026-10-31), apply to every later stream:** a feature that needs a *host* to call
 it is not done when the module compiles. D's `recordProgress` and summary projections and T's `SeekableChunkSource`,
@@ -338,146 +338,146 @@ re-verified:** every finding D/T/U/N/G/H/E/K/S/R/C touch - that is each stream's
 Effort/risk are the audit's own (S/M/L, Low/Medium). "Doc" is the evidence file in
 `docs/audit/optimization-2026-10-23/`.
 
-### A Ã¢â‚¬â€ build (25)
+### A — build (25)
 
-**Batch 1 Ã¢â‚¬â€ configuration only, no source (each under an hour):**
-`O21-01` uncomment `org.gradle.parallel` Ã‚Â· `O21-02` `org.gradle.caching=true` Ã‚Â· `O21-03` daemon `-Xmx4096m` + modern
-GC Ã‚Â· `O21-04` `:server:test` `maxParallelForks=4` Ã‚Â· `O21-05` CI runs `:server:test` Ã‚Â· `O21-06` CI JDK 21 +
-`--no-daemon` audit Ã‚Â· `O21-07` pin the BouncyCastle version range Ã‚Â· `O21-08` notices/AboutLibraries only on release Ã‚Â·
-`O21-10` drop the duplicate Room KSP in `:app` Ã‚Â· `O22-01` ABI splits (arm64-v8a, armeabi-v7a, x86_64) Ã‚Â· `O22-04` dead
-JRE modules Ã‚Â· `O22-05` drop Material 2 from the desktop umbrella Ã‚Â· `O22-06` narrow the `org.webrtc.**` keep rule Ã‚Â·
-`O22-07` remove parked `:ui:chat` androidMain dependencies Ã‚Â· `O20-05` R8 rules that strip logs in release.
+**Batch 1 — configuration only, no source (each under an hour):**
+`O21-01` uncomment `org.gradle.parallel` · `O21-02` `org.gradle.caching=true` · `O21-03` daemon `-Xmx4096m` + modern
+GC · `O21-04` `:server:test` `maxParallelForks=4` · `O21-05` CI runs `:server:test` · `O21-06` CI JDK 21 +
+`--no-daemon` audit · `O21-07` pin the BouncyCastle version range · `O21-08` notices/AboutLibraries only on release ·
+`O21-10` drop the duplicate Room KSP in `:app` · `O22-01` ABI splits (arm64-v8a, armeabi-v7a, x86_64) · `O22-04` dead
+JRE modules · `O22-05` drop Material 2 from the desktop umbrella · `O22-06` narrow the `org.webrtc.**` keep rule ·
+`O22-07` remove parked `:ui:chat` androidMain dependencies · `O20-05` R8 rules that strip logs in release.
 
-**Batch 2 Ã¢â‚¬â€ one-day items:**
-`O21-09` split `buildSrc` Ã‚Â· `O19-04` desktop JVM flags (`MaxGCPauseMillis`, `Xss512k`, `ExitOnOutOfMemoryError`) Ã‚Â·
-`O19-05` AppCDS archive in jpackage Ã‚Â· `O01-06` desktop AppCDS/JVM flags Ã¢â‚¬â€ **the same defect as O19-04/05, close it as a
-duplicate** Ã‚Â· `O22-02` strip the 24 foreign native SQLite binaries from the installer Ã‚Â·
+**Batch 2 — one-day items:**
+`O21-09` split `buildSrc` · `O19-04` desktop JVM flags (`MaxGCPauseMillis`, `Xss512k`, `ExitOnOutOfMemoryError`) ·
+`O19-05` AppCDS archive in jpackage · `O01-06` desktop AppCDS/JVM flags — **the same defect as O19-04/05, close it as a
+duplicate** · `O22-02` strip the 24 foreign native SQLite binaries from the installer ·
 `O01-03` + `O28-01` a `:benchmark` module with Macrobenchmark and baseline/startup profiles.
 
-**Batch 3 Ã¢â‚¬â€ measurement:**
-`O27-01` forks monorepo-wide Ã‚Â· `O27-02` virtual time (config + the shared test harness only; per-module test rewrites
-belong to the owning stream) Ã‚Â· `O27-05` the flake infrastructure.
+**Batch 3 — measurement:**
+`O27-01` forks monorepo-wide · `O27-02` virtual time (config + the shared test harness only; per-module test rewrites
+belong to the owning stream) · `O27-05` the flake infrastructure.
 
-**Gated:** `O22-03` (remove BouncyCastle) Ã¢â‚¬â€ needs an ADR and a TLS device test (Ã‚Â§8). Record it, do not do it.
+**Gated:** `O22-03` (remove BouncyCastle) — needs an ADR and a TLS device test (§8). Record it, do not do it.
 
 **Verify:** before/after `:server:test` wall clock, a clean `:app:assembleRelease` APK size per ABI, `:desktop:package*`
 installer size, and one cold `:core:messaging:compileKotlinJvm`. Evidence runs must say *executed*, not
-`FROM-CACHE` Ã¢â‚¬â€ so for the numbers use `--rerun-tasks` on the single task.
+`FROM-CACHE` — so for the numbers use `--rerun-tasks` on the single task.
 
-**Status 2026-10-30 Ã¢â‚¬â€ MERGED, reviewed (ADR-231).** 21 of 25 findings landed; see
-`logs/streams/build/INTEGRATOR-REVIEW.md` for the per-finding table and Ã‚Â§6.3.2 for the gate numbers.
+**Status 2026-10-30 — MERGED, reviewed (ADR-231).** 21 of 25 findings landed; see
+`logs/streams/build/INTEGRATOR-REVIEW.md` for the per-finding table and §6.3.2 for the gate numbers.
 
-- Landed: `O21-01`Ã¢â‚¬Â¦`O21-10`, `O22-02`, `O22-05`, `O20-05`, `O19-04`, `O01-03`/`O28-01` (module only), `O27-01/02/05`. `O22-01` (built 2026-10-31 by the review: ABI splits + the release script reads `output-metadata.json` and fails on a stale or missing output).
+- Landed: `O21-01`…`O21-10`, `O22-02`, `O22-05`, `O20-05`, `O19-04`, `O01-03`/`O28-01` (module only), `O27-01/02/05`. `O22-01` (built 2026-10-31 by the review: ABI splits + the release script reads `output-metadata.json` and fails on a stale or missing output).
 - **Not landed — owner decisions, not stream work:** `O22-04` jlink pruning (unverifiable without an installer
   smoke test → PERF-A03), `O22-06` narrowed WebRTC keeps (reverses a documented release-only crash fix), `O22-07`
   `:ui:chat` dependency removal (published POM; the file says why they stay).
-- **Not landed Ã¢â‚¬â€ not delivered:** `O19-05` Ã¢â‚¬â€ `-Xshare:auto` is the JVM default and no AppCDS archive is shipped, so
+- **Not landed — not delivered:** `O19-05` — `-Xshare:auto` is the JVM default and no AppCDS archive is shipped, so
   `O01-06` is **not** closed. Still open.
-- **Corrected after measurement:** 4 forks per `Test` task Ã¢â€ â€™ **1 for every task** (two forks for the Robolectric host
+- **Corrected after measurement:** 4 forks per `Test` task → **1 for every task** (two forks for the Robolectric host
   suites measured faster but flaked `RealFlashChatRepositoryTest` under load, ERROR-873); `SoftRefLRUPolicyMSPerMB=50`
   and `forkEvery=100` removed; hand-written `app/src/main/baseline-prof.txt` deleted (not generated; one rule cannot
-  match) Ã¢â‚¬â€ `O01-03`/`O28-01` stay open until PERF-A02 runs on a device. `:benchmark` cannot run yet: `:app` has no
+  match) — `O01-03`/`O28-01` stay open until PERF-A02 runs on a device. `:benchmark` cannot run yet: `:app` has no
   `benchmark` build type.
 
-### D Ã¢â‚¬â€ data (23)
+### D — data (23)
 
 > **Merged 2026-10-31** (`3b28e5be`, fixes `f3154de0`). Review: `logs/streams/data/INTEGRATOR-REVIEW.md`.
 > Delivered: `O06-01`, `O06-05`, `O04-02`, `O25-04`, `O02-06`, `O06-04`, `O06-06`, `O06-02`, `O04-03`,
 > `O04-04`, `O06-09`, `O04-01`, `O14-04`, `O14-05` (with the `hashCode` contract fix), `O27-05`, `O25-09`, `O28-05`,
 > `O23-05`, `O06-07`/`O07-03` (caller wired by the integrator). Not delivered: `O06-08` (projections now
-> real, no consumer Ã¢â‚¬â€ `PERF-D03`) and `O27-04` (never attempted Ã¢â‚¬â€ `PERF-D04`). Device checks `PERF-D01`/`PERF-D02`.
+> real, no consumer — `PERF-D03`) and `O27-04` (never attempted — `PERF-D04`). Device checks `PERF-D01`/`PERF-D02`.
 
 **First step (ERROR-873, added by the integrator after the Wave 0 merge):** `RealFlashChatRepositoryTest` has two cases that
-synchronise with `delay(20)`/`delay(100)` and read an empty list under CPU load Ã¢â‚¬â€ `pins are stored per conversation, newest
-firstÃ¢â‚¬Â¦` (line ~522) and `delete for everyone sends direct action only for the local author` (line ~3436). They pass at one
+synchronise with `delay(20)`/`delay(100)` and read an empty list under CPU load — `pins are stored per conversation, newest
+first…` (line ~522) and `delete for everyone sends direct action only for the local author` (line ~3436). They pass at one
 fork, but they are the reason the monorepo cannot use per-task forks. D owns this file: replacing the sleeps with an explicit
 wait (poll `conversationState.value` with a timeout, or collect the flow) belongs in D's first commit, before anyone trusts a
 gate at more than one fork.
 
-**Batch 1 (the 1,700Ãƒâ€” win + the indexes):**
-`O06-01` index `messages(conversationId, readAt)` and rewrite `observeUnreadCounts` (697 ms Ã¢â€ â€™ 0.41 ms) Ã‚Â· `O06-05`
-five missing indexes (`outbox.nextAttemptAt`, `hub_file.createdAtMs`, `conversations(pinned, sortOrder)`, Ã¢â‚¬Â¦) Ã‚Â·
-`O04-02` the N+1 synchronous queries in the chat-list combine Ã‚Â· `O25-04` cache the regex in `decodeReactorIds` Ã‚Â·
+**Batch 1 (the 1,700× win + the indexes):**
+`O06-01` index `messages(conversationId, readAt)` and rewrite `observeUnreadCounts` (697 ms → 0.41 ms) · `O06-05`
+five missing indexes (`outbox.nextAttemptAt`, `hub_file.createdAtMs`, `conversations(pinned, sortOrder)`, …) ·
+`O04-02` the N+1 synchronous queries in the chat-list combine · `O25-04` cache the regex in `decodeReactorIds` ·
 `O02-06` + `O06-04` the **desktop** opener `JvmFlashDatabaseOpener` (non-WAL / `synchronous=FULL`, no page-cache
-bound) Ã‚Â· `O23-05` + `O06-06` `auto_vacuum` + `journal_size_limit` (this is the one Room step **22**).
+bound) · `O23-05` + `O06-06` `auto_vacuum` + `journal_size_limit` (this is the one Room step **22**).
 
 **Batch 2:**
-`O06-02` `observeLatestPreviews` (573 ms, re-run on every write) Ã‚Â· `O04-03` receipt/reaction invalidation storm Ã‚Â·
-`O04-04` search/unread scans Ã‚Â· `O06-07` one transaction for `markChunksDone` + `setBytesDone` Ã‚Â· `O06-09` the
-`searchMembers` index that a leading wildcard defeats Ã‚Â· `O02-02` stop retaining closed conversation state Ã‚Â·
-`O14-04` the eager `hubDropped` `stateIn` Ã¢â€ â€™ `WhileSubscribed(5_000)` (the audit's ledger keeps `sendWithTimeout`
-cancellation under the same number; that half stays open Ã¢â‚¬â€ a blocking socket write cannot be cancelled without
-truncating a frame) Ã‚Â· `O14-05` the structural-equality iteration on every `conversationState` emission Ã‚Â·
-`O07-03` 5,120 transactions per 10 GB (with T: T owns the caller, D owns the DAO) Ã‚Â· `O28-05` slow-query callbacks.
+`O06-02` `observeLatestPreviews` (573 ms, re-run on every write) · `O04-03` receipt/reaction invalidation storm ·
+`O04-04` search/unread scans · `O06-07` one transaction for `markChunksDone` + `setBytesDone` · `O06-09` the
+`searchMembers` index that a leading wildcard defeats · `O02-02` stop retaining closed conversation state ·
+`O14-04` the eager `hubDropped` `stateIn` → `WhileSubscribed(5_000)` (the audit's ledger keeps `sendWithTimeout`
+cancellation under the same number; that half stays open — a blocking socket write cannot be cancelled without
+truncating a frame) · `O14-05` the structural-equality iteration on every `conversationState` emission ·
+`O07-03` 5,120 transactions per 10 GB (with T: T owns the caller, D owns the DAO) · `O28-05` slow-query callbacks.
 
 **Batch 3:**
-`O06-08` BLOB inlining (`SwarmContentEntity` 131 KB manifest; coordinate with S) Ã‚Â· `O25-09` collection sizing Ã‚Â·
+`O06-08` BLOB inlining (`SwarmContentEntity` 131 KB manifest; coordinate with S) · `O25-09` collection sizing ·
 `O27-04` in-memory SQLite for the client tests. **Decided by ADR-232:** `O06-03` **stays on LIKE** (FTS5 only if a real device
-shows >~300 ms over ~100k messages); `O06-10` takes the **`mmap_size` half only** Ã¢â‚¬â€ the PBKDF2 iteration count is not lowered;
-`O04-01` is **approved** Ã¢â‚¬â€ page the history, and the pager must resolve `FlashBackStackState.targetMessageId` so search
+shows >~300 ms over ~100k messages); `O06-10` takes the **`mmap_size` half only** — the PBKDF2 iteration count is not lowered;
+`O04-01` is **approved** — page the history, and the pager must resolve `FlashBackStackState.targetMessageId` so search
 deep-links still land on the right message.
 
 **Verify:** the audit's own `bench/db_benchmark.py` before/after at 100k messages, plus `:core:persistence:jvmTest`
 and the two migration tests. The index change is a schema step: bump `FlashSchemaSteps`, add the `22.json`, and prove
 the chain.
 
-### T Ã¢â‚¬â€ transfer (28)
+### T — transfer (28)
 
 > **Merged 2026-10-31**, fixes in the commit after (`5ef86ca5`). Review:
 > `logs/streams/transfer/INTEGRATOR-REVIEW.md`. Delivered: `O07-07`, `O07-09`, `O02-10`, `O25-01`, `O07-05`,
 > `O23-04`, `O05-04`/`O05-05`/`O05-08`/`O05-09`, `O02-08`/`O02-09`, `O02-01`, `O07-04`, `O07-06`, `O07-08`,
 > `O28-02`, `O25-07`, `O05-02`/`O05-03`/`O05-10`, `O07-10` (blocked). Merged but **inert without a host caller**
 > (recorded, not reverted): `O23-02` (`PERF-T05`), `O07-02` (`PERF-T06`), `O23-03`'s FAT32 half (`PERF-T07`).
-> Not delivered: `O05-01`/`O07-01` (Ã‚Â§8), `O23-06` (`PERF-T08`). A resumed send was broken on the branch Ã¢â‚¬â€ fixed
+> Not delivered: `O05-01`/`O07-01` (§8), `O23-06` (`PERF-T08`). A resumed send was broken on the branch — fixed
 > before the gate, and fixing it exposed an endgame that re-sent merely queued frames (ERROR-894, also fixed);
 > `PERF-T09`/`PERF-T10` cover the settle and the ACK grace.
 
 **Batch 1 (cheap, high ROI):**
-`O07-07` the 1 MB chunk plan silently clamped to 256 KB Ã‚Â· `O07-09` the boxed `ArrayList<Int>` done-set reconcile
-(`ResumeBitVector`) Ã‚Â· `O25-01` the O(NÃ‚Â·M) `pendingIndexes` init Ã‚Â· `O07-05` the per-chunk `Sha256.digest` provider
-lookup Ã‚Â· `O23-04` purge orphaned hub binaries/partials/voice/camera files Ã‚Â· `O23-03` pre-allocate + the FAT32 4 GB
-check Ã‚Â· `O23-06` buffered `saveToGallery` (250,000 syscalls per multi-GB copy) Ã‚Â· `O05-04` EXIF header without
-re-reading the file Ã‚Â· `O05-05` rotate without a second full pixel matrix Ã‚Â· `O05-08` trim the camera/voice cache Ã‚Â·
-`O05-09` bounded decode retries Ã‚Â· `O02-08` the `JvmImageDecoder` 32-bitmap (~64 MB) cache with no trim hook Ã‚Â·
+`O07-07` the 1 MB chunk plan silently clamped to 256 KB · `O07-09` the boxed `ArrayList<Int>` done-set reconcile
+(`ResumeBitVector`) · `O25-01` the O(N·M) `pendingIndexes` init · `O07-05` the per-chunk `Sha256.digest` provider
+lookup · `O23-04` purge orphaned hub binaries/partials/voice/camera files · `O23-03` pre-allocate + the FAT32 4 GB
+check · `O23-06` buffered `saveToGallery` (250,000 syscalls per multi-GB copy) · `O05-04` EXIF header without
+re-reading the file · `O05-05` rotate without a second full pixel matrix · `O05-08` trim the camera/voice cache ·
+`O05-09` bounded decode retries · `O02-08` the `JvmImageDecoder` 32-bitmap (~64 MB) cache with no trim hook ·
 `O02-09` the `Activity` context held by `AndroidImageDecoder` (both files are in `ui/platform-shims`, which T owns).
 
 **Batch 2 (the cascade):**
 `O05-01` + `O07-01` one streaming pass for the whole-file hash and the chunk hashes (no `hashOnly` pre-pass; 5.8 GB
-Ã¢â€ â€™ 1.9 GB of reads for a 2 GB file) Ã‚Â· `O02-01` route inbound frames through `ChunkBufferPool` Ã‚Â· `O23-02` a seekable source so resume skips to the missing
-offsets instead of re-reading the whole file Ã‚Â· `O07-08` coalesce the 100 Hz progress flow (with U reading
-it) Ã‚Â· `O07-06` in-flight chunk retransmission instead of a 15 s timeout + full restart Ã‚Â· `O07-02` `.part` + atomic
-rename Ã‚Â· `O07-04` take the hash/disk work off the lock-bound reader thread Ã‚Â· `O28-02` flight telemetry so the
+→ 1.9 GB of reads for a 2 GB file) · `O02-01` route inbound frames through `ChunkBufferPool` · `O23-02` a seekable source so resume skips to the missing
+offsets instead of re-reading the whole file · `O07-08` coalesce the 100 Hz progress flow (with U reading
+it) · `O07-06` in-flight chunk retransmission instead of a 15 s timeout + full restart · `O07-02` `.part` + atomic
+rename · `O07-04` take the hash/disk work off the lock-bound reader thread · `O28-02` flight telemetry so the
 before/after is measurable.
 
 **Batch 3:**
-`O02-10` the resume bit vector Ã‚Â· `O25-07` `ChunkFrame.serialize` pooling + redundant sort Ã‚Â· `O05-02`/`O05-03`/`O05-10`
-desktop AAC/JCodec work off the UI thread Ã‚Â· `O07-10` **gated** (Ã‚Â§8).
+`O02-10` the resume bit vector · `O25-07` `ChunkFrame.serialize` pooling + redundant sort · `O05-02`/`O05-03`/`O05-10`
+desktop AAC/JCodec work off the UI thread · `O07-10` **gated** (§8).
 
 **Verify:** `:core:transfer:jvmTest`, `bench/TransferLoopbackBenchmark.kt` before/after, and EXP numbers in the
 fragment. The hash single-pass change must keep the whole-file verification (REJ-02 forbids dropping it).
 
-### U Ã¢â‚¬â€ ui (28)
+### U — ui (28)
 
 **Batch 1 (each S, each provable by inspection):**
-`O03-03` hoist `draft` out of the root `ConversationScreen` scope (every keystroke re-composes the screen) Ã‚Â·
-`O03-04` a Compose compiler stability configuration file for the domain models Ã‚Â· `O03-01`/`O03-11`/`O03-12` read
-animation values in the draw phase and guard `reduceMotion` Ã‚Â· `O03-05` hoist the per-card lambdas Ã‚Â·
-`O03-06` stop the O(N) set equality check on every `LazyColumn` recomposition Ã‚Â· `O03-08` the context-menu list
-allocation Ã‚Â· `O03-13` hoist the `BorderStroke` Ã‚Â· `O03-09` memoise the trusted-peer regex mapping Ã‚Â·
+`O03-03` hoist `draft` out of the root `ConversationScreen` scope (every keystroke re-composes the screen) ·
+`O03-04` a Compose compiler stability configuration file for the domain models · `O03-01`/`O03-11`/`O03-12` read
+animation values in the draw phase and guard `reduceMotion` · `O03-05` hoist the per-card lambdas ·
+`O03-06` stop the O(N) set equality check on every `LazyColumn` recomposition · `O03-08` the context-menu list
+allocation · `O03-13` hoist the `BorderStroke` · `O03-09` memoise the trusted-peer regex mapping ·
 `O03-02` the reaction chip's composition-phase state + puff reads (reading animation state in composition instead of
-the draw phase, so every chip frame re-composes) Ã‚Â·
-`O04-05` per-row `SwipeToDismissBox` state Ã‚Â· `O04-06` day separators out of the inline lambda (slot reuse) Ã‚Â·
-`O24-05` the settings toggle's synchronous DataStore write Ã‚Â· `O24-06` no infinite transition while a sheet opens Ã‚Â·
+the draw phase, so every chip frame re-composes) ·
+`O04-05` per-row `SwipeToDismissBox` state · `O04-06` day separators out of the inline lambda (slot reuse) ·
+`O24-05` the settings toggle's synchronous DataStore write · `O24-06` no infinite transition while a sheet opens ·
 `O24-07` reserve the image ratio before decode.
 
 **Batch 2:**
-`O03-14` the splash canvas allocations (in `ui/theme`) Ã‚Â· `O03-15` is **S's** Ã‚Â·
-`O03-16` the double text measurement in the quoted reply Ã‚Â· `O03-17`/`O03-18` are `BoxWithConstraints` in the nav bar
-(U) and the call dock (**C**) Ã‚Â· `O03-07` the re-created `GroupFileSender` remember key Ã‚Â·
-`O24-01` optimistic local echo as a **UI-local overlay** (Ã‚Â§8) Ã‚Â· `O24-02` keep the staging tray visible with a spinner
-until `sendFile` returns Ã‚Â· `O24-03` the IME `animateContentSize` jitter Ã‚Â· `O24-04` auto-scroll when the keyboard
-opens Ã‚Â· `O05-06`/`O05-07` the 10 Hz voice-note card and its waveform parsing Ã‚Â· `O25-05` memoise the sorts in the
-nearby and video-grid layouts Ã‚Â· `O04-07` the unconstrained `animateScrollToItem`.
+`O03-14` the splash canvas allocations (in `ui/theme`) · `O03-15` is **S's** ·
+`O03-16` the double text measurement in the quoted reply · `O03-17`/`O03-18` are `BoxWithConstraints` in the nav bar
+(U) and the call dock (**C**) · `O03-07` the re-created `GroupFileSender` remember key ·
+`O24-01` optimistic local echo as a **UI-local overlay** (§8) · `O24-02` keep the staging tray visible with a spinner
+until `sendFile` returns · `O24-03` the IME `animateContentSize` jitter · `O24-04` auto-scroll when the keyboard
+opens · `O05-06`/`O05-07` the 10 Hz voice-note card and its waveform parsing · `O25-05` memoise the sorts in the
+nearby and video-grid layouts · `O04-07` the unconstrained `animateScrollToItem`.
 
 **Batch 3:** `O24-08` is E's (desktop reduce-motion).
 
@@ -485,132 +485,132 @@ nearby and video-grid layouts Ã‚Â· `O04-07` the unconstrained `animateScrol
 device check (`PERF-U01`) for anything that changes what a user sees. Do not claim a frame-rate number without a
 Macrobenchmark run (A's `:benchmark` module).
 
-### N Ã¢â‚¬â€ net (18)
+### N — net (18)
 
 **Batch 1:**
-`O09-06` + `O14-02` the `Thread.sleep(25)` busy-poll in `WsSession` backpressure Ã‚Â· `O09-05` the
-`ByteArrayPool` copy-and-discard in `WebSocketCodec` Ã‚Â· `O09-08` the unconditional `UUID.randomUUID()` for a flow
-nobody collects Ã‚Â· (`O14-04`/`O14-05` are D's) Ã‚Â· `O10-03` the 253 Binder IPC cycles per subnet sweep Ã‚Â·
+`O09-06` + `O14-02` the `Thread.sleep(25)` busy-poll in `WsSession` backpressure · `O09-05` the
+`ByteArrayPool` copy-and-discard in `WebSocketCodec` · `O09-08` the unconditional `UUID.randomUUID()` for a flow
+nobody collects · (`O14-04`/`O14-05` are D's) · `O10-03` the 253 Binder IPC cycles per subnet sweep ·
 `O10-06` the duplicated connectivity triggers.
 
 **Batch 2:**
-`O09-01` `BoundedSendQueue` bypassed by unbuffered blocking writes under the global write lock Ã‚Â· `O14-01` the
-monitor lock held across socket I/O Ã‚Â· `O14-03` the global `drainMutex` serialising every peer Ã‚Â·
-`O09-03` double JSON tree parsing in `RelayFrameCodec` Ã‚Â· `O10-04` the NSD resolve queue head-of-line block Ã‚Â·
-`O10-05` the unsynchronised polling sweepers Ã‚Â· `O10-07` directed broadcast basic-rate penalty Ã‚Â· `O28-03` call
+`O09-01` `BoundedSendQueue` bypassed by unbuffered blocking writes under the global write lock · `O14-01` the
+monitor lock held across socket I/O · `O14-03` the global `drainMutex` serialising every peer ·
+`O09-03` double JSON tree parsing in `RelayFrameCodec` · `O10-04` the NSD resolve queue head-of-line block ·
+`O10-05` the unsynchronised polling sweepers · `O10-07` directed broadcast basic-rate penalty · `O28-03` call
 telemetry is C's.
 
 **Batch 3:**
-`O09-02` TLS session resumption (measure both hosts; it changes handshake behaviour) Ã‚Â· `O10-01` screen-off
-discovery downscale (**needs G's screen-state signal** Ã¢â‚¬â€ agree on an interface; N owns the discovery side) Ã‚Â·
+`O09-02` TLS session resumption (measure both hosts; it changes handshake behaviour) · `O10-01` screen-off
+discovery downscale (**needs G's screen-state signal** — agree on an interface; N owns the discovery side) ·
 `O10-02` the permanent `MulticastLock` (N owns `core:discovery`; G calls the new lease API if one is needed).
 
-**Decided by ADR-232:** `O09-04` and `O09-07` are **not taken** Ã¢â‚¬â€ no wire-format change now. N implements only the allocation
+**Decided by ADR-232:** `O09-04` and `O09-07` are **not taken** — no wire-format change now. N implements only the allocation
 half (`O09-05`, `O09-06`, `O14-02`), which changes no bytes. A wire v3 with a negotiated fallback is its own project.
 
 **Verify:** `:core:network:jvmTest`, `:core:discovery` tests, and for the lock change a two-device transfer check
 (`PERF-N01`).
 
-### G Ã¢â‚¬â€ android (13)
+### G — android (13)
 
 **Batch 1 (battery, the owner-visible one):**
-`O13-01` the perpetual partial wake lock Ã¢â€ â€™ bounded, ref-counted lease Ã‚Â· `O13-02` the keepalive worker that spins the
-whole engine for an empty outbox Ã‚Â· `O13-03` `Verifying` missing from the Android 15 timeout plan Ã‚Â·
-`O13-08` the `delay(300)` poll at service start Ã‚Â· `O01-02` synchronous DataStore/SQLite on the main thread Ã‚Â·
-`O01-07` the redundant `MediaCodecList` enumeration Ã‚Â· `O01-08` sequential PRAGMAs at open.
+`O13-01` the perpetual partial wake lock → bounded, ref-counted lease · `O13-02` the keepalive worker that spins the
+whole engine for an empty outbox · `O13-03` `Verifying` missing from the Android 15 timeout plan ·
+`O13-08` the `delay(300)` poll at service start · `O01-02` synchronous DataStore/SQLite on the main thread ·
+`O01-07` the redundant `MediaCodecList` enumeration · `O01-08` sequential PRAGMAs at open.
 
 **Batch 2:**
-`O13-05` `ACTION_SCREEN_OFF` handling (polling and tickers in a pocket) Ã‚Â· `O13-04` the Transsion Tier 3 silent
-`AudioTrack` Ã‚Â· `O13-07` audio-focus backoff in `TranssionHiberKeepAlive` Ã‚Â· `O01-04` the eager engine assembly +
-subnet sweep at launch. (`O02-09` Ã¢â‚¬â€ the `Activity` context held by `AndroidImageDecoder` Ã¢â‚¬â€ is T's, because the file is
+`O13-05` `ACTION_SCREEN_OFF` handling (polling and tickers in a pocket) · `O13-04` the Transsion Tier 3 silent
+`AudioTrack` · `O13-07` audio-focus backoff in `TranssionHiberKeepAlive` · `O01-04` the eager engine assembly +
+subnet sweep at launch. (`O02-09` — the `Activity` context held by `AndroidImageDecoder` — is T's, because the file is
 in `ui/platform-shims`.)
 
-**Batch 3 / decided by ADR-232:** `O13-06` is **approved** Ã¢â‚¬â€ the `connectedDevice` service stops when there is no peer, no
+**Batch 3 / decided by ADR-232:** `O13-06` is **approved** — the `connectedDevice` service stops when there is no peer, no
 transfer and no hub connection, and one opt-in setting ("Keep listening in the background") restores today's behaviour with
-the honest sentence. `O01-01` is **not taken** Ã¢â‚¬â€ ADR-080 stands and the splash is never dismissed; G may change what happens
+the honest sentence. `O01-01` is **not taken** — ADR-080 stands and the splash is never dismissed; G may change what happens
 *during* the splash, never whether the animation finishes.
 
 **Verify:** `:app:compileDebugKotlin`, `:app:compileDebugAndroidTestKotlin`, and a device session for the wake-lock
-and Doze behaviour (`PERF-G01`, `PERF-G02`) Ã¢â‚¬â€ a battery claim without `batterystats` is not a result.
+and Doze behaviour (`PERF-G01`, `PERF-G02`) — a battery claim without `batterystats` is not a result.
 
-### H Ã¢â‚¬â€ hub (19)
+### H — hub (19)
 
 **Batch 1:**
-`O23-01` the per-chunk `fsync` + open/close in `HubFileDisk` (1,600 per 50 MB) Ã‚Â· `O25-10` the N+1 revocation cascade
-(~2.1 s of exclusive write lock) Ã‚Â· `O18-01` gzip/deflate static assets Ã‚Â· `O18-02` the 35-request ES module waterfall Ã‚Â·
+`O23-01` the per-chunk `fsync` + open/close in `HubFileDisk` (1,600 per 50 MB) · `O25-10` the N+1 revocation cascade
+(~2.1 s of exclusive write lock) · `O18-01` gzip/deflate static assets · `O18-02` the 35-request ES module waterfall ·
 `O17-04` `ExitOnOutOfMemoryError` in the deploy scripts.
 
 **Batch 2:**
-`O17-02` `writeChunkFile` inside `db.withTransaction` Ã‚Â· `O25-02` the O(DÃ‚Â·M) directory sync + repeated JSON Ã‚Â·
-`O25-06` the linear scan over `memberDeviceIds` Ã‚Â· `O16-01` the stop-and-wait hub file chunk pipeline Ã‚Â·
-`O16-03` the 30 s HTTP presence poll while the relay is up Ã‚Â· `O02-03` the 35Ã¢â‚¬â€œ45 MB org snapshot spike Ã‚Â·
-`O02-07`/`O17-01` the heap cliff (**document only**, Ã‚Â§8) Ã‚Â· `O27-03` real sockets/Netty in the test suite.
+`O17-02` `writeChunkFile` inside `db.withTransaction` · `O25-02` the O(D·M) directory sync + repeated JSON ·
+`O25-06` the linear scan over `memberDeviceIds` · `O16-01` the stop-and-wait hub file chunk pipeline ·
+`O16-03` the 30 s HTTP presence poll while the relay is up · `O02-03` the 35–45 MB org snapshot spike ·
+`O02-07`/`O17-01` the heap cliff (**document only**, §8) · `O27-03` real sockets/Netty in the test suite.
 
-**Batch 3:** `O16-02` multi-page sync (overlaps `O02-03`) Ã‚Â· `O16-04` batched mailbox acks Ã‚Â· `O18-03` console
-preloading Ã‚Â· `O25-09` collection sizing Ã‚Â· `O17-03` the group fan-out serialisation.
+**Batch 3:** `O16-02` multi-page sync (overlaps `O02-03`) · `O16-04` batched mailbox acks · `O18-03` console
+preloading · `O25-09` collection sizing · `O17-03` the group fan-out serialisation.
 
 **Verify:** `:server:test` (compare against A's new parallel baseline, not the old 238 s), the hub file e2e test, and
 the admin console tests. A migration change also re-runs the server `MigratorTest` on the merged result.
 
-### E Ã¢â‚¬â€ desktop (10)
+### E — desktop (10)
 
-`O19-01` the recursive AWT `DropTarget` registration Ã‚Â· `O19-02` the transfer toast observing 100 Hz at idle Ã‚Â·
-`O19-03` the window-width container read during resize Ã‚Â· `O03-10` the desktop shell root invalidation from eight
-StateFlows Ã‚Â· `O19-06` + `O01-05` the blocking constructor (DPAPI, keys, disk) Ã‚Â· `O19-07` idle discovery downscaling
-when minimised to tray Ã‚Â· `O20-03` the synchronous unbuffered console sink Ã‚Â· `O14-06` the 28Ã¢â‚¬â€œ34 threads the desktop
+`O19-01` the recursive AWT `DropTarget` registration · `O19-02` the transfer toast observing 100 Hz at idle ·
+`O19-03` the window-width container read during resize · `O03-10` the desktop shell root invalidation from eight
+StateFlows · `O19-06` + `O01-05` the blocking constructor (DPAPI, keys, disk) · `O19-07` idle discovery downscaling
+when minimised to tray · `O20-03` the synchronous unbuffered console sink · `O14-06` the 28–34 threads the desktop
 spawns at idle from independent coroutine/OkHttp/Ktor pools (E owns the desktop tree; it does not edit
-`core/network`) Ã‚Â· `O24-08` OS reduce-motion Ã‚Â· `O19-04`/`O19-05` are A's (build).
+`core/network`) · `O24-08` OS reduce-motion · `O19-04`/`O19-05` are A's (build).
 
 **Verify:** `:desktop:compileKotlinJvm`, `:desktop:jvmTest`, and a manual frame profiler note (`PERF-E01`).
 
-### K Ã¢â‚¬â€ kernel (10)
+### K — kernel (10)
 
-`O20-01` `inline fun FlashLog.d(tag, msg: () -> String)` + level check before the lambda (the 11 FPS contributor) Ã‚Â·
-`O20-04` `FlashProbe` vararg pair allocation and repeated sanitisation Ã‚Â· `O20-02` move the rotating sink's three regex
-redactions + date formatting off the caller thread Ã‚Â· `O20-06` compress the diagnostic log export Ã‚Â·
-`O15-01` cache the parsed SPKI in `ecP256Verify` (halves signature verification) Ã‚Â· `O15-02` one `SecureRandom` Ã‚Â·
-`O15-03` cache `Cipher.getInstance("AES/GCM/NoPadding")` per thread Ã‚Â· `O15-04` drop the okio `HashingSink` wrapper in
-`Sha256.digest` Ã‚Â· `O25-03` top-level `Regex` + cached NFKD folding in `foldForSearch`/initials Ã‚Â· `O27-06` keep the
+`O20-01` `inline fun FlashLog.d(tag, msg: () -> String)` + level check before the lambda (the 11 FPS contributor) ·
+`O20-04` `FlashProbe` vararg pair allocation and repeated sanitisation · `O20-02` move the rotating sink's three regex
+redactions + date formatting off the caller thread · `O20-06` compress the diagnostic log export ·
+`O15-01` cache the parsed SPKI in `ecP256Verify` (halves signature verification) · `O15-02` one `SecureRandom` ·
+`O15-03` cache `Cipher.getInstance("AES/GCM/NoPadding")` per thread · `O15-04` drop the okio `HashingSink` wrapper in
+`Sha256.digest` · `O25-03` top-level `Regex` + cached NFKD folding in `foldForSearch`/initials · `O27-06` keep the
 heavy crypto tests out of the default sweep (tag + a documented task).
 
 **Verify:** `:core:common:jvmTest`, `:core:security:jvmTest`, and a JMH-style microbenchmark note for the regex and
 hash changes. `FlashLog` is called by every module: keep the public API source-compatible.
 
-### S Ã¢â‚¬â€ swarm (14)
+### S — swarm (14)
 
-`O08-01` the O(PÃ‚Â·NÃ‚Â·W) scheduler Ã¢â€ â€™ bitset + rarest-first Ã‚Â· `O25-08` the discarded O(PÃ‚Â·N) holder computation in
-`updateWaitReason` Ã‚Â· `O08-07` the O(NÃ‚Â²) HAVE storm Ã‚Â· `O08-02` the redundant full-piece re-hash on serve Ã‚Â·
-`O08-04` per-piece fsync + DAO amplification Ã‚Â· `O08-05` the 4 Hz idle ticker Ã‚Â· `O08-06` thermal governor integration Ã‚Â·
-`O08-08` tombstone retention + summary broadcasts Ã‚Â· `O02-04` `Channel.UNLIMITED` queues Ã‚Â· `O02-05` permanent
-tombstones in a `LinkedHashMap` Ã‚Â· `O23-07` heap-wrapped NIO buffers in the piece storage Ã‚Â· `O03-15` the piece-map
-canvas allocations (S owns `FlashSwarm*.kt`) Ã‚Â· `O28-04` scheduler telemetry.
+`O08-01` the O(P·N·W) scheduler → bitset + rarest-first · `O25-08` the discarded O(P·N) holder computation in
+`updateWaitReason` · `O08-07` the O(N²) HAVE storm · `O08-02` the redundant full-piece re-hash on serve ·
+`O08-04` per-piece fsync + DAO amplification · `O08-05` the 4 Hz idle ticker · `O08-06` thermal governor integration ·
+`O08-08` tombstone retention + summary broadcasts · `O02-04` `Channel.UNLIMITED` queues · `O02-05` permanent
+tombstones in a `LinkedHashMap` · `O23-07` heap-wrapped NIO buffers in the piece storage · `O03-15` the piece-map
+canvas allocations (S owns `FlashSwarm*.kt`) · `O28-04` scheduler telemetry.
 
-**Decided by ADR-232:** `O08-03` is **approved** Ã¢â‚¬â€ age-weighted / deficit round-robin serve slots, no wire change, proved with
-the multi-device run S owes anyway. `O06-08` (the BLOB entity) is D's Ã¢â‚¬â€ coordinate, do not edit persistence.
+**Decided by ADR-232:** `O08-03` is **approved** — age-weighted / deficit round-robin serve slots, no wire change, proved with
+the multi-device run S owes anyway. `O06-08` (the BLOB entity) is D's — coordinate, do not edit persistence.
 
-**Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (a rare flake that passed in the 2026-10-30 baseline Ã¢â‚¬â€ record it
+**Verify:** `:core:swarm:jvmTest`, `SwarmInteropTest` (a rare flake that passed in the 2026-10-30 baseline — record it
 rather than "fixing" it), and a three-device swarm check (`PERF-S01`).
 
-### R Ã¢â‚¬â€ radio (7)
+### R — radio (7)
 
-`O26-01` the 250 ms semi-blocking read loop in `KissTncDriver` (14,400 wake-ups/hour) Ã‚Â· `O26-04` framing/AAD/serial
-buffer churn Ã‚Â· `O26-03` the unbounded `pendingAcks` and `UNLIMITED` channels Ã‚Â· `O26-05` the up-to-4 s
-`Thread.sleep()` in Android connection probing Ã‚Â· `O26-07` JCA provider lookups + SPKI re-parsing in
-`JdkRadioCrypto`/`JdkRadioSignatureScheme` Ã‚Â· `O26-02` channel occupancy / goodput (measure first: 1200 baud numbers
-are easy to get wrong) Ã‚Â· `O26-06` **obsolete** (Ã‚Â§8).
+`O26-01` the 250 ms semi-blocking read loop in `KissTncDriver` (14,400 wake-ups/hour) · `O26-04` framing/AAD/serial
+buffer churn · `O26-03` the unbounded `pendingAcks` and `UNLIMITED` channels · `O26-05` the up-to-4 s
+`Thread.sleep()` in Android connection probing · `O26-07` JCA provider lookups + SPKI re-parsing in
+`JdkRadioCrypto`/`JdkRadioSignatureScheme` · `O26-02` channel occupancy / goodput (measure first: 1200 baud numbers
+are easy to get wrong) · `O26-06` **obsolete** (§8).
 
 **Verify:** `:core:radio:jvmTest`, the golden-frame test (the wire must not change), and `RADCHAT-*`/`RADVOICE-*`
 device checks. Anything touching `RadioSession` re-runs the anti-replay tests (ERROR-870 lives there).
 
-### C Ã¢â‚¬â€ calls (15)
+### C — calls (15)
 
-`O11-01` 1080p30 software VP8 on desktop (**device-gated**) Ã‚Â· `O11-02` the camera capturer running when the camera is
-off Ã‚Â· `O11-03` the unconditional VP8 SDP that strips MediaCodec (**device-gated, fork**) Ã‚Â· `O11-04` the O(N) stats
-allocation in mesh calls Ã‚Â· `O11-05` the dead SDP bitrate tuning Ã‚Â· `O11-06` occluded remote frames still rasterising Ã‚Â·
-`O11-07` uncapped screen-share encoding to 4 watchers Ã‚Â· `O12-01` the 50 Hz playout StateFlow Ã‚Â·
-`O12-02` ~550 allocs/sec in the audio pipeline Ã‚Â· `O12-03` the 1 s `TargetDataLine` cold open (pre-warm) Ã‚Â·
-`O12-04` the non-adaptive 120 ms jitter buffer Ã‚Â· `O12-05` Android `AudioTrack` performance mode + attributes Ã‚Â·
-`O12-06` PCM16 airtime (**gated**, both hosts) Ã‚Â· `O03-18` the call-dock `BoxWithConstraints` Ã‚Â· `O28-03` call
+`O11-01` 1080p30 software VP8 on desktop (**device-gated**) · `O11-02` the camera capturer running when the camera is
+off · `O11-03` the unconditional VP8 SDP that strips MediaCodec (**device-gated, fork**) · `O11-04` the O(N) stats
+allocation in mesh calls · `O11-05` the dead SDP bitrate tuning · `O11-06` occluded remote frames still rasterising ·
+`O11-07` uncapped screen-share encoding to 4 watchers · `O12-01` the 50 Hz playout StateFlow ·
+`O12-02` ~550 allocs/sec in the audio pipeline · `O12-03` the 1 s `TargetDataLine` cold open (pre-warm) ·
+`O12-04` the non-adaptive 120 ms jitter buffer · `O12-05` Android `AudioTrack` performance mode + attributes ·
+`O12-06` PCM16 airtime (**gated**, both hosts) · `O03-18` the call-dock `BoxWithConstraints` · `O28-03` call
 telemetry.
 
 **Verify:** `:core:calling:jvmTest`, `:core:ptt:jvmTest`, `:ui:callui:jvmTest`, `:desktop:compileKotlinJvm`, and a
@@ -623,18 +623,18 @@ The integrator keeps this table current; a stream's own fragment holds its detai
 
 | Stream | Worktree | Batch 1 | Batch 2 | Batch 3 | Merged (`git log --oneline -1`) | Gate | Device checks owed |
 |---|---|---|---|---|---|---|---|
-| A build | `opt-build` | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | Ã¢Ëœâ€˜ | `0cc10902` (merge `4da12c9c`) | **PASS** Ã¢â‚¬â€ gate 1 204 s (2,138 tests), gate 2 490 s (1,526 tests, 2 known); 21 of 25 findings kept, 5 reverted (ADR-231, see Ã‚Â§2 of `logs/streams/build/INTEGRATOR-REVIEW.md`) | PERF-A01..A07 (A05/A06 already PASS; **A04 built by the review 2026-10-31 - four APKs, universal 52.15 MiB vs arm64 16.79 MiB, stale-output guard proven, EXP-093 - so A01 is runnable**) |
-| D data | `opt-data` | Ã¢Ëœâ€˜ | Ã¢â€”Â | Ã¢â€”Â | `f3154de0` (merge `3b28e5be`) | forced gate 1 **PASS** on the merged tree (432 tasks, 5 m 34 s, 2 416 tests, 0 failures; two earlier attempts failed on the test fakes the projection change invalidated, updated in the same follow-up); 28-file diff reviewed, gate 2 forced green except the two known ERROR-106 `:app` rows; `O06-08`/`O27-04` not delivered, 6 defects fixed (`logs/streams/data/INTEGRATOR-REVIEW.md`) | PERF-D01 (paging on a long thread), PERF-D02 (search deep link), PERF-D03 (summary consumer), PERF-D04 (in-memory SQLite) |
-| T transfer | `opt-transfer` | Ã¢Ëœâ€˜ | Ã¢â€”Â | Ã¢Ëœâ€˜ | `01a1d4d9` (merge) | forced gate 1 **PASS** on the merged tree (2 416 tests) and gate 2 forced green except the two expected ERROR-106 `:app` rows (1 673 host tests, `:core:transfer` re-run 375 green after the last edit); a resumed send was misaligned on the branch (fixed, ERROR-893) and the endgame re-sent merely queued frames (fixed, ERROR-894); `O05-01`/`O07-01` not delivered, `O23-02`/`O07-02`/`O23-03` inert without a host caller | PERF-T01 (send a 2 GB file), PERF-T02 (resume), PERF-T04 (one pass), PERF-T05 (seekable source), PERF-T06 (`.part` staging), PERF-T07 (FAT32), PERF-T08 (`saveToGallery`), PERF-T09 (settle/ACK grace), PERF-T10 (no duplicate tail on resume) |
-| U ui | `opt-ui` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-U01 (scroll during transfer) |
-| N net | `opt-net` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-N01 (transfer under lock change) |
-| G android | `opt-android` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-G01 (battery), PERF-G02 (Doze) |
-| H hub | `opt-hub` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-H01 (hub file 50 MB), PERF-H02 (revocation) |
-| E desktop | `opt-desktop` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-E01 (navigation frames) |
-| K kernel | `opt-kernel` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | none |
-| S swarm | `opt-swarm` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-S01 (three devices) |
-| R radio | `opt-radio` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-R01 (idle wake-ups) |
-| C calls | `opt-calls` | Ã¢ËœÂ | Ã¢ËœÂ | Ã¢ËœÂ | | | PERF-C01 (call CPU/audio) |
+| A build | `opt-build` | ☑ | ☑ | ☑ | `0cc10902` (merge `4da12c9c`) | **PASS** — gate 1 204 s (2,138 tests), gate 2 490 s (1,526 tests, 2 known); 21 of 25 findings kept, 5 reverted (ADR-231, see §2 of `logs/streams/build/INTEGRATOR-REVIEW.md`) | PERF-A01..A07 (A05/A06 already PASS; **A04 built by the review 2026-10-31 - four APKs, universal 52.15 MiB vs arm64 16.79 MiB, stale-output guard proven, EXP-093 - so A01 is runnable**) |
+| D data | `opt-data` | ☑ | ◐ | ◐ | `f3154de0` (merge `3b28e5be`) | forced gate 1 **PASS** on the merged tree (432 tasks, 5 m 34 s, 2 416 tests, 0 failures; two earlier attempts failed on the test fakes the projection change invalidated, updated in the same follow-up); 28-file diff reviewed, gate 2 forced green except the two known ERROR-106 `:app` rows; `O06-08`/`O27-04` not delivered, 6 defects fixed (`logs/streams/data/INTEGRATOR-REVIEW.md`) | PERF-D01 (paging on a long thread), PERF-D02 (search deep link), PERF-D03 (summary consumer), PERF-D04 (in-memory SQLite) |
+| T transfer | `opt-transfer` | ☑ | ◐ | ☑ | `01a1d4d9` (merge) | forced gate 1 **PASS** on the merged tree (2 416 tests) and gate 2 forced green except the two expected ERROR-106 `:app` rows (1 673 host tests, `:core:transfer` re-run 375 green after the last edit); a resumed send was misaligned on the branch (fixed, ERROR-893) and the endgame re-sent merely queued frames (fixed, ERROR-894); `O05-01`/`O07-01` not delivered, `O23-02`/`O07-02`/`O23-03` inert without a host caller | PERF-T01 (send a 2 GB file), PERF-T02 (resume), PERF-T04 (one pass), PERF-T05 (seekable source), PERF-T06 (`.part` staging), PERF-T07 (FAT32), PERF-T08 (`saveToGallery`), PERF-T09 (settle/ACK grace), PERF-T10 (no duplicate tail on resume) |
+| U ui | `opt-ui` | ☑ | ☑ | ☐ | `b9c2ed60` (merge) | **the branch tip did not compile.** Four break classes (missing `AttachmentUi` imports and a wrong parameter type in the extracted `FlashMessageBubble` composables, `it.fileName`/`state.title` in `FlashConversationScreen`, `WindowInsets.isImeVisible` in `commonMain`); 21 of 26 findings kept, 7 repaired during review (stale per-card closures, echo matching by text alone, an in-flight attachment re-enabling send, two unsynchronised caches), 1 reverted (`O24-06`), 4 handed to G/C/M. So the stream's "verified green" lines describe a tree that is not this one, and its "698 tests" is this plan's pre-branch baseline for `:ui:chat:testAndroidHostTest` (measured 730 jvm / 705 androidHost after repair). Batches 1 + 2 delivered; batch 3 not attempted. Review: `logs/streams/ui/INTEGRATOR-REVIEW.md` | PERF-U01..U06 (`U02` desktop archive still reachable, `U03` keyboard auto-scroll, `U04` an echo whose row never arrives, `U05` a dropped settings write, `U06` wire the stability config) |
+| N net | `opt-net` | ☑ | ☑ | ☑ | `8c331229` (merge) | **PASS — gate 1 forced on the merged tree: `BUILD SUCCESSFUL`, 161 of 161 tasks executed, 5 m 5 s, exit 0** (ten `jvmTest` suites incl. `:core:discovery` and `:core:hub-protocol`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin`). Gate 2 forced on the same tree: the three host suites green (`:ui:chat` 705, `:core:messaging` 688, `:core:persistence` 53, zero failures) and `:app:testDebugUnitTest` 87 with **only** the two known ERROR-106 rows, so the build exits 1 exactly as the §6.3 baseline predicts; gate 2b after the last KDoc edit 730 `jvmTest` / 705 `testAndroidHostTest`, zero failures. 11 of 15 findings kept (6 repaired), 2 **rejected and reverted** (`O10-05` sweep 5 s→15 s inverted `CompositeDiscovery`'s browse-watchdog invariant and its saving was unmeasured; `O10-07`'s "multicast is healthy" signal cannot see what it claims, so on a broadcast-only network it suppressed the fallback that network needs), `O14-03` handed to D, `O09-04`/`O09-07` declined per ADR-232. Five defects the report did not mention were found and fixed — the worst being that a full send queue returned `sendFrame == false`, which the dispatcher reads as **permanent death of that channel**. The numeric headlines are withdrawn (`EXP-100`..`102` in `logs/experiments.md`). Batches 1-3 delivered. Review: `logs/streams/net/INTEGRATOR-REVIEW.md` | PERF-N01 (two-phone reconnect handshake), PERF-N02 (a message stays instant under a saturating transfer), PERF-N03 (broadcast-only discovery + network switch) |
+| G android | `opt-android` | ☐ | ☐ | ☐ | | | PERF-G01 (battery), PERF-G02 (Doze) |
+| H hub | `opt-hub` | ☐ | ☐ | ☐ | | | PERF-H01 (hub file 50 MB), PERF-H02 (revocation) |
+| E desktop | `opt-desktop` | ☐ | ☐ | ☐ | | | PERF-E01 (navigation frames) |
+| K kernel | `opt-kernel` | ☐ | ☐ | ☐ | | | none |
+| S swarm | `opt-swarm` | ☐ | ☐ | ☐ | | | PERF-S01 (three devices) |
+| R radio | `opt-radio` | ☐ | ☐ | ☐ | | | PERF-R01 (idle wake-ups) |
+| C calls | `opt-calls` | ☐ | ☐ | ☐ | | | PERF-C01 (call CPU/audio) |
 
 ---
 
@@ -652,12 +652,12 @@ Two things the blocks do not repeat:
 - **The base is `dev` at the commit this plan was committed in.** If `dev` has moved since, `git merge dev` before
   batch 1 (never rebase).
 
-**Rules learned from Wave 0 (2026-10-30, ADR-231) Ã¢â‚¬â€ they apply to every block below:**
+**Rules learned from Wave 0 (2026-10-30, ADR-231) — they apply to every block below:**
 
 1. **Both halves of any before/after must be forced, and the command line goes in the log.** Stream A reported a 13 %
    gate win by comparing an unforced run (almost everything up-to-date) with the plan's forced baseline; the same
    command was really 70 % slower (ERROR-872). For a wall-clock evidence run use
-   `--rerun-tasks --no-build-cache` (forced runs only *write* the build cache Ã¢â‚¬â€ 112 s on gate 1 Ã¢â‚¬â€ and reuse nothing).
+   `--rerun-tasks --no-build-cache` (forced runs only *write* the build cache — 112 s on gate 1 — and reuse nothing).
 2. **`maxParallelForks` is 1 for every `Test` task now** (`:server:test` keeps its own 4). Do not raise it to make a
    number look better: two forks for the Robolectric host suites was 114 s faster and flaked two
    `RealFlashChatRepositoryTest` cases (ERROR-873). `PERF-A07` is the fix, and it is Stream D's first step.
@@ -669,16 +669,16 @@ Two things the blocks do not repeat:
    executed; `OPT-O19-05`, `OPT-O01-03`, `OPT-O28-01` are open for exactly this reason.
 
 
-### 11.A Ã¢â‚¬â€ build
+### 11.A — build
 
-**DONE 2026-10-30 Ã¢â‚¬â€ do not hand this block out again.** The stream ran, the integrator reviewed and merged it
-(`0cc10902`): 21 of 25 findings kept, 5 reverted with reasons. Outcome: Ã‚Â§9 A "Status 2026-10-30", ADR-231, and
+**DONE 2026-10-30 — do not hand this block out again.** The stream ran, the integrator reviewed and merged it
+(`0cc10902`): 21 of 25 findings kept, 5 reverted with reasons. Outcome: §9 A "Status 2026-10-30", ADR-231, and
 `logs/streams/build/INTEGRATOR-REVIEW.md`. Build-file requests from other streams now go to the integrator.
 
 ```text
 You are the BUILD (A) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST, before reading anything else:
+STEP 0 — CREATE YOUR WORKTREE FIRST, before reading anything else:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-build -b agent/opt-build dev
     Copy-Item .\local.properties E:\FlashWork\opt-build\local.properties
@@ -688,7 +688,7 @@ keystore.properties or the .jks.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "A Ã¢â‚¬â€ build" (your findings and batch order).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "A — build" (your findings and batch order).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 (machine rules) and section 8 (log fragments).
 4. docs/audit/optimization-2026-10-23/: O21-build-gradle.md, O22-size-dependencies.md,
    O27-test-suite-performance.md, O01-startup.md (O01-03), O19-desktop-app.md (O19-04/05),
@@ -725,12 +725,12 @@ their last lines, the shared files you edited and their hunk sizes, what is left
 reproduces. Run cmd /c "tools\flash-gradle.cmd --stop" when you finish a session.
 ```
 
-### 11.D Ã¢â‚¬â€ data
+### 11.D — data
 
 ```text
 You are the DATA (D) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-data -b agent/opt-data dev
     Copy-Item .\local.properties E:\FlashWork\opt-data\local.properties
@@ -739,7 +739,7 @@ The main tree is the integrator's: never edit it. Never copy keystore.properties
 
 READ FIRST
 1. AGENTS.md sections 6-13, 18, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "D Ã¢â‚¬â€ data".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "D — data".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3, section 7 (reservations), section 8.
 4. docs/audit/optimization-2026-10-23/: O06-database-room-sqlite.md, O04-chat-list-and-conversation.md,
    O02-heap-and-native-memory.md (O02-02/O02-06), O14-concurrency-dispatchers-locks.md, O25-algorithmic-complexity.md
@@ -788,12 +788,12 @@ REPORT: per finding the change + measured before/after, the gate commands and th
 took, what is left, and every finding that no longer reproduces. Stop the daemon when the session ends.
 ```
 
-### 11.T Ã¢â‚¬â€ transfer
+### 11.T — transfer
 
 ```text
 You are the TRANSFER (T) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-transfer -b agent/opt-transfer dev
     Copy-Item .\local.properties E:\FlashWork\opt-transfer\local.properties
@@ -802,7 +802,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 18, 23, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "T Ã¢â‚¬â€ transfer" (+ compounding.md cascade 1).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "T — transfer" (+ compounding.md cascade 1).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O05-media-pipeline.md, O07-file-transfer-throughput.md,
    O23-storage-file-io.md, O02-heap-and-native-memory.md (O02-01/08/09/10), O25-algorithmic-complexity.md (O25-01/07),
@@ -839,12 +839,12 @@ REPORT: per finding the change + measured before/after, the gate commands and th
 findings that no longer reproduce. Stop the daemon when the session ends.
 ```
 
-### 11.U Ã¢â‚¬â€ ui
+### 11.U — ui
 
 ```text
 You are the UI (U) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-ui -b agent/opt-ui dev
     Copy-Item .\local.properties E:\FlashWork\opt-ui\local.properties
@@ -853,7 +853,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 22, 24, 31, 34, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "U Ã¢â‚¬â€ ui" (+ compounding.md cascade 2).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "U — ui" (+ compounding.md cascade 2).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O03-compose-stability.md, O24-ui-responsiveness.md,
    O04-chat-list-and-conversation.md (O04-05/06/07), O05-media-pipeline.md (O05-06/07),
@@ -894,12 +894,12 @@ REPORT: per finding the change, what you measured (or why it is inspection-only)
 lines, what is left, findings that no longer reproduce. Stop the daemon when the session ends.
 ```
 
-### 11.N Ã¢â‚¬â€ net
+### 11.N — net
 
 ```text
 You are the NET (N) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-net -b agent/opt-net dev
     Copy-Item .\local.properties E:\FlashWork\opt-net\local.properties
@@ -908,7 +908,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 16, 19, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "N Ã¢â‚¬â€ net".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "N — net".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O09-websocket-mesh-wire.md, O10-discovery-presence.md,
    O14-concurrency-dispatchers-locks.md, and docs/protocol.md before touching anything on the wire.
@@ -945,12 +945,12 @@ REPORT: per finding the change + what you measured, the gate commands and their 
 that no longer reproduce, and any interface you need from another stream. Stop the daemon when the session ends.
 ```
 
-### 11.G Ã¢â‚¬â€ android
+### 11.G — android
 
 ```text
 You are the ANDROID (G) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-android -b agent/opt-android dev
     Copy-Item .\local.properties E:\FlashWork\opt-android\local.properties
@@ -960,7 +960,7 @@ owner names you for a device session.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 20, 21, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "G Ã¢â‚¬â€ android".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "G — android".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md sections 3, 4 (the phone is single-owner) and 8.
 4. docs/audit/optimization-2026-10-23/: O13-background-battery-wakeups.md, O01-startup.md,
    and docs/android-platform-notes.md. (O02-08/O02-09 are the transfer stream's: they live in ui/platform-shims.)
@@ -999,12 +999,12 @@ REPORT: per finding the change, what still needs a device, the gate commands and
 fact you verified with its URL. Stop the daemon when the session ends.
 ```
 
-### 11.H Ã¢â‚¬â€ hub
+### 11.H — hub
 
 ```text
 You are the HUB (H) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-hub -b agent/opt-hub dev
     Copy-Item .\local.properties E:\FlashWork\opt-hub\local.properties
@@ -1013,7 +1013,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks. N
 
 READ FIRST
 1. AGENTS.md sections 6-13, 19, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "H Ã¢â‚¬â€ hub" (+ compounding.md cascade 3).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "H — hub" (+ compounding.md cascade 3).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md sections 3, 7 and 8.
 4. docs/audit/optimization-2026-10-23/: O17-hub-server.md, O18-admin-console.md, O16-hub-client.md,
    O25-algorithmic-complexity.md (O25-02/06/09/10), O23-storage-file-io.md (O23-01), and docs/protocol.md.
@@ -1049,12 +1049,12 @@ REPORT: per finding the change + measured before/after (latency, lock hold time,
 last lines, the migration versions you took, what is left. Stop the daemon when the session ends.
 ```
 
-### 11.E Ã¢â‚¬â€ desktop
+### 11.E — desktop
 
 ```text
 You are the DESKTOP (E) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-desktop -b agent/opt-desktop dev
     Copy-Item .\local.properties E:\FlashWork\opt-desktop\local.properties
@@ -1064,7 +1064,7 @@ during the day; use temp state directories in tests, never ~/.flash.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "E Ã¢â‚¬â€ desktop".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "E — desktop".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O19-desktop-app.md, O03-compose-stability.md (O03-10),
    O01-startup.md (O01-05), O20-logging-probes.md (O20-03), O24-ui-responsiveness.md (O24-08).
@@ -1096,12 +1096,12 @@ REPORT: per finding the change + what you measured, the gate commands and their 
 that no longer reproduce. Stop the daemon when the session ends.
 ```
 
-### 11.K Ã¢â‚¬â€ kernel
+### 11.K — kernel
 
 ```text
 You are the KERNEL (K) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-kernel -b agent/opt-kernel dev
     Copy-Item .\local.properties E:\FlashWork\opt-kernel\local.properties
@@ -1110,7 +1110,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 19, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "K Ã¢â‚¬â€ kernel" (+ compounding.md cascade 2 for FlashLog).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "K — kernel" (+ compounding.md cascade 2 for FlashLog).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O20-logging-probes.md, O15-serialization-crypto-hashing.md,
    O25-algorithmic-complexity.md (O25-03), O27-test-suite-performance.md (O27-06), docs/testing/PROBES.md.
@@ -1143,12 +1143,12 @@ REPORT: per finding the change + measured before/after (allocs/op, ns/op, or a f
 their last lines, and what is left. Stop the daemon when the session ends.
 ```
 
-### 11.S Ã¢â‚¬â€ swarm
+### 11.S — swarm
 
 ```text
 You are the SWARM (S) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-swarm -b agent/opt-swarm dev
     Copy-Item .\local.properties E:\FlashWork\opt-swarm\local.properties
@@ -1157,7 +1157,7 @@ The main tree is the integrator's. Never copy keystore.properties or the .jks. N
 
 READ FIRST
 1. AGENTS.md sections 6-13, 18, 23, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "S Ã¢â‚¬â€ swarm" (+ compounding.md cascade 5).
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "S — swarm" (+ compounding.md cascade 5).
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O08-group-swarm.md, O02-heap-and-native-memory.md (O02-04/05),
    O25-algorithmic-complexity.md (O25-08), O23-storage-file-io.md (O23-07), O03-compose-stability.md (O03-15),
@@ -1193,12 +1193,12 @@ REPORT: per finding the change + measured piece/s and CPU, the gate commands and
 Stop the daemon when the session ends.
 ```
 
-### 11.R Ã¢â‚¬â€ radio
+### 11.R — radio
 
 ```text
 You are the RADIO (R) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-radio -b agent/opt-radio dev
     Copy-Item .\local.properties E:\FlashWork\opt-radio\local.properties
@@ -1208,7 +1208,7 @@ unless you are explicitly given a device session.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "R Ã¢â‚¬â€ radio".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "R — radio".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O26-bluetooth-radio.md, plus docs/network/RADIO-WIRE-FORMAT.md,
    docs/network/RADIO-BLUETOOTH-CHANNELS.md, docs/network/RADIO-AUDIO.md and ADR-210 / ADR-225 / ADR-228 / ADR-229.
@@ -1242,12 +1242,12 @@ REPORT: per finding the change + measured wake-ups/goodput, the gate commands an
 radio in hand. Stop the daemon when the session ends.
 ```
 
-### 11.C Ã¢â‚¬â€ calls
+### 11.C — calls
 
 ```text
 You are the CALLS (C) stream of the Flash performance-optimization programme.
 
-STEP 0 Ã¢â‚¬â€ CREATE YOUR WORKTREE FIRST:
+STEP 0 — CREATE YOUR WORKTREE FIRST:
     cd C:\Users\KaliOxygen\Downloads\Flash
     git worktree add E:\FlashWork\opt-calls -b agent/opt-calls dev
     Copy-Item .\local.properties E:\FlashWork\opt-calls\local.properties
@@ -1257,7 +1257,7 @@ owner names you.
 
 READ FIRST
 1. AGENTS.md sections 6-13, 23, 24, 31, 35, 36.
-2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "C Ã¢â‚¬â€ calls".
+2. docs/plans/OPTIMIZATION-PARALLEL-PLAN.md sections 2-8 and 9 "C — calls".
 3. docs/plans/HUB-PARALLEL-AGENTS-PROTOCOL.md section 3 and section 8.
 4. docs/audit/optimization-2026-10-23/: O11-calls-webrtc.md, O12-ptt-realtime-audio.md,
    O03-compose-stability.md (O03-18), O28-observability-benchmarks.md (O28-03), plus docs/calling/SCREEN-SHARE-DESIGN.md,
@@ -1294,11 +1294,11 @@ devices, and whether the webrtc fork needs republishing. Stop the daemon when th
 
 ---
 
-## 12. Decisions Ã¢â‚¬â€ answered 2026-10-30 (ADR-232)
+## 12. Decisions — answered 2026-10-30 (ADR-232)
 
-These were the Ã‚Â§8 items that blocked work. The owner delegated them to the integrator's recommendation on 2026-10-30, so all
+These were the §8 items that blocked work. The owner delegated them to the integrator's recommendation on 2026-10-30, so all
 of them are now decided in **ADR-232**. A stream that reaches one of these **implements the answer**; it no longer records
-`BLOCKED Ã¢â‚¬â€ owner decision`. The question text is kept, with the answer under it, so the reasoning stays readable.
+`BLOCKED — owner decision`. The question text is kept, with the answer under it, so the reasoning stays readable.
 
 | # | Finding | Answer | Who |
 |---|---|---|---|
@@ -1312,7 +1312,7 @@ of them are now decided in **ADR-232**. A stream that reaches one of these **imp
 | 8 | `OPT-O08-03` swarm fairness | **Approved** (age-weighted / deficit round-robin), proved by a multi-device run | S |
 | 9 | `OPT-O22-01` per-ABI APKs (PERF-A04) | **Approved**: per-ABI **and** universal, with the release script collecting outputs and failing on a stale one | integrator |
 | 9 | `OPT-O22-01` per-ABI APKs (PERF-A04) | **Approved and built 2026-10-31** (ADR-243): per-ABI **and** universal, the release script collects what `output-metadata.json` lists and fails on a stale, missing or duplicate-`versionCode` output | integrator |
-| 11 | `PERF-A02` baseline profile | **Deferred** to when G touches startup | Ã¢â‚¬â€ |
+| 11 | `PERF-A02` baseline profile | **Deferred** to when G touches startup | — |
 | 12 | `PERF-A07` sleep-based tests | **D's first commit**; it is what allows 2 forks again | D |
 
 The original questions, with their answers:
@@ -1339,7 +1339,7 @@ The original questions, with their answers:
 8. **`OPT-O08-03`**: may the swarm change who wins a serve slot (fairness vs throughput)?
    **Answer: yes.** Starvation looks like "my file never downloads"; no wire change; prove it with the multi-device run.
 
-Until an answer existed, a stream recorded `BLOCKED Ã¢â‚¬â€ owner decision`. That is no longer an acceptable outcome for these twelve
+Until an answer existed, a stream recorded `BLOCKED — owner decision`. That is no longer an acceptable outcome for these twelve
 items: the answer exists, so a stream that skips one must say which ADR-232 clause it is skipping.
 
 
@@ -1349,6 +1349,6 @@ items: the answer exists, so a stream that skips one must say which ADR-232 clau
 2. Fold `logs/streams/<stream>/*` into `logs/progress.md`, `logs/errors.md`, `logs/experiments.md`,
    `docs/decisions.md`, `docs/testing/PROBES.md` and `docs/testing/TEST-BACKLOG.md`.
 3. Move every device/manual check the stream owes into `docs/testing/TEST-BACKLOG.md` with its `PERF-<x>NN` ID.
-4. Run the integration gate (Ã‚Â§6.3) on the merged tree and record the result in Ã‚Â§10.
+4. Run the integration gate (§6.3) on the merged tree and record the result in §10.
 5. Delete the worktree only after the merge is green: `git worktree remove E:\FlashWork\opt-<stream>`. Keep the branch.
 6. Update `logs/handoff.md` with the merged stream, the gate result and the next wave.

@@ -1,5 +1,11 @@
 # Current Handoff — NET (N) Stream
 
+> **SUPERSEDED (§27) — the review is `logs/streams/net/INTEGRATOR-REVIEW.md`; the live handoff is `dev`'s
+> `logs/handoff.md`.** The branch was merged as `8c331229` with 11 of 15 findings kept (6 repaired), `OPT-O10-05` and
+> `OPT-O10-07` reverted, and `OPT-O14-03` handed to Stream D. The interface requests this handoff makes to Streams G and D
+> are still open and are recorded in `dev`'s `logs/handoff.md`; the owed device checks are `PERF-N01`..`N03` in `dev`'s
+> `docs/testing/TEST-BACKLOG.md`.
+
 ## Current Branch
 `agent/opt-net` in worktree `E:\FlashWork\opt-net` (branched from `dev`).
 

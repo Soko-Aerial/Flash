@@ -13,10 +13,10 @@ ssh myserver 'cd ~/flash-hub && sed -i "s/\r$//" *.sh *.yml && chmod +x *.sh'
 (`sed` because a copy that came through a shell pipe can arrive with CRLF line endings, which
 `bash` refuses. `scp` never does this; a pipe can.)
 
-- `./up.sh` â€” start (or refresh) and print the temporary public URL.
-- `./up.sh --fresh` â€” wipe this hub's data first (fresh organisation).
-- `./status.sh` â€” state, URL, health, console instructions.
-- `./down.sh` â€” stop it (data is kept).
+- `./up.sh` — start (or refresh) and print the temporary public URL.
+- `./up.sh --fresh` — wipe this hub's data first (fresh organisation).
+- `./status.sh` — state, URL, health, console instructions.
+- `./down.sh` — stop it (data is kept).
 
 ## Deploy a new build (one script)
 
@@ -49,7 +49,7 @@ directory, and only two **loopback** host ports: `18443` (hub) and `18444`
 (admin console). Nothing is published on 80/443, and no other container, unit or
 file on this host is touched.
 
-## This is a test hub â€” read before using it with anything real
+## This is a test hub — read before using it with anything real
 
 It runs with `FLASH_ALLOW_INSECURE=true` and `FLASH_DEV_EMBEDDED_ROOT=true`
 (see `docs/plans/HUB-DEMO-RUNBOOK.md`, `docs/security.md` SEC-04): the

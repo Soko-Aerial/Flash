@@ -1,5 +1,16 @@
 # Progress Log — NET (N) Stream
 
+> **SUPERSEDED (§27) — read the review first: `logs/streams/net/INTEGRATOR-REVIEW.md`.**
+>
+> This copy is kept as written. Two of the fifteen findings were **rejected and reverted** (`OPT-O10-05`, `OPT-O10-07`),
+> six were repaired during review, and five defects the report did not mention were found and fixed - including one where
+> a full send queue was being reported as a permanently dead channel. The numeric headlines below ("253 → 1 Binder calls",
+> "88 % handshake latency reduction", "83.3 % MulticastLock release", "< 1 ms dispatch") are arithmetic or cite tests that
+> time nothing or do not exist; they are requantified in `dev`'s `logs/experiments.md`.
+>
+> The corrected record is the canonical `dev` logs: `logs/progress.md`, `logs/errors.md`, `logs/experiments.md`,
+> `docs/decisions.md` (ADR-270/271) and `docs/testing/TEST-BACKLOG.md` (`PERF-N01`..`N03`).
+
 ## 2026-10-31 — Performance Optimization Programme (Batches 1, 2, 3)
 
 ### Worked On

@@ -125,6 +125,20 @@ Mesh WebSocket transport provides wire-level encryption (`wss://`) with Trust-On
     reaches the dialed address before binding. No message, file or key material does.
 - **Engine Integration**:
   - Handled via `TlsOptions` across `WsFlashNetwork`, `JvmWsFlashNetwork`, `WsTransferClient`, `DesktopEngine`, `Flash.kt`, and `DiscoveryEngineHolder`.
+- **Session resumption and where the pin is enforced (ADR-271, corrected 2026-10-31)**:
+  - Since `ADR-271`, `FlashTlsContextFactory` caches one `SSLContext` per peer, with `sessionTimeout = 86400` and
+    `sessionCacheSize = 256`, so a reconnect can **resume** the TLS session instead of running a full handshake.
+  - **The trust manager is not re-invoked on a resumed TLS 1.3 session** — Java's session cache returns the established
+    session before `X509TrustManager` runs. The pin is therefore enforced **at the point a session is created**, not on
+    every connection of that session.
+  - What keeps that honest: the resumed session is reachable only through the cached `SSLContext`, whose cache key
+    includes `expectedDeviceId` and `pinVerifier`, and whose `KeyManagersRef` component is compared by **reference
+    identity** (`managers === other.managers`) — never by `System.identityHashCode`, on which a collision would present
+    the wrong certificate. Do not simplify that wrapper back to a hash.
+  - The manual-IP/deferred-binding path above is unaffected: it is a *first* handshake, so the trust manager does run and
+    `deferredPeerLeafFingerprintHex` carries the leaf to the `FLASH_WS_HELLO` check.
+  - Do not describe this as "pinning is enforced on every connection" in a design doc or a review answer; that phrasing was
+    wrong in the stream's original ADR and is corrected in `docs/decisions.md` ADR-271.
 
 ## 8. v2 groups: signed membership and signed messages (ADR-044 V1, 2026-09-30)
 

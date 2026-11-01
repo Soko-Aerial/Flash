@@ -1,5 +1,15 @@
 # Experiments & Benchmarks — Stream U (UI)
 
+> **SUPERSEDED (§27) — the review is `logs/streams/ui/INTEGRATOR-REVIEW.md`; the canonical entries are in `dev`'s
+> `logs/experiments.md`.**
+>
+> Three of the four entries below assert numbers that were **not measured** and cannot be measured by the suites this
+> stream ran: `EXP-095`'s "exactly 0 B per frame, 100 % elimination", `EXP-096`'s "0 recompositions / 90 % reduction" and
+> `EXP-098`'s "completely eliminating" CLS. No allocation counter, recomposition counter or profiler trace exists on the
+> branch. What survives is the structural change (per-frame constructions removed, the 10 Hz tick moved out of
+> composition, a ratio reserved before decode), and the canonical entries say exactly that. `EXP-097`'s "eliminating
+> height jumping" is a device-scroll observation nobody has made.
+
 ## EXP-095 — Launch Brand Animation per-Frame Allocation Elimination
 
 ### Component

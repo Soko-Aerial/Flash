@@ -1,5 +1,106 @@
 # Progress Log
 
+## 2026-10-31 - Wave 2 merge: Stream U (UI) and Stream N (network/discovery), both reviewed and repaired
+
+### Worked on
+Merging the two Wave 2 optimisation streams into `dev` after an independent verification of every finding against
+**the code**, not against the streams' reports. Per-finding verdicts: `logs/streams/ui/INTEGRATOR-REVIEW.md` (26
+findings) and `logs/streams/net/INTEGRATOR-REVIEW.md` (15 findings).
+
+### Changed
+- **Stream U merged as `b9c2ed60`** (tip `1ddd5306`, 23 commits). 21 of 26 findings kept, 7 repaired during review, 1
+  reverted, 4 handed to Streams G/C/M. Compose work in `:ui:chat` and `:ui:theme`: draft hoisted out of the root screen,
+  draw-phase animation reads with `reduceMotion` guards, per-card lambda hoisting, day separators in the message
+  `contentType`, a single-pass `Layout` for the bottom-nav pill, `IntrinsicSize.Min` removed from the quoted reply card,
+  the splash canvas's per-frame allocations removed, a distance-bounded pre-jump in `jumpToMessage`, the IME jitter and
+  the keyboard auto-scroll, the optimistic echo overlay, the staging-tray sending spinner, and the 10 Hz voice-card
+  recomposition decoupling.
+- **Stream N merged as `8c331229`** (tip `5ac82529`, 13 commits). 11 of 15 kept, 6 repaired during review, 2 rejected and
+  reverted, 1 handed to Stream D, 2 stayed declined per ADR-232. The priority-aware `BoundedSendQueue` + `writerLoop`,
+  per-peer `SSLContext` caching with TLS session resumption, a single-pass `RelayFrameCodec` decode, codec pool hygiene,
+  suspending backpressure, the screen-active discovery hook, the multicast-lock lease, the route snapshot cache, the 2 s
+  resolve timeout and the connectivity-restart debounce.
+- Corrections folded into the canonical logs: this entry, `logs/errors.md` (ERROR-901/902 folded; ERROR-911 RESOLVED,
+  ERROR-912 **OBSOLETE**), `logs/experiments.md` (EXP-095..098 and EXP-100..102 rewritten to state what is proven and
+  what is unmeasured), `docs/decisions.md` (ADR-260..265, ADR-270/271 with ADR-271's security claim corrected),
+  `docs/testing/TEST-BACKLOG.md` (`PERF-U01`..`U06`, `PERF-N01`..`N03`).
+- **Mojibake in the documentation repaired (ERROR-913).** While reading the plan for the merge it was clear its non-ASCII
+  text had been destroyed by a PowerShell round-trip: commit `5ef86ca5` had rewritten the whole file, so `—` read
+  `Ã¢â‚¬â€` and the §10 check-box glyphs were unreadable. The raw damage was **507 lines across 7 files**, including two
+  Kotlin sources (KDoc/comments only) and `tools/hub-test-server/README.md`. Reversing the byte round-trip per non-ASCII
+  run, with the ASCII skeleton required to stay byte-identical and the plan cross-checked against its pre-corruption
+  revision `6f8fe180` (1 322 of 1 335 lines came back **exactly**), repaired 1 330 lines; `☑`/`◐`/`☐` came back, so no
+  tracking state was lost. Six runs in `logs/progress.md` and the deliberate quotes in `ERROR-012`/`ERROR-913` are left
+  alone — a lost byte cannot be guessed. Method and the "what could not be recovered" list: `ERROR-913`.
+
+### Why
+This is the plan's rule for a stream merge (`docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` §6.3): the gate numbers and the
+reports are the stream's own account of its work, and a merge is the first place they can be checked against the code.
+
+### Verification - what the review actually found
+- **The U branch tip does not compile.** Four break classes, each verified from the git objects: `FlashMessageBubble`'s
+  extracted composables lost their `AttachmentUi` imports (10 bare references) and copied `onSelectToggle` with the
+  wrong type; `FlashConversationScreen` used `it.fileName` and `state.title`; `FlashMessageList` used
+  `WindowInsets.isImeVisible`, which is Android-only in Compose Multiplatform 1.9.3. The stream's reported green gates
+  therefore cannot describe the tip. The `698 tests` it reported is not either of its suites (they are 730 and 705 after
+  the repairs) - it is this plan's §6.3.1 **baseline** figure for `:ui:chat:testAndroidHostTest`, i.e. it predates the
+  branch.
+- **Seven semantic repairs, none of which a compile could have shown.** The hoisted per-card closures were keyed on
+  `file.id` while `FlashFileAttachmentUi` carries live transfer state, so a card whose offer had not yet been accepted
+  would have kept opening a null `localUri` after the download (O03-05). The optimistic echo matched rows by text alone
+  and was concatenated into the durable list, so any re-emit of an old outgoing row retired a fresh echo (O24-01). An
+  already-sending attachment re-enabled the composer's send, so a second tap handed it to `onSendFile` again (O24-02).
+  The waveform cache keyed on a hash without comparing amplitudes, so a collision would draw another message's waveform.
+  The image ratio cache was an unsynchronised map written from a decode callback. `O24-06` (the sheet's load deferral) is
+  reverted: it made the load's timing depend on `reduceMotion` and on a constant that is not the entrance animation's
+  duration, and did nothing at all when `reduceMotion` is on - the case the finding is about.
+- **Two N findings were rejected and reverted.** `O10-07`'s "multicast is healthy" signal cannot distinguish a multicast
+  datagram from a broadcast one (the receiving sockets are wildcard-bound), so on a broadcast-only network broadcasting
+  refreshed the very counter that suppressed broadcasting: a Lost/Found flap every ~60-80 s, on exactly the networks the
+  broadcast fallback exists for. `O10-05` (5 s -> 15 s sweep) inverts `CompositeDiscovery`'s documented
+  `browseWatchdogMs (10 s) > sweepIntervalMs` invariant and its saving is unmeasured; `ERROR-912` is the tell - the
+  constant's change broke `AutoConnectorTest`, and the "fix" pinned the interval in the test to hide it.
+- **Five N defects fixed rather than the reported behaviour.** A full queue returned `false` from `WsConnection.send`, but
+  `StreamChannel.sendFrame`'s contract is that `false` means **permanent death of that channel** - the dispatcher would
+  have marked a merely-behind writer's lane dead and returned its un-ACKed chunks to the pool. Added a bounded waiting
+  enqueue (5 s, `Rejected(QueueFull)` on expiry) with `notFull` signalled on close/poll. The suspending send dropped the
+  liveness stamp that only the read coroutine can make, so a consumer slower than the 25 s watchdog had a healthy but
+  backpressured connection closed as silent. The `SSLContext` cache was keyed on `System.identityHashCode(keyManagers)`,
+  so an identity-hash collision could present **the wrong certificate**. The multicast-lock lease raced its own renewal
+  across two threads. The duplicate-restart skip also swallowed the only notification that a new network had appeared.
+- **The N branch's numeric headlines are arithmetic or unmeasured** and are recorded as such: `253 -> 1 Binder calls` is
+  a /24 count, `88% handshake latency` cites a test that times nothing, `83.3% MulticastLock release` cites a code path,
+  `< 1 ms dispatch` cites a test that does not exist (`WSConnectionTest sendText leapfrogs ...`). `ADR-271`'s
+  "100% strictly enforced" is false as written: on a resumed TLS session the trust manager is not re-invoked.
+- Measured on the merged tree, forced (`--rerun-tasks`): see the §6.3 gate entry below.
+- **Integration gate §6.3, forced on the merged tree (2026-11-01):**
+  - **Gate 1 — PASS.** `:core:{common,security,persistence,messaging,transfer,swarm,network,discovery,hub-protocol}:jvmTest`,
+    `:ui:{chat,theme,callui}:jvmTest`, `:desktop:compileKotlinJvm`, `:app:compileDebugKotlin` with `--rerun-tasks --continue`:
+    `BUILD SUCCESSFUL in 5m 5s`, **161 actionable tasks: 161 executed**, exit 0. This is the first build of Stream U's work that
+    means anything (§ above).
+  - **Gate 2 — as expected.** `:core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest
+    :ui:chat:testAndroidHostTest :app:testDebugUnitTest`, forced: `209 actionable tasks: 209 executed`, 8 m 46 s. `:ui:chat`
+    **705 tests, 0 failures**; `:core:messaging` **688, 0 failures**; `:core:persistence` **53, 0 failures**; `:app:testDebugUnitTest`
+    **87 tests, 2 failed** — and the two failures are exactly the pre-existing ERROR-106 `TransfersUiMapperTest` rows named in the
+    plan's §6.3.1 baseline (`retryableComesFromTheModelPredicate`, `aHubRowSaysSoAndOffersNoRetry`). 1,533 host tests, 2 known
+    `:app` failures, no new failure anywhere.
+  - **Gate 2b** (`:ui:chat:jvmTest :ui:chat:testAndroidHostTest`, forced) was re-run after one **KDoc-only** correction to
+    `ui/chat/.../FlashChatListRowPlatform.kt` (its comment claimed the desktop shell "uses context menus"; there is no right-click
+    archive on a chat row, only long-press → selection mode). A comment cannot change bytecode, but the gates above were taken
+    before it, so the module is re-run rather than assumed: `BUILD SUCCESSFUL in 2m 36s`, `109 actionable tasks: 109 executed`,
+    **`:ui:chat:jvmTest` 730 / `:ui:chat:testAndroidHostTest` 705, both 0 failures**.
+
+### Remaining
+- Device checks: `PERF-U01`..`U06` and `PERF-N01`..`N03` in `docs/testing/TEST-BACKLOG.md`. The two U behaviour changes
+  (desktop loses swipe-to-archive; the keyboard opening now scrolls the thread) need the owner's eye even if the numbers
+  are fine.
+- `OPT-O10-01` (`setScreenActive`) is merged but **nothing calls it** - Stream G owes the caller (wave 3), with the
+  caveat that ECO is a whole-mode switch and must not fire mid-call or mid-transfer.
+- `OPT-O14-03` (`drainMutex` serialising every peer in `RealFlashChatRepository`) is Stream D's item, untouched.
+- `OPT-O03-04`'s `ui/chat/compose_compiler_config.conf` is committed but wired into **no build file**, so it does nothing
+  yet; wiring it is a build-file change and should land alone so a stale-UI regression can be attributed.
+- `O24-06` is not delivered; the finding stays open for whoever owns the sheet's entrance animation.
+
 ## 2026-10-31 - `PERF-A04`: per-ABI APKs and a release script that cannot ship a stale one
 
 ### Worked on
@@ -15153,8 +15254,8 @@ C5.1 per docs/core-upgrade-plan.md: moved all three remaining `:app` WS-engine c
 
 ### Changed
 Created under `core/transfer/src/main/java/com/transfer/flash/core/transfer/wslegacy/`:
-- `WsTransferManager.kt` â€” behavior byte-identical except documented adaptations below.
-- `WsDiscovery.kt` â€” unchanged logic; now maps `FlashDiscoveredEndpoint` â† local `LegacyDiscoveredDevice`.
+- `WsTransferManager.kt` — behavior byte-identical except documented adaptations below.
+- `WsDiscovery.kt` — unchanged logic; now maps `FlashDiscoveredEndpoint` → local `LegacyDiscoveredDevice`.
 - `WsPairingStore.kt` â€ Context removed from constructor; store injected directly.
 - `LegacyDiscoveredDevice.kt` (NEW tiny file) â€ local stand-in for the deleted `:app` `DiscoveredDevice`/`TransportType` (identical field shape + `LegacyTransportType{LAN,WIFI_DIRECT}`), keeping the move mechanical. TODO(unification) with `FlashDiscoveredEndpoint` / `WsDiscoveredDevice` noted in KDoc.
 Created test: `core/transfer/src/test/java/com/transfer/flash/core/transfer/wslegacy/WsPairingStoreTest.kt` (3 JVM tests, fake FlashTrustStore).
@@ -15218,55 +15319,55 @@ NOT Gradle-verified (forbidden this session) " run testDebugUnitTest first; ~35 
 ### Next AI
 Run testDebugUnitTest; fix any fallout in chunked/** only; then proceed C5.7 multi-stream dispatcher (shared DEFAULT_ACK_EVERY=32 contract already pinned).
 
-## 2026-08-23 â€” Phase P4 part 2: TLS into WS transport + LAN session hardening + DefaultFlashNetwork
+## 2026-08-23 — Phase P4 part 2: TLS into WS transport + LAN session hardening + DefaultFlashNetwork
 
 ### Worked on
 Completed P4 integration: wired the C4.1 TLS layer and resilience components into real transports, and built the first concrete `FlashNetwork` implementation.
 
 ### Changed
-- **Stream A (TLSâ†’WS):** `tls/SecureSocketUpgrader` (wrapClient eager-handshake w/ SO_TIMEOUT budget; wrapAccepted server-mode lazy handshake; plain-stream taint-tracking guard), additive `TlsOptions?` on `WsTransferServer`/`WsTransferClient` â€” entire HTTP-upgrade exchange travels over TLS when enabled; no-TLS callers unchanged (R4). Research: SSLSocket wrap semantics, STARTTLS clean-boundary pitfalls, handshake-timeout mechanism.
-- **Stream B (LAN hardening):** `LanProbeMessages` additive FLASH_ACK/FLASH_DATA frames (byte-compatible); `LanSession` â€” `frameAcks` flow (SocketWritten per send / PeerAcknowledged on ACK), `sendAwaitAck(timeout)` failing soft without session teardown, HeartbeatTracker-driven dead detection (10sÃ—3 â‰ˆ 30s worst case) closing the socket to unblock readLine, injectable heartbeat intervals + logger seam; `incomingFrames` receive surface so PeerAcknowledged is only emitted for consumed payloads.
-- **Lead: `DefaultFlashNetwork : FlashNetwork`** â€” composes LanProbeServer (inbound) + LanConnectionProbe (outbound) + SessionHardeningPolicy (cap + duplicate coalescing) + ConnectionHealthAggregator (`connectionHealth`) + ReconnectPolicy + AndroidNetworkWatcher (instant network-available reconnect) + manual `retryConnection()`; `rememberEndpoint()` = C3â†’C4 route seam; registry eviction only when the REGISTERED session itself disconnects (coalesced-duplicate teardown no longer evicts live sessions).
-- **JVM-testability:** LanProbeServer/LanConnectionProbe/DefaultFlashNetwork log via injectable `LanSessionLogger` (android.util.Log crashes JVM tests); LanConnectionProbe tolerates null Context; loopback composition test drives two DefaultFlashNetwork instances end-to-end (connect â†’ both registries â†’ health Connected â†’ duplicate coalesced â†’ stop â†’ Offline).
+- **Stream A (TLS→WS):** `tls/SecureSocketUpgrader` (wrapClient eager-handshake w/ SO_TIMEOUT budget; wrapAccepted server-mode lazy handshake; plain-stream taint-tracking guard), additive `TlsOptions?` on `WsTransferServer`/`WsTransferClient` — entire HTTP-upgrade exchange travels over TLS when enabled; no-TLS callers unchanged (R4). Research: SSLSocket wrap semantics, STARTTLS clean-boundary pitfalls, handshake-timeout mechanism.
+- **Stream B (LAN hardening):** `LanProbeMessages` additive FLASH_ACK/FLASH_DATA frames (byte-compatible); `LanSession` — `frameAcks` flow (SocketWritten per send / PeerAcknowledged on ACK), `sendAwaitAck(timeout)` failing soft without session teardown, HeartbeatTracker-driven dead detection (10s×3 ≈ 30s worst case) closing the socket to unblock readLine, injectable heartbeat intervals + logger seam; `incomingFrames` receive surface so PeerAcknowledged is only emitted for consumed payloads.
+- **Lead: `DefaultFlashNetwork : FlashNetwork`** — composes LanProbeServer (inbound) + LanConnectionProbe (outbound) + SessionHardeningPolicy (cap + duplicate coalescing) + ConnectionHealthAggregator (`connectionHealth`) + ReconnectPolicy + AndroidNetworkWatcher (instant network-available reconnect) + manual `retryConnection()`; `rememberEndpoint()` = C3→C4 route seam; registry eviction only when the REGISTERED session itself disconnects (coalesced-duplicate teardown no longer evicts live sessions).
+- **JVM-testability:** LanProbeServer/LanConnectionProbe/DefaultFlashNetwork log via injectable `LanSessionLogger` (android.util.Log crashes JVM tests); LanConnectionProbe tolerates null Context; loopback composition test drives two DefaultFlashNetwork instances end-to-end (connect → both registries → health Connected → duplicate coalesced → stop → Offline).
 
 ### Verification
 - Consolidated build: **575 tests / 0 failures** (+14). Two real networks exchange sessions over loopback in pure-JVM tests.
-- Lead fixes during integration: constructor-resolution cycle in legacy LanSession secondary ctor (deleted â€” unused); Flow.map-style overload & missing-import fallout; logger threading through probe/server/network chain; snapshot-vs-delta health API alignment; duplicate-close registry eviction bug caught by the new composition test.
+- Lead fixes during integration: constructor-resolution cycle in legacy LanSession secondary ctor (deleted — unused); Flow.map-style overload & missing-import fallout; logger threading through probe/server/network chain; snapshot-vs-delta health API alignment; duplicate-close registry eviction bug caught by the new composition test.
 
 ### Remaining
 - Device verification of TLS-on-WS + hardened sessions on physical phones (Dev Console path).
-- C4.6 Aware/Direct endpoint acceptance seams land with C3.6â€“C3.8 radios (P7).
-- C4.8 peer-side ACK senders belong to the messaging engine (C6) â€” transport side is ready.
-- Next phase: **P5 (:core:transfer chunked multi-stream)** or engine facade pull-forward â€” owner's call.
+- C4.6 Aware/Direct endpoint acceptance seams land with C3.6–C3.8 radios (P7).
+- C4.8 peer-side ACK senders belong to the messaging engine (C6) — transport side is ready.
+- Next phase: **P5 (:core:transfer chunked multi-stream)** or engine facade pull-forward — owner's call.
 
 ### Next AI
-Start P5 per plan Â§5, or wire DefaultFlashNetwork+discovery into Dev Console as an integration smoke before proceeding. R1 research-first every step.
+Start P5 per plan §5, or wire DefaultFlashNetwork+discovery into Dev Console as an integration smoke before proceeding. R1 research-first every step.
 
-## 2026-08-23 â€” P4 part 2 stream B: LAN session hardening + delivery-ACK emission (C4.8 + C4.3 wiring, :core:network/tcp)
+## 2026-08-23 — P4 part 2 stream B: LAN session hardening + delivery-ACK emission (C4.8 + C4.3 wiring, :core:network/tcp)
 
 ### Worked on
-Hardened `LanSession` (tracker-driven heartbeat, reader-unblock-on-dead) and implemented real per-frame delivery ACKs on the LAN TCP transport. Parallel agents own ws/**, tls/** â€” untouched.
+Hardened `LanSession` (tracker-driven heartbeat, reader-unblock-on-dead) and implemented real per-frame delivery ACKs on the LAN TCP transport. Parallel agents own ws/**, tls/** — untouched.
 
 ### Research findings (R1)
 - (a) Application-level ack framing for text-line protocols: sender-chosen UUID (`frameId`) echoed by receiver; chat delivery is at-least-once with client dedup when retried via durable outbox, while a single in-call send is at-most-once (retry belongs to C6 outbox). Duplicate acks must be idempotent. Sources: https://sujeet.pro/articles/design-real-time-chat-messaging (at-least-once + client dedup on stable messageId), https://www.techinterview.org/post/3233476407/chat-system-design-delivery-ordering-presence/ (client-generated ID before send; ack chain as separate small frames), https://semicolony.dev/codex/system-design/playbook/chat/ (client_msg_id correlation, resends only from durable layer), https://github.com/anulum/synapse-channel/blob/main/docs/protocol.md (senders dedupe repeated ids rather than treating duplicates as new outcomes).
-- (b) Unblocking a thread blocked in `readLine()`: JDK `Socket.close()` makes ANY thread blocked in I/O on the socket throw `SocketException` â€” this is the documented cross-thread teardown; `Thread.interrupt()` does not reliably unblock socket reads (platform dependent); `setSoTimeout()` only converts an infinite block into periodic `SocketTimeoutException`s while the half-open session stays alive. Sources: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/net/Socket.html ("Any thread currently blocked in an I/O operation upon this socket will throw"), https://stackoverflow.com/questions/3595926/how-to-interrupt-bufferedreaders-readline, https://stackoverflow.com/questions/1024482/stop-interrupt-threads-blocked-on-waiting-input-from-socket, https://stackoverflow.com/questions/23622839/safely-closing-thread-reading-socket-inputstream-from-a-different-thread.
-  â‡’ DeclareDead closes the socket from the heartbeat coroutine; SoTimeout alone is insufficient because it never tears down and requires loop re-arm handling (which we ALSO added â€” see below).
+- (b) Unblocking a thread blocked in `readLine()`: JDK `Socket.close()` makes ANY thread blocked in I/O on the socket throw `SocketException` — this is the documented cross-thread teardown; `Thread.interrupt()` does not reliably unblock socket reads (platform dependent); `setSoTimeout()` only converts an infinite block into periodic `SocketTimeoutException`s while the half-open session stays alive. Sources: https://docs.oracle.com/en/java/javase/17/docs/api/java.base/java/net/Socket.html ("Any thread currently blocked in an I/O operation upon this socket will throw"), https://stackoverflow.com/questions/3595926/how-to-interrupt-bufferedreaders-readline, https://stackoverflow.com/questions/1024482/stop-interrupt-threads-blocked-on-waiting-input-from-socket, https://stackoverflow.com/questions/23622839/safely-closing-thread-reading-socket-inputstream-from-a-different-thread.
+  ⇒ DeclareDead closes the socket from the heartbeat coroutine; SoTimeout alone is insufficient because it never tears down and requires loop re-arm handling (which we ALSO added — see below).
 
 ### Changed
 - **MODIFIED** `tcp/LanProbeMessages.kt` (additive): `LanProbeAck` + `FLASH_ACK` builder/parser (`version/deviceId/name/frameId`), `LanProbeData` envelope + `FLASH_DATA` builder/parser. All existing frames byte-compatible (R4).
 - **MODIFIED** `tcp/LanSession.kt`:
-  - `override val frameAcks: MutableSharedFlow<FrameAck>` â€” every successful `send()` emits `FrameAck(UUID, SocketWritten, now)`; parsed peer `FLASH_ACK` emits `PeerAcknowledged`. DROP_OLDEST buffer 64 keeps emission non-suspending.
-  - New `sendAwaitAck(message, timeoutMs = DEFAULT_ACK_TIMEOUT_MS=5000)`: wraps payload in `FLASH_DATA` envelope (fresh UUID), registers waiter in a `ConcurrentHashMap`, completes on matching ACK. Timeout â‡’ `Failure(ConnectionTimeout)` WITHOUT closing session; session death â‡’ fail-fast `PeerUnavailable`.
-  - Read loop: parses `FLASH_DATA` (auto-acks + emits payload on new additive `incomingFrames: SharedFlow<String>`), `FLASH_ACK` (remove-before-fire dedup â‡’ duplicates can't double-complete or double-emit), tolerates `SocketTimeoutException` (probe leaves soTimeout 3â€“4 s armed; legacy 3 s pings masked it, 10 s tracker cadence would otherwise kill idle-but-healthy sessions).
-  - Heartbeat: replaced blind 3 s fixed loop with `HeartbeatTracker` ticks (tick = interval/4 clamped [5 ms, interval]); Suspect logged, DeclareDead closes with reason "heartbeat timeout". Interval/threshold injectable via NEW defaulted constructor params (`heartbeatIntervalMs = HeartbeatPolicy.DEFAULT_INTERVAL_MS = 10 s`, `heartbeatMissedThreshold = 3`) â€” old signature still compiles (R4); legacy 3 s cadence available by passing 3000. Choice documented: tracker defaults preferred per C4.3 research (10 s Ã— 3 â‰ˆ 30 s worst-case detection).
+  - `override val frameAcks: MutableSharedFlow<FrameAck>` — every successful `send()` emits `FrameAck(UUID, SocketWritten, now)`; parsed peer `FLASH_ACK` emits `PeerAcknowledged`. DROP_OLDEST buffer 64 keeps emission non-suspending.
+  - New `sendAwaitAck(message, timeoutMs = DEFAULT_ACK_TIMEOUT_MS=5000)`: wraps payload in `FLASH_DATA` envelope (fresh UUID), registers waiter in a `ConcurrentHashMap`, completes on matching ACK. Timeout ⇒ `Failure(ConnectionTimeout)` WITHOUT closing session; session death ⇒ fail-fast `PeerUnavailable`.
+  - Read loop: parses `FLASH_DATA` (auto-acks + emits payload on new additive `incomingFrames: SharedFlow<String>`), `FLASH_ACK` (remove-before-fire dedup ⇒ duplicates can't double-complete or double-emit), tolerates `SocketTimeoutException` (probe leaves soTimeout 3–4 s armed; legacy 3 s pings masked it, 10 s tracker cadence would otherwise kill idle-but-healthy sessions).
+  - Heartbeat: replaced blind 3 s fixed loop with `HeartbeatTracker` ticks (tick = interval/4 clamped [5 ms, interval]); Suspect logged, DeclareDead closes with reason "heartbeat timeout". Interval/threshold injectable via NEW defaulted constructor params (`heartbeatIntervalMs = HeartbeatPolicy.DEFAULT_INTERVAL_MS = 10 s`, `heartbeatMissedThreshold = 3`) — old signature still compiles (R4); legacy 3 s cadence available by passing 3000. Choice documented: tracker defaults preferred per C4.3 research (10 s × 3 ≈ 30 s worst-case detection).
   - New injectable `LanSessionLogger` fun interface (default = android.util.Log.println, behavior identical) so JVM tests avoid "not mocked" without touching gradle files.
-- **NOT MODIFIED** `tcp/LanProbeServer.kt` / `tcp/LanConnectionProbe.kt` â€” constructor stayed source-compatible via default params (R4 verified by signature review); no behavioral change required.
-- **NEW** test `tcp/LanSessionHardenedTest.kt` (5 tests, JVM loopback, deterministic, well under 15 s): SocketWritten-per-send; two real sessions Aâ†’B end-to-end acked send (Success + PeerAcknowledged + payload on B.incomingFrames); ACK timeout keeps session Connected and usable; 3 missed heartbeats (interval=60 ms injected) close with "heartbeat timeout" ~180â€“250 ms; duplicate FLASH_ACK fires exactly one PeerAcknowledged.
+- **NOT MODIFIED** `tcp/LanProbeServer.kt` / `tcp/LanConnectionProbe.kt` — constructor stayed source-compatible via default params (R4 verified by signature review); no behavioral change required.
+- **NEW** test `tcp/LanSessionHardenedTest.kt` (5 tests, JVM loopback, deterministic, well under 15 s): SocketWritten-per-send; two real sessions A→B end-to-end acked send (Success + PeerAcknowledged + payload on B.incomingFrames); ACK timeout keeps session Connected and usable; 3 missed heartbeats (interval=60 ms injected) close with "heartbeat timeout" ~180–250 ms; duplicate FLASH_ACK fires exactly one PeerAcknowledged.
 
 ### Deviations / notes for next AI
 - Added additive receive surface `incomingFrames` beyond the letter of the spec: without it the receiver would auto-ack a payload it silently discarded, making PeerAcknowledged semantically dishonest between two real Flash sessions.
 - Chose tracker-default 10 s interval over keeping legacy 3 s cadence (documented in KDoc + protocol.md); old cadence reachable via constructor arg.
-- `sendAwaitAck` payloads are single-line UTF-8 text (existing line-framing constraint); embedded newlines corrupt envelope/payload pairing â€” documented in KDoc.
+- `sendAwaitAck` payloads are single-line UTF-8 text (existing line-framing constraint); embedded newlines corrupt envelope/payload pairing — documented in KDoc.
 - NOT Gradle-run (forbidden session). Expected: +5 tests green; existing LanProbeMessagesTest unaffected (additive only).
 
 ### Verification
@@ -15276,24 +15377,24 @@ Full code re-read + API-semantics check against JDK Socket contract; build/test 
 - Device verification of heartbeat teardown on real phones (two-device dead-peer scenario).
 - Wire `frameAcks` stages into C6 receipt logic (UI-015 glyphs).
 
-## 2026-08-23 â€” P4 part 2 stream A: TLS integration into WebSocket transport (C4.1 completion, :core:network)
+## 2026-08-23 — P4 part 2 stream A: TLS integration into WebSocket transport (C4.1 completion, :core:network)
 
 ### Worked on
-Wired the C4.1 TLS layer into the WS transport via a new `SecureSocketUpgrader`, plus additive `TlsOptions` on `WsTransferServer`/`WsTransferClient`. Parallel agent owns tcp/** â€” untouched.
+Wired the C4.1 TLS layer into the WS transport via a new `SecureSocketUpgrader`, plus additive `TlsOptions` on `WsTransferServer`/`WsTransferClient`. Parallel agent owns tcp/** — untouched.
 
 ### Research findings (R1, cited in SecureSocketUpgrader KDoc)
-- (a) `SSLSocketFactory.createSocket(socket, host, port, autoClose)` layers over a CONNECTED socket without reconnecting; host/port are logical only; NO I/O until first use or `startHandshake()` â€” which is what makes server-side `setUseClientMode(false)` after wrap legal. https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/net/ssl/SSLSocketFactory.html + https://developer.android.com/reference/javax/net/ssl/SSLSocketFactory + https://stackoverflow.com/questions/6559859/is-it-possible-to-change-plain-socket-to-sslsocket
+- (a) `SSLSocketFactory.createSocket(socket, host, port, autoClose)` layers over a CONNECTED socket without reconnecting; host/port are logical only; NO I/O until first use or `startHandshake()` — which is what makes server-side `setUseClientMode(false)` after wrap legal. https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/net/ssl/SSLSocketFactory.html + https://developer.android.com/reference/javax/net/ssl/SSLSocketFactory + https://stackoverflow.com/questions/6559859/is-it-possible-to-change-plain-socket-to-sslsocket
 - (b) Clean-boundary rule: ANY pre-wrap plain-stream read/write corrupts the TLS stream / enables plaintext injection; once upgrading, plaintext use must cease entirely. https://duesee.dev/p/avoid-implementing-starttls/ + https://lists.openwall.net/bugtraq/2011/03/07/17 + https://stackoverflow.com/questions/15957198/upgrading-socket-to-sslsocket-with-starttls-recv-failed
-- (c) No portable public per-handshake timeout on SSLSocket; both deprecated `SSLCertificateSocketFactory.getDefault(ms)` and Conscrypt's internal `setHandshakeTimeout` implement it by temporarily swapping SO_TIMEOUT for the handshake then restoring â€” mechanism adopted here. https://developer.android.com/reference/android/net/SSLCertificateSocketFactory + conscrypt OpenSSLSocketImpl source.
+- (c) No portable public per-handshake timeout on SSLSocket; both deprecated `SSLCertificateSocketFactory.getDefault(ms)` and Conscrypt's internal `setHandshakeTimeout` implement it by temporarily swapping SO_TIMEOUT for the handshake then restoring — mechanism adopted here. https://developer.android.com/reference/android/net/SSLCertificateSocketFactory + conscrypt OpenSSLSocketImpl source.
 
 ### Changed
-- **NEW** `core/network/.../tls/SecureSocketUpgrader.kt`: suspend `wrapClient(...)` (eager handshake, fail-closed, autoClose=true, SO_TIMEOUT-based timeout), `wrapAccepted(...)` (server mode, LAZY handshake documented, caller can `forceHandshake`), `withPlainStreamTracking(socket)` taint-tracking delegating wrapper + `IllegalStateException` refusal when streams were accessed before wrap (best-effort: JDK Socket exposes no way to detect stream access on foreign implementations â€” convention enforced otherwise), shared `TlsOptions(pinVerifier, keyManagers, expectedDeviceId, handshakeTimeoutMs)`.
+- **NEW** `core/network/.../tls/SecureSocketUpgrader.kt`: suspend `wrapClient(...)` (eager handshake, fail-closed, autoClose=true, SO_TIMEOUT-based timeout), `wrapAccepted(...)` (server mode, LAZY handshake documented, caller can `forceHandshake`), `withPlainStreamTracking(socket)` taint-tracking delegating wrapper + `IllegalStateException` refusal when streams were accessed before wrap (best-effort: JDK Socket exposes no way to detect stream access on foreign implementations — convention enforced otherwise), shared `TlsOptions(pinVerifier, keyManagers, expectedDeviceId, handshakeTimeoutMs)`.
 - **MODIFIED** `ws/WsTransferServer.kt` (+additive `tls: TlsOptions? = null`; accepted sockets are tracked+wrapped BEFORE the WS handshake parses any byte) and `ws/WsTransferClient.kt` (+additive `tls: TlsOptions? = null`; CONNECT socket wrapped BEFORE the WS upgrade is sent). Existing callers compile unchanged (`app/.../WsTransferManager.kt` verified source-compatible).
 - **NEW tests**: `tls/SecureSocketUpgraderTest.kt` (taint-refusal client+server, clean-wrapper accepted, wrong-pin fail-closed with TOFU CertificateException in chain) and `ws/SecureWsTransferLoopbackTest.kt` (full TLS server+client text round-trip through encryption; wrong-pin connect fails closed with cert/handshake indicator asserted from cause chain; no-TLS R4 regression path).
 
 ### Deviations / notes for next AI
-- `WsTransferClient` context param widened to `Context?` (source-compatible) so pure-JVM loopback tests can run without an Android Context; null â‡’ default routing instead of Wi-Fi/Ethernet pinning.
-- New internal `WsLog` shim (in WsTransferServer.kt) wraps android.util.Log in try/catch â€” production behaviour identical, unblocks JVM unit tests since gradle files may not be modified this session (`isReturnDefaultValues` not enabled).
+- `WsTransferClient` context param widened to `Context?` (source-compatible) so pure-JVM loopback tests can run without an Android Context; null ⇒ default routing instead of Wi-Fi/Ethernet pinning.
+- New internal `WsLog` shim (in WsTransferServer.kt) wraps android.util.Log in try/catch — production behaviour identical, unblocks JVM unit tests since gradle files may not be modified this session (`isReturnDefaultValues` not enabled).
 - TlsOptions field named `expectedDeviceId` (spec draft said `expectedClientDeviceId`) + extra defaulted `handshakeTimeoutMs`.
 - NOT Gradle-run (forbidden session). Expected: ~+7 tests, all existing green.
 
@@ -15301,12 +15402,12 @@ Wired the C4.1 TLS layer into the WS transport via a new `SecureSocketUpgrader`,
 Code review + API-semantics research only; build/test run pending owner's consolidated Gradle session.
 
 ### Remaining
-- Wire TLS into LanSession/LanConnectionProbe (tcp/** â€” concurrent agent), C4.8 real ack emission, device verification of TLS path.
+- Wire TLS into LanSession/LanConnectionProbe (tcp/** — concurrent agent), C4.8 real ack emission, device verification of TLS path.
 
 ### Next AI
 Run testDebugUnitTest; then integrate WsTransferServer/Client TlsOptions at engine wiring (:app/:core:engine) using AndroidKeyStore KeyManagers + Room-backed FlashPinVerifier.
 
-## 2026-08-23 â€” Stale-peer fix + Phase P4 part 1 (:core:network TLS + resilience logic)
+## 2026-08-23 — Stale-peer fix + Phase P4 part 1 (:core:network TLS + resilience logic)
 
 ### Worked on
 Fixed the field-reported discovery bug (peers stayed visible after stop/Wi-Fi-off), then executed P4 steps C4.1 + C4.2/C4.3/C4.5/C4.7-aggregation + C4.9 via two parallel research-first subagents plus lead contracts/integration.
@@ -15314,13 +15415,13 @@ Fixed the field-reported discovery bug (peers stayed visible after stop/Wi-Fi-of
 ### Changed
 - **Stale-peer fix (`2c1909d`):** CompositeDiscovery now owns an internal sweeper loop (5 s interval, started by startAll, cancelled by stopAll) so departed peers converge to Lost within ~grace+interval even when mDNS goodbyes are missed; injectable delayFn + maxSweepLoops determinism hooks; regression test drives virtual time through AtomicLong clock.
 - **C4 contracts (lead):** `FlashConnectionHealth` enum; additive `FlashNetwork.connectionHealth`/`retryConnection()`; additive `FlashSession.frameAcks: Flow<FrameAck>` (SocketWritten/PeerAcknowledged stages feeding UI-015).
-- **C4.1 TLS (agent):** `tls/` package â€” `FlashPinVerifier` seam (Room store wired later), `TofuX509TrustManager` (X509ExtendedTrustManager, SHA-256 SPKI pinning, fail-closed incl. missing device id, uniform onKeyChanged reporting), `FlashTlsContextFactory` (client/server contexts w/ KeyManager injection + onKeyChanged threading, TLSv1.3-preferred config), hostname-verification-replacement rationale documented.
-- **C4.2/C4.3/C4.5/C4.7/C4.9 resilience (agent):** `resilience/` package â€” full-jitter-with-floor `ReconnectPolicy` (AWS blog research), 10sÃ—3-miss `HeartbeatTracker`, reject-newest `BoundedSendQueue` (capacity 64; outbox retains rejected writes per C6 contract), `SessionHardeningPolicy` (8-session cap, transport-rank coalescing), `ConnectionHealthAggregator`, `ChaosSession`+`ChaosNetworkHarness` fault-injection with resilience invariant tests (dedup gate, queue-full storm under watchdog, dead-peer declaration, reconnect reset).
-- **Lead additions:** `AndroidNetworkWatcher` (NetworkCallback instant-reconnect trigger, LAN transports only); test-only BouncyCastle bcpkix dependency for JVM cert generation (documented decision: zero production footprint â€” prod certs come from platform keystore).
+- **C4.1 TLS (agent):** `tls/` package — `FlashPinVerifier` seam (Room store wired later), `TofuX509TrustManager` (X509ExtendedTrustManager, SHA-256 SPKI pinning, fail-closed incl. missing device id, uniform onKeyChanged reporting), `FlashTlsContextFactory` (client/server contexts w/ KeyManager injection + onKeyChanged threading, TLSv1.3-preferred config), hostname-verification-replacement rationale documented.
+- **C4.2/C4.3/C4.5/C4.7/C4.9 resilience (agent):** `resilience/` package — full-jitter-with-floor `ReconnectPolicy` (AWS blog research), 10s×3-miss `HeartbeatTracker`, reject-newest `BoundedSendQueue` (capacity 64; outbox retains rejected writes per C6 contract), `SessionHardeningPolicy` (8-session cap, transport-rank coalescing), `ConnectionHealthAggregator`, `ChaosSession`+`ChaosNetworkHarness` fault-injection with resilience invariant tests (dedup gate, queue-full storm under watchdog, dead-peer declaration, reconnect reset).
+- **Lead additions:** `AndroidNetworkWatcher` (NetworkCallback instant-reconnect trigger, LAN transports only); test-only BouncyCastle bcpkix dependency for JVM cert generation (documented decision: zero production footprint — prod certs come from platform keystore).
 
 ### Verification
 - Consolidated build: **561 tests / 0 failures** (+65: localhost TLS handshakes matching/wrong/missing pin, TLS 1.3 negotiation, chaos invariants, policy tables).
-- Lead integration fixes (7): javax.net.ssl.KeyManager import; BC test route after hand-rolled DER encoder produced malformed certs ("Too short"); TestIdentity API compat + REAL PKCS12-backed KeyManagers (empty managers broke server-side handshakes); CN double-prefix normalization; factory now threads onKeyChanged (was silently dropped â†’ empty key-change events); trust-manager test restructured to expect the fail-closed exception before asserting callback; chaos storm assertion corrected to reject-all-500.
+- Lead integration fixes (7): javax.net.ssl.KeyManager import; BC test route after hand-rolled DER encoder produced malformed certs ("Too short"); TestIdentity API compat + REAL PKCS12-backed KeyManagers (empty managers broke server-side handshakes); CN double-prefix normalization; factory now threads onKeyChanged (was silently dropped → empty key-change events); trust-manager test restructured to expect the fail-closed exception before asserting callback; chaos storm assertion corrected to reject-all-500.
 - Multiple ERROR-008 E:-drive incidents again (AsyncCacheAccessDecoratedCache write failures killing daemons/config cache); recovered via --stop + fresh no-daemon runs each time.
 
 ### Remaining (P4 part 2)
@@ -15367,100 +15468,100 @@ Implemented `NsdTransport : FlashRadioTransport` (identity-aware advertising, co
 ### Next AI
 1) Run testDebugUnitTest; fix reds + log ERROR-0XX. 2) Wire StandardEndpointDirectory + sweeper into NsdTransport.pollSweep(). 3) Device battery: cold join, hot leave, Wi-Fi toggle, AP roam timings -> logs/experiments.md; verify multicast-lock behavior on Android 13 non-T-ext7 device specifically.
 
-## 2026-08-22 â€” Phase P2 Executed (:core:security full stack)
+## 2026-08-22 — Phase P2 Executed (:core:security full stack)
 
 ### Worked on
-Executed core plan Phase P2 (C2.0â€“C2.8) via two parallel research-first subagents with strict file ownership (crypto/ vs trust+pairing/); lead wired the :core:persistence dependency into :core:security, ran consolidated builds, fixed seven integration issues.
+Executed core plan Phase P2 (C2.0–C2.8) via two parallel research-first subagents with strict file ownership (crypto/ vs trust+pairing/); lead wired the :core:persistence dependency into :core:security, ran consolidated builds, fixed seven integration issues.
 
 ### Changed
-- **C2.0 research:** AndroidKeyStore ECDSA sign since API 23/StrongBox API 28+; PURPOSE_AGREE_KEY only since API 31 â†’ design decision: identity = Keystore ECDSA P-256, session keys = ephemeral software ECDH P-256 (memory-only); self-signed cert via platform KeyGenParameterSpec certificate fields instead of BouncyCastle (multi-MB dep rejected); HKDF per RFC 5869; AES-GCM random-96-bit-nonce discipline per NIST SP 800-38D.
-- **crypto/ (agent A):** `FlashCrypto` interface, `KeystoreFlashCrypto` (alias flash_identity, StrongBoxâ†’TEE fallback, platform self-signed cert retrieval), `SoftwareFlashCrypto` (JVM tests/fallback, loud NOT-FOR-PRODUCTION), `Hkdf` (RFC 5869 test cases 1â€“2 as vectors), `FlashFingerprint` (SHA-256 D3 + hex-group formatting + constant-time equals), `E2eFrameCodec` ([12B nonce|ct+tag], AAD=protocol version, AES-256-GCM).
-- **trust/pairing/ (agent B):** `RoomTrustedStore` (additive FlashTrustStore impl + pin/isPinned/trustedPeers Flow + idempotent legacy import w/ LEGACY_UNBOUND_FINGERPRINT so old flags never silently become pins), pure `TofuPolicy` (FirstConnect/Match/Mismatch, fail-closed incl. missing presented fingerprint), `FlashPairingFrames`, symmetric `NumericComparisonCode` (sorted-concat SHA-256, BT-SSP numeric-comparison precedent), pure `PairingSessionStateMachine` (8 phases, engine-owned timeouts, Expiredâ‰ Failed, mapped to UI-032 demo phases), `DefaultFlashPairingProtocol` orchestrator (events flow, onFrame/onTick seams for C4/C6).
+- **C2.0 research:** AndroidKeyStore ECDSA sign since API 23/StrongBox API 28+; PURPOSE_AGREE_KEY only since API 31 → design decision: identity = Keystore ECDSA P-256, session keys = ephemeral software ECDH P-256 (memory-only); self-signed cert via platform KeyGenParameterSpec certificate fields instead of BouncyCastle (multi-MB dep rejected); HKDF per RFC 5869; AES-GCM random-96-bit-nonce discipline per NIST SP 800-38D.
+- **crypto/ (agent A):** `FlashCrypto` interface, `KeystoreFlashCrypto` (alias flash_identity, StrongBox→TEE fallback, platform self-signed cert retrieval), `SoftwareFlashCrypto` (JVM tests/fallback, loud NOT-FOR-PRODUCTION), `Hkdf` (RFC 5869 test cases 1–2 as vectors), `FlashFingerprint` (SHA-256 D3 + hex-group formatting + constant-time equals), `E2eFrameCodec` ([12B nonce|ct+tag], AAD=protocol version, AES-256-GCM).
+- **trust/pairing/ (agent B):** `RoomTrustedStore` (additive FlashTrustStore impl + pin/isPinned/trustedPeers Flow + idempotent legacy import w/ LEGACY_UNBOUND_FINGERPRINT so old flags never silently become pins), pure `TofuPolicy` (FirstConnect/Match/Mismatch, fail-closed incl. missing presented fingerprint), `FlashPairingFrames`, symmetric `NumericComparisonCode` (sorted-concat SHA-256, BT-SSP numeric-comparison precedent), pure `PairingSessionStateMachine` (8 phases, engine-owned timeouts, Expired≠Failed, mapped to UI-032 demo phases), `DefaultFlashPairingProtocol` orchestrator (events flow, onFrame/onTick seams for C4/C6).
 - **docs/security.md created:** threat model, identity/pairing/E2E policy, nonce discipline, rekey deferral to D5 mesh workstream, known gaps.
-- **Lead integration fixes (7):** missing KeyPairGenerator import; generateKeyPair name collision inside .run block; kotlinx Flow.map vs FlashResult.map overload collision in RoomTrustedStore â†’ try/catch rewrite; TofuPolicy nullable-arg type mismatch; PeerDeclined reducer violating its own total-reducer principle (only meaningful in AwaitingPeerConfirmation); replay=0 SharedFlow needed testScheduler.runCurrent() pumping in 3 tests; PAIR_CONFIRM fed to wrong party in handshake test.
+- **Lead integration fixes (7):** missing KeyPairGenerator import; generateKeyPair name collision inside .run block; kotlinx Flow.map vs FlashResult.map overload collision in RoomTrustedStore → try/catch rewrite; TofuPolicy nullable-arg type mismatch; PeerDeclined reducer violating its own total-reducer principle (only meaningful in AwaitingPeerConfirmation); replay=0 SharedFlow needed testScheduler.runCurrent() pumping in 3 tests; PAIR_CONFIRM fed to wrong party in handshake test.
 
 ### Verification
 - Consolidated `testDebugUnitTest assembleDebug`: **BUILD SUCCESSFUL, 413 tests / 0 failures** (+73: RFC vectors, ECDH bidirectional agreement, tamper detection, numeric-code symmetry/determinism, state-machine transition matrix incl. expiry boundaries, two-party cross-wired handshake, TOFU decisions incl. blank-presented fail-closed, migration idempotency).
-- Recurrent Kotlin-daemon crashes from E:-drive I/O drops (ERROR-008) â€” recovered each run. **Incident note:** one PowerShell Get-Content/Set-Content pass corrupted handoff.md UTF-8 (mojibake); restored from git commit and redid edits via UTF-8-safe tools. Lesson recorded: never round-trip repo text files through PS 5.1 Get-/Set-Content.
+- Recurrent Kotlin-daemon crashes from E:-drive I/O drops (ERROR-008) — recovered each run. **Incident note:** one PowerShell Get-Content/Set-Content pass corrupted handoff.md UTF-8 (mojibake); restored from git commit and redid edits via UTF-8-safe tools. Lesson recorded: never round-trip repo text files through PS 5.1 Get-/Set-Content.
 - Runtime Keystore/E2E verification pending (device backlog item added).
 
 ### Remaining
-- Phase P3 next (discovery continuous mode C3.1â€“C3.5 + device battery C3.11).
+- Phase P3 next (discovery continuous mode C3.1–C3.5 + device battery C3.11).
 - Wire pairing protocol to transport when C4 lands; decline frame encoding C4/C6.
 
 ### Next AI
-Start P3 per plan Â§5. R1 research-first every step. Beware ERROR-008; commit incrementally.
+Start P3 per plan §5. R1 research-first every step. Beware ERROR-008; commit incrementally.
 
-## 2026-08-22 â€” Phase P1 Executed (:core:persistence â€” Room + SQLCipher + DataStore)
+## 2026-08-22 — Phase P1 Executed (:core:persistence — Room + SQLCipher + DataStore)
 
 ### Worked on
-Executed core plan Phase P1 (C1.0â€“C1.8) via two parallel research-first subagents with strict file ownership; lead scaffolded module/build config, ran one consolidated build, fixed two integration issues.
+Executed core plan Phase P1 (C1.0–C1.8) via two parallel research-first subagents with strict file ownership; lead scaffolded module/build config, ran one consolidated build, fixed two integration issues.
 
 ### Changed
 - **C1.0 research (lead):** Room 3.0 went stable 2026-07 (new `androidx.room3` package, SQLiteDriver-based, breaks SupportSQLite); SQLCipher added Room 3 support only in 4.18.0 (2026-08-18). **Decision: Room 2.8.4** (mature SupportOpenHelperFactory path) + **SQLCipher 4.18.0** (`net.zetetic:sqlcipher-android@aar`) + DataStore preferences 1.1.7 + Robolectric 4.16.1 (DAO tests pinned @Config sdk=[34]; SDK 36 needs JDK 21). Room 3 migration = documented revisit point.
 - **Module scaffold (lead):** `settings.gradle.kts` include, version catalog entries (room/sqlcipher/sqlite/datastore/coroutines-test/robolectric), `core/persistence/build.gradle.kts` (ksp room-compiler, room.schemaLocation export to `schemas/`, maven-publish, test assets), rules.pro stubs.
-- **C1.2â€“C1.4 (agent A):** 11 entities (Message/Conversation/Receipt/Outbox/Transfer/TransferChunk/RecentSearch/TrustedPeer/Reaction/Draft/ReadCursor), 11 DAOs (Flow reads; IGNORE dedup on messages/receipts; @Upsert last-write-wins for drafts/reactions/recents/cursors; keyset pagination `(sentAt<c)OR(=AND localId<)` with PK tiebreaker; composite seek index on (conversationId,sentAt,localId)), `FlashDatabase` v1 exportSchema=true, `FlashDatabaseOpener` (openEncrypted via System.loadLibrary("sqlcipher")+SupportOpenHelperFactory+PassphraseProvider seam; openInMemory test-only w/ loud destructive-migration comment).
-- **C1.8 invariant tests (agent A):** Robolectric in-memory suite â€” duplicate message/receipt IGNORE, outbox claimâ†’attemptsâ†’deleteâ†’re-claim-empty race semantics, read-cursor monotonicity (advanceFurthest transactional read-compare-write, older/equal no-op), keyset walk of 50 msgs / page 7 / tie-heavy no-dup-no-gap per-conversation scoping, chunk done-set resume bit-vector roundtrip + resetStuck.
-- **C1.5â€“C1.6 (agent B):** `FlashSettingsDataStore` â€” all 9 plan keys incl. soundsEnabled default FALSE (D6), dynamicAccent, reduceMotionOverride, saveLocationUri, retentionDays, displayName; Flow readers + suspend writers, ReplaceFileCorruptionHandler(emptyPreferences), JVM-testable produceFile constructor (DataStore prefs is KMP-JVM capable per docs; plain-JVM tests over Robolectric). `RetentionPolicy` pure policy class (strictly-older cutoff, protected entries spared, retentionDays<=0 disables = keep-forever) + `PrunableSource` seam for the future DB-backed worker (C6/C7 hook).
+- **C1.2–C1.4 (agent A):** 11 entities (Message/Conversation/Receipt/Outbox/Transfer/TransferChunk/RecentSearch/TrustedPeer/Reaction/Draft/ReadCursor), 11 DAOs (Flow reads; IGNORE dedup on messages/receipts; @Upsert last-write-wins for drafts/reactions/recents/cursors; keyset pagination `(sentAt<c)OR(=AND localId<)` with PK tiebreaker; composite seek index on (conversationId,sentAt,localId)), `FlashDatabase` v1 exportSchema=true, `FlashDatabaseOpener` (openEncrypted via System.loadLibrary("sqlcipher")+SupportOpenHelperFactory+PassphraseProvider seam; openInMemory test-only w/ loud destructive-migration comment).
+- **C1.8 invariant tests (agent A):** Robolectric in-memory suite — duplicate message/receipt IGNORE, outbox claim→attempts→delete→re-claim-empty race semantics, read-cursor monotonicity (advanceFurthest transactional read-compare-write, older/equal no-op), keyset walk of 50 msgs / page 7 / tie-heavy no-dup-no-gap per-conversation scoping, chunk done-set resume bit-vector roundtrip + resetStuck.
+- **C1.5–C1.6 (agent B):** `FlashSettingsDataStore` — all 9 plan keys incl. soundsEnabled default FALSE (D6), dynamicAccent, reduceMotionOverride, saveLocationUri, retentionDays, displayName; Flow readers + suspend writers, ReplaceFileCorruptionHandler(emptyPreferences), JVM-testable produceFile constructor (DataStore prefs is KMP-JVM capable per docs; plain-JVM tests over Robolectric). `RetentionPolicy` pure policy class (strictly-older cutoff, protected entries spared, retentionDays<=0 disables = keep-forever) + `PrunableSource` seam for the future DB-backed worker (C6/C7 hook).
 - 21 new tests total across settings/retention/db packages.
 
 ### Verification
 - Consolidated `testDebugUnitTest assembleDebug`: **BUILD SUCCESSFUL, 340 tests / 0 failures** (was 312).
 - Room schema v1 exported: `core/persistence/schemas/com.transfer.flash.core.persistence.db.FlashDatabase/1.json` (in-repo, C1.7 baseline before any migration exists).
-- Lead fixes: missing androidx.room imports in ReadCursorDao (KSP MissingType PROCESSING_ERROR); non-Comparable kotlin.Pair `<` in keyset walk test â†’ explicit composite comparison.
-- Three ERROR-008 E:-drive incidents this session (Gradle lock-file write failures + Kotlin daemon NoClassDefFoundError crashes); each recovered via --stop/kill-java/fresh no-daemon rerun. Pattern worsening â€” see Known blockers.
+- Lead fixes: missing androidx.room imports in ReadCursorDao (KSP MissingType PROCESSING_ERROR); non-Comparable kotlin.Pair `<` in keyset walk test → explicit composite comparison.
+- Three ERROR-008 E:-drive incidents this session (Gradle lock-file write failures + Kotlin daemon NoClassDefFoundError crashes); each recovered via --stop/kill-java/fresh no-daemon rerun. Pattern worsening — see Known blockers.
 
 ### Remaining
-- SQLCipher encrypted-open path is compile-verified but NOT runtime-verified (native lib requires device/emulator) â€” add device smoke item: open DB encrypted, write/read row, reopen.
+- SQLCipher encrypted-open path is compile-verified but NOT runtime-verified (native lib requires device/emulator) — add device smoke item: open DB encrypted, write/read row, reopen.
 - Keystore-wrapped passphrase provider lands with C7/:app wiring.
 - Retention pruner DB-backed worker (needs WorkManager decision) deferred to C6/C7.
-- Next phase: P2 (:core:security full stack, C2.0â€“C2.8).
+- Next phase: P2 (:core:security full stack, C2.0–C2.8).
 
 ### Next AI
-Start P2 per plan Â§5. R1 research-first every step. :core:* stay DI-agnostic. Beware E:-drive flakiness â€” commit incrementally.
+Start P2 per plan §5. R1 research-first every step. :core:* stay DI-agnostic. Beware E:-drive flakiness — commit incrementally.
 
-## 2026-08-22 â€” Phase P0 Executed (C0 Foundations) + UI-040 Sound Unblocked
+## 2026-08-22 — Phase P0 Executed (C0 Foundations) + UI-040 Sound Unblocked
 
 ### Worked on
 Owner approved D1 (Hilt) and D6 (subtle opt-in sounds, default off); executed core plan Phase P0 via three parallel research-first subagents with strict file ownership; lead ran one consolidated build and fixed integration issues.
 
 ### Changed
-- **C0.1â€“C0.4 (`:core:common`, new files only):** `protocol/FlashProtocol` (VERSION=2, exact-match `isCompatible`, assert-on-handshake rationale w/ citations), `protocol/FlashEnvelope` (validated shared wire container), `logging/FlashLogger` (bounded thread-safe ring buffer, 512 default, Android Log forwarding wrapped JVM-safe) + `FlashLogEntry/Level`, `time/FlashTimeSource` + `SystemTimeSource` (+ test-source `FakeTimeSource`), `id/FlashIdGenerator` + `UuidIdGenerator`. JUnit4 tests for all.
-- **C0.5 (Hilt DI skeleton in `:app`):** version catalog `hilt=2.60.1`, `ksp=2.3.11` (KSP2 standalone required by AGP 9 built-in Kotlin; Dagger â‰¥2.59 requires AGP â‰¥9 â€” satisfied by 9.3.1). Root plugins declared apply-false; app applies ksp+hilt; `di/FlashAppModule.kt` (@AppScope/@IoDispatcher/@DefaultDispatcher qualifiers nowinandroid-style, app CoroutineScope singleton, SampleFlashChatRepository provider), `di/FlashApplication.kt` (@HiltAndroidApp, registered in manifest), `MainActivity` annotated @AndroidEntryPoint. Composables not yet rewired (later phases).
-- **C0.6:** `.github/workflows/ci.yml` â€” JDK17 temurin, `testDebugUnitTest assembleDebug` on push/PR, test-report artifact on failure.
-- **UI-040 (D6 unblocked):** `ui/theme/FlashSounds.kt` â€” `FlashSound` enum (8 procedural PCM tone events), `ToneSegment`, `FlashSoundPolicy.shouldPlay` (respects enabled-flag + ringer silent/vibrate + DND interruption filter), `FlashSoundSettings` mutableStateOf bridge (default OFF; DataStore persistence lands C1.5), `FlashSoundSynth` pure-JVM renderer, `rememberFlashSounds()` composable + AudioTrack MODE_STATIC player (per Android guidance for short UI sounds, USAGE_ASSISTANCE_SONIFICATION). Full section added to `docs/ui/motion-system.md` w/ cited research; ui-research-index updated â†’ **ALL UI-001â€“045 IMPLEMENTED except UI-045 gate**.
+- **C0.1–C0.4 (`:core:common`, new files only):** `protocol/FlashProtocol` (VERSION=2, exact-match `isCompatible`, assert-on-handshake rationale w/ citations), `protocol/FlashEnvelope` (validated shared wire container), `logging/FlashLogger` (bounded thread-safe ring buffer, 512 default, Android Log forwarding wrapped JVM-safe) + `FlashLogEntry/Level`, `time/FlashTimeSource` + `SystemTimeSource` (+ test-source `FakeTimeSource`), `id/FlashIdGenerator` + `UuidIdGenerator`. JUnit4 tests for all.
+- **C0.5 (Hilt DI skeleton in `:app`):** version catalog `hilt=2.60.1`, `ksp=2.3.11` (KSP2 standalone required by AGP 9 built-in Kotlin; Dagger ≥2.59 requires AGP ≥9 — satisfied by 9.3.1). Root plugins declared apply-false; app applies ksp+hilt; `di/FlashAppModule.kt` (@AppScope/@IoDispatcher/@DefaultDispatcher qualifiers nowinandroid-style, app CoroutineScope singleton, SampleFlashChatRepository provider), `di/FlashApplication.kt` (@HiltAndroidApp, registered in manifest), `MainActivity` annotated @AndroidEntryPoint. Composables not yet rewired (later phases).
+- **C0.6:** `.github/workflows/ci.yml` — JDK17 temurin, `testDebugUnitTest assembleDebug` on push/PR, test-report artifact on failure.
+- **UI-040 (D6 unblocked):** `ui/theme/FlashSounds.kt` — `FlashSound` enum (8 procedural PCM tone events), `ToneSegment`, `FlashSoundPolicy.shouldPlay` (respects enabled-flag + ringer silent/vibrate + DND interruption filter), `FlashSoundSettings` mutableStateOf bridge (default OFF; DataStore persistence lands C1.5), `FlashSoundSynth` pure-JVM renderer, `rememberFlashSounds()` composable + AudioTrack MODE_STATIC player (per Android guidance for short UI sounds, USAGE_ASSISTANCE_SONIFICATION). Full section added to `docs/ui/motion-system.md` w/ cited research; ui-research-index updated → **ALL UI-001–045 IMPLEMENTED except UI-045 gate**.
 - **Docs:** ADR-011 (D1/D6 decisions + P0 execution) in `docs/decisions.md`.
 
 ### Verification
 - Consolidated `testDebugUnitTest assembleDebug`: **BUILD SUCCESSFUL, 312 tests / 0 failures** (was 271; +41 new).
 - Two ERROR-008 E:-drive daemon kills during the run; recovered per documented procedure (`--stop`, kill java, fresh no-daemon rerun).
-- Lead fix: `FlashLogger.kt` used nonexistent `ArrayDeque.capacity()` â†’ replaced with stored `maxCapacity` bound check (smallest-fix rule).
-- NOT yet device-verified: Hilt runtime graph (needs installDebug launch), sound tones on hardware (silent/DND enforcement QA â†’ backlog).
+- Lead fix: `FlashLogger.kt` used nonexistent `ArrayDeque.capacity()` → replaced with stored `maxCapacity` bound check (smallest-fix rule).
+- NOT yet device-verified: Hilt runtime graph (needs installDebug launch), sound tones on hardware (silent/DND enforcement QA → backlog).
 
 ### Remaining
-- Phase P1 (persistence module) is next per plan Â§5.
+- Phase P1 (persistence module) is next per plan §5.
 - Wire FlashSound call sites when real send/receive paths exist (documented in motion-system.md interaction table).
 - Device backlog: add Hilt-graph smoke check + UI-040 toggle/tone QA items.
 
 ### Next AI
-Start P1 (C1.0 research â†’ C1.1 module creation). Keep R1 research-first discipline; :core:* modules must stay DI-agnostic.
+Start P1 (C1.0 research → C1.1 module creation). Keep R1 research-first discipline; :core:* modules must stay DI-agnostic.
 
-## 2026-08-22 â€” Core Plan v2: UI-dependency audit + extensive step breakdown
+## 2026-08-22 — Core Plan v2: UI-dependency audit + extensive step breakdown
 
 ### Worked on
 Owner directed an iteration on `docs/core-upgrade-plan.md` grounded in what the finished UI actually needs, plus specific feature asks (continuous discovery, multi-stream transfer, full security stack, exhaustive messaging API).
 
 ### Changed
-- **UI requirements audit:** two parallel research passes mined all 30+ `docs/ui/*.md` docs; produced capabilityâ†’module map (Â§3.1) and explicit sample-data limitation list (Â§3.2) now embedded in the plan.
-- **Web research (cited in plan Â§7):** NsdManager continuous discovery (API 34+ `registerServiceInfoCallback`, deprecated `resolveService`, NetworkRequest-scoped discovery), LocalSend protocol v2 (parallel upload routes, sha256 chunk verification, resumable uploads), offline-first chat sync patterns (durable outbox, pull-before-push delta sync, cursor receipts with furthest-forward merge, ephemeral-vs-durable state separation).
-- **Plan rewritten to v2:** binding ground rules incl. mandatory research-first per step (R1) and reusable-library purity (R2); owner decision table (D2 SQLCipher / D3 SHA-256 / D4 E2E-in-C2 / D5 mesh-post-v1 approved; D1 DI + D6 sound still open); C0â€“C7 expanded from ~40 coarse steps to ~80 fine-grained steps each with research/acceptance hooks; new behavior contract for discovery (`startAll(identity)` = advertise own details + continuous browsing with lost-peer aging); network resilience upgrades enumerated (backoff+jitter, NetworkCallback instant reconnect, heartbeat dead-peer detection, bounded per-peer queues, session coalescing); multi-stream transfer as explicit feature (C5.7) with benchmark-before-defaults rule; messaging section lists complete screen-facing API surface.
+- **UI requirements audit:** two parallel research passes mined all 30+ `docs/ui/*.md` docs; produced capability→module map (§3.1) and explicit sample-data limitation list (§3.2) now embedded in the plan.
+- **Web research (cited in plan §7):** NsdManager continuous discovery (API 34+ `registerServiceInfoCallback`, deprecated `resolveService`, NetworkRequest-scoped discovery), LocalSend protocol v2 (parallel upload routes, sha256 chunk verification, resumable uploads), offline-first chat sync patterns (durable outbox, pull-before-push delta sync, cursor receipts with furthest-forward merge, ephemeral-vs-durable state separation).
+- **Plan rewritten to v2:** binding ground rules incl. mandatory research-first per step (R1) and reusable-library purity (R2); owner decision table (D2 SQLCipher / D3 SHA-256 / D4 E2E-in-C2 / D5 mesh-post-v1 approved; D1 DI + D6 sound still open); C0–C7 expanded from ~40 coarse steps to ~80 fine-grained steps each with research/acceptance hooks; new behavior contract for discovery (`startAll(identity)` = advertise own details + continuous browsing with lost-peer aging); network resilience upgrades enumerated (backoff+jitter, NetworkCallback instant reconnect, heartbeat dead-peer detection, bounded per-peer queues, session coalescing); multi-stream transfer as explicit feature (C5.7) with benchmark-before-defaults rule; messaging section lists complete screen-facing API surface.
 - **ADR-010** added to `docs/decisions.md` recording D2/D3/D4/D5 approvals.
 
 ### Why
 Everything visible runs on sample data; the UI docs define exact required inputs. The old plan was too coarse for accurate development and lacked the audit trail the owner wants.
 
 ### Verification
-Documentation only â€” no code touched, build state unchanged (last green: 271 tests, 2026-08-22).
+Documentation only — no code touched, build state unchanged (last green: 271 tests, 2026-08-22).
 
 ### Remaining
 Owner sign-off on **D1 (DI framework)** before C0.5 and **D6 (sound)** before UI-040. Execution starts at Phase P0 once owner says go.
@@ -15489,38 +15590,38 @@ Engine classes (LanController, WsTransferManager, WsDiscovery, WsPairingStore, A
 ### Verification
 - assembleDebug - BUILD SUCCESSFUL after one ERROR-008 daemon recovery cycle.
 
-## 2026-08-22 â€” Core Upgrade & API Exposure Plan (research + planning only)
+## 2026-08-22 — Core Upgrade & API Exposure Plan (research + planning only)
 
 ### Worked on
-Surveyed all six `:core:*` modules (public APIs + gaps), performed extensive online research, and authored **`docs/core-upgrade-plan.md`** (PROPOSED â€” no code implemented per owner instruction).
+Surveyed all six `:core:*` modules (public APIs + gaps), performed extensive online research, and authored **`docs/core-upgrade-plan.md`** (PROPOSED — no code implemented per owner instruction).
 
 ### Research performed (online)
-- LocalSend protocol v2 (receiver-runs-HTTP model, PIN verify, reverse browser transfer, multi-recipient) + Quick Share benchmarks (LAN â‰« Wi-Fi Direct throughput).
+- LocalSend protocol v2 (receiver-runs-HTTP model, PIN verify, reverse browser transfer, multi-recipient) + Quick Share benchmarks (LAN ≫ Wi-Fi Direct throughput).
 - Knit / bitchat-android / AirChat mesh messengers (dual-radio transport seams, signed relay frames w/ TTL dedup, store-and-forward, battery tiers, Noise/P-256 E2E patterns, offline APK self-share).
 - mftp + Swoosh + gusset transfer engineering (chunk bit-vector resume, BLAKE3/SHA-256 integrity, adaptive chunking, zstd, TOFU pinning, AAD-bound ciphertexts).
 - Stream offline-sync + chat architecture articles and Android offline-first guide (Room source-of-truth, outbox+WorkManager backoff/jitter, pull-delta-before-replay, receipt batching, tombstones).
 
 ### Created
-- `docs/core-upgrade-plan.md`: current-state inventory per module; target architecture (`FlashEngine` facade over Room-backed repositories); **9 phases / ~64 numbered steps** (foundations â†’ persistence â†’ real messaging engine â†’ transfer v2 â†’ security/TLS/TOFU/pairing â†’ discovery expansion (Aware/Direct/BLE seam) â†’ background runtime â†’ frontend API exposure â†’ hardening); bottom-navigation recommendation (**Chats / Transfers / Nearby / Settings** + Send FAB); feature backlog **F01â€“F30** with sources; decisions D1â€“D6 requiring owner input (DI framework, at-rest encryption, hash lib, frame E2E, mesh scope, sound/UI-040).
+- `docs/core-upgrade-plan.md`: current-state inventory per module; target architecture (`FlashEngine` facade over Room-backed repositories); **9 phases / ~64 numbered steps** (foundations → persistence → real messaging engine → transfer v2 → security/TLS/TOFU/pairing → discovery expansion (Aware/Direct/BLE seam) → background runtime → frontend API exposure → hardening); bottom-navigation recommendation (**Chats / Transfers / Nearby / Settings** + Send FAB); feature backlog **F01–F30** with sources; decisions D1–D6 requiring owner input (DI framework, at-rest encryption, hash lib, frame E2E, mesh scope, sound/UI-040).
 
 ### Not done
 - No implementation (owner: "don't implement anything").
 
 ---
 
-## 2026-08-22 â€” Git repository enabled + initial push to GitHub
+## 2026-08-22 — Git repository enabled + initial push to GitHub
 
 ### Worked on
 Enabled version control for the project (previously un-managed per earlier handoffs).
 
 ### Changed
 - Extended `.gitignore`: module `build/` dirs, `.gradle-user-home/`, `.kotlin/`, `.idea/`, `*.log` build-noise files, `local.properties`.
-- `git init -b main` â†’ remote `origin = https://github.com/Kali452345/Flash.git`.
-- Initial commit `8a5c458` â€” 330 files / ~40k lines (all source, docs, logs; zero build artifacts verified pre-commit).
+- `git init -b main` → remote `origin = https://github.com/Kali452345/Flash.git`.
+- Initial commit `8a5c458` — 330 files / ~40k lines (all source, docs, logs; zero build artifacts verified pre-commit).
 - Pushed to `origin/main`.
 
 ### Note
-Git identity set repo-locally (Kali452345 / noreply email) â€” adjust if a different identity is wanted.
+Git identity set repo-locally (Kali452345 / noreply email) — adjust if a different identity is wanted.
 
 ---
 
@@ -15551,10 +15652,10 @@ Third subagent round closed out the roadmap. All UI-001-045 IDs are now IMPLEMEN
 
 ---
 
-## 2026-08-22 â€” UI-044 + UI-035/036 + UI-033 via Triple Parallel Subagents (with online research)
+## 2026-08-22 — UI-044 + UI-035/036 + UI-033 via Triple Parallel Subagents (with online research)
 
 ### Worked on
-Second triple-parallel-subagent round. Each agent read AGENTS.md Â§34, its target doc, and all pattern-matching sources first, then performed live web research with citations. Lead integrated and built.
+Second triple-parallel-subagent round. Each agent read AGENTS.md §34, its target doc, and all pattern-matching sources first, then performed live web research with citations. Lead integrated and built.
 
 ### Delivered
 **UI-044 Network-state simulation (Agent A):**
@@ -15562,15 +15663,15 @@ Second triple-parallel-subagent round. Each agent read AGENTS.md Â§34, its tar
 - Research: Chrome DevTools throttling, Android emulator networking, Beagle/Tapadoo debug menus, production-safe override patterns.
 
 **UI-035 Dark theme + UI-036 Dynamic color (Agent B):**
-- **Audit found & fixed two real contrast gaps** in `FlashColors.dark()`: `textOnAccent` whiteâ†’pulse900 (2.5:1â†’~5.9:1 on pulse400) and `avatarPlaceholderText` graphite500â†’graphite300 (~2.8:1â†’~5.8:1). (One dropped slot `avatarPlaceholderBackground` restored by lead during integration.)
-- `resolveAccent()` pure helper formalizes UI-036: dynamic wallpaper accents (SDK â‰¥ S, opt-in flag, accents only per ADR-005); public API backward-compatible.
+- **Audit found & fixed two real contrast gaps** in `FlashColors.dark()`: `textOnAccent` white→pulse900 (2.5:1→~5.9:1 on pulse400) and `avatarPlaceholderText` graphite500→graphite300 (~2.8:1→~5.8:1). (One dropped slot `avatarPlaceholderBackground` restored by lead during integration.)
+- `resolveAccent()` pure helper formalizes UI-036: dynamic wallpaper accents (SDK ≥ S, opt-in flag, accents only per ADR-005); public API backward-compatible.
 - New previews: full dark-palette sweep + dynamic-accent light/dark.
 - Tests: 12 new (dark-slot divergence, no pure black/white backgrounds, WCAG luminance-computed contrast guards, resolveAccent SDK/fallback matrix).
 - Research: M3 dynamic color/HCT tonal palettes, WCAG dark-theme guidance, theme-mode settings patterns.
 
 **UI-033 Navigation (Agent C):**
 - `ui/navigation/FlashNavigation.kt` (new): dependency-free `FlashNavigationState` stack (depth cap 10, duplicate-push guard incl. conversationId), `FlashDestination`, `rememberFlashNavigationState`, generic `FlashAnimatedScreen` using reserved `motion.screenEnter()/screenExit()` tokens.
-- `navigation.md` created/filled â€” documents honest evaluation of androidx.navigation (deferred, trade-offs recorded).
+- `navigation.md` created/filled — documents honest evaluation of androidx.navigation (deferred, trade-offs recorded).
 - 12 unit tests (no Compose runtime).
 - Research: predictive-back guide, type-safe navigation, conditional-navigation pitfalls.
 
@@ -15584,10 +15685,10 @@ Second triple-parallel-subagent round. Each agent read AGENTS.md Â§34, its tar
 
 ---
 
-## 2026-08-22 â€” UI-024 + UI-031 + UI-032 via Triple Parallel Subagents (with online research)
+## 2026-08-22 — UI-024 + UI-031 + UI-032 via Triple Parallel Subagents (with online research)
 
 ### Worked on
-Ran **three parallel subagents simultaneously**, each required to (a) read AGENTS.md Â§34, the component-doc template, their target doc, and all pattern-matching source files before changing anything, and (b) perform live web searches for design inspiration with citations. Lead engineer handled integration and the single consolidated build.
+Ran **three parallel subagents simultaneously**, each required to (a) read AGENTS.md §34, the component-doc template, their target doc, and all pattern-matching source files before changing anything, and (b) perform live web searches for design inspiration with citations. Lead engineer handled integration and the single consolidated build.
 
 ### Delivered
 **UI-024 Global / chat-list search (Agent A):**
@@ -15603,44 +15704,44 @@ Ran **three parallel subagents simultaneously**, each required to (a) read AGENT
 
 **UI-032 Device pairing flow (Agent C):**
 - `FlashPairingFlow.kt`: in-screen pairing dialog (numeric-comparison code "123 456", Canvas countdown bar, Accept/Decline pills, Awaiting/Paired/Declined/Expired phase visuals per error-states severity language), `FlashPairingMath` + models local to ui/chat; 14 unit tests; 6 previews incl. dark.
-- `profile-ui.md` created/filled (UI-032 DESIGNED â†’ IMPLEMENTED).
+- `profile-ui.md` created/filled (UI-032 DESIGNED → IMPLEMENTED).
 - Research: Bluetooth SIG numeric comparison, Silicon Labs/Nordic pairing processes, Signal safety-number updates.
 
 ### Verification
-- Consolidated build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks).
+- Consolidated build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks).
 - `:ui:chat`: **147 tests / 0 failures** across 20 suites (+33 from this round).
-- Â§34 spot-audit of all new files clean.
+- §34 spot-audit of all new files clean.
 
 ### Remaining
 - Integration wiring: encryption badge into header/composer area, pairing dialog trigger from Nearby Devices flow (needs discovery engine hookup).
 - Recent-search persistence; `isVerified` has no engine source yet (passes false).
-- Device verification backlog continues to grow (UI-019â€“032).
+- Device verification backlog continues to grow (UI-019–032).
 
 ---
 
-## 2026-08-21 â€” Device-Feedback Bug Round + UI-023 In-Chat Search â€” IMPLEMENTED
+## 2026-08-21 — Device-Feedback Bug Round + UI-023 In-Chat Search — IMPLEMENTED
 
 ### Worked on
 Investigated and fixed four device-reported bugs, then implemented **UI-023 (In-chat search)** per the new `docs/ui/search-ui.md`.
 
 ### Bug fixes (each logged in `logs/errors.md`)
-1. **ERROR-010 â€” Recording gesture loss**: composer's `AnimatedContent(recordingPhase)` disposed the mic button mid-hold, killing the active pointer stream. Restructured so `FlashMicButton` lives OUTSIDE the swapped region â€” one persistent node across Idle/Holding/CancelArmed; only Locked swaps layout post-release.
-2. **ERROR-009 â€” Double IME padding**: removed `.imePadding()` from the `FlashMessageList` call site; keyboard clearance now flows only through Scaffold `innerPadding` (composer bottomBar already grows with IME).
-3. **ERROR-011 â€” Multi-tap overlay dismissal**: replaced the separate-window `Dialog` with an in-screen scrim overlay (last child of the layout) plus explicit close button + BackHandler â€” first-tap dismiss now lands directly.
+1. **ERROR-010 — Recording gesture loss**: composer's `AnimatedContent(recordingPhase)` disposed the mic button mid-hold, killing the active pointer stream. Restructured so `FlashMicButton` lives OUTSIDE the swapped region — one persistent node across Idle/Holding/CancelArmed; only Locked swaps layout post-release.
+2. **ERROR-009 — Double IME padding**: removed `.imePadding()` from the `FlashMessageList` call site; keyboard clearance now flows only through Scaffold `innerPadding` (composer bottomBar already grows with IME).
+3. **ERROR-011 — Multi-tap overlay dismissal**: replaced the separate-window `Dialog` with an in-screen scrim overlay (last child of the layout) plus explicit close button + BackHandler — first-tap dismiss now lands directly.
 4. **NSD crash report**: stale logcat from 2026-08-20; ERROR-006 fix already present in code (`onResolvedCallback`). No change needed.
 
 ### UI-023 implementation
-- `docs/ui/search-ui.md`: new research/design doc (Telegram/WhatsApp/Signal patterns; header-swap inline search chosen; Material SearchBar rejected per Â§34).
+- `docs/ui/search-ui.md`: new research/design doc (Telegram/WhatsApp/Signal patterns; header-swap inline search chosen; Material SearchBar rejected per §34).
 - **`FlashChatSearchBar.kt` (new)**: `FlashChatSearchMath` (case-insensitive matching, non-overlapping match ranges, newest-first results with wrap-around stepping, counter label) + `FlashChatSearchBar` composable (close, query field pill, liveRegion counter "3 / 7", prev/next chevrons from rotated Flash back glyph) + `buildHighlightedMessageText`.
-- **Wiring**: Search action now available in ALL conversations; header swaps between selection toolbar / search bar / normal header via single `AnimatedContent(Pair)`; result stepping reuses scroll+pulse-highlight pipeline; `searchQuery` threaded through `FlashMessageList` â†’ `FlashMessageBubble` for in-bubble substring highlighting.
-- **`FlashText`** gained an `AnnotatedString` overload (foundation BasicText â€” ADR-009 compliant).
-- **ADR-009 follow-through**: migrated `FlashMessageBubble` off Material components entirely â€” custom bubble Box (clip+background+border stroke) replaces `material3.Surface`, all text now `FlashText`.
-- **Unit tests**: `FlashChatSearchLogicTest.kt` â€” 8 tests.
+- **Wiring**: Search action now available in ALL conversations; header swaps between selection toolbar / search bar / normal header via single `AnimatedContent(Pair)`; result stepping reuses scroll+pulse-highlight pipeline; `searchQuery` threaded through `FlashMessageList` → `FlashMessageBubble` for in-bubble substring highlighting.
+- **`FlashText`** gained an `AnnotatedString` overload (foundation BasicText — ADR-009 compliant).
+- **ADR-009 follow-through**: migrated `FlashMessageBubble` off Material components entirely — custom bubble Box (clip+background+border stroke) replaces `material3.Surface`, all text now `FlashText`.
+- **Unit tests**: `FlashChatSearchLogicTest.kt` — 8 tests.
 
 ### Verification
-- Full build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks).
+- Full build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks).
 - `:ui:chat`: **114 tests / 0 failures** across 16 suites.
-- Â§34 spot-audit of touched files clean (no material3 refs remain in FlashMessageBubble).
+- §34 spot-audit of touched files clean (no material3 refs remain in FlashMessageBubble).
 
 ### Remaining
 - Device re-test: recording gestures, keyboard gap, overlay single-tap dismiss, search flow.
@@ -15648,16 +15749,16 @@ Investigated and fixed four device-reported bugs, then implemented **UI-023 (In-
 
 ---
 
-## 2026-08-21 â€” UI-029 + UI-030 Implemented via Parallel Subagents
+## 2026-08-21 — UI-029 + UI-030 Implemented via Parallel Subagents
 
 ### Worked on
-Ran **two parallel subagents** to implement UI-029 (group member presentation) and UI-030 (device/network status UI) simultaneously â€” first multi-agent session. File ownership was strictly partitioned; agents were forbidden from running Gradle (cache contention on the flaky E: drive) and from touching shared files.
+Ran **two parallel subagents** to implement UI-029 (group member presentation) and UI-030 (device/network status UI) simultaneously — first multi-agent session. File ownership was strictly partitioned; agents were forbidden from running Gradle (cache contention on the flaky E: drive) and from touching shared files.
 
 ### Changed
 **UI-029 (subagent A):**
 - `FlashMessagingModels.kt`: added `FlashMemberRole` enum + `FlashGroupMemberUi` data class.
-- `FlashGroupMembersSheet.kt` (new): custom member rows in a bottom sheet â€” avatar with online-dot overlay, transport subtitle + glyph, role badge pills (Owner/Admin), hand-drawn hairline dividers, no `ListItem`; `FlashGroupMembersMath` (online-first/rank/alphabetical sort, summary labels, badge labels, row cap) + sample roster + previews.
-- `docs/ui/group-ui.md`: UI-029 section filled DESIGNED â†’ IMPLEMENTED.
+- `FlashGroupMembersSheet.kt` (new): custom member rows in a bottom sheet — avatar with online-dot overlay, transport subtitle + glyph, role badge pills (Owner/Admin), hand-drawn hairline dividers, no `ListItem`; `FlashGroupMembersMath` (online-first/rank/alphabetical sort, summary labels, badge labels, row cap) + sample roster + previews.
+- `docs/ui/group-ui.md`: UI-029 section filled DESIGNED → IMPLEMENTED.
 - `FlashGroupMembersLogicTest.kt` (new).
 
 **UI-030 (subagent B):**
@@ -15667,39 +15768,39 @@ Ran **two parallel subagents** to implement UI-029 (group member presentation) a
 
 **Integration (lead):**
 - `FlashConversationScreen.kt`: connection banner under header (hidden while Connected, fade via motion tokens); group avatar tap opens members sheet (`showGroupMembers`, demo roster until repository feeds live members); group Search action toast stub.
-- Fixed 3 subagent compile/test issues: nullable icon spec passed to non-null param; AnimatedContent transform misuse; `resolveHealth` precedence (peerCount==0 â†’ Offline must trump Connected/Relay paths).
+- Fixed 3 subagent compile/test issues: nullable icon spec passed to non-null param; AnimatedContent transform misuse; `resolveHealth` precedence (peerCount==0 → Offline must trump Connected/Relay paths).
 
 ### Verification
-- Full build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks).
+- Full build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks).
 - `:ui:chat`: **106 tests, 0 failures** across 15 suites.
-- Â§34 spot-audit of both new files: clean (no material3.Text/Icons/ListItem/Button).
+- §34 spot-audit of both new files: clean (no material3.Text/Icons/ListItem/Button).
 
 ### Remaining
-- Device verification backlog: UI-019â€“022, UI-025â€“028, UI-029â€“030.
+- Device verification backlog: UI-019–022, UI-025–028, UI-029–030.
 - Members sheet uses demo roster until live member feed exists; auto-retry/backoff deferred to engine (UI-044).
 
 ---
 
-## 2026-08-21 â€” UI-028: Group Chat Header â€” IMPLEMENTED (with online research)
+## 2026-08-21 — UI-028: Group Chat Header — IMPLEMENTED (with online research)
 
 ### Worked on
 Researched (live web sources), designed, and implemented **UI-028 (Group Chat Header)** per the new DESIGNED section in `docs/ui/group-ui.md`.
 
 ### Research performed (online)
-- Stream channel-header docs (Android/iOS/RN cookbooks â€” pattern reference only, no SDK code/dependencies): member+online count subtitle, connection override, stacked member avatars fallback.
-- Ethora chat UX guide: overlapping circles up to 3 or 2Ã—2 grid; consistent color-hash per member.
+- Stream channel-header docs (Android/iOS/RN cookbooks — pattern reference only, no SDK code/dependencies): member+online count subtitle, connection override, stacked member avatars fallback.
+- Ethora chat UX guide: overlapping circles up to 3 or 2×2 grid; consistent color-hash per member.
 - Telegram/WhatsApp/Signal header behavior: collage identity, "X members, Y online", named typing capped at two names.
 
 ### Changed
 - **`docs/ui/group-ui.md`**: filled from NOT STARTED to UI-028 IMPLEMENTED (UI-029 remains separate).
-- **Model** (`FlashChatHeaderUiState`): added `memberInitials`, `memberCount`, `onlineCount`, `typingMemberNames` â€” all defaulted, zero breakage.
-- **`FlashGroupHeader.kt` (new)**: `FlashGroupHeaderMath` pure logic (collage layout selection Single/TwoVertical/OneLargeTwoSmall/Quad, initials cap at 4 with blank filtering, singular-safe "N members Â· M online" label, named typing labels capped at 2 names + "+N more", subtitle precedence) + `FlashGroupAvatar` clipped-circle collage using shared seeded avatar palette (`flashAvatarColorsFor` helper added to `:ui:theme`) and `FlashText`.
-- **`FlashChatHeader.kt`**: group branches â€” collage avatar slot when â‰¥2 member initials, subtitle precedence (typing â†’ explicit summary â†’ computed counts), named typing dots + accent label for groups, Search action added for groups (new `onSearchClick` callback). Also migrated this file off Material components per ADR-009: custom 48dp icon buttons replace `material3.IconButton`, drawn hairline replaces `HorizontalDivider`, all text now `FlashText`.
+- **Model** (`FlashChatHeaderUiState`): added `memberInitials`, `memberCount`, `onlineCount`, `typingMemberNames` — all defaulted, zero breakage.
+- **`FlashGroupHeader.kt` (new)**: `FlashGroupHeaderMath` pure logic (collage layout selection Single/TwoVertical/OneLargeTwoSmall/Quad, initials cap at 4 with blank filtering, singular-safe "N members · M online" label, named typing labels capped at 2 names + "+N more", subtitle precedence) + `FlashGroupAvatar` clipped-circle collage using shared seeded avatar palette (`flashAvatarColorsFor` helper added to `:ui:theme`) and `FlashText`.
+- **`FlashChatHeader.kt`**: group branches — collage avatar slot when ≥2 member initials, subtitle precedence (typing → explicit summary → computed counts), named typing dots + accent label for groups, Search action added for groups (new `onSearchClick` callback). Also migrated this file off Material components per ADR-009: custom 48dp icon buttons replace `material3.IconButton`, drawn hairline replaces `HorizontalDivider`, all text now `FlashText`.
 - **Sample data**: group sample header now uses real counts + member initials.
-- **Unit tests**: `FlashGroupHeaderLogicTest.kt` â€” 6 tests (layouts incl. degenerate inputs, initials capping, subtitle labels, typing label capping).
+- **Unit tests**: `FlashGroupHeaderLogicTest.kt` — 6 tests (layouts incl. degenerate inputs, initials capping, subtitle labels, typing label capping).
 
 ### Verification
-- Full build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 - Note: intermittent `IOException: The device is not ready` from the E: drive during builds this session (Gradle cache writes); resolved per-run by retrying / `--no-daemon --no-configuration-cache`. Environment issue, not code.
 
 ### Remaining
@@ -15708,22 +15809,22 @@ Researched (live web sources), designed, and implemented **UI-028 (Group Chat He
 
 ---
 
-## 2026-08-21 â€” Â§34 Customness Audit + `FlashText` Design-System Primitive (ADR-009)
+## 2026-08-21 — §34 Customness Audit + `FlashText` Design-System Primitive (ADR-009)
 
 ### Worked on
-Owner-requested audit of all session implementations (UI-018â€“022, UI-025/026/027) against the "everything custom" rule, plus remediation.
+Owner-requested audit of all session implementations (UI-018–022, UI-025/026/027) against the "everything custom" rule, plus remediation.
 
 ### Audit results
 - **Clean**: all icons Flash-owned (zero `Icons.Default/Filled/Outlined` in `:ui:chat`); all buttons/badges/chrome custom composables; composer on foundation `BasicTextField`; waveforms/skeletons raw Canvas/Box; pager/gestures = permitted foundation infrastructure; no Stream deps.
-- **Gap found & fixed**: text rendered via `material3.Text`. Added **`FlashText`** (`:ui:theme`, foundation `BasicText` + `FlashTypography` tokens â€” ADR-009) and migrated all my components (`FlashMediaViewer`, `FlashVoiceMessageCard`, `FlashVoiceRecording`, `FlashMessageList` pill, `FlashStateViews`) to it. Verified zero `material3` references remain in those files.
-- **Flagged for later (predate this session)**: `material3.IconButton` in `FlashReplyDock`, `CircularProgressIndicator` in `FlashFileIconBadge`, `HorizontalDivider`, `Scaffold` â€” recorded in ADR-009 for opportunistic migration.
+- **Gap found & fixed**: text rendered via `material3.Text`. Added **`FlashText`** (`:ui:theme`, foundation `BasicText` + `FlashTypography` tokens — ADR-009) and migrated all my components (`FlashMediaViewer`, `FlashVoiceMessageCard`, `FlashVoiceRecording`, `FlashMessageList` pill, `FlashStateViews`) to it. Verified zero `material3` references remain in those files.
+- **Flagged for later (predate this session)**: `material3.IconButton` in `FlashReplyDock`, `CircularProgressIndicator` in `FlashFileIconBadge`, `HorizontalDivider`, `Scaffold` — recorded in ADR-009 for opportunistic migration.
 
 ### Verification
-- Full build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL**, all unit tests green.
+- Full build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL**, all unit tests green.
 
 ---
 
-## 2026-08-21 â€” UI-025/026/027: Empty, Loading & Error States â€” IMPLEMENTED (with online research)
+## 2026-08-21 — UI-025/026/027: Empty, Loading & Error States — IMPLEMENTED (with online research)
 
 ### Worked on
 Researched (including live web research), designed, and implemented the three system-state components per new docs `docs/ui/empty-states.md`, `loading-states.md`, `error-states.md`.
@@ -15731,163 +15832,163 @@ Researched (including live web research), designed, and implemented the three sy
 ### Research performed (online)
 - NN/g "Designing Empty States in Complex Applications" + Carbon Design System empty-states pattern: three jobs (name screen / explain why empty / one action); replace data region entirely; never dead-end.
 - 137foundry + Pixxen: generic copy is an anti-pattern; single primary CTA on first run.
-- Skeleton research: NN/g video, 72technologies loading-pattern guide, accessible-data-interfaces.com (skeletons decorative + status announcements; reduce-motion guard), Codexical review of Viget 2017 / ACM ECCE 2018 (mismatched skeletons can feel slower â†’ match real geometry within ~10%).
-- web.dev offline UX guidelines + Android offline-first LCE architecture guide + Coder Legion offline handling: distinguish environmental (offline/peer-unreachable â€” neutral color) from failure (red); always provide one recovery action; don't block content.
+- Skeleton research: NN/g video, 72technologies loading-pattern guide, accessible-data-interfaces.com (skeletons decorative + status announcements; reduce-motion guard), Codexical review of Viget 2017 / ACM ECCE 2018 (mismatched skeletons can feel slower → match real geometry within ~10%).
+- web.dev offline UX guidelines + Android offline-first LCE architecture guide + Coder Legion offline handling: distinguish environmental (offline/peer-unreachable — neutral color) from failure (red); always provide one recovery action; don't block content.
 
 ### Changed
 - **`FlashStateViews.kt` (new, `:ui:chat`)**:
-  - `FlashStateMath` â€” 300ms delay guard (`shouldShowLoadingIndicator`), skeleton row cap (12).
-  - `FlashStateCopy` â€” screen-specific empty copy (ChatListFirstRun: "No conversations yet / Find devices"; ConversationEmpty: "Say hello"); anti-generic-copy unit-test guard.
-  - `FlashEmptyState` â€” 72dp accent medallion + headline + body + optional pill CTA (UI-025).
-  - `FlashErrorState` â€” severity split per web.dev: Failure (red, `FlashIcons.Failed`) vs Environmental (neutral Pulse accent, `FlashIcons.Connection`); single Retry pill (UI-027).
-  - `FlashSkeletonChatList` / `FlashSkeletonConversation` â€” layout-matched skeletons (real 72dp rows, avatar sizes, bubble shapes), opacity pulse static under reduce-motion, `clearAndSetSemantics {}` decorative semantics (UI-026).
-- **Wiring**: `FlashChatListScreen` gained `isLoading` / `errorMessage` / `isErrorEnvironmental` / `onRetryLoad` / `onFindDevicesClick` with precedence error â†’ skeleton â†’ empty â†’ list; `FlashConversationScreen` shows the conversation-empty state when no messages. New previews for all states.
-- **Unit tests**: `FlashStatesLogicTest.kt` â€” delay guard, row cap, copy specificity/non-blank guards.
+  - `FlashStateMath` — 300ms delay guard (`shouldShowLoadingIndicator`), skeleton row cap (12).
+  - `FlashStateCopy` — screen-specific empty copy (ChatListFirstRun: "No conversations yet / Find devices"; ConversationEmpty: "Say hello"); anti-generic-copy unit-test guard.
+  - `FlashEmptyState` — 72dp accent medallion + headline + body + optional pill CTA (UI-025).
+  - `FlashErrorState` — severity split per web.dev: Failure (red, `FlashIcons.Failed`) vs Environmental (neutral Pulse accent, `FlashIcons.Connection`); single Retry pill (UI-027).
+  - `FlashSkeletonChatList` / `FlashSkeletonConversation` — layout-matched skeletons (real 72dp rows, avatar sizes, bubble shapes), opacity pulse static under reduce-motion, `clearAndSetSemantics {}` decorative semantics (UI-026).
+- **Wiring**: `FlashChatListScreen` gained `isLoading` / `errorMessage` / `isErrorEnvironmental` / `onRetryLoad` / `onFindDevicesClick` with precedence error → skeleton → empty → list; `FlashConversationScreen` shows the conversation-empty state when no messages. New previews for all states.
+- **Unit tests**: `FlashStatesLogicTest.kt` — delay guard, row cap, copy specificity/non-blank guards.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 
 ### Remaining
 - Host screens don't yet emit TalkBack loading/loaded announcements (needs repository state wiring).
 - Search-no-results variant deferred to UI-023/024; auto-retry/backoff indicator deferred to UI-044.
 
 ### Next AI
-Device-test pending components (UI-019â€“022, UI-025â€“027), then research **UI-030 (network status UI)** or **UI-028 (group header)** per `docs/ui/ui-research-index.md`.
+Device-test pending components (UI-019–022, UI-025–027), then research **UI-030 (network status UI)** or **UI-028 (group header)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-21 â€” UI-021 + UI-022: Chat Scrolling & Jump-to-Latest â€” IMPLEMENTED
+## 2026-08-21 — UI-021 + UI-022: Chat Scrolling & Jump-to-Latest — IMPLEMENTED
 
 ### Worked on
 Researched, designed, and implemented **UI-021 (Chat Scrolling)** and **UI-022 (Jump to Latest)** per the new sections in `docs/ui/chat-screen.md`.
 
 ### Changed
-- **Design doc** (`docs/ui/chat-screen.md`): UI-021/UI-022 sections filled from _Deferred_ to IMPLEMENTED â€” behavior matrix (auto-scroll at bottom / own sends; unseen pill while scrolled up; image-resize pinning via reverseLayout; keyboard retention), rejected approaches (always-autoscroll; silent-superseded v1).
+- **Design doc** (`docs/ui/chat-screen.md`): UI-021/UI-022 sections filled from _Deferred_ to IMPLEMENTED — behavior matrix (auto-scroll at bottom / own sends; unseen pill while scrolled up; image-resize pinning via reverseLayout; keyboard retention), rejected approaches (always-autoscroll; silent-superseded v1).
 - **`FlashMessageList.kt`**:
-  - New `FlashChatScrollMath` pure logic: `nextUnseenCount` (resets at bottom / on own send which auto-scrolls; increments on peer arrivals while scrolled up), `isNewTailMessage` (tail-id change detection â€” reaction edits don't count), `shouldShowNewMessagesPill`, `pillLabel`.
+  - New `FlashChatScrollMath` pure logic: `nextUnseenCount` (resets at bottom / on own send which auto-scrolls; increments on peer arrivals while scrolled up), `isNewTailMessage` (tail-id change detection — reaction edits don't count), `shouldShowNewMessagesPill`, `pillLabel`.
   - Unseen tracking wired: tail-id LaunchedEffect + `derivedStateOf` at-bottom reset.
-  - List wrapped in Box with floating **`FlashNewMessagesPill`** (UI-022): accent pill, down-chevron = Flash back glyph rotated âˆ’90Â° (no new icon), tap animates to latest and clears counter; fade+slide entrance via motion tokens; Role.Button a11y ("Jump to N new messages").
-- **Unit tests**: `FlashChatScrollLogicTest.kt` â€” 7 tests covering counter transitions, arrival detection, pill visibility/label.
+  - List wrapped in Box with floating **`FlashNewMessagesPill`** (UI-022): accent pill, down-chevron = Flash back glyph rotated −90° (no new icon), tap animates to latest and clears counter; fade+slide entrance via motion tokens; Role.Button a11y ("Jump to N new messages").
+- **Unit tests**: `FlashChatScrollLogicTest.kt` — 7 tests covering counter transitions, arrival detection, pill visibility/label.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 
 ### Remaining
-- Device verification: send messages from a peer while scrolled up â†’ pill counts; tap pill jumps; return-to-bottom resets. History pagination still out of scope (no repository paging).
+- Device verification: send messages from a peer while scrolled up → pill counts; tap pill jumps; return-to-bottom resets. History pagination still out of scope (no repository paging).
 
 ### Next AI
 Device-test UI-019/020/021/022, then research **UI-025/026/027 (empty/loading/error states)** or **UI-030 (network status UI)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-21 â€” UI-020: Voice Recording Interface â€” IMPLEMENTED
+## 2026-08-21 — UI-020: Voice Recording Interface — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-020 (Voice Recording Interface)** per the new UI-020 section in `docs/ui/voice-message.md` â€” the composer transforms into a recording surface with hold-to-record, slide-to-cancel, lock-to-record, timer, live amplitude strip, and trash/pause/send controls.
+Researched, designed, and implemented **UI-020 (Voice Recording Interface)** per the new UI-020 section in `docs/ui/voice-message.md` — the composer transforms into a recording surface with hold-to-record, slide-to-cancel, lock-to-record, timer, live amplitude strip, and trash/pause/send controls.
 
 ### Changed
-- **Design doc** (`docs/ui/voice-message.md`): added full UI-020 section â€” compared WhatsApp/Signal (hold + slide-left-cancel), Telegram (slide-up lock + persistent panel), iMessage (full-screen, rejected); hybrid state machine with unit-tested thresholds (`CANCEL_SLIDE_DP=96`, `LOCK_SLIDE_DP=72`, `MIN_RECORD_MS=500`).
+- **Design doc** (`docs/ui/voice-message.md`): added full UI-020 section — compared WhatsApp/Signal (hold + slide-left-cancel), Telegram (slide-up lock + persistent panel), iMessage (full-screen, rejected); hybrid state machine with unit-tested thresholds (`CANCEL_SLIDE_DP=96`, `LOCK_SLIDE_DP=72`, `MIN_RECORD_MS=500`).
 - **`FlashVoiceRecording.kt` (new, `:ui:chat`)**:
   - `FlashRecordingPhase` (Idle/Holding/CancelArmed/Locked) + `FlashHoldSlideTarget`.
-  - `FlashVoiceRecordingMath` â€” dominant-axis slide resolution, EMA amplitude smoothing, bounded demo random-walk amplitude generator, short-press discard rule, strip windowing.
-  - `FlashMicButton` â€” occupies the send slot when draft is blank; low-level `awaitEachGesture` hold gesture streams cumulative drag to parent; press-scale + accent color transitions.
-  - `FlashVoiceRecordingBar` â€” hold mode: pulsing red dot (reduce-motion-safe) + timer Â· Canvas amplitude strip Â· "â€¹ Slide to cancel" / "Release to cancel" (error-tinted when armed). Locked mode: trash Â· strip Â· pause/resume Â· timer Â· accent send. AnimatedContent mode swaps.
-- **`FlashComposer.kt`**: mic/send swap when draft blank; phase-driven `AnimatedContent` â€” **mic button stays mounted during Holding/CancelArmed so the live gesture keeps flowing** (critical design point; only Lock swaps to the full-width panel); 100ms ticker advances timer + appends smoothed demo amplitudes; new `onSendVoice: (FlashVoiceAttachmentUi) -> Unit` callback producing a real `FlashVoiceAttachmentUi` (durationMs + amplitudes).
-- **Unit tests**: `FlashVoiceRecordingLogicTest.kt` â€” 8 tests (slide resolution incl. dominant-axis conflicts, EMA clamping, random-walk bounds over 500 iterations, short-press discard, strip windowing).
+  - `FlashVoiceRecordingMath` — dominant-axis slide resolution, EMA amplitude smoothing, bounded demo random-walk amplitude generator, short-press discard rule, strip windowing.
+  - `FlashMicButton` — occupies the send slot when draft is blank; low-level `awaitEachGesture` hold gesture streams cumulative drag to parent; press-scale + accent color transitions.
+  - `FlashVoiceRecordingBar` — hold mode: pulsing red dot (reduce-motion-safe) + timer · Canvas amplitude strip · "‹ Slide to cancel" / "Release to cancel" (error-tinted when armed). Locked mode: trash · strip · pause/resume · timer · accent send. AnimatedContent mode swaps.
+- **`FlashComposer.kt`**: mic/send swap when draft blank; phase-driven `AnimatedContent` — **mic button stays mounted during Holding/CancelArmed so the live gesture keeps flowing** (critical design point; only Lock swaps to the full-width panel); 100ms ticker advances timer + appends smoothed demo amplitudes; new `onSendVoice: (FlashVoiceAttachmentUi) -> Unit` callback producing a real `FlashVoiceAttachmentUi` (durationMs + amplitudes).
+- **Unit tests**: `FlashVoiceRecordingLogicTest.kt` — 8 tests (slide resolution incl. dominant-axis conflicts, EMA clamping, random-walk bounds over 500 iterations, short-press discard, strip windowing).
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
-- One test expectation corrected (EMA truncates: 59.8 â†’ 59).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- One test expectation corrected (EMA truncates: 59.8 → 59).
 
 ### Known limitations
 - Demo-mode capture: no audio file is produced; real capture needs RECORD_AUDIO permission flow + MediaRecorder engine + pipeline ADR (documented in component doc).
 
 ### Remaining
-- Device verification: holdâ†’speakâ†’release sends; slide-left arms cancel; release cancels; slide-up locks; trash/pause/send; short tap discards silently.
+- Device verification: hold→speak→release sends; slide-left arms cancel; release cancels; slide-up locks; trash/pause/send; short tap discards silently.
 
 ### Next AI
 Device-test UI-019/UI-020, then research **UI-021 (Chat Scrolling)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-21 â€” UI-019 Device Feedback Fixes (layout, long-press context, preview, play/pause animation)
+## 2026-08-21 — UI-019 Device Feedback Fixes (layout, long-press context, preview, play/pause animation)
 
 ### Worked on
 Applied owner's device-test feedback on the UI-019 voice message card.
 
 ### Changed
-- **Layout fix**: speed pill moved from the right-hand stack to **under the badge on the left side**; remaining/duration label now sits alone on the **right side**, vertically centered â€” waveform is unobstructed full-width between them.
+- **Layout fix**: speed pill moved from the right-hand stack to **under the badge on the left side**; remaining/duration label now sits alone on the **right side**, vertically centered — waveform is unobstructed full-width between them.
 - **Long-press context support**: card uses `combinedClickable` with a new `onLongPress` callback (haptic + `onOpenActions`), so long-pressing the voice card opens the UI-007/UI-008 focus overlay like text bubbles.
-- **Focus overlay content fix**: new pure helper `flashMessageContentSummary()` in `:core:messaging` (`FlashMessagingUtils.kt`) returns `Voice message â€¢ m:ss` / `Photo` / `N photos` / file name for blank-text messages; `FlashFocusedBubblePreview` renders it instead of empty text (previously only sender name showed).
-- **Play/pause animation**: badge icon swaps through an `AnimatedContent` spring scale (0.6Ã—â†’1Ã—) + fade morph using `FlashMotion.springSnappySpec()`/`tweenFastSpec()`.
+- **Focus overlay content fix**: new pure helper `flashMessageContentSummary()` in `:core:messaging` (`FlashMessagingUtils.kt`) returns `Voice message • m:ss` / `Photo` / `N photos` / file name for blank-text messages; `FlashFocusedBubblePreview` renders it instead of empty text (previously only sender name showed).
+- **Play/pause animation**: badge icon swaps through an `AnimatedContent` spring scale (0.6×→1×) + fade morph using `FlashMotion.springSnappySpec()`/`tweenFastSpec()`.
 - **Tests**: added `FlashMessageContentSummaryTest.kt` in `:core:messaging` (5 tests).
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 
 ### Remaining
 - Re-test on device: layout sides, long-press context menu, overlay summary line, play/pause morph.
 
 ---
 
-## 2026-08-21 â€” UI-018 VERIFIED + UI-019: Voice Message Playback â€” IMPLEMENTED
+## 2026-08-21 — UI-018 VERIFIED + UI-019: Voice Message Playback — IMPLEMENTED
 
 ### Worked on
-1. Marked **UI-018 (Media Viewer) VERIFIED** â€” owner confirmed on device (Samsung SM_G986U1) that tapping a grid tile opens the viewer and does **not** also trigger the bubble context menu.
+1. Marked **UI-018 (Media Viewer) VERIFIED** — owner confirmed on device (Samsung SM_G986U1) that tapping a grid tile opens the viewer and does **not** also trigger the bubble context menu.
 2. Researched, designed, and implemented **UI-019 (Voice Message Playback)** per the new DESIGNED spec in `docs/ui/voice-message.md`.
 
 ### Changed
 - **Research & Design Document** (`docs/ui/voice-message.md`):
-  - Filled from NOT STARTED to DESIGNED: compared Telegram (discrete bar waveform, remaining-countdown label), WhatsApp (smooth waveform, circular badge), Signal (plain progress bar â€” rejected as prohibited generic), iMessage (scrubbing), Discord (speed control).
+  - Filled from NOT STARTED to DESIGNED: compared Telegram (discrete bar waveform, remaining-countdown label), WhatsApp (smooth waveform, circular badge), Signal (plain progress bar — rejected as prohibited generic), iMessage (scrubbing), Discord (speed control).
   - Selected: Telegram-style 40-bar discrete waveform + WhatsApp-style 48dp badge + Discord-style speed pill; real audio decode deferred pending Media3 dependency ADR.
 - **Model** (`:core:messaging`, `FlashMessagingModels.kt`):
   - Added `FlashVoiceAttachmentUi(id, uri, durationMs, amplitudes, mimeType, transferStatus)` reusing `FlashFileTransferStatus`.
   - Added `voiceAttachments: List<FlashVoiceAttachmentUi>` to `FlashMessageUi`.
 - **`FlashVoiceMessageCard.kt` (new, `:ui:chat`)**:
-  - `FlashVoiceMath` â€” pure logic: `m:ss` duration formatting, peak-preserving amplitude bucketing to exactly N bars, tapâ†’fraction/bar-index mapping, elapsed-from-fraction, speed cycle (1Ã—â†’1.5Ã—â†’2Ã—), Telegram-style trailing label (remaining countdown mid-playback â†” total when untouched/finished), played-bar count.
-  - `FlashVoiceMessageCard` â€” attachment-surface card matching UI-016 language; demo-mode 100ms playback ticker scaled by speed; auto-stop at end.
-  - `FlashVoiceBadge` â€” 48dp circle: Play/Pause (accent), Download (neutral), Retry (error); 0.90Ã— spring press physics.
-  - `FlashVoiceWaveform` â€” Canvas bars (3dp/2dp gap, rounded caps), accent played vs 45%-alpha unplayed, tap-to-seek + horizontal drag scrub via dedicated pointer inputs.
-  - `FlashVoiceSpeedPill` â€” chip with active accent border while speed â‰  1Ã—.
+  - `FlashVoiceMath` — pure logic: `m:ss` duration formatting, peak-preserving amplitude bucketing to exactly N bars, tap→fraction/bar-index mapping, elapsed-from-fraction, speed cycle (1×→1.5×→2×), Telegram-style trailing label (remaining countdown mid-playback ↔ total when untouched/finished), played-bar count.
+  - `FlashVoiceMessageCard` — attachment-surface card matching UI-016 language; demo-mode 100ms playback ticker scaled by speed; auto-stop at end.
+  - `FlashVoiceBadge` — 48dp circle: Play/Pause (accent), Download (neutral), Retry (error); 0.90× spring press physics.
+  - `FlashVoiceWaveform` — Canvas bars (3dp/2dp gap, rounded caps), accent played vs 45%-alpha unplayed, tap-to-seek + horizontal drag scrub via dedicated pointer inputs.
+  - `FlashVoiceSpeedPill` — chip with active accent border while speed ≠ 1×.
   - TalkBack: merged description with duration + play state, stateDescription Playing/Paused, per-control button semantics.
 - **Integration**: `FlashMessageBubble` renders voice cards; sample voice message added to `sampleFlashConversationState()` for device testing.
-- **Unit tests**: `FlashVoiceLogicTest.kt` â€” 13 tests covering all `FlashVoiceMath` behavior.
+- **Unit tests**: `FlashVoiceLogicTest.kt` — 13 tests covering all `FlashVoiceMath` behavior.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks).
 - `:ui:chat` test suites all green (49 tests across 12 suites, including new `FlashVoiceLogicTest`: 13/13).
 
 ### Remaining
 - UI-019 device verification: play/pause, tap-seek, drag scrub, speed cycle, label swap, dark mode both directions.
-- Real audio output deferred (Media3 ADR required once attachment pipeline lands) â€” documented in component doc Known limitations.
+- Real audio output deferred (Media3 ADR required once attachment pipeline lands) — documented in component doc Known limitations.
 
 ### Next AI
 Device-test UI-019, then research **UI-021 (Chat Scrolling)** or **UI-020 (Voice Recording)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-21 â€” UI-018: Media Viewer â€” IMPLEMENTED
+## 2026-08-21 — UI-018: Media Viewer — IMPLEMENTED
 
 ### Worked on
-Implemented **UI-018 (Media Viewer)** per the DESIGNED spec in `docs/ui/media-viewer.md` â€” full-screen immersive photo viewer with pinch/double-tap zoom, pan, vertical drag-to-dismiss, HorizontalPager album carousel, auto-hiding chrome, and sample-size-guarded bitmap decode.
+Implemented **UI-018 (Media Viewer)** per the DESIGNED spec in `docs/ui/media-viewer.md` — full-screen immersive photo viewer with pinch/double-tap zoom, pan, vertical drag-to-dismiss, HorizontalPager album carousel, auto-hiding chrome, and sample-size-guarded bitmap decode.
 
 ### Changed
 - **`FlashMediaViewer.kt` (new, `:ui:chat`)**:
-  - `FlashMediaViewerMath` â€” pure, unit-testable gesture/decode logic: zoom clamp (1Ã—â€“4Ã—), pinch overshoot ceiling (Ã—1.35), anchored-offset invariant (centroid-fixed zoom math), pan limits, dismiss claim policy (vertical dominance â‰¥ 2Ã— touch slop), dismiss distance (180dp) / velocity (900px/s) thresholds, counter + TalkBack page descriptions, initial-page clamp, power-of-two `inSampleSize` guard (long edge â‰¤ 4096px), backdrop alpha & page-scale dismiss mapping.
-  - `FlashZoomState` / `rememberFlashZoomState` â€” per-page scale+offset transform state; spring reset/settle via `FlashMotion.springDefaultSpec()`.
-  - `FlashMediaPage` â€” claim-policy gesture scope (`awaitEachGesture`): pinch owns â†’ zoomed pan owns â†’ un-zoomed dominant-vertical drag dismisses â†’ horizontal left unconsumed for pager. Separate lightweight `detectTapGestures` scope: single tap toggles chrome, double-tap springs to 2.3Ã— anchored at tap point (or back to 1Ã—). Two-pass bounds+sample decode on `Dispatchers.IO` via `produceState`; seed-gradient loading placeholder; failure state with Flash icon + text.
-  - `FlashMediaViewer` â€” always-dark `mediaViewerBackdrop` (drawBehind-only alpha during drag = zero recomposition), page scale 0.94 + half-translate during dismiss, `HorizontalPager(beyondViewportPageCount = 1)`, top chrome (close, `n / m` counter, more) + bottom chrome (sender â€¢ time, Save/Share/Forward) with white-92 `mediaViewerChromeText`, 48dp targets, BackHandler.
+  - `FlashMediaViewerMath` — pure, unit-testable gesture/decode logic: zoom clamp (1×–4×), pinch overshoot ceiling (×1.35), anchored-offset invariant (centroid-fixed zoom math), pan limits, dismiss claim policy (vertical dominance ≥ 2× touch slop), dismiss distance (180dp) / velocity (900px/s) thresholds, counter + TalkBack page descriptions, initial-page clamp, power-of-two `inSampleSize` guard (long edge ≤ 4096px), backdrop alpha & page-scale dismiss mapping.
+  - `FlashZoomState` / `rememberFlashZoomState` — per-page scale+offset transform state; spring reset/settle via `FlashMotion.springDefaultSpec()`.
+  - `FlashMediaPage` — claim-policy gesture scope (`awaitEachGesture`): pinch owns → zoomed pan owns → un-zoomed dominant-vertical drag dismisses → horizontal left unconsumed for pager. Separate lightweight `detectTapGestures` scope: single tap toggles chrome, double-tap springs to 2.3× anchored at tap point (or back to 1×). Two-pass bounds+sample decode on `Dispatchers.IO` via `produceState`; seed-gradient loading placeholder; failure state with Flash icon + text.
+  - `FlashMediaViewer` — always-dark `mediaViewerBackdrop` (drawBehind-only alpha during drag = zero recomposition), page scale 0.94 + half-translate during dismiss, `HorizontalPager(beyondViewportPageCount = 1)`, top chrome (close, `n / m` counter, more) + bottom chrome (sender • time, Save/Share/Forward) with white-92 `mediaViewerChromeText`, 48dp targets, BackHandler.
   - Suspending gesture calls routed through the external composition scope because `awaitEachGesture` is a restricted-suspension scope (documented in component doc).
-- **Tap path threading**: `FlashImageGrid.onImageClick` â†’ `FlashMessageBubble` (new param) â†’ `FlashMessageList` (`onImageClick(message, index)`) â†’ `FlashConversationScreen`.
-- **`FlashConversationScreen.kt`**: viewer state (`mediaViewerVisible`/`Items`/`StartIndex` â€” items persist through exit animation), overlay rendered in `AnimatedVisibility(motion.mediaOpenEnter/Exit)`, viewer-first BackHandler ordering, Toast placeholder actions for Save/Share/Forward (pipeline not connected yet).
-- **Unit tests**: `FlashMediaViewerLogicTest.kt` â€” 14 tests covering all math/decision functions above.
+- **Tap path threading**: `FlashImageGrid.onImageClick` → `FlashMessageBubble` (new param) → `FlashMessageList` (`onImageClick(message, index)`) → `FlashConversationScreen`.
+- **`FlashConversationScreen.kt`**: viewer state (`mediaViewerVisible`/`Items`/`StartIndex` — items persist through exit animation), overlay rendered in `AnimatedVisibility(motion.mediaOpenEnter/Exit)`, viewer-first BackHandler ordering, Toast placeholder actions for Save/Share/Forward (pipeline not connected yet).
+- **Unit tests**: `FlashMediaViewerLogicTest.kt` — 14 tests covering all math/decision functions above.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 - One test iteration: initial "center anchor preserves offset" expectation was mathematically wrong (correct invariant: center-anchor scales existing pan by ratio); test corrected to encode the true invariant.
 
 ### Remaining
-- UI-018 device verification (Samsung SM_G986U1): open-from-tile smoke test (confirm bubble context menu does not also fire on tile tap), pinch/double-tap/dismiss/fling gestures, chrome toggle, dark/light backdrop â€” then mark VERIFIED.
+- UI-018 device verification (Samsung SM_G986U1): open-from-tile smoke test (confirm bubble context menu does not also fire on tile tap), pinch/double-tap/dismiss/fling gestures, chrome toggle, dark/light backdrop — then mark VERIFIED.
 - UI-019 (voice playback) or UI-021 (chat scrolling) research next.
 
 ### Next AI
@@ -15895,7 +15996,7 @@ Device-test UI-018 per its testing checklist, then proceed to UI-019/UI-021 rese
 
 ---
 
-## 2026-08-21 â€” UI-017: Image Message & Adaptive Grid Layout
+## 2026-08-21 — UI-017: Image Message & Adaptive Grid Layout
 
 ### Worked on
 Researched, designed, and implemented **UI-017 (Image Message & Adaptive Grid Layout)** in `:ui:chat` and `:core:messaging`.
@@ -15922,11 +16023,11 @@ Researched, designed, and implemented **UI-017 (Image Message & Adaptive Grid La
   - Added `FlashImageGridLogicTest.kt` covering dimensions, model properties, and overflow arithmetic.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 
 ---
 
-## 2026-08-20 â€” WebSocket Transfer: Received File Click-to-Open, Export (SAF), and Share
+## 2026-08-20 — WebSocket Transfer: Received File Click-to-Open, Export (SAF), and Share
 
 ### Worked on
 Implemented full file viewing, sharing, and device export capabilities for files received via the experimental WebSocket mesh transfer track.
@@ -15954,17 +16055,17 @@ Implemented full file viewing, sharing, and device export capabilities for files
   - Added `WsFileActionsTest.kt` covering MIME type mapping and transfer model path integration.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (357 tasks, all unit tests green).
 
 ---
 
-## 2026-08-20 â€” Flash Custom Vector Icon Set Complete Redesign (24x24 & 2.0dp Stroke)
+## 2026-08-20 — Flash Custom Vector Icon Set Complete Redesign (24x24 & 2.0dp Stroke)
 
 ### Worked on
-Redesigned the entire Flash-owned custom vector icon set (46 icons) from the ground up on a generous 24Ã—24 grid with 2.0dp stroke weight, modern geometric balance, and increased default UI sizing.
+Redesigned the entire Flash-owned custom vector icon set (46 icons) from the ground up on a generous 24×24 grid with 2.0dp stroke weight, modern geometric balance, and increased default UI sizing.
 
 ### Changed
-- **24Ã—24 Viewport & Optical Footprint Optimization**:
+- **24×24 Viewport & Optical Footprint Optimization**:
   - Re-architected all vector paths across 46 XML drawables in `ui/theme/src/main/res/drawable/` (`flash_ic_*`), eliminating excessive internal padding.
   - Increased stroke weight from 1.5dp to a crisp, bold 2.0dp with round caps and joins.
 - **Icon Sizing Scale in `FlashDimensions.kt`**:
@@ -15978,14 +16079,14 @@ Redesigned the entire Flash-owned custom vector icon set (46 icons) from the gro
   - **Delivery & Transit**: `flash_ic_clock`, `flash_ic_check`, `flash_ic_delivered`, `flash_ic_read`, `flash_ic_failed`, `flash_ic_retry`, `flash_ic_verified`.
   - **Calls & Networking**: `flash_ic_call`, `flash_ic_video_call`, `flash_ic_wifi`, `flash_ic_wifi_direct`, `flash_ic_connection`, `flash_ic_device`, `flash_ic_group`, `flash_ic_relay`, `flash_ic_encryption`.
   - **Playback & Utility**: `flash_ic_download`, `flash_ic_upload`, `flash_ic_play`, `flash_ic_pause`, `flash_ic_stop`, `flash_ic_bolt`, `flash_ic_heart`, `flash_ic_thumb_up`, `flash_ic_thumb_down`.
-- **Documentation**: Updated `docs/ui/icon-system.md` with 24Ã—24 grid and 24dp render sizing specifications.
+- **Documentation**: Updated `docs/ui/icon-system.md` with 24×24 grid and 24dp render sizing specifications.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, all unit tests passing).
 
 ---
 
-## 2026-08-20 â€” Edge-to-Edge System Bar Overlap & Window Insets Fix (ERROR-007)
+## 2026-08-20 — Edge-to-Edge System Bar Overlap & Window Insets Fix (ERROR-007)
 
 ### Worked on
 Investigated and resolved system bar overlaps across top headers, status bar notch/camera cutout, bottom composer, and 3-button navigation bar.
@@ -16004,14 +16105,14 @@ Investigated and resolved system bar overlaps across top headers, status bar not
 - **Error Log**: Added ERROR-007 to `logs/errors.md`.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, all unit tests passing).
 
 ---
 
-## 2026-08-20 â€” UI-016: File Message Card â€” IMPLEMENTED
+## 2026-08-20 — UI-016: File Message Card — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-016 (File Message Card)** per `docs/ui/file-card.md` â€” rich in-bubble document card featuring color-coded file extension badges (`FlashFileIconBadge`), circular transfer progress rings with real-time throughput metrics (speed & ETA), formatted file sizes, and seamless integration into message bubbles (`FlashFileMessageCard`).
+Researched, designed, and implemented **UI-016 (File Message Card)** per `docs/ui/file-card.md` — rich in-bubble document card featuring color-coded file extension badges (`FlashFileIconBadge`), circular transfer progress rings with real-time throughput metrics (speed & ETA), formatted file sizes, and seamless integration into message bubbles (`FlashFileMessageCard`).
 
 ### Changed
 - **Research & Design Document created (`docs/ui/file-card.md`):**
@@ -16031,21 +16132,21 @@ Researched, designed, and implemented **UI-016 (File Message Card)** per `docs/u
   - Tested byte size formatting across magnitude ranges, extension color resolution, and transfer state model integrity.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 26 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 26 executed, all unit tests passing).
 
 ### Remaining
-- UI-017 (Image message & grid) â€” NOT STARTED.
-- UI-018 (Media viewer) â€” NOT STARTED.
+- UI-017 (Image message & grid) — NOT STARTED.
+- UI-018 (Media viewer) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-017 (Image Message & Grid Layout)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-015: Delivery / Read States â€” IMPLEMENTED
+## 2026-08-20 — UI-015: Delivery / Read States — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-015 (Delivery / Read States)** per `docs/ui/delivery-status.md` â€” animated delivery status glyphs (`FlashDeliveryStatusIcon`), custom checkmark/clock vector iconography (`flash_ic_clock.xml`, `flash_ic_check.xml`, `flash_ic_delivered.xml`, `flash_ic_read.xml`, `flash_ic_failed.xml`), and 5-stage transit lifecycle mapping (Pending, Sent, Delivered, Read, Failed) with 1-tap retry interaction.
+Researched, designed, and implemented **UI-015 (Delivery / Read States)** per `docs/ui/delivery-status.md` — animated delivery status glyphs (`FlashDeliveryStatusIcon`), custom checkmark/clock vector iconography (`flash_ic_clock.xml`, `flash_ic_check.xml`, `flash_ic_delivered.xml`, `flash_ic_read.xml`, `flash_ic_failed.xml`), and 5-stage transit lifecycle mapping (Pending, Sent, Delivered, Read, Failed) with 1-tap retry interaction.
 
 ### Changed
 - **Research & Design Document created (`docs/ui/delivery-status.md`):**
@@ -16066,21 +16167,21 @@ Researched, designed, and implemented **UI-015 (Delivery / Read States)** per `d
   - Tested 5 lifecycle states, message model status serialization/copying, and accessibility description mapping.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 44 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 44 executed, all unit tests passing).
 
 ### Remaining
-- UI-016 (File message card) â€” NOT STARTED.
-- UI-017 (Image message) â€” NOT STARTED.
+- UI-016 (File message card) — NOT STARTED.
+- UI-017 (Image message) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-016 (File Message Card)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-014: Typing Indicator â€” IMPLEMENTED
+## 2026-08-20 — UI-014: Typing Indicator — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-014 (Typing Indicator)** per `docs/ui/typing-indicator.md` â€” 120 FPS GPU-accelerated 3-dot wave bouncing animation, incoming message stream typing bubble (`FlashTypingBubble`), and header subtitle status integration (`FlashHeaderTypingStatus`).
+Researched, designed, and implemented **UI-014 (Typing Indicator)** per `docs/ui/typing-indicator.md` — 120 FPS GPU-accelerated 3-dot wave bouncing animation, incoming message stream typing bubble (`FlashTypingBubble`), and header subtitle status integration (`FlashHeaderTypingStatus`).
 
 ### Changed
 - **Research & Design Document created (`docs/ui/typing-indicator.md`):**
@@ -16102,21 +16203,21 @@ Researched, designed, and implemented **UI-014 (Typing Indicator)** per `docs/ui
   - Tested typing presence mapping, typing bubble resolution, and accessibility descriptions.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 17 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 17 executed, all unit tests passing).
 
 ### Remaining
-- UI-015 (Delivery / read states) â€” NOT STARTED.
-- UI-016 (File message card) â€” NOT STARTED.
+- UI-015 (Delivery / read states) — NOT STARTED.
+- UI-016 (File message card) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-015 (Delivery / Read States)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-012: Custom Attachment Button & Palette â€” IMPLEMENTED
+## 2026-08-20 — UI-012: Custom Attachment Button & Palette — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-012 (Custom Attachment Button & Palette)** per `docs/ui/attachment-button.md` â€” stateful composer attachment trigger with $45^\circ$ rotation micro-interaction, active accent tint, and sculpted modal bottom sheet action grid with categorized options (Gallery, Files, Camera, Audio, Flash P2P).
+Researched, designed, and implemented **UI-012 (Custom Attachment Button & Palette)** per `docs/ui/attachment-button.md` — stateful composer attachment trigger with $45^\circ$ rotation micro-interaction, active accent tint, and sculpted modal bottom sheet action grid with categorized options (Gallery, Files, Camera, Audio, Flash P2P).
 
 ### Changed
 - **Research & Design Document created (`docs/ui/attachment-button.md`):**
@@ -16137,26 +16238,26 @@ Researched, designed, and implemented **UI-012 (Custom Attachment Button & Palet
   - Tested 5 core attachment action categories, non-empty labels, valid icon specs, and container colors.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 19 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 19 executed, all unit tests passing).
 
 ### Remaining
-- UI-014 (Typing indicator) â€” NOT STARTED.
-- UI-015 (Delivery / read states) â€” NOT STARTED.
+- UI-014 (Typing indicator) — NOT STARTED.
+- UI-015 (Delivery / read states) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-014 (Typing Indicator)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-010: Message Reply System â€” IMPLEMENTED
+## 2026-08-20 — UI-010: Message Reply System — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-010 (Reply System)** per `docs/ui/reply-system.md` â€” swipe-to-reply gesture with tactile reveal, in-bubble quoted reference cards with 1-tap jump to original message, 600ms pulse glow highlight, and composer reply dock integration.
+Researched, designed, and implemented **UI-010 (Reply System)** per `docs/ui/reply-system.md` — swipe-to-reply gesture with tactile reveal, in-bubble quoted reference cards with 1-tap jump to original message, 600ms pulse glow highlight, and composer reply dock integration.
 
 ### Changed
 - **Research & Design Document created (`docs/ui/reply-system.md`):**
   - Analyzed swipe-to-reply mechanics across Telegram, Signal, WhatsApp, iMessage, and Slack.
-  - Selected Telegram-style **Swipe Left** (inward drag) to eliminate collisions with Android 10â€“16 system edge-back navigation.
+  - Selected Telegram-style **Swipe Left** (inward drag) to eliminate collisions with Android 10–16 system edge-back navigation.
   - Specified 52dp threshold with logarithmic damping, rotating reply badge reveal, single-edge haptic trigger, 3dp vertical accent bar on in-bubble quote cards, and 600ms pulse highlight.
 - **`FlashQuotedReplyUi` model added in `:core:messaging` (`FlashMessagingModels.kt`):**
   - Data class `FlashQuotedReplyUi(messageId, senderName, textSnippet, isMine)` added to `FlashMessageUi.replyTo`.
@@ -16174,21 +16275,21 @@ Researched, designed, and implemented **UI-010 (Reply System)** per `docs/ui/rep
   - Tested quoted metadata storage, reverseLayout jump index calculation, and quote snippet creation.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 17 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 17 executed, all unit tests passing).
 
 ### Remaining
-- UI-012 (Custom attachment button) â€” NOT STARTED.
-- UI-014 (Typing indicator) â€” NOT STARTED.
+- UI-012 (Custom attachment button) — NOT STARTED.
+- UI-014 (Typing indicator) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-012 (Custom Attachment Button)** or **UI-014 (Typing Indicator)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-009: Message Reaction System â€” IMPLEMENTED
+## 2026-08-20 — UI-009: Message Reaction System — IMPLEMENTED
 
 ### Worked on
-Researched, designed, and implemented **UI-009 (Reaction System)** per `docs/ui/reaction-system.md` â€” a hybrid architecture combining Telegram/Signal's spotlight quick reaction bar with Discord/Slack's frictionless 1-tap reaction chip toggling on message bubbles.
+Researched, designed, and implemented **UI-009 (Reaction System)** per `docs/ui/reaction-system.md` — a hybrid architecture combining Telegram/Signal's spotlight quick reaction bar with Discord/Slack's frictionless 1-tap reaction chip toggling on message bubbles.
 
 ### Changed
 - **Research & Design Document created (`docs/ui/reaction-system.md`):**
@@ -16212,48 +16313,48 @@ Researched, designed, and implemented **UI-009 (Reaction System)** per `docs/ui/
   - Tested new reaction addition, incrementing peer reactions, decrementing self-reactions, completely removing solo reactions, preserving sibling reactions, and non-target message isolation.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 26 executed, all unit tests passing).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 26 executed, all unit tests passing).
 
 ### Remaining
-- UI-010 (Reply system) â€” NOT STARTED.
-- UI-012 (Custom attachment button) â€” NOT STARTED.
+- UI-010 (Reply system) — NOT STARTED.
+- UI-012 (Custom attachment button) — NOT STARTED.
 
 ### Next AI
 Proceed with research and design for **UI-010 (Reply System)** or **UI-012 (Custom Attachment Button)** per `docs/ui/ui-research-index.md`.
 
 ---
 
-## 2026-08-20 â€” UI-007/UI-008: Focus Overlay, Context Menu & Selection Mode â€” IMPLEMENTED
+## 2026-08-20 — UI-007/UI-008: Focus Overlay, Context Menu & Selection Mode — IMPLEMENTED
 
 ### Worked on
-Implemented **UI-007 (Message press & selection mode)** and **UI-008 (Focus overlay & context menu)** â€” the immersive long-press interaction from modern chat interfaces.
+Implemented **UI-007 (Message press & selection mode)** and **UI-008 (Focus overlay & context menu)** — the immersive long-press interaction from modern chat interfaces.
 
 ### Changed
-- **`FlashConversationScreen.kt`** â€” Full rewrite to wire focus overlay and selection toolbar:
+- **`FlashConversationScreen.kt`** — Full rewrite to wire focus overlay and selection toolbar:
   - `focusedMessage` state drives `FlashMessageFocusOverlay` display.
   - `selectedMessageIds` state drives `FlashSelectionToolbar` swap via `AnimatedContent`.
   - `BackHandler` exits selection mode before navigating back.
   - `replyingToMessage` state wired to `FlashComposer`'s `FlashReplyDock`.
   - Clipboard copy via Android `ClipboardManager` for single & multi-select.
-- **`FlashMessageContextMenu.kt`** â€” Fixed shape tokens (`bubbleOutgoingTail`/`bubbleIncomingTail`) and spacing (`space8`).
-- **`FlashMessageBubble.kt`** â€” Fixed `avatarInline` â†’ `avatarXs`, fixed bubble shape mapping to use existing `FlashShapes` tokens (`bubbleOutgoingTail`, `bubbleIncomingTail`, `bubbleGrouped`).
-- **`FlashSelectionLogicTest.kt`** â€” New unit tests for toggle selection, selection mode detection, and clipboard text formatting.
-- **`ui/chat/build.gradle.kts`** â€” Added `activity-compose` dependency for `BackHandler`.
+- **`FlashMessageContextMenu.kt`** — Fixed shape tokens (`bubbleOutgoingTail`/`bubbleIncomingTail`) and spacing (`space8`).
+- **`FlashMessageBubble.kt`** — Fixed `avatarInline` → `avatarXs`, fixed bubble shape mapping to use existing `FlashShapes` tokens (`bubbleOutgoingTail`, `bubbleIncomingTail`, `bubbleGrouped`).
+- **`FlashSelectionLogicTest.kt`** — New unit tests for toggle selection, selection mode detection, and clipboard text formatting.
+- **`ui/chat/build.gradle.kts`** — Added `activity-compose` dependency for `BackHandler`.
 
 ### Verification
-- Full multi-module build: `testDebugUnitTest assembleDebug` â€” **BUILD SUCCESSFUL** (354 tasks, 17 executed).
+- Full multi-module build: `testDebugUnitTest assembleDebug` — **BUILD SUCCESSFUL** (354 tasks, 17 executed).
 - All unit tests pass (including new `FlashSelectionLogicTest`).
 
 ### Remaining
-- UI-009 (Reaction system) â€” NOT STARTED.
-- UI-010 (Reply system) â€” NOT STARTED.
+- UI-009 (Reaction system) — NOT STARTED.
+- UI-010 (Reply system) — NOT STARTED.
 
 ### Next AI
 Proceed to UI-009 Reaction System research and implementation.
 
 ---
 
-## 2026-08-20 â€” UI-007: Message Press & Selection Mode Research & Design Complete
+## 2026-08-20 — UI-007: Message Press & Selection Mode Research & Design Complete
 
 ### Worked on
 Executed the research, architecture, visual specification, interaction design, and animation mechanics for **UI-007 (Message press and selection mode)** per `docs/ui/selection-mode.md`.
@@ -16276,7 +16377,7 @@ Executed the research, architecture, visual specification, interaction design, a
 ### Next AI
 Implement UI-007 in `:ui:chat` per `docs/ui/selection-mode.md`.
 
-## 2026-08-20 â€” UI-011 / UI-013: Custom Message Composer & Send Button Implementation
+## 2026-08-20 — UI-011 / UI-013: Custom Message Composer & Send Button Implementation
 
 ### Worked on
 Implemented **UI-011 (Custom message composer)** and **UI-013 (Custom send button)** in `:ui:chat` according to the design specification in `docs/ui/composer.md`.
@@ -16295,7 +16396,7 @@ Implemented **UI-011 (Custom message composer)** and **UI-013 (Custom send butto
   - Upgraded `docs/ui/composer.md` and `docs/ui/ui-research-index.md` status to **`IMPLEMENTED`**.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (2m 24s); all 64 library unit tests passing (`:core:common`: 15, `:core:security`: 7, `:core:discovery`: 2, `:core:network`: 15, `:core:transfer`: 8, `:core:messaging`: 5, `:ui:theme`: 4, `:ui:chat`: 8 tests).
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (2m 24s); all 64 library unit tests passing (`:core:common`: 15, `:core:security`: 7, `:core:discovery`: 2, `:core:network`: 15, `:core:transfer`: 8, `:core:messaging`: 5, `:ui:theme`: 4, `:ui:chat`: 8 tests).
 - All previews compile and render cleanly (`Empty`, `Typing`, `Replying`).
 
 ### Remaining
@@ -16304,7 +16405,7 @@ Implemented **UI-011 (Custom message composer)** and **UI-013 (Custom send butto
 ### Next AI
 Proceed with research and design for the next sequential component (e.g., UI-007 / UI-010 / UI-012) per `docs/ui/ui-research-index.md`.
 
-## 2026-08-20 â€” UI-011 / UI-013: Message Composer & Send Button Research & Design Complete
+## 2026-08-20 — UI-011 / UI-013: Message Composer & Send Button Research & Design Complete
 
 ### Worked on
 Resumed the Flash Premium Chat UI component roadmap. Completed the research, visual specification, interaction model, and animation architecture for **UI-011 (Custom message composer)** and **UI-013 (Custom send button)**.
@@ -16326,7 +16427,7 @@ Resumed the Flash Premium Chat UI component roadmap. Completed the research, vis
 ### Next AI
 Implement `FlashComposer.kt` and `FlashSendButton.kt` in `:ui:chat` per `docs/ui/composer.md`.
 
-## 2026-08-20 â€” Phase K & L: Rewire `:app` Showcase & Quality Gate + Migration Complete
+## 2026-08-20 — Phase K & L: Rewire `:app` Showcase & Quality Gate + Migration Complete
 
 ### Worked on
 Executed Phase K (Rewire `:app` Showcase & Quality Gate) and Phase L (Migration Wrap-up & Quality Gate sign-off) of the Library-First Migration Plan.
@@ -16337,39 +16438,39 @@ Executed Phase K (Rewire `:app` Showcase & Quality Gate) and Phase L (Migration 
   - `MainActivity.kt` cleanly imports and composes library composables (`FlashChatListScreen`, `FlashConversationScreen`, `WsTransferScreen`, `FlashIconSheet`, `FlashMotionSheet`) and repositories (`SampleFlashChatRepository`).
 - **Complete multi-module quality gate verified:**
   - Full build & test suite across all 10 modules:
-    1. `:core:common` (`com.transfer.flash:core-common:1.0.0`) â€” 15 tests
-    2. `:core:security` (`com.transfer.flash:core-security:1.0.0`) â€” 7 tests
-    3. `:core:discovery` (`com.transfer.flash:core-discovery:1.0.0`) â€” 2 tests
-    4. `:core:network` (`com.transfer.flash:core-network:1.0.0`) â€” 15 tests
-    5. `:core:transfer` (`com.transfer.flash:core-transfer:1.0.0`) â€” 8 tests
-    6. `:core:messaging` (`com.transfer.flash:core-messaging:1.0.0`) â€” 5 tests
-    7. `:ui:theme` (`com.transfer.flash:ui-theme:1.0.0`) â€” 4 tests
-    8. `:ui:chat` (`com.transfer.flash:ui-chat:1.0.0`) â€” 6 tests
+    1. `:core:common` (`com.transfer.flash:core-common:1.0.0`) — 15 tests
+    2. `:core:security` (`com.transfer.flash:core-security:1.0.0`) — 7 tests
+    3. `:core:discovery` (`com.transfer.flash:core-discovery:1.0.0`) — 2 tests
+    4. `:core:network` (`com.transfer.flash:core-network:1.0.0`) — 15 tests
+    5. `:core:transfer` (`com.transfer.flash:core-transfer:1.0.0`) — 8 tests
+    6. `:core:messaging` (`com.transfer.flash:core-messaging:1.0.0`) — 5 tests
+    7. `:ui:theme` (`com.transfer.flash:ui-theme:1.0.0`) — 4 tests
+    8. `:ui:chat` (`com.transfer.flash:ui-chat:1.0.0`) — 6 tests
     9. `:ui:transfer` (`com.transfer.flash:ui-transfer:1.0.0`)
-    10. `:app` â€” Runnable showcase application
+    10. `:app` — Runnable showcase application
   - Total unit tests: 62 library unit tests passing.
   - Zero circular dependencies; strictly unidirectional architecture graph.
 - **Architectural Migration Status:** COMPLETE. Flash is now fully structured as a suite of publishable, modular libraries with a clean runnable showcase.
 
 ### Verification
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL (1m 30s); 354 Gradle tasks executed/up-to-date, all 62 library unit tests green.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL (1m 30s); 354 Gradle tasks executed/up-to-date, all 62 library unit tests green.
 - All 6 quality gates passed across all modules.
 
 ### Remaining / Next Phase
 - Resume Flash Premium Chat UI roadmap starting with **UI-011 Custom message composer** research in `docs/ui/composer.md`.
 
-## 2026-08-20 â€” Phase J: Extract `:ui:chat` and `:ui:transfer`
+## 2026-08-20 — Phase J: Extract `:ui:chat` and `:ui:transfer`
 
 ### Worked on
 Executed Phase J (Extract `:ui:chat` and `:ui:transfer`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:ui:chat` module created (`com.transfer.flash:ui-chat:1.0.0`):**
-  - `ui/chat/build.gradle.kts` â€” Android library with `maven-publish`, Compose compiler, namespace `com.transfer.flash.ui.chat`, depends on `:core:common`, `:core:messaging`, `:ui:theme`.
+  - `ui/chat/build.gradle.kts` — Android library with `maven-publish`, Compose compiler, namespace `com.transfer.flash.ui.chat`, depends on `:core:common`, `:core:messaging`, `:ui:theme`.
   - Migrated all chat composables: `FlashChatListScreen.kt`, `FlashChatListRow.kt`, `FlashChatListTopBar.kt`, `FlashConversationScreen.kt`, `FlashChatHeader.kt`, `FlashMessageList.kt`, `FlashMessageBubble.kt`, `FlashMessageActionsSheet.kt`, `FlashComposer.kt`, `FlashAttachmentGrid.kt`, `FlashReactionsRow.kt`.
   - Migrated `FlashMessageInsertionTest.kt` (6 tests) to `ui/chat/src/test/`.
 - **`:ui:transfer` module created (`com.transfer.flash:ui-transfer:1.0.0`):**
-  - `ui/transfer/build.gradle.kts` â€” Android library with `maven-publish`, Compose compiler, namespace `com.transfer.flash.ui.transfer`, depends on `:core:common`, `:core:security`, `:core:network`, `:core:transfer`, `:ui:theme`.
+  - `ui/transfer/build.gradle.kts` — Android library with `maven-publish`, Compose compiler, namespace `com.transfer.flash.ui.transfer`, depends on `:core:common`, `:core:security`, `:core:network`, `:core:transfer`, `:ui:theme`.
   - Migrated `WsTransferScreen.kt`.
   - Updated imports from `com.transfer.flash.wstransfer.*` to `com.transfer.flash.core.transfer.model.*`.
 - **WS transfer UI models extracted to `:core:transfer`:**
@@ -16383,16 +16484,16 @@ Executed Phase J (Extract `:ui:chat` and `:ui:transfer`) of the Library-First Mi
   - Added `:ui:chat` and `:ui:transfer` to `settings.gradle.kts`.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (1m 37s); all unit tests green:
-  - `:core:common` â€” 15 tests
-  - `:core:security` â€” 7 tests
-  - `:core:discovery` â€” 2 tests
-  - `:core:network` â€” 15 tests
-  - `:core:transfer` â€” 8 tests
-  - `:core:messaging` â€” 5 tests
-  - `:ui:theme` â€” 4 tests
-  - `:ui:chat` â€” 6 tests (`FlashMessageInsertionTest`)
-  - `:app` â€” all tests green
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (1m 37s); all unit tests green:
+  - `:core:common` — 15 tests
+  - `:core:security` — 7 tests
+  - `:core:discovery` — 2 tests
+  - `:core:network` — 15 tests
+  - `:core:transfer` — 8 tests
+  - `:core:messaging` — 5 tests
+  - `:ui:theme` — 4 tests
+  - `:ui:chat` — 6 tests (`FlashMessageInsertionTest`)
+  - `:app` — all tests green
 
 ### Problems
 - WsTransferScreen imported `WsPeer`, `WsTransferItem`, etc. from `com.transfer.flash.wstransfer` (`:app` internal). Required extracting WS transfer UI models to `:core:transfer:model` and updating imports.
@@ -16405,34 +16506,34 @@ Executed Phase J (Extract `:ui:chat` and `:ui:transfer`) of the Library-First Mi
 ### Next AI
 Implement Phase K per migration plan checklist.
 
-## 2026-08-20 â€” Phase I: Extract `:ui:theme`
+## 2026-08-20 — Phase I: Extract `:ui:theme`
 
 ### Worked on
 Executed Phase I (Extract `:ui:theme`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:ui:theme` module created (`com.transfer.flash:ui-theme:1.0.0`):**
-  - `ui/theme/build.gradle.kts` â€” Android library with `maven-publish`, Compose compiler plugin enabled, namespace `com.transfer.flash.ui.theme`, depends on `:core:common` and Jetpack Compose BOM.
+  - `ui/theme/build.gradle.kts` — Android library with `maven-publish`, Compose compiler plugin enabled, namespace `com.transfer.flash.ui.theme`, depends on `:core:common` and Jetpack Compose BOM.
   - `ui/theme/consumer-rules.pro` & `ui/theme/proguard-rules.pro`.
   - Added `:ui:theme` to `settings.gradle.kts`.
   - **Design tokens & theme (`ui:theme:theme`):**
-    - `FlashTheme.kt` â€” Public Compose theme wrapper with dynamic accent support.
-    - `FlashColors.kt` â€” Semantic color palettes (light, dark, dynamic accent tinting).
-    - `FlashTypography.kt` â€” Typography tokens.
-    - `FlashShapes.kt` â€” Shape tokens including concave `FlashBubbleShape`.
-    - `FlashSpacing.kt` â€” 4dp/8dp grid spacing system.
-    - `FlashDimensions.kt` â€” Standard layout measurements.
-    - `FlashElevation.kt` â€” Surface elevation tokens.
-    - `FlashMotion.kt` & `FlashMotionSheet.kt` â€” Motion curves, springs, and reduce-motion probe.
-    - `FlashThemeSwatches.kt` â€” Design token visualization swatches.
-    - `Theme.kt`, `Color.kt`, `Type.kt` â€” Material3 bridge theme (`FlashMaterialTheme`).
+    - `FlashTheme.kt` — Public Compose theme wrapper with dynamic accent support.
+    - `FlashColors.kt` — Semantic color palettes (light, dark, dynamic accent tinting).
+    - `FlashTypography.kt` — Typography tokens.
+    - `FlashShapes.kt` — Shape tokens including concave `FlashBubbleShape`.
+    - `FlashSpacing.kt` — 4dp/8dp grid spacing system.
+    - `FlashDimensions.kt` — Standard layout measurements.
+    - `FlashElevation.kt` — Surface elevation tokens.
+    - `FlashMotion.kt` & `FlashMotionSheet.kt` — Motion curves, springs, and reduce-motion probe.
+    - `FlashThemeSwatches.kt` — Design token visualization swatches.
+    - `Theme.kt`, `Color.kt`, `Type.kt` — Material3 bridge theme (`FlashMaterialTheme`).
   - **Icon system & avatar (`ui:theme:icons`, `ui:theme:avatar`):**
-    - `FlashIcons.kt` â€” 35+ typed icon accessors (`flash_ic_*`), `FlashIconSpec`, `FlashIcon` composable.
-    - `FlashIconSheet.kt` â€” Icon sheet preview grid.
-    - `FlashAvatar.kt` â€” Avatar composable with seed-based background generation.
-    - `ui/theme/src/main/res/drawable/` â€” 44 Flash vector drawables (`flash_ic_*.xml`).
+    - `FlashIcons.kt` — 35+ typed icon accessors (`flash_ic_*`), `FlashIconSpec`, `FlashIcon` composable.
+    - `FlashIconSheet.kt` — Icon sheet preview grid.
+    - `FlashAvatar.kt` — Avatar composable with seed-based background generation.
+    - `ui/theme/src/main/res/drawable/` — 44 Flash vector drawables (`flash_ic_*.xml`).
   - **Unit tests:**
-    - `FlashThemeTokensTest.kt` â€” 4 tests: light color tokens, dark color tokens, spacing tokens positive, dimensions tokens positive.
+    - `FlashThemeTokensTest.kt` — 4 tests: light color tokens, dark color tokens, spacing tokens positive, dimensions tokens positive.
 - **`:app` module cleanup & refactoring:**
   - Added `implementation(project(":ui:theme"))` to `app/build.gradle.kts`.
   - Deleted deprecated `ui/design/` compatibility layer from `:app`.
@@ -16440,16 +16541,16 @@ Executed Phase I (Extract `:ui:theme`) of the Library-First Migration Plan.
   - Updated all composables in `:app` (`FlashChatHeader.kt`, `FlashChatListRow.kt`, `FlashChatListScreen.kt`, `FlashConversationScreen.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`, `MainActivity.kt`) to consume tokens and icons directly from `:ui:theme`.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (2m 7s); all unit tests green:
-  - `:core:common` â€” 15 tests
-  - `:core:security` â€” 7 tests
-  - `:core:discovery` â€” 2 tests
-  - `:core:network` â€” 15 tests
-  - `:core:transfer` â€” 8 tests
-  - `:core:messaging` â€” 5 tests
-  - `:ui:theme` â€” 4 tests
-  - `:app` â€” all tests green (total: 56 library unit tests)
-- All 6 quality gates passed: Build âœ“, API âœ“, Dependency âœ“ (unidirectional `:app` â†’ `:ui:theme` â†’ `:core:common`), Test âœ“, Behavior âœ“, Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (2m 7s); all unit tests green:
+  - `:core:common` — 15 tests
+  - `:core:security` — 7 tests
+  - `:core:discovery` — 2 tests
+  - `:core:network` — 15 tests
+  - `:core:transfer` — 8 tests
+  - `:core:messaging` — 5 tests
+  - `:ui:theme` — 4 tests
+  - `:app` — all tests green (total: 56 library unit tests)
+- All 6 quality gates passed: Build ✓, API ✓, Dependency ✓ (unidirectional `:app` → `:ui:theme` → `:core:common`), Test ✓, Behavior ✓, Documentation ✓.
 
 ### Remaining
 - Phase J: Extract `:ui:chat` and `:ui:transfer`.
@@ -16459,23 +16560,23 @@ Executed Phase I (Extract `:ui:theme`) of the Library-First Migration Plan.
 ### Next AI
 Implement Phase J (`:ui:chat` and `:ui:transfer`) per migration plan checklist.
 
-## 2026-08-20 â€” Phase H: Extract `:core:messaging`
+## 2026-08-20 — Phase H: Extract `:core:messaging`
 
 ### Worked on
 Executed Phase H (Extract `:core:messaging`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:core:messaging` module created (`com.transfer.flash:core-messaging:1.0.0`):**
-  - `core/messaging/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.messaging`, depends on `:core:common`, `:core:security`, and `:core:network`, zero Compose dependencies.
+  - `core/messaging/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.messaging`, depends on `:core:common`, `:core:security`, and `:core:network`, zero Compose dependencies.
   - `core/messaging/consumer-rules.pro` & `core/messaging/proguard-rules.pro`.
   - Added `:core:messaging` to `settings.gradle.kts`.
   - **Public domain contracts & models (`core:messaging:model`):**
-    - `FlashChatRepository.kt` â€” High-level messaging repository contract and `SampleFlashChatRepository` implementation.
-    - `FlashMessagingModels.kt` â€” Domain models: `FlashMessageId`, `FlashConversationId`, `FlashMessageStatus`, `FlashMessageGroupPosition`, `FlashListPreviewDelivery`, `FlashNetworkTransport`, `FlashAttachment`, `FlashMessage`, `FlashMessageUi`, `FlashChatListItemUi`, `FlashChatListUiState`, `FlashChatHeaderUiState`, `FlashConversationUiState`, `FlashConversation`, `FlashConversationDetail`.
+    - `FlashChatRepository.kt` — High-level messaging repository contract and `SampleFlashChatRepository` implementation.
+    - `FlashMessagingModels.kt` — Domain models: `FlashMessageId`, `FlashConversationId`, `FlashMessageStatus`, `FlashMessageGroupPosition`, `FlashListPreviewDelivery`, `FlashNetworkTransport`, `FlashAttachment`, `FlashMessage`, `FlashMessageUi`, `FlashChatListItemUi`, `FlashChatListUiState`, `FlashChatHeaderUiState`, `FlashConversationUiState`, `FlashConversation`, `FlashConversationDetail`.
   - **Messaging utilities (`core:messaging:util`):**
-    - `FlashMessagingUtils.kt` â€” `computeMessageGroupPositions`, `sortedChatListItems`, `sampleFlashChatListState`, `sampleFlashConversationState`, `sampleDirectChatHeader`, `chatListRowContentDescription`.
+    - `FlashMessagingUtils.kt` — `computeMessageGroupPositions`, `sortedChatListItems`, `sampleFlashChatListState`, `sampleFlashConversationState`, `sampleDirectChatHeader`, `chatListRowContentDescription`.
   - **Unit tests:**
-    - `FlashMessageGroupingTest.kt` â€” 5 tests: single message, consecutive same sender (TOP/MIDDLE/BOTTOM), sender change grouping break, same name but different direction separation, sender header on incoming group start.
+    - `FlashMessageGroupingTest.kt` — 5 tests: single message, consecutive same sender (TOP/MIDDLE/BOTTOM), sender change grouping break, same name but different direction separation, sender header on incoming group start.
 - **`:app` module refactoring:**
   - Added `implementation(project(":core:messaging"))` to `app/build.gradle.kts`.
   - Updated UI composables (`FlashChatHeader.kt`, `FlashChatListRow.kt`, `FlashChatListScreen.kt`, `FlashConversationScreen.kt`, `FlashMessageBubble.kt`, `FlashMessageList.kt`, `MainActivity.kt`) to import from `com.transfer.flash.core.messaging.*`.
@@ -16483,15 +16584,15 @@ Executed Phase H (Extract `:core:messaging`) of the Library-First Migration Plan
   - Deleted duplicate source and test files (`FlashChatRepository.kt`, `FlashConversationModels.kt`, `FlashChatListModels.kt`, `FlashMessageGroupingTest.kt`) from `:app`.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (1m 25s); all unit tests green:
-  - `:core:common` â€” 15 tests
-  - `:core:security` â€” 7 tests
-  - `:core:discovery` â€” 2 tests
-  - `:core:network` â€” 15 tests
-  - `:core:transfer` â€” 8 tests
-  - `:core:messaging` â€” 5 tests (FlashMessageGroupingTest)
-  - `:app` â€” all tests green (total: 52 core unit tests)
-- All 6 quality gates passed: Build âœ“, API âœ“, Dependency âœ“ (unidirectional `:app` â†’ `:core:messaging` â†’ `:core:network` â†’ `:core:common`), Test âœ“, Behavior âœ“, Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (1m 25s); all unit tests green:
+  - `:core:common` — 15 tests
+  - `:core:security` — 7 tests
+  - `:core:discovery` — 2 tests
+  - `:core:network` — 15 tests
+  - `:core:transfer` — 8 tests
+  - `:core:messaging` — 5 tests (FlashMessageGroupingTest)
+  - `:app` — all tests green (total: 52 core unit tests)
+- All 6 quality gates passed: Build ✓, API ✓, Dependency ✓ (unidirectional `:app` → `:core:messaging` → `:core:network` → `:core:common`), Test ✓, Behavior ✓, Documentation ✓.
 
 ### Remaining
 - Phase I: Extract `:ui:theme`.
@@ -16502,24 +16603,24 @@ Executed Phase H (Extract `:core:messaging`) of the Library-First Migration Plan
 ### Next AI
 Implement Phase I (`:ui:theme`) per migration plan checklist.
 
-## 2026-08-20 â€” Phase G: Extract `:core:transfer`
+## 2026-08-20 — Phase G: Extract `:core:transfer`
 
 ### Worked on
 Executed Phase G (Extract `:core:transfer`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:core:transfer` module created (`com.transfer.flash:core-transfer:1.0.0`):**
-  - `core/transfer/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.transfer`, depends on `:core:common`, `:core:security`, and `:core:network`, zero Compose dependencies.
+  - `core/transfer/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.transfer`, depends on `:core:common`, `:core:security`, and `:core:network`, zero Compose dependencies.
   - `core/transfer/consumer-rules.pro` & `core/transfer/proguard-rules.pro`.
   - Added `:core:transfer` to `settings.gradle.kts`.
   - **Public domain contracts:**
-    - `FlashTransferRepository.kt` â€” Transfer repository interface (`activeTransfers`, `sendFile()`, `pauseTransfer()`, `resumeTransfer()`, `cancelTransfer()`).
-    - `FlashTransfer.kt` â€” Domain models: `FlashTransferId` (value class), `FlashTransferDirection` (`Sending`, `Receiving`), `FlashTransferState` (`Offered`, `Queued`, `Transferring`, `Paused`, `Verifying`, `Completed`, `Failed`, `Cancelled`), `FlashTransfer`.
+    - `FlashTransferRepository.kt` — Transfer repository interface (`activeTransfers`, `sendFile()`, `pauseTransfer()`, `resumeTransfer()`, `cancelTransfer()`).
+    - `FlashTransfer.kt` — Domain models: `FlashTransferId` (value class), `FlashTransferDirection` (`Sending`, `Receiving`), `FlashTransferState` (`Offered`, `Queued`, `Transferring`, `Paused`, `Verifying`, `Completed`, `Failed`, `Cancelled`), `FlashTransfer`.
   - **Protocol framing (`core:transfer:protocol`):**
-    - `WsTransferMessages.kt` â€” Message framing using `FlashTextFraming` (`HELLO`, `FILE_START`, `FILE_END`, `FILE_ACK`).
+    - `WsTransferMessages.kt` — Message framing using `FlashTextFraming` (`HELLO`, `FILE_START`, `FILE_END`, `FILE_ACK`).
   - **Unit tests:**
-    - `WsTransferMessagesTest.kt` â€” 6 tests: hello round trip, file start with special characters/spaces, file end, file ack, malformed message rejection, prefix separation.
-    - `FlashTransferModelTest.kt` â€” 2 tests: transfer model defaults and state enum verification.
+    - `WsTransferMessagesTest.kt` — 6 tests: hello round trip, file start with special characters/spaces, file end, file ack, malformed message rejection, prefix separation.
+    - `FlashTransferModelTest.kt` — 2 tests: transfer model defaults and state enum verification.
 - **`:app` module refactoring:**
   - Added `implementation(project(":core:transfer"))` to `app/build.gradle.kts`.
   - Updated `WsTransferManager.kt` imports to use `com.transfer.flash.core.transfer.protocol.WsTransferMessages`.
@@ -16527,14 +16628,14 @@ Executed Phase G (Extract `:core:transfer`) of the Library-First Migration Plan.
   - Deleted migrated `WsTransferMessages.kt` and `WsTransferMessagesTest.kt` from `:app`.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (2m 16s); all unit tests green:
-  - `:core:common` â€” 15 tests
-  - `:core:security` â€” 7 tests
-  - `:core:discovery` â€” 2 tests
-  - `:core:network` â€” 15 tests
-  - `:core:transfer` â€” 8 tests (6 WsTransferMessages + 2 model)
-  - `:app` â€” all tests green (total: 47 core unit tests)
-- All 6 quality gates passed: Build âœ“, API âœ“ (zero impl leaks in public contracts), Dependency âœ“ (unidirectional `:app` â†’ `:core:transfer` â†’ `:core:network` â†’ `:core:common`), Test âœ“, Behavior âœ“, Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (2m 16s); all unit tests green:
+  - `:core:common` — 15 tests
+  - `:core:security` — 7 tests
+  - `:core:discovery` — 2 tests
+  - `:core:network` — 15 tests
+  - `:core:transfer` — 8 tests (6 WsTransferMessages + 2 model)
+  - `:app` — all tests green (total: 47 core unit tests)
+- All 6 quality gates passed: Build ✓, API ✓ (zero impl leaks in public contracts), Dependency ✓ (unidirectional `:app` → `:core:transfer` → `:core:network` → `:core:common`), Test ✓, Behavior ✓, Documentation ✓.
 
 ### Remaining
 - Phase H: Extract `:core:messaging`.
@@ -16546,37 +16647,37 @@ Executed Phase G (Extract `:core:transfer`) of the Library-First Migration Plan.
 ### Next AI
 Implement Phase H (`:core:messaging`) without changing existing transfer/network contracts.
 
-## 2026-08-20 â€” Phase F: Extract `:core:network`
+## 2026-08-20 — Phase F: Extract `:core:network`
 
 ### Worked on
 Executed Phase F (Extract `:core:network`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:core:network` module created (`com.transfer.flash:core-network:1.0.0`):**
-  - `core/network/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.network`, depends on `:core:common` and `:core:security`, zero Compose dependencies.
+  - `core/network/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.network`, depends on `:core:common` and `:core:security`, zero Compose dependencies.
   - `core/network/consumer-rules.pro` & `core/network/proguard-rules.pro`.
   - Added `:core:network` to `settings.gradle.kts`.
   - **Public domain contracts:**
-    - `FlashNetwork.kt` â€” High-level network engine interface (`networkState`, `activeSessions`, `start()`, `stop()`, `connect()`, `connectManual()`, `disconnect()`).
-    - `FlashSession.kt` â€” Active bidirectional peer session interface (`peer`, `connectionState`, `transportType`, `send()`, `sendText()`, `disconnect()`).
-    - `FlashNetworkState.kt` â€” Network state model (`isRunning`, `localPort`, `localAddresses`, `activePeerCount`).
-    - `FlashConnectionState.kt` â€” Connection lifecycle enum (`Connecting`, `Connected`, `Disconnecting`, `Disconnected`, `Failed`).
+    - `FlashNetwork.kt` — High-level network engine interface (`networkState`, `activeSessions`, `start()`, `stop()`, `connect()`, `connectManual()`, `disconnect()`).
+    - `FlashSession.kt` — Active bidirectional peer session interface (`peer`, `connectionState`, `transportType`, `send()`, `sendText()`, `disconnect()`).
+    - `FlashNetworkState.kt` — Network state model (`isRunning`, `localPort`, `localAddresses`, `activePeerCount`).
+    - `FlashConnectionState.kt` — Connection lifecycle enum (`Connecting`, `Connected`, `Disconnecting`, `Disconnected`, `Failed`).
   - **TCP engine (`core:network:tcp`):**
-    - `LanProbeMessages.kt` â€” Protocol message encoding/decoding using `FlashTextFraming` from `:core:common`.
-    - `LanProbeServer.kt` â€” TCP ServerSocket listener with accept loop.
-    - `LanConnectionProbe.kt` â€” TCP client probe with ConnectivityManager socket binding.
-    - `LanSession.kt` â€” Persistent TCP session with heartbeat, implementing `FlashSession`.
+    - `LanProbeMessages.kt` — Protocol message encoding/decoding using `FlashTextFraming` from `:core:common`.
+    - `LanProbeServer.kt` — TCP ServerSocket listener with accept loop.
+    - `LanConnectionProbe.kt` — TCP client probe with ConnectivityManager socket binding.
+    - `LanSession.kt` — Persistent TCP session with heartbeat, implementing `FlashSession`.
   - **WebSocket engine (`core:network:ws`):**
-    - `WebSocketCodec.kt` â€” Pure-JVM RFC 6455 frame codec (no Android imports).
-    - `WsConnection.kt` â€” WebSocket connection with read/write loops.
-    - `WsTransferServer.kt` â€” WebSocket upgrade server.
-    - `WsTransferClient.kt` â€” WebSocket upgrade client with LAN network binding.
+    - `WebSocketCodec.kt` — Pure-JVM RFC 6455 frame codec (no Android imports).
+    - `WsConnection.kt` — WebSocket connection with read/write loops.
+    - `WsTransferServer.kt` — WebSocket upgrade server.
+    - `WsTransferClient.kt` — WebSocket upgrade client with LAN network binding.
   - **Utility (`core:network:util`):**
-    - `LocalNetworkAddresses.kt` â€” IPv4 address enumeration via ConnectivityManager + NetworkInterface fallback.
+    - `LocalNetworkAddresses.kt` — IPv4 address enumeration via ConnectivityManager + NetworkInterface fallback.
   - **Unit tests:**
-    - `FlashNetworkModelTest.kt` â€” State defaults and connection state enum tests.
-    - `LanProbeMessagesTest.kt` â€” Hello/OK round-trip and malformed rejection tests.
-    - `WebSocketCodecTest.kt` â€” 10 tests: RFC 6455 accept key, base64, masked/unmasked frames, fragmentation, ping/close, Unicode, HTTP headers, error rejection.
+    - `FlashNetworkModelTest.kt` — State defaults and connection state enum tests.
+    - `LanProbeMessagesTest.kt` — Hello/OK round-trip and malformed rejection tests.
+    - `WebSocketCodecTest.kt` — 10 tests: RFC 6455 accept key, base64, masked/unmasked frames, fragmentation, ping/close, Unicode, HTTP headers, error rejection.
 - **`:app` module refactoring:**
   - Added `implementation(project(":core:network"))` to `app/build.gradle.kts`.
   - Updated `LanController.kt` imports from `com.transfer.flash.network.*` to `com.transfer.flash.core.network.tcp.*` and `com.transfer.flash.core.network.util.*`.
@@ -16587,141 +16688,141 @@ Executed Phase F (Extract `:core:network`) of the Library-First Migration Plan.
   - Added `vararg` overload for `FlashTextFraming.encodeFields()` to support both list and vararg call sites.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (2m 46s); all unit tests green:
-  - `:core:common` â€” 15 tests
-  - `:core:security` â€” 7 tests
-  - `:core:discovery` â€” 2 tests
-  - `:core:network` â€” 15 tests (2 model + 3 LanProbeMessages + 10 WebSocketCodec)
-  - `:app` â€” all tests green
-- All 6 quality gates passed: Build âœ“, API âœ“ (zero impl leaks in public contracts), Dependency âœ“ (unidirectional `:app` â†’ `:core:network` â†’ `:core:common` + `:core:security`), Test âœ“, Behavior âœ“, Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (2m 46s); all unit tests green:
+  - `:core:common` — 15 tests
+  - `:core:security` — 7 tests
+  - `:core:discovery` — 2 tests
+  - `:core:network` — 15 tests (2 model + 3 LanProbeMessages + 10 WebSocketCodec)
+  - `:app` — all tests green
+- All 6 quality gates passed: Build ✓, API ✓ (zero impl leaks in public contracts), Dependency ✓ (unidirectional `:app` → `:core:network` → `:core:common` + `:core:security`), Test ✓, Behavior ✓, Documentation ✓.
 
 ### Problems
-- `FlashTextFraming.encodeFields()` only accepted `List<Pair>` â€” callers in `:core:network` used vararg syntax. Fixed by adding vararg overload.
+- `FlashTextFraming.encodeFields()` only accepted `List<Pair>` — callers in `:core:network` used vararg syntax. Fixed by adding vararg overload.
 - `@FlashInternalApi` annotation on `FlashTextFraming` and `LanProbeMessages` required `@file:OptIn(FlashInternalApi::class)` on all internal consumers within `:core:network`.
 - `LanSession` had conflicting `peer` property (both `LanProbeHello` getter and `FlashDevice` override). Fixed by removing the `LanProbeHello` getter and using `peerInfo` property instead.
 
 ### Remaining
 - Phase G: Extract `:core:transfer`.
 - Phase H: Extract `:core:messaging`.
-- Phase Iâ€“L per migration plan checklist.
+- Phase I–L per migration plan checklist.
 
 ### Next AI
 Implement Phase G (`:core:transfer`) without changing the existing network contracts.
 
-## 2026-08-20 â€” Phase E: Extract `:core:discovery`
+## 2026-08-20 — Phase E: Extract `:core:discovery`
 
 ### Worked on
 Executed Phase E (Extract `:core:discovery`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:core:discovery` module created (`com.transfer.flash:core-discovery:1.0.0`):**
-  - `core/discovery/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.discovery`, depends on `:core:common`, zero Compose dependencies.
+  - `core/discovery/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.discovery`, depends on `:core:common`, zero Compose dependencies.
   - `core/discovery/consumer-rules.pro` & `core/discovery/proguard-rules.pro`.
   - Added `:core:discovery` to `settings.gradle.kts`.
-  - `FlashDiscovery.kt` â€” Public discovery interface contract (`state: StateFlow<FlashDiscoveryState>`, `discoveredEndpoints: StateFlow<List<FlashDiscoveredEndpoint>>`, `startDiscovery()`, `stopDiscovery()`, `startAdvertising(port)`, `stopAdvertising()`, `stopAll()`).
-  - `FlashDiscoveryState.kt` â€” Public discovery state model (`isDiscovering`, `isAdvertising`, `advertisedPort`, `statusMessage`).
-  - `FlashDiscoveredEndpoint.kt` â€” Discovered endpoint domain model wrapping `FlashDevice`, `hostAddress`, `port`, `serviceName`.
-  - `NsdResolveQueue.kt` â€” Serialized resolver queue for Android `NsdManager` to eliminate concurrency crashes and lockups.
-  - `NsdFlashDiscovery.kt` â€” Production implementation of `FlashDiscovery` for Android DNS-SD/mDNS with multicast lock handling, generation checks for stale callbacks, and dual support for LAN (`_flash-transfer._tcp.`) and WebSocket (`_flashws._tcp.`) service types.
-  - `FlashDiscoveryModelTest.kt` â€” Unit tests covering state defaults and endpoint delegation.
+  - `FlashDiscovery.kt` — Public discovery interface contract (`state: StateFlow<FlashDiscoveryState>`, `discoveredEndpoints: StateFlow<List<FlashDiscoveredEndpoint>>`, `startDiscovery()`, `stopDiscovery()`, `startAdvertising(port)`, `stopAdvertising()`, `stopAll()`).
+  - `FlashDiscoveryState.kt` — Public discovery state model (`isDiscovering`, `isAdvertising`, `advertisedPort`, `statusMessage`).
+  - `FlashDiscoveredEndpoint.kt` — Discovered endpoint domain model wrapping `FlashDevice`, `hostAddress`, `port`, `serviceName`.
+  - `NsdResolveQueue.kt` — Serialized resolver queue for Android `NsdManager` to eliminate concurrency crashes and lockups.
+  - `NsdFlashDiscovery.kt` — Production implementation of `FlashDiscovery` for Android DNS-SD/mDNS with multicast lock handling, generation checks for stale callbacks, and dual support for LAN (`_flash-transfer._tcp.`) and WebSocket (`_flashws._tcp.`) service types.
+  - `FlashDiscoveryModelTest.kt` — Unit tests covering state defaults and endpoint delegation.
 - **`:app` module refactoring:**
   - Added `implementation(project(":core:discovery"))` to `app/build.gradle.kts`.
   - Refactored `LanDiscovery` in `:app` to delegate to `NsdFlashDiscovery` with LAN service type.
   - Refactored `WsDiscovery` in `:app` to delegate to `NsdFlashDiscovery` with WS service type.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (1m 49s); all unit tests in `:core:common` (15), `:core:security` (7), `:core:discovery` (2), and `:app` green.
-- All 6 quality gates passed: Build âœ“, API âœ“ (zero impl leaks), Dependency âœ“ (unidirectional `:app` -> `:core:discovery` -> `:core:common`), Test âœ“, Behavior âœ“ (existing LAN discovery and WS discovery intact), Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (1m 49s); all unit tests in `:core:common` (15), `:core:security` (7), `:core:discovery` (2), and `:app` green.
+- All 6 quality gates passed: Build ✓, API ✓ (zero impl leaks), Dependency ✓ (unidirectional `:app` -> `:core:discovery` -> `:core:common`), Test ✓, Behavior ✓ (existing LAN discovery and WS discovery intact), Documentation ✓.
 
 ### Remaining
-- Phase F: Extract `:core:network` â€” move `LanSession`, `LanProbeServer`, `LanConnectionProbe`, `LocalNetworkAddresses`, `WebSocketCodec`, `WsConnection`, `WsTransferServer`, `WsTransferClient` behind `FlashNetwork` and `FlashSession`.
-- Phase Gâ€“L per migration plan checklist.
+- Phase F: Extract `:core:network` — move `LanSession`, `LanProbeServer`, `LanConnectionProbe`, `LocalNetworkAddresses`, `WebSocketCodec`, `WsConnection`, `WsTransferServer`, `WsTransferClient` behind `FlashNetwork` and `FlashSession`.
+- Phase G–L per migration plan checklist.
 
 ### Next AI
 Execute Phase F (`:core:network`) per `docs/architecture/library-first-migration-plan.md`.
 
 ---
 
-## 2026-08-20 â€” Phase D: Extract `:core:security`
+## 2026-08-20 — Phase D: Extract `:core:security`
 
 ### Worked on
 Executed Phase D (Extract `:core:security`) of the Library-First Migration Plan.
 
 ### Changed
 - **`:core:security` module created (`com.transfer.flash:core-security:1.0.0`):**
-  - `core/security/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.security`, depends on `:core:common`, zero Compose dependencies.
+  - `core/security/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.security`, depends on `:core:common`, zero Compose dependencies.
   - `core/security/consumer-rules.pro` & `core/security/proguard-rules.pro`.
   - Added `:core:security` to `settings.gradle.kts`.
-  - `FlashIdentity.kt` â€” Domain model representing local device identity (`deviceId: FlashDeviceId`, `friendlyName: String`).
-  - `FlashIdentityStore.kt` â€” Interface contract for local persistent identity generation and display name updates.
-  - `AndroidPreferencesIdentityStore.kt` â€” `SharedPreferences`-backed implementation maintaining 100% key compatibility with Flash 1.0 (`flash_identity`, `device_id`, `friendly_name`).
-  - `FlashTrustStore.kt` â€” Interface contract for paired/trusted peer management (`isTrusted`, `trustPeer`, `revokeTrust`, `getTrustedPeers`).
-  - `AndroidPreferencesTrustStore.kt` â€” `SharedPreferences`-backed implementation maintaining 100% key compatibility with Flash 1.0 (`flash_ws_pairing`, `paired_<deviceId>`).
-  - `FakeSharedPreferences.kt` â€” Test utility for pure-JVM fast in-memory testing.
-  - `FlashIdentityStoreTest.kt` â€” 4 unit tests covering generation, persistence, caching, and blank name validation.
-  - `FlashTrustStoreTest.kt` â€” 3 unit tests covering trust registration, raw string overloads, revocation, and map inspection.
+  - `FlashIdentity.kt` — Domain model representing local device identity (`deviceId: FlashDeviceId`, `friendlyName: String`).
+  - `FlashIdentityStore.kt` — Interface contract for local persistent identity generation and display name updates.
+  - `AndroidPreferencesIdentityStore.kt` — `SharedPreferences`-backed implementation maintaining 100% key compatibility with Flash 1.0 (`flash_identity`, `device_id`, `friendly_name`).
+  - `FlashTrustStore.kt` — Interface contract for paired/trusted peer management (`isTrusted`, `trustPeer`, `revokeTrust`, `getTrustedPeers`).
+  - `AndroidPreferencesTrustStore.kt` — `SharedPreferences`-backed implementation maintaining 100% key compatibility with Flash 1.0 (`flash_ws_pairing`, `paired_<deviceId>`).
+  - `FakeSharedPreferences.kt` — Test utility for pure-JVM fast in-memory testing.
+  - `FlashIdentityStoreTest.kt` — 4 unit tests covering generation, persistence, caching, and blank name validation.
+  - `FlashTrustStoreTest.kt` — 3 unit tests covering trust registration, raw string overloads, revocation, and map inspection.
 - **`:app` module refactoring:**
   - Added `implementation(project(":core:security"))` to `app/build.gradle.kts`.
   - Refactored `AppIdentity` to delegate to `AndroidPreferencesIdentityStore`.
   - Refactored `WsPairingStore` to delegate to `AndroidPreferencesTrustStore`.
 
 ### Verification
-- `testDebugUnitTest` & `assembleDebug` â€” BUILD SUCCESSFUL (2m 8s); all unit tests in `:core:common` (15), `:core:security` (7), and `:app` green.
-- All 6 quality gates passed: Build âœ“, API âœ“ (zero impl leaks), Dependency âœ“ (unidirectional `:app` -> `:core:security` -> `:core:common`), Test âœ“, Behavior âœ“ (existing identity and pairing intact), Documentation âœ“.
+- `testDebugUnitTest` & `assembleDebug` — BUILD SUCCESSFUL (2m 8s); all unit tests in `:core:common` (15), `:core:security` (7), and `:app` green.
+- All 6 quality gates passed: Build ✓, API ✓ (zero impl leaks), Dependency ✓ (unidirectional `:app` -> `:core:security` -> `:core:common`), Test ✓, Behavior ✓ (existing identity and pairing intact), Documentation ✓.
 
 ### Remaining
-- Phase E: Extract `:core:discovery` â€” move `LanDiscovery` and `WsDiscovery` behind `FlashDiscovery`.
-- Phase Fâ€“L per migration plan checklist.
+- Phase E: Extract `:core:discovery` — move `LanDiscovery` and `WsDiscovery` behind `FlashDiscovery`.
+- Phase F–L per migration plan checklist.
 
 ### Next AI
 Execute Phase E (`:core:discovery`) per `docs/architecture/library-first-migration-plan.md`.
 
 ---
 
-## 2026-08-20 â€” Phase B+C: Gradle Infrastructure & `:core:common` Extraction
+## 2026-08-20 — Phase B+C: Gradle Infrastructure & `:core:common` Extraction
 
 ### Worked on
 Executed Phase B (Gradle & Build Infrastructure Setup) and Phase C (Extract `:core:common`) of the Library-First Migration Plan.
 
 ### Changed
-- **Phase B â€” Gradle Infrastructure:**
+- **Phase B — Gradle Infrastructure:**
   - Added `android-library` plugin alias to `gradle/libs.versions.toml`.
   - Registered `android-library` in root `build.gradle.kts`.
   - Added `:core:common` to `settings.gradle.kts`.
-- **Phase C â€” `:core:common` module created:**
-  - `core/common/build.gradle.kts` â€” Android library with `maven-publish`, namespace `com.transfer.flash.core.common`, zero Compose dependencies.
-  - `FlashAnnotations.kt` â€” `@FlashInternalApi` and `@FlashExperimentalApi` opt-in annotations.
-  - `FlashDevice.kt` â€” Public domain model for discovered/connected peers.
-  - `FlashDeviceId.kt` â€” Type-safe `@JvmInline value class` with blank-validation.
-  - `FlashTransportType.kt` â€” Enum: LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, UNKNOWN + `fromString()`.
-  - `FlashPeerPresence.kt` â€” Enum: Online, Offline, Typing, Connecting.
-  - `FlashResult.kt` â€” Sealed `FlashResult<T>` (Success/Failure) + extension functions `map`, `flatMap`, `fold`, `onSuccess`, `onFailure`, `getOrNull`, `getOrElse`, `runCatching`.
-  - `FlashError.kt` â€” Sealed error hierarchy: NetworkUnavailable, PeerUnavailable, ConnectionTimeout, ProtocolMismatch, TransferFailed, VerificationFailed, StorageError, Cancelled, Unknown.
-  - `FlashTextFraming.kt` â€” Deduplicated protocol escape/unescape/encodeFields/parseFields (replaces duplicated logic in `LanProbeMessages` and `WsTransferMessages`).
-  - `FlashResultTest.kt` â€” 7 unit tests covering Success/Failure accessors, map, flatMap, callbacks, fold, runCatching.
-  - `FlashTextFramingTest.kt` â€” 4 unit tests: escape/unescape round-trip, encodeFields/parseFields round-trip, prefix mismatch, malformed pairs.
-  - `FlashDeviceTest.kt` â€” 4 unit tests: DeviceId validation, blank-throws, equality/defaults, TransportType.fromString.
+- **Phase C — `:core:common` module created:**
+  - `core/common/build.gradle.kts` — Android library with `maven-publish`, namespace `com.transfer.flash.core.common`, zero Compose dependencies.
+  - `FlashAnnotations.kt` — `@FlashInternalApi` and `@FlashExperimentalApi` opt-in annotations.
+  - `FlashDevice.kt` — Public domain model for discovered/connected peers.
+  - `FlashDeviceId.kt` — Type-safe `@JvmInline value class` with blank-validation.
+  - `FlashTransportType.kt` — Enum: LAN, WIFI_DIRECT, WEBSOCKET, RELAY, MESH, UNKNOWN + `fromString()`.
+  - `FlashPeerPresence.kt` — Enum: Online, Offline, Typing, Connecting.
+  - `FlashResult.kt` — Sealed `FlashResult<T>` (Success/Failure) + extension functions `map`, `flatMap`, `fold`, `onSuccess`, `onFailure`, `getOrNull`, `getOrElse`, `runCatching`.
+  - `FlashError.kt` — Sealed error hierarchy: NetworkUnavailable, PeerUnavailable, ConnectionTimeout, ProtocolMismatch, TransferFailed, VerificationFailed, StorageError, Cancelled, Unknown.
+  - `FlashTextFraming.kt` — Deduplicated protocol escape/unescape/encodeFields/parseFields (replaces duplicated logic in `LanProbeMessages` and `WsTransferMessages`).
+  - `FlashResultTest.kt` — 7 unit tests covering Success/Failure accessors, map, flatMap, callbacks, fold, runCatching.
+  - `FlashTextFramingTest.kt` — 4 unit tests: escape/unescape round-trip, encodeFields/parseFields round-trip, prefix mismatch, malformed pairs.
+  - `FlashDeviceTest.kt` — 4 unit tests: DeviceId validation, blank-throws, equality/defaults, TransportType.fromString.
 - Added `implementation(project(":core:common"))` to `:app/build.gradle.kts`.
 
 ### Verification
-- `testDebugUnitTest` â€” BUILD SUCCESSFUL (1m 8s); all `:core:common` tests (15) and `:app` tests green.
-- `assembleDebug` â€” BUILD SUCCESSFUL (3m 34s in Android Studio).
-- All 6 quality gates passed: Build âœ“, API âœ“ (no impl leaks), Dependency âœ“ (unidirectional), Test âœ“, Behavior âœ“ (existing features intact), Documentation âœ“.
+- `testDebugUnitTest` — BUILD SUCCESSFUL (1m 8s); all `:core:common` tests (15) and `:app` tests green.
+- `assembleDebug` — BUILD SUCCESSFUL (3m 34s in Android Studio).
+- All 6 quality gates passed: Build ✓, API ✓ (no impl leaks), Dependency ✓ (unidirectional), Test ✓, Behavior ✓ (existing features intact), Documentation ✓.
 
 ### Problems
 - Initial `FlashResult` had operators as interface default methods; `Failure : FlashResult<Nothing>` caused `ClassCastException` at runtime when calling `getOrElse` on a Failure (JVM bridge method tried to cast Nothing to String). Fixed by moving all operators to top-level extension functions.
 - Gradle configuration-cache lock contention when Android Studio daemon was running simultaneously. Fixed by using `--no-daemon --no-configuration-cache` for CLI builds.
 
 ### Remaining
-- Phase D: Extract `:core:security` â€” move `AppIdentity` and `WsPairingStore` behind `FlashIdentity`/`FlashTrustStore`.
-- Phase Eâ€“L per migration plan checklist.
+- Phase D: Extract `:core:security` — move `AppIdentity` and `WsPairingStore` behind `FlashIdentity`/`FlashTrustStore`.
+- Phase E–L per migration plan checklist.
 
 ### Next AI
 Execute Phase D (`:core:security`) per `docs/architecture/library-first-migration-plan.md`. Use `--no-daemon --no-configuration-cache` for CLI builds when Android Studio is open.
 
 ---
 
-## 2026-08-20 â€” Library-First Architectural Audit & Migration Plan
+## 2026-08-20 — Library-First Architectural Audit & Migration Plan
 
 ### Worked on
 Conducted a deep, evidence-based architectural audit of the entire codebase and produced the comprehensive Library-First Migration Plan for transforming Flash into a suite of decoupled, standalone Android/Kotlin libraries under `com.transfer.flash:*` with `:app` as the showcase application.
@@ -16747,7 +16848,7 @@ Begin Phase B and Phase C of `docs/architecture/library-first-migration-plan.md`
 
 ---
 
-## 2026-08-20 â€” Modular Multi-Library Architecture & Publishing Plan (ADR-008)
+## 2026-08-20 — Modular Multi-Library Architecture & Publishing Plan (ADR-008)
 
 ### Worked on
 Planned and formalized the architectural transition of Flash from a single `:app` module into a suite of decoupled, standalone Android/Kotlin libraries under `com.transfer.flash:*` with independent hosting and publishing capability. Temporarily paused the Chat UI component sequence to complete this infrastructure upgrade.
@@ -16776,27 +16877,27 @@ Proceed with Step 1 & 2 of `docs/architecture-modular-libraries-plan.md`.
 ---
 
 ### Worked on
-Owner-requested side track (explicitly NOT part of the main design): checked whether WebSocket transfer existed (it did not â€” only the raw-TCP `LanSession` probe) and implemented an experimental WebSocket transfer path with multi-device pairing (3-device mesh capable) and simple file transfer.
+Owner-requested side track (explicitly NOT part of the main design): checked whether WebSocket transfer existed (it did not — only the raw-TCP `LanSession` probe) and implemented an experimental WebSocket transfer path with multi-device pairing (3-device mesh capable) and simple file transfer.
 
 ### Changed
 - Added `wstransfer/` package:
-  - `WebSocketCodec.kt` â€” minimal hand-rolled RFC 6455 codec (upgrade handshake helpers, client masking, frame parse/serialize, continuation reassembly, ping/pong/close, own Base64 encoder so minSdk 24 + pure-JVM tests work). Zero new dependencies; OkHttp rejected (client-only, and only present in the Gradle cache from the reverted Stream experiment).
-  - `WsTransferMessages.kt` â€” control text frames `FLASH_WS_HELLO` / `FLASH_FILE_START` / `FLASH_FILE_END` / `FLASH_FILE_ACK` with the same escaping as `LanProbeMessages`.
-  - `WsConnection.kt` â€” post-handshake connection: IO read loop, lock-serialized frame writes, close/ping/pong handling.
-  - `WsTransferServer.kt` â€” accepts WS upgrades on preferred port 45822 (dynamic fallback), 8 s handshake timeout.
-  - `WsTransferClient.kt` â€” outbound connect + upgrade with the Wi-Fi/Ethernet `Network.socketFactory` routing fix from `LanConnectionProbe`.
-  - `WsTransferManager.kt` â€” multi-peer registry keyed by deviceId (outbound connection preferred per peer, inbound kept as fallback and promoted on drop), self-connect guard, SAF file send (64 KiB binary frames, one active transfer per connection), receive to `filesDir/ws-received/` with deduped names + byte-count verification + `FLASH_FILE_ACK`, progress StateFlow.
-- Added `ui/transfer/WsTransferScreen.kt` â€” start/stop server (shows own address), connect-by-IP (repeatable for multiple peers), paired-peer list with per-peer Send/Drop, "send to all", transfer progress list.
-- `MainActivity.kt` â€” LAN home gained a "WebSocket transfer (experimental)" button and the new screen route; manager lifecycle tied to composition.
+  - `WebSocketCodec.kt` — minimal hand-rolled RFC 6455 codec (upgrade handshake helpers, client masking, frame parse/serialize, continuation reassembly, ping/pong/close, own Base64 encoder so minSdk 24 + pure-JVM tests work). Zero new dependencies; OkHttp rejected (client-only, and only present in the Gradle cache from the reverted Stream experiment).
+  - `WsTransferMessages.kt` — control text frames `FLASH_WS_HELLO` / `FLASH_FILE_START` / `FLASH_FILE_END` / `FLASH_FILE_ACK` with the same escaping as `LanProbeMessages`.
+  - `WsConnection.kt` — post-handshake connection: IO read loop, lock-serialized frame writes, close/ping/pong handling.
+  - `WsTransferServer.kt` — accepts WS upgrades on preferred port 45822 (dynamic fallback), 8 s handshake timeout.
+  - `WsTransferClient.kt` — outbound connect + upgrade with the Wi-Fi/Ethernet `Network.socketFactory` routing fix from `LanConnectionProbe`.
+  - `WsTransferManager.kt` — multi-peer registry keyed by deviceId (outbound connection preferred per peer, inbound kept as fallback and promoted on drop), self-connect guard, SAF file send (64 KiB binary frames, one active transfer per connection), receive to `filesDir/ws-received/` with deduped names + byte-count verification + `FLASH_FILE_ACK`, progress StateFlow.
+- Added `ui/transfer/WsTransferScreen.kt` — start/stop server (shows own address), connect-by-IP (repeatable for multiple peers), paired-peer list with per-peer Send/Drop, "send to all", transfer progress list.
+- `MainActivity.kt` — LAN home gained a "WebSocket transfer (experimental)" button and the new screen route; manager lifecycle tied to composition.
 - Tests: `WebSocketCodecTest` (10 tests incl. the RFC 6455 reference accept-key vector, masked/unmasked/16-bit/64-bit round trips, fragmentation reassembly, header-then-frame stream continuity) and `WsTransferMessagesTest` (6 tests).
 - Docs: ADR-007 in `docs/decisions.md`; experimental track section in `docs/protocol.md`.
 
 ### Verification
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL in 1m 27s; all unit tests green (both new test classes executed).
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL in 1m 27s; all unit tests green (both new test classes executed).
 - Not yet device-tested: 3-device mesh pairing and a real file send between phones still need on-device verification.
 
 ### Problems
-- None blocking. One new deprecation warning (`allNetworks` in `WsTransferClient.kt`) â€” same pattern already used by `LanConnectionProbe`/`LocalNetworkAddresses`, kept for consistency.
+- None blocking. One new deprecation warning (`allNetworks` in `WsTransferClient.kt`) — same pattern already used by `LanConnectionProbe`/`LocalNetworkAddresses`, kept for consistency.
 
 ### Remaining
 - Device test: 3 phones, each starting its server and connecting to the other two; send a file to one peer and broadcast to all; confirm ACK-verified completion and `ws-received/` output.
@@ -16805,42 +16906,42 @@ Owner-requested side track (explicitly NOT part of the main design): checked whe
 ### Next AI
 Device-test the WS transfer screen; do not merge this track with the main LAN protocol path without an ADR. Main-line work remains UI-011 composer research or UI-007 selection research.
 
-## 2026-08-20 â€” UI-006 Message insertion animation
+## 2026-08-20 — UI-006 Message insertion animation
 
 ### Worked on
 Research, design, and implementation of message insertion choreography (UI-006): reverse-layout list, sibling glide, Flash entrance for new tail messages, arrival-time scroll policy.
 
 ### Changed
-- Completed UI-006 section of `docs/ui/message-bubble.md` (DESIGNED â†’ IMPLEMENTED). Approaches studied: animateItem-only (A), per-item AnimatedVisibility with `messageEnter()` (B), chosen hybrid full-size slot + progress-driven content entrance (C). Sources: Telegram/Signal/WhatsApp/iMessage behavior, official `LazyItemScope.animateItem` API reference (verified 2026-08-20, stable since foundation 1.7; BOM 2025.12.00 â†’ 1.9.x), M3 motion, Jetchat (Apache 2.0).
-- `FlashMessageList.kt`: `LazyColumn(reverseLayout = true)` over `messages.asReversed()` (O(1) view; opens at bottom; key-anchored scroll stability), per-item `animateItem(fadeInSpec = null, placementSpec, fadeOutSpec)`, sticky birth-time entrance gating via first-composition id snapshot, at-bottom tracking (`derivedStateOf`), auto-scroll policy (own send || at bottom â†’ scroll to layout 0; reduce-motion â†’ instant). Pure internal helpers `shouldAnimateMessageEnter` / `shouldAutoScrollToNewMessage` / `isAtBottom`.
-- `FlashMotion.kt`: + `rememberMessageEnterProgress(animate)` (one-shot 0â†’1, tween 200 Decelerate â€” the `messageEnter()` channels at its duration), `messagePlacementSpec()` (spring 0.90/400, snap under reduce-motion), `messageFadeOutSpec()`.
+- Completed UI-006 section of `docs/ui/message-bubble.md` (DESIGNED → IMPLEMENTED). Approaches studied: animateItem-only (A), per-item AnimatedVisibility with `messageEnter()` (B), chosen hybrid full-size slot + progress-driven content entrance (C). Sources: Telegram/Signal/WhatsApp/iMessage behavior, official `LazyItemScope.animateItem` API reference (verified 2026-08-20, stable since foundation 1.7; BOM 2025.12.00 → 1.9.x), M3 motion, Jetchat (Apache 2.0).
+- `FlashMessageList.kt`: `LazyColumn(reverseLayout = true)` over `messages.asReversed()` (O(1) view; opens at bottom; key-anchored scroll stability), per-item `animateItem(fadeInSpec = null, placementSpec, fadeOutSpec)`, sticky birth-time entrance gating via first-composition id snapshot, at-bottom tracking (`derivedStateOf`), auto-scroll policy (own send || at bottom → scroll to layout 0; reduce-motion → instant). Pure internal helpers `shouldAnimateMessageEnter` / `shouldAutoScrollToNewMessage` / `isAtBottom`.
+- `FlashMotion.kt`: + `rememberMessageEnterProgress(animate)` (one-shot 0→1, tween 200 Decelerate — the `messageEnter()` channels at its duration), `messagePlacementSpec()` (spring 0.90/400, snap under reduce-motion), `messageFadeOutSpec()`.
 - `FlashDimensions.kt`: + `chatBottomStickThreshold = 48.dp`.
 - Added `FlashMessageInsertionTest.kt` (6 unit tests).
-- Index: UI-006 â†’ IMPLEMENTED.
+- Index: UI-006 → IMPLEMENTED.
 
 ### Verification
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL (all tests green; two compile errors fixed: `VisibilityThreshold` extension import, `Animatable.asState()` return).
-- Device (Samsung R5CN21CNJAF, dark theme): installed, opened group conversation â€” history renders bottom-anchored with no entrance animation (historical). Live send "UI-006 live send": message appended at tail, list auto-scrolled to bottom, previous outgoing bubble reclassified SINGLEâ†’TOP (tail scoop moved to the new BOTTOM bubble) â€” `logs/screenshots/ui-006-conversation.png` (before) + `ui-006-after-send.png` (after). No layout jumps observed.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL (all tests green; two compile errors fixed: `VisibilityThreshold` extension import, `Animatable.asState()` return).
+- Device (Samsung R5CN21CNJAF, dark theme): installed, opened group conversation — history renders bottom-anchored with no entrance animation (historical). Live send "UI-006 live send": message appended at tail, list auto-scrolled to bottom, previous outgoing bubble reclassified SINGLE→TOP (tail scoop moved to the new BOTTOM bubble) — `logs/screenshots/ui-006-conversation.png` (before) + `ui-006-after-send.png` (after). No layout jumps observed.
 
 ### Problems
-- Device-test choreography: screen is 1080Ã—2400 (not 1440Ã—3200 as assumed); taps below the viewport silently missed. Resolved via `uiautomator dump` for exact composer/send bounds (`logs/ui-dump.xml`).
-- Observed: provisional composer has no `imePadding`, so the keyboard covers it while typing â€” recorded as UI-011 input in `message-bubble.md` known limitations.
+- Device-test choreography: screen is 1080×2400 (not 1440×3200 as assumed); taps below the viewport silently missed. Resolved via `uiautomator dump` for exact composer/send bounds (`logs/ui-dump.xml`).
+- Observed: provisional composer has no `imePadding`, so the keyboard covers it while typing — recorded as UI-011 input in `message-bubble.md` known limitations.
 
 ### Remaining
 - Scrolled-up no-steal device check needs a long conversation (deferred to UI-021/UI-043; predicate unit-tested).
 - Reduce-motion device gate (UI-038).
 
 ### Next AI
-**UI-011** composer research (also owns the imePadding gap) or **UI-007** selection research â€” both docs NOT STARTED, so research â†’ DESIGNED first. UI-008/009 remain blocked on UI-007.
+**UI-011** composer research (also owns the imePadding gap) or **UI-007** selection research — both docs NOT STARTED, so research → DESIGNED first. UI-008/009 remain blocked on UI-007.
 
-## 2026-08-20 â€” UI-005 Message bubble system
+## 2026-08-20 — UI-005 Message bubble system
 
 ### Worked on
 Research, design, and implementation of the Flash message bubble system (UI-005): custom concave-tail geometry, sender-group rhythm, adaptive width, press feedback, metadata tokens.
 
 ### Changed
-- Completed `docs/ui/message-bubble.md` (DESIGNED â†’ IMPLEMENTED).
-- Added `FlashBubbleShape` (custom `Shape`, concave cubic-BÃ©zier "pulse scoop" tail, RTL-aware) + `bubbleTailSize` token in `ui/theme/FlashShapes.kt`; `bubbleIncomingTail`/`bubbleOutgoingTail` now use it.
+- Completed `docs/ui/message-bubble.md` (DESIGNED → IMPLEMENTED).
+- Added `FlashBubbleShape` (custom `Shape`, concave cubic-Bézier "pulse scoop" tail, RTL-aware) + `bubbleTailSize` token in `ui/theme/FlashShapes.kt`; `bubbleIncomingTail`/`bubbleOutgoingTail` now use it.
 - Added `chatTextTimestampOutgoing` token to `FlashColors` (light pulse700 / dark pulse300, contrast-checked).
 - Rebuilt `FlashMessageBubble.kt`: `BoxWithConstraints` width (fraction + 320dp cap, no `LocalConfiguration`), group-position shape mapping, press scale 0.97 via `FlashMotion.springSnappySpec` (reduce-motion aware), outgoing in-bubble metadata row with reserved delivery slot (UI-015), incoming time in-bubble for direct chats, `semantics(mergeDescendants = true)`.
 - `FlashMessageList.kt`: group-aware gaps (space4 inside a run, space12 between runs), `itemsIndexed` stable keys, `showSenderHeaders` parameter.
@@ -16848,11 +16949,11 @@ Research, design, and implementation of the Flash message bubble system (UI-005)
 - Deleted provisional `ui/design/FlashMessageStyling.kt` (absorbed into bubble).
 - Added `FlashMessageGroupingTest.kt` (5 unit tests).
 - Added ADR-006 (custom bubble geometry).
-- Index: UI-005 â†’ IMPLEMENTED.
+- Index: UI-005 → IMPLEMENTED.
 
 ### Verification
-- Compose previews: light/dark group, direct, 1.5Ã— font scale.
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL (unit tests green).
+- Compose previews: light/dark group, direct, 1.5× font scale.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL (unit tests green).
 - Device (Samsung R5CN21CNJAF): `logs/screenshots/ui-005-bubbles-light.png` + `ui-005-bubbles-dark.png`; tails, borders, group rhythm, and timestamp token render correctly in both themes.
 
 ### Problems
@@ -16866,7 +16967,7 @@ Research, design, and implementation of the Flash message bubble system (UI-005)
 ### Next AI
 **UI-006** message insertion animation, or **UI-011** composer research. Do not start UI-007/008 until their docs are DESIGNED.
 
-## 2026-08-19 â€” UI-003 Chat list
+## 2026-08-19 — UI-003 Chat list
 
 ### Worked on
 Research, design, and implementation of Flash chat inbox (UI-003): custom rows, list screen, repository navigation.
@@ -16877,11 +16978,11 @@ Research, design, and implementation of Flash chat inbox (UI-003): custom rows, 
 - Extended `FlashChatRepository` with `chatListState`, selection, archive, `openConversation`/`closeConversation`.
 - `MainActivity`: app opens to chat list; LAN home via connection icon in top bar.
 - `FlashDimensions.chatListRowHeight`, unread badge size.
-- Index: UI-003 â†’ IMPLEMENTED.
+- Index: UI-003 → IMPLEMENTED.
 
 ### Verification
 - Compose previews: list light/dark/selection, row variants.
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL.
 - Device screenshot: `logs/screenshots/ui-003-chat-list.png`.
 
 ### Remaining
@@ -16893,33 +16994,33 @@ Research, design, and implementation of Flash chat inbox (UI-003): custom rows, 
 ### Next AI
 **UI-005** message bubble system research + implementation.
 
-## 2026-08-19 â€” UI-037 Motion design system
+## 2026-08-19 — UI-037 Motion design system
 
 ### Worked on
 Research, design, and implementation of centralized Flash motion tokens (UI-037). First consumer: chat header status crossfade.
 
 ### Changed
 - Completed `docs/ui/motion-system.md` (IMPLEMENTED).
-- Added `FlashMotion.kt` â€” duration tiers, easing, springs, named transitions, reduce-motion probe.
+- Added `FlashMotion.kt` — duration tiers, easing, springs, named transitions, reduce-motion probe.
 - Added `FlashMotionSheet.kt` QA demo; `FlashTheme.motion` CompositionLocal.
 - Migrated `FlashChatHeader` status line to `motion.statusCrossfade()`.
 - LAN home: "Motion sheet (QA)" button in `MainActivity`.
-- Index: UI-037 â†’ IMPLEMENTED.
+- Index: UI-037 → IMPLEMENTED.
 
 ### Verification
 - Compose previews: motion sheet light/dark/reduce-motion; header previews unchanged.
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL.
 - Device: conversation header visible with Flash motion integration (`ui-004-chat-header.png` recaptured ~235 KB).
 
 ### Remaining
 - UI-038 reduced-motion TalkBack pairing.
-- UI-039â€“UI-041 haptics/sound/micro-interactions.
+- UI-039–UI-041 haptics/sound/micro-interactions.
 - Wire `screenTransition`, `messageEnter` when UI-003/005/033 land.
 
 ### Next AI
 **UI-003** chat list or **UI-005** message bubble research + implementation (both unblocked by UI-037).
 
-## 2026-08-19 â€” UI-004 Chat header
+## 2026-08-19 — UI-004 Chat header
 
 ### Worked on
 Research, design, and implementation of `FlashChatHeader` (UI-004). Replaced provisional center-title `FlashChannelHeader`.
@@ -16930,11 +17031,11 @@ Research, design, and implementation of `FlashChatHeader` (UI-004). Replaced pro
 - Refactored `FlashConversationUiState` to nested `header` model.
 - Removed `FlashChannelHeader.kt`.
 - Updated `FlashConversationScreen` to use `FlashChatHeader`.
-- Index: UI-004 â†’ VERIFIED.
+- Index: UI-004 → VERIFIED.
 
 ### Verification
 - Compose previews: group, direct, typing, dark.
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL.
 - Device screenshot: `logs/screenshots/ui-004-chat-header.png`.
 
 ### Remaining
@@ -16945,7 +17046,7 @@ Research, design, and implementation of `FlashChatHeader` (UI-004). Replaced pro
 ### Next AI
 UI-005 message bubble research or UI-003 chat list.
 
-## 2026-08-19 â€” UI-002 Custom icon system
+## 2026-08-19 — UI-002 Custom icon system
 
 ### Worked on
 Flash-owned MVP icon set: 35+ vector drawables, typed `FlashIcons` registry, `FlashIcon` composable with state tints, QA icon sheet.
@@ -16956,17 +17057,17 @@ Flash-owned MVP icon set: 35+ vector drawables, typed `FlashIcons` registry, `Fl
 - Added/updated `res/drawable/flash_ic_*.xml` for MVP chat + P2P icons.
 - Migrated provisional chat composables from `ui/chat/FlashIcons.kt` to `ui/icons/`.
 - Added LAN home "Icon sheet (QA)" entry + device back navigation.
-- Updated `ui-research-index.md` UI-002 â†’ IMPLEMENTED.
+- Updated `ui-research-index.md` UI-002 → IMPLEMENTED.
 
 ### Verification
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL.
 - Compose previews: light/dark icon sheet.
 - Device screenshot: `logs/screenshots/ui-002-icon-sheet.png`.
 
 ### Next AI
 UI-037 motion system, or UI-003 chat list research.
 
-## 2026-08-19 â€” UI-001 Visual identity & design system
+## 2026-08-19 — UI-001 Visual identity & design system
 
 ### Worked on
 Research and implementation of Flash Pulse design system (UI-001). Documented light/dark palettes, typography, spacing, shapes, elevation, surfaces, dynamic color policy, dark theme principles.
@@ -16978,11 +17079,11 @@ Research and implementation of Flash Pulse design system (UI-001). Documented li
 - Deprecated provisional `ui/design/*` with wrappers pointing to `ui/theme/`.
 - Migrated provisional chat composables to `FlashTheme` tokens.
 - Added ADR-005 (Flash Pulse identity).
-- Updated `ui-research-index.md` UI-001 â†’ IMPLEMENTED.
+- Updated `ui-research-index.md` UI-001 → IMPLEMENTED.
 
 ### Verification
-- Compose `@Preview`: light, dark, and 1.5Ã— font scale swatches in `FlashThemeSwatches.kt`.
-- `testDebugUnitTest assembleDebug` â€” BUILD SUCCESSFUL.
+- Compose `@Preview`: light, dark, and 1.5× font scale swatches in `FlashThemeSwatches.kt`.
+- `testDebugUnitTest assembleDebug` — BUILD SUCCESSFUL.
 - APK installed on Samsung R5CN21CNJAF; device screenshots: `logs/screenshots/ui-001-conversation-light.png`, `ui-001-conversation-dark.png`.
 
 ### Remaining
@@ -17234,7 +17335,7 @@ Started the LAN MVP foundation.
 ### Next AI
 Run `assembleDebug` from Android Studio or an unrestricted shell, then perform physical-device LAN discovery/probe validation.
 
-## 2026-08-19 â€” First Stream-inspired Flash conversation screen
+## 2026-08-19 — First Stream-inspired Flash conversation screen
 
 ### Worked on
 Implemented the first Flash-owned Compose conversation screen based on the visual structure of the inspected Stream message screen.
@@ -17261,7 +17362,7 @@ Implemented the first Flash-owned Compose conversation screen based on the visua
 ### Next AI task
 Fix or provide the Android build toolchain, build the app, inspect the rendered first screen, and only then refine this screen or move to the next Stream-inspired page.
 
-## 2026-08-19 â€” Flash-owned Stream-look design system and conversation UI
+## 2026-08-19 — Flash-owned Stream-look design system and conversation UI
 
 ### Worked on
 Implemented the clean-room Stream-look conversation screen plan: Flash design tokens, split composables, Flash-owned icons, repository seam, and legal ADR.
@@ -17288,18 +17389,18 @@ Implemented the clean-room Stream-look conversation screen plan: Flash design to
 ### Next AI
 Install APK on device/emulator, run Stream compose sample beside Flash, tune tokens in `ui/design/` until conversation screen is accepted. Do not start channel list until then.
 
-## 2026-08-19 â€” Premium chat UI master plan and research-first documentation
+## 2026-08-19 — Premium chat UI master plan and research-first documentation
 
 ### Worked on
 Created full premium chat UI implementation specification from owner prompt. Updated AGENTS.md and project docs. **No UI code changes.**
 
 ### Changed
-- Added `docs/ui/flash-premium-chat-ui-implementation.md` (master plan: UI-001â€“UI-045, all requirements, procedures, quality gates).
+- Added `docs/ui/flash-premium-chat-ui-implementation.md` (master plan: UI-001–UI-045, all requirements, procedures, quality gates).
 - Added `docs/ui/ui-research-index.md` (component registry, order, status).
 - Added `docs/ui/component-doc-template.md` (required per-component sections).
 - Added 29 stub component research docs under `docs/ui/` (NOT STARTED).
-- Added AGENTS.md Â§34 Premium Chat UI â€” Research-First Rules.
-- Updated AGENTS.md Â§4 first-run, Â§5 docs tree, Â§22 UI rules, Â§29 status, Â§32 fast start.
+- Added AGENTS.md §34 Premium Chat UI — Research-First Rules.
+- Updated AGENTS.md §4 first-run, §5 docs tree, §22 UI rules, §29 status, §32 fast start.
 - Added ADR-004 to `docs/decisions.md`.
 - Updated `logs/handoff.md`; marked `docs/flash-design-system.md` as superseded by UI-001 track.
 
@@ -17308,34 +17409,34 @@ Created full premium chat UI implementation specification from owner prompt. Upd
 
 ### Unfinished
 - UI-001 Visual identity research (`docs/ui/design-system.md`).
-- All UI-002â€“UI-045 component research docs remain empty stubs.
+- All UI-002–UI-045 component research docs remain empty stubs.
 
 ### Next AI
-Follow AGENTS.md Â§34: begin UI-001 research only. Do not implement chat UI until `design-system.md` is DESIGNED.
+Follow AGENTS.md §34: begin UI-001 research only. Do not implement chat UI until `design-system.md` is DESIGNED.
 
-## 2026-08-22 â€” Phase P2 partial: C2.1â€“C2.3 + C2.7 + C2.8 crypto core (:core:security/crypto)
+## 2026-08-22 — Phase P2 partial: C2.1–C2.3 + C2.7 + C2.8 crypto core (:core:security/crypto)
 
 ### Worked on
 Implemented the crypto foundation of C2 (steps C2.1 identity key, C2.2 self-signed cert, C2.3 fingerprint, C2.7 E2E frames, C2.8 constant-time compares + RFC vectors) with mandatory R1 research first. Trust (C2.4/C2.5) and pairing (C2.6) packages are owned by a concurrent agent and were NOT touched.
 
 ### Changed
 All new files under core/security/.../crypto/ only:
-- Hkdf.kt â€” RFC 5869 HKDF-SHA256 extract/expand/derive (internal).
-- FlashCrypto.kt â€” interface (identityPublicKey exposure, sign, wire-friendly ByteArray verify, ephemeral ECDH keygen, ecdhSessionKey â†’ 32-byte AES-256 via HKDF bound to FlashProtocol.VERSION) + shared pure-JCA ops (EcP256Ops).
-- KeystoreFlashCrypto.kt â€” AndroidKeyStore ECDSA P-256 alias lash_identity (SIGN|VERIFY, SHA-256 digest, StrongBox on API 28+ with fallback, biometric-invalidation off); selfSignedCertificate() uses the PLATFORM-generated keystore cert (AOSP AndroidKeyStoreKeyPairGeneratorSpi) â€” no BouncyCastle, no hand-rolled DER.
-- SoftwareFlashCrypto.kt â€” JVM-test/fallback impl, loud NOT-FOR-PRODUCTION KDoc.
-- FlashFingerprint.kt â€” SHA-256 fingerprint, stable XX:XX uppercase grouping, constantTimeEquals via MessageDigest.isEqual.
-- E2eFrameCodec.kt â€” AES-256-GCM [12B nonce | ct+tag], AAD = protocol version string; nonce discipline + rekey placeholder documented.
-- Tests: HkdfTest (RFC 5869 TC1+TC2 exact OKM/PRK), SoftwareFlashCryptoTest (sign/verify roundtrip+tamper, ECDH both-direction equality), E2eFrameCodecTest (roundtrip, wrong-key/tamper â‡’ AEADBadTagException), FlashFingerprintTest (hard-coded vector 82A67EF3â€¦F4EB computed independently).
+- Hkdf.kt — RFC 5869 HKDF-SHA256 extract/expand/derive (internal).
+- FlashCrypto.kt — interface (identityPublicKey exposure, sign, wire-friendly ByteArray verify, ephemeral ECDH keygen, ecdhSessionKey → 32-byte AES-256 via HKDF bound to FlashProtocol.VERSION) + shared pure-JCA ops (EcP256Ops).
+- KeystoreFlashCrypto.kt — AndroidKeyStore ECDSA P-256 alias lash_identity (SIGN|VERIFY, SHA-256 digest, StrongBox on API 28+ with fallback, biometric-invalidation off); selfSignedCertificate() uses the PLATFORM-generated keystore cert (AOSP AndroidKeyStoreKeyPairGeneratorSpi) — no BouncyCastle, no hand-rolled DER.
+- SoftwareFlashCrypto.kt — JVM-test/fallback impl, loud NOT-FOR-PRODUCTION KDoc.
+- FlashFingerprint.kt — SHA-256 fingerprint, stable XX:XX uppercase grouping, constantTimeEquals via MessageDigest.isEqual.
+- E2eFrameCodec.kt — AES-256-GCM [12B nonce | ct+tag], AAD = protocol version string; nonce discipline + rekey placeholder documented.
+- Tests: HkdfTest (RFC 5869 TC1+TC2 exact OKM/PRK), SoftwareFlashCryptoTest (sign/verify roundtrip+tamper, ECDH both-direction equality), E2eFrameCodecTest (roundtrip, wrong-key/tamper ⇒ AEADBadTagException), FlashFingerprintTest (hard-coded vector 82A67EF3…F4EB computed independently).
 
 ### Verification
 - NOT yet built: Gradle runs are forbidden for this agent per task constraints (one consolidated run happens at session consolidation). All test vectors taken from authoritative sources; fingerprint vector independently precomputed.
 - Next consolidating agent MUST run :core:security:testDebugUnitTest and record results here.
 
 ### Remaining
-- C2.4â€“C2.6 (trust store extension, TOFU, pairing frames) â€” concurrent agent.
+- C2.4–C2.6 (trust store extension, TOFU, pairing frames) — concurrent agent.
 - docs/security.md threat-model update (C2.8 tail) once both agents' work merges.
-- Device verification of KeystoreFlashCrypto (StrongBox path, cert generation) â€” JVM-only here.
+- Device verification of KeystoreFlashCrypto (StrongBox path, cert generation) — JVM-only here.
 
 ### Next AI
 Run the consolidated unit-test build; if AEAD/HKDF vectors fail, check Hkdf.expand counter byte first.
@@ -17356,7 +17457,7 @@ Implemented C2.4 (Room-backed trust/pin store), C2.5 (TOFU policy), C2.6 (pairin
 - `trust/pinned/LegacyTrustMigration.kt` " pure merge logic for SharedPreferences"Room migration (existing rows win " idempotent; legacy rows carry unbound sentinel).
 - `pairing/FlashPairingFrames.kt` " sealed FlashPairingFrame {PairRequest, PairAccept, PairConfirm(codeHashHex), Paired}; plain Kotlin types, wire encoding deferred C4/C6 (noted in KDoc).
 - `pairing/NumericComparisonCode.kt` " derive() (sorted-concat SHA-256 construction documented incl. why sorted), confirmationHashHex(), hashesEqual() constant-time, normalizeHex().
-- `pairing/PairingSessionStateMachine.kt` " 8 phases mapped to profile-ui.md FlashPairingPhase in KDoc; pure reduce(state,event,timeouts,localFp); PairingTimeouts(requestExpiryMs=30s default, decisionWindowMs configurable); Expired is neutral (Ã¢â€°Â  Failed); inapplicable events are no-ops.
+- `pairing/PairingSessionStateMachine.kt` " 8 phases mapped to profile-ui.md FlashPairingPhase in KDoc; pure reduce(state,event,timeouts,localFp); PairingTimeouts(requestExpiryMs=30s default, decisionWindowMs configurable); Expired is neutral (≠ Failed); inapplicable events are no-ops.
 - `pairing/FlashPairingProtocol.kt` " FlashPairingEvent sealed (RequestReceived w/ code6+expiresAtMs, PeerAccepted, PeerDeclined, Expired, Confirmed(fp+ephemeralPubKey), Failed); FlashPairingProtocol interface per plan target abstraction + additive onFrame/onTick integration seams; DefaultFlashPairingProtocol fully fake-constructible (no Android types, no internal scope/clock " engine drives ticks).
 - Tests (JVM-only, no Robolectric needed): `pairing/NumericComparisonCodeTest` (determinism, symmetry, format/range, uniformity sanity over seeded 5k samples, hash checks), `pairing/PairingSessionStateMachineTest` (full transition matrix incl. expiry boundary, decision-window expiry, code-hash mismatch, terminal absorption, stale-requestId ignore), `pairing/DefaultFlashPairingProtocolTest` (two-party cross-wired handshake happy path, tampered confirm hard-fail, expiry, busy-beginRequest, decline, accept-without-request), `trust/TofuPolicyTest`, `trust/LegacyTrustMigrationTest`; local `testutil/FakeClock` (module-local copy ":core:common FakeTimeSource not visible across modules).
 
@@ -17419,25 +17520,25 @@ Pure-JVM half of Phase P3 per task brief: directory bookkeeping, cross-radio TXT
 Plan P3.5: A2 (TXT caps/p8), A3/A4 (identity fields + inbound proto gate), B2 (NsdTransport.setMode: GHOST/ECO/BOOST), B3 (CompositeDiscovery.setMode fan-out + mode in state). R1 research-first completed BEFORE coding; contracts (FlashDiscoveryMode, DiscoveryModePolicy) were pre-existing and were NOT restructured. group/** and settings/** untouched; no gradle/toml changes; Gradle NOT run.
 
 ### Research findings (R1, cited)
-- (a) TXT size limits: DNS TXT constituent strings are max 255 bytes each (RFC 1035 Â§3.3.14 via RFC 6763 Â§6.1); RFC 6763 Â§6.2 recommends total TXT ~200 bytes (<=400 to fit 512-byte DNS message, <=1300 NOT-EXCEEDED rule); mDNS packet cap 9000 bytes => ~8900 TXT ceiling but real-world mDNS-offload chipsets historically broke above 256 bytes. VALIDATION: our full key set {device_id(~36), name(<=24), model, proto, caps(<=120), fp8(8)} stays comfortably under the guidance; caps joined value guarded to <=120 chars so caps=+value always fits ONE 255-byte constituent string. Sources: https://www.rfc-editor.org/rfc/rfc6763.html (S6.1, S6.2, S6.4) ; https://www.zeroconf.org/Rendezvous/txtrecords.html
-- (b) Zeroconf service-type spoofing/mimicry: mDNS/DNS-SD is unauthenticated â€” any on-link host can spoof _flash-transfer._tcp. responses and forge TXT (incl. caps/fp8); prior art treats TXT fingerprints as consistency cross-checks only, never as MITM defenses (uptrakit zeroconf security doc), and IETF draft-ietf-dnssd-prireq enumerates sender-impersonation + fingerprinting risks of rich TXT records. CONSEQUENCE: our caps is informational (no access decisions at discovery layer); capability-gating precedent = Bonjour/DNS-SD profiles advertising features via TXT keys (zeroconf.org TXT format doc: clients SHOULD ignore unknown attributes; feature info is a performance hint, TCP connection does real negotiation). Enforcement deferred to connect time (C3.10 seam). Sources: https://github.com/worried-networking/uptrakit/blob/main/docs/security/zeroconf-discovery.md ; https://www.ietf.org/archive/id/draft-ietf-dnssd-prireq-04.html (S3.3.5) ; https://www.ieee-security.org/TC/SP2021/SPW2021/WOOT21/files/woot21-farrah-slides.pdf ; https://ernw.de/download/An_Attack-in-Depth_Analysis_of%20_multicast_DNS_and_DNS_Service_Discovery.pdf
-- (c) Duty-cycled scanning precedents: BLE scan modes are the platform's own duty-cycle pattern â€” SCAN_MODE_LOW_POWER ("consumes least power", enforced for background apps) vs BALANCED vs LOW_LATENCY ("highest duty cycle"): https://developer.android.com/reference/android/bluetooth/le/ScanSettings . Wi-Fi SCAN throttling (Android 8+: bg 1/30min; Android 9+: fg 4/2min) applies ONLY to WifiManager.startScan() â€” NSD is NOT subject to it (NsdManager runs via the system mDNS path): https://developer.android.com/develop/connectivity/wifi/wifi-scan ; framework confirmation: https://android.googlesource.com/platform/frameworks/opt/net/wifi/+/refs/tags/android-9.0.0_r34/service/java/com/android/server/wifi/ScanRequestProxy.java . BUT multicast reception still costs battery â€” WifiManager.MulticastLock docs explicitly warn of "noticeable battery drain" and advise release when not needed, and NsdManager docs say background apps should avoid the lock post T-ext7: https://developer.android.com/reference/android/net/wifi/WifiManager.MulticastLock . ECO duty cycle therefore alternates full browse bursts with idle gaps (releasing nothing extra today; lock lifecycle unchanged) â€” 20s/100s per DiscoveryModePolicy.
+- (a) TXT size limits: DNS TXT constituent strings are max 255 bytes each (RFC 1035 §3.3.14 via RFC 6763 §6.1); RFC 6763 §6.2 recommends total TXT ~200 bytes (<=400 to fit 512-byte DNS message, <=1300 NOT-EXCEEDED rule); mDNS packet cap 9000 bytes => ~8900 TXT ceiling but real-world mDNS-offload chipsets historically broke above 256 bytes. VALIDATION: our full key set {device_id(~36), name(<=24), model, proto, caps(<=120), fp8(8)} stays comfortably under the guidance; caps joined value guarded to <=120 chars so caps=+value always fits ONE 255-byte constituent string. Sources: https://www.rfc-editor.org/rfc/rfc6763.html (S6.1, S6.2, S6.4) ; https://www.zeroconf.org/Rendezvous/txtrecords.html
+- (b) Zeroconf service-type spoofing/mimicry: mDNS/DNS-SD is unauthenticated — any on-link host can spoof _flash-transfer._tcp. responses and forge TXT (incl. caps/fp8); prior art treats TXT fingerprints as consistency cross-checks only, never as MITM defenses (uptrakit zeroconf security doc), and IETF draft-ietf-dnssd-prireq enumerates sender-impersonation + fingerprinting risks of rich TXT records. CONSEQUENCE: our caps is informational (no access decisions at discovery layer); capability-gating precedent = Bonjour/DNS-SD profiles advertising features via TXT keys (zeroconf.org TXT format doc: clients SHOULD ignore unknown attributes; feature info is a performance hint, TCP connection does real negotiation). Enforcement deferred to connect time (C3.10 seam). Sources: https://github.com/worried-networking/uptrakit/blob/main/docs/security/zeroconf-discovery.md ; https://www.ietf.org/archive/id/draft-ietf-dnssd-prireq-04.html (S3.3.5) ; https://www.ieee-security.org/TC/SP2021/SPW2021/WOOT21/files/woot21-farrah-slides.pdf ; https://ernw.de/download/An_Attack-in-Depth_Analysis_of%20_multicast_DNS_and_DNS_Service_Discovery.pdf
+- (c) Duty-cycled scanning precedents: BLE scan modes are the platform's own duty-cycle pattern — SCAN_MODE_LOW_POWER ("consumes least power", enforced for background apps) vs BALANCED vs LOW_LATENCY ("highest duty cycle"): https://developer.android.com/reference/android/bluetooth/le/ScanSettings . Wi-Fi SCAN throttling (Android 8+: bg 1/30min; Android 9+: fg 4/2min) applies ONLY to WifiManager.startScan() — NSD is NOT subject to it (NsdManager runs via the system mDNS path): https://developer.android.com/develop/connectivity/wifi/wifi-scan ; framework confirmation: https://android.googlesource.com/platform/frameworks/opt/net/wifi/+/refs/tags/android-9.0.0_r34/service/java/com/android/server/wifi/ScanRequestProxy.java . BUT multicast reception still costs battery — WifiManager.MulticastLock docs explicitly warn of "noticeable battery drain" and advise release when not needed, and NsdManager docs say background apps should avoid the lock post T-ext7: https://developer.android.com/reference/android/net/wifi/WifiManager.MulticastLock . ECO duty cycle therefore alternates full browse bursts with idle gaps (releasing nothing extra today; lock lifecycle unchanged) — 20s/100s per DiscoveryModePolicy.
 
 ### Changed (all additive; no restructuring)
-- core/TxtCodec.kt â€” added KEY_CAPS/KEY_FP8 + MAX_CAPS_VALUE_LENGTH=120 guard; encode emits caps only when non-empty (flag-boundary truncation via new 	runcateFlags), fp8 when non-blank; decode returns capabilities/fingerprintPrefix with emptySet/null defaults.
-- core/FlashRadioTransport.kt â€” FlashAdvertisedIdentity gains capabilities: Set<String> = emptySet() and ingerprintPrefix: String? = null (defaults keep all existing callers compiling); interface gains setMode(policy) with no-op default body (ADR-013).
+- core/TxtCodec.kt — added KEY_CAPS/KEY_FP8 + MAX_CAPS_VALUE_LENGTH=120 guard; encode emits caps only when non-empty (flag-boundary truncation via new 	runcateFlags), fp8 when non-blank; decode returns capabilities/fingerprintPrefix with emptySet/null defaults.
+- core/FlashRadioTransport.kt — FlashAdvertisedIdentity gains capabilities: Set<String> = emptySet() and ingerprintPrefix: String? = null (defaults keep all existing callers compiling); interface gains setMode(policy) with no-op default body (ADR-013).
 - 
-sd/NsdTransport.kt â€” NsdTxtCodec: keys synced incl. caps/fp8; **encode now delegates to core TxtCodec** (trivial TODO(unify) closure; tolerant decode intentionally kept local); ParsedIdentity extended. NsdTransport: setMode() override (advertise toggle immediate w/ retained identity resume on GHOST exit; conflated wake-up cuts ECO idle short), ECO duty loop inside existing browse machinery (maxDutyCycles test-determinism bound), BOOST scales backoff base (cap/attempts unchanged), GHOST startAdvertising = documented Success no-op; inbound hardening: explicit proto != FlashProtocol.VERSION dropped PRE-directory (missing proto still falls back to ours â€” legacy tolerance preserved); peer caps logged informationally, never retained on the shared endpoint model (FlashDiscoveredEndpoint untouched).
-- core/CompositeDiscovery.kt â€” discoveryMode: StateFlow<FlashDiscoveryMode> + setMode(mode) fan-out to every transport (default STANDARD applied implicitly at construction on both sides â€” setMode is suspend so eager ctor fan-out impossible); statusMessage gains additive [MODE]  prefix; refreshState consults policy so GHOST never claims isAdvertising; startAll passes identity through unchanged (now carries caps/fp8).
+sd/NsdTransport.kt — NsdTxtCodec: keys synced incl. caps/fp8; **encode now delegates to core TxtCodec** (trivial TODO(unify) closure; tolerant decode intentionally kept local); ParsedIdentity extended. NsdTransport: setMode() override (advertise toggle immediate w/ retained identity resume on GHOST exit; conflated wake-up cuts ECO idle short), ECO duty loop inside existing browse machinery (maxDutyCycles test-determinism bound), BOOST scales backoff base (cap/attempts unchanged), GHOST startAdvertising = documented Success no-op; inbound hardening: explicit proto != FlashProtocol.VERSION dropped PRE-directory (missing proto still falls back to ours — legacy tolerance preserved); peer caps logged informationally, never retained on the shared endpoint model (FlashDiscoveredEndpoint untouched).
+- core/CompositeDiscovery.kt — discoveryMode: StateFlow<FlashDiscoveryMode> + setMode(mode) fan-out to every transport (default STANDARD applied implicitly at construction on both sides — setMode is suspend so eager ctor fan-out impossible); statusMessage gains additive [MODE]  prefix; refreshState consults policy so GHOST never claims isAdvertising; startAll passes identity through unchanged (now carries caps/fp8).
 - Tests (same packages): TxtCodecTest +7 (roundtrip caps/fp8, missing-key defaults, malformed caps tolerance, flag-boundary truncation, oversized-set guard, omission when empty); NsdTransportLogicTest +9 (caps/fp8 on wire, version-mismatch pre-directory drop, missing-proto tolerance, caps informational accept, GHOST no-op advertise, GHOST unadvertise+resume, ECO burst/idle alternation over budget, BOOST lowered base asserting ACTUAL slept delays, STANDARD unchanged baseline); CompositeDiscoveryTest +4 via additive FakeTransport.policies recording (default STANDARD at construction, fan-out, [MODE] prefix without breaking suffix, GHOST startAll advertises suppressed while browsing runs).
 
 ### Verification
 - NOT Gradle-verified this session (forbidden). All tests written deterministic (injected sleep/idleWait/slept recorder, Unconfined inline dispatch) consistent with module's existing technique. Existing 462-test suite expectations reviewed for regressions: FlashDiscoveryState default "Idle" test untouched; CompositeDiscoveryTest legacy assertions don't inspect statusMessage text; NsdTransportLogicTest retry-budget math unchanged for STANDARD.
 
 ### Deviations
-1. maxDutyCycles constructor bound added (default Int.MAX_VALUE) â€” no-op sleeps make an ECO loop infinite under the module's no-virtual-time test technique; mirrors maxBrowsingRestarts precedent (documented in KDoc).
-2. BOOST implemented as provider SCALING not replacement â€” preserves injected provider shape; raw provider outputs remain observable for assertions while actual slept delays reflect policy (ADR-013).
-3. idleWait injectable returning Boolean (woke-early?) instead of reusing plain sleep â€” needed for the mid-idle immediate-resume requirement without coroutines-test.
+1. maxDutyCycles constructor bound added (default Int.MAX_VALUE) — no-op sleeps make an ECO loop infinite under the module's no-virtual-time test technique; mirrors maxBrowsingRestarts precedent (documented in KDoc).
+2. BOOST implemented as provider SCALING not replacement — preserves injected provider shape; raw provider outputs remain observable for assertions while actual slept delays reflect policy (ADR-013).
+3. idleWait injectable returning Boolean (woke-early?) instead of reusing plain sleep — needed for the mid-idle immediate-resume requirement without coroutines-test.
 4. TODO(unify) narrowed rather than closed: NsdTxtCodec.encode delegates to TxtCodec; tolerant DECODE stays local by design (fallback contract differs).
 
 ### Remaining
@@ -17448,33 +17549,33 @@ sd/NsdTransport.kt â€” NsdTxtCodec: keys synced incl. caps/fp8; **encode no
 ### Next AI
 Run testDebugUnitTest; fix reds + log ERROR-0XX. Do not touch group/** or settings/** (concurrent agent). When wiring UI mode switcher, consume CompositeDiscovery.discoveryMode + parse state suffix after the [MODE]  prefix if needed.
 
-## 2026-08-23 â€” P4 pure-logic agent (C4.2/C4.3/C4.5/C4.7-aggregation + C4.9 chaos)
+## 2026-08-23 — P4 pure-logic agent (C4.2/C4.3/C4.5/C4.7-aggregation + C4.9 chaos)
 
 ### Worked on
 Resilience primitives + chaos harness for `:core:network`, all NEW files only (no existing file touched, no gradle/toml change, Gradle NOT run per session rules).
 
 ### Research findings (R1, cited)
-- (a) Backoff+jitter: AWS "Exponential Backoff and Jitter" https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/ â€” Full jitter â‰ˆ Decorrelated completion time with LESS client work; decorrelated only wins under sustained overload; Brooker https://brooker.co.za/blog/2022/08/11/backoff.html ; simulator reference https://github.com/aws-samples/aws-arch-backoff-simulator . CHOICE: full jitter WITH floor `base + rand*(min(cap, base*2^attempt) âˆ’ base)` (floor = minimum P2P retry spacing; herd de-sync preserved).
-- (b) Heartbeat/dead-peer: TCP keepalive defaults 2h first probe and answers at OS layer (zombie-blind) â†’ app-level ping/pong required: https://dev.to/137foundry/why-application-level-heartbeats-beat-tcp-keepalive-for-websockets-1bfl ; websocket.org timeout guide: missed-counter pattern, "3 missed is a reasonable default", 25s interval guidance: https://websocket.org/guides/troubleshooting/timeout/ ; chat presence systems use 10â€“15s heartbeats, offline after 2â€“3 misses: https://websocket.org/guides/use-cases/chat/ . CHOICE: intervalMs=10_000, missedThreshold=3 (P2P has no proxy idle timeout â†’ bias fast detection; worst-case declaration 30s).
+- (a) Backoff+jitter: AWS "Exponential Backoff and Jitter" https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/ — Full jitter ≈ Decorrelated completion time with LESS client work; decorrelated only wins under sustained overload; Brooker https://brooker.co.za/blog/2022/08/11/backoff.html ; simulator reference https://github.com/aws-samples/aws-arch-backoff-simulator . CHOICE: full jitter WITH floor `base + rand*(min(cap, base*2^attempt) − base)` (floor = minimum P2P retry spacing; herd de-sync preserved).
+- (b) Heartbeat/dead-peer: TCP keepalive defaults 2h first probe and answers at OS layer (zombie-blind) → app-level ping/pong required: https://dev.to/137foundry/why-application-level-heartbeats-beat-tcp-keepalive-for-websockets-1bfl ; websocket.org timeout guide: missed-counter pattern, "3 missed is a reasonable default", 25s interval guidance: https://websocket.org/guides/troubleshooting/timeout/ ; chat presence systems use 10–15s heartbeats, offline after 2–3 misses: https://websocket.org/guides/use-cases/chat/ . CHOICE: intervalMs=10_000, missedThreshold=3 (P2P has no proxy idle timeout → bias fast detection; worst-case declaration 30s).
 - (c) Bounded-queue backpressure: reject-newest/fail-fast correct when every item matters and caller has fallback; drop-oldest only when newest invalidates oldest (video/sensors); block risks deadlock on dead peers: https://unseel.com/cs/backpressure ; https://www.techinterview.org/post/3233468900/lld-backpressure/ ; https://letsbuildsolutions.com/blog/system-design/back-pressure-in-distributed-systems-flow-control-patterns-that-prevent-cascading-overload/ . CHOICE: REJECT (typed Rejected(QueueFull|Closed), outbox retains write per C6 contract).
 
 ### Changed (all under ownership paths only)
-- main `resilience/ReconnectPolicy.kt` â€” pure delayForAttempt(attempt[, random01]) + stateful nextDelay()/reset() (stable-connect reset), giveUpAfterMs nullable (null=infinite, P2P semantics), overflow-guarded bounds.
-- main `resilience/HeartbeatPolicy.kt` (+10s/3 defaults w/ citations), `HeartbeatTracker.kt` â€” Alive/Suspect/Dead, onPingSent/onPongReceived/onTick(nowMs)â†’PingNow|AwaitPong|DeclareDead; exactly-at-threshold inclusive boundary; Dead terminal.
-- main `resilience/BoundedSendQueue.kt` â€” capacity 64 default, Enqueued|Rejected, poll/drainInto/awaitDrained/close, ReentrantLock thread-safe.
-- main `resilience/SessionHardeningPolicy.kt` â€” maxConcurrentSessions=8; resolveDuplicate(existingRank,newRank): strictly-lower wins, tie keeps existing; ranks LAN0>Direct1>WS2>relay/mesh(+future BLE-presence)3>unknown99 mirroring C3 priority.
-- main `resilience/ConnectionHealthAggregator.kt` â€” MutableStateFlow holder (coroutines available transitively via lifecycle-runtime-ktx â€” verified LanSession already uses it); resolve(): sessions beat attempts beat peer-count; Connected when â‰¥1 healthy & none degraded; mixed healthy+degradedâ†’Connected (documented precedence); Degraded only when ALL degraded.
-- main `resilience/ChaosSession.kt` + `ChaosNetworkHarness.kt` â€” seeded drop/dup/reorder-window/delay/disconnect faults over FlashSession delegate; DedupGate helper; harness composes queue+tracker+policy.
-- tests `resilience/` â€” ReconnectPolicyTest (seeded distribution bounds incl. cap/clamp/give-up/reset-replay), HeartbeatTrackerTest (boundary ticks incl. exactly-at-threshold, pong-reset, Dead-terminal), BoundedSendQueueTest (overflow, FIFO, closed-drainable, 4-producer/1-consumer smoke w/ per-stream FIFO check), SessionHardeningPolicyTest (ties, rank order, unknown-never-wins), ConnectionHealthAggregatorTest (precedence matrix + holder flow), ChaosResilienceTest (invariants iâ€“iv + mid-drain outbox retention). All deterministic JVM tests, explicit nowMs / seeded rng / injected random01; NO coroutines-test dependency (runBlocking only, from transitive coroutines-core).
+- main `resilience/ReconnectPolicy.kt` — pure delayForAttempt(attempt[, random01]) + stateful nextDelay()/reset() (stable-connect reset), giveUpAfterMs nullable (null=infinite, P2P semantics), overflow-guarded bounds.
+- main `resilience/HeartbeatPolicy.kt` (+10s/3 defaults w/ citations), `HeartbeatTracker.kt` — Alive/Suspect/Dead, onPingSent/onPongReceived/onTick(nowMs)→PingNow|AwaitPong|DeclareDead; exactly-at-threshold inclusive boundary; Dead terminal.
+- main `resilience/BoundedSendQueue.kt` — capacity 64 default, Enqueued|Rejected, poll/drainInto/awaitDrained/close, ReentrantLock thread-safe.
+- main `resilience/SessionHardeningPolicy.kt` — maxConcurrentSessions=8; resolveDuplicate(existingRank,newRank): strictly-lower wins, tie keeps existing; ranks LAN0>Direct1>WS2>relay/mesh(+future BLE-presence)3>unknown99 mirroring C3 priority.
+- main `resilience/ConnectionHealthAggregator.kt` — MutableStateFlow holder (coroutines available transitively via lifecycle-runtime-ktx — verified LanSession already uses it); resolve(): sessions beat attempts beat peer-count; Connected when ≥1 healthy & none degraded; mixed healthy+degraded→Connected (documented precedence); Degraded only when ALL degraded.
+- main `resilience/ChaosSession.kt` + `ChaosNetworkHarness.kt` — seeded drop/dup/reorder-window/delay/disconnect faults over FlashSession delegate; DedupGate helper; harness composes queue+tracker+policy.
+- tests `resilience/` — ReconnectPolicyTest (seeded distribution bounds incl. cap/clamp/give-up/reset-replay), HeartbeatTrackerTest (boundary ticks incl. exactly-at-threshold, pong-reset, Dead-terminal), BoundedSendQueueTest (overflow, FIFO, closed-drainable, 4-producer/1-consumer smoke w/ per-stream FIFO check), SessionHardeningPolicyTest (ties, rank order, unknown-never-wins), ConnectionHealthAggregatorTest (precedence matrix + holder flow), ChaosResilienceTest (invariants i–iv + mid-drain outbox retention). All deterministic JVM tests, explicit nowMs / seeded rng / injected random01; NO coroutines-test dependency (runBlocking only, from transitive coroutines-core).
 
 ### Verification
 - NOT Gradle-verified this session (forbidden). Logic traced by hand against contracts read first: FlashConnectionHealth enum values, FlashSession+FrameAck, FlashNetwork.connectionHealth/retryConnection, LanSession/WsConnection skim.
 
 ### Deviations
-1. Full-jitter variant uses a BASE FLOOR (task spec range `[base, min(cap, base*2^attempt)]`) vs canonical AWS `[0, bound]` â€” spec-compliant and justified above.
+1. Full-jitter variant uses a BASE FLOOR (task spec range `[base, min(cap, base*2^attempt)]`) vs canonical AWS `[0, bound]` — spec-compliant and justified above.
 2. Chaos inbound enters via explicit deliverInbound() because FlashSession exposes no inbound hook by design (reads live in transport loops like LanSession.readLoop).
 3. Harness requeueAtHead shim added so failed sends retain FIFO order inside the harness (production wiring will own this via the real session manager).
-4. Mixed healthy+degraded sessions map to Connected (spec left mixed case open; any healthy path dominates â€” documented in KDoc).
+4. Mixed healthy+degraded sessions map to Connected (spec left mixed case open; any healthy path dominates — documented in KDoc).
 
 ### Remaining
 - Owner runs testDebugUnitTest (~+30 tests expected); fix reds + ERROR-0XX if any.
