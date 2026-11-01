@@ -208,6 +208,12 @@ object DiscoveryEngineHolder {
     private val _transfersFlow = MutableStateFlow<FlashTransferRepository?>(null)
     val transfersFlow: StateFlow<FlashTransferRepository?> = _transfersFlow.asStateFlow()
 
+    private val _networkFlow = MutableStateFlow<FlashNetwork?>(null)
+    val networkFlow: StateFlow<FlashNetwork?> = _networkFlow.asStateFlow()
+
+    @Volatile
+    var backgroundTransfers: Boolean = false
+
     @Volatile
     private var chatRepo: FlashChatRepository? = null
     @Volatile
@@ -1998,11 +2004,12 @@ object DiscoveryEngineHolder {
 
         composite = engine
         network = networkImpl
+        _networkFlow.value = networkImpl
         transferRepo = transferImpl
         _transfersFlow.value = transferImpl
         appScope.launch {
             transferImpl.activeTransfers.collect {
-                updateWifiLockState()
+                updatePowerLocksState()
             }
         }
         chatRepo = chatImpl
@@ -2122,6 +2129,7 @@ object DiscoveryEngineHolder {
                     FlashNotificationManager.clearPttTapToTalk(ctx)
                     PttSessionService.start(ctx)
                 }
+                updatePowerLocksState()
             }
         }
         transferRef = transferImpl
@@ -2278,7 +2286,7 @@ object DiscoveryEngineHolder {
                 val callOwnsAudio = state != null && state.state != FlashCallState.ENDED
                 busyPeerIds = state?.busyPeerIds.orEmpty()
                 setCallActive(callOwnsAudio, engine)
-                updateWifiLockState()
+                updatePowerLocksState()
             }
         }
 
@@ -2302,7 +2310,7 @@ object DiscoveryEngineHolder {
     private suspend fun setCallActive(active: Boolean, engine: CompositeDiscovery) {
         if (active == callActive) return
         callActive = active
-        updateWifiLockState()
+        updatePowerLocksState()
         // Mic exclusivity (ADR-032): a starting call tears any PTT session down; the press
         // path refuses while a call is active, so the floor can never fight the call for
         // the mic. Voice-message capture uses the same engine-owned gate in MainActivity.
@@ -2882,20 +2890,64 @@ object DiscoveryEngineHolder {
     }
 
     /**
-     * Acquires the CPU power lock and initializes the Wi-Fi power lock for the engine's lifetime.
-     * The CPU wake lock is held to ensure keepalive pings are scheduled.
-     * The Wi-Fi high-performance lock is held dynamically: released during idle mesh states
-     * to save battery and reduce radio wake-lock contention, and acquired only during active file
-     * transfers or active calls (see [updateWifiLockState]).
+     * Bounded lease representing an active claim on the CPU partial wake lock (OPT-O13-01).
+     * The wake lock is released when all active claims and transfers/calls complete, or when [expiryMs] elapses.
+     */
+    public interface WakeLockLease : AutoCloseable {
+        public val tag: String
+        public val expiryMs: Long
+        public fun release()
+        override fun close() { release() }
+    }
+
+    private val activeWakeLockLeases = ConcurrentHashMap<String, Long>()
+    @Volatile
+    private var wakeLockRefreshJob: Job? = null
+
+    val isWakeLockHeld: Boolean
+        get() = wakeLock?.isHeld == true
+
+    val activeWakeLockLeaseCount: Int
+        get() = activeWakeLockLeases.size
+
+    /**
+     * Acquires a bounded, ref-counted CPU wake lock lease (OPT-O13-01).
+     * The lease automatically expires after [timeoutMs] (capped at [WAKE_LOCK_TIMEOUT_MS]) if not closed earlier.
+     */
+    public fun acquireWakeLockLease(tag: String, timeoutMs: Long = 60_000L): WakeLockLease {
+        val safeTimeout = timeoutMs.coerceIn(1_000L, WAKE_LOCK_TIMEOUT_MS)
+        val expiry = System.currentTimeMillis() + safeTimeout
+        activeWakeLockLeases[tag] = expiry
+        updateCpuWakeLockState()
+        return object : WakeLockLease {
+            private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+            override val tag: String = tag
+            override val expiryMs: Long = expiry
+            override fun release() {
+                if (closed.compareAndSet(false, true)) {
+                    activeWakeLockLeases.remove(tag, expiry)
+                    updateCpuWakeLockState()
+                }
+            }
+        }
+    }
+
+    /**
+     * Initializes the CPU power lock and the Wi-Fi power lock for the engine's lifetime.
+     * Both locks are managed dynamically (OPT-O13-01):
+     * - CPU wake lock is held with a bounded timeout only while active transfers, active calls,
+     *   active PTT sessions, or explicit leases exist; idle standby allows AP suspend.
+     * - Wi-Fi high-performance lock is held dynamically: released during idle mesh states
+     *   to save battery and reduce radio contention, and acquired only during active file
+     *   transfers or active calls (see [updateWifiLockState]).
      */
     private fun acquirePowerLocks(context: Context) {
-        if (wakeLock?.isHeld != true) {
+        if (wakeLock == null) {
             wakeLock = runCatching {
                 context.getSystemService(PowerManager::class.java)
                     .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)
                     .apply {
                         setReferenceCounted(false)
-                        acquire()
                     }
             }.onFailure { Log.w(TAG_WS, "Wake lock unavailable", it) }.getOrNull()
         }
@@ -2914,8 +2966,59 @@ object DiscoveryEngineHolder {
                     }
             }.onFailure { Log.w(TAG_WS, "Wi-Fi lock unavailable", it) }.getOrNull()
         }
+        updatePowerLocksState()
+        Log.i(TAG_WS, "Power locks initialized: wakeHeld=${wakeLock?.isHeld == true} wifiHeld=${wifiLock?.isHeld == true}")
+    }
+
+    /**
+     * Evaluates active transfers, calls, PTT, and leases to dynamically acquire or release
+     * both Wi-Fi high-perf lock and CPU wake lock (OPT-O13-01).
+     */
+    fun updatePowerLocksState() {
         updateWifiLockState()
-        Log.i(TAG_WS, "Power locks initialized: wake=${wakeLock?.isHeld == true} wifiHeld=${wifiLock?.isHeld == true}")
+        updateCpuWakeLockState()
+    }
+
+    /**
+     * Dynamically acquires or releases the CPU partial wake lock based on active work (OPT-O13-01).
+     * Always acquires with a safety timeout ([WAKE_LOCK_TIMEOUT_MS]), never indefinitely.
+     */
+    private fun updateCpuWakeLockState() {
+        val now = System.currentTimeMillis()
+        activeWakeLockLeases.entries.removeIf { it.value <= now }
+        val hasActiveLease = activeWakeLockLeases.isNotEmpty()
+        val hasActiveTransfer = transferRepo?.activeTransfers?.value?.any {
+            it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+        } == true
+        val hasActiveCall = calling?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
+        val hasActivePtt = pttEngine?.state?.value?.let { it !is com.transfer.flash.core.ptt.floor.PttFloorState.Idle } == true
+        val needsWakeLock = hasActiveTransfer || hasActiveCall || hasActivePtt || hasActiveLease
+
+        synchronized(this) {
+            val lock = wakeLock ?: return
+            if (needsWakeLock) {
+                if (!lock.isHeld) {
+                    runCatching { lock.acquire(WAKE_LOCK_TIMEOUT_MS) }
+                    Log.i(TAG_WS, "Acquired CPU wake lock (activeTransfer=$hasActiveTransfer, activeCall=$hasActiveCall, activePtt=$hasActivePtt, leases=${activeWakeLockLeases.size}, timeoutMs=$WAKE_LOCK_TIMEOUT_MS)")
+                }
+                if (wakeLockRefreshJob == null && appScope.isActive) {
+                    wakeLockRefreshJob = appScope.launch {
+                        while (isActive) {
+                            delay(WAKE_LOCK_REFRESH_INTERVAL_MS)
+                            updateCpuWakeLockState()
+                        }
+                    }
+                }
+            } else {
+                wakeLockRefreshJob?.cancel()
+                wakeLockRefreshJob = null
+                if (lock.isHeld) {
+                    runCatching { lock.release() }
+                    Log.i(TAG_WS, "Released CPU wake lock (mesh idle — AP suspend allowed)")
+                }
+            }
+        }
     }
 
     /**
@@ -2949,6 +3052,9 @@ object DiscoveryEngineHolder {
 
     /** Releases both power locks. Only [stopAll] calls this — a stopping service must not. */
     private fun releasePowerLocks() {
+        wakeLockRefreshJob?.cancel()
+        wakeLockRefreshJob = null
+        activeWakeLockLeases.clear()
         runCatching { wakeLock?.let { if (it.isHeld) it.release() } }
         wakeLock = null
         runCatching { wifiLock?.let { if (it.isHeld) it.release() } }
@@ -3117,6 +3223,7 @@ object DiscoveryEngineHolder {
             currentNetwork = network
             composite = null
             network = null
+            _networkFlow.value = null
             currentTransfer = transferRepo
             transferRepo = null
             _transfersFlow.value = null
@@ -3197,6 +3304,8 @@ object DiscoveryEngineHolder {
 
     private const val WAKE_LOCK_TAG = "flash:ws-mesh"
     private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"
+    private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
+    private const val WAKE_LOCK_REFRESH_INTERVAL_MS = 5 * 60 * 1000L
 }
 
 /**

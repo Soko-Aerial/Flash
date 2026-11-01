@@ -242,6 +242,8 @@ class AppEngine @Inject constructor(
                 DiscoveryEngineHolder.performanceMode = performanceMode.value
                 val isSwarmEnabled = runCatching { settingsStore.groupSwarmEnabled.first() }.getOrDefault(true)
                 DiscoveryEngineHolder.groupSwarmEnabled = isSwarmEnabled
+                val isBackgroundTransfers = runCatching { settingsStore.backgroundTransfers.first() }.getOrDefault(false)
+                DiscoveryEngineHolder.backgroundTransfers = isBackgroundTransfers
                 val result = runCatching { DiscoveryEngineHolder.ensureStarted(context) }
                 result
                     .onSuccess {
@@ -271,6 +273,9 @@ class AppEngine @Inject constructor(
                             settingsStore.smallerVideoForMany.collect {
                                 DiscoveryEngineHolder.smallerVideoForMany = it
                             }
+                        }
+                        scope.launch {
+                            settingsStore.backgroundTransfers.collect { DiscoveryEngineHolder.backgroundTransfers = it }
                         }
                         // ERROR-033: same mirroring for the performance tier, read by
                         // CallCoordinator and WsFlashNetwork through lambdas.
