@@ -42,6 +42,24 @@ class FlashProbeTest {
     }
 
     @Test
+    fun emit_flat_overloads_write_identical_lines_without_pairs() {
+        capture()
+
+        FlashProbe.emit("test.zero")
+        FlashProbe.emit("test.one", "k1", "v1")
+        FlashProbe.emit("test.two", "k1", "v1", "k2", 42)
+        FlashProbe.emit("test.three", "k1", "v1", "k2", 42, "k3", true)
+        FlashProbe.emit("test.four", "k1", "v1", "k2", 42, "k3", true, "k4", null)
+
+        assertEquals(5, lines.size)
+        assertEquals("test.zero", lines[0].message)
+        assertEquals("test.one k1=v1", lines[1].message)
+        assertEquals("test.two k1=v1 k2=42", lines[2].message)
+        assertEquals("test.three k1=v1 k2=42 k3=true", lines[3].message)
+        assertEquals("test.four k1=v1 k2=42 k3=true k4=-", lines[4].message)
+    }
+
+    @Test
     fun a_null_or_empty_value_is_a_dash() {
         assertEquals("x a=- b=-", FlashProbe.format("x", listOf("a" to null, "b" to "")))
     }

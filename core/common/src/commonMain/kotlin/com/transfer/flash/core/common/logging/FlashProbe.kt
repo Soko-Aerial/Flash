@@ -29,19 +29,211 @@ public object FlashProbe {
     @Volatile
     private var headerFields: List<Pair<String, Any?>> = emptyList()
 
+    /** Appends sanitized [value] directly to [sb] without intermediate allocations. */
+    internal fun appendSanitized(sb: StringBuilder, value: Any?) {
+        val text = value?.toString()
+        if (text.isNullOrEmpty()) {
+            sb.append('-')
+            return
+        }
+        val limit = minOf(text.length, VALUE_MAX)
+        for (i in 0 until limit) {
+            val c = text[i]
+            sb.append(if (c.isWhitespace() || c.isISOControl()) '_' else c)
+        }
+    }
+
+    /** Appends a key-value field directly to [sb]. */
+    internal fun appendField(sb: StringBuilder, key: String, value: Any?) {
+        sb.append(' ').append(key).append('=')
+        appendSanitized(sb, value)
+    }
+
+    /** Emits a zero-argument probe [name]. Never throws. */
+    public fun emit(name: String) {
+        try {
+            FlashLog.i(TAG, name)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 1 field. Avoids [Pair] and array allocations. */
+    public fun emit(name: String, k1: String, v1: Any?) {
+        try {
+            val sb = StringBuilder(name.length + 32)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 2 fields. Avoids [Pair] and array allocations. */
+    public fun emit(name: String, k1: String, v1: Any?, k2: String, v2: Any?) {
+        try {
+            val sb = StringBuilder(name.length + 64)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 3 fields. Avoids [Pair] and array allocations. */
+    public fun emit(name: String, k1: String, v1: Any?, k2: String, v2: Any?, k3: String, v3: Any?) {
+        try {
+            val sb = StringBuilder(name.length + 96)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 4 fields. Avoids [Pair] and array allocations. */
+    public fun emit(
+        name: String,
+        k1: String, v1: Any?,
+        k2: String, v2: Any?,
+        k3: String, v3: Any?,
+        k4: String, v4: Any?,
+    ) {
+        try {
+            val sb = StringBuilder(name.length + 128)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            appendField(sb, k4, v4)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 5 fields. Avoids [Pair] and array allocations. */
+    public fun emit(
+        name: String,
+        k1: String, v1: Any?,
+        k2: String, v2: Any?,
+        k3: String, v3: Any?,
+        k4: String, v4: Any?,
+        k5: String, v5: Any?,
+    ) {
+        try {
+            val sb = StringBuilder(name.length + 160)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            appendField(sb, k4, v4)
+            appendField(sb, k5, v5)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 6 fields. Avoids [Pair] and array allocations. */
+    public fun emit(
+        name: String,
+        k1: String, v1: Any?,
+        k2: String, v2: Any?,
+        k3: String, v3: Any?,
+        k4: String, v4: Any?,
+        k5: String, v5: Any?,
+        k6: String, v6: Any?,
+    ) {
+        try {
+            val sb = StringBuilder(name.length + 192)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            appendField(sb, k4, v4)
+            appendField(sb, k5, v5)
+            appendField(sb, k6, v6)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 7 fields. Avoids [Pair] and array allocations. */
+    public fun emit(
+        name: String,
+        k1: String, v1: Any?,
+        k2: String, v2: Any?,
+        k3: String, v3: Any?,
+        k4: String, v4: Any?,
+        k5: String, v5: Any?,
+        k6: String, v6: Any?,
+        k7: String, v7: Any?,
+    ) {
+        try {
+            val sb = StringBuilder(name.length + 224)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            appendField(sb, k4, v4)
+            appendField(sb, k5, v5)
+            appendField(sb, k6, v6)
+            appendField(sb, k7, v7)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Emits probe [name] with 8 fields. Avoids [Pair] and array allocations. */
+    public fun emit(
+        name: String,
+        k1: String, v1: Any?,
+        k2: String, v2: Any?,
+        k3: String, v3: Any?,
+        k4: String, v4: Any?,
+        k5: String, v5: Any?,
+        k6: String, v6: Any?,
+        k7: String, v7: Any?,
+        k8: String, v8: Any?,
+    ) {
+        try {
+            val sb = StringBuilder(name.length + 256)
+            sb.append(name)
+            appendField(sb, k1, v1)
+            appendField(sb, k2, v2)
+            appendField(sb, k3, v3)
+            appendField(sb, k4, v4)
+            appendField(sb, k5, v5)
+            appendField(sb, k6, v6)
+            appendField(sb, k7, v7)
+            appendField(sb, k8, v8)
+            FlashLog.i(TAG, sb.toString())
+        } catch (_: Throwable) {
+        }
+    }
+
     /** Emits probe [name] with [fields] (a `null` value is written as `-`). Never throws. */
     public fun emit(name: String, vararg fields: Pair<String, Any?>) {
         try {
-            FlashLog.i(TAG, format(name, fields.asList()))
+            val sb = StringBuilder(name.length + fields.size * 24)
+            sb.append(name)
+            for (i in 0 until fields.size) {
+                val pair = fields[i]
+                appendField(sb, pair.first, pair.second)
+            }
+            FlashLog.i(TAG, sb.toString())
         } catch (_: Throwable) {
         }
     }
 
     /** `name k=v k=v`, values [sanitize]d. Separate from [emit] so tests can assert the exact line. */
     public fun format(name: String, fields: List<Pair<String, Any?>>): String {
-        val sb = StringBuilder(name)
-        for ((key, value) in fields) {
-            sb.append(' ').append(key).append('=').append(sanitize(value))
+        val sb = StringBuilder(name.length + fields.size * 24)
+        sb.append(name)
+        for (i in 0 until fields.size) {
+            val pair = fields[i]
+            appendField(sb, pair.first, pair.second)
         }
         return sb.toString()
     }
@@ -77,7 +269,12 @@ public object FlashProbe {
      */
     public fun exportHeader(wallClockMs: Long): List<String> {
         val lines = mutableListOf<String>()
-        lines += format("session.header", listOf<Pair<String, Any?>>("exportAtMs" to wallClockMs) + headerFields)
+        val headerSb = StringBuilder("session.header exportAtMs=").append(wallClockMs)
+        for (i in 0 until headerFields.size) {
+            val pair = headerFields[i]
+            appendField(headerSb, pair.first, pair.second)
+        }
+        lines += headerSb.toString()
         try {
             snapshotProvider?.invoke()?.let { lines += it }
         } catch (t: Throwable) {
