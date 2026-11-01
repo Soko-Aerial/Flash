@@ -2864,6 +2864,15 @@ Not established. The message is the creation rule added for ERROR-095 / ADR-064 
 ### Next
 Decide whether the test should bring `beta` online before `createGroup` or whether the rule needs an exception for a session that is about to come up. Do not weaken the ERROR-095 rule to make a test pass.
 
+### 2026-11-01 - the failure does not reproduce on `44eed960`
+Run alone on the merged wave-3 tree: `:desktop:jvmTest --tests "*DesktopEngineGroupSessionUpTest*"` returned
+`BUILD SUCCESSFUL in 34s`, 1 test, 0 failures, and the 2026-10-30 result XML for the same class also shows 1 test,
+0 failures. So the deterministic failure described above is not present on the current `dev`. The entry stays **OPEN**
+rather than RESOLVED because the root cause was never established: something between 2026-10-06 and 2026-10-30 changed
+either the test's timing or the creation rule, and nobody identified which. Consequence for the optimization
+programme: plan section 11.E no longer tells the desktop stream to expect this failure (updated 2026-11-01), so a
+`:desktop:jvmTest` failure on a stream branch is to be treated as new, not as a known baseline.
+
 ### Related files
 - `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEngineGroupSessionUpTest.kt`
 

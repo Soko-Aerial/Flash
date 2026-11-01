@@ -7861,7 +7861,10 @@ still one Room transaction, so a failure rolls the whole page set back.
   `hubOnline` kept whatever it last held. The 600 000 ms constant only bounded how often the relay state was re-read, so the
   staleness was not "ten minutes" but the whole length of the relay session - and `HubFacade` picks the `HUB` route from
   `hubOnline` (ADR-229), so a colleague appearing or disappearing stayed mis-routed for that entire time. (This review
-  first recorded it as "30 s to 10 min", which understated it; corrected on reading the reverted hunk.)
+  first recorded it as "30 s to 10 min", which understated it; corrected on reading the reverted hunk. The "30 s" was
+  never the code's value either: `HubPresenceDefaults.POLL_MS` has been `15_000L` since the poll was introduced in
+  `f32f5e16`, and nothing overrides it, so the saving the finding claimed was twice what the constant allowed, before
+  it turned out to be no saving at all.)
 
 This is Wave 2's `O10-05`/`O10-07` failure mode again: an unmeasured saving bought by deleting an invariant the code
 documents. The uncited "120 radio activations/hour" and the "95 %" saving are withdrawn with it.

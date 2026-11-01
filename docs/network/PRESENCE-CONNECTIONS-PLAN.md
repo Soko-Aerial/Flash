@@ -404,3 +404,105 @@ in `docs/testing/TEST-BACKLOG.md`).
 What that means for the owner's scenario (phone off Wi-Fi, both apps rebuilt): the desktop's chat header reads
 **Radio only - texts go over the air** instead of Offline, the send no longer waits ~1 s on a dial that cannot succeed, and
 the bubble says when the acknowledgement is still outstanding.
+
+## 2026-11-01 - Recommendation: presence, push and hub sync (analysis only; nothing built, nothing decided)
+
+Owner question after wave 3 (which rejected `OPT-O16-03` for suppressing the hub presence poll): is the way we do
+online/presence the best one, can push notifications be added, and what about hub sync. Nothing in this section is
+implemented and no ADR is proposed yet - it is the reading of the code that a later stream should start from.
+
+### What is true in the code today (verified 2026-11-01, `dev` at `44eed960`)
+
+| Fact | Where |
+|---|---|
+| `hubOnline` is written by exactly one thing: the REST poll loop. No wire frame carries presence. | `EnterpriseHub.pollHubPresence`, `HubPresence.kt`; `RelayFrame` carries chat, mail and receipts only |
+| The poll runs every `HubPresenceDefaults.POLL_MS` = **15 s**, not 30 s: the constant has been `15_000L` since `f32f5e16` and no host overrides it. | `HubPresence.kt:69`, `EnterpriseHub.kt:103` |
+| Each poll is a **directory listing read**, not a presence read: up to `MAX_PAGES` 4 pages of 500 rows from `GET /api/v1/directory/people`, keeping only `PersonDto.online`. | `hubOnlineDeviceIds`, `PersonDto` |
+| There is **no backoff and no jitter**: the loop fetches, then `delay(hubPresencePollMs)` whatever happened. A failing hub is asked every 15 s for as long as the app runs, and every device in an organisation polls on the same boundary. | `EnterpriseHub.pollHubPresence` |
+| A failed round returns `null` = "we learned nothing", so the previous answer is kept instead of blinking every colleague offline. That part is right. | `hubOnlineDeviceIds` KDoc |
+| The per-device listing budget is 30 burst then 1 per 2 s (`HubRateLimits.directoryPeople` = `TokenBucketLimiter(30, 0.5)`), so one device's presence polling can spend about 16 of its own 30 requests a minute before any screen uses the listing. | `server/.../RateLimiter.kt:118` |
+| Staleness is a routing problem, not only a ring: `HubFacade` chooses the `HUB` route from `hubOnline` (ADR-229). | `HubFacade` |
+| LAN sightings are a separate and fresher source (discovery, `RememberedRoutes.sightings`) and are not merged with hub presence into one labelled state. | `RealFlashChatRepository`, `directLinkUi` |
+| Directory sync already has the right bones: cursor paging, epoch reset, single-flight, jittered exponential backoff, `isBackedOff`. The presence poll uses none of it. | `OrgDirectorySync` |
+| Batched mailbox acks are transport-only; `HubChatBridge` still acks one delivery at a time. | ADR-296, `OPT-O16-04` |
+
+**Cost, as arithmetic rather than measurement.** No harness has produced this figure and `PERF-H08` in
+`docs/testing/TEST-BACKLOG.md` is the test that would. A `PersonDto` carries device id, display name, department id,
+department name, role and `online`, so roughly 150-250 bytes; a full 2 000-row poll is therefore a few hundred KB,
+every 15 s, per enrolled device - order 1-2 MB/min for a device idling in the background. That is a sizing argument
+for the decision, not a headline.
+
+### Is it the best we can do without a push channel? - right in shape, wrong in cost
+
+The *shape* is right: with no presence push anywhere on the wire, a periodic pull is the only honest way to learn
+liveness, and the failure semantics are correct. What is wrong is that we pay for the whole directory to read one
+bitmask, and that the loop has no failure discipline.
+
+1. **Single-flight plus jittered backoff on failure**, reusing the `OrgDirectorySync` pattern instead of inventing a
+   second one. No wire change, and it removes "a hub answering 5xx is asked four times a minute forever, in phase with
+   every other device in the organisation".
+2. **Poll while a consumer exists, plus a slow reconcile tick.** `hubPresencePollMs = 0` already disables the poll, but
+   there is no subscription gate: a device with the app in the tray still polls at 15 s. This must not become "poll only
+   while the window is visible" - ADR-298 rejects gating on window state - but "poll while something collects
+   `hubOnline`, and reconcile every few minutes regardless" is a different and safe rule.
+3. **Ask for presence, not for the directory.** A `fields=deviceId,online` projection on the existing route, or a
+   dedicated `GET /api/v1/directory/presence` returning only online ids, collapses 4 x 500 rows into one small answer.
+   This is the highest-value hub-side change and it needs an owner decision plus `docs/protocol.md`, because it is a
+   route/contract addition (`docs/protocol-routes.txt` is checked by `RouteTableContractTest`).
+4. **Name the source in the UI.** A 15 s-stale hub answer and a live LAN sighting are drawn with the same ring today.
+   The "Radio only" work (ADR-227/ADR-228) established the pattern for a ranked presentation state that is not a
+   presence source; hub presence deserves the same ("Online through the hub"), and a last-seen timestamp if we ever
+   store one.
+
+### Push notifications - what is actually being asked, and the recommendation
+
+Two different problems hide in the word "push": (a) **not losing messages**, and (b) **noticing them promptly while the
+app is frozen**. Flash already answers (a) with no push at all: the hub mailbox and the relay hold a message until the
+app next runs, and the outbox retries until it is acknowledged. Nothing is lost today; what is missing is timeliness.
+
+For (b) there are exactly three mechanisms, and the project's own research already measured the third:
+
+- **FCM** - the only thing that reliably wakes a dozing app on stock Android. It needs internet, Google Play services,
+  a Firebase project and a sender identity per organisation, and it hands delivery metadata to a third party.
+  `docs/network/TRANSSION-BACKGROUND-DELIVERY-RESEARCH.md` records the owner's current position (**FCM ruled out**) and
+  marks the decisive question **unverified**: whether a high-priority FCM message unfreezes Transsion's Hiber
+  (`HIB-07`). Without that answer FCM could be built and still not deliver on the handsets this project exists for.
+- **Our own always-on socket** - the relay. Same connection we already keep, no new dependency, works on desktop and
+  stock Android; it dies exactly when the OS freezes the process, which on Transsion is the whole UID (`HIB-10`), so it
+  cannot be sold as "background delivery".
+- **OEM allowlist** - manual, per device, already documented; not a product feature.
+
+**Recommendation: do not build push now.** Do the cheap hardening first; when timely notice is actually wanted, build
+the thing that needs no new dependency and no new party - a **hub -> client presence/message frame on the relay**, so a
+connected app notifies at once - and treat FCM as an optional, off-by-default channel behind its own ADR, gated on
+`HIB-07` answering yes. The honest UI sentence stays what ADR-232 already implies: notifications arrive while the app
+is allowed to listen.
+
+### Hub sync
+
+The directory/sync side is in reasonable shape and should not be rebuilt: cursors, epoch resets, single-flight and
+backoff are all there, and the sync path is O(members + departments) now. The gap is that **liveness is not part of
+the delta stream**: the directory feed carries membership and presence is polled beside it. If a relay presence frame
+is ever added, the shape that keeps this simple is:
+
+- the hub emits a **coalesced delta** on relay session open and close, filtered through the same visibility rule the
+  people listing uses (`presenceVisible`), so a hidden department's liveness cannot leak;
+- the client keeps `hubOnline` as "last known set plus applied deltas", and the 15 s poll becomes a **reconcile**
+  measured in minutes - which is precisely the condition ADR-298 named for revisiting the suppression it rejected;
+- privacy and flood control are part of the frame, not an afterthought: deltas only, capped per roster, never a full
+  roster broadcast on every connect.
+
+Two smaller items belong with it rather than in a separate effort: finish the *caller* of the batched mailbox ack
+(`OPT-O16-04` is transport-only, so the drain is still stop-and-wait), and leave the relay byte budget and the device
+certificate lifetime alone - wave 3 has just tuned both.
+
+### Recommended order (for a later wave, not now)
+
+1. Presence loop discipline: single-flight, jitter, backoff on failure (no wire change).
+2. A presence-only answer on the hub (projection or route) - owner decision, protocol doc, route contract test.
+3. Relay presence deltas, which is the condition ADR-298 set for revisiting the suppression.
+4. UI: name the presence source instead of drawing a stale hub answer like a live sighting.
+5. FCM only if `HIB-07` says yes and the owner reverses the current position.
+
+What not to do: change `POLL_MS` as a performance win (ADR-298), poll the people listing more often "to feel live", or
+gate any of this on window or minimised state.

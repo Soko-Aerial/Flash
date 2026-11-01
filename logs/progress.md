@@ -1,5 +1,57 @@
 # Progress Log
 
+## 2026-11-01 - Wave 4 prompts corrected, and the presence/push/hub-sync recommendation recorded (docs only)
+
+### Worked on
+Two things the owner asked for after wave 3: bring the stream E and K kickoff prompts up to the current tree, and answer
+"is the way we do online/presence the best, can we add push notifications, and what about hub sync" without building
+anything.
+
+### Changed
+- `docs/plans/OPTIMIZATION-PARALLEL-PLAN.md` section 11.E (desktop) and 11.K (kernel): each now carries a TREE STATE
+  block (`dev` at `44eed960`, both gates green, no known-expected failures), retires the stale "note the known ERROR-106
+  failures" instruction, and adds a "what changed under you in wave 3" section - `setScreenActive` wired on Android only
+  with the desktop TODO now naming `O19-07`, the ECO guard rule (the caller owns it; downscaling drops peers mid-call or
+  mid-transfer), ADR-298's "never slow or suppress the hub presence poll", K's `O27-06` rule (a test-tag change must
+  update the section 6.3/6.3.1 commands and counts in the same commit, and no security test may leave every gate),
+  `FlashProbe` name stability against `docs/testing/PROBES.md`, and the wave-3 lesson that every regression the review
+  caught lived in a caller. Both also carry the ERROR-938 rule: no new wall-clock budget assertions.
+- Section 9's hub batch list now says `HubPresenceDefaults.POLL_MS` = 15 s (the "30 s" it carried was never the code's
+  value) and records that `O16-03` was rejected, so nobody re-attempts it without a presence push channel.
+- `docs/network/PRESENCE-CONNECTIONS-PLAN.md`: new section "2026-11-01 - Recommendation: presence, push and hub sync" -
+  the verified facts (15 s poll, 4 x 500-row listing read per poll, no backoff, no jitter, no presence frame on the wire,
+  `HubFacade` routing on `hubOnline`, directory sync's single-flight/backoff that presence does not use), the four
+  improvements that need no wire change, why FCM is not recommended now (`HIB-07` unverified, owner position unchanged),
+  the relay-based alternative, and a five-step order for a later wave.
+- `logs/errors.md` ERROR-106: a dated note that the failure does not reproduce on `44eed960` (run alone: `BUILD SUCCESSFUL
+  in 34s`, 1 test, 0 failures), kept OPEN because the root cause was never established.
+- `docs/testing/TEST-BACKLOG.md`: `PERF-H08` - measure what the presence poll actually costs, since that number is what the
+  recommendation's arithmetic rests on and `OPT-O16-03`'s headline was withdrawn.
+- `docs/decisions.md` ADR-298 and `logs/streams/hub/INTEGRATOR-REVIEW.md`: the "30 s" in their historical sentence was also
+  wrong; the constant has been 15 s since `f32f5e16`.
+
+### Why
+The prompts are the contract a stream works from, and two of theirs had gone stale in ways that would cost real time: a
+baseline of expected failures that no longer fail, and no warning that the discovery seam they must wire fails dangerously
+for a caller that forgets its guard. The presence question needed a written answer because the next waves' scope depends on
+it, and a chat answer would not survive the session.
+
+### Verification
+Docs only - no code changed, nothing built, nothing device-verified. Every claim was checked against the code first:
+`HubPresenceDefaults.POLL_MS = 15_000L` (`HubPresence.kt:69`), `MAX_PAGES = 4`, `PAGE_SIZE = 500`, the poll loop
+(`EnterpriseHub.kt:229-246`, fetch then an unconditional `delay`), `TokenBucketLimiter(30, 0.5)` for `directoryPeople`
+(`RateLimiter.kt:118`), `PersonDto`'s six fields, `RelayFrame` carrying no presence frame, and
+`:desktop:jvmTest --tests "*DesktopEngineGroupSessionUpTest*"` green on `44eed960`.
+
+### Remaining
+- Nothing in the recommendation is built or accepted; it needs an owner decision before a stream acts on it.
+- Wave 4 (E then K) is unstarted; its prompts are current as of this entry.
+- `PERF-H08` is owed.
+
+### Next AI
+If wave 4 is started, launch E and K from sections 11.E / 11.K as they now stand, and do not re-attempt `OPT-O16-03` in any
+form until a presence push channel exists.
+
 ## 2026-11-01 - Wave 3 merge: Stream G (Android) and Stream H (hub), both reviewed and repaired
 
 ### Worked on

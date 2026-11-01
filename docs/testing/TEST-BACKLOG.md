@@ -7064,3 +7064,15 @@ that the client still acks one message at a time, and `PERF-H07` covers the repa
   attempt per received index). No `chunk-*.part` file survives a resumed upload, and the completed download matches the
   source byte for byte.
 - **Status:** TODO.
+
+### PERF-H08 - What the hub presence poll actually costs (the number behind `OPT-O16-03`'s revisit condition)
+- **Area:** client / hub presence (`EnterpriseHub.pollHubPresence`, `hubOnlineDeviceIds`; ADR-298)
+- **Source:** `docs/network/PRESENCE-CONNECTIONS-PLAN.md` "2026-11-01 - Recommendation: presence, push and hub sync";
+  the withdrawn figures of `OPT-O16-03`.
+- **Setup:** an enrolled client against a hub seeded with 0, 1, 500 and 2 000 visible members, with the hub's request log
+  and a client-side byte counter, on 4G as well as Wi-Fi.
+- **Steps:** idle for ten minutes in three states - nothing else running; a chat open; the app closed to the tray - and
+  record requests, response bytes and radio state changes for each.
+- **Pass condition:** the numbers are recorded and they confirm or refute the recommendation's arithmetic (a full poll is
+  up to 4 requests of 500 rows, every 15 s: order 1-2 MB/min). No wall-clock assertion (ERROR-938).
+- **Status:** TODO.
