@@ -2258,7 +2258,14 @@ object DiscoveryEngineHolder {
             edges = merge(engine.discoveredEndpoints, presence.tips, modes.dialFilter, remembered.changes, sweep.hitsChanged),
         )
         sweepController = sweep
-        sweepJob = sweep.start()
+        // OPT-O01-04: defer automatic subnet sweep fallback during cold start (30s) so probe flood
+        // does not contend with initial rendering, UI thread queries, and local mDNS discovery.
+        sweepJob = appScope.launch {
+            delay(INITIAL_SWEEP_START_DELAY_MS)
+            if (isActive) {
+                sweep.start()
+            }
+        }
         sweepStateJob = appScope.launch { sweep.state.collect { _sweepState.value = it } }
         presenceJob = presence.start(
             edges = merge(networkImpl.activeSessions, engine.discoveredEndpoints, engine.discoveryMode, _discoveryMode),
@@ -2341,8 +2348,29 @@ object DiscoveryEngineHolder {
      * Safe to call when the engine has not started (no-op).
      */
     fun onScreenOn() {
+        composite?.setScreenActive(true)
         appContextRef?.let { FlashBackgroundService.retryPromotionIfRefused(it) }
         reArm("Screen-on")
+    }
+
+    /**
+     * Called when the screen turns off (OPT-O13-05, OPT-O10-01).
+     * If no transfer, call, or PTT session is active, downscales discovery to ECO.
+     */
+    fun onScreenOff() {
+        val hasActiveTransfer = transferRepo?.activeTransfers?.value?.any {
+            it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+        } == true
+        val hasActiveCall = calling?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
+        val hasActivePtt = pttEngine?.state?.value?.let { it !is com.transfer.flash.core.ptt.floor.PttFloorState.Idle } == true
+
+        if (!hasActiveTransfer && !hasActiveCall && !hasActivePtt) {
+            Log.i(TAG_WS, "Screen-off and mesh idle: downscaling discovery to ECO (OPT-O10-01, OPT-O13-05)")
+            composite?.setScreenActive(false)
+        } else {
+            Log.i(TAG_WS, "Screen-off with active workload (transfer=$hasActiveTransfer, call=$hasActiveCall, ptt=$hasActivePtt): retaining active discovery mode")
+        }
     }
 
     /**
@@ -2977,6 +3005,15 @@ object DiscoveryEngineHolder {
     fun updatePowerLocksState() {
         updateWifiLockState()
         updateCpuWakeLockState()
+        checkScreenOffDownscale()
+    }
+
+    private fun checkScreenOffDownscale() {
+        val context = appContextRef ?: return
+        val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        if (!pm.isInteractive) {
+            onScreenOff()
+        }
     }
 
     /**
@@ -3072,8 +3109,12 @@ object DiscoveryEngineHolder {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
-                        Log.i(TAG_WS, "Screen-on (${intent.action}) — re-arming discovery + auto-connect")
+                        Log.i(TAG_WS, "Screen-on (${intent.action}) — re-arming discovery + auto-connect (OPT-O10-01)")
                         onScreenOn()
+                    }
+                    Intent.ACTION_SCREEN_OFF -> {
+                        Log.i(TAG_WS, "Screen-off (${intent.action}) — checking active workloads before ECO downscale (OPT-O13-05, OPT-O10-01)")
+                        onScreenOff()
                     }
                 }
             }
@@ -3081,6 +3122,7 @@ object DiscoveryEngineHolder {
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
+            addAction(Intent.ACTION_SCREEN_OFF)
         }
         // NOT_EXPORTED: both actions are protected system broadcasts, and API 34+ requires an
         // explicit export flag for every runtime registration.
@@ -3306,6 +3348,7 @@ object DiscoveryEngineHolder {
     private const val WIFI_LOCK_TAG = "flash:ws-mesh-wifi"
     private const val WAKE_LOCK_TIMEOUT_MS = 10 * 60 * 1000L
     private const val WAKE_LOCK_REFRESH_INTERVAL_MS = 5 * 60 * 1000L
+    private const val INITIAL_SWEEP_START_DELAY_MS = 30_000L
 }
 
 /**

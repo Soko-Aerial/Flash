@@ -516,7 +516,7 @@ class FlashBackgroundService : Service() {
         }
 
         fun reevaluateKeepAlive() {
-            activeInstance?.keepAlive?.reevaluateTier()
+            activeInstance?.keepAlive?.onAppForegrounded()
         }
 
         fun setSessionActive(active: Boolean) {

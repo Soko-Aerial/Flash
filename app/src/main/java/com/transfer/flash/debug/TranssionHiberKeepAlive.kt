@@ -22,6 +22,7 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -67,6 +68,8 @@ class TranssionHiberKeepAlive(
     private val sessionActiveChecker: (() -> Boolean)? = null,
     private val activeListResolver: (() -> String)? = null,
     private val onTierChanged: ((oldTier: KeepAliveTier, newTier: KeepAliveTier) -> Unit)? = null,
+    private val screenInteractiveChecker: (() -> Boolean)? = null,
+    private val timeSource: () -> Long = { System.currentTimeMillis() },
 ) {
     enum class KeepAliveTier {
         BLUETOOTH,
@@ -92,6 +95,17 @@ class TranssionHiberKeepAlive(
     val isSessionActive: Boolean
         get() = sessionActiveChecker?.invoke() ?: internalSessionActive
 
+    val isScreenInteractive: Boolean
+        get() = screenInteractiveChecker?.invoke()
+            ?: ((context.getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive == true)
+
+    @Volatile
+    var lastPermanentFocusLossMs: Long = 0L
+        private set
+
+    val isPermanentFocusLossCooldownActive: Boolean
+        get() = (timeSource() - lastPermanentFocusLossMs) < PERMANENT_FOCUS_LOSS_COOLDOWN_MS
+
     fun setSessionActive(active: Boolean) {
         if (internalSessionActive == active) return
         internalSessionActive = active
@@ -113,6 +127,7 @@ class TranssionHiberKeepAlive(
     private var audioFocusRequest: AudioFocusRequest? = null
 
     private var receiverRegistered: Boolean = false
+    private var screenReceiverRegistered: Boolean = false
 
     private val bluetoothReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -126,15 +141,29 @@ class TranssionHiberKeepAlive(
         }
     }
 
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> onScreenStateChanged(isInteractive = true)
+                Intent.ACTION_SCREEN_OFF -> onScreenStateChanged(isInteractive = false)
+            }
+        }
+    }
+
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         Log.d(TAG, "Tier 3 AudioFocus change: $focusChange")
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
                 Log.i(TAG, "Tier 3 audio focus gained/regained")
+                lastPermanentFocusLossMs = 0L
                 if (currentTier == KeepAliveTier.AUDIO && isSessionActive) {
-                    if (audioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                        runCatching { audioTrack?.play() }
-                        Log.i(TAG, "Resumed silent AudioTrack keep-alive after regaining focus")
+                    if (!isScreenInteractive) {
+                        if (audioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                            runCatching { audioTrack?.play() }
+                            Log.i(TAG, "Resumed silent AudioTrack keep-alive after regaining focus (screen off)")
+                        }
+                    } else {
+                        Log.i(TAG, "Audio focus gained but screen is interactive; leaving silent AudioTrack paused (OPT-O13-04)")
                     }
                 }
             }
@@ -144,7 +173,8 @@ class TranssionHiberKeepAlive(
                 runCatching { audioTrack?.pause() }
             }
             AudioManager.AUDIOFOCUS_LOSS -> {
-                Log.i(TAG, "Tier 3 audio focus lost permanently ($focusChange); pausing silent audio without fighting")
+                lastPermanentFocusLossMs = timeSource()
+                Log.i(TAG, "Tier 3 audio focus lost permanently ($focusChange); armed 10-min cooldown, pausing silent audio without fighting (OPT-O13-07)")
                 runCatching { audioTrack?.pause() }
                 // Graceful fallback: do not fight for focus! Attempt fallback to Bluetooth scan or transfer traffic shield
                 if (!isBleScanning) {
@@ -190,6 +220,21 @@ class TranssionHiberKeepAlive(
             }.onFailure { Log.w(TAG, "Failed to register Bluetooth state receiver", it) }
         }
 
+        if (!screenReceiverRegistered) {
+            runCatching {
+                val filter = IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_ON)
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(screenReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(screenReceiver, filter)
+                }
+                screenReceiverRegistered = true
+            }.onFailure { Log.w(TAG, "Failed to register screen state receiver", it) }
+        }
+
         reevaluateTier()
     }
 
@@ -204,6 +249,11 @@ class TranssionHiberKeepAlive(
         if (receiverRegistered) {
             runCatching { context.unregisterReceiver(bluetoothReceiver) }
             receiverRegistered = false
+        }
+
+        if (screenReceiverRegistered) {
+            runCatching { context.unregisterReceiver(screenReceiver) }
+            screenReceiverRegistered = false
         }
 
         verificationRunnable?.let {
@@ -277,6 +327,10 @@ class TranssionHiberKeepAlive(
         if (brandResolver() != OemBatteryOptimizationHelper.OemBrand.TRANSSION) return KeepAliveTier.NONE
         if (!isSessionActive) return KeepAliveTier.NONE
         if (canUseBluetoothTier()) return KeepAliveTier.BLUETOOTH
+        if (isPermanentFocusLossCooldownActive) {
+            Log.d(TAG, "Audio focus cooldown active; skipping AUDIO tier to avoid fighting external media (OPT-O13-07)")
+            return KeepAliveTier.NONE
+        }
         return KeepAliveTier.AUDIO
     }
 
@@ -475,6 +529,10 @@ class TranssionHiberKeepAlive(
 
     private fun startAudio(): Boolean {
         if (audioTrack != null) return true
+        if (isPermanentFocusLossCooldownActive) {
+            Log.w(TAG, "Tier 3 (AUDIO) focus cooldown active (${(timeSource() - lastPermanentFocusLossMs) / 1000}s); not requesting focus to avoid fighting external media (OPT-O13-07)")
+            return false
+        }
         return try {
             val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
             val attrs = AudioAttributes.Builder()
@@ -526,14 +584,19 @@ class TranssionHiberKeepAlive(
             audioTrack = track
 
             if (res == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                track.play()
-                Log.i(TAG, "Tier 3 (AUDIO) started: Audio focus granted, silent static PCM loop running (STATUS_AUDIO_FOCUS)")
+                if (!isScreenInteractive) {
+                    track.play()
+                    Log.i(TAG, "Tier 3 (AUDIO) started: Audio focus granted, silent static PCM loop running (screen off)")
+                } else {
+                    Log.i(TAG, "Tier 3 (AUDIO) started: Audio focus granted, static PCM loop paused while screen is interactive (OPT-O13-04)")
+                }
                 true
             } else if (res == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
                 Log.i(TAG, "Tier 3 (AUDIO) focus delayed; waiting for AUDIOFOCUS_GAIN before playing")
                 true
             } else {
-                Log.w(TAG, "Tier 3 (AUDIO) focus denied (res=$res); not fighting, falling back to Bluetooth/traffic shield")
+                lastPermanentFocusLossMs = timeSource()
+                Log.w(TAG, "Tier 3 (AUDIO) focus denied (res=$res); armed cooldown, not fighting, falling back to Bluetooth/traffic shield (OPT-O13-07)")
                 if (!isBleScanning) {
                     startBluetooth()
                 }
@@ -543,6 +606,33 @@ class TranssionHiberKeepAlive(
             Log.w(TAG, "Failed to start Audio tier: ${t.message}", t)
             false
         }
+    }
+
+    /**
+     * Pauses the silent AudioTrack when screen turns ON and resumes it when screen turns OFF (OPT-O13-04).
+     */
+    fun onScreenStateChanged(isInteractive: Boolean) {
+        if (!isStarted || currentTier != KeepAliveTier.AUDIO) return
+        val track = audioTrack ?: return
+        if (isInteractive) {
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                runCatching { track.pause() }
+                Log.i(TAG, "Paused Tier 3 silent AudioTrack: screen is interactive (OPT-O13-04)")
+            }
+        } else {
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING && isSessionActive && !isPermanentFocusLossCooldownActive) {
+                runCatching { track.play() }
+                Log.i(TAG, "Resumed Tier 3 silent AudioTrack: screen is off (OPT-O13-04)")
+            }
+        }
+    }
+
+    /**
+     * Resets permanent focus loss cooldown when user re-enters the app (OPT-O13-07).
+     */
+    fun onAppForegrounded() {
+        lastPermanentFocusLossMs = 0L
+        reevaluateTier()
     }
 
     private fun stopAudio() {
@@ -566,6 +656,7 @@ class TranssionHiberKeepAlive(
     }
 
     companion object {
+        const val PERMANENT_FOCUS_LOSS_COOLDOWN_MS: Long = 10 * 60 * 1000L
         private const val TAG = "HIBER_KEEPALIVE"
     }
 }
