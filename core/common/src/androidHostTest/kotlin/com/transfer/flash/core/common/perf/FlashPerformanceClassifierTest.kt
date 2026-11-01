@@ -53,8 +53,16 @@ class FlashPerformanceClassifierTest {
     )
 
     @Test
-    fun belfone_is_low() {
+    fun belfone_is_ultra_low() {
         val verdict = FlashPerformanceClassifier.classify(belfone)
+        assertEquals(FlashPerformanceMode.ULTRA_LOW, verdict.mode)
+        assertTrue("reason should name BelFone-class: ${verdict.reason}", verdict.reason.contains("BelFone-class"))
+    }
+
+    @Test
+    fun low_ram_gate_without_ultra_low_is_low() {
+        val lowDevice = belfone.copy(apiLevel = 28) // API 28 > 27, so ultraLowGate does not trip, but RAM 1800 <= 2560 trips gate
+        val verdict = FlashPerformanceClassifier.classify(lowDevice)
         assertEquals(FlashPerformanceMode.LOW, verdict.mode)
         assertTrue("reason should name RAM: ${verdict.reason}", verdict.reason.contains("RAM"))
     }

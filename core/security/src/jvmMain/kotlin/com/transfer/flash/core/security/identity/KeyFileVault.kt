@@ -3,6 +3,7 @@
 package com.transfer.flash.core.security.identity
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
+import com.transfer.flash.core.security.crypto.sharedSecureRandom
 import java.io.File
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
@@ -45,7 +46,7 @@ internal interface MasterKeySource {
 internal class FileMasterKey(private val keyFile: File) : MasterKeySource {
     override val tag: Byte = TAG
     private val lock = Any()
-    private val random = SecureRandom()
+    private val random = sharedSecureRandom
 
     override fun load(): ByteArray? {
         if (!keyFile.isFile) return null
@@ -99,7 +100,7 @@ internal class FileMasterKey(private val keyFile: File) : MasterKeySource {
 internal class KeyringMasterKey(private val store: SecretKeyStore) : MasterKeySource {
     override val tag: Byte = TAG
     private val lock = Any()
-    private val random = SecureRandom()
+    private val random = sharedSecureRandom
 
     override fun load(): ByteArray? = store.lookup()?.also {
         require(it.size == SealedVault.KEY_BYTES) { "keyring master key has the wrong size (${it.size})" }
@@ -133,7 +134,7 @@ internal class KeyringMasterKey(private val store: SecretKeyStore) : MasterKeySo
  *   still ask the keyring for it. Windows keeps DPAPI.
  */
 internal class SealedVault(private val sources: List<MasterKeySource>) {
-    private val random = SecureRandom()
+    private val random = sharedSecureRandom
 
     init {
         require(sources.isNotEmpty()) { "a vault needs at least one master key source" }

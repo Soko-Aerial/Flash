@@ -101,6 +101,48 @@ class PlatformCryptoParityTest {
     }
 
     @Test
+    fun cached_public_key_is_a_snapshot_not_the_callers_mutable_array() {
+        val keyPair = ecP256GenerateKeyPair()
+        val data = "cache-key snapshot".encodeToByteArray()
+        val signature = ecP256Sign(keyPair.privateKey, data)
+        val encoded = keyPair.publicKeyEncoded.copyOf()
+        assertTrue(ecP256Verify(encoded, data, signature))
+
+        // Preserve the content hash while making the DER header invalid. A cache may use
+        // this hash to choose a bucket, but must still compare immutable encoded bytes.
+        val initialHash = encoded.contentHashCode()
+        encoded[0] = (encoded[0] + 1).toByte()
+        encoded[1] = (encoded[1] - 31).toByte()
+        assertEquals(initialHash, encoded.contentHashCode())
+        assertFalse(ecP256Verify(encoded.copyOf(), data, signature))
+        assertTrue(ecP256Verify(keyPair.publicKeyEncoded, data, signature))
+    }
+
+    @Test
+    fun aesGcm_recovers_after_authentication_failure_and_key_changes() {
+        val key = secureRandomBytes(FlashCrypto.SESSION_KEY_SIZE_BYTES)
+        val otherKey = secureRandomBytes(FlashCrypto.SESSION_KEY_SIZE_BYTES)
+        val nonce = secureRandomBytes(E2eFrameCodec.NONCE_BYTES)
+        val aad = "state-reset".encodeToByteArray()
+        val plain = "payload".encodeToByteArray()
+        val sealed = aesGcmSeal(key, nonce, aad, plain)
+        assertFails { aesGcmOpen(otherKey, nonce, aad, sealed) }
+        assertTrue(aesGcmOpen(key, nonce, aad, sealed).contentEquals(plain))
+        val otherNonce = secureRandomBytes(E2eFrameCodec.NONCE_BYTES)
+        val otherSealed = aesGcmSeal(otherKey, otherNonce, aad, plain)
+        assertTrue(aesGcmOpen(otherKey, otherNonce, aad, otherSealed).contentEquals(plain))
+    }
+
+    @Test
+    fun hmacSha256_reinitializes_for_each_key() {
+        val data = "what do ya want for nothing?".encodeToByteArray()
+        val key = "Jefe".encodeToByteArray()
+        val first = hmacSha256(key, data)
+        assertFalse(first.contentEquals(hmacSha256("another key".encodeToByteArray(), data)))
+        assertTrue(first.contentEquals(hmacSha256(key, data)))
+    }
+
+    @Test
     fun ecP256_shared_secret_agrees_in_both_directions() {
         val alice = ecP256GenerateKeyPair()
         val bob = ecP256GenerateKeyPair()
