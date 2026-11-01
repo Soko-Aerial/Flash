@@ -224,13 +224,15 @@ public class EnterpriseHub(
     /**
      * Keeps [hubOnlinePeerIds] fresh: ask the hub, keep the previous answer when the round fails, sleep, repeat. Stops
      * while unenrolled (and clears, so a signed-out device claims nobody is online through an organisation it left).
+     * Downscaled while the relay WebSocket is connected (OPT-O16-03).
      */
     private suspend fun pollHubPresence() {
         while (currentCoroutineContext().isActive) {
             val credentials = trustStore.credentials.value
+            val isRelayOnline = relay.state.value.isOnline
             if (credentials == null) {
                 if (hubOnline.value.isNotEmpty()) hubOnline.value = emptySet()
-            } else {
+            } else if (!isRelayOnline) {
                 val ids = hubOnlineDeviceIds(directory, credentials.hubUrl)
                 if (ids != null && ids != hubOnline.value) hubOnline.value = ids
                 // ADR-229: path selection now prefers the radio over a mailbox deposit, so a log has to show
@@ -241,7 +243,12 @@ public class EnterpriseHub(
                     "count" to (ids?.size ?: hubOnline.value.size),
                 )
             }
-            delay(hubPresencePollMs)
+            val pollDelay = if (isRelayOnline) {
+                maxOf(hubPresencePollMs, RELAY_ONLINE_PRESENCE_POLL_MS)
+            } else {
+                hubPresencePollMs
+            }
+            delay(pollDelay)
         }
     }
 
@@ -484,3 +491,4 @@ public class EnterpriseHub(
 }
 
 private const val WITHDRAW_TIMEOUT_MS: Long = 5_000L
+private const val RELAY_ONLINE_PRESENCE_POLL_MS: Long = 600_000L // 10 minutes (OPT-O16-03)
