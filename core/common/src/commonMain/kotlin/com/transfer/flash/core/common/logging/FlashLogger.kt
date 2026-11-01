@@ -53,6 +53,12 @@ internal class FlashLogger(
     private val maxCapacity: Int = capacity
     private val buffer = ArrayDeque<FlashLogEntry>(capacity)
 
+    /** Logs at [FlashLogLevel.DEBUG]. */
+    fun d(message: String) = log(FlashLogLevel.DEBUG, message, null)
+
+    /** Logs at [FlashLogLevel.DEBUG] with an optional throwable for stack-trace capture. */
+    fun d(message: String, throwable: Throwable?) = log(FlashLogLevel.DEBUG, message, throwable)
+
     /** Logs at [FlashLogLevel.INFO]. */
     fun i(message: String) = log(FlashLogLevel.INFO, message, null)
 
@@ -106,6 +112,7 @@ internal class FlashLogger(
         throwable: Throwable?,
     ) {
         when (level) {
+            FlashLogLevel.DEBUG -> FlashLog.d(tag, message, throwable)
             FlashLogLevel.INFO -> FlashLog.i(tag, message, throwable)
             FlashLogLevel.WARN -> FlashLog.w(tag, message, throwable)
             FlashLogLevel.ERROR -> FlashLog.e(tag, message, throwable)
