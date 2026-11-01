@@ -125,7 +125,81 @@ then holds a 100 ms settle window so "listeners fire **once**" is still asserted
 failing tests now use it (`revokingADeviceRevokes...` line 113 and `revokingTwiceChangesNothing...`).
 
 ### Verification
-`:server:test` in full: see the integrator run recorded in `logs/streams/hub/progress.md`.
+`:server:test` in full: see the integrator run recorded in `logs/streams/hub/INTEGRATOR-REVIEW.md`.
 
 ### Status
 RESOLVED (test-side; the asynchronous notification path is unchanged).
+
+---
+
+## ERROR-936 — Compressed console asset answers 304 without `Vary: Accept-Encoding`
+
+### Date
+2026-11-01
+
+### Area
+Admin console static assets (OPT-O18-01)
+
+### Symptoms
+Found on review, before merge: `StaticAssets.respond` appended `Vary: Accept-Encoding` only on the two branches that chose a
+compressed body. The `If-None-Match` branch returned 304 before either of them ran.
+
+### Root cause
+The 304 was treated as "no body, no negotiation", but a 304 revalidates a *representation*: a client (or an intermediary
+cache) holding the gzip variant and one holding the identity variant share the same ETag, so an answer that does not vary
+on `Accept-Encoding` lets the wrong representation be reused.
+
+### Working fix
+`Vary` is now set as soon as the asset is known to have a compressed variant, i.e. **before** the 304 branch. New test
+`aNotModifiedAnswerAlsoVariesOnAcceptEncoding`.
+
+### Verification
+`:server:test --tests *AdminConsoleWebTest*` — green, including the new test.
+
+### Related files
+- `server/src/main/kotlin/com/transfer/flash/server/admin/AdminConsoleWeb.kt`
+- `server/src/test/kotlin/com/transfer/flash/server/admin/AdminConsoleWebTest.kt`
+
+### Status
+RESOLVED (unit-tested; not device- or browser-verified).
+
+---
+
+## ERROR-937 — `CachedMailboxStatsTest.aFailingRefreshKeepsTheLastNumbersAndIsRetried` fails under suite load
+
+### Date
+2026-11-01
+
+### Area
+Server observability tests (`CachedMailboxStatsTest`)
+
+### Symptoms
+The integrator's first full `:server:test` run on this branch: 664 tests, 1 failed —
+`AssertionError: expected:<11> but was:<10>` at `CachedMailboxStatsTest.kt:86`. Alone, the test passes.
+
+### Root cause
+Not this branch's product code (`git diff dev..HEAD -- server/src/main/kotlin/.../observability/` is empty). It is the
+documented flake in `docs/audit/optimization-2026-10-23/00-baseline.md:14`: the test polls a **wall-clock** deadline
+(`System.currentTimeMillis() + 5_000`) for a refresh that `CachedMailboxStats` dispatches to `Dispatchers.IO`. When the
+rest of the suite saturates those threads, the deadline expires before the refresh even starts. `O27-test-suite-
+performance.md` prescribed exactly this fix for it.
+
+### Failed attempt
+Treating it as "green when rerun alone" and leaving it as a flake. That is what the audit recorded, and it makes every
+future `:server:test` run look like it might have a mailbox regression.
+
+### Working fix
+Test-side, using an existing constructor parameter: the test builds the cache with
+`scope = CoroutineScope(Dispatchers.Unconfined)`, so the refresh runs on the calling thread. The polling loop and the sleep
+are gone, and the test now asserts the product's actual semantics — the read that starts a refresh still serves the old
+snapshot, the next read serves the new numbers. Production behaviour and the production scope are unchanged.
+
+### Verification
+`:server:test --tests *CachedMailboxStatsTest*` green; the full `:server:test` afterwards: see
+`logs/streams/hub/INTEGRATOR-REVIEW.md` §header.
+
+### Related files
+- `server/src/test/kotlin/com/transfer/flash/server/observability/CachedMailboxStatsTest.kt`
+
+### Status
+RESOLVED (test-side).

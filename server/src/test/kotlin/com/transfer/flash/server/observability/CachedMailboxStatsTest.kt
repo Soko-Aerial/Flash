@@ -1,5 +1,7 @@
 package com.transfer.flash.server.observability
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -73,17 +75,18 @@ class CachedMailboxStatsTest {
     fun aFailingRefreshKeepsTheLastNumbersAndIsRetried() {
         var now = 0L
         val db = Counting()
-        val stats = CachedMailboxStats(db, ttlMs = 1_000, clock = { now })
+        // The refresh is dispatched to a scope; running it unconfined makes it happen on the calling thread, so this test
+        // never waits on a wall clock. (It used to poll for 5 s and fail whenever the suite starved Dispatchers.IO — the
+        // documented flake in docs/audit/optimization-2026-10-23/00-baseline.md. The production scope is unchanged.)
+        val stats = CachedMailboxStats(db, ttlMs = 1_000, clock = { now }, scope = CoroutineScope(Dispatchers.Unconfined))
         db.failing = true
         now = 5_000
-        assertEquals(10L, stats.queuedCount())
-        Thread.sleep(200)
-        assertEquals(10L, stats.queuedCount(), "the last good numbers stay")
+        assertEquals(10L, stats.queuedCount(), "the read that starts a refresh still serves the old numbers")
+        assertEquals(10L, stats.queuedCount(), "the last good numbers stay while every refresh fails")
         db.failing = false
         db.count = 11
-        val deadline = System.currentTimeMillis() + 5_000
-        while (stats.queuedCount() != 11L && System.currentTimeMillis() < deadline) Thread.sleep(20)
-        assertEquals(11L, stats.queuedCount())
+        assertEquals(10L, stats.queuedCount(), "the read that recovers still serves the old snapshot")
+        assertEquals(11L, stats.queuedCount(), "and the next read has the numbers the retry brought back")
     }
 
     @Test

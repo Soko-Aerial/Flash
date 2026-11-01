@@ -45,8 +45,10 @@ trades per-chunk durability for one sync at the end — `PERF-H07` is the crash-
 
 ## Last change
 Integrator repairs on the branch: `Revert "perf(presence): suppress REST poll when relay websocket is connected (OPT-O16-03)"`
-(`8b622a9b`), the `FileStore` staging/publish repair, the 100-id cap in `FlashRelayClient.acknowledgeReceipts`, and the
-corrected durability comment in `HubFileTransfers`.
+(`8b622a9b`), the `FileStore` staging/publish repair, the 100-id cap in `FlashRelayClient.acknowledgeReceipts`, the
+corrected durability comment in `HubFileTransfers`, `Vary: Accept-Encoding` on 304 asset answers, and the
+`CachedMailboxStatsTest` de-flake (ERROR-936/937). The full verdict table is in **`logs/streams/hub/INTEGRATOR-REVIEW.md`**,
+which is the file to read before anything else in this directory.
 
 ## Last test
 - Node admin console tests: `node --no-warnings --test server/admin-ui-tests/*.test.mjs` (83/83 passed, 595 ms).

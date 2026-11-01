@@ -142,6 +142,11 @@ class StaticAssets(private val root: String) {
         }
         call.response.headers.append(HttpHeaders.ETag, asset.etag)
         call.response.headers.append(HttpHeaders.CacheControl, cacheControl)
+        if (asset.gzipBytes != null || asset.deflateBytes != null) {
+            // Set before any body is chosen, so the 304 carries it too: an answer that depends on Accept-Encoding must say
+            // so on every response, or a shared cache may hand the gzip bytes to a client that asked for identity.
+            call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
+        }
         if (call.request.headers[HttpHeaders.IfNoneMatch]?.split(',')?.any { it.trim() == asset.etag } == true) {
             call.respond(HttpStatusCode.NotModified)
             return
@@ -150,20 +155,13 @@ class StaticAssets(private val root: String) {
         when {
             acceptEncoding.contains("gzip") && asset.gzipBytes != null -> {
                 call.response.headers.append(HttpHeaders.ContentEncoding, "gzip")
-                call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
                 call.respondBytes(asset.gzipBytes, asset.type)
             }
             acceptEncoding.contains("deflate") && asset.deflateBytes != null -> {
                 call.response.headers.append(HttpHeaders.ContentEncoding, "deflate")
-                call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
                 call.respondBytes(asset.deflateBytes, asset.type)
             }
-            else -> {
-                if (asset.gzipBytes != null || asset.deflateBytes != null) {
-                    call.response.headers.append(HttpHeaders.Vary, HttpHeaders.AcceptEncoding)
-                }
-                call.respondBytes(asset.bytes, asset.type)
-            }
+            else -> call.respondBytes(asset.bytes, asset.type)
         }
     }
 
