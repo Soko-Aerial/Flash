@@ -3,6 +3,7 @@ package com.transfer.flash.core.ptt
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.Build
 import android.util.Log
 import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import java.util.concurrent.atomic.AtomicBoolean
@@ -92,25 +93,33 @@ internal class PttPlayout(
             Log.w(TAG, "Rate $sampleRateHz unsupported for playout (minBuffer=$minBuffer)")
             return null
         }
-        val track = runCatching {
-            AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build(),
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                        .setSampleRate(sampleRateHz)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build(),
-                )
-                .setBufferSizeInBytes(maxOf(minBuffer, bytesPerPacket * TRACK_PACKETS))
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
-        }.getOrNull()
+        val builder = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRateHz)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+            )
+            .setBufferSizeInBytes(maxOf(minBuffer, bytesPerPacket * TRACK_PACKETS))
+            .setTransferMode(AudioTrack.MODE_STREAM)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            // OPT-O12-05: an advisory request that the audio server route this track through the fast (low-latency)
+            // mixer instead of the deep-buffer music path. The platform may decline it, which is why the effective
+            // mode is logged below — a device check (PERF-C01) reads it rather than trusting the request.
+            //
+            // Deliberately NOT done here: shrinking the track buffer to earn the fast path. This track's buffer is
+            // `bytesPerPacket * TRACK_PACKETS`; halving it trades a possible underrun (an audible hole in received
+            // voice) for latency, and that trade needs a measurement on the field handsets, not an argument.
+            builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        }
+        val track = runCatching { builder.build() }.getOrNull()
         if (track == null || track.state != AudioTrack.STATE_INITIALIZED) {
             runCatching { track?.release() }
             Log.w(TAG, "AudioTrack init failed rate=$sampleRateHz")
@@ -122,7 +131,12 @@ internal class PttPlayout(
             Log.w(TAG, "AudioTrack would not play rate=$sampleRateHz")
             return null
         }
-        Log.i(TAG, "Playout started rate=$sampleRateHz packetMs=$packetMs")
+        val performance = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            "performanceMode=${track.performanceMode}"
+        } else {
+            "performanceMode=n/a"
+        }
+        Log.i(TAG, "Playout started rate=$sampleRateHz packetMs=$packetMs $performance")
         return track
     }
 
