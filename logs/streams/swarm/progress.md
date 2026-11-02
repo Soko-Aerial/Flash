@@ -75,3 +75,26 @@ sizes 0, 1, 7, 63, 64, 65, 127, 128, 129, 1000 and 4096 (40 rounds each), plus t
 
 ### Remaining
 `TombstonesRestored`/`computePieceBlocks` still walk pieces once per snapshot; not part of this finding.
+## 2026-11-02 — OPT-O08-07: the O(N²) HAVE storm no longer reruns the scheduler
+
+### Worked on
+In a full mesh every stored piece is announced to every member, so `HaveArrived` runs tens of times a second per node.
+Each one reclassified the wait reason, republished the row (a Compose invalidation) and reran the whole request
+scheduler — even when the request window was already full and no request could possibly be issued.
+
+### Changed
+- `HaveArrived` always updates the peer's bitfield (nothing is dropped). It runs the expensive path only when the
+  content is ACTIVE **and** `requestWindow.canRequestBytes(pieceSize)`; otherwise it records the content in
+  `deferredWaitReasons` and the next tick (250 ms) publishes the row and reschedules.
+- The tick clears the marker, and a content that leaves ACTIVE clears it too (no unbounded set).
+
+### Verification
+`SwarmHaveDeferralTest`: with a MEDIUM window filled exactly (4 peers x 4 pieces x 1 MiB = 16 MiB), 100 HAVE frames
+produce **0** `PublishRow` and **0** `Request` commands, and the next tick answers with exactly **one** publish.
+A second case proves the first HAVE on an empty window still starts the transfer immediately (no added latency).
+
+`:core:swarm:jvmTest` 163 tests, 0 failures.
+
+### Measured
+Scheduler invocations per HAVE while saturated: 100 -> 1 per 100 HAVE frames (deterministic, from the test's command
+counts). Wall-clock/CPU on a device: **NOT MEASURED** (PERF-S01).

@@ -30,6 +30,9 @@ public class SwarmEngine(
     private val peers = LinkedHashMap<String, PeerConnectionState>()
     private val tombstones = LinkedHashMap<Pair<String, String>, SwarmTombstone>()
 
+    /** Contents whose wait reason and row a HAVE touched while the request window was full (OPT-O08-07). */
+    private val deferredWaitReasons = HashSet<Pair<String, ContentRoot>>()
+
     private var networkUp: Boolean = true
     private var systemSuspended: Boolean = false
     private var callActive: Boolean = false
@@ -275,11 +278,22 @@ public class SwarmEngine(
                 if (!isPeerAllowed(event.frame.groupId, event.peerId)) return commands
                 contents[event.frame.groupId to event.frame.root]?.let { content ->
                     peerHandler.handleHaveArrived(event, content) {
-                        updateWaitReason(it)
-                        publishRow(it, commands)
-                        transferScheduler.scheduleRequests(
-                            it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
-                        )
+                        // OPT-O08-07: in a 20-node mesh every stored piece reaches every member as HAVE, so this runs
+                        // tens of times a second. Reclassifying the wait reason and republishing the row on each one
+                        // rebuilt the scheduler's answer for no new request: while the request window is full, the
+                        // next work can only happen when a piece arrives or the tick reschedules. The bitfield update
+                        // above is never skipped, so nothing is lost — the answer is deferred, not dropped.
+                        if (it.state != SwarmLifecycleState.ACTIVE ||
+                            requestWindow.canRequestBytes(it.pieceSize.toLong())
+                        ) {
+                            updateWaitReason(it)
+                            publishRow(it, commands)
+                            transferScheduler.scheduleRequests(
+                                it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
+                            )
+                        } else {
+                            deferredWaitReasons.add(it.groupId to it.root)
+                        }
                     }
                 }
             }
@@ -436,6 +450,9 @@ public class SwarmEngine(
                 transferScheduler.flushPendingHaves(contents.values, peers, ::isPeerAllowed, event.nowMs, commands)
 
                 for (content in contents.values) {
+                    if (content.state != SwarmLifecycleState.ACTIVE) {
+                        deferredWaitReasons.remove(content.groupId to content.root)
+                    }
                     if (content.state != SwarmLifecycleState.COMPLETE &&
                         content.state != SwarmLifecycleState.CANCELLED &&
                         content.state != SwarmLifecycleState.FAILED &&
@@ -458,6 +475,10 @@ public class SwarmEngine(
                         manifestHandler.maybeFetchManifest(content, peers, ::isPeerAllowed, commands, event.nowMs)
                     } else if (content.state == SwarmLifecycleState.ACTIVE) {
                         updateWaitReason(content)
+                        if (deferredWaitReasons.remove(content.groupId to content.root)) {
+                            // OPT-O08-07: a HAVE that arrived while the request window was full is answered here.
+                            publishRow(content, commands)
+                        }
                         if (content.role == SwarmRole.ORIGIN &&
                             event.nowMs - content.lastRecipientPublishMs >= RECIPIENT_REPUBLISH_MS &&
                             peers.values.any { it.isConnected && it.contentStates[content.root]?.bitfield?.isComplete() != true }
