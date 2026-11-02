@@ -2,6 +2,7 @@ package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.SwarmContentState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
+import com.transfer.flash.core.swarm.codec.SwarmFrameCodec
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.SwarmFailReason
 import com.transfer.flash.core.swarm.model.SwarmLifecycleState
@@ -209,7 +210,7 @@ internal class PeerHandler(
         commands: MutableList<SwarmCommand>,
         nowMs: Long = 0L,
     ) {
-        val groupTombstones = tombstones.values.filter { it.groupId == groupId }
+        val groupTombstones = tombstonesForSummary(groupId)
         val entries = ArrayList<SwarmFrame.Summary.Entry>()
 
         for (content in contents.values.filter { it.groupId == groupId }) {
@@ -265,5 +266,16 @@ internal class PeerHandler(
             if (bits.get(i)) total += content.pieceLength(i)
         }
         return total
+    }
+
+    /**
+     * The tombstones a Summary carries for [groupId] (OPT-O08-08). `SwarmFrameCodec` refuses a Summary with more than
+     * [MAX_SUMMARY_TOMBSTONES] of them, so a group that cancelled 65 files could not send a Summary at all; the newest
+     * fit and the oldest are left to the per-content `CANCEL` frames and to each member's own persisted set.
+     */
+    private fun tombstonesForSummary(groupId: String): List<SwarmTombstone> {
+        val mine = tombstones.values.filter { it.groupId == groupId }
+        if (mine.size <= SwarmFrameCodec.MAX_SUMMARY_TOMBSTONES) return mine
+        return mine.sortedByDescending { it.cancelledAtMs }.take(SwarmFrameCodec.MAX_SUMMARY_TOMBSTONES)
     }
 }

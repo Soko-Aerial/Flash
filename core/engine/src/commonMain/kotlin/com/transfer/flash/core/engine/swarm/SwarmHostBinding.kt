@@ -267,6 +267,7 @@ public class SwarmHostBinding(
 
     private var lastCallActive: Boolean? = null
     private var lastServingEnabled: Boolean? = null
+    private var lastThermalStatus: com.transfer.flash.core.common.perf.FlashThermalStatus? = null
 
     /**
      * Re-evaluates call active status and serving enabled status; the engine hears only about changes.
@@ -285,6 +286,13 @@ public class SwarmHostBinding(
                 lastServingEnabled = now
                 driver.onServingEnabled(now)
             }
+        }
+        // OPT-O08-06: the thermal governor is a process-wide singleton with a no-op default, so this costs nothing on a
+        // host that has no sensor and needs no new host wiring. It applies its own hysteresis; the swarm only follows.
+        val thermal = com.transfer.flash.core.common.perf.ThermalGovernor.get().status
+        if (thermal != lastThermalStatus) {
+            lastThermalStatus = thermal
+            driver.onThermalStatus(thermal)
         }
     }
 

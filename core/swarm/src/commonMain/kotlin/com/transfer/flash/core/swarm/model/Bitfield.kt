@@ -41,6 +41,30 @@ public class Bitfield(
         }
     }
 
+    /**
+     * Word-level view for the scheduler's rarity scan (OPT-O08-01): bit `i` lives in word `i ushr 6` at bit `i and 63`.
+     * Reading whole words lets one pass test sixty-four pieces at a time instead of calling [get] sixty-four times.
+     * The array must not be written: it is the live storage of this bitfield.
+     */
+    internal fun rawWord(index: Int): Long = words[index]
+
+    /** Number of 64-bit words backing this bitfield, i.e. how many times [rawWord] may be called. */
+    internal val rawWordCount: Int get() = words.size
+
+    /**
+     * True when this bitfield has at least one bit set that [other] does not have ("does the peer hold anything I am
+     * missing?"). Answered a word at a time instead of piece by piece (OPT-O25-08).
+     *
+     * No masking is needed for bits past [size]: the constructor and [set] keep them clear in both bitfields.
+     */
+    internal fun hasBitOutside(other: Bitfield): Boolean {
+        val common = minOf(words.size, other.rawWordCount)
+        for (w in 0 until common) {
+            if (words[w] and other.rawWord(w).inv() != 0L) return true
+        }
+        return false
+    }
+
     public fun get(index: Int): Boolean {
         checkBounds(index)
         val wordIndex = index ushr 6
