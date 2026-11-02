@@ -46,10 +46,17 @@ observation recorded as 2 red / 1 green on a byte-identical tree; the fix that w
 instrumentation of where work stops during a failing run, which is a testability task, not a timeout bump. Owed and
 recorded as such.
 
+### Gate 2 on the merged tree — PASS
+`BUILD SUCCESSFUL in 8m 53s`, **218/218 tasks executed**, exit 0, no failures. Counts summed from JUnit XML, not the
+console: `:core:messaging` **688**, `:ui:chat` **705**, `:core:security` **265**, `:core:enterprise` **165**,
+`:core:common` **144**, `:app:testDebugUnitTest` **90**, `:core:persistence` **53** — **2 110 tests, 0 failures,
+0 skips**. That is the same total as the kernel-only gate 2 on `bec221d2`, which is the expected result for a
+desktop-only merge and also demonstrates no suite was dropped or silently skipped.
+
 ### Remaining / next AI
-Gate 2 for the merged tree is running (`logs/wave4-ek-gate2-2026-11-02.log`). If it is green, the push of `dev` is a plain
-fast-forward (`origin` already has `dev` at `2d3920bd`, local `dev` was 162 ahead / 0 behind). Then start streams S and R
-from the pushed tip. Do not "fix" 959/960 by enlarging a timeout; do not re-open the scope cap.
+Both merged-tree gates are green on `c5d825f9` (code) — gate 1 on the third run, gate 2 on this one. The push of `dev` is a
+plain fast-forward (`origin` already carries `dev` at `2d3920bd`; local `dev` was 162 ahead / 0 behind). Then start streams
+S and R from the pushed tip. Do not "fix" 959/960 by enlarging a timeout, and do not re-open the scope cap.
 
 ## 2026-11-02 - Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running
 

@@ -932,13 +932,18 @@ Targeted repaired verification PASS: desktop 259 tests, kernel 602, zero failure
 Cipher/Mac ThreadLocals in favor of Provider selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade
 or zeroization guarantee. All numeric headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production
 integration. Canonical reviewed records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124.
-Owed PERF-E01..E08/PERF-K01..K05. **Next: the merged-tree gates must pass before anything is pushed.** First merged-tree
-gate 1 on `c5d825f9` FAILED on two timing cases (ERROR-959 relay `ERR_EXPIRED` frame after a successful cut-off, ERROR-960
-desktop PTT 0-of-8 frames); both pass alone, E is not indicated, nothing was weakened, and a complete forced rerun is in
-progress. `origin` already has `dev` (`2d3920bd`) and local `dev` is 162 ahead/0 behind, so the push is a plain
-fast-forward once both gates are green.
+Owed PERF-E01..E08/PERF-K01..K05. **Both expanded gates are GREEN on the merged tree (`c5d825f9` code): gate 1 on the
+third run (`BUILD SUCCESSFUL 7m 3s`, 259/259 tasks, exit 0) and gate 2 (`BUILD SUCCESSFUL 8m 53s`, 218/218 tasks, exit 0,
+2 110 tests, 0 failures, 0 skips — messaging 688, chat 705, security 265, enterprise 165, common 144, app 90,
+persistence 53, summed from JUnit XML). The two earlier gate-1 failures were investigated across seven measured runs rather
+than rerun until green: ERROR-959 (relay `ERR_EXPIRED` frame) and ERROR-960 (desktop PTT 0-of-8 frames) are **gate
+flakiness** — the unmodified tree passes (2 red / 1 green on a byte-identical tree), E changed no build input and no
+`server/`/`core/` code, and the single candidate product fix (reverting E's `limitedParallelism(8)`) was tested, passed its
+gate, and was **still discarded** because the unmodified tree passed too. Nothing reverted, nothing weakened.
+`origin` already carries `dev` (`2d3920bd`) and local `dev` is 162 ahead/0 behind, so the push is a plain fast-forward.
+**Next: push `dev`, then start streams S (swarm) and R (radio) from the pushed tip.**
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
-No push/deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
+No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
 
 **Optimization programme Wave 3 merged: Stream G (Android battery/lifecycle) and Stream H (hub server), both reviewed against the
