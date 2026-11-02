@@ -178,36 +178,32 @@ public class SwarmDriver(
 
         // Persistence queue worker: ensures file sync and database writes are strictly FIFO
         scope.launch(workerDispatcher) {
+            val batch = SwarmPersistBatch()
             for (cmd in persistChannel) {
                 // One failed write (disk full, a locked database) must not end this worker: every later write would
                 // be queued for ever and the cancellation would take the whole binding down with it.
                 try {
-                    when (cmd) {
-                        is SwarmCommand.SyncAndPersistBits -> {
-                            val key = partialKeyFor(cmd.root, cmd.groupId)
-                            val expectedSize = if (cmd.totalSize > 0L) cmd.totalSize else (contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone)
-                            val cached = openPartialHandles[key]
-                            if (cached != null) {
-                                runCatching { cached.sync() }
-                            } else {
-                                storage.openPartial(key, expectedSize)?.use { it.sync() }
-                            }
-                            stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
-                        }
-                        is SwarmCommand.PersistRecord -> {
-                            stateStore.upsert(cmd.record)
-                        }
-                        else -> {}
+                    if (!batch.add(cmd)) {
+                        persistOne(cmd)
+                        continue
                     }
+                    // OPT-O08-04: drain what is already queued so a burst of pieces costs one fsync and one row write
+                    // per content instead of one of each per piece. A non-bits command keeps its place in the FIFO:
+                    // the batch is written first, then that command.
+                    var drained = 0
+                    while (drained < PERSIST_BATCH_MAX) {
+                        val next = persistChannel.tryReceive().getOrNull() ?: break
+                        drained++
+                        if (!batch.add(next)) {
+                            runPersistBatch(batch)
+                            persistOne(next)
+                        }
+                    }
+                    runPersistBatch(batch)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
-                    val what = when (cmd) {
-                        is SwarmCommand.SyncAndPersistBits -> "bits root=${cmd.root.hex.take(8)}"
-                        is SwarmCommand.PersistRecord -> "record root=${cmd.record.root.hex.take(8)}"
-                        else -> cmd::class.simpleName
-                    }
-                    FlashLog.e("SWARM", "persist failed ($what): ${t::class.simpleName}: ${t.message}", t)
+                    FlashLog.e("SWARM", "persist failed (${describe(cmd)}): ${t::class.simpleName}: ${t.message}", t)
                 }
             }
         }
@@ -710,9 +706,61 @@ public class SwarmDriver(
         return null
     }
 
+    /** Writes one coalesced bits snapshot: one `fsync` of the partial file, one row update (OPT-O08-04). */
+    private suspend fun persistBits(cmd: SwarmCommand.SyncAndPersistBits) {
+        val key = partialKeyFor(cmd.root, cmd.groupId)
+        val expectedSize = if (cmd.totalSize > 0L) {
+            cmd.totalSize
+        } else {
+            contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone
+        }
+        val cached = openPartialHandles[key]
+        if (cached != null) {
+            runCatching { cached.sync() }
+        } else {
+            storage.openPartial(key, expectedSize)?.use { it.sync() }
+        }
+        stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
+    }
+
+    private suspend fun runPersistBatch(batch: SwarmPersistBatch) {
+        for (cmd in batch.drain()) {
+            try {
+                persistBits(cmd)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.e("SWARM", "persist failed (bits root=${cmd.root.hex.take(8)}): ${t::class.simpleName}: ${t.message}", t)
+            }
+        }
+    }
+
+    private suspend fun persistOne(cmd: SwarmCommand) {
+        try {
+            when (cmd) {
+                is SwarmCommand.SyncAndPersistBits -> persistBits(cmd)
+                is SwarmCommand.PersistRecord -> stateStore.upsert(cmd.record)
+                else -> {}
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.e(
+                "SWARM",
+                "persist failed (${describe(cmd)}): ${t::class.simpleName}: ${t.message}",
+                t,
+            )
+        }
+    }
+
+    private fun describe(cmd: SwarmCommand): String = when (cmd) {
+        is SwarmCommand.SyncAndPersistBits -> "bits root=${cmd.root.hex.take(8)}"
+        is SwarmCommand.PersistRecord -> "record root=${cmd.record.root.hex.take(8)}"
+        else -> cmd::class.simpleName ?: "command"
+    }
+
     /** When the served file's whole-file identity was last compared with the announced size (OPT-O08-02). */
     private val lastSourceCheckMs = SyncMap<String, Long>()
-
     /**
      * Cheap stand-in for the per-piece hash the serve path used to compute (OPT-O08-02): the file we serve from must
      * still have the size that was announced. A deleted or truncated source already fails the read; this catches a
@@ -1023,3 +1071,6 @@ private const val SPEED_SAMPLE_MIN_MS = 700L
 
 /** How often a serve compares the source file's size with the announced size (OPT-O08-02). */
 private const val SOURCE_CHECK_INTERVAL_MS = 2_000L
+
+/** Most persistence commands one batch may take off the queue before it writes (OPT-O08-04). */
+private const val PERSIST_BATCH_MAX = 256

