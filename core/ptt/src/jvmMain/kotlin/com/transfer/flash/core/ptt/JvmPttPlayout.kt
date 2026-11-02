@@ -4,6 +4,7 @@ package com.transfer.flash.core.ptt
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashLog
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.Volatile
 
@@ -21,7 +22,7 @@ internal class JvmPttPlayout(
     private val packetMs: Int,
     private val onAmplitude: (Float) -> Unit = {},
     private val onPlayoutLost: () -> Unit = {},
-    targetDepthMs: Long = PttPlayoutCore.DEFAULT_TARGET_DEPTH_MS,
+    targetDepthMs: Long = PttJitterDepth.targetDepthMs(),
 ) : PttPlayoutDevice {
     private val core = PttPlayoutCore(sampleRateHz, packetMs, targetDepthMs)
     private val running = AtomicBoolean(false)

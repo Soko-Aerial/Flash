@@ -2,6 +2,7 @@ package com.transfer.flash.core.ptt
 
 import com.transfer.flash.core.ptt.floor.PttAudioLevel
 import com.transfer.flash.core.ptt.floor.PttJitterBuffer
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
@@ -18,7 +19,7 @@ import kotlinx.coroutines.channels.Channel
 internal class PttPlayoutCore(
     sampleRateHz: Int,
     private val packetMs: Int,
-    targetDepthMs: Long = DEFAULT_TARGET_DEPTH_MS,
+    targetDepthMs: Long = PttJitterDepth.targetDepthMs(),
 ) {
     private class Incoming(val seq: Long, val captureTsMs: Long, val pcm: ByteArray)
 
@@ -109,6 +110,7 @@ internal class PttPlayoutCore(
     }
 
     companion object {
+        /** The shipped start gate; the per-burst value is [PttJitterDepth.targetDepthMs] (OPT-O12-04). */
         const val DEFAULT_TARGET_DEPTH_MS: Long = 120L
         const val INBOX_CAPACITY: Int = 64
         private const val CONCEALED_GAIN_SHIFT = 1

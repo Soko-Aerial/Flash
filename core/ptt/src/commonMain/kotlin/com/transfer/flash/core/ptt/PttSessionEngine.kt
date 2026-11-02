@@ -12,6 +12,7 @@ import com.transfer.flash.core.ptt.floor.PttFloorEffect
 import com.transfer.flash.core.ptt.floor.PttFloorEvent
 import com.transfer.flash.core.ptt.floor.PttFloorMachine
 import com.transfer.flash.core.ptt.floor.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import com.transfer.flash.core.ptt.floor.PttTransition
 import com.transfer.flash.core.ptt.protocol.PttAudioFrame
 import com.transfer.flash.core.ptt.protocol.PttFrameCodec
@@ -713,6 +714,9 @@ public class PttSessionEngine(
     }
 
     private fun stopListen() {
+        // OPT-O12-04: a finished burst teaches the next one how deep it should start. Read before the
+        // device is stopped — the counters are the burst's totals.
+        playout?.snapshot()?.let { PttJitterDepth.observe(it.readyTotal, it.concealedTotal) }
         runCatching { playout?.stop() }
         playout = null
         // holderId deliberately SURVIVES here: the machine emits [StopPlayout, SendLeave]
