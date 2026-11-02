@@ -52,12 +52,6 @@ class CallSdpTest {
     private fun ptime(body: String): String =
         section(body, "audio").single { it.startsWith("a=ptime:") }.removePrefix("a=ptime:")
 
-    /** The fmtp parameter list [mode] writes for VP8, in the order [CallSdp] emits it. */
-    private fun videoParamsOf(mode: FlashPerformanceMode): String =
-        "x-google-start-bitrate=${mode.video.startBitrateKbps};" +
-            "x-google-min-bitrate=${mode.video.minBitrateKbps};" +
-            "x-google-max-bitrate=${mode.video.maxBitrateKbps}"
-
     /** The fmtp parameter list [mode] writes for Opus, in the order [CallSdp] emits it. */
     private fun opusParamsOf(mode: FlashPerformanceMode): String =
         "minptime=${mode.voice.ptimeMs};useinbandfec=1;usedtx=${if (mode.voice.useDtx) 1 else 0};maxaveragebitrate=${mode.voice.maxBitrateBps}"
@@ -226,20 +220,35 @@ class CallSdpTest {
     }
 
     // ------------------------------------------------------------------
-    // Video: the encoder's bitrate window
+    // Video: no SDP bitrate hints, because the VP8 sanitizer removes them
     // ------------------------------------------------------------------
 
-    /** Every real video codec in the section is seeded, whether or not it had an fmtp line. */
+    /**
+     * OPT-O11-05. The video section used to be seeded with `x-google-{start,min,max}-bitrate` for every codec, and the
+     * very next call — [CallSdp.enforceVp8Only], which every description goes through — deleted every `a=fmtp:` line in
+     * that section. The formatting was pure garbage, and worse, it made the SDP look like the thing that bounds the
+     * video bitrate. It is not: `RtpSenderTuning`/`setParameters` is. This pins the reality the pipeline actually sees.
+     */
     @Test
-    fun local_seedsBitrateOnEveryCodec() {
-        val video = section(CallSdp.tuneLocal(offer, high), "video")
+    fun video_carriesNoFmtpHintsBecauseTheVp8SanitizerRemovesThem() {
+        for (mode in FlashPerformanceMode.entries) {
+            val video = section(CallSdp.enforceVp8Only(CallSdp.tuneLocal(offer, mode)), "video")
 
-        assertEquals(video.single { it.startsWith("a=fmtp:96 ") }, "a=fmtp:96 ${videoParamsOf(high)}")
-        assertEquals(
-            "a=fmtp:98 level-asymmetry-allowed=1;packetization-mode=1;" +
-                "profile-level-id=42e01f;${videoParamsOf(high)}",
-            video.single { it.startsWith("a=fmtp:98 ") },
-        )
+            assertTrue(video.none { it.contains("x-google-") }, "tier ${mode.key}: $video")
+            assertTrue(video.none { it.startsWith("a=fmtp:") }, "tier ${mode.key}: $video")
+            assertTrue(video.any { it.startsWith("a=rtpmap:96 VP8/") }, "tier ${mode.key} still sends VP8")
+        }
+    }
+
+    /** The tuner leaves the video half of the description exactly as libwebrtc wrote it. */
+    @Test
+    fun video_isPassedThroughUntouched() {
+        for (mode in FlashPerformanceMode.entries) {
+            val tuned = section(CallSdp.tuneLocal(offer, mode), "video")
+            val original = section(offer, "video")
+
+            assertEquals(original, tuned, "tier ${mode.key}")
+        }
     }
 
     /**
@@ -271,24 +280,36 @@ class CallSdpTest {
      * 8 Mbit/s — and 8 Mbit/s of video on a phone hotspot is what made voice unintelligible. The
      * numbers are the fix, so the numbers are what the test names.
      *
-     * HIGH's triple is also the pre-tiering constant set, which is what makes that tier a provable
-     * no-op rather than a fourth set of numbers to keep in sync.
+     * OPT-O11-05: the video side of this pin moved with the hints. The video ceiling a call really
+     * uses is the one `RtpSenderTuning` sets on the sender, so what is pinned here is the voice
+     * envelope that still travels in the SDP: HIGH's triple is the pre-tiering constant set, which is
+     * what makes that tier a provable no-op rather than a fourth set of numbers to keep in sync.
      */
     @Test
-    fun local_capsBitratePerTier() {
+    fun local_capsVoiceBitratePerTier() {
         val expected = mapOf(
-            low to Triple(200, 100, 350),
-            medium to Triple(500, 250, 900),
-            high to Triple(1200, 600, 2500),
+            FlashPerformanceMode.ULTRA_LOW to 12_000,
+            low to 20_000,
+            medium to 24_000,
+            high to 32_000,
         )
 
-        for ((mode, triple) in expected) {
-            val params = fmtpParams(CallSdp.tuneLocal(offer, mode), "video", "96")
-            val (start, min, max) = triple
+        for ((mode, ceiling) in expected) {
+            val params = fmtpParams(CallSdp.tuneLocal(offer, mode), "audio", "111")
 
-            assertEquals("$start", params["x-google-start-bitrate"], "tier ${mode.key} start")
-            assertEquals("$min", params["x-google-min-bitrate"], "tier ${mode.key} min")
-            assertEquals("$max", params["x-google-max-bitrate"], "tier ${mode.key} max")
+            assertEquals("$ceiling", params["maxaveragebitrate"], "tier ${mode.key}")
+        }
+    }
+
+    /** And the video ladder itself, which `RtpSenderTuning` applies: monotonic and capped at HIGH. */
+    @Test
+    fun theVideoLadderIsMonotonicInEveryDimension() {
+        val modes = FlashPerformanceMode.entries.sortedBy { it.video.maxBitrateKbps }
+        for ((previous, next) in modes.zipWithNext()) {
+            assertTrue(next.video.maxBitrateKbps > previous.video.maxBitrateKbps, "${previous.key} -> ${next.key}")
+            assertTrue(next.video.minBitrateKbps >= previous.video.minBitrateKbps, "${previous.key} -> ${next.key}")
+            assertTrue(next.video.minBitrateKbps <= next.video.startBitrateKbps, next.key)
+            assertTrue(next.video.startBitrateKbps < next.video.maxBitrateKbps, next.key)
         }
     }
 
@@ -344,19 +365,16 @@ class CallSdpTest {
         assertEquals(fmtpParams(highSees, "audio", "111")["usedtx"], "1")
         assertEquals(fmtpParams(highSees, "audio", "111")["minptime"], "60")
         assertEquals(fmtpParams(highSees, "audio", "111")["maxaveragebitrate"], "20000")
-        assertEquals(fmtpParams(highSees, "video", "96")["x-google-max-bitrate"], "350")
-        assertEquals(fmtpParams(highSees, "video", "96")["x-google-min-bitrate"], "100")
-        assertEquals(fmtpParams(highSees, "video", "96")["x-google-start-bitrate"], "200")
     }
 
-    /** Longer Opus frames win, the tighter bitrate ceiling wins — for every tier pairing. */
+    /** Longer Opus frames win, the tighter voice bitrate ceiling wins — for every tier pairing. */
     @Test
     fun remote_takesTheLongerFrameAndTheSmallerCeiling() {
         for (theirs in FlashPerformanceMode.entries) {
             for (ours in FlashPerformanceMode.entries) {
                 val seen = CallSdp.tuneRemote(CallSdp.tuneLocal(offer, theirs), ours)
                 val label = "${theirs.key} → ${ours.key}"
-                val video = fmtpParams(seen, "video", "96")
+                val audio = fmtpParams(seen, "audio", "111")
 
                 assertEquals(
                     "${maxOf(theirs.voice.ptimeMs, ours.voice.ptimeMs)}",
@@ -364,8 +382,8 @@ class CallSdpTest {
                     label,
                 )
                 assertEquals(
-                    "${minOf(theirs.video.maxBitrateKbps, ours.video.maxBitrateKbps)}",
-                    video["x-google-max-bitrate"],
+                    "${minOf(theirs.voice.maxBitrateBps, ours.voice.maxBitrateBps)}",
+                    audio["maxaveragebitrate"],
                     label,
                 )
             }
@@ -373,27 +391,23 @@ class CallSdpTest {
     }
 
     /**
-     * The seed must stay inside the window in every pairing too. Seeding above the cap would ask
-     * congestion control to walk *down* from an illegal rate on the first frame; seeding below the
-     * floor makes the seed a no-op. Taking MIN of all three independently only preserves the
-     * ordering because the tiers are monotonic in all three fields — this is the test that says so.
+     * The voice ceiling must stay inside the ladder in every pairing too. Taking MIN of both sides only preserves the
+     * ordering because the tiers are monotonic in it — this is the test that says so.
      */
     @Test
-    fun remote_keepsTheSeedInsideTheWindowForEveryPairing() {
+    fun remote_keepsTheVoiceCeilingInsideTheLadderForEveryPairing() {
         for (theirs in FlashPerformanceMode.entries) {
             for (ours in FlashPerformanceMode.entries) {
-                val video = fmtpParams(
+                val audio = fmtpParams(
                     CallSdp.tuneRemote(CallSdp.tuneLocal(offer, theirs), ours),
-                    "video",
-                    "96",
+                    "audio",
+                    "111",
                 )
-                val floor = video.getValue("x-google-min-bitrate").toInt()
-                val start = video.getValue("x-google-start-bitrate").toInt()
-                val ceiling = video.getValue("x-google-max-bitrate").toInt()
-                val label = "${theirs.key} → ${ours.key}: $floor/$start/$ceiling"
+                val ceiling = audio.getValue("maxaveragebitrate").toInt()
+                val label = "${theirs.key} → ${ours.key}: $ceiling"
 
-                assertTrue(floor <= start, label)
-                assertTrue(start < ceiling, label)
+                assertTrue(ceiling >= 12_000, label)
+                assertTrue(ceiling <= 32_000, label)
             }
         }
     }

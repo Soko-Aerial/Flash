@@ -12,6 +12,7 @@ import com.transfer.flash.core.ptt.floor.PttFloorEffect
 import com.transfer.flash.core.ptt.floor.PttFloorEvent
 import com.transfer.flash.core.ptt.floor.PttFloorMachine
 import com.transfer.flash.core.ptt.floor.PttFloorState
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import com.transfer.flash.core.ptt.floor.PttTransition
 import com.transfer.flash.core.ptt.protocol.PttAudioFrame
 import com.transfer.flash.core.ptt.protocol.PttFrameCodec
@@ -121,6 +122,17 @@ public class PttSessionEngine(
 
     private val _stats = MutableStateFlow<PttSessionStats?>(null)
     override public val stats: StateFlow<PttSessionStats?> = _stats.asStateFlow()
+
+    /** OPT-O12-01: when the stats snapshot last went out; 0 = never. Written from the playout thread. */
+    @Volatile
+    private var lastStatsAtMs: Long = 0L
+
+    /** OPT-O12-02: the listening session id and its UTF-8 form, encoded once per session, not per packet. */
+    @Volatile
+    private var listenSessionId: String? = null
+
+    @Volatile
+    private var listenSessionBytesCache: ByteArray? = null
 
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 16)
     override public val notices: SharedFlow<String> = _notices.asSharedFlow()
@@ -410,10 +422,25 @@ public class PttSessionEngine(
             listening.sampleRateHz,
             listening.packetMs,
         ) ?: return
-        val frame = PttAudioFrame.decodeExpectedSize(data, expectedBytes) ?: return
-        if (frame.sessionId != listening.sessionId || peerId != listening.holderId) return
+        // OPT-O12-02: the session id of the session we are listening to, encoded once instead of once per
+        // packet. A packet for another session is rejected by comparing bytes, before a String exists.
+        val session = listenSessionBytes(listening.sessionId)
+        val frame = PttAudioFrame.decodeExpected(data, listening.sessionId, session, expectedBytes) ?: return
+        if (peerId != listening.holderId) return
         val accepted = playout?.offer(frame.seq, frame.captureTsMs, frame.pcm) == true
         if (accepted) lastAudioPacketMs = nowMs()
+    }
+
+    /**
+     * The UTF-8 form of the session this device listens to, cached for the burst (OPT-O12-02). Two volatiles rather
+     * than a lock: the pair only ever moves forward to a new session, and a reader that races a change re-derives it.
+     */
+    private fun listenSessionBytes(sessionId: String): ByteArray {
+        if (listenSessionId == sessionId) listenSessionBytesCache?.let { return it }
+        val encoded = sessionId.encodeToByteArray()
+        listenSessionBytesCache = encoded
+        listenSessionId = sessionId
+        return encoded
     }
 
     override public fun onInboundBinary(peerId: String?, data: ByteArray): Boolean {
@@ -661,7 +688,11 @@ public class PttSessionEngine(
         val instance = audio.createPlayout(
             sampleRateHz = sessionRateHz,
             packetMs = sessionPacketMs,
-            onAmplitude = { refreshPttSessionStats() },
+            // OPT-O12-01: the playout loop calls this once per 20 ms packet (50 Hz). It used to build a
+            // `PttPlayoutSnapshot` + `PttSessionStats` and emit a StateFlow value per packet, waking every
+            // Compose collector 50 times a second to move an amplitude bar; at most 10 Hz is what the bar can
+            // show, so the refresh is rate-limited and the allocations drop with it.
+            onAmplitude = { refreshPttSessionStatsIfDue() },
             onPlayoutLost = {
                 scope.launch {
                     if (playout === slot[0]) {
@@ -683,6 +714,9 @@ public class PttSessionEngine(
     }
 
     private fun stopListen() {
+        // OPT-O12-04: a finished burst teaches the next one how deep it should start. Read before the
+        // device is stopped — the counters are the burst's totals.
+        playout?.snapshot()?.let { PttJitterDepth.observe(it.readyTotal, it.concealedTotal) }
         runCatching { playout?.stop() }
         playout = null
         // holderId deliberately SURVIVES here: the machine emits [StopPlayout, SendLeave]
@@ -777,6 +811,9 @@ public class PttSessionEngine(
 
     private suspend fun CoroutineScope.senderLoop(sessionId: String) {
         var seq = 0L
+        // OPT-O12-02: the session id is fixed for the whole burst, so its UTF-8 form is built once here
+        // instead of once per packet (`PttAudioFrame.encode` did that 50 times a second).
+        val sessionBytes = sessionId.encodeToByteArray()
         // Drain anything a previous session left behind.
         while (audioOut.tryReceive().getOrNull() != null) Unit
         for (packet in audioOut) {
@@ -784,11 +821,22 @@ public class PttSessionEngine(
             val talking = floor as? PttFloorState.Talking
             if (talking == null || talking.sessionId != sessionId) break
             if (packet.sessionId != sessionId) continue
-            val frame = PttAudioFrame.encode(
-                PttAudioFrame(sessionId, seq++, packet.captureTsMs, packet.pcm),
-            )
+            val frame = PttAudioFrame.encode(sessionBytes, seq++, packet.captureTsMs, packet.pcm)
             members.forEach { sendAudio(it, frame) }
         }
+    }
+
+    /**
+     * OPT-O12-01: [refreshPttSessionStats] at most once per [STATS_MIN_INTERVAL_MS], however fast the audio
+     * callback that drives it. The playout thread's amplitude callback is the only 50 Hz caller; every other
+     * caller (a member leaving, a state change) publishes immediately.
+     */
+    private fun refreshPttSessionStatsIfDue() {
+        val now = nowMs()
+        val previous = lastStatsAtMs
+        if (previous != 0L && now - previous < STATS_MIN_INTERVAL_MS) return
+        lastStatsAtMs = now
+        refreshPttSessionStats()
     }
 
     private fun refreshPttSessionStats() {
@@ -866,6 +914,13 @@ public class PttSessionEngine(
         private const val TAG = "PTT_SESS"
         private const val TICK_MS = 500L
         private const val HEARTBEAT_MS = 1000L
+
+        /**
+         * OPT-O12-01: minimum gap between two stats snapshots driven by the playout amplitude callback. The
+         * callback fires once per 20 ms audio packet; 100 ms is ten updates a second, which is what an
+         * amplitude bar can show.
+         */
+        private const val STATS_MIN_INTERVAL_MS = 100L
         private const val MAX_TRACKED_HB = 120
 
         /**

@@ -1,5 +1,6 @@
 package com.transfer.flash.ui.calling
 
+import androidx.compose.ui.unit.dp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -95,5 +96,27 @@ class FlashCallControlDockTest {
             phase += 0.01f
         }
         assertTrue(sawPositive && sawNegative, "a ringing handset swings both ways")
+    }
+
+    /**
+     * OPT-O03-18: the dock no longer measures itself with a `BoxWithConstraints` before it can compose its buttons. The
+     * per-slot arithmetic the old code did is now a constant, so this pins that the buttons a 360 dp phone draws are the
+     * same size they were before (52 dp cap, 16/count + 4 dp given back per slot, 40 dp floor).
+     */
+    @Test
+    fun `dock buttons are the same size the measuring dock produced`() {
+        // 360 dp phone, 6 controls, 16 dp of horizontal padding on each side: 328 dp of row, 54.67 dp per slot.
+        val slot360 = 328.dp / 6
+        assertEquals(48.dp.value, dockButtonSize(slot360, 6).value, 0.01f)
+
+        // 3 controls on the same phone: a slot is wider than the cap, so the button is the cap.
+        assertEquals(52.dp.value, dockButtonSize(328.dp / 3, 3).value, 0.01f)
+
+        // Below ~320 dp the arithmetic asks for less than the 40 dp floor; the floor is what the rule says, and the layout
+        // cannot exceed its slot, so on such a window the circle renders at the slot width (no overlap).
+        assertEquals(40.dp.value, dockButtonSize(208.dp / 6, 6).value, 0.01f)
+
+        assertEquals(0.dp, dockButtonInset(0), "no controls, no inset")
+        assertTrue(dockButtonInset(6) < dockButtonInset(3), "more controls give back less per slot")
     }
 }
