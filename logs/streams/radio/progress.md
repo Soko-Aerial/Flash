@@ -78,10 +78,17 @@ cmd /c "tools\flash-gradle.cmd :core:radio:compileAndroidMain --console=plain"
 cmd /c "tools\flash-gradle.cmd :core:radio:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain"
   BUILD SUCCESSFUL in 4m 52s   (132 actionable tasks: 60 executed, 16 from cache, 56 up-to-date, exit 0)
   35 suites, 273 tests, 0 failures, 0 errors, 0 skipped
+
+cmd /c "tools\flash-gradle.cmd :core:radio:jvmTest :core:radio:testAndroidHostTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain"
+  BUILD SUCCESSFUL in 26s   (139 actionable tasks, exit 0)  -- final tree
+  :core:radio:testAndroidHostTest: 23 suites, 192 tests, 0 failures, 0 errors, 0 skipped
+  (:core:radio:jvmTest UP-TO-DATE on this run: the only change since its last execution was androidMain
+   code and an androidHostTest test file, neither of which is a jvmTest input.)
 ```
 
-Test count went 259 -> 273 (14 new tests: 4 cadence, 5 table, 3 occupancy, 4 measurement, 1 engine bound case;
-one existing test file gained a case). The `:core:radio` suite is what the integrator's gate 1 gains when this merges.
+Test count went 259 -> 273 in `:core:radio:jvmTest` (14 new tests: 4 cadence, 5 table, 3 occupancy, 4 measurement;
+one existing test file gained an engine case) and 191 -> 192 in `:core:radio:testAndroidHostTest` (the reader-close
+guard). The `:core:radio` jvm suite is what the integrator's gate 1 gains when this merges.
 
 ### Problems
 
