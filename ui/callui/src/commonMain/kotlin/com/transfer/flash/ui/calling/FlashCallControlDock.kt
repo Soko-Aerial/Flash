@@ -16,10 +16,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -204,13 +204,18 @@ internal fun FlashCallControlDock(
     // ADR-078: a call with no camera of ours on it (voice, or a video call joined without a camera) can add one.
     val upgrade = if (state.canUpgradeToVideo) onUpgradeToVideo else null
     val count = (if (state.video) 5 else 3) + (if (!state.video && upgrade != null) 1 else 0) + (if (onOpenMore != null) 1 else 0)
+    // OPT-O03-18: this used to be a `BoxWithConstraints` — a `SubcomposeLayout`, which defers the buttons' composition
+    // into the measure pass and builds a second subcomposition table — purely to read `maxWidth` and divide it by the
+    // button count. The same arithmetic per slot is a constant (the row gives every control `weight(1f)`, so a slot is
+    // exactly `maxWidth / count`), so each button can size itself from its own constraints instead. The dock keeps
+    // `widthIn(max = count * DOCK_SLOT_MAX_DP)` so six controls never spread across a wide desktop window.
+    val slotInset = dockButtonInset(count)
     // Six buttons must fit a 360 dp phone: shrink the buttons (never below 40 dp) rather than overflow.
-    BoxWithConstraints(
+    Box(
         modifier = Modifier
             .padding(horizontal = FlashSpacing.space16)
             .widthIn(max = (count * DOCK_SLOT_MAX_DP).dp),
     ) {
-    val buttonSize = ((maxWidth - 16.dp) / count - 4.dp).coerceIn(MIN_BUTTON_SIZE, BUTTON_SIZE)
     val active = audioRoutes.active
     val routeIconSpec = when {
         active != null -> routeIcon(active)
@@ -242,7 +247,7 @@ internal fun FlashCallControlDock(
                 rippleOutward = !state.micMuted,
                 gesture = DockGesture.Pop,
                 onClick = onToggleMute,
-                buttonSize = buttonSize,
+                slotInset = slotInset,
                 modifier = Modifier.weight(1f),
             )
             if (!state.video && upgrade != null) {
@@ -254,7 +259,7 @@ internal fun FlashCallControlDock(
                     rippleOutward = true,
                     gesture = DockGesture.Eyelid,
                     onClick = upgrade,
-                    buttonSize = buttonSize,
+                    slotInset = slotInset,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -271,7 +276,7 @@ internal fun FlashCallControlDock(
                     enabled = !state.sharing,
                     // A video call joined without a camera has nothing to switch on: the button adds one.
                     onClick = upgrade ?: onToggleCamera,
-                    buttonSize = buttonSize,
+                    slotInset = slotInset,
                     modifier = Modifier.weight(1f),
                 )
                 FlashCallDockButton(
@@ -284,7 +289,7 @@ internal fun FlashCallControlDock(
                     // Nothing to flip while our camera is off: dim it rather than let it vanish and shift the row.
                     enabled = !state.cameraOff && !state.sharing,
                     onClick = onSwitchCamera,
-                    buttonSize = buttonSize,
+                    slotInset = slotInset,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -300,7 +305,7 @@ internal fun FlashCallControlDock(
                 rippleOutward = if (active != null) active == FlashCallAudioRoute.SPEAKER else state.speakerOn,
                 gesture = DockGesture.Pop,
                 onClick = if (audioRoutes.needsPicker) onOpenRoutes else onToggleSpeaker,
-                buttonSize = buttonSize,
+                slotInset = slotInset,
                 modifier = Modifier.weight(1f),
             )
             if (onOpenMore != null) {
@@ -312,7 +317,7 @@ internal fun FlashCallControlDock(
                     rippleOutward = true,
                     gesture = DockGesture.Pop,
                     onClick = onOpenMore,
-                    buttonSize = buttonSize,
+                    slotInset = slotInset,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -325,7 +330,7 @@ internal fun FlashCallControlDock(
                 gesture = DockGesture.Tilt,
                 destructive = true,
                 onClick = onHangUp,
-                buttonSize = buttonSize,
+                slotInset = slotInset,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -335,6 +340,24 @@ internal fun FlashCallControlDock(
 
 /** Widest a slot grows on a wide window (desktop), so three audio controls do not spread across 1000 dp. */
 private const val DOCK_SLOT_MAX_DP = 84
+
+/**
+ * The horizontal space one dock slot gives back, so neighbouring circles do not touch (OPT-O03-18).
+ *
+ * The old `BoxWithConstraints` computed `((maxWidth - 16.dp) / count - 4.dp)`, i.e. `maxWidth / count` (one weighted
+ * slot) minus `16 / count + 4` — a per-slot constant. Knowing it, a button sizes itself from its own slot and the dock
+ * needs no measure-then-compose pass.
+ */
+internal fun dockButtonInset(count: Int): Dp = if (count <= 0) 0.dp else (16f / count + 4f).dp
+
+/**
+ * The circle diameter for a [slotWidth]-wide slot: the pre-OPT-O03-18 arithmetic, as a pure function so the sizing rule
+ * can be tested without a layout. Below ~320 dp with six controls the result is the [MIN_BUTTON_SIZE] floor and the
+ * layout, which cannot exceed its own slot, draws the circle at the slot width instead of overlapping its neighbour
+ * (the old code let it overflow the row).
+ */
+internal fun dockButtonSize(slotWidth: Dp, count: Int): Dp =
+    (slotWidth - dockButtonInset(count)).coerceIn(MIN_BUTTON_SIZE, BUTTON_SIZE)
 
 /**
  * One dock control: a round button, its glyph, and a one-word label under it.
@@ -355,7 +378,11 @@ internal fun FlashCallDockButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     destructive: Boolean = false,
-    buttonSize: Dp = BUTTON_SIZE,
+    /**
+     * Space this control's slot gives back on each side (see [dockButtonInset]); the circle then fills its slot, capped
+     * at [BUTTON_SIZE]. Default 0 sizes the button to [BUTTON_SIZE] wherever it is placed.
+     */
+    slotInset: Dp = 0.dp,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -409,9 +436,19 @@ internal fun FlashCallDockButton(
         modifier = modifier,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        // OPT-O03-18: the circle fills its weighted slot minus [slotInset], capped at BUTTON_SIZE. A `slotInset` of 0
+        // (a caller placing the button itself) keeps the fixed BUTTON_SIZE.
+        val circleModifier = if (slotInset > 0.dp) {
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = slotInset / 2)
+                .widthIn(max = BUTTON_SIZE)
+                .aspectRatio(1f)
+        } else {
+            Modifier.size(BUTTON_SIZE)
+        }
         Box(
-            modifier = Modifier
-                .size(buttonSize)
+            modifier = circleModifier
                 // Unclipped outer box: the ring is allowed to leave the button's circle.
                 .drawBehind {
                     val a = rippleAlpha(burst.value)
@@ -426,8 +463,7 @@ internal fun FlashCallDockButton(
             contentAlignment = Alignment.Center,
         ) {
             Box(
-                modifier = Modifier
-                    .size(buttonSize)
+                modifier = circleModifier
                     .flashPressScale(interaction)
                     .graphicsLayer { alpha = if (enabled) 1f else DISABLED_ALPHA }
                     .clip(CircleShape)
