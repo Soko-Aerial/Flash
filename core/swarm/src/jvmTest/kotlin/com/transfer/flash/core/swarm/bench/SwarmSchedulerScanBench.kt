@@ -154,4 +154,60 @@ class SwarmSchedulerScanBench {
             "the scan must be faster than the loop it replaces (legacy=${legacyNanos}ns scan=${scanNanos}ns)",
         )
     }
+
+    /**
+     * OPT-O25-08: `updateWaitReason` used to walk every piece against every candidate peer (twice, plus a discarded
+     * third pass) to answer "does any connected peer hold something I am missing?". It now reads 64-bit words.
+     */
+    @Test
+    fun `wait reason holder scan - legacy piece loop versus word-wise`() {
+        // The case the finding describes: we are missing pieces and no connected peer has any of them, so the legacy
+        // loop walks every piece of every peer before it answers. That is the state a stalled receiver sits in.
+        val localBitfield = Bitfield(pieces)
+        for (p in 0 until pieces - 1) localBitfield.set(p, true)
+        val peerBitfields = List(peerCount) { Bitfield(pieces).also { bf -> for (p in 0 until 64) bf.set(p, true) } }
+
+        fun legacy(): Boolean {
+            for (bf in peerBitfields) {
+                if (bf.isEmpty()) continue
+                for (i in 0 until pieces) {
+                    if (!localBitfield.get(i) && bf.get(i)) return true
+                }
+            }
+            return false
+        }
+
+        fun wordWise(): Boolean {
+            for (bf in peerBitfields) {
+                if (bf.isEmpty()) continue
+                if (bf.hasBitOutside(localBitfield)) return true
+            }
+            return false
+        }
+
+        repeat(50) { assertTrue(!legacy()); assertTrue(!wordWise()) }
+
+        var legacyTrue = false
+        val legacyStart = System.nanoTime()
+        repeat(200) { legacyTrue = legacy() }
+        val legacyNanos = (System.nanoTime() - legacyStart) / 200.0
+
+        var wordTrue = false
+        val wordStart = System.nanoTime()
+        repeat(200) { wordTrue = wordWise() }
+        val wordNanos = (System.nanoTime() - wordStart) / 200.0
+
+        assertTrue(legacyTrue == wordTrue)
+        println(
+            "SWARM-WAIT-SCAN-BENCH pieces=$pieces peers=$peerCount " +
+                "legacy_us_per_call=${"%.2f".format(legacyNanos / 1_000.0)} " +
+                "word_us_per_call=${"%.2f".format(wordNanos / 1_000.0)} " +
+                "time_ratio=${"%.1f".format(legacyNanos / wordNanos)} " +
+                "legacy_piece_tests=${pieces * peerCount} word_reads=${(pieces + 63) / 64 * peerCount}",
+        )
+        assertTrue(
+            legacyNanos > wordNanos * 4,
+            "the word-wise test must be several times faster (legacy=${legacyNanos}ns word=${wordNanos}ns)",
+        )
+    }
 }

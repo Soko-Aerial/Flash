@@ -486,25 +486,37 @@ public class SwarmEngine(
     public fun snapshot(): SwarmSnapshot {
         val map = LinkedHashMap<Pair<String, ContentRoot>, ContentSnapshot>()
         for ((key, c) in contents) {
-            val (onlineHolders, distCopies) = computeHolderStats(c)
-            map[key] = ContentSnapshot(
-                groupId = c.groupId,
-                root = c.root,
-                state = c.state,
-                waitReason = c.waitReason,
-                bytesDone = c.bytesDone,
-                totalBytes = c.totalSize,
-                piecesDone = c.piecesDone,
-                totalPieces = c.totalPieces,
-                holdersOnline = onlineHolders,
-                distributedCopies = distCopies,
-                canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
-                deliveredTo = c.deliveredTo.toSet(),
-                pieceBlocks = computePieceBlocks(c),
-                recipients = computeRecipients(c),
-            )
+            map[key] = contentSnapshotOf(c)
         }
         return SwarmSnapshot(map)
+    }
+
+    /**
+     * The snapshot of one content item. A row publish needs only its own content; [snapshot] rebuilt every content's
+     * holder statistics for each row, which is the same O(pieces × peers) work the wait classifier used to throw away
+     * (OPT-O25-08).
+     */
+    internal fun contentSnapshot(groupId: String, root: ContentRoot): ContentSnapshot? =
+        contents[groupId to root]?.let { contentSnapshotOf(it) }
+
+    private fun contentSnapshotOf(c: ContentState): ContentSnapshot {
+        val (onlineHolders, distCopies) = computeHolderStats(c)
+        return ContentSnapshot(
+            groupId = c.groupId,
+            root = c.root,
+            state = c.state,
+            waitReason = c.waitReason,
+            bytesDone = c.bytesDone,
+            totalBytes = c.totalSize,
+            piecesDone = c.piecesDone,
+            totalPieces = c.totalPieces,
+            holdersOnline = onlineHolders,
+            distributedCopies = distCopies,
+            canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
+            deliveredTo = c.deliveredTo.toSet(),
+            pieceBlocks = computePieceBlocks(c),
+            recipients = computeRecipients(c),
+        )
     }
 
     public fun debugDump(): String {
@@ -548,41 +560,26 @@ public class SwarmEngine(
     }
 
     private fun updateWaitReason(content: ContentState) {
-        val (onlineHolders, _) = computeHolderStats(content)
+        // OPT-O25-08: this used to compute the full holder statistics (O(pieces × peers)) and throw the result away,
+        // then walk every piece twice more looking for a holder of a missing piece. Both questions are now answered
+        // a 64-bit word at a time.
         val isOriginConn = peers[content.originId]?.isConnected == true
 
-        val onlineCandidatePeers = peers.values.filter {
-            it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
-        }
         var hasOnlineHoldersForMissing = false
-        for (p in onlineCandidatePeers) {
-            val pcs = p.contentStates[content.root]
-            if (pcs != null && !pcs.bitfield.isEmpty()) {
-                for (i in 0 until content.totalPieces) {
-                    if (!content.bitfield.get(i) && pcs.bitfield.get(i)) {
-                        hasOnlineHoldersForMissing = true
-                        break
-                    }
-                }
-            }
-            if (hasOnlineHoldersForMissing) break
-        }
-
-        val offlineCandidatePeers = peers.values.filter {
-            !it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
-        }
         var hasOfflineHolders = false
-        for (p in offlineCandidatePeers) {
-            val pcs = p.contentStates[content.root]
-            if (pcs != null && !pcs.bitfield.isEmpty()) {
-                for (i in 0 until content.totalPieces) {
-                    if (!content.bitfield.get(i) && pcs.bitfield.get(i)) {
-                        hasOfflineHolders = true
-                        break
-                    }
-                }
+        for (peer in peers.values) {
+            if (peer.peerId == localDeviceId) continue
+            if (!isPeerAllowed(content.groupId, peer.peerId)) continue
+            val pcs = peer.contentStates[content.root] ?: continue
+            if (pcs.bitfield.isEmpty()) continue
+            if (!pcs.bitfield.hasBitOutside(content.bitfield)) continue
+            if (peer.isConnected) {
+                hasOnlineHoldersForMissing = true
+                if (hasOfflineHolders) break
+            } else {
+                hasOfflineHolders = true
+                if (hasOnlineHoldersForMissing) break
             }
-            if (hasOfflineHolders) break
         }
 
         content.waitReason = WaitClassifier.classify(
@@ -702,28 +699,80 @@ public class SwarmEngine(
             it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
         }
         var onlineHolders = 0
+        var union: LongArray? = null
+        val words = (content.totalPieces + 63) ushr 6
         for (p in candidatePeers) {
             val pcs = p.contentStates[content.root]
             if (pcs != null && !pcs.bitfield.isEmpty()) {
                 onlineHolders++
+                if (words > 0) {
+                    val bits = union ?: LongArray(words).also { union = it }
+                    for (w in 0 until words) bits[w] = bits[w] or pcs.bitfield.rawWord(w)
+                }
             }
         }
 
-        var minCopies = Int.MAX_VALUE
-        for (i in 0 until content.totalPieces) {
-            var copiesForI = 0
-            for (p in candidatePeers) {
-                val pcs = p.contentStates[content.root]
-                if (pcs != null && pcs.bitfield.get(i)) {
-                    copiesForI++
+        // `distributedCopies` is the smallest number of connected holders of any piece. Zero as soon as one piece has
+        // no holder — which is the normal answer while a transfer is still running, and now costs one word-wise pass.
+        var minCopies = 0
+        if (candidatePeers.isNotEmpty() && words > 0) {
+            val bits = union ?: LongArray(words)
+            var complete = true
+            for (w in 0 until words) {
+                val mask = if (w == words - 1) {
+                    val tail = content.totalPieces and 63
+                    if (tail == 0) -1L else (1L shl tail) - 1L
+                } else {
+                    -1L
+                }
+                if (bits[w] and mask != mask) {
+                    complete = false
+                    break
                 }
             }
-            if (copiesForI < minCopies) {
-                minCopies = copiesForI
+            if (complete) minCopies = exactMinCopies(content, candidatePeers, words)
+        }
+        return onlineHolders to minCopies
+    }
+
+    /**
+     * The smallest per-piece holder count when every piece is held by at least one candidate. Bit-sliced over 64-bit
+     * words, so the cost is `peers × words × levels` instead of `pieces × peers` (OPT-O25-08). Only reached when the
+     * word-wise union already showed that no piece is missing from the swarm.
+     */
+    private fun exactMinCopies(
+        content: ContentState,
+        candidatePeers: List<PeerConnectionState>,
+        words: Int,
+    ): Int {
+        val levels = 32 - candidatePeers.size.coerceAtLeast(1).countLeadingZeroBits()
+        val planes = Array(levels) { LongArray(words) }
+        for (p in candidatePeers) {
+            val bf = p.contentStates[content.root]?.bitfield ?: continue
+            for (w in 0 until words) {
+                var carry = bf.rawWord(w)
+                if (carry == 0L) continue
+                for (l in 0 until levels) {
+                    val next = planes[l][w] xor carry
+                    carry = planes[l][w] and carry
+                    planes[l][w] = next
+                }
             }
         }
-        val distCopies = if (minCopies == Int.MAX_VALUE) 0 else minCopies
-        return onlineHolders to distCopies
+        var min = Int.MAX_VALUE
+        for (w in 0 until words) {
+            // Every position needs its count, so walk the pieces of this word.
+            for (b in 0 until 64) {
+                val piece = (w shl 6) + b
+                if (piece >= content.totalPieces) break
+                var count = 0
+                for (l in 0 until levels) {
+                    count = count or (((planes[l][w] ushr b) and 1L).toInt() shl l)
+                }
+                if (count < min) min = count
+            }
+        }
+        return if (min == Int.MAX_VALUE) 0 else min
     }
 
     private fun countPeerCopies(content: ContentState?, index: Int, requesterPeerId: String? = null): Int {
