@@ -126,6 +126,13 @@ public class PttSessionEngine(
     @Volatile
     private var lastStatsAtMs: Long = 0L
 
+    /** OPT-O12-02: the listening session id and its UTF-8 form, encoded once per session, not per packet. */
+    @Volatile
+    private var listenSessionId: String? = null
+
+    @Volatile
+    private var listenSessionBytesCache: ByteArray? = null
+
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 16)
     override public val notices: SharedFlow<String> = _notices.asSharedFlow()
 
@@ -414,10 +421,25 @@ public class PttSessionEngine(
             listening.sampleRateHz,
             listening.packetMs,
         ) ?: return
-        val frame = PttAudioFrame.decodeExpectedSize(data, expectedBytes) ?: return
-        if (frame.sessionId != listening.sessionId || peerId != listening.holderId) return
+        // OPT-O12-02: the session id of the session we are listening to, encoded once instead of once per
+        // packet. A packet for another session is rejected by comparing bytes, before a String exists.
+        val session = listenSessionBytes(listening.sessionId)
+        val frame = PttAudioFrame.decodeExpected(data, listening.sessionId, session, expectedBytes) ?: return
+        if (peerId != listening.holderId) return
         val accepted = playout?.offer(frame.seq, frame.captureTsMs, frame.pcm) == true
         if (accepted) lastAudioPacketMs = nowMs()
+    }
+
+    /**
+     * The UTF-8 form of the session this device listens to, cached for the burst (OPT-O12-02). Two volatiles rather
+     * than a lock: the pair only ever moves forward to a new session, and a reader that races a change re-derives it.
+     */
+    private fun listenSessionBytes(sessionId: String): ByteArray {
+        if (listenSessionId == sessionId) listenSessionBytesCache?.let { return it }
+        val encoded = sessionId.encodeToByteArray()
+        listenSessionBytesCache = encoded
+        listenSessionId = sessionId
+        return encoded
     }
 
     override public fun onInboundBinary(peerId: String?, data: ByteArray): Boolean {
@@ -785,6 +807,9 @@ public class PttSessionEngine(
 
     private suspend fun CoroutineScope.senderLoop(sessionId: String) {
         var seq = 0L
+        // OPT-O12-02: the session id is fixed for the whole burst, so its UTF-8 form is built once here
+        // instead of once per packet (`PttAudioFrame.encode` did that 50 times a second).
+        val sessionBytes = sessionId.encodeToByteArray()
         // Drain anything a previous session left behind.
         while (audioOut.tryReceive().getOrNull() != null) Unit
         for (packet in audioOut) {
@@ -792,9 +817,7 @@ public class PttSessionEngine(
             val talking = floor as? PttFloorState.Talking
             if (talking == null || talking.sessionId != sessionId) break
             if (packet.sessionId != sessionId) continue
-            val frame = PttAudioFrame.encode(
-                PttAudioFrame(sessionId, seq++, packet.captureTsMs, packet.pcm),
-            )
+            val frame = PttAudioFrame.encode(sessionBytes, seq++, packet.captureTsMs, packet.pcm)
             members.forEach { sendAudio(it, frame) }
         }
     }
