@@ -8122,3 +8122,94 @@ contracts independently verified 2026-11-01 (ADR-312) reset to initialized state
 failures are preserved, not credited as evidence. Host parity/concurrency/mutation regressions pass; physical provider
 behavior remains `PERF-K05` TODO. Numeric benefits are NOT MEASURED. Raw bounded log queues never authorize secret
 logging. Revisit only with a separately reviewed, measured alternative preserving these ownership/security invariants.
+
+---
+
+## ADR-330 — The radio read loop waits on a 60 s heartbeat, not a 250 ms poll (2026-11-02)
+
+### Status
+IMPLEMENTED by stream R (`OPT-O26-01`), merged 2026-11-02. Unit-tested; **not device-verified**.
+
+### Context
+`KissTncDriver.readLoop` called `ByteLink.read(buf, readTimeoutMs)` in a `while (isActive)` loop with
+`readTimeoutMs = 250`. The loop does nothing with a 0 result — no probe, no state change, no retry — and its only real job
+is to be cancelled, which `serve()`'s closer already delivers by calling `link.close()`. The 250 ms therefore bought four
+wake-ups a second for nothing: EXP-130 counted **14 401** `read` calls per simulated idle hour against **61** with the new
+default, measured side by side in one test binary.
+
+### Decision
+`KissTncConfig.readTimeoutMs` defaults to `DEFAULT_READ_HEARTBEAT_MS = 60_000` and is documented as a liveness **bound**,
+not a poll interval. It is kept finite rather than infinite for one reason: a `ByteLink` that neither delivers bytes nor
+honours `close()` must not be able to hold the read loop for the rest of the process. `require(readTimeoutMs > 0)` keeps
+"infinite" unrepresentable.
+
+### Alternatives considered
+- **Infinite timeout (the audit's proposal).** Rejected: cancellation would depend entirely on every platform link honouring
+  `close()` from another thread. 60 s costs 60 wakes an hour and removes that reliance.
+- **Keep 250 ms.** Rejected: it is the cost the finding names, and the old comment's stated reason ("check for cancellation")
+  is not what the loop does with the 0.
+- **Emit a probe on each heartbeat.** Rejected: one `radio.*` line a minute per connected radio would drown the probe log.
+
+### Consequences
+Three test rigs that pass `readTimeoutMs = 50` explicitly are unaffected. The desktop serial link keeps
+`TIMEOUT_READ_SEMI_BLOCKING`, so a read still returns as soon as **one** byte arrives and only the give-up interval grows;
+`TIMEOUT_READ_BLOCKING` was deliberately not used because it waits for the whole buffer. Device behaviour — a text still
+arriving after an idle hour, and the phone no longer waking 4×/s — is owed as `PERF-R01`.
+
+---
+
+## ADR-331 — Radio ACK bookkeeping and the priority lanes are bounded; a full ACK lane pauses reception rather than dropping an acknowledgement (2026-11-02)
+
+### Status
+IMPLEMENTED by stream R (`OPT-O26-03`), merged 2026-11-02, **amended by the integrator review**. Unit-tested; not
+device-verified.
+
+### Context
+`RadioChatEngine` kept `pendingAcks: HashMap<Long, PendingOutbound>`, one entry per sent text, removed only by the peer's
+cryptographic ACK. On a lossy channel an ACK is often lost, so entries lived for the life of the process. The four priority
+lanes and `BlockingStreamReader.chunks` were `Channel.UNLIMITED`, so a disconnected or slowly paced radio could grow them
+without limit.
+
+### Decision
+1. `PendingAckTable`: 256 entries and a 30-minute TTL (the outbox gives up on a radio send after 30 minutes), applied on
+   insert, oldest evicted first.
+2. The four priority lanes are bounded at `LANE_CAPACITY = 32` and keep using the suspending `send`.
+3. `BlockingStreamReader.chunks` is bounded at 32 chunks with a **blocking** `send` from the pump thread, so RFCOMM flow
+   control pushes back on the radio instead of bytes being dropped — a dropped byte would corrupt a frame.
+4. Because (3) is the one place a *thread* can park, `BlockingStreamReader.close()` ends it: it closes the channel and
+   **interrupts the pump thread** (integrator repair, ERROR-973). Closing the socket alone wakes a pump blocked in
+   `InputStream.read`, not one parked handing a chunk over, and closing the channel alone did not release the parked
+   sender in 3 of 3 full host-suite runs.
+
+### Why bounding `pendingAcks` cannot lose a delivery
+An evicted entry only means the ACK for that message is not matched. The outbox retries and re-sends **the identical
+frame** (ERROR-869: the same counters, so the receiver sees a duplicate) and the receiver re-ACKs without storing the
+message twice (ERROR-870). The cost of an eviction is one retransmission and a longer "waiting for acknowledgement" line,
+never a lost message.
+
+### Alternatives considered
+- **Unbounded map with a periodic sweep.** Still unbounded between sweeps, and needs a timer.
+- **`trySend` and drop the ACK when the lane is full.** Rejected by the stream; the integrator implemented it, measured it,
+  and reverted it — see the amendment.
+- **`Channel.UNLIMITED` with a byte budget.** More code, and the frames of one text are already bounded by the 16-segment
+  message cap.
+
+### Amendment 2026-11-02 (integrator review) — which lane may park its producer
+The lane justification as first written ("the producer is already a suspending send path that waits for the transmit
+result") is true of EMERGENCY, TEXT and LOCATION but **not** of ACK: `queueAckFrame` runs inside `rxCollectorJob`, so a full
+ACK lane pauses the *receive* path. That pause is nonetheless the right trade:
+
+- It is bounded at about one lane — 32 frames of airtime. The inbound rate and the ACK backlog scale with the same airtime,
+  so the frames that accumulate meanwhile stay roughly constant (~32–40) at any baud rate, comfortably inside
+  `KissTncDriver.rxFlow`'s 128-frame buffer with `DROP_OLDEST`. At 1200 baud the pause is ~16 s and nothing is dropped.
+- The radio is **half-duplex**: while the pump transmits, the station is not receiving anyway.
+- Dropping the ACK is not free: the peer retransmits the **whole message** — up to 16 segments, ~53 s of air for 3 KB at
+  1200 baud (EXP-133) — to recover an acknowledgement that could have been queued for a fraction of that.
+
+`RadioChatEngine`'s lane comment now states the real ACK producer so the next reader does not rediscover this. Revisit if a
+link's inbound rate ever vastly exceeds its outbound pacing, or for a full-duplex / deeply buffered TNC.
+
+### Consequences
+Memory per engine is bounded at ~256 pending entries plus 4 × 32 queued tasks (each at most 16 frames of 236 B). A
+pathological receive burst pauses the rx collector instead of growing the heap, and the frame source keeps its own
+128-frame drop-oldest buffer. Device behaviour is owed as `PERF-R04`.

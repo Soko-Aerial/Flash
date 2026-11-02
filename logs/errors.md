@@ -16147,3 +16147,110 @@ readers — none of which the current evidence distinguishes.
 `E:/FlashWork/verify-bec221d2/verify-parity.log`, `E:/FlashWork/verify-nocap/gate1-nocap.log`.
 **OPEN — 2 red / 1 green under the full gate on `c5d825f9`; PASS module-only on the same commit; PASS under the full gate
 on pre-E `bec221d2`. Frame count (8) and timeout (10 000 ms) unchanged; no product line reverted.**
+
+## ERROR-971 — `writeBytes(buffer, count, offset)` in jSerialComm 2.11.4 is `(byte[], int, int)`, not `(byte[], long, long)`
+
+### Date / area / environment
+2026-11-02; `:core:radio` desktop serial link (`OPT-O26-04`). Windows 11, 8 logical cores, JBR 21, Gradle 9.5.0,
+jSerialComm 2.11.4, compile target JVM 11.
+
+### Symptoms
+`:core:radio:compileKotlinJvm` failed while removing the duplicate outgoing-frame copy in `JvmSerialLink.write`:
+
+```text
+e: .../core/radio/src/jvmMain/kotlin/com/transfer/flash/core/radio/link/JvmSerialPortCatalog.kt:78:30
+Cannot access 'fun writeBytes(p0: Long, p1: ByteArray!, p2: Int, p3: Int, p4: Int): Int':
+it is private in 'com/fazecast/jSerialComm/SerialPort'.
+```
+
+### Root cause
+The public overloads in 2.11.4 are `readBytes(byte[], int)`, `readBytes(byte[], int, int)`, `writeBytes(byte[], int)` and
+`writeBytes(byte[], int, int)` — all `int` — plus a **private native** `writeBytes(long, byte[], int, int, int)`. Passing
+`Long` arguments resolved against the private native overload, so the error read like an access problem instead of a
+signature problem. The three-argument form is `(buffer, bytesToWrite, offset)`; `javap -c` shows the two-argument form
+delegating with offset 0 and rejecting `bytesToWrite > buffer.length - offset`.
+
+### Working fix
+`val n = port.writeBytes(data, data.size - off, off)`, same `n < 0` / `n == 0` handling. No copy, and the third argument is
+the byte offset.
+
+### Verification / status
+`:core:radio:jvmTest` and `:app:compileDebugKotlin` green. The write path is **never exercised against a real serial port**
+anywhere in this repository (`JvmSerialPortCatalog`'s KDoc says so), so this is compile- and review-verified only; the
+desktop serial write remains owed as part of `PERF-R05`/`BT-00`.
+**RESOLVED (compile-verified; runtime unverified on hardware).**
+
+## ERROR-972 — K2 backend crashes ("No override for IR_EXTERNAL_JAVA_DECLARATION_STUB name:get") on an anonymous `LinkedHashMap` subclass
+
+### Date / area / environment
+2026-11-02; `:core:radio` build, Kotlin 2.x K2 compiler with `explicitApi()`, JBR 21, Gradle 9.5.0.
+
+### Symptoms
+`compileKotlinJvm` and `compileAndroidMain` both failed with an internal compiler error, not a source diagnostic:
+
+```text
+e: java.lang.IllegalStateException: No override for FUN IR_EXTERNAL_JAVA_DECLARATION_STUB name:get visibility:public
+  at org.jetbrains.kotlin.backend.common.actualizer.SpecialFakeOverrideSymbolsResolver.getReferencedSimpleFunction(...)
+```
+
+### Root cause
+A `val map = object : LinkedHashMap<K, V>() { override fun removeEldestEntry(...) }` property later indexed with `map[key]`
+makes K2 resolve the `get` fake override against the local anonymous class and crash while actualising the module. It is a
+compiler bug: the message names a file that may be unrelated to the trigger (it named `JdkRadioSignatureScheme` while
+`PendingAckTable` had the same construct).
+
+### Working fix
+Plain `LinkedHashMap` plus manual eviction. Same behaviour, no anonymous subclass. `RadioSession`'s pre-existing anonymous
+`LinkedHashMap` still compiles, so the construct is only a hazard where the map is also indexed through the anonymous type;
+avoid it in new code.
+
+### Verification / status
+`:core:radio:jvmTest` and `:core:radio:compileAndroidMain` green.
+**RESOLVED.**
+
+## ERROR-973 — `BlockingStreamReaderTest`'s "closing the reader releases a pump parked on a full chunk queue" failed twice in the full host suite, hung once, and passes alone
+
+### Date / area / environment
+2026-11-02; `:core:radio:testAndroidHostTest` (a **new** test from stream R's `OPT-O26-03`), branch `agent/opt-radio` off
+`7adcf4f5`. Windows/JBR 21, 8 logical CPUs, shared with another agent's Gradle build.
+
+### Symptoms / evidence
+- Full host suite, run 1: **192 tests, 1 failed** — this case. Assertion at the end:
+  `the pump thread must end after close(); it was parked at:` followed by
+  `Unsafe.park` → `LockSupport.parkNanos` → `BlockingCoroutine.joinBlocking` → `runBlocking`, i.e. the pump thread was
+  inside `runBlocking { chunks.send(...) }` and had not been released.
+- Full host suite, run 2 (clean tree, repair reverted): **same test failed again**, same assertion. So 2 of 2 in the suite.
+- Class alone: run 1 **hung** `:core:radio:testAndroidHostTest` for over ten minutes with an idle test worker (killed with
+  `Stop-Process`); run 2 **PASSED**, `BUILD SUCCESSFUL in 37s`, 5/5 tests.
+- The test itself allows a **5-second** deadline for the thread to die, which is generous, so "the wait was too short" is a
+  weak explanation for the assertion failures even though the class passes alone.
+
+### What is not in doubt
+`close()` does exactly two things (`chunks.close()`), and the pump's only park points are `InputStream.read` (woken by
+closing the pipe/socket) and `runBlocking { chunks.send(...) }` (released only if closing the channel resumes a suspended
+sender). The `InterruptedException` catch in the pump exists but **nothing ever interrupts the pump thread**, so the release
+depends entirely on `Channel.close()` resuming that sender.
+
+### What was done (2026-11-02) — product fixed, test untouched
+Option 1 was applied on the reviewed branch (`3babf39b`): `BlockingStreamReader` keeps the pump `Thread` and
+`close()` now interrupts it *after* closing the channel. That makes the release independent of whether
+`Channel.close()` resumes a sender parked in `runBlocking`'s event loop, and it activates the `InterruptedException`
+handler that was already in the pump. A pump blocked in `InputStream.read` gets `InterruptedIOException`, which the
+existing `IOException` handler closes the channel with; `RfcommLink.read` still answers -1 first because it checks its own
+`closed` flag before calling the reader.
+
+**Verification:** full host suite green **twice** — `BUILD SUCCESSFUL in 40s` and `in 1m 5s`, `192 tests, 0 failures,
+0 skipped` — after 3 of 3 red runs on the unmodified tree. The same runs kept `:core:radio:jvmTest` at **273 tests,
+0 failures**. The **test was not modified**, so its 5 s deadline and its `Thread.getAllStackTraces()` oracle are unchanged;
+the product simply now satisfies what it asserts.
+
+### What is still not proven
+Whether the *original* failure was a genuine `Channel.close()` semantics gap in this kotlinx-coroutines version or
+scheduling pressure on the shared 8-core box. That does not affect the fix — interrupting the pump is correct either way,
+because it removes the dependence on either — but it is why no claim is made about the library.
+
+### Related files / status
+`core/radio/src/androidMain/kotlin/com/transfer/flash/core/radio/link/BlockingStreamReader.kt`,
+`core/radio/src/androidHostTest/kotlin/com/transfer/flash/core/radio/link/BlockingStreamReaderTest.kt` (unchanged),
+`core/radio/src/androidMain/kotlin/com/transfer/flash/core/radio/link/AndroidBluetoothCatalog.kt` (`RfcommLink.close`).
+**RESOLVED (unit/host-suite verified, 2 of 2 green after the fix; not device-verified).**
