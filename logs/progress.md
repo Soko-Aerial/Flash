@@ -1,5 +1,56 @@
 # Progress Log
 
+## 2026-11-02 - Merged-tree gate 1 GREEN on the third run; the two failures are gate flakiness, not E's merge
+
+### Worked on
+Attributing the two failures of the merged-tree gate 1 (ERROR-959 relay, ERROR-960 desktop PTT) instead of rerunning
+until green. Six measurements, all recorded with raw logs:
+
+| # | Tree | Scope | Result |
+|---|---|---|---|
+| 1 | merged `c5d825f9` | full gate 1 | **FAIL** — 959 + 960, `BUILD FAILED in 8m 36s`, 259/259 tasks |
+| 2 | merged `c5d825f9` | full gate 1 | **FAIL** — the same two cases, `BUILD FAILED in 7m 17s`, 259/259 tasks |
+| 3 | merged `c5d825f9` | that class alone (959) | PASS, `BUILD SUCCESSFUL in 59s`, 24/24 tasks |
+| 4 | merged `c5d825f9` | that class alone (960) | PASS, `BUILD SUCCESSFUL in 2m 30s`, 70/70 tasks |
+| 5 | merged `c5d825f9` | full `:desktop:jvmTest` only, forced | PASS, `BUILD SUCCESSFUL in 4m 23s`, 259 tests |
+| 6 | pre-E `bec221d2` | `:server:test` + `:desktop:jvmTest` in full | PASS, `BUILD SUCCESSFUL in 6m 15s`, 664 + 243 tests |
+| 7 | merged + only the scope cap reverted | full gate 1 | PASS, `BUILD SUCCESSFUL in 8m 42s`, 259/259 tasks |
+| 8 | merged `c5d825f9`, **unmodified** | full gate 1 | **PASS**, `BUILD SUCCESSFUL in 7m 3s`, 259/259 tasks |
+
+### What the evidence actually says
+- **E changed no build input and no server code.** `git diff --stat bec221d2 c5d825f9` is `desktop/**`, `docs/**`, `logs/**`
+  and `AGENTS.md` only (16 desktop Kotlin files, 4 new desktop test classes). A diff of `gradle.properties`,
+  `gradle/libs.versions.toml`, `settings.gradle.kts`, `build.gradle.kts`, `desktop/build.gradle.kts` and
+  `server/build.gradle.kts` is **empty**. So ERROR-959's module is byte-identical in the failing and the green runs.
+- **Run 8 passes the unmodified tree**, which is the run that matters: it kills the "E's merge regressed something"
+  hypothesis with a measurement rather than an argument, and it kills the runner-up hypothesis too — see below.
+- **The scope cap was tested and cleared, and the experiment was discarded.** E's only load-related line is
+  `Dispatchers.IO.limitedParallelism(8)` (OPT-O14-06) on the engine-wide scope. It was removed in the throwaway worktree
+  `E:/FlashWork/verify-nocap` (branch `agent/verify-nocap`, uncommitted edit) and the full gate passed (run 7). But run 8
+  passed the tree **with** the cap, so run 7 was not causal evidence. Inspection agreed: `DesktopEngine` has ~20
+  `scope.launch` sites, nearly all suspending collectors that hold no slot while suspended, with the boot job's
+  `runBlocking` the only blocking occupant — eight short tasks cannot starve a dispatcher for ten seconds. **No product
+  line was reverted**, and the worktree is to be removed with the edit unmerged.
+- **Nothing was weakened.** Frame count (8), `PTT_TIMEOUT_MS` (10 000), suite contents and test counts are unchanged, and
+  the counts were verified by summing JUnit XML rather than trusting the console: merged desktop **259 tests / 46 classes**
+  vs pre-E **243 / 42** (E's four new classes account for the 16), `:server:test` **664** in both, 0 failures, 0 skipped
+  in every run quoted.
+
+### Why the flakiness is a real defect worth recording anyway
+Both failing cases are timing assertions over real I/O on a machine running fourteen other suites simultaneously
+(`DesktopEnginePttTest` drives a real WebSocket plus real mDNS/multicast; the relay case asserts a post-close error frame
+is observed after a successful disconnect). The box is the §36 saturation case: 8 logical CPUs, ~2.4 GB free RAM, other
+Gradle/Java/node work present. `RelayDeliveryContractTest` also has form here — ERROR-399 (ACK race) and a 2026-10-13
+note where it failed during a concurrent agent build and passed on every re-run. Both ERRORs stay **OPEN** with the
+observation recorded as 2 red / 1 green on a byte-identical tree; the fix that would actually settle them is
+instrumentation of where work stops during a failing run, which is a testability task, not a timeout bump. Owed and
+recorded as such.
+
+### Remaining / next AI
+Gate 2 for the merged tree is running (`logs/wave4-ek-gate2-2026-11-02.log`). If it is green, the push of `dev` is a plain
+fast-forward (`origin` already has `dev` at `2d3920bd`, local `dev` was 162 ahead / 0 behind). Then start streams S and R
+from the pushed tip. Do not "fix" 959/960 by enlarging a timeout; do not re-open the scope cap.
+
 ## 2026-11-02 - Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running
 
 ### Worked on
