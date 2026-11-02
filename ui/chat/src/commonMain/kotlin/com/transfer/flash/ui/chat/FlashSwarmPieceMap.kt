@@ -5,7 +5,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -161,37 +161,51 @@ public fun FlashSwarmPieceMap(
 
         Spacer(modifier = Modifier.height(FlashSpacing.space8))
 
-        // Canvas micro-block grid. Two layers: the static grid reads no animated state, so it is recorded only when the
-        // blocks change; the pulse layer exists only while a block is in flight and draws just those blocks.
+        // Canvas micro-block grid. Two layers: the static grid reads no animated state, so its geometry, its stroke and
+        // its colours are built once per size in drawWithCache and only the blocks are re-drawn; the pulse layer exists
+        // only while a block is in flight and draws just those blocks. (OPT-O03-15: the grid, the stroke object and the
+        // alpha-adjusted colour used to be constructed inside onDraw, i.e. on every frame.)
         val rows = ((totalBlocks + columns - 1) / columns).coerceAtLeast(1)
         val gridModifier = Modifier
             .fillMaxWidth()
             .height(44.dp)
 
         Box {
-            Canvas(modifier = gridModifier) {
-                val grid = PieceGrid(size.width, size.height, columns, rows, 1.5.dp.toPx(), 1.dp.toPx())
-                statuses.forEachIndexed { index, status ->
-                    when (status) {
-                        FlashPieceStatus.VerifiedSaved -> grid.fill(this, index, verifiedColor)
-                        FlashPieceStatus.InFlightDownloading -> Unit // drawn by the pulse layer
-                        FlashPieceStatus.AvailableOnPeers -> {
-                            // Amber border / outline to indicate available on swarm peers
-                            grid.fill(this, index, swarmColor.copy(alpha = 0.25f))
-                            grid.stroke(this, index, swarmColor, 1.dp.toPx())
-                        }
-                        FlashPieceStatus.Missing -> grid.fill(this, index, missingColor)
-                    }
-                }
-            }
-            if (anyInFlight) {
-                Canvas(modifier = gridModifier) {
+            Box(
+                modifier = gridModifier.drawWithCache {
                     val grid = PieceGrid(size.width, size.height, columns, rows, 1.5.dp.toPx(), 1.dp.toPx())
-                    val color = inFlightColor.copy(alpha = pulseAlpha)
-                    statuses.forEachIndexed { index, status ->
-                        if (status == FlashPieceStatus.InFlightDownloading) grid.fill(this, index, color)
+                    val hairline = Stroke(width = 1.dp.toPx())
+                    val swarmFill = swarmColor.copy(alpha = 0.25f)
+                    onDrawBehind {
+                        statuses.forEachIndexed { index, status ->
+                            when (status) {
+                                FlashPieceStatus.VerifiedSaved -> grid.fill(this, index, verifiedColor)
+                                FlashPieceStatus.InFlightDownloading -> Unit // drawn by the pulse layer
+                                FlashPieceStatus.AvailableOnPeers -> {
+                                    // Amber border / outline to indicate available on swarm peers
+                                    grid.fill(this, index, swarmFill)
+                                    grid.stroke(this, index, swarmColor, hairline)
+                                }
+                                FlashPieceStatus.Missing -> grid.fill(this, index, missingColor)
+                            }
+                        }
                     }
-                }
+                },
+            )
+            if (anyInFlight) {
+                Box(
+                    modifier = gridModifier.drawWithCache {
+                        val grid = PieceGrid(size.width, size.height, columns, rows, 1.5.dp.toPx(), 1.dp.toPx())
+                        onDrawBehind {
+                            // Reading pulseAlpha here re-draws this layer only; the cache block above does not rerun.
+                            statuses.forEachIndexed { index, status ->
+                                if (status == FlashPieceStatus.InFlightDownloading) {
+                                    grid.fill(this, index, inFlightColor, alpha = pulseAlpha)
+                                }
+                            }
+                        }
+                    },
+                )
             }
         }
 
@@ -253,17 +267,23 @@ private class PieceGrid(
         y = (index / columns) * (blockHeight + spacing),
     )
 
-    fun fill(scope: DrawScope, index: Int, color: Color) {
-        scope.drawRoundRect(color = color, topLeft = offsetOf(index), size = blockSize, cornerRadius = corner)
-    }
-
-    fun stroke(scope: DrawScope, index: Int, color: Color, width: Float) {
+    fun fill(scope: DrawScope, index: Int, color: Color, alpha: Float = 1f) {
         scope.drawRoundRect(
             color = color,
             topLeft = offsetOf(index),
             size = blockSize,
             cornerRadius = corner,
-            style = Stroke(width = width),
+            alpha = alpha,
+        )
+    }
+
+    fun stroke(scope: DrawScope, index: Int, color: Color, stroke: Stroke) {
+        scope.drawRoundRect(
+            color = color,
+            topLeft = offsetOf(index),
+            size = blockSize,
+            cornerRadius = corner,
+            style = stroke,
         )
     }
 }

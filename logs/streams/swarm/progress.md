@@ -296,3 +296,31 @@ buffer (or `RandomAccessFile`) would remove a 1 MiB copy per piece and "reduce C
 ### Owed
 - `PERF-S02` (device, only if someone wants to reopen this): on a phone, transfer a 2 GB swarm file and compare piece-I/O
   CPU of the heap-wrapped path against the `RandomAccessFile` path with `simpleperf`.
+## 2026-11-02 — OPT-O03-15: the piece map's per-frame objects
+
+### What the finding claims
+`FlashSwarmPieceMap` instantiated `PieceGrid` (and with it a `Size` and a `CornerRadius`) inside `onDraw`, plus
+an `Offset` per block and a `Color` per in-flight block on every frame — "~1,200 to 6,000 allocations per second".
+
+### Correction to the claim
+`Offset`, `Size`, `CornerRadius` and `Color` are `@JvmInline value class` in Compose UI: they are packed into a
+`Long`/`ULong` and **do not allocate** on the heap in ART or on the JVM. The `Color.copy(alpha = …)` in the pulse
+layer was therefore free. The allocations that were real: one `PieceGrid` per layer per frame (2), two `Size`/
+`CornerRadius` value objects inside it (value classes again), and — the one that did allocate — a `Stroke` object per
+amber `AvailableOnPeers` block per frame (up to 64/frame, i.e. ~3,800/s at 60 Hz), plus `1.dp.toPx()` arithmetic
+inside the loop.
+
+### Changed
+Both Canvas layers now use `Modifier.drawWithCache`: the grid geometry, the `Stroke` and the alpha-adjusted swarm
+colour are built once per size/status change, and only the block loop runs per frame. The pulse layer passes its alpha to
+`drawRoundRect(alpha = …)` instead of building a new `Color`. No visual or API change (same columns, spacing, corner
+radius, colours, legend and semantics).
+
+### Verification
+`:ui:chat:compileKotlinJvm` and `:ui:chat:jvmTest --tests *Swarm*` green (the map's arithmetic lives in
+`FlashSwarmPieceMapMath`, unchanged).
+
+### Measured
+Frame-time or allocation-rate on a device: **NOT MEASURED** (needs a device profile; the finding's own 2 MB/min figure was
+also an estimate). The number of objects built per frame drops from 2 `PieceGrid` + up to 64 `Stroke` to **0** while
+nothing changes; that is a count, not a measurement.
