@@ -4,10 +4,16 @@ import com.transfer.flash.core.swarm.model.Bitfield
 
 /**
  * Peer view passed to [PiecePicker] to determine available pieces and rarity.
+ *
+ * [inFlightCount] and [window] are what the scheduler already checked when it built the list; [PieceScan] needs them
+ * because a scheduling pass can fill a peer's window part way through and the reference picker then drops that peer
+ * from the holder counts.
  */
 public data class PeerPieceAvailability(
     public val peerId: String,
     public val bitfield: Bitfield,
+    public val inFlightCount: Int = 0,
+    public val window: Int = Int.MAX_VALUE,
 )
 
 /**
@@ -18,6 +24,39 @@ public data class PeerPieceAvailability(
 public class PiecePicker(
     private val random: SeededRandom,
 ) {
+    /** The rarity index a scheduling pass reuses (OPT-O08-01); one pass at a time, on the engine's actor. */
+    private val scan = PieceScan(random)
+
+    /**
+     * Piece-peer holder tests the reference [pickNextPiece] performed in its last call, and the equivalent count for
+     * [beginScan]. Measurement only: the benchmark compares work, not wall-clock time.
+     */
+    internal var lastHolderChecks: Long = 0L
+        private set
+
+    /**
+     * Starts one scheduling pass: builds the rarity index [PieceScan] answers [PieceScan.pickNext] from, which is the
+     * fast equivalent of calling [pickNextPiece] once per window slot. The caller must drive [PieceScan.onPeerRequested]
+     * for every request it issues and rebuild the scan each pass.
+     */
+    internal fun beginScan(
+        localBitfield: Bitfield,
+        availablePeers: List<PeerPieceAvailability>,
+        inFlightByPiece: Map<Int, Set<String>>,
+        canDuplicate: ((Int) -> Boolean)? = null,
+    ): PieceScan {
+        val missingCount = localBitfield.size - localBitfield.count()
+        scan.begin(
+            localBitfield = localBitfield,
+            availablePeers = availablePeers,
+            inFlightByPiece = inFlightByPiece,
+            canDuplicate = canDuplicate,
+            endgame = isEndgame(missingCount, localBitfield.size),
+        )
+        lastHolderChecks = scan.holderChecks
+        return scan
+    }
+
     /**
      * Calculates the endgame threshold for [totalPieces].
      * Endgame starts when missing <= min(32, 2% of pieces).
@@ -56,6 +95,7 @@ public class PiecePicker(
         // Scan missing pieces deterministically (0 until totalPieces)
         val candidatePieces = ArrayList<Int>()
         var minRarity = Int.MAX_VALUE
+        lastHolderChecks = 0L
 
         for (p in 0 until totalPieces) {
             if (localBitfield.get(p)) continue // Already have it
@@ -71,6 +111,7 @@ public class PiecePicker(
                     holders++
                 }
             }
+            lastHolderChecks += availablePeers.size
 
             if (holders == 0) continue // No eligible peer has this piece
 

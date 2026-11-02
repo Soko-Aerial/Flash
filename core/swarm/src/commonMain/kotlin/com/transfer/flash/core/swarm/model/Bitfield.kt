@@ -41,6 +41,16 @@ public class Bitfield(
         }
     }
 
+    /**
+     * Word-level view for the scheduler's rarity scan (OPT-O08-01): bit `i` lives in word `i ushr 6` at bit `i and 63`.
+     * Reading whole words lets one pass test sixty-four pieces at a time instead of calling [get] sixty-four times.
+     * The array must not be written: it is the live storage of this bitfield.
+     */
+    internal fun rawWord(index: Int): Long = words[index]
+
+    /** Number of 64-bit words backing this bitfield, i.e. how many times [rawWord] may be called. */
+    internal val rawWordCount: Int get() = words.size
+
     public fun get(index: Int): Boolean {
         checkBounds(index)
         val wordIndex = index ushr 6
