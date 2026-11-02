@@ -80,6 +80,10 @@ flush contracts, not device logging latency, compression, wear or frame rate.
 | `group.media.drop` | GroupMedia | a file offer was refused | `group`, `from`, `reason`, `swarm`, `skewMs` |
 | `swarm.offer.in` | GroupMedia | a verified swarm offer was accepted | `group`, `from`, `via=live`, `paired`, `skewMs` |
 | `swarm.offer.ignored` | GroupMedia | an unpaired sender's offer could not be used | `group`, `from`, `via=live`, `reason` |
+| `swarm.piece.timeout` | `TransferScheduler.checkTimeouts` | a requested piece was not answered before its timeout (it used to vanish from the in-flight map without a trace) | `transfer`, `peer`, `piece`, `elapsedMs`, `speedBps` |
+| `swarm.sched.stall` | `TransferScheduler` | the request window stayed full past the probe interval, so the scheduler had nothing to ask for | `transfer`, `reason=window_full`, `inFlightBytes`, `budgetBytes`, `piecesDone`, `totalPieces`, `peers` |
+| `swarm.recv.wasted` | `TransferScheduler` | a piece arrived that was already held and had to be discarded (duplicate bytes on the air) | `transfer`, `peer`, `piece`, `wastedBytes`, `receivedBytes` |
+| `swarm.send.dropped` | `SwarmDriver.enqueueSend` | a **piece** frame was dropped because a peer's bounded queue was full (emitted on the first drop and every 50th; control frames are never dropped) | `peer`, `type=piece`, `dropped`, `deferred` |
 | `group.file.fanout` | `GroupFileSender.send` | once per file sent to a group | `group`, `members`, `swarmable`, `swarmOffers`, `wholeFiles`, `notReached`, `noFeatures` |
 | `group.sync.in` | `handleSyncPush` | a catch-up message was accepted | `group`, `relay`, `author`, `kind` (`text`, `swarm_offer`, `offer_kept_swarm_off_here`, `offer_unused_unsigned`), `signed`, `skewMs` |
 | `group.sync.drop` | `handleSyncPush` | a catch-up message was refused | `group`, `from` (the relay), `reason`, `skewMs`, optional `author`, `hasOffer` |

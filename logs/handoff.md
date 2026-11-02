@@ -1,7 +1,26 @@
 # Current Handoff
 
-> **2026-11-02 — STREAM R (radio) IS MERGED AS `1fa3a2d1`; expanded gates running on the merged tree; stream S (swarm)
-> still working.** R came in as 9 commits off `7adcf4f5` and merged `--no-ff` after review (parents `c092c88d` +
+> **2026-11-02 — STREAM S (swarm) IS MERGED AS `6eff1714`; gates running; stream C (calls) is now running.** S came in as 14
+> commits off `7adcf4f5`; **13 of 14 findings delivered and `OPT-O23-07` REJECTED on measurement** (`RandomAccessFile.seek`
+> was 2.1× slower than the existing buffer, EXP-128 — nothing changed). Records: ADR-320..324, ERROR-961..964, EXP-125..128,
+> PERF-S01/S02, and four new probes registered in `docs/testing/PROBES.md`. Review:
+> `logs/streams/swarm/INTEGRATOR-REVIEW.md`.
+> **Review verified rather than trusted:** the receiving peer still hashes every piece (so trusting the bitfield while
+> serving cannot propagate corruption), control frames are never dropped by the bounded send queue, a fairness yield gives up
+> only a slot (in-flight reads finish), and the tombstone cap is the codec's real 64 (the audit's 256 was wrong; a group that
+> cancelled 65 files could not send a Summary at all — ERROR-963). The stream also caught two of its own defects
+> (ERROR-961 in the fast scan) and a load-sensitive timing assertion (ERROR-964).
+> **Tooling damage to the stream's own files was verified repaired** (no BOM, no mojibake), and two line-joining artifacts
+> plus a stale `Ã—` in the copied EXP-126 heading were fixed; behaviour unchanged.
+> **Branch gate:** swarm 191/0, engine 175/0, chat 730/0, desktop + app compile (`BUILD SUCCESSFUL 7m 37s`, 134 tasks);
+> `SwarmInteropTest` passed. **Nothing swarm-side is device-verified** — `PERF-S01`/`S02` are owed.
+> **Now:** **both expanded gates are GREEN on the merged tree** — gate 1 `BUILD SUCCESSFUL 10m 58s`, 263/263 tasks,
+> **4 101 tests, 0 failures, 2 documented POSIX-only skips** (with `:core:engine:jvmTest` added for S); gate 2
+> `BUILD SUCCESSFUL 9m 15s`, 218/218 tasks, **2 110 tests, 0 failures, 0 skips**. Next: push.
+> **Stream C (calls)** was started in `E:\FlashWork\opt-calls` (`agent/opt-calls`) from `53caa6b6`; it must `git merge dev`
+> before its final gate to pick up S.
+
+> **2026-11-02 — STREAM R (radio) IS MERGED AS `1fa3a2d1` (superseded by the banner above for R).** R came in as 9 commits off `7adcf4f5` and merged `--no-ff` after review (parents `c092c88d` +
 > `3babf39b`); records are in `docs/decisions.md` (ADR-330/331), `logs/errors.md` (ERROR-971..973), `logs/experiments.md`
 > (EXP-130..133) and `PERF-R01..R05` in the test backlog. Review: `logs/streams/radio/INTEGRATOR-REVIEW.md`.
 > **Review outcome:** `O26-01`..`O26-07` kept; the AAD rewrite was verified byte-identical; the crypto cache holds only

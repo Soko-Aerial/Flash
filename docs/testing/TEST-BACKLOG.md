@@ -7279,3 +7279,22 @@ numbers into device facts.
   runtime exercise of the jSerialComm write path (ERROR-971). *Source:* ERROR-971, merge record. *Status:* TODO.
 - **RADCHAT-DEV03..07 re-run** (no routing changed, but the transport paths did): same steps as recorded in the radio
   sections above; *Pass:* unchanged behaviour plus the PERF-R01 numbers. *Status:* TODO.
+
+### PERF-S01..S02 — swarm stream (stream S, merged 2026-11-02, ADR-320..324, EXP-125..128)
+
+Every swarm number so far is desktop-JVM only. These are the device checks that turn them into facts; none has been run.
+
+- **PERF-S01 — three devices, one 2 GB file.** *Setup:* three phones in one group (one of them a Windows desktop if
+  available), a single 2 GB file, the group swarm on. *Steps:* send the file, let all members finish, then repeat with one
+  device thermally loaded (or `THERMAL` throttled) and once with one member paused and resumed. Watch `swarm.piece.timeout`,
+  `swarm.sched.stall`, `swarm.recv.wasted`, `swarm.send.dropped`. *Pass:* (a) every member finishes and the whole-file hash
+  matches on all of them; (b) **fairness** — each member is served within the first minutes rather than two members holding
+  the slots (ADR-322/`OPT-O08-03`); (c) the thermally loaded device steps its serve profile down instead of hashing at full
+  rate (ADR-323); (d) idle wake-ups are in the hundreds per hour, not thousands (ADR-320/`OPT-O08-05`, EXP-125 is JVM only);
+  (e) a resumed transfer continues from its persisted pieces; (f) a group that cancelled **65+** files still exchanges
+  Summaries (ERROR-963's reachable failure was exactly this); (g) the wasted-duplicate ratio stays low.
+  *Source:* ADR-320..324, EXP-125..127, ERROR-961/963. *Status:* TODO.
+- **PERF-S02 — Android piece I/O, only if `OPT-O23-07` is ever reopened.** *Setup:* a phone, `simpleperf` available.
+  *Steps:* profile the piece read/write path (`RandomAccessFile` vs the heap-wrapped buffer) on the same file. *Pass:* a
+  measured improvement on ART, not a desktop extrapolation — EXP-128 rejected the change on desktop because it was 2.1×
+  slower there. *Source:* EXP-128. *Status:* TODO (not required unless the finding is reopened).
