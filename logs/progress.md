@@ -1,5 +1,29 @@
 # Progress Log
 
+## 2026-11-02 - Desktop E merged --no-ff as `c5d825f9`; both expanded gates running on the merged tree
+
+### Worked on / changed
+Committed the green kernel-gate record as **`2e4ab027`** (docs only: `AGENTS.md`, this log, `logs/errors.md` rechecks,
+`logs/handoff.md`, plan K row, kernel stream files). Then merged reviewed desktop tip **`b2b61b92`** into `dev` with
+**`--no-ff`** as **`c5d825f9`**, after both expanded kernel gates had passed on `bec221d2`. The merge was clean: no
+conflicts, 23 files changed (1 984 insertions, 352 deletions), including the new `DesktopDiscoveryActivity`,
+`DesktopFileLogSink`, `DesktopOsReduceMotion` sources and their tests plus the desktop stream records. Working tree was
+clean before and after. No source file was edited by hand in this step.
+
+### Verification
+Both expanded plan section 6.3 gates were launched forced on the merged commit `c5d825f9`, through
+`tools/flash-gradle.ps1`, gate 1 first (raw output `logs/wave4-ek-gate1-2026-11-02.log`, ignored), gate 2 to follow
+sequentially (`logs/wave4-ek-gate2-2026-11-02.log`). **No merged-tree gate result is recorded yet**; the kernel-only
+numbers belong to `bec221d2` and must not be quoted for this tree.
+
+### Remaining / next AI
+Record gate 1 and gate 2 XML counts, skips and exit status for `c5d825f9`. A new failure here belongs to E's merge and
+needs its own `ERROR-NNN` before anything else merges; plan section 6.3.1 says the baseline is 2 documented POSIX
+skips in gate 1 and none in gate 2, with no expected failures since `432ceb52` (ERROR-935). Then stop the Gradle
+daemons through the lock, remove only clean green-integrated worktrees (keeping branches), and leave the handoff at the
+exact stopping point. No push, deploy, device session, presence work or Wave 5 implementation; every PERF-E/PERF-K
+check stays TODO and every performance headline NOT MEASURED.
+
 ## 2026-11-02 - K gate 2 PASSES; both expanded K gates green on `bec221d2`, E may merge
 
 ### Worked on

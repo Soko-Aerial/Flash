@@ -917,9 +917,10 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Optimization programme Wave 4 reviewed and repair-committed, integration IN PROGRESS (2026-11-02):** desktop E
-`b2b61b92` (unmerged), kernel K `22a53994` (**merged `bec221d2`**), both actual base `baf77753`. Canonical records
-committed in `f9b1fba0`. First expanded JVM/compile gate on `bec221d2` FAILED with one load-sensitive messaging test and
+**Optimization programme Wave 4 merged and being gate-verified (2026-11-02):** both streams are now ON `dev` - desktop E
+`b2b61b92` (**merged `c5d825f9`**) and kernel K `22a53994` (**merged `bec221d2`**) - from actual base `baf77753`.
+Canonical reviewed records: `f9b1fba0`; the green kernel-gate record is `2e4ab027`. First expanded JVM/compile gate on
+`bec221d2` FAILED with one load-sensitive messaging test and
 one server test (ERROR-957/958); both pass alone, and the **complete forced rerun PASSED on 2026-11-02**
 (`BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks, exit 0, 3 597 tests, 0 failures, 2 documented POSIX-only Windows skips).
 Neither flake repeated, so both ERRORs stay OPEN (intermittent, root cause unknown, nothing weakened). The **expanded
@@ -931,7 +932,8 @@ Targeted repaired verification PASS: desktop 259 tests, kernel 602, zero failure
 Cipher/Mac ThreadLocals in favor of Provider selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade
 or zeroization guarantee. All numeric headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production
 integration. Canonical reviewed records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124.
-Owed PERF-E01..E08/PERF-K01..K05. **Next: E merges `--no-ff`, then both expanded gates run again on the merged tree.**
+Owed PERF-E01..E08/PERF-K01..K05. **Next: both expanded gates on the merged `c5d825f9` tree must pass; a new failure
+there belongs to E's merge and needs its own ERROR before anything else lands.**
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No push/deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
