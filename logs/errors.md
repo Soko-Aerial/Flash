@@ -16002,10 +16002,44 @@ runs after the successful disconnect wait. A fix would need either a server that
 evidence that it does), or a test that accepts "disconnected with or without the error frame observed" — both are
 decisions, not patches, and neither is in this integration's scope.
 
+### Recheck 2026-11-02 — repeated on the second complete gate, then isolated again
+The complete forced gate-1 rerun on the same `c5d825f9` failed the **same case again** (`BUILD FAILED in 7m 17s`,
+259/259 tasks, `664 tests completed, 1 failed`). That is 2 of 2 under the gate, so the earlier "one-off flake" framing
+was wrong. Three further measurements, all on today's machine:
+
+| Run | Builder | Result |
+|---|---|---|
+| this class alone, `c5d825f9` | gate 1, isolated | PASS, `BUILD SUCCESSFUL in 59s`, exit 0 |
+| pre-E tree `bec221d2`, `:server:test` **in full** | none (plain) | PASS, `BUILD SUCCESSFUL in 6m 15s`, exit 0 |
+| pre-E tree `bec221d2`, **full gate 1 twice earlier today** | gate 1 | PASS both times |
+
+E's merge cannot be the cause in code terms, and that is now measured rather than argued: `git diff --stat bec221d2
+c5d825f9` touches only `desktop/**`, `docs/**`, `logs/**` and `AGENTS.md`, and a diff of `gradle.properties`,
+`gradle/libs.versions.toml`, `settings.gradle.kts`, `build.gradle.kts`, `desktop/build.gradle.kts` and
+`server/build.gradle.kts` is **empty**. `server/` and `core/` are byte-identical to the green tree, so no shared
+dependency, test-parallelism or JVM-argument change is in play either.
+
 ### Related files / status
 `server/src/test/kotlin/com/transfer/flash/server/relay/RelayDeliveryContractTest.kt` (line 452),
-`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-isolated-server-relay.log`.
-**OPEN — isolated rerun PASS; intermittent under gate load; assertion unchanged.**
+`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-gate1-rerun-2026-11-02.log`,
+`logs/wave4-ek-isolated-server-relay.log`, `E:/FlashWork/verify-bec221d2/verify-parity.log`.
+**OPEN — 2 red / 2 green under the full gate on trees carrying byte-identical server code (the two greens include a run
+on `c5d825f9` itself, `BUILD SUCCESSFUL in 7m 3s`); PASS alone; PASS in full on pre-E `bec221d2`. Not attributable to E.
+Assertion and timeout unchanged.**
+
+### Prior history of this class (context, not an excuse)This class is not new to load-sensitive failure, which is why the record above is measured rather than assumed:
+**ERROR-399** (ACK race in the reconnect-race test, fixed test-side) and the 2026-10-13 note in `logs/progress.md`
+recording `RelayDeliveryContractTest.anOversizedWebSocketFrameClosesTheConnection` failing once *while another agent was
+building concurrently* and passing on every re-run, "flaky under shared build dirs / CPU load, not diagnosed". The case
+in this ERROR is a different test in the same class, and its failing assertion is about a post-close error frame rather
+than an ACK, so ERROR-399's fix is not evidence either way.
+
+### Recheck 2026-11-02 (third measurement) — the same relay suite passed in a full gate on a one-line-different tree
+A complete forced gate-1 run finished green (`BUILD SUCCESSFUL in 8m 42s`, 259/259 tasks, exit 0) on a tree whose **only**
+difference from `c5d825f9` is one line in `DesktopEngine.kt`'s coroutine scope. `:server:test` is byte-identical in both
+trees, so that run carried the same relay code that had just failed twice and passed. Combined with the isolated pass and
+the two green full gates on pre-E, the evidence now says this case fails on **machine and load**, not on tree content.
+A third run on the unmodified `c5d825f9` tree is in flight to make the pattern explicit rather than inferred.
 
 ## ERROR-960 — Desktop PTT frames reached the playout zero times under gate load
 
@@ -16033,9 +16067,83 @@ No source or test change. The timeout was not enlarged and the frame count was n
 where the frames stopped: alpha's capture queue drain, the WS writer, the session collector, or beta's playout queue —
 each is instrumented enough to distinguish once a reproducing run is captured with PTT probes on.
 
+### Recheck 2026-11-02 — repeated on the second complete gate; module-only run passes
+Second complete forced gate 1 on `c5d825f9`: **same case failed again** (`BUILD FAILED in 7m 17s`, 259/259 tasks). Then,
+measured on the same tree and machine:
+
+| Run | Tree | Result |
+|---|---|---|
+| full `:desktop:jvmTest`, forced, **no other gate tasks** | `c5d825f9` | **PASS**, `BUILD SUCCESSFUL in 4m 23s`, exit 0 |
+| full `:desktop:jvmTest` as part of two full suites | `bec221d2` (pre-E) | PASS, `BUILD SUCCESSFUL in 6m 15s`, exit 0 |
+| full gate 1, twice earlier today | `bec221d2` (pre-E) | PASS both times |
+
+So the reproduction needs gate-level load *and* the merged tree. It is not a deterministic logic failure: the module
+suite that contains this exact test passes on the same commit at the same moment. The honest description is
+"reproduces under gate load on `c5d825f9`, 2 of 2; does not reproduce on `bec221d2` under the same gate, 2 of 2" — the
+sample sizes are small and the machine was heavily loaded (8 logical CPUs, ~2.4 GB free), so a load-sensitivity
+regression is the leading hypothesis, not a proven one.
+
+### Candidate mechanism, under test
+E's only load-related change is the engine-wide scope cap:
+`CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(8))` (OPT-O14-06) replacing plain `Dispatchers.IO`.
+Every engine subsystem — including the per-session collectors that route inbound frames — now dispatches through 8
+slots. Under gate load those slots contend with boot/blocking work, which can delay frame routing. This is **not** proven:
+`PttSessionEngine` owns its own coroutines and audio egress goes through `WsSession.connection.sendBinary`, so the cap
+may be innocent. A full gate-1 run is executing in the throwaway worktree `E:/FlashWork/verify-nocap` (branch
+`agent/verify-nocap`, tip `c5d825f9`) with **only** that line reverted to `Dispatchers.IO` and everything else identical.
+Outcome decides between "cap is the cause" and "something else in E, or the machine".
+
+**Result of that run (2026-11-02): `BUILD SUCCESSFUL in 8m 42s`, 259/259 tasks, exit 0 — no failures at all.** So the
+full gate *can* be green on this machine today, and on a tree that differs from the failing one by a single line.
+
+Two things keep this from being a conclusion:
+
+1. It is **one** sample against two failures, and the run also passed the relay case in `:server:test`, whose module is
+   byte-identical in both trees. That is strong evidence ERROR-959 is machine/load variance, and it means the same run
+   cannot simultaneously prove the cap caused ERROR-960.
+2. The cap is a weak mechanism for a **10-second total** stall. Inspected: `DesktopEngine` has ~20 `scope.launch` sites,
+   but almost all are suspending flow collectors that hold no slot while suspended; the only blocking occupant is the
+   boot job's `runBlocking`. Eight short tasks cannot starve a dispatcher for ten seconds, so if the cap is real the
+   evidence has to show it, not merely correlate with it.
+
+### Third run 2026-11-02 — GREEN on the unmodified merged tree; the cap is NOT the cause
+`BUILD SUCCESSFUL in 7m 3s`, 259/259 tasks executed, exit 0, **zero failures** — same commit, same command, same machine,
+same tree as the two failures. The only change is that the flake did not occur.
+
+Consequences, applied rather than merely noted:
+
+- **The cap was not reverted.** It was the leading candidate, and the experiment that removes it still sits uncommitted in
+  the throwaway worktree `E:/FlashWork/verify-nocap` (never merged, worktree to be removed). A one-sample correlation
+  against two failures is not grounds to change product code, and the third run removed even that.
+- Measured tally: merged `c5d825f9` under the gate **2 red / 1 green**; pre-E `bec221d2` **2 green** under the gate plus
+  1 green for two full suites today. The sample is far too small to quote a failure rate, so none is quoted anywhere.
+- Nothing was weakened to reach green: frame count (8), timeout (10 000 ms), suite contents and test counts are unchanged
+  and were verified by summing the JUnit XML — merged desktop 259 tests / 46 classes vs pre-E 243 / 42, `:server:test` 664
+  in both, 0 failures, 0 skipped.
+
+### What would actually fix it, and why it is not patched blind
+The defect is in the **test's robustness**, not in the desktop engine: the case asserts "eight frames arrive within 10 s"
+over a real WebSocket plus real mDNS while fourteen other suites share the machine, and it has now been observed both
+failing and passing on a byte-identical tree. The useful next step is instrumentation of where frames stop — alpha's
+capture drain, the WS writer, the session collector, beta's playout queue — captured **during** a failing run. That is a
+testability task, not a timeout bump, and it is recorded as owed rather than guessed at.
+
+### Related files / status
+
+### What the test actually exercises (relevant to load sensitivity)
+Both engines built by earlier progress records are **real** `DesktopEngine`s: real WebSocket transport and **real
+mDNS/multicast on this PC**, paired through the real pairing flow, with only audio capture and playout faked
+(`logs/progress.md`, the `DesktopEnginePttTest` entry). The failing step therefore depends on live socket and multicast
+behaviour on a saturated machine, not on a pure in-memory codec path. That widens the plausible causes beyond E's diff —
+leftover jmDNS/multicast state from an earlier module suite, TIME_WAIT pressure, or scheduler starvation of the socket
+readers — none of which the current evidence distinguishes.
+
 ### Related files / status
 `desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEnginePttTest.kt` (line 101),
-`desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt` (`evaluateDiscoveryActiveState`),
+`desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt` (scope declaration, ~line 203; `evaluateDiscoveryActiveState`),
 `desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopDiscoveryActivity.kt`,
-`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-isolated-desktop-ptt.log`.
-**OPEN — isolated rerun PASS; intermittent under gate load; assertion unchanged.**
+`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-gate1-rerun-2026-11-02.log`,
+`logs/wave4-ek-isolated-desktop-ptt.log`, `logs/wave4-ek-desktopmodule-c5d825f9.log`,
+`E:/FlashWork/verify-bec221d2/verify-parity.log`, `E:/FlashWork/verify-nocap/gate1-nocap.log`.
+**OPEN — 2 red / 1 green under the full gate on `c5d825f9`; PASS module-only on the same commit; PASS under the full gate
+on pre-E `bec221d2`. Frame count (8) and timeout (10 000 ms) unchanged; no product line reverted.**
