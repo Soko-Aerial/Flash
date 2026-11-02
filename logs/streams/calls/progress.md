@@ -39,13 +39,18 @@ re-opened against today's code before it was touched.
 
 ### Verification
 
-- `:core:calling:jvmTest` — 239 tests, 0 failures (every suite, `CallSdpTest` 29, `CallQualityMathTest` 6).
-- `:core:ptt:jvmTest` — 154 tests, 0 failures across 17 suites (new: `PttStatsRateTest` 3, `PttJitterRingTest` 6,
-  `PttJitterDepthTest` 7, `PttAudioFrameAllocationTest` 4, `JvmPttWarmUpTest` 3).
-- `:ui:callui:jvmTest` — 110 tests, 0 failures (new `DesktopVideoSinkBindingTest` 3; `FlashCallControlDockRenderTest`
-  4/4 renders after the layout change; `FlashCallControlDockTest` 9).
-- `:core:ptt:compileAndroidMain` and `:app:compileDebugKotlin` / `:desktop:compileKotlinJvm` as part of the final gate.
-- Exact commands and their last lines are in the stream report; every number in `EXP-135` came from a forced run.
+- **Stream gate (forced, on the tree merged with `origin/dev` = `5e8138dc`):**
+  ```text
+  cmd /c "tools\flash-gradle.cmd :core:calling:jvmTest :core:ptt:jvmTest :ui:callui:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --rerun-tasks --no-build-cache --no-configuration-cache --console=plain"
+  ```
+  **`BUILD SUCCESSFUL in 9m 1s`, 138 of 138 tasks executed.** JUnit XML sum over the three suites: **494 tests,
+  0 failures, 0 errors** (`:core:calling:jvmTest` 16 suites / 239 tests, `:core:ptt:jvmTest` 17 suites / 155,
+  `:ui:callui:jvmTest` 16 suites / 110 — 49 suites in total). `:desktop:compileKotlinJvm` and
+  `:app:compileDebugKotlin` were part of the same run.
+- **Also run, not required by the stream list:** `:core:calling:testAndroidHostTest` (the 16 `androidHostTest` files
+  that drive the real session classes) — **396 tests, 0 failures**, 2 m 37 s. The integrator's gate 2 should include
+  this task now that C changes `core/calling`'s `commonMain`.
+- `:core:ptt:compileAndroidMain` — green (the `AudioTrack` change).
 
 ### Problems found while fixing
 
