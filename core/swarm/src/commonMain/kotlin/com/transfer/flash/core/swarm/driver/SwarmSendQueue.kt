@@ -27,6 +27,7 @@ internal class SwarmSendQueue(
     private val dispatcher: CoroutineDispatcher,
     private val capacity: Int = SEND_QUEUE_CAPACITY,
     private val send: suspend (SwarmFrame) -> Unit,
+    private val onPieceDropped: (dropped: Long, deferred: Long) -> Unit = { _, _ -> },
 ) {
     private val frames = Channel<SwarmFrame>(capacity)
 
@@ -63,6 +64,7 @@ internal class SwarmSendQueue(
         if (frames.trySend(frame).isSuccess) return
         if (frame is SwarmFrame.Piece) {
             droppedPieces++
+            onPieceDropped(droppedPieces, deferredControls)
             return
         }
         deferredControls++

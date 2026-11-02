@@ -19,6 +19,7 @@ public class SwarmEngine(
     public val config: SwarmConfig,
     public val localDeviceId: String,
     seed: Long,
+    private val telemetry: SwarmTelemetry? = null,
 ) {
     private val random = SeededRandom(seed)
     public val strikeBook: StrikeBook = StrikeBook()
@@ -46,7 +47,7 @@ public class SwarmEngine(
 
     private val manifestHandler = ManifestHandler(strikeBook)
     private val serveHandler = ServeHandler(servePolicy, requestWindow, config)
-    private val transferScheduler = TransferScheduler(piecePicker, sourceSelector, requestWindow, strikeBook)
+    private val transferScheduler = TransferScheduler(piecePicker, sourceSelector, requestWindow, strikeBook, telemetry)
     private val contentLifecycleHandler = ContentLifecycleHandler(localDeviceId, config, strikeBook)
     private val peerHandler = PeerHandler(peers, contents, tombstones) { tb, cmds -> applyTombstone(tb, cmds) }
 
