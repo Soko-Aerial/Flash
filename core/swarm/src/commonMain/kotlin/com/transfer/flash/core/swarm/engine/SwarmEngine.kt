@@ -2,6 +2,7 @@ package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
+import com.transfer.flash.core.common.perf.FlashThermalStatus
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceReadStatus
 import com.transfer.flash.core.swarm.model.SwarmFailReason
@@ -38,6 +39,10 @@ public class SwarmEngine(
     private var callActive: Boolean = false
     private var localServingEnabled: Boolean = config.servingEnabled
     private var freeStorageBytes: Long = Long.MAX_VALUE
+
+    /** Thermal step-down state (OPT-O08-06); the profile and budget the engine is actually running with. */
+    private var thermalStatus: FlashThermalStatus = FlashThermalStatus.NONE
+    private var effectiveProfile: SwarmProfile = config.profile
 
     private val manifestHandler = ManifestHandler(strikeBook)
     private val serveHandler = ServeHandler(servePolicy, requestWindow, config)
@@ -324,6 +329,8 @@ public class SwarmEngine(
                     countPeerCopies = { idx -> countPeerCopies(content, idx, requesterPeerId = event.peerId) },
                     countPendingServes = { idx -> countPendingServes(content, idx) },
                     commands = commands,
+                    profile = effectiveProfile,
+                    thermalServingBlocked = thermalServingBlocked,
                 )
             }
             is SwarmEvent.UnrequestArrived -> {
@@ -445,6 +452,7 @@ public class SwarmEngine(
                 callActive = event.active
                 requestWindow.setCallActive(event.active)
             }
+            is SwarmEvent.ThermalChanged -> applyThermalStatus(event.status)
             is SwarmEvent.Tick -> {
                 transferScheduler.checkTimeouts(contents.values, peers, event.nowMs)
                 transferScheduler.flushPendingHaves(contents.values, peers, ::isPeerAllowed, event.nowMs, commands)
@@ -564,6 +572,39 @@ public class SwarmEngine(
         }
         return false
     }
+
+    /** The in-flight request budget the engine is currently running with, for the thermal step-down test. */
+    internal val inFlightBudgetBytes: Long get() = requestWindow.currentBudgetBytes
+
+    /** The serve profile in force after any thermal step-down (OPT-O08-06). */
+    internal val activeServeProfile: SwarmProfile get() = effectiveProfile
+
+    /**
+     * OPT-O08-06: follow the host's thermal governor. `MODERATE` steps the serve profile down one notch, `SEVERE` and
+     * above drop to [SwarmProfile.LOW] **and** stop serving; recovery restores the configured profile and the user's
+     * own serving choice, which this never overwrites. The governor applies its own dwell/hysteresis, so a flapping
+     * sensor does not flap this.
+     */
+    private fun applyThermalStatus(status: FlashThermalStatus) {
+        if (status == thermalStatus) return
+        thermalStatus = status
+        val next = when (status) {
+            FlashThermalStatus.NONE, FlashThermalStatus.LIGHT -> config.profile
+            FlashThermalStatus.MODERATE -> when (config.profile) {
+                SwarmProfile.HIGH -> SwarmProfile.MEDIUM
+                SwarmProfile.MEDIUM, SwarmProfile.LOW -> SwarmProfile.LOW
+            }
+            FlashThermalStatus.SEVERE, FlashThermalStatus.CRITICAL, FlashThermalStatus.EMERGENCY -> SwarmProfile.LOW
+        }
+        if (next != effectiveProfile) {
+            effectiveProfile = next
+            requestWindow.setBudgetBytes(next.inFlightByteBudget)
+        }
+    }
+
+    /** Serving is blocked by heat only at SEVERE and above; the profile step-down covers MODERATE. */
+    private val thermalServingBlocked: Boolean
+        get() = thermalStatus >= FlashThermalStatus.SEVERE
 
     private fun cancelInFlight(content: ContentState) {
         for ((key, _) in content.inFlightRequests) {

@@ -26,6 +26,8 @@ internal class ServeHandler(
         countPeerCopies: (Int) -> Int,
         countPendingServes: (Int) -> Int,
         commands: MutableList<SwarmCommand>,
+        profile: SwarmProfile = config.profile,
+        thermalServingBlocked: Boolean = false,
     ) {
         val eval = servePolicy.evaluateRequest(
             peerId = e.peerId,
@@ -34,10 +36,10 @@ internal class ServeHandler(
             isAllowed = e.allowed,
             contentKnown = content != null,
             isTombstoned = isTombstoned,
-            servingEnabled = localServingEnabled && !systemSuspended && e.serveAllowed,
+            servingEnabled = localServingEnabled && !systemSuspended && e.serveAllowed && !thermalServingBlocked,
             isOrigin = content?.role == SwarmRole.ORIGIN,
             isCallActive = callActive,
-            profile = config.profile,
+            profile = profile,
             activeRequesters = content?.activeRequesters ?: emptySet(),
             currentOutstandingBytes = content?.outstandingServeBytes?.get(e.peerId) ?: 0L,
             localHoldsPiece = { idx -> content?.bitfield?.get(idx) == true },

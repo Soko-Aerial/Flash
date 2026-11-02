@@ -314,6 +314,16 @@ public sealed interface SwarmEvent {
         override val nowMs: Long,
     ) : SwarmEvent
 
+    /**
+     * The host's thermal governor changed state (OPT-O08-06). The swarm steps its serve profile down under
+     * `MODERATE`, drops to the lowest profile and stops serving under `SEVERE` and above, and restores both when the
+     * device cools — the governor already applies the hysteresis, so the engine simply follows it.
+     */
+    public data class ThermalChanged(
+        public val status: com.transfer.flash.core.common.perf.FlashThermalStatus,
+        override val nowMs: Long,
+    ) : SwarmEvent
+
     public data class Tick(
         override val nowMs: Long,
     ) : SwarmEvent
