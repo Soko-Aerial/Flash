@@ -950,7 +950,11 @@ already rejected dropping ACKs; the bounded pause is inside `rxFlow`'s 128-frame
 applied one real repair — **ERROR-973**: `BlockingStreamReader.close()` now interrupts the pump thread, because closing the
 channel alone left it parked in 3 of 3 host-suite runs. Branch tip: `:core:radio:jvmTest` 273/0/0,
 `:core:radio:testAndroidHostTest` 192/0/0 twice. Records: ADR-330/331, ERROR-971..973, EXP-130..133, `PERF-R01..R05` owed
-(no radio in the session — **nothing radio-side is device-verified**). Expanded gates are running on the merged tree.
+(no radio in the session — **nothing radio-side is device-verified**). **Both expanded gates are GREEN on the merged tree:**
+gate 1 on the second run (`BUILD SUCCESSFUL 8m 7s`, 261/261 tasks, exit 0; the first run's `:server:test` failure was two
+`RelayDeliveryContractTest` cases on a tree whose `server/`+`core/common` diff is empty — ERROR-959's flaky class, recorded)
+and gate 2 (`BUILD SUCCESSFUL 8m 55s`, 218/218 tasks, 2 110 tests, 0 failures, 0 skips). Radio host re-run on the merged
+tree: 192/0/0.
 **Stream S (swarm) is still running** in `E:\FlashWork\opt-swarm`; do not disturb its worktree or build.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,

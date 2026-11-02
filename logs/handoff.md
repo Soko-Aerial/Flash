@@ -13,8 +13,12 @@
 > a sender parked in `runBlocking`. The test itself was not modified.
 > **Verified on the branch tip:** `:core:radio:jvmTest` **273/0/0**, `:core:radio:testAndroidHostTest` **192/0/0 twice**.
 > ***Nothing radio-side is device-verified*** — `PERF-R01..R05` and the `RADCHAT-DEV03..07` re-runs are owed.
-> **Now:** gate 1 (with `:core:radio:jvmTest` added per §6.3) and gate 2 on the merged tree. Stream S is still running in
-> `E:\FlashWork\opt-swarm` and must not be disturbed.
+> **On the merged tree:** gate 1 (now with `:core:radio:jvmTest`) **PASS on the second run** — `BUILD SUCCESSFUL in 8m 7s`,
+> 261/261 tasks, exit 0; the first run failed `:server:test` with two `RelayDeliveryContractTest` cases on a tree whose
+> `server/` and `core/common` diff is empty, the class passing alone (ERROR-959's fourth/fifth flaky case, recorded).
+> Gate 2 **PASS** — `BUILD SUCCESSFUL in 8m 55s`, 218/218 tasks, **2 110 tests, 0 failures, 0 skips**. Radio host on the
+> merged tree: **192/0/0**. Nothing weakened, nothing excluded.
+> **Next: push; stream S (swarm) is still running** in `E:\FlashWork\opt-swarm` and must not be disturbed.
 
 > **2026-11-02 — WAVE 4 IS PUSHED; STREAMS S (swarm) AND R (radio) ARE RUNNING (superseded by the banner above for R).** `dev` = **`7adcf4f5`**, pushed to
 > `origin/dev` (`2d3920bd..7adcf4f5`, plain fast-forward, upstream now set), verified after a fresh fetch at `0 ahead /
