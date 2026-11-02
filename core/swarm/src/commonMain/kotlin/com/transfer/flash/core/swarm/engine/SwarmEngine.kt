@@ -2,6 +2,7 @@ package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.SourceState
 import com.transfer.flash.core.swarm.codec.SwarmFrame
+import com.transfer.flash.core.common.perf.FlashThermalStatus
 import com.transfer.flash.core.swarm.model.ContentRoot
 import com.transfer.flash.core.swarm.model.PieceReadStatus
 import com.transfer.flash.core.swarm.model.SwarmFailReason
@@ -18,6 +19,7 @@ public class SwarmEngine(
     public val config: SwarmConfig,
     public val localDeviceId: String,
     seed: Long,
+    private val telemetry: SwarmTelemetry? = null,
 ) {
     private val random = SeededRandom(seed)
     public val strikeBook: StrikeBook = StrikeBook()
@@ -30,15 +32,22 @@ public class SwarmEngine(
     private val peers = LinkedHashMap<String, PeerConnectionState>()
     private val tombstones = LinkedHashMap<Pair<String, String>, SwarmTombstone>()
 
+    /** Contents whose wait reason and row a HAVE touched while the request window was full (OPT-O08-07). */
+    private val deferredWaitReasons = HashSet<Pair<String, ContentRoot>>()
+
     private var networkUp: Boolean = true
     private var systemSuspended: Boolean = false
     private var callActive: Boolean = false
     private var localServingEnabled: Boolean = config.servingEnabled
     private var freeStorageBytes: Long = Long.MAX_VALUE
 
+    /** Thermal step-down state (OPT-O08-06); the profile and budget the engine is actually running with. */
+    private var thermalStatus: FlashThermalStatus = FlashThermalStatus.NONE
+    private var effectiveProfile: SwarmProfile = config.profile
+
     private val manifestHandler = ManifestHandler(strikeBook)
     private val serveHandler = ServeHandler(servePolicy, requestWindow, config)
-    private val transferScheduler = TransferScheduler(piecePicker, sourceSelector, requestWindow, strikeBook)
+    private val transferScheduler = TransferScheduler(piecePicker, sourceSelector, requestWindow, strikeBook, telemetry)
     private val contentLifecycleHandler = ContentLifecycleHandler(localDeviceId, config, strikeBook)
     private val peerHandler = PeerHandler(peers, contents, tombstones) { tb, cmds -> applyTombstone(tb, cmds) }
 
@@ -275,11 +284,22 @@ public class SwarmEngine(
                 if (!isPeerAllowed(event.frame.groupId, event.peerId)) return commands
                 contents[event.frame.groupId to event.frame.root]?.let { content ->
                     peerHandler.handleHaveArrived(event, content) {
-                        updateWaitReason(it)
-                        publishRow(it, commands)
-                        transferScheduler.scheduleRequests(
-                            it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
-                        )
+                        // OPT-O08-07: in a 20-node mesh every stored piece reaches every member as HAVE, so this runs
+                        // tens of times a second. Reclassifying the wait reason and republishing the row on each one
+                        // rebuilt the scheduler's answer for no new request: while the request window is full, the
+                        // next work can only happen when a piece arrives or the tick reschedules. The bitfield update
+                        // above is never skipped, so nothing is lost — the answer is deferred, not dropped.
+                        if (it.state != SwarmLifecycleState.ACTIVE ||
+                            requestWindow.canRequestBytes(it.pieceSize.toLong())
+                        ) {
+                            updateWaitReason(it)
+                            publishRow(it, commands)
+                            transferScheduler.scheduleRequests(
+                                it, peers, ::isPeerAllowed, event.nowMs, systemSuspended, networkUp, commands
+                            )
+                        } else {
+                            deferredWaitReasons.add(it.groupId to it.root)
+                        }
                     }
                 }
             }
@@ -310,6 +330,8 @@ public class SwarmEngine(
                     countPeerCopies = { idx -> countPeerCopies(content, idx, requesterPeerId = event.peerId) },
                     countPendingServes = { idx -> countPendingServes(content, idx) },
                     commands = commands,
+                    profile = effectiveProfile,
+                    thermalServingBlocked = thermalServingBlocked,
                 )
             }
             is SwarmEvent.UnrequestArrived -> {
@@ -431,11 +453,16 @@ public class SwarmEngine(
                 callActive = event.active
                 requestWindow.setCallActive(event.active)
             }
+            is SwarmEvent.ThermalChanged -> applyThermalStatus(event.status)
             is SwarmEvent.Tick -> {
                 transferScheduler.checkTimeouts(contents.values, peers, event.nowMs)
                 transferScheduler.flushPendingHaves(contents.values, peers, ::isPeerAllowed, event.nowMs, commands)
+                pruneTombstones(event.nowMs)
 
                 for (content in contents.values) {
+                    if (content.state != SwarmLifecycleState.ACTIVE) {
+                        deferredWaitReasons.remove(content.groupId to content.root)
+                    }
                     if (content.state != SwarmLifecycleState.COMPLETE &&
                         content.state != SwarmLifecycleState.CANCELLED &&
                         content.state != SwarmLifecycleState.FAILED &&
@@ -458,6 +485,10 @@ public class SwarmEngine(
                         manifestHandler.maybeFetchManifest(content, peers, ::isPeerAllowed, commands, event.nowMs)
                     } else if (content.state == SwarmLifecycleState.ACTIVE) {
                         updateWaitReason(content)
+                        if (deferredWaitReasons.remove(content.groupId to content.root)) {
+                            // OPT-O08-07: a HAVE that arrived while the request window was full is answered here.
+                            publishRow(content, commands)
+                        }
                         if (content.role == SwarmRole.ORIGIN &&
                             event.nowMs - content.lastRecipientPublishMs >= RECIPIENT_REPUBLISH_MS &&
                             peers.values.any { it.isConnected && it.contentStates[content.root]?.bitfield?.isComplete() != true }
@@ -486,25 +517,37 @@ public class SwarmEngine(
     public fun snapshot(): SwarmSnapshot {
         val map = LinkedHashMap<Pair<String, ContentRoot>, ContentSnapshot>()
         for ((key, c) in contents) {
-            val (onlineHolders, distCopies) = computeHolderStats(c)
-            map[key] = ContentSnapshot(
-                groupId = c.groupId,
-                root = c.root,
-                state = c.state,
-                waitReason = c.waitReason,
-                bytesDone = c.bytesDone,
-                totalBytes = c.totalSize,
-                piecesDone = c.piecesDone,
-                totalPieces = c.totalPieces,
-                holdersOnline = onlineHolders,
-                distributedCopies = distCopies,
-                canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
-                deliveredTo = c.deliveredTo.toSet(),
-                pieceBlocks = computePieceBlocks(c),
-                recipients = computeRecipients(c),
-            )
+            map[key] = contentSnapshotOf(c)
         }
         return SwarmSnapshot(map)
+    }
+
+    /**
+     * The snapshot of one content item. A row publish needs only its own content; [snapshot] rebuilt every content's
+     * holder statistics for each row, which is the same O(pieces × peers) work the wait classifier used to throw away
+     * (OPT-O25-08).
+     */
+    internal fun contentSnapshot(groupId: String, root: ContentRoot): ContentSnapshot? =
+        contents[groupId to root]?.let { contentSnapshotOf(it) }
+
+    private fun contentSnapshotOf(c: ContentState): ContentSnapshot {
+        val (onlineHolders, distCopies) = computeHolderStats(c)
+        return ContentSnapshot(
+            groupId = c.groupId,
+            root = c.root,
+            state = c.state,
+            waitReason = c.waitReason,
+            bytesDone = c.bytesDone,
+            totalBytes = c.totalSize,
+            piecesDone = c.piecesDone,
+            totalPieces = c.totalPieces,
+            holdersOnline = onlineHolders,
+            distributedCopies = distCopies,
+            canGoOffline = c.role == SwarmRole.ORIGIN && distCopies >= 1,
+            deliveredTo = c.deliveredTo.toSet(),
+            pieceBlocks = computePieceBlocks(c),
+            recipients = computeRecipients(c),
+        )
     }
 
     public fun debugDump(): String {
@@ -520,6 +563,50 @@ public class SwarmEngine(
         }
         return sb.toString()
     }
+
+    /**
+     * True while at least one content is offered or transferring: the only states whose tick can produce work.
+     * With no such content the driver ticks slowly and wakes early on an announcement or an inbound frame (OPT-O08-05).
+     */
+    internal fun hasActiveWork(): Boolean {
+        for (content in contents.values) {
+            if (content.state == SwarmLifecycleState.ACTIVE || content.state == SwarmLifecycleState.OFFERED) return true
+        }
+        return false
+    }
+
+    /** The in-flight request budget the engine is currently running with, for the thermal step-down test. */
+    internal val inFlightBudgetBytes: Long get() = requestWindow.currentBudgetBytes
+
+    /** The serve profile in force after any thermal step-down (OPT-O08-06). */
+    internal val activeServeProfile: SwarmProfile get() = effectiveProfile
+
+    /**
+     * OPT-O08-06: follow the host's thermal governor. `MODERATE` steps the serve profile down one notch, `SEVERE` and
+     * above drop to [SwarmProfile.LOW] **and** stop serving; recovery restores the configured profile and the user's
+     * own serving choice, which this never overwrites. The governor applies its own dwell/hysteresis, so a flapping
+     * sensor does not flap this.
+     */
+    private fun applyThermalStatus(status: FlashThermalStatus) {
+        if (status == thermalStatus) return
+        thermalStatus = status
+        val next = when (status) {
+            FlashThermalStatus.NONE, FlashThermalStatus.LIGHT -> config.profile
+            FlashThermalStatus.MODERATE -> when (config.profile) {
+                SwarmProfile.HIGH -> SwarmProfile.MEDIUM
+                SwarmProfile.MEDIUM, SwarmProfile.LOW -> SwarmProfile.LOW
+            }
+            FlashThermalStatus.SEVERE, FlashThermalStatus.CRITICAL, FlashThermalStatus.EMERGENCY -> SwarmProfile.LOW
+        }
+        if (next != effectiveProfile) {
+            effectiveProfile = next
+            requestWindow.setBudgetBytes(next.inFlightByteBudget)
+        }
+    }
+
+    /** Serving is blocked by heat only at SEVERE and above; the profile step-down covers MODERATE. */
+    private val thermalServingBlocked: Boolean
+        get() = thermalStatus >= FlashThermalStatus.SEVERE
 
     private fun cancelInFlight(content: ContentState) {
         for ((key, _) in content.inFlightRequests) {
@@ -548,41 +635,26 @@ public class SwarmEngine(
     }
 
     private fun updateWaitReason(content: ContentState) {
-        val (onlineHolders, _) = computeHolderStats(content)
+        // OPT-O25-08: this used to compute the full holder statistics (O(pieces × peers)) and throw the result away,
+        // then walk every piece twice more looking for a holder of a missing piece. Both questions are now answered
+        // a 64-bit word at a time.
         val isOriginConn = peers[content.originId]?.isConnected == true
 
-        val onlineCandidatePeers = peers.values.filter {
-            it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
-        }
         var hasOnlineHoldersForMissing = false
-        for (p in onlineCandidatePeers) {
-            val pcs = p.contentStates[content.root]
-            if (pcs != null && !pcs.bitfield.isEmpty()) {
-                for (i in 0 until content.totalPieces) {
-                    if (!content.bitfield.get(i) && pcs.bitfield.get(i)) {
-                        hasOnlineHoldersForMissing = true
-                        break
-                    }
-                }
-            }
-            if (hasOnlineHoldersForMissing) break
-        }
-
-        val offlineCandidatePeers = peers.values.filter {
-            !it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
-        }
         var hasOfflineHolders = false
-        for (p in offlineCandidatePeers) {
-            val pcs = p.contentStates[content.root]
-            if (pcs != null && !pcs.bitfield.isEmpty()) {
-                for (i in 0 until content.totalPieces) {
-                    if (!content.bitfield.get(i) && pcs.bitfield.get(i)) {
-                        hasOfflineHolders = true
-                        break
-                    }
-                }
+        for (peer in peers.values) {
+            if (peer.peerId == localDeviceId) continue
+            if (!isPeerAllowed(content.groupId, peer.peerId)) continue
+            val pcs = peer.contentStates[content.root] ?: continue
+            if (pcs.bitfield.isEmpty()) continue
+            if (!pcs.bitfield.hasBitOutside(content.bitfield)) continue
+            if (peer.isConnected) {
+                hasOnlineHoldersForMissing = true
+                if (hasOfflineHolders) break
+            } else {
+                hasOfflineHolders = true
+                if (hasOnlineHoldersForMissing) break
             }
-            if (hasOfflineHolders) break
         }
 
         content.waitReason = WaitClassifier.classify(
@@ -644,6 +716,21 @@ public class SwarmEngine(
         return tombstones.values.any { it.groupId == groupId && it.root == root }
     }
 
+    /**
+     * Drops tombstones that are past their retention (OPT-O08-08, OPT-O02-05). The map is loaded from storage at start
+     * and was never pruned while the process ran, so every Summary carried the whole history — 64 of them make a Summary
+     * too large to encode at all. The window matches the persisted row's (37 days from the cancellation); the database
+     * rows are purged by the host's startup sweep, which this does not replace.
+     */
+    private fun pruneTombstones(nowMs: Long) {
+        if (tombstones.isEmpty()) return
+        val iterator = tombstones.entries.iterator()
+        while (iterator.hasNext()) {
+            val tb = iterator.next().value
+            if (tb.cancelledAtMs > 0L && nowMs - tb.cancelledAtMs > TOMBSTONE_RETENTION_MS) iterator.remove()
+        }
+    }
+
     private fun recheckAllContents(nowMs: Long, commands: MutableList<SwarmCommand>) {
         for (content in contents.values) {
             if (content.state == SwarmLifecycleState.ACTIVE) {
@@ -702,28 +789,80 @@ public class SwarmEngine(
             it.isConnected && it.peerId != localDeviceId && isPeerAllowed(content.groupId, it.peerId)
         }
         var onlineHolders = 0
+        var union: LongArray? = null
+        val words = (content.totalPieces + 63) ushr 6
         for (p in candidatePeers) {
             val pcs = p.contentStates[content.root]
             if (pcs != null && !pcs.bitfield.isEmpty()) {
                 onlineHolders++
+                if (words > 0) {
+                    val bits = union ?: LongArray(words).also { union = it }
+                    for (w in 0 until words) bits[w] = bits[w] or pcs.bitfield.rawWord(w)
+                }
             }
         }
 
-        var minCopies = Int.MAX_VALUE
-        for (i in 0 until content.totalPieces) {
-            var copiesForI = 0
-            for (p in candidatePeers) {
-                val pcs = p.contentStates[content.root]
-                if (pcs != null && pcs.bitfield.get(i)) {
-                    copiesForI++
+        // `distributedCopies` is the smallest number of connected holders of any piece. Zero as soon as one piece has
+        // no holder — which is the normal answer while a transfer is still running, and now costs one word-wise pass.
+        var minCopies = 0
+        if (candidatePeers.isNotEmpty() && words > 0) {
+            val bits = union ?: LongArray(words)
+            var complete = true
+            for (w in 0 until words) {
+                val mask = if (w == words - 1) {
+                    val tail = content.totalPieces and 63
+                    if (tail == 0) -1L else (1L shl tail) - 1L
+                } else {
+                    -1L
+                }
+                if (bits[w] and mask != mask) {
+                    complete = false
+                    break
                 }
             }
-            if (copiesForI < minCopies) {
-                minCopies = copiesForI
+            if (complete) minCopies = exactMinCopies(content, candidatePeers, words)
+        }
+        return onlineHolders to minCopies
+    }
+
+    /**
+     * The smallest per-piece holder count when every piece is held by at least one candidate. Bit-sliced over 64-bit
+     * words, so the cost is `peers × words × levels` instead of `pieces × peers` (OPT-O25-08). Only reached when the
+     * word-wise union already showed that no piece is missing from the swarm.
+     */
+    private fun exactMinCopies(
+        content: ContentState,
+        candidatePeers: List<PeerConnectionState>,
+        words: Int,
+    ): Int {
+        val levels = 32 - candidatePeers.size.coerceAtLeast(1).countLeadingZeroBits()
+        val planes = Array(levels) { LongArray(words) }
+        for (p in candidatePeers) {
+            val bf = p.contentStates[content.root]?.bitfield ?: continue
+            for (w in 0 until words) {
+                var carry = bf.rawWord(w)
+                if (carry == 0L) continue
+                for (l in 0 until levels) {
+                    val next = planes[l][w] xor carry
+                    carry = planes[l][w] and carry
+                    planes[l][w] = next
+                }
             }
         }
-        val distCopies = if (minCopies == Int.MAX_VALUE) 0 else minCopies
-        return onlineHolders to distCopies
+        var min = Int.MAX_VALUE
+        for (w in 0 until words) {
+            // Every position needs its count, so walk the pieces of this word.
+            for (b in 0 until 64) {
+                val piece = (w shl 6) + b
+                if (piece >= content.totalPieces) break
+                var count = 0
+                for (l in 0 until levels) {
+                    count = count or (((planes[l][w] ushr b) and 1L).toInt() shl l)
+                }
+                if (count < min) min = count
+            }
+        }
+        return if (min == Int.MAX_VALUE) 0 else min
     }
 
     private fun countPeerCopies(content: ContentState?, index: Int, requesterPeerId: String? = null): Int {
@@ -753,3 +892,6 @@ public class SwarmEngine(
 
 private const val RECIPIENT_RATE_STALE_MS = 4_000L
 private const val RECIPIENT_REPUBLISH_MS = 1_000L
+
+/** How long a tombstone is kept in memory — the same 37-day window `RoomSwarmStateStore` persists (O08-08). */
+private const val TOMBSTONE_RETENTION_MS = 37L * 24 * 60 * 60 * 1000L

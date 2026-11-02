@@ -26,6 +26,8 @@ internal class ServeHandler(
         countPeerCopies: (Int) -> Int,
         countPendingServes: (Int) -> Int,
         commands: MutableList<SwarmCommand>,
+        profile: SwarmProfile = config.profile,
+        thermalServingBlocked: Boolean = false,
     ) {
         val eval = servePolicy.evaluateRequest(
             peerId = e.peerId,
@@ -34,16 +36,19 @@ internal class ServeHandler(
             isAllowed = e.allowed,
             contentKnown = content != null,
             isTombstoned = isTombstoned,
-            servingEnabled = localServingEnabled && !systemSuspended && e.serveAllowed,
+            servingEnabled = localServingEnabled && !systemSuspended && e.serveAllowed && !thermalServingBlocked,
             isOrigin = content?.role == SwarmRole.ORIGIN,
             isCallActive = callActive,
-            profile = config.profile,
+            profile = profile,
             activeRequesters = content?.activeRequesters ?: emptySet(),
             currentOutstandingBytes = content?.outstandingServeBytes?.get(e.peerId) ?: 0L,
             localHoldsPiece = { idx -> content?.bitfield?.get(idx) == true },
             copiesCount = countPeerCopies,
             pendingCount = countPendingServes,
             hasBackedOffElsewhere = { idx -> (content?.elsewhereRejections?.get(e.peerId to idx) ?: 0) >= 1 },
+            servedInTenure = content?.servedInTenure ?: emptyMap(),
+            refusedSinceMs = content?.refusedSinceMs ?: emptyMap(),
+            nowMs = e.nowMs,
         )
 
         when (eval) {
@@ -52,6 +57,10 @@ internal class ServeHandler(
                     for (p in eval.pieces) {
                         content.elsewhereRejections[e.peerId to p] = (content.elsewhereRejections[e.peerId to p] ?: 0) + 1
                     }
+                }
+                if (content != null && eval.reason == SwarmRejectReason.BUSY) {
+                    // OPT-O08-03: remember how long this member has been asking, so it can take a slot in its turn.
+                    content.refusedSinceMs.putIfAbsent(e.peerId, e.nowMs)
                 }
                 commands.add(
                     SwarmCommand.Send(
@@ -69,12 +78,19 @@ internal class ServeHandler(
             }
             is ServeEvaluation.Accepted -> {
                 if (content != null) {
+                    eval.yieldPeerId?.let { yielded ->
+                        // OPT-O08-03: the peer that has had its share gives up the slot; its outstanding reads finish.
+                        content.activeRequesters.remove(yielded)
+                        content.servedInTenure.remove(yielded)
+                    }
                     if (eval.piecesToServe.isNotEmpty()) {
                         content.activeRequesters.add(e.peerId)
+                        content.refusedSinceMs.remove(e.peerId)
                     }
                     for (p in eval.piecesToServe) {
                         content.elsewhereRejections.remove(e.peerId to p)
                         val pLen = content.pieceLength(p).toLong()
+                        content.servedInTenure[e.peerId] = (content.servedInTenure[e.peerId] ?: 0L) + pLen
                         val curr = content.outstandingServeBytes[e.peerId] ?: 0L
                         content.outstandingServeBytes[e.peerId] = curr + pLen
                         content.pendingServesByPiece[p] = (content.pendingServesByPiece[p] ?: 0) + 1
@@ -122,6 +138,7 @@ internal class ServeHandler(
         if (remaining == 0L) {
             content.outstandingServeBytes.remove(e.peerId)
             content.activeRequesters.remove(e.peerId)
+            content.servedInTenure.remove(e.peerId)
         } else {
             content.outstandingServeBytes[e.peerId] = remaining
         }

@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
@@ -71,9 +72,29 @@ public class SwarmDriver(
     seed: Long = 42L,
 ) : FlashSwarm {
 
-    private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed)
-    private val eventChannel: Channel<SwarmEvent> = Channel(Channel.UNLIMITED)
-    private val persistChannel: Channel<SwarmCommand> = Channel(Channel.UNLIMITED)
+    private val engineTelemetry = com.transfer.flash.core.swarm.engine.SwarmTelemetry { name, fields ->
+        FlashProbe.emit(name, *fields.toTypedArray())
+    }
+
+    private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed, telemetry = engineTelemetry)
+
+    /**
+     * Inbound engine events (OPT-O02-04). Bounded: a decoded `PieceArrived` carries up to a megabyte, and with an
+     * unbounded channel every stalled worker could add to it. 32 slots is twice the engine's own in-flight request count
+     * for a 1 MiB-piece profile, so ordinary operation never waits; a flood suspends the per-peer inbox workers, whose
+     * own buffer drops frames, and the protocol re-asks.
+     */
+    private val eventChannel: Channel<SwarmEvent> = Channel(EVENT_CHANNEL_CAPACITY)
+
+    /** Persistence commands; the actor suspends when this is full, which is the intended backpressure (OPT-O02-04). */
+    private val persistChannel: Channel<SwarmCommand> = Channel(PERSIST_CHANNEL_CAPACITY)
+
+    /** Wakes the idle ticker early when something that could start work arrives (OPT-O08-05). */
+    private val tickKick = Channel<Unit>(Channel.CONFLATED)
+
+    private fun kickTicker() {
+        tickKick.trySend(Unit)
+    }
 
     private val _rows = MutableStateFlow<List<FlashTransfer>>(emptyList())
     override val rows: StateFlow<List<FlashTransfer>> = _rows.asStateFlow()
@@ -133,7 +154,7 @@ public class SwarmDriver(
     private val knownGroups = SyncSet<String>()
 
     /** One ordered outbound queue per peer: frames to a peer must leave in the order the engine produced them. */
-    private val sendQueues = SyncMap<String, Channel<SwarmFrame>>()
+    private val sendQueues = SyncMap<String, SwarmSendQueue>()
 
     /** Completes once persisted state has been fed to the engine; inbound frames and announcements wait for it. */
     private val restored = CompletableDeferred<Unit>()
@@ -178,44 +199,48 @@ public class SwarmDriver(
 
         // Persistence queue worker: ensures file sync and database writes are strictly FIFO
         scope.launch(workerDispatcher) {
+            val batch = SwarmPersistBatch()
             for (cmd in persistChannel) {
                 // One failed write (disk full, a locked database) must not end this worker: every later write would
                 // be queued for ever and the cancellation would take the whole binding down with it.
                 try {
-                    when (cmd) {
-                        is SwarmCommand.SyncAndPersistBits -> {
-                            val key = partialKeyFor(cmd.root, cmd.groupId)
-                            val expectedSize = if (cmd.totalSize > 0L) cmd.totalSize else (contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone)
-                            val cached = openPartialHandles[key]
-                            if (cached != null) {
-                                runCatching { cached.sync() }
-                            } else {
-                                storage.openPartial(key, expectedSize)?.use { it.sync() }
-                            }
-                            stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
-                        }
-                        is SwarmCommand.PersistRecord -> {
-                            stateStore.upsert(cmd.record)
-                        }
-                        else -> {}
+                    if (!batch.add(cmd)) {
+                        persistOne(cmd)
+                        continue
                     }
+                    // OPT-O08-04: drain what is already queued so a burst of pieces costs one fsync and one row write
+                    // per content instead of one of each per piece. A non-bits command keeps its place in the FIFO:
+                    // the batch is written first, then that command.
+                    var drained = 0
+                    while (drained < PERSIST_BATCH_MAX) {
+                        val next = persistChannel.tryReceive().getOrNull() ?: break
+                        drained++
+                        if (!batch.add(next)) {
+                            runPersistBatch(batch)
+                            persistOne(next)
+                        }
+                    }
+                    runPersistBatch(batch)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (t: Throwable) {
-                    val what = when (cmd) {
-                        is SwarmCommand.SyncAndPersistBits -> "bits root=${cmd.root.hex.take(8)}"
-                        is SwarmCommand.PersistRecord -> "record root=${cmd.record.root.hex.take(8)}"
-                        else -> cmd::class.simpleName
-                    }
-                    FlashLog.e("SWARM", "persist failed ($what): ${t::class.simpleName}: ${t.message}", t)
+                    FlashLog.e("SWARM", "persist failed (${describe(cmd)}): ${t::class.simpleName}: ${t.message}", t)
                 }
             }
         }
 
-        // 2. Periodic 250ms tick
+        // 2. Periodic tick: 250 ms while a transfer is live, 5 s when nothing is happening (OPT-O08-05). The old loop
+        // woke the actor four times a second for the whole life of the process, with zero swarm transfers, and each
+        // wake allocated an event and ran the engine's tick over an empty map: 14,400 wake-ups an hour doing nothing.
         scope.launch {
             while (isActive) {
-                delay(250)
+                if (engine.hasActiveWork()) {
+                    delay(tickDelayMs(hasActiveWork = true))
+                } else {
+                    // Wakes early as soon as anything that could start work arrives (announcement, inbound frame).
+                    withTimeoutOrNull(tickDelayMs(hasActiveWork = false)) { tickKick.receive() }
+                }
+                while (tickKick.tryReceive().isSuccess) { /* drop stale wake-ups */ }
                 eventChannel.trySend(SwarmEvent.Tick(now()))
             }
         }
@@ -329,21 +354,23 @@ public class SwarmDriver(
 
     private fun enqueueSend(peerId: String, frame: SwarmFrame) {
         val queue = sendQueues.getOrPut(peerId) {
-            val channel = Channel<SwarmFrame>(Channel.UNLIMITED)
-            scope.launch(workerDispatcher) {
-                for (f in channel) {
-                    try {
-                        transport.send(peerId, SwarmFrameCodec.encode(f))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (t: Throwable) {
-                        FlashLog.w("SWARM", "send failed peer=$peerId frame=${f::class.simpleName}: ${t.message}")
-                    }
+            SwarmSendQueue(peerId, scope, workerDispatcher, send = { f ->
+                transport.send(peerId, SwarmFrameCodec.encode(f))
+            }) { dropped, deferred ->
+                // OPT-O28-04: a piece frame the peer's full queue made us throw away. The requester's timeout recovers
+                // it, so this is a delay, but it is the one signal that says the link is saturated.
+                if (dropped == 1L || dropped % 50L == 0L) {
+                    FlashProbe.emit(
+                        "swarm.send.dropped",
+                        "peer", peerId.take(8),
+                        "type", "piece",
+                        "dropped", dropped,
+                        "deferred", deferred,
+                    )
                 }
             }
-            channel
         }
-        queue.trySend(frame)
+        queue.offer(frame)
     }
 
     /**
@@ -351,6 +378,7 @@ public class SwarmDriver(
      */
     public suspend fun onInboundFrame(peerId: String, frameBytes: ByteArray) {
         restored.await()
+        kickTicker()
         when (val decoded = SwarmFrameCodec.decode(frameBytes)) {
             is DecodeResult.Decoded -> {
                 handleFrame(peerId, decoded.frame)
@@ -378,6 +406,11 @@ public class SwarmDriver(
                     return
                 }
                 val validTombstones = frame.tombstones.filter { tb ->
+                    // OPT-O08-08: a tombstone this device already accepted is not verified again — the Ed25519 check
+                    // cost 0.5 ms each and every reconnect re-sent the whole history. The key is only claimed after a
+                    // successful signature check, so a forged one cannot shadow the real cancellation.
+                    val key = tb.groupId + "/" + tb.messageId
+                    if (verifiedTombstoneKeys.contains(key)) return@filter false
                     val authorKey = groupContext.authorKey(tb.groupId, tb.originId)
                     val stmt = SwarmStatement.cancel(
                         groupId = tb.groupId,
@@ -387,8 +420,11 @@ public class SwarmDriver(
                         reason = tb.reason.name,
                         cancelledAtMs = tb.cancelledAtMs,
                     )
-                    authorKey != null && groupContext.verifyStatement(authorKey, stmt, tb.signature)
+                    val ok = authorKey != null && groupContext.verifyStatement(authorKey, stmt, tb.signature)
+                    if (ok) verifiedTombstoneKeys.add(key)
+                    ok
                 }
+                pruneVerifiedTombstoneKeys()
                 eventChannel.send(SwarmEvent.SummaryArrived(peerId, frame.copy(tombstones = validTombstones), now()))
             }
             is SwarmFrame.ManifestGet -> {
@@ -475,7 +511,7 @@ public class SwarmDriver(
         }
     }
 
-    private fun executeCommand(cmd: SwarmCommand) {
+    private suspend fun executeCommand(cmd: SwarmCommand) {
         when (cmd) {
             is SwarmCommand.Send -> enqueueSend(cmd.peerId, cmd.frame)
             is SwarmCommand.RequestSession -> {
@@ -485,16 +521,24 @@ public class SwarmDriver(
                 scope.launch(workerDispatcher) {
                     val record = contentRecords[cmd.groupId to cmd.root]
                     val bytes = readPieceBytes(record, cmd.groupId, cmd.root, cmd.index)
-                    val expectedHash = cachedManifests[cmd.root]?.pieceHashes?.getOrNull(cmd.index)
-                    val valid = bytes != null && (expectedHash == null || Sha256.digest(bytes).contentEquals(expectedHash))
-                    val status = if (valid) PieceReadStatus.OK else PieceReadStatus.GONE
+                    // OPT-O08-02: the piece was hash-verified when it arrived and is marked verified in the content's
+                    // bitfield (the engine only asks for a piece it holds). Re-hashing every outgoing piece meant
+                    // hashing 12 GB of a 4 GB file served to three members. What is still checked is the whole-file
+                    // identity, rate-limited: a source that was truncated or replaced stops serving, which is what
+                    // ERROR-109's signed LOST statement needs. A same-size edit of the origin's file is now caught by
+                    // the *receiving* peer's per-piece hash instead of here.
+                    val status = if (bytes != null && sourceStillMatches(record, cmd.groupId, cmd.root)) {
+                        PieceReadStatus.OK
+                    } else {
+                        PieceReadStatus.GONE
+                    }
                     eventChannel.send(
                         SwarmEvent.PieceRead(
                             peerId = cmd.forPeerId,
                             groupId = cmd.groupId,
                             root = cmd.root,
                             index = cmd.index,
-                            bytes = if (valid) bytes else null,
+                            bytes = if (status == PieceReadStatus.OK) bytes else null,
                             status = status,
                             nowMs = now(),
                         )
@@ -524,7 +568,7 @@ public class SwarmDriver(
                 }
             }
             is SwarmCommand.SyncAndPersistBits -> {
-                persistChannel.trySend(cmd)
+                persistChannel.send(cmd)
             }
             is SwarmCommand.Finalize -> {
                 scope.launch(workerDispatcher) {
@@ -580,7 +624,7 @@ public class SwarmDriver(
             }
             is SwarmCommand.PersistRecord -> {
                 val record = rememberRecord(cmd.record)
-                persistChannel.trySend(SwarmCommand.PersistRecord(record))
+                persistChannel.send(SwarmCommand.PersistRecord(record))
             }
             is SwarmCommand.SignTombstone -> {
                 scope.launch(workerDispatcher) {
@@ -703,6 +747,97 @@ public class SwarmDriver(
         return null
     }
 
+    /** Writes one coalesced bits snapshot: one `fsync` of the partial file, one row update (OPT-O08-04). */
+    private suspend fun persistBits(cmd: SwarmCommand.SyncAndPersistBits) {
+        val key = partialKeyFor(cmd.root, cmd.groupId)
+        val expectedSize = if (cmd.totalSize > 0L) {
+            cmd.totalSize
+        } else {
+            contentRecords[cmd.groupId to cmd.root]?.totalSize ?: cmd.bytesDone
+        }
+        val cached = openPartialHandles[key]
+        if (cached != null) {
+            runCatching { cached.sync() }
+        } else {
+            storage.openPartial(key, expectedSize)?.use { it.sync() }
+        }
+        stateStore.setBits(cmd.root, cmd.groupId, cmd.bits, cmd.bytesDone)
+    }
+
+    private suspend fun runPersistBatch(batch: SwarmPersistBatch) {
+        for (cmd in batch.drain()) {
+            try {
+                persistBits(cmd)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                FlashLog.e("SWARM", "persist failed (bits root=${cmd.root.hex.take(8)}): ${t::class.simpleName}: ${t.message}", t)
+            }
+        }
+    }
+
+    private suspend fun persistOne(cmd: SwarmCommand) {
+        try {
+            when (cmd) {
+                is SwarmCommand.SyncAndPersistBits -> persistBits(cmd)
+                is SwarmCommand.PersistRecord -> stateStore.upsert(cmd.record)
+                else -> {}
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (t: Throwable) {
+            FlashLog.e(
+                "SWARM",
+                "persist failed (${describe(cmd)}): ${t::class.simpleName}: ${t.message}",
+                t,
+            )
+        }
+    }
+
+    private fun describe(cmd: SwarmCommand): String = when (cmd) {
+        is SwarmCommand.SyncAndPersistBits -> "bits root=${cmd.root.hex.take(8)}"
+        is SwarmCommand.PersistRecord -> "record root=${cmd.record.root.hex.take(8)}"
+        else -> cmd::class.simpleName ?: "command"
+    }
+
+    /** Tombstones this device already verified, keyed `groupId/messageId`; bounded, memory only (OPT-O08-08). */
+    private val verifiedTombstoneKeys = SyncSet<String>()
+
+    private fun pruneVerifiedTombstoneKeys() {
+        if (verifiedTombstoneKeys.toList().size <= VERIFIED_TOMBSTONE_CAP) return
+        // Coarse on purpose: the worst case of forgetting is one redundant signature check.
+        verifiedTombstoneKeys.clear()
+    }
+
+    /** When the served file's whole-file identity was last compared with the announced size (OPT-O08-02). */
+    private val lastSourceCheckMs = SyncMap<String, Long>()
+    /**
+     * Cheap stand-in for the per-piece hash the serve path used to compute (OPT-O08-02): the file we serve from must
+     * still have the size that was announced. A deleted or truncated source already fails the read; this catches a
+     * replaced one for the price of one `stat` every [SOURCE_CHECK_INTERVAL_MS] instead of a SHA-256 over every piece.
+     * An unknown identity (a provider that reports no size) never fails a serve.
+     */
+    private suspend fun sourceStillMatches(
+        record: SwarmContentRecord?,
+        groupId: String,
+        root: ContentRoot,
+    ): Boolean {
+        if (record == null) return true
+        val uri = when {
+            record.role == SwarmRole.ORIGIN && record.sourceUri != null -> record.sourceUri
+            record.finalPath != null -> record.finalPath
+            // Partial storage is ours: its length was set by us and pieces are only written after a hash check.
+            else -> return true
+        }
+        val key = "$groupId:${root.hex}"
+        val nowMs = now()
+        lastSourceCheckMs[key]?.let { if (nowMs - it < SOURCE_CHECK_INTERVAL_MS) return true }
+        lastSourceCheckMs[key] = nowMs
+        val handle = openSourceHandles[uri] ?: getOrCreateSourceHandle(uri) ?: return false
+        val identity = runCatching { handle.identity() }.getOrNull() ?: return true
+        return identity.sizeBytes == record.totalSize
+    }
+
     private fun updateTransferRow(cmd: SwarmCommand.PublishRow) {
         val transferId = keyToTransferId[cmd.groupId to cmd.root] ?: cmd.root.hex
         val record = contentRecords[cmd.groupId to cmd.root]
@@ -743,7 +878,7 @@ public class SwarmDriver(
             else -> null
         }
 
-        val snapshot = engine.snapshot().contents[cmd.groupId to cmd.root]
+        val snapshot = engine.contentSnapshot(cmd.groupId, cmd.root)
         val canGoOffline = snapshot?.canGoOffline ?: false
         val holdersOnline = snapshot?.holdersOnline ?: 0
 
@@ -869,6 +1004,7 @@ public class SwarmDriver(
 
     override suspend fun accept(transferId: String) {
         val key = findKey(transferId) ?: return
+        kickTicker()
         eventChannel.send(SwarmEvent.Accepted(key.first, key.second, now()))
     }
 
@@ -883,6 +1019,7 @@ public class SwarmDriver(
 
     override suspend fun resume(transferId: String) {
         val key = findKey(transferId) ?: return
+        kickTicker()
         eventChannel.send(SwarmEvent.LocalResume(key.first, key.second, now()))
     }
 
@@ -916,6 +1053,7 @@ public class SwarmDriver(
     override fun reevaluate() {
         scope.launch(workerDispatcher) {
             val freeBytes = storage.freeBytesFor("")
+            kickTicker()
             eventChannel.send(SwarmEvent.SpaceChanged(freeBytes, now()))
             eventChannel.send(SwarmEvent.SystemResume(now()))
         }
@@ -956,30 +1094,77 @@ public class SwarmDriver(
         rememberGroupTitle(event.groupId)
         if (!event.isOrigin) rememberOriginName(event.groupId, event.originId)
         FlashLog.i("SWARM", "announce root=${event.root.hex.take(8)} group=${event.groupId} origin=${event.isOrigin} size=${event.totalSize}")
+        kickTicker()
         eventChannel.send(event)
     }
 
     public fun onNetworkUp() {
-        eventChannel.trySend(SwarmEvent.NetworkUp(now()))
+        kickTicker()
+        post(SwarmEvent.NetworkUp(now()))
     }
 
     public fun onNetworkDown() {
-        eventChannel.trySend(SwarmEvent.NetworkDown(now()))
+        post(SwarmEvent.NetworkDown(now()))
     }
 
     public fun onServingEnabled(enabled: Boolean) {
-        eventChannel.trySend(SwarmEvent.ServingEnabled(enabled, now()))
+        post(SwarmEvent.ServingEnabled(enabled, now()))
     }
 
     public fun onCallActive(active: Boolean) {
-        eventChannel.trySend(SwarmEvent.CallActive(active, now()))
+        post(SwarmEvent.CallActive(active, now()))
+    }
+
+    /** The host's thermal governor changed state (OPT-O08-06); the engine steps its serve profile down or restores it. */
+    public fun onThermalStatus(status: com.transfer.flash.core.common.perf.FlashThermalStatus) {
+        post(SwarmEvent.ThermalChanged(status, now()))
     }
 
     public fun onSpaceChanged(freeBytes: Long) {
-        eventChannel.trySend(SwarmEvent.SpaceChanged(freeBytes, now()))
+        post(SwarmEvent.SpaceChanged(freeBytes, now()))
+    }
+
+    /**
+     * Posts an environment event (OPT-O02-04). The queue is bounded now, so a state change that finds it full is handed
+     * to a coroutine instead of being lost; these events arrive at most a few times a second (the binding's 0.5 Hz
+     * environment poll, the network collector), so this is the rare case, and each one carries a complete new value.
+     */
+    private fun post(event: SwarmEvent) {
+        if (eventChannel.trySend(event).isSuccess) return
+        scope.launch(workerDispatcher) { eventChannel.send(event) }
     }
 
     public fun debugDump(): String = engine.debugDump()
+
+    /**
+     * True while at least one content is offered or transferring. Drives the ticker's period (OPT-O08-05): a device with
+     * no swarm content must not wake four times a second for the life of the process.
+     */
+    internal fun hasActiveWork(): Boolean = engine.hasActiveWork()
 }
 
 private const val SPEED_SAMPLE_MIN_MS = 700L
+
+/** How often a serve compares the source file's size with the announced size (OPT-O08-02). */
+private const val SOURCE_CHECK_INTERVAL_MS = 2_000L
+
+/** Most persistence commands one batch may take off the queue before it writes (OPT-O08-04). */
+private const val PERSIST_BATCH_MAX = 256
+
+/** How many verified tombstone keys are remembered before the set is dropped wholesale (OPT-O08-08). */
+private const val VERIFIED_TOMBSTONE_CAP = 1024
+
+/** Inbound engine events buffered before the per-peer inbox workers wait for the actor (OPT-O02-04). */
+private const val EVENT_CHANNEL_CAPACITY = 32
+
+/** Persistence commands buffered before the actor waits for the writer (OPT-O02-04). */
+private const val PERSIST_CHANNEL_CAPACITY = 64
+
+/** Tick period while at least one transfer is live (OPT-O08-05). */
+internal const val TICK_ACTIVE_MS = 250L
+
+/** Tick period with nothing to transfer: the engine only needs to sweep expiry, and an arrival wakes it early. */
+internal const val TICK_IDLE_MS = 5_000L
+
+/** The ticker's period for the current state (OPT-O08-05); pulled out so the two numbers can be asserted. */
+internal fun tickDelayMs(hasActiveWork: Boolean): Long = if (hasActiveWork) TICK_ACTIVE_MS else TICK_IDLE_MS
