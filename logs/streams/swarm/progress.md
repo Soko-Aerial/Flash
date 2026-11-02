@@ -98,3 +98,30 @@ A second case proves the first HAVE on an empty window still starts the transfer
 ### Measured
 Scheduler invocations per HAVE while saturated: 100 -> 1 per 100 HAVE frames (deterministic, from the test's command
 counts). Wall-clock/CPU on a device: **NOT MEASURED** (PERF-S01).
+## 2026-11-02 — OPT-O08-02: the served piece is no longer re-hashed
+
+### Worked on
+`SwarmCommand.ReadPiece` read the piece from disk and then ran `Sha256.digest(bytes)` over every outgoing megabyte
+against the manifest before sending it. The piece had already been hash-verified when it arrived and is marked verified
+in the content's bitfield — the engine only emits `ReadPiece` for `bitfield.get(index)`. Serving a 4 GB file to three
+members therefore hashed 12 GB, and the origin is the busiest device in a group transfer.
+
+### Changed
+`SwarmDriver` now serves on the bitfield's authority and checks the **whole-file size** instead
+(`sourceStillMatches`, rate-limited to one `identity()` per 2 s per content): a source that was deleted or truncated
+already fails the read, and one that was replaced with a different size is refused, which keeps ERROR-109's signed LOST
+statement working. An unknown identity (a provider that reports no size) never fails a serve. Consequence, recorded
+deliberately: a *same-size* edit of the origin's file is now caught by the receiving peer's per-piece hash (a refused
+piece and a strike against this sender) rather than by the sender before it sends.
+
+### Verification
+`SwarmDriverServeTest` (new, real driver + fake storage):
+- a manifest whose piece 0 hash is **deliberately wrong** still serves piece 0 — this is the test that fails on the old
+  code, where the outbound digest refused the serve;
+- a source reporting a size that no longer matches the announcement serves nothing.
+`:core:swarm:jvmTest` 165 tests, 0 failures.
+
+### Measured (EXP-127, forced run, desktop JVM)
+`cmd /c "tools\\flash-gradle.cmd :core:swarm:jvmTest --tests *SwarmSchedulerScanBench* --rerun-tasks --no-build-cache"`
+- SHA-256 over one served MiB: **3.792 ms** -> a 4 GB file served to 3 peers (12 GiB) no longer burns **46.6 s** of CPU.
+- Android: **NOT MEASURED** (PERF-S01).

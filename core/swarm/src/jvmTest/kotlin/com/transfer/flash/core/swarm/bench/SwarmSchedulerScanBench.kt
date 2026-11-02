@@ -6,6 +6,7 @@ import com.transfer.flash.core.swarm.engine.PiecePicker
 import com.transfer.flash.core.swarm.engine.SeededRandom
 import com.transfer.flash.core.swarm.engine.SourceSelector
 import com.transfer.flash.core.swarm.model.Bitfield
+import com.transfer.flash.core.transfer.chunked.Sha256
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -153,6 +154,24 @@ class SwarmSchedulerScanBench {
             legacyNanos > scanNanos,
             "the scan must be faster than the loop it replaces (legacy=${legacyNanos}ns scan=${scanNanos}ns)",
         )
+    }
+
+    /**
+     * OPT-O08-02: what one served megabyte used to cost. The serve path hashed every outgoing piece with SHA-256; it
+     * now checks the file's size every two seconds instead.
+     */
+    @Test
+    fun `serve path - sha256 per megabyte that is no longer computed`() {
+        val megabyte = ByteArray(1024 * 1024) { (it * 31).toByte() }
+        repeat(20) { Sha256.digest(megabyte) }
+        val start = System.nanoTime()
+        repeat(40) { Sha256.digest(megabyte) }
+        val msPerMb = (System.nanoTime() - start) / 40.0 / 1_000_000.0
+        println(
+            "SWARM-SERVE-HASH-BENCH sha256_ms_per_mb=${"%.3f".format(msPerMb)} " +
+                "per_4gb_served_to_3_peers_s=${"%.1f".format(msPerMb * 4096 * 3 / 1000.0)}",
+        )
+        assertTrue(msPerMb > 0.0)
     }
 
     /**
