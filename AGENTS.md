@@ -917,16 +917,23 @@ This section must be updated by the AI as implementation progresses.
 
 ## Current Phase
 
-**Optimization programme Wave 4 reviewed and repair-committed, integration IN PROGRESS (2026-11-01):** desktop E
-`b2b61b92`, kernel K `22a53994`, both actual base `baf77753`. At this entry neither is merged; targeted forced
-verification PASS: desktop 259 tests, kernel 602, zero failures/errors (2 documented POSIX-only Windows skips in K).
-E repaired six caller/lifetime defects; K repaired four and rejected keyed Cipher/Mac ThreadLocals in favor of Provider
-selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade or zeroization guarantee. All numeric
-headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production integration. Canonical reviewed
-records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124. Owed PERF-E01..E08/PERF-K01..K05.
-**Next: K then E, each --no-ff merge and both expanded plan §6.3 gates.** K's existing classifier correction is needed
-by newly included common Android-host coverage; no suite may be dropped. No merged-tree gate yet, no push/deploy/
-device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
+**Optimization programme Wave 4 reviewed and repair-committed, integration IN PROGRESS (2026-11-02):** desktop E
+`b2b61b92` (unmerged), kernel K `22a53994` (**merged `bec221d2`**), both actual base `baf77753`. Canonical records
+committed in `f9b1fba0`. First expanded JVM/compile gate on `bec221d2` FAILED with one load-sensitive messaging test and
+one server test (ERROR-957/958); both pass alone, and the **complete forced rerun PASSED on 2026-11-02**
+(`BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks, exit 0, 3 597 tests, 0 failures, 2 documented POSIX-only Windows skips).
+Neither flake repeated, so both ERRORs stay OPEN (intermittent, root cause unknown, nothing weakened). The **expanded
+Android-host gate 2 also PASSED on `bec221d2`** (`BUILD SUCCESSFUL in 10m 47s`, 218/218 tasks, 2 110 tests, 0 failures,
+0 skips: `:core:messaging` 688, `:core:security` 265, `:core:enterprise` 165, `:core:common` 144, `:app` 90,
+`:core:persistence` 53, `:ui:chat` 705), so the stale 2026-10-23 common classifier XML was replaced rather than inherited.
+Targeted repaired verification PASS: desktop 259 tests, kernel 602, zero failures/errors
+(2 documented POSIX-only Windows skips in K). E repaired six caller/lifetime defects; K repaired four and rejected keyed
+Cipher/Mac ThreadLocals in favor of Provider selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade
+or zeroization guarantee. All numeric headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production
+integration. Canonical reviewed records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124.
+Owed PERF-E01..E08/PERF-K01..K05. **Next: E merges `--no-ff`, then both expanded gates run again on the merged tree.**
+K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
+No push/deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
 
 **Optimization programme Wave 3 merged: Stream G (Android battery/lifecycle) and Stream H (hub server), both reviewed against the

@@ -15918,3 +15918,59 @@ Same reentrant monitor covers dequeue/format/append/flush/crash/gzip copy; separ
 replace rotating source. Explicit calls may block, slow copy can fill bounded queue/drop newest/count it; storage failures remain
 best-effort. In-flight flush and source-overwrite regressions pass; K 602 tests, zero failures/errors, two POSIX skips.
 `RotatingFileLogSink.kt`/Test; ADR-311, EXP-124, PERF-K03. **RESOLVED (host-tested); physical storage TODO.**
+
+## ERROR-957 — Group hub-file receipt test failed only under the full forced gate
+
+### Date / area / environment
+2026-11-01/02; `:core:messaging:jvmTest`, merged `bec221d2`, Windows/JBR host under the expanded parallel gate.
+
+### Symptoms / evidence
+The first expanded gate failed `RealFlashChatRepositoryHubFileTest` / `HUBFILE-P4-U51` at line 481:
+`expected:<1> but was:<0>` for Bob's notification count. The suite reported 382 tests, one failure. Running that test
+alone on the unchanged tree passed (`BUILD SUCCESSFUL in 55s`, exit 0). The failure is therefore load/timing-sensitive;
+no production defect or root cause has been established, and an isolated pass does not prove the gate is reliable.
+
+### Failed attempts / working fix
+No source or test change has been made. Do not weaken the assertion or add an arbitrary delay. A second complete forced
+gate is being used to determine whether the failure repeats under the same coverage. If it repeats, capture the ticket,
+message, notification and receipt timeline before changing code.
+
+### Recheck 2026-11-02 — did not repeat on a complete forced gate
+The second complete expanded gate 1, same commit `bec221d2`, same 259-task command through the lock, finished
+`BUILD SUCCESSFUL in 12m 40s` with 259 of 259 tasks executed and exit 0. `:core:messaging:jvmTest` reported **382 tests,
+0 failures**; the whole gate reported **3 597 tests, 0 failures, 0 errors, 2 documented POSIX-only Windows skips**.
+So the failure is intermittent under gate load and did not reproduce on a full rerun. This is evidence about
+frequency, not a root cause: the case is still unordered-sensitive and can fail again. No assertion, timeout or suite
+was changed. If it repeats, capture the hub-file ticket/message/notification/receipt ordering (the case asserts Bob's
+notification count reached 1) before touching the test or the repository.
+
+### Related files / status
+`RealFlashChatRepositoryHubFileTest.kt`, `logs/wave4-k-gate1-2026-11-01.log`, `logs/wave4-k-gate1-rerun-2026-11-02.log`.
+**OPEN — isolated rerun PASS and full-gate rerun PASS; root cause unknown, intermittent, assertion unchanged.**
+
+## ERROR-958 — Relay ping/pong end-to-end test timed out only under the full forced gate
+
+### Date / area / environment
+2026-11-01/02; `:server:test`, merged `bec221d2`, Windows/JBR host under the expanded parallel gate.
+
+### Symptoms / evidence
+The first expanded gate failed `E2eRelayContractTest.aPingIsAnsweredWithAPongAndKeepsTheSessionAlive` at line 184:
+`FLASH_PING -> FLASH_PONG`. The suite reported 664 tests, one failure. Running that test alone on the unchanged tree
+passed (`BUILD SUCCESSFUL in 24s`, exit 0). The current evidence is consistent with a load-sensitive asynchronous wait,
+but does not prove whether the timeout is test-side or in relay handling.
+
+### Failed attempts / working fix
+No source or test change has been made. Do not simply enlarge a timeout without measuring the full-gate timing. A second
+complete forced gate is running; a repeat failure needs client/server frame and session timestamps around the ping.
+
+### Recheck 2026-11-02 — did not repeat on a complete forced gate
+The second complete expanded gate 1, same commit `bec221d2`, same command through the lock, finished
+`BUILD SUCCESSFUL in 12m 40s`, 259 of 259 tasks executed, exit 0. `:server:test` reported **664 tests, 0 failures**;
+gate total **3 597 tests, 0 failures, 0 errors, 2 documented POSIX-only Windows skips**. The ping/pong case passed
+under exactly the load that broke it first, so no timeout was enlarged and no suite was dropped — but the wait is
+still an asynchronous race and can fail again. A repeat needs client/server frame and session timestamps around the
+`FLASH_PING`/`FLASH_PONG` exchange before any code or test change.
+
+### Related files / status
+`E2eRelayContractTest.kt`, `logs/wave4-k-gate1-2026-11-01.log`, `logs/wave4-k-gate1-rerun-2026-11-02.log`.
+**OPEN — isolated rerun PASS and full-gate rerun PASS; root cause unknown, intermittent, timeout unchanged.**

@@ -1,5 +1,27 @@
 # Integrator review — Kernel (K)
 
+## Gate follow-up — 2026-11-02
+
+The first expanded gate 1 on `bec221d2` failed one messaging case (ERROR-957) and one server relay case (ERROR-958)
+under full load; both pass alone on the unchanged tree. The second, **complete forced gate 1 then PASSED on the same
+commit**: `BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks executed, exit 0, **3 597 tests, 0 failures, 0 errors, 2
+documented POSIX-only Windows skips**. Per task: `:core:common` 19, `:core:security` 174 + 2 skips,
+`:core:persistence` 85, `:core:messaging` 382, `:core:transfer` 141, `:core:swarm` 151, `:core:network` 339,
+`:core:discovery` 106, `:core:enterprise` 276, `:core:hub-protocol` 126, `:ui:chat` 730, `:ui:theme` 58,
+`:ui:callui` 103, `:server:test` 664, `:desktop:jvmTest` 243. Neither flake reproduced, so ERROR-957/958 remain OPEN
+as intermittent with no root cause; no code, assertion, timeout or suite was changed to obtain the pass.
+**Gate 2 then PASSED on the same commit**: `BUILD SUCCESSFUL in 10m 47s`, 218/218 tasks, exit 0, **2 110 tests,
+0 failures, 0 skips** (`:core:messaging` 688, `:core:security` 265, `:core:enterprise` 165, `:core:common` 144,
+`:app:testDebugUnitTest` 90, `:core:persistence` 53, `:ui:chat` 705), so both expanded K gates are green and desktop E
+may merge. This does not alter the reviewed kernel dispositions below.
+
+## Merged-tree integration — 2026-11-01
+
+Repaired tip `22a53994` committed and merged into `dev` with `--no-ff` as **`bec221d2`**; canonical records committed in `f9b1fba0`.
+Both expanded gates have since passed on `bec221d2` (see above). Desktop E remains unmerged pending its own merge and the
+repeated gates. PERF-K01..K05 remain TODO; no device, performance, push or deployment result.
+The initial review below preserves its original uncommitted stopping point.
+
 Reviewed 2026-11-01 against actual base `baf77753`, delivered tip `6d9c9227`, code, callers and tests. Review is complete;
 repairs are targeted-tested but not yet committed/merged at this entry. No physical-device or performance claim.
 

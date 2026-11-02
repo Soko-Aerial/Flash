@@ -1,5 +1,44 @@
 # Kernel Stream Progress Log
 
+## 2026-11-02 - Both expanded gates PASS on the merged tree
+
+Gate 2 on `bec221d2` (six `testAndroidHostTest` suites plus `:app:testDebugUnitTest`, forced, through the lock) finished
+**`BUILD SUCCESSFUL in 10m 47s`, 218/218 tasks executed, exit 0**, with **2 110 tests, 0 failures, 0 errors, 0 skips**:
+`:core:messaging` 688, `:core:security` 265, `:core:enterprise` 165, `:core:common` 144, `:app:testDebugUnitTest` 90,
+`:core:persistence` 53, `:ui:chat` 705. The common Android-host suite rewrote its results at 09:23, so the stale
+2026-10-23 `FlashPerformanceClassifierTest.belfone_is_low` XML is replaced rather than excluded. Together with gate 1
+(3 597 tests, 0 failures, 2 documented POSIX skips) both expanded gates are green on the same commit. Raw log (ignored):
+`logs/wave4-k-gate2-2026-11-02.log`. Desktop E may now merge `--no-ff`; both gates then run again on the merged tree.
+No performance result, device/provider verification, push or deployment.
+
+## 2026-11-02 - Complete forced gate 1 PASSES on the merged tree
+
+The second, complete expanded gate 1 on `bec221d2` (same 259-task §6.3 command, `--rerun-tasks --no-build-cache`,
+through the machine lock) finished **`BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks executed, exit 0**, with
+**3 597 tests, 0 failures, 0 errors, 2 skips** (the documented POSIX-only Windows assumptions, confirmed by name).
+Neither first-attempt flake repeated: `HUBFILE-P4-U51` passed inside the 382-test messaging suite and
+`E2eRelayContractTest.aPingIsAnsweredWithAPongAndKeepsTheSessionAlive` inside the 664-test server suite. Nothing was
+weakened to reach that, so ERROR-957/958 stay OPEN as intermittent with no established root cause. Per task:
+`:core:common` 19, `:core:security` 174 + 2 skips, `:core:persistence` 85, `:core:messaging` 382, `:core:transfer` 141,
+`:core:swarm` 151, `:core:network` 339, `:core:discovery` 106, `:core:enterprise` 276, `:core:hub-protocol` 126,
+`:ui:chat` 730, `:ui:theme` 58, `:ui:callui` 103, `:server:test` 664, `:desktop:jvmTest` 243. Raw log (ignored):
+`logs/wave4-k-gate1-rerun-2026-11-02.log`. Gate 2 is running; desktop E stays unmerged until it also passes. No
+performance result, device/provider verification, push or deployment.
+
+## 2026-11-02 - First expanded gate failed; isolated failures pass, complete rerun in progress
+
+The first gate 1 on merged `bec221d2` failed after 10m15s with 259/259 tasks executed: one messaging group hub-file
+receipt case (ERROR-957) and one server relay ping/pong case (ERROR-958). Each passes alone on the unchanged tree.
+A second complete forced gate 1 is running without dropping coverage. No source/test edit and no E merge until both
+K gates pass. Earlier "gate running" entries below preserve their original stopping points.
+
+## 2026-11-01 — Repaired kernel merged; expanded gates in progress
+
+Reviewed repair tip `22a53994` merged into main `dev` with `--no-ff` as `bec221d2`; canonical records committed as
+`f9b1fba0`. Merge had no conflicts. Expanded forced JVM/compile gate running on `bec221d2`, Android-host gate pending;
+no outcome recorded yet. No source edit after merge. Desktop E must wait for both K gates. PERF-K01..K05 remain TODO;
+no benchmark/device/push/deployment/presence/Wave 5 claim. Previous review/delivery records below are historical.
+
 ## 2026-11-01 — Integration review and repaired kernel verification
 
 ### Worked on / changed

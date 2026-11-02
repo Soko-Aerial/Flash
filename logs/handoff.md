@@ -1,5 +1,43 @@
 # Current Handoff
 
+> **2026-11-02 — BOTH expanded K gates are green on `bec221d2`; desktop E is next.** Gate 1 (15 JVM suites + three
+> compile tasks) `BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks, exit 0, **3 597 tests, 0 failures, 2 documented POSIX
+> skips**. Gate 2 (six `testAndroidHostTest` suites + `:app:testDebugUnitTest`) `BUILD SUCCESSFUL in 10m 47s`,
+> 218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** (`:core:messaging` 688, `:core:security` 265,
+> `:core:enterprise` 165, `:core:common` 144, `:app` 90, `:core:persistence` 53, `:ui:chat` 705). The two first-attempt
+> flakes (ERROR-957, ERROR-958) did not repeat and stay **OPEN** as intermittent; no assertion, timeout or suite was
+> weakened. The stale 2026-10-23 common classifier XML was overwritten by gate 2. **Next: merge E (`b2b61b92`) with
+> `--no-ff`, then rerun both gates on the merged tree.** No source/test change was made in this step. Exact evidence is
+> in the top two `logs/progress.md` entries; older banners below are historical.
+
+> **2026-11-02 — Wave 4 K gate 1 PASSED on a complete forced rerun (superseded by the banner above).** On merged
+> **`bec221d2`** the
+> full plan §6.3 gate-1 command (unchanged, 259 tasks, `--rerun-tasks --no-build-cache`) finished
+> **`BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks executed, exit 0**, with **3 597 tests, 0 failures, 0 errors, 2
+> skipped** (the documented POSIX-only Windows assumptions, read back by name). The two first-attempt failures
+> (ERROR-957 messaging hub-file receipt, ERROR-958 server relay ping/pong) did **not** repeat under the same load; both
+> ERRORs stay **OPEN** because an intermittent pass is frequency evidence, not a root cause, and nothing was weakened
+> to obtain it. Gate 2 (six `testAndroidHostTest` tasks + `:app:testDebugUnitTest`, forced) is running; its raw log is
+> `logs/wave4-k-gate2-2026-11-02.log`. **Desktop E (`b2b61b92`) stays unmerged until both expanded K gates pass**, then
+> merges `--no-ff` and both gates run again on the merged tree. No source/test change was made in this step. Exact
+> evidence is in the top `logs/progress.md` entry; older banners below are historical.
+
+> **2026-11-02 — Wave 4 K gate 1 rerun IN PROGRESS (superseded by the banner above).** The first expanded gate on
+> merged `bec221d2` **FAILED** in
+> 10m15s (259/259 tasks): one messaging hub-file receipt test (ERROR-957) and one server relay ping/pong test
+> (ERROR-958). Both pass alone on the unchanged tree, so they are load/timing-sensitive but not resolved. A second
+> complete forced gate 1 is running with no suite omitted; gate 2 and desktop E remain blocked on a green result.
+> No source/test change was made. See `logs/progress.md`, `logs/errors.md`, and the raw rerun log named there.
+> Older "gate running/no result" banners below are historical.
+
+> **2026-11-01 — Wave 4 merged-tree verification IN PROGRESS.** Kernel K is merged into `dev` as
+> **`bec221d2`** (`--no-ff`, repaired tip `22a53994`). Canonical reviewed records were committed in `f9b1fba0`.
+> The expanded forced JVM/compile gate is running on `bec221d2`; no result is recorded yet. The expanded Android-host
+> gate follows. Desktop E (`b2b61b92`) remains unmerged until both K gates pass. No source change after the merge.
+> All PERF-E01..E08/PERF-K01..K05 remain TODO; no push, deployment, device session, presence or Wave 5 work.
+> Exact gate commands are plan §6.3; current evidence is in `logs/progress.md` and kernel `INTEGRATOR-REVIEW.md`.
+> Earlier entries below preserve their original stopping points and do not override this one.
+
 > **2026-11-01 — Wave 4 integration IN PROGRESS.** Review and repair commits are complete: desktop E
 > **`b2b61b92`** (delivered `00a7a51f`), kernel K **`22a53994`** (delivered `6d9c9227`), both based on actual
 > common base **`baf77753`**. Main `dev` has not merged either stream at this entry. Targeted repaired verification:
