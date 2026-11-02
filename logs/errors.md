@@ -16048,6 +16048,27 @@ earlier E and K merges used. **What it does not mean:** that the flakiness is ac
 sleeps); that is a test-infrastructure task, recorded here so it is not lost, and it is not being smuggled into a feature
 merge.
 
+### Recheck 2026-11-02 (stream-C merge gate) — a different relay class, and it flaked **alone** too
+Gate 1 on the merged C tree failed `:server:test` (664 tests, 1 failed) at
+`RelayFrameRouterTest.aLiveMessageDuringTheDrainIsQueuedBehindTheOlderRows`:
+`bob is still catching up: the live message is stored, not handed over expected:<QUEUED> but was:<DELIVERED>`.
+
+C is excluded by construction: `git diff --stat 7f04632e..HEAD -- server core/common` is **empty**.
+
+The class-alone rerun then **also failed**, but on a **different case** of the same class:
+`messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce` (41 tests, 1 failed). That case is *already*
+recorded in this project as a known load flake — the Hub-files P1 entry calls it "one documented load flake
+(`RelayFrameRouterTest.messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`, green when rerun alone)", and
+`logs/progress.md` records this class failing once during a concurrent agent build and passing on every re-run.
+
+Two different tests failing in two consecutive runs is what distinguishes **flakiness** from a deterministic ordering bug: a
+real defect in the drain path would fail the same assertion every time. It also means a red `:server:test` on this box is
+evidence about the machine's load before it is evidence about the tree.
+
+**The category is now "relay suites", not one class.** Five distinct cases have failed under gate load across four merged
+trees (`E2eRelayContractTest` ping/pong, `RelayDeliveryContractTest` expiry/shutdown-kick/delivered-on-ack,
+`RelayFrameRouterTest` drain ordering), and every one has been green on a later run without a code change.
+
 ### Prior history of this class (context, not an excuse)This class is not new to load-sensitive failure, which is why the record above is measured rather than assumed:
 **ERROR-399** (ACK race in the reconnect-race test, fixed test-side) and the 2026-10-13 note in `logs/progress.md`
 recording `RelayDeliveryContractTest.anOversizedWebSocketFrameClosesTheConnection` failing once *while another agent was
@@ -16168,6 +16189,50 @@ readers — none of which the current evidence distinguishes.
 `E:/FlashWork/verify-bec221d2/verify-parity.log`, `E:/FlashWork/verify-nocap/gate1-nocap.log`.
 **OPEN — 2 red / 1 green under the full gate on `c5d825f9`; PASS module-only on the same commit; PASS under the full gate
 on pre-E `bec221d2`. Frame count (8) and timeout (10 000 ms) unchanged; no product line reverted.**
+
+## ERROR-974 — The router test fixture registered a session as *caught up* before starting its drain
+
+### Date / area / environment
+2026-11-02; `server/src/test`, `RelayFrameRouterTest`. Windows/JBR, 8 logical CPUs, merged tree after stream C (`5e3a1822`),
+found while running the expanded gate.
+
+### Symptoms
+Three consecutive failures, each time with a **live message overtaking older mailbox rows**:
+- gate 1: `aLiveMessageDuringTheDrainIsQueuedBehindTheOlderRows` — `expected:<QUEUED> but was:<DELIVERED>`;
+- gate 1 rerun: `messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce` — delivered
+  `[m0002, m0000, m0001, m0003, …]`;
+- the same test alone: delivered `[m0008, m0000 … m0007, m0009, …]`.
+
+The server, `core/` and the router itself were **unchanged** since the last green gate (`git diff 7f04632e..HEAD -- server
+core/common` is empty).
+
+### Root cause — a race in the fixture, not in the router
+The production connect path marks the session `draining` **before** it is registered, so nothing live can be handed over
+until the mailbox has been replayed (`RelayFrameRouter.kt`: `relaySession.draining = true` … then `register(...)` … then
+`requestDrain(...)`).
+
+`RelayFrameRouterTest.Rig.connect` did not: it created a `RelaySession` (whose `draining` defaults to **false**), called
+`router.register(session)` and only then `router.requestDrain(session)`. In the window between those two calls the session
+looked caught up to `handOffLive`, so a sender running concurrently with the connect — exactly what this test does from
+`Dispatchers.Default` — could have its live frame delivered immediately while `m0000`…`m0007` were still unpushed in the
+mailbox. The drain then delivered them afterwards.
+
+This is also the answer to a long-standing note: the hub-files P1 record called this test "one documented load flake
+(`…messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce`, green when rerun alone)". It was never a flake
+in the product and never load-specific; the fixture had a window that a busy machine widened.
+
+### Working fix (test only — no product change)
+`Rig.connect` now sets `session.draining = true` **before** `router.register(session)` when `startDrain` is true, mirroring
+production. No assertion, timeout or case changed.
+
+### Verification
+Before: 3 of 3 red (gate, gate rerun, class alone). After: **3 of 3 green, `41 tests, 0 failures` each**, now
+plus the complete expanded gate (recorded in `logs/progress.md`).
+
+### Related files / status
+`server/src/test/kotlin/com/transfer/flash/server/relay/RelayFrameRouterTest.kt` (`Rig.connect`),
+`server/src/main/kotlin/com/transfer/flash/server/relay/RelayFrameRouter.kt` (the production order it now mirrors).
+**RESOLVED (test-side race; production was already correct).**
 
 ## ERROR-971 — `writeBytes(buffer, count, offset)` in jSerialComm 2.11.4 is `(byte[], int, int)`, not `(byte[], long, long)`
 
