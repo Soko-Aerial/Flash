@@ -743,7 +743,7 @@ public class SwarmDriver(
             else -> null
         }
 
-        val snapshot = engine.snapshot().contents[cmd.groupId to cmd.root]
+        val snapshot = engine.contentSnapshot(cmd.groupId, cmd.root)
         val canGoOffline = snapshot?.canGoOffline ?: false
         val holdersOnline = snapshot?.holdersOnline ?: 0
 

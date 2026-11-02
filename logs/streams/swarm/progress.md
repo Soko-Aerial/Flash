@@ -41,3 +41,37 @@ cmd /c "tools\flash-gradle.cmd :core:swarm:jvmTest --tests *SwarmSchedulerScanBe
 ### Remaining
 The audit's 0.2 ms target is not met on this JVM (0.465 ms); the remainder is the scan build plus SourceSelector.
 SwarmProfile/chunk maths unchanged; no wire change; no test weakened.
+## 2026-11-02 — OPT-O25-08: the discarded holder computation in updateWaitReason
+
+### Worked on
+`updateWaitReason` called `computeHolderStats` (a full pieces × peers pass) and **discarded** its result, then walked
+every piece twice more — once over connected peers, once over disconnected ones — to answer "does anybody hold a piece I
+am missing?". It runs on every HAVE, every PieceStored, every Summary and every tick, so a 20-node mesh did ~245,760
+bit checks per event.
+
+Separately, `SwarmDriver.updateTransferRow` called `engine.snapshot()`, which recomputed the holder statistics for
+**every** content item on every row publish.
+
+### Changed
+- `updateWaitReason` no longer computes holder statistics at all. One pass over the peers answers both holder
+  questions with `Bitfield.hasBitOutside` (a 64-bit word at a time, early exit as soon as both answers are known).
+- `computeHolderStats` now builds the union of the peers' bitfields word-wise and answers 0 immediately when any piece
+  has no holder (the normal answer mid-transfer); the exact per-piece minimum is only computed when the union covers every
+  piece, with a bit-sliced adder instead of a per-piece peer loop.
+- `SwarmEngine.contentSnapshot(groupId, root)` added; the driver uses it instead of `snapshot()` for one row.
+
+### Verification
+`SwarmWaitHolderScanTest`: `hasBitOutside` is compared against a per-piece reference loop over random bitfields for
+sizes 0, 1, 7, 63, 64, 65, 127, 128, 129, 1000 and 4096 (40 rounds each), plus the three classifications it feeds
+(no wait with a connected holder of a missing piece, `WAITING_FOR_SESSION` for a disconnected holder only, and
+`distributedCopies`/`canGoOffline` counting the least-held piece).
+`:core:swarm:jvmTest` 159 tests, 0 failures.
+
+### Measured (EXP-126, forced run, desktop JVM)
+`cmd /c "tools\\flash-gradle.cmd :core:swarm:jvmTest --tests *SwarmSchedulerScanBench* --rerun-tasks --no-build-cache"`
+- stalled-receiver holder scan, 4,096 pieces × 20 peers: legacy nested loop **91.94 us**, word-wise **13.10 us** (7.0×),
+  81,920 piece tests -> 1,280 word reads (64× less work).
+- Android: **NOT MEASURED**.
+
+### Remaining
+`TombstonesRestored`/`computePieceBlocks` still walk pieces once per snapshot; not part of this finding.
