@@ -68,6 +68,15 @@ class RelayFrameRouterTest {
 
         fun connect(deviceId: String, outgoingCapacity: Int = Channel.UNLIMITED, outboundQueue: Int = 256, startDrain: Boolean = false): Pair<RelaySession, FakeWebSocketSession> {
             val (session, ws) = fakeSession(deviceId, outgoingCapacity, outboundQueue)
+            // The production connect path marks the session `draining` BEFORE it is registered
+            // (RelayFrameRouter.kt: `relaySession.draining = true` then `register(...)`), so no live frame can be
+            // handed over before the mailbox has been replayed. Without this line the fixture registered a
+            // session that looked caught-up for the moment between `register` and `requestDrain`, and a sender
+            // running concurrently with the connect could have its live frame delivered ahead of older mailbox
+            // rows. That is a race in this fixture, not in the router: it made
+            // `messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce` fail with the live message
+            // first (see ERROR-974) while the assertions are exactly right.
+            if (startDrain) session.draining = true
             router.register(session)
             if (startDrain) router.requestDrain(session) else session.draining = false
             return session to ws
