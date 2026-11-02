@@ -34,37 +34,21 @@ internal class TransferScheduler(
         }
         if (candidatePeers.isEmpty()) return
 
-        while (requestWindow.canRequestBytes(content.pieceSize.toLong())) {
-            val availPeers = candidatePeers.mapNotNull { p ->
-                val pcs = p.contentStates[content.root] ?: return@mapNotNull null
-                val inFlightCount = content.inFlightRequests.keys.count { it.first == p.peerId }
-                val win = requestWindow.getWindow(p.peerId, content.root)
-                if (pcs.servingEnabled && nowMs >= pcs.backoffUntilMs && inFlightCount < win) {
-                    PeerPieceAvailability(p.peerId, pcs.bitfield)
-                } else null
-            }
-            if (availPeers.isEmpty()) break
+        // Everything below is built once per pass instead of once per requested piece (OPT-O08-01): the peer views,
+        // the per-peer in-flight sets and the source candidates used to be rebuilt inside the while-loop, which
+        // allocated three collections per peer per slot (about 960 objects for a 16-slot pass).
+        val inFlightByPeer = HashMap<String, MutableSet<Int>>(candidatePeers.size)
+        for (key in content.inFlightRequests.keys) {
+            inFlightByPeer.getOrPut(key.first) { HashSet() }.add(key.second)
+        }
 
-            val pieceToFetch = piecePicker.pickNextPiece(
-                localBitfield = content.bitfield,
-                availablePeers = availPeers,
-                inFlightByPiece = content.inFlightByPiece,
-                canDuplicate = { p ->
-                    val fetcher = content.inFlightByPiece[p]?.firstOrNull()
-                    val sentAt = if (fetcher != null) content.inFlightRequests[fetcher to p] ?: nowMs else nowMs
-                    val elapsedMs = nowMs - sentAt
-                    val pcs = if (fetcher != null) peers[fetcher]?.contentStates?.get(content.root) else null
-                    val speedBps = pcs?.ewmaSpeedBps ?: 1_000_000.0
-                    val expectedMs = if (speedBps > 0.0) ((content.pieceSize.toDouble() * 1000.0) / speedBps).toLong() else 500L
-                    val thresholdMs = maxOf(300L, (expectedMs * 15L) / 10L)
-                    elapsedMs >= thresholdMs
-                },
-            ) ?: break
-
-            val sourceCandidates = candidatePeers.mapNotNull { p ->
-                val pcs = p.contentStates[content.root] ?: return@mapNotNull null
-                val inFlight = content.inFlightRequests.keys.filter { it.first == p.peerId }.map { it.second }.toSet()
-                val win = requestWindow.getWindow(p.peerId, content.root)
+        val available = ArrayList<PeerPieceAvailability>(candidatePeers.size)
+        val candidates = ArrayList<PeerSourceCandidate>(candidatePeers.size)
+        for (p in candidatePeers) {
+            val pcs = p.contentStates[content.root] ?: continue
+            val inFlight = inFlightByPeer.getOrPut(p.peerId) { HashSet() }
+            val win = requestWindow.getWindow(p.peerId, content.root)
+            candidates.add(
                 PeerSourceCandidate(
                     peerId = p.peerId,
                     isOrigin = p.peerId == content.originId,
@@ -80,9 +64,32 @@ internal class TransferScheduler(
                     ewmaSpeedBps = pcs.ewmaSpeedBps,
                     inFlightPieces = inFlight,
                 )
+            )
+            if (pcs.servingEnabled && nowMs >= pcs.backoffUntilMs && inFlight.size < win) {
+                available.add(PeerPieceAvailability(p.peerId, pcs.bitfield, inFlight.size, win))
             }
+        }
+        if (available.isEmpty()) return
 
-            val chosen = sourceSelector.selectSource(pieceToFetch, sourceCandidates, nowMs) ?: break
+        val scan = piecePicker.beginScan(
+            localBitfield = content.bitfield,
+            availablePeers = available,
+            inFlightByPiece = content.inFlightByPiece,
+            canDuplicate = { p ->
+                val fetcher = content.inFlightByPiece[p]?.firstOrNull()
+                val sentAt = if (fetcher != null) content.inFlightRequests[fetcher to p] ?: nowMs else nowMs
+                val elapsedMs = nowMs - sentAt
+                val pcs = if (fetcher != null) peers[fetcher]?.contentStates?.get(content.root) else null
+                val speedBps = pcs?.ewmaSpeedBps ?: 1_000_000.0
+                val expectedMs = if (speedBps > 0.0) ((content.pieceSize.toDouble() * 1000.0) / speedBps).toLong() else 500L
+                val thresholdMs = maxOf(300L, (expectedMs * 15L) / 10L)
+                elapsedMs >= thresholdMs
+            },
+        )
+
+        while (requestWindow.canRequestBytes(content.pieceSize.toLong())) {
+            val pieceToFetch = scan.pickNext() ?: break
+            val chosen = sourceSelector.selectSource(pieceToFetch, candidates, nowMs) ?: break
 
             content.inFlightRequests[chosen.peerId to pieceToFetch] = nowMs
             content.inFlightByPiece.getOrPut(pieceToFetch) { LinkedHashSet() }.add(chosen.peerId)
@@ -95,6 +102,15 @@ internal class TransferScheduler(
                     frame = SwarmFrame.Request(content.groupId, content.root, listOf(pieceToFetch)),
                 )
             )
+
+            // Keep the scan and the per-peer views in step with the request just issued.
+            scan.onPeerRequested(chosen.peerId, pieceToFetch)
+            val inFlight = inFlightByPeer.getOrPut(chosen.peerId) { HashSet() }
+            inFlight.add(pieceToFetch)
+            val index = candidates.indexOfFirst { it.peerId == chosen.peerId }
+            if (index >= 0) {
+                candidates[index] = candidates[index].copy(inFlightCount = inFlight.size, inFlightPieces = inFlight)
+            }
         }
     }
 
