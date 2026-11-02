@@ -1,6 +1,22 @@
 # Current Handoff
 
-> **2026-11-02 — STREAM S (swarm) IS MERGED AS `6eff1714`; gates running; stream C (calls) is now running.** S came in as 14
+> **2026-11-02 — STREAM C (calls) IS MERGED AS `5e3a1822`; gates running. All four streams (E, K, R, S, C) are now in
+> `dev`.** C came in as 13 commits + a merge of `dev`. **9 findings delivered, 1 no longer reproduces (`O11-07` — the ladder
+> already caps four watchers), 4 honestly BLOCKED (`O11-01`/`O11-03` need a live camera and two phones, `O11-03` also an ADR;
+> `O12-06` needs a wire change and airtime).** `ERROR-981` fixed on the way (flip-camera on a muted desktop track restarted
+> the webcam). Records: ADR-341..343, ERROR-981, EXP-135..139, PERF-C01..C03, `logs/streams/calls/INTEGRATOR-REVIEW.md`.
+> **The camera privacy fix ships INERT.** `O11-02` stops the `VideoDeviceSource` when the desktop track is disabled, in the
+> fork's jvm target — but the app resolves the fork from Maven and the version was deliberately not bumped, so until the fork
+> is republished (`PERF-C03`) the shipped desktop keeps the old behaviour. Do not claim the LED goes off until then.
+> **Review verified:** the PTT packet bytes are unchanged (new overload delegates, decode compares bytes and rejects exactly
+> the same inputs), the video SDP passthrough changes no wire output (`enforceVp8Only` already stripped those fmtp lines), the
+> learned jitter depth is test-isolated and changes only the start gate (60–160 ms), and `O28-03` did not invent a probe
+> namespace — `call.quality` is recorded as **proposed, not registered**.
+> **Branch gate:** calling+ptt+callui 494/0, calling androidHost 396/0, desktop + app compile (`BUILD SUCCESSFUL 9m 1s`).
+> **Now:** gate 1 (with `:core:calling:jvmTest` and `:core:ptt:jvmTest` added) and gate 2 (with
+> `:core:calling:testAndroidHostTest` added) on the merged tree, then push. **Nothing call-side is device-verified.**
+
+> **2026-11-02 — STREAM S (swarm) IS MERGED AS `6eff1714` (superseded by the banner above for S).** S came in as 14
 > commits off `7adcf4f5`; **13 of 14 findings delivered and `OPT-O23-07` REJECTED on measurement** (`RandomAccessFile.seek`
 > was 2.1× slower than the existing buffer, EXP-128 — nothing changed). Records: ADR-320..324, ERROR-961..964, EXP-125..128,
 > PERF-S01/S02, and four new probes registered in `docs/testing/PROBES.md`. Review:

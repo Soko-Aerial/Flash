@@ -7298,3 +7298,27 @@ Every swarm number so far is desktop-JVM only. These are the device checks that 
   *Steps:* profile the piece read/write path (`RandomAccessFile` vs the heap-wrapped buffer) on the same file. *Pass:* a
   measured improvement on ART, not a desktop extrapolation — EXP-128 rejected the change on desktop because it was 2.1×
   slower there. *Source:* EXP-128. *Status:* TODO (not required unless the finding is reopened).
+
+### PERF-C01..C03 — calls stream (stream C, merged 2026-11-02, ADR-341..343, EXP-135..139)
+
+Nothing call-side is device-verified: no camera, microphone or second device was available, and several findings could not
+even be written without one.
+
+- **PERF-C01 — call quality on two devices.** *Setup:* two phones (one Android, one Windows desktop), a group call and a
+  1:1 call. *Steps and pass conditions:* (1) mute the desktop camera → the **webcam LED goes off** and the sensor stops
+  (this is the fork change; it is inert until `PERF-C03`); (2) flip camera while muted → the camera does not come back on
+  (ERROR-981); (3) an occluded 1:1 tile stops converting frames (CPU drop, no black video when uncovered); (4) a 4-party
+  call reports mesh stats at ≤10 Hz without stutter (was 50 Hz); (5) PTT is intelligible both ways and the learned start
+  gate lowers to ~60 ms over three clean bursts and rises on a lossy one; (6) the desktop's first press is not clipped
+  (audio lines pre-warmed); (7) `AudioTrack.getPerformanceMode()` reports `LOW_LATENCY` on API 26+; (8) desktop video is not
+  black (the SDP/video path is untouched by `O11-05`); (9) the dock lays out correctly at 360 dp and on a tablet.
+  *Source:* ADR-341..343, EXP-135..139, ERROR-981. *Status:* TODO.
+- **PERF-C02 — `CALL_DIAG` quality fields on a degrading link.** *Setup:* two devices, one with a bandwidth/loss limiter.
+  *Steps:* read `CALL_DIAG` during a clean stretch, then under loss and under jitter. *Pass:* `jb` rises with jitter, `plc`
+  rises with loss, `|avDrift| < 50 ms` in steady state, and a field is **absent** rather than 0 when its counters are
+  missing. *Source:* `OPT-O28-03`, probes proposal `call.quality`. *Status:* TODO.
+- **PERF-C03 — republish the WebRTC fork.** *Setup:* release access. *Steps:* `:webrtc-kmp:webrtc-kmp:publishToMavenLocal`
+  (or the JitPack release), bump the app's fork version, rebuild, then repeat `PERF-C01` steps 1–2. *Pass:* the desktop
+  camera LED goes off on mute with the published artifact, not just the source tree. *Source:* ADR-103,
+  `third_party/webrtc-kmp/MODIFICATIONS.md`, `OPT-O11-02`. *Status:* TODO — until this is done the camera fix ships
+  **inert**.

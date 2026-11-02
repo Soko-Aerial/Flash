@@ -1,5 +1,64 @@
 # Progress Log
 
+## 2026-11-02 - Stream C (calls) reviewed and merged as `5e3a1822`; expanded gates running
+
+### Worked on
+Reviewed stream C against the code, merged it `--no-ff`, and started the expanded gates on the merged tree. This was the last
+of the programme's four streams (E, K, R, S, C).
+
+### Changed
+- Merged `agent/opt-calls` (13 commits + a merge of `dev`) as **`5e3a1822`**. Scope check: every changed path is inside
+  `core/calling`, `core/ptt`, `ui/callui`, the jvm target of `third_party/webrtc-kmp`, `app/**/calling|ptt` or
+  `logs/streams/calls` — nothing else.
+- Records integrated: **ADR-341..343**, **ERROR-981**, **EXP-135..139**, **PERF-C01..C03**, and the `call.quality` proposal
+  recorded in `docs/testing/PROBES.md` under "Proposed namespaces (not registered, not emitted)". Review:
+  `logs/streams/calls/INTEGRATOR-REVIEW.md`.
+
+### Outcome
+**9 findings delivered, 1 no longer reproduces, 4 honestly BLOCKED.**
+- `O11-07` **no longer reproduces**: `ShareLadder.CROWD_WATCHERS = 3` already steps four watchers to 720p8, below the audit's
+  own target. Nothing changed — the right answer for a finding whose premise expired.
+- **BLOCKED, not faked:** `O11-01`/`O11-03` (need a live camera and two phones; `O11-03` also touches the `NullVideoDecoder`
+  protection and needs an ADR) and `O12-06` (wire change + 2.4 GHz airtime).
+- `ERROR-981` fixed on the way: switching camera on a muted desktop track restarted the webcam.
+
+### The privacy fix ships INERT — stated plainly
+`O11-02` is in the fork's jvm `LocalVideoStreamTrack`: `onSetEnabled(false)` now stops the `VideoDeviceSource` and
+`onSetEnabled(true)` starts it, mirroring what Android already did; `switchCamera` no longer restarts a disabled source.
+**But the desktop app resolves the fork from Maven and the version was deliberately not bumped**, so the shipped desktop
+still has the old behaviour until the fork is republished (`PERF-C03`). Nothing may claim the camera turns off on mute
+before that. The stream was right not to bump the version silently.
+
+### What the review verified rather than accepted
+- **`O12-02` keeps the wire identical:** the new `encode(sessionBytes, …)` overload writes the same layout and the old
+  `encode(frame)` delegates to it; `decodeExpected` compares the session id as bytes and rejects exactly the inputs the old
+  path rejected. The listener's cached UTF-8 form uses a two-volatile publish that only moves forward.
+- **`O11-05` only deletes dead formatting:** `enforceVp8Only` already stripped every video `a=fmtp:` line, so passing the
+  video section through leaves the emitted SDP unchanged; the stream added per-tier tests pinning that.
+- **`O12-04`'s global depth is test-isolated:** every test that touches `PttJitterDepth` resets it; the adaptation changes
+  the **start gate only**, bounded 60–160 ms from a 120 ms default, so a wrong guess costs one concealed packet at the start
+  of the next burst, not a permanently under-buffered session (ADR-341).
+- **`O28-03` did not invent a namespace:** it added `jb`/`plc`/`avDrift` to the existing `CALL_DIAG` line and left
+  `call.quality` as a proposal, because plan §4.3 rule 2 makes a new probe namespace an owner decision. Recorded as proposed,
+  not registered.
+- One unguarded edge noted, not patched: `onSetEnabled(true)` after `onStop()` would start a disposed source — the Android
+  implementation has the same edge, so the fork mirrors the platform; unreachable through the app's call path.
+
+### Verification
+- Branch tip `38a81158`, forced: `:core:calling:jvmTest` + `:core:ptt:jvmTest` + `:ui:callui:jvmTest` = **494 tests,
+  0 failures**; `:core:calling:testAndroidHostTest` **396/0**; `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`
+  green (`BUILD SUCCESSFUL in 9m 1s`, 138/138 tasks).
+- Expanded gates are running on the merged tree with **`:core:calling:jvmTest` and `:core:ptt:jvmTest` added to gate 1**
+  (plan §6.3) and **`:core:calling:testAndroidHostTest` added to gate 2**, because C touched `core/calling/commonMain`:
+  `logs/wave4-c-gate1-2026-11-02.log`.
+
+### Remaining / next AI
+Record both merged-tree gate results and push. **Nothing call-side is device-verified.** `PERF-C01` (nine steps: camera LED
+on mute, flip-while-muted, occluded tile, 4-party stats, PTT intelligibility and start gate, desktop first press,
+`getPerformanceMode()`, non-black desktop video, dock layout), `PERF-C02` (`CALL_DIAG` on a degrading link) and `PERF-C03`
+(**republish the fork — the camera fix is inert until then**) are owed and recorded. No deploy, no device session, no
+presence work, no Wave 5.
+
 ## 2026-11-02 - Stream S (swarm) reviewed and merged as `6eff1714`; expanded gates running
 
 ### Worked on

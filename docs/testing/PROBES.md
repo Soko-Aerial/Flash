@@ -204,3 +204,13 @@ names, no secrets):
 A device test passes PRIV-03 when the sender side logs `directory.lookup.hit`
 and the message is accepted; PRIV-04 when a listing after refresh no longer
 contains the hidden rows.
+
+## Proposed namespaces (not registered, not emitted)
+
+- **`call.quality`** — proposed by stream C for `OPT-O28-03`, **not registered and not emitted**. The `call.*` namespace
+  does not exist, and plan §4.3 rule 2 makes creating one an owner/integrator decision, so the stream put the same data on
+  the existing `CALL_DIAG` line instead (`jb`, `plc`, `avDrift`, each omitted when its counters are absent — never rendered
+  as 0 for missing data). Proposed shape if it is ever registered:
+  `PROBE: call.quality peer=<8> role=<in|out> rtt=<ms> jbDelayMs=<ms> plcPct=<n.n> avDriftMs=<ms> lossPct=<n.n> tier=<HIGH|MEDIUM|LOW|ULTRA_LOW>`,
+  emitted once per `CALL_DIAG` period (5 s), never per frame, ids shortened, no media content. A `PERF-C02` device run could
+  then assert `plcPct > 5` or `|avDriftMs| > 50` without parsing prose.
