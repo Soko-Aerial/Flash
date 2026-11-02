@@ -965,8 +965,16 @@ desktop + app compile. Records: ADR-320..324, ERROR-961..964, EXP-125..128, PERF
 device-verified**), four probes registered in `docs/testing/PROBES.md`. **Both expanded gates are GREEN on the merged tree:**
 gate 1 `BUILD SUCCESSFUL 10m 58s`, 263/263 tasks, 4 101 tests, 0 failures, 2 documented POSIX-only skips (with
 `:core:engine:jvmTest` added); gate 2 `BUILD SUCCESSFUL 9m 15s`, 218/218 tasks, 2 110 tests, 0 failures, 0 skips.
-**Stream C (calls) is now RUNNING** in `E:\FlashWork\opt-calls` (`agent/opt-calls`) from `53caa6b6`; it must `git merge dev`
-before its final gate. Do not disturb its worktree or build.
+**C is now MERGED**: reviewed tip `38a81158`, merged `--no-ff` as **`5e3a1822`**. **9 findings delivered, 1 no longer
+reproduces (`O11-07`), 4 honestly BLOCKED** (`O11-01`/`O11-03` need a live camera and two phones, `O11-03` also an ADR because
+it touches the `NullVideoDecoder` protection; `O12-06` needs a wire change and airtime). `ERROR-981` fixed. **The `O11-02`
+camera fix is INERT** until the webrtc fork is republished (`PERF-C03`): the app resolves the fork from Maven and the version
+was deliberately not bumped, so the shipped desktop keeps the old behaviour. Review verified that `O12-02` keeps the PTT
+packet byte-identical, `O11-05` changes no wire output, the learned jitter depth is test-isolated and only moves the start
+gate, and `O28-03` did **not** invent a probe namespace (`call.quality` is recorded as proposed, not registered). Branch gate:
+calling+ptt+callui 494/0, calling androidHost 396/0. Expanded gates are running on the merged tree. **Nothing call-side is
+device-verified**: `PERF-C01` (nine device steps), `PERF-C02` (`CALL_DIAG` on a degrading link) and `PERF-C03` (fork
+republish) are owed. This was the last of the programme's streams.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
