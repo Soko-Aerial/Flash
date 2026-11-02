@@ -942,10 +942,16 @@ flakiness** — the unmodified tree passes (2 red / 1 green on a byte-identical 
 gate, and was **still discarded** because the unmodified tree passed too. Nothing reverted, nothing weakened.
 `origin` already carries `dev` (`2d3920bd`) and local `dev` is 162 ahead/0 behind, so the push is a plain fast-forward.
 **PUSHED 2026-11-02: `2d3920bd..7adcf4f5 dev -> dev`, upstream set, verified at 0 ahead / 0 behind after a fresh fetch.**
-**Streams S (swarm) and R (radio) are RUNNING** in `E:\FlashWork\opt-swarm` (`agent/opt-swarm`) and
-`E:\FlashWork\opt-radio` (`agent/opt-radio`), both based on the pushed `7adcf4f5`, using the §11.S / §11.R blocks. They
-commit only to their own branches and never merge or push; the integrator reviews and merges each, then reruns the
-expanded gates (gate 1 gains `:core:radio:jvmTest` when R merges, `:core:calling:jvmTest`/`:core:ptt:jvmTest` when C does).
+**Streams S (swarm) and R (radio) started 2026-11-02** from the pushed `7adcf4f5` using the §11.S / §11.R blocks; they
+commit only to their own branches and never merge or push. **R is now MERGED**: reviewed tip `3babf39b`, merged `--no-ff`
+as **`1fa3a2d1`** (parents `c092c88d` + `3babf39b`). Review kept `O26-01`..`O26-07`, verified the AAD rewrite byte-identical
+and the crypto cache to hold only providers/public keys, **reverted the integrator's own `trySend` change** (ADR-331 had
+already rejected dropping ACKs; the bounded pause is inside `rxFlow`'s 128-frame buffer and the medium is half-duplex), and
+applied one real repair — **ERROR-973**: `BlockingStreamReader.close()` now interrupts the pump thread, because closing the
+channel alone left it parked in 3 of 3 host-suite runs. Branch tip: `:core:radio:jvmTest` 273/0/0,
+`:core:radio:testAndroidHostTest` 192/0/0 twice. Records: ADR-330/331, ERROR-971..973, EXP-130..133, `PERF-R01..R05` owed
+(no radio in the session — **nothing radio-side is device-verified**). Expanded gates are running on the merged tree.
+**Stream S (swarm) is still running** in `E:\FlashWork\opt-swarm`; do not disturb its worktree or build.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.

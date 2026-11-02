@@ -1,6 +1,22 @@
 # Current Handoff
 
-> **2026-11-02 — WAVE 4 IS PUSHED; STREAMS S (swarm) AND R (radio) ARE RUNNING.** `dev` = **`7adcf4f5`**, pushed to
+> **2026-11-02 — STREAM R (radio) IS MERGED AS `1fa3a2d1`; expanded gates running on the merged tree; stream S (swarm)
+> still working.** R came in as 9 commits off `7adcf4f5` and merged `--no-ff` after review (parents `c092c88d` +
+> `3babf39b`); records are in `docs/decisions.md` (ADR-330/331), `logs/errors.md` (ERROR-971..973), `logs/experiments.md`
+> (EXP-130..133) and `PERF-R01..R05` in the test backlog. Review: `logs/streams/radio/INTEGRATOR-REVIEW.md`.
+> **Review outcome:** `O26-01`..`O26-07` kept; the AAD rewrite was verified byte-identical; the crypto cache holds only
+> providers and public keys. **My own change was reverted** — I had made the ACK lane drop ACKs instead of pausing
+> reception, but ADR-331 had already rejected that and the numbers back the stream: the pause is ~one lane of airtime,
+> inside `rxFlow`'s 128-frame buffer, on a half-duplex medium, whereas a dropped ACK costs a whole-message retransmission.
+> **One real repair (ERROR-973):** `BlockingStreamReader.close()` now interrupts the pump thread; without it the stream's
+> own test failed 3 of 3 full host-suite runs (and hung the worker once) because closing the channel alone did not release
+> a sender parked in `runBlocking`. The test itself was not modified.
+> **Verified on the branch tip:** `:core:radio:jvmTest` **273/0/0**, `:core:radio:testAndroidHostTest` **192/0/0 twice**.
+> ***Nothing radio-side is device-verified*** — `PERF-R01..R05` and the `RADCHAT-DEV03..07` re-runs are owed.
+> **Now:** gate 1 (with `:core:radio:jvmTest` added per §6.3) and gate 2 on the merged tree. Stream S is still running in
+> `E:\FlashWork\opt-swarm` and must not be disturbed.
+
+> **2026-11-02 — WAVE 4 IS PUSHED; STREAMS S (swarm) AND R (radio) ARE RUNNING (superseded by the banner above for R).** `dev` = **`7adcf4f5`**, pushed to
 > `origin/dev` (`2d3920bd..7adcf4f5`, plain fast-forward, upstream now set), verified after a fresh fetch at `0 ahead /
 > 0 behind` with both refs resolving to `7adcf4f5212f5ad40a9a77bf4ba332784ab886b8`.
 > Both expanded §6.3 gates are **GREEN on the merged tree**: gate 1 on the third run (`BUILD SUCCESSFUL in 7m 3s`,

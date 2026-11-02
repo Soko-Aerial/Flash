@@ -1,5 +1,60 @@
 # Progress Log
 
+## 2026-11-02 - Stream R (radio) reviewed and merged as `1fa3a2d1`; expanded gates running on the merged tree
+
+### Worked on
+Reviewed stream R against the code, repaired one defect it exposed, merged it, and started the expanded gates. Stream S
+(swarm) is still running in parallel and was not touched.
+
+### Changed
+- Merged `agent/opt-radio` (9 stream commits + 2 integrator commits) with `--no-ff` as **`1fa3a2d1`** (parents
+  `c092c88d` + `3babf39b`). Scope was `core/radio/**` plus its tests and `logs/streams/radio/**`; no build file, no wire
+  constant, no `core/messaging`/`ui/chat` file.
+- Records integrated: **ADR-330** (60 s read heartbeat) and **ADR-331** (bounded ACK bookkeeping/lanes, with an integrator
+  amendment), **ERROR-971/972/973**, **EXP-130..133**, and **PERF-R01..R05** plus the `RADCHAT-DEV03..07` re-runs in
+  `docs/testing/TEST-BACKLOG.md`. Full review: `logs/streams/radio/INTEGRATOR-REVIEW.md`.
+- Two integrator commits on the branch: a comment clarification (the ACK lane's producer is the RX collector) and
+  **ERROR-973's fix** (below).
+
+### What the review verified rather than accepted
+- **AAD rewrite is byte-identical** (`O26-04`): checked the header layout instead of trusting "same bytes" — 4-byte tag at
+  offset 4, counter at 8..11, and the new single-array writer fills exactly those offsets. No wire change.
+- **The 60 s read heartbeat cannot block writes or shutdown** (`O26-01`): `serve()` runs `rx`, `tx` and a `closer`; a
+  blocked read is released by `link.close()`, and writes are a separate coroutine.
+- **Bounded chunk queue drops no bytes** (`O26-03`), and the stream itself caught the real hazard — a pump parked on the full
+  queue is not woken by closing the socket — so `BlockingStreamReader.close()` exists and `RfcommLink.close()` calls it first.
+- **Crypto caches only providers and public keys** (`O26-07`): synchronized, bounded to 16, keyed by SPKI content with a
+  private copy; no keyed `Cipher`/`Mac` reuse, matching the kernel-stream precedent.
+- **`PendingAckTable` eviction cannot lose a message**: it re-uses the ERROR-869/870 retransmit-then-re-ACK path.
+
+### The correction I had to make to myself
+I first judged the ACK lane a defect (its producer is the RX collector, so `send` pauses reception) and implemented
+`trySend` + a drop counter. ADR-331 had already considered and rejected exactly that, and the numbers support the stream:
+the pause is bounded at about one lane of airtime (~32 frames), the frames that accumulate stay ~32–40 at any baud rate
+because both sides scale with airtime, and that sits inside `rxFlow`'s 128-frame buffer; the radio is half-duplex anyway;
+and dropping an ACK costs the peer a **whole-message** retransmission (up to 53 s of air for 3 KB). **Reverted**, with the
+reasoning recorded in the review doc §3 and in ADR-331's amendment so it is not re-opened.
+
+### The defect that was real — ERROR-973 (fixed)
+`BlockingStreamReaderTest`'s own case "closing the reader releases a pump parked on a full chunk queue" failed **3 of 3**
+full host-suite runs (and hung the test worker once for >10 minutes, which had to be killed) while passing when the class ran
+alone. `close()` only closed the channel and relied on that resuming a sender parked in `runBlocking { chunks.send(...) }`.
+Fix: the reader keeps its pump `Thread` and `close()` interrupts it after closing the channel, which is what the pump's
+pre-existing `InterruptedException` handler expected. **The test was not modified.** Result: full host suite green **twice**
+(`192 tests, 0 failures`), JVM suite **273 tests, 0 failures**.
+
+### Verification
+- `:core:radio:jvmTest` **273 tests / 0 failures / 0 skipped** (35 suites; was 259 — the 14 new ones are this work), golden
+  frame and `RadioSession` anti-replay green.
+- `:core:radio:testAndroidHostTest` **192 / 0 / 0**, twice, after the repair.
+- Expanded gate 1 with `:core:radio:jvmTest` added (plan §6.3) and gate 2 are running on the merged tree:
+  `logs/wave4-r-gate1-2026-11-02.log`, gate 2 to follow.
+
+### Remaining / next AI
+Record both merged-tree gate results; merge stream S when it reports. Nothing radio-side is **device-verified**: a 1200-baud
+channel, wake-ups/battery, the jSerialComm write path and the RFCOMM close path all still need hardware (`PERF-R01..R05`,
+`RADCHAT-DEV03..07`). No deploy, no device session, no presence work, no Wave 5.
+
 ## 2026-11-02 - Wave 4 pushed to `origin/dev`; streams S (swarm) and R (radio) started in parallel
 
 ### Worked on
