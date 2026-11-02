@@ -15,6 +15,16 @@ public class RequestWindow(
     private var inFlightBytes: Long = 0L
     private var isCallActive: Boolean = false
 
+    /** The current in-flight budget; a thermal step-down shrinks it without touching in-flight accounting (O08-06). */
+    private var budget: Long = budgetBytes
+
+    public val currentBudgetBytes: Long get() = budget
+
+    /** Replaces the in-flight budget (thermal profile change, OPT-O08-06); already in-flight bytes are kept. */
+    public fun setBudgetBytes(bytes: Long) {
+        budget = bytes
+    }
+
     public val currentInFlightBytes: Long get() = inFlightBytes
 
     /**
@@ -49,7 +59,7 @@ public class RequestWindow(
      * Checks if requesting [additionalBytes] stays within the global profile budget.
      */
     public fun canRequestBytes(additionalBytes: Long): Boolean {
-        return inFlightBytes + additionalBytes <= budgetBytes
+        return inFlightBytes + additionalBytes <= budget
     }
 
     /**

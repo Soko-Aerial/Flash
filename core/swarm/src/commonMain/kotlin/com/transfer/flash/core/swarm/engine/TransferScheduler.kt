@@ -13,6 +13,7 @@ internal class TransferScheduler(
     private val sourceSelector: SourceSelector,
     private val requestWindow: RequestWindow,
     private val strikeBook: StrikeBook,
+    private val telemetry: SwarmTelemetry? = null,
 ) {
     fun scheduleRequests(
         content: ContentState,
@@ -34,37 +35,44 @@ internal class TransferScheduler(
         }
         if (candidatePeers.isEmpty()) return
 
-        while (requestWindow.canRequestBytes(content.pieceSize.toLong())) {
-            val availPeers = candidatePeers.mapNotNull { p ->
-                val pcs = p.contentStates[content.root] ?: return@mapNotNull null
-                val inFlightCount = content.inFlightRequests.keys.count { it.first == p.peerId }
-                val win = requestWindow.getWindow(p.peerId, content.root)
-                if (pcs.servingEnabled && nowMs >= pcs.backoffUntilMs && inFlightCount < win) {
-                    PeerPieceAvailability(p.peerId, pcs.bitfield)
-                } else null
+        // OPT-O28-04: a receiver that is missing pieces, has holders and still cannot ask for anything is stalled on its
+        // own in-flight budget. That used to be invisible in a log; the probe fires on the transition, not per tick.
+        if (!requestWindow.canRequestBytes(content.pieceSize.toLong())) {
+            val now = nowMs
+            val sinceLast = if (content.lastStallProbeMs == 0L) Long.MAX_VALUE else now - content.lastStallProbeMs
+            if (sinceLast >= STALL_PROBE_INTERVAL_MS) {
+                content.lastStallProbeMs = now
+                telemetry?.emit(
+                    "swarm.sched.stall",
+                    listOf(
+                        "transfer" to content.localTransferId.take(PROBE_ID_LENGTH),
+                        "reason" to "window_full",
+                        "inFlightBytes" to requestWindow.currentInFlightBytes,
+                        "budgetBytes" to requestWindow.currentBudgetBytes,
+                        "piecesDone" to content.piecesDone,
+                        "totalPieces" to content.totalPieces,
+                        "peers" to candidatePeers.size,
+                    ),
+                )
             }
-            if (availPeers.isEmpty()) break
+            return
+        }
 
-            val pieceToFetch = piecePicker.pickNextPiece(
-                localBitfield = content.bitfield,
-                availablePeers = availPeers,
-                inFlightByPiece = content.inFlightByPiece,
-                canDuplicate = { p ->
-                    val fetcher = content.inFlightByPiece[p]?.firstOrNull()
-                    val sentAt = if (fetcher != null) content.inFlightRequests[fetcher to p] ?: nowMs else nowMs
-                    val elapsedMs = nowMs - sentAt
-                    val pcs = if (fetcher != null) peers[fetcher]?.contentStates?.get(content.root) else null
-                    val speedBps = pcs?.ewmaSpeedBps ?: 1_000_000.0
-                    val expectedMs = if (speedBps > 0.0) ((content.pieceSize.toDouble() * 1000.0) / speedBps).toLong() else 500L
-                    val thresholdMs = maxOf(300L, (expectedMs * 15L) / 10L)
-                    elapsedMs >= thresholdMs
-                },
-            ) ?: break
+        // Everything below is built once per pass instead of once per requested piece (OPT-O08-01): the peer views,
+        // the per-peer in-flight sets and the source candidates used to be rebuilt inside the while-loop, which
+        // allocated three collections per peer per slot (about 960 objects for a 16-slot pass).
+        val inFlightByPeer = HashMap<String, MutableSet<Int>>(candidatePeers.size)
+        for (key in content.inFlightRequests.keys) {
+            inFlightByPeer.getOrPut(key.first) { HashSet() }.add(key.second)
+        }
 
-            val sourceCandidates = candidatePeers.mapNotNull { p ->
-                val pcs = p.contentStates[content.root] ?: return@mapNotNull null
-                val inFlight = content.inFlightRequests.keys.filter { it.first == p.peerId }.map { it.second }.toSet()
-                val win = requestWindow.getWindow(p.peerId, content.root)
+        val available = ArrayList<PeerPieceAvailability>(candidatePeers.size)
+        val candidates = ArrayList<PeerSourceCandidate>(candidatePeers.size)
+        for (p in candidatePeers) {
+            val pcs = p.contentStates[content.root] ?: continue
+            val inFlight = inFlightByPeer.getOrPut(p.peerId) { HashSet() }
+            val win = requestWindow.getWindow(p.peerId, content.root)
+            candidates.add(
                 PeerSourceCandidate(
                     peerId = p.peerId,
                     isOrigin = p.peerId == content.originId,
@@ -80,9 +88,32 @@ internal class TransferScheduler(
                     ewmaSpeedBps = pcs.ewmaSpeedBps,
                     inFlightPieces = inFlight,
                 )
+            )
+            if (pcs.servingEnabled && nowMs >= pcs.backoffUntilMs && inFlight.size < win) {
+                available.add(PeerPieceAvailability(p.peerId, pcs.bitfield, inFlight.size, win))
             }
+        }
+        if (available.isEmpty()) return
 
-            val chosen = sourceSelector.selectSource(pieceToFetch, sourceCandidates, nowMs) ?: break
+        val scan = piecePicker.beginScan(
+            localBitfield = content.bitfield,
+            availablePeers = available,
+            inFlightByPiece = content.inFlightByPiece,
+            canDuplicate = { p ->
+                val fetcher = content.inFlightByPiece[p]?.firstOrNull()
+                val sentAt = if (fetcher != null) content.inFlightRequests[fetcher to p] ?: nowMs else nowMs
+                val elapsedMs = nowMs - sentAt
+                val pcs = if (fetcher != null) peers[fetcher]?.contentStates?.get(content.root) else null
+                val speedBps = pcs?.ewmaSpeedBps ?: 1_000_000.0
+                val expectedMs = if (speedBps > 0.0) ((content.pieceSize.toDouble() * 1000.0) / speedBps).toLong() else 500L
+                val thresholdMs = maxOf(300L, (expectedMs * 15L) / 10L)
+                elapsedMs >= thresholdMs
+            },
+        )
+
+        while (requestWindow.canRequestBytes(content.pieceSize.toLong())) {
+            val pieceToFetch = scan.pickNext() ?: break
+            val chosen = sourceSelector.selectSource(pieceToFetch, candidates, nowMs) ?: break
 
             content.inFlightRequests[chosen.peerId to pieceToFetch] = nowMs
             content.inFlightByPiece.getOrPut(pieceToFetch) { LinkedHashSet() }.add(chosen.peerId)
@@ -95,6 +126,15 @@ internal class TransferScheduler(
                     frame = SwarmFrame.Request(content.groupId, content.root, listOf(pieceToFetch)),
                 )
             )
+
+            // Keep the scan and the per-peer views in step with the request just issued.
+            scan.onPeerRequested(chosen.peerId, pieceToFetch)
+            val inFlight = inFlightByPeer.getOrPut(chosen.peerId) { HashSet() }
+            inFlight.add(pieceToFetch)
+            val index = candidates.indexOfFirst { it.peerId == chosen.peerId }
+            if (index >= 0) {
+                candidates[index] = candidates[index].copy(inFlightCount = inFlight.size, inFlightPieces = inFlight)
+            }
         }
     }
 
@@ -117,6 +157,23 @@ internal class TransferScheduler(
             content.inFlightByPiece[e.index]?.remove(e.peerId)
             requestWindow.removeInFlightBytes(pieceLen)
         } else if (content.bitfield.get(e.index)) {
+            // OPT-O28-04: a duplicate that lost an endgame race (or one nobody asked for) is wasted airtime. Counted per
+            // content and reported at most every few seconds, so the ratio is visible without a probe per piece.
+            content.wastedBytes += e.bytes.size
+            val sinceLastWaste = if (content.lastWastedProbeMs == 0L) Long.MAX_VALUE else e.nowMs - content.lastWastedProbeMs
+            if (sinceLastWaste >= WASTED_PROBE_INTERVAL_MS) {
+                content.lastWastedProbeMs = e.nowMs
+                telemetry?.emit(
+                    "swarm.recv.wasted",
+                    listOf(
+                        "transfer" to content.localTransferId.take(PROBE_ID_LENGTH),
+                        "peer" to e.peerId.take(PROBE_ID_LENGTH),
+                        "piece" to e.index,
+                        "wastedBytes" to content.wastedBytes,
+                        "receivedBytes" to content.bytesDone,
+                    ),
+                )
+            }
             return
         }
 
@@ -311,6 +368,7 @@ internal class TransferScheduler(
             }
 
             for ((peerId, index) in timedOut) {
+                val reqTime = content.inFlightRequests[peerId to index] ?: 0L
                 content.inFlightRequests.remove(peerId to index)
                 content.inFlightByPiece[index]?.remove(peerId)
                 val pLen = content.pieceLength(index).toLong()
@@ -320,12 +378,23 @@ internal class TransferScheduler(
                 if (peerState != null) {
                     peerState.backoffUntilMs = nowMs + 5_000L
                 }
+                // OPT-O28-04: a piece nobody answered used to disappear from the in-flight map without a trace, so a
+                // "why is this swarm slow" report had nothing to go on.
+                telemetry?.emit(
+                    "swarm.piece.timeout",
+                    listOf(
+                        "transfer" to content.localTransferId.take(PROBE_ID_LENGTH),
+                        "peer" to peerId.take(PROBE_ID_LENGTH),
+                        "piece" to index,
+                        "elapsedMs" to (nowMs - reqTime),
+                        "speedBps" to (peerState?.ewmaSpeedBps?.toLong() ?: 0L),
+                    ),
+                )
             }
         }
     }
 
-    private fun toPieceRanges(pieces: Set<Int>): List<PieceRange> {
-        if (pieces.isEmpty()) return emptyList()
+    private fun toPieceRanges(pieces: Set<Int>): List<PieceRange> {        if (pieces.isEmpty()) return emptyList()
         val sorted = pieces.sorted()
         val ranges = ArrayList<PieceRange>()
         var start = sorted[0]
@@ -343,3 +412,11 @@ internal class TransferScheduler(
         return ranges
     }
 }
+
+private const val PROBE_ID_LENGTH = 8
+
+/** A stalled receiver reports the same condition at most this often (OPT-O28-04). */
+private const val STALL_PROBE_INTERVAL_MS = 2_000L
+
+/** Wasted duplicate bytes are reported at most this often per content (OPT-O28-04). */
+private const val WASTED_PROBE_INTERVAL_MS = 5_000L
