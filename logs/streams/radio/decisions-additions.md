@@ -63,6 +63,12 @@ grow them without limit.
 3. `BlockingStreamReader.chunks` gets 32 chunks (32 KiB) with a *blocking* `send` from the pump thread, so RFCOMM flow
    control pushes back on the radio instead of bytes being dropped.
 
+Because (3) is the only place a *thread* can now park, `BlockingStreamReader.close()` closes the channel, and
+`RfcommLink.close()` calls it before closing the socket: closing the socket only wakes a pump blocked in `InputStream.read`,
+not one parked handing a chunk over, so without that a link closed while its consumer had stopped would leave the pump
+thread waiting for ever. `BlockingStreamReaderTest` guards it ("closing the reader releases a pump parked on a full chunk
+queue").
+
 ### Why bounding `pendingAcks` cannot lose a delivery
 An evicted entry only means the ACK for that message is not matched when it arrives. The outbox's own retry then re-sends
 **the identical frame** (ERROR-869: the same counters, so the receiver sees a duplicate) and the receiver re-ACKs it
