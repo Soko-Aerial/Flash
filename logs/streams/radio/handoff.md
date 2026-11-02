@@ -12,6 +12,9 @@ Six of the seven `O26-*` findings of `docs/audit/optimization-2026-10-23/O26-blu
 recorded as obsolete. Nothing in the radio wire format changed: `RadioGoldenFrameTest` and the `RadioSession` anti-replay
 tests (ERROR-870) pass unchanged, and no frame byte, counter, nonce, AAD layout or ARQ behaviour was touched.
 
+Last verified build: `agent/opt-radio` at `61a0f4a0` plus one follow-up docs commit; `:core:radio:jvmTest` (273 tests),
+`:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` all green in one run, `BUILD SUCCESSFUL in 4m 52s`.
+
 | Finding | Verdict | Where |
 |---|---|---|
 | `O26-01` 250 ms read poll | **DONE**: 60 s heartbeat (14 401 -> 61 reads per idle hour) | `KissTncConfig`, `KissTncDriver.readLoop`, ADR-330, EXP-130 |
