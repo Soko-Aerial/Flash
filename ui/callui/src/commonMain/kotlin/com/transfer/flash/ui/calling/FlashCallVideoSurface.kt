@@ -51,6 +51,26 @@ internal enum class CallVideoFit {
 }
 
 /**
+ * Which track the **main** call tile shows (OPT-O11-06).
+ *
+ * The tile is the remote picture, or this device's own when the pictures are swapped. When the remote picture is not
+ * shown — data saver on, or the other camera off — the tile is covered by `FlashRemoteVideoPlaceholder`, and the answer
+ * is `null`: the renderer stays composed (its native surface must not be rebuilt) but nothing is bound to the track, so
+ * no frame is converted, rasterised or uploaded for a picture nobody can see. The auditor measured 15–30 % of a desktop
+ * core spent that way; on the phone it is a full RGBA upload per frame.
+ */
+internal fun mainVideoTrack(
+    remoteShown: Boolean,
+    swapped: Boolean,
+    localTrack: VideoStreamTrack?,
+    remoteTrack: VideoStreamTrack?,
+): VideoStreamTrack? = when {
+    !remoteShown -> null
+    swapped -> localTrack
+    else -> remoteTrack
+}
+
+/**
  * The size the picture is drawn at inside a [boxWidth] x [boxHeight] box, for a frame of [frameWidth] x [frameHeight] (already turned
  * upright). The box is the limit; the result never exceeds it and is centred by the caller.
  *
