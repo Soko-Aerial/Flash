@@ -16027,6 +16027,27 @@ dependency, test-parallelism or JVM-argument change is in play either.
 on `c5d825f9` itself, `BUILD SUCCESSFUL in 7m 3s`); PASS alone; PASS in full on pre-E `bec221d2`. Not attributable to E.
 Assertion and timeout unchanged.**
 
+### Recheck 2026-11-02 (stream-R merge gate) — two *more* cases in this class, on a tree that cannot have changed it
+Gate 1 on the merged R tree **`1fa3a2d1`** failed: `BUILD FAILED in 9m 41s`, 261/261 tasks, `:server:test` **664 tests,
+2 failed** — `shutdownKicksEverySessionKeepsUnacknowledgedMessagesAndRefusesNewOnes` and
+`theSenderLearnsDeliveredOnlyWhenTheRecipientAcknowledges`.
+
+R is excluded by construction, not by argument: `git diff --stat c092c88d..1fa3a2d1 -- server core/common` is **empty**;
+the merge touched `core/radio/**` and `logs/streams/radio/**` only. The isolated rerun of the class on the same merged tree
+passed (`BUILD SUCCESSFUL in 1m 1s`, exit 0), as every other case in it has.
+
+This class has now produced **four distinct failing cases** across three tree states — `aPingIsAnsweredWithAPong…`,
+`anExpiredSessionThatKeepsTalkingIsCutOffAtItsNextFrame`, `shutdownKicksEverySession…`, and
+`theSenderLearnsDeliveredOnlyWhenTheRecipientAcknowledges` — and every one of them is green when the class runs alone. That
+is a property of its real-socket, wall-clock fixture under a saturated 8-core box, not evidence about any feature.
+
+**What this means for the gate:** a red `:server:test` that names `RelayDeliveryContractTest` is not evidence about the
+tree; it needs (a) the class rerun alone, and (b) if that passes, a complete gate rerun — which is exactly the procedure the
+earlier E and K merges used. **What it does not mean:** that the flakiness is acceptable. The class is owed a hardening pass
+(stable port allocation instead of racing for sockets, an await helper with one deadline discipline, no raw wall-clock
+sleeps); that is a test-infrastructure task, recorded here so it is not lost, and it is not being smuggled into a feature
+merge.
+
 ### Prior history of this class (context, not an excuse)This class is not new to load-sensitive failure, which is why the record above is measured rather than assumed:
 **ERROR-399** (ACK race in the reconnect-race test, fixed test-side) and the 2026-10-13 note in `logs/progress.md`
 recording `RelayDeliveryContractTest.anOversizedWebSocketFrameClosesTheConnection` failing once *while another agent was
