@@ -23,19 +23,30 @@ import java.util.concurrent.ConcurrentHashMap
  */
 public object DesktopTaskbarBadgeManager {
 
-    private val baseIconsCache: List<BufferedImage> by lazy {
-        listOf(16, 24, 32, 48, 64, 96, 128, 256).map { size -> renderIcon(size, badgeCount = 0) }
+    private val commonSizes = listOf(16, 24, 32, 48, 64)
+    private val largeSizes = listOf(96, 128, 256)
+
+    // OPT-O19-06: Cache only common taskbar/titlebar icon sizes eagerly on first access (16..64px).
+    // Large 96px, 128px and 256px raster icons are heavy Java2D raster operations and are rendered lazily on demand.
+    private val commonBaseIcons: List<BufferedImage> by lazy {
+        commonSizes.map { size -> renderIcon(size, badgeCount = 0) }
+    }
+
+    private val largeBaseIcons: List<BufferedImage> by lazy {
+        largeSizes.map { size -> renderIcon(size, badgeCount = 0) }
     }
 
     private val badgedIconsCache = ConcurrentHashMap<Int, List<BufferedImage>>()
 
-    public fun getBaseIcons(): List<BufferedImage> = baseIconsCache
+    public fun getBaseIcons(): List<BufferedImage> = commonBaseIcons
+
+    public fun getAllBaseIcons(): List<BufferedImage> = commonBaseIcons + largeBaseIcons
 
     public fun getBadgedIcons(count: Int): List<BufferedImage> {
         if (count <= 0) return getBaseIcons()
         val clampedCount = if (count > 9) 10 else count
         return badgedIconsCache.computeIfAbsent(clampedCount) { c ->
-            listOf(16, 24, 32, 48, 64, 96, 128, 256).map { size -> renderIcon(size, badgeCount = c) }
+            commonSizes.map { size -> renderIcon(size, badgeCount = c) }
         }
     }
 

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,8 +20,6 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.transfer.flash.core.common.logging.FlashLog
-import com.transfer.flash.core.common.logging.FlashLogLevel
-import com.transfer.flash.core.common.logging.FlashLogSink
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
 import com.transfer.flash.core.discovery.core.FlashDiscoveryMode
 import com.transfer.flash.ui.settings.FlashSettingsMath
@@ -42,10 +41,12 @@ import org.jetbrains.compose.resources.painterResource
 import java.awt.SystemTray
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.toComposeImageBitmap
-import java.io.File
-import kotlinx.coroutines.launch
+import java.io.BufferedWriter
 import java.io.FileWriter
-import java.io.PrintWriter
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /**
  * Flash desktop entry point (Phase 21, sub-step 21-3).
@@ -72,6 +73,12 @@ public fun main(args: Array<String> = emptyArray()) {
         System.setProperty("skiko.fps", "60")
     }
 
+    // OPT-O14-06: Cap default Dispatchers.IO thread pool to 16 threads (default is 64 on modern multi-core PCs).
+    // Reduces idle thread footprint and stack memory allocation without bottlenecking file I/O or networking.
+    if (System.getProperty("kotlinx.coroutines.io.parallelism") == null) {
+        System.setProperty("kotlinx.coroutines.io.parallelism", "16")
+    }
+
     // Enforce single-instance: if another instance is already running, forward files or activate, then exit.
     // Before the log sink on purpose (ERROR-744): the sink truncates `desktop.log`, and a duplicate launch used to
     // wipe the running instance's log, the file a bug report depends on.
@@ -87,6 +94,14 @@ public fun main(args: Array<String> = emptyArray()) {
     application {
         val engine = remember { DesktopEngine() }
         engine.start()
+        // Own the controller above the conditional Window and Settings destinations.
+        // A stored-ON gateway starts now and keeps the same manager across tray/tab changes.
+        val radioGatewayController = remember(engine) {
+            com.transfer.flash.desktop.radio.DesktopRadioGatewayController(
+                scope = engine.scope,
+                onManagerChanged = com.transfer.flash.desktop.radio.DesktopRadioManagers::publish,
+            )
+        }
 
         // UI-056 / ADR-080: the launch animation plays once per process, at start-up. The gate lives
         // here, above `if (isWindowVisible)`, because hiding to the tray disposes the window's
@@ -104,8 +119,15 @@ public fun main(args: Array<String> = emptyArray()) {
     var currentComposeWindow by remember { mutableStateOf<java.awt.Window?>(null) }
 
     val windowState = rememberWindowState(width = 1200.dp, height = 800.dp)
+
+    // OPT-O19-07: Downscale discovery to ECO when window is hidden in tray or minimized (guarded by active workloads).
+    LaunchedEffect(isWindowVisible, windowState.isMinimized) {
+        engine.setWindowActive(isWindowVisible && !windowState.isMinimized)
+    }
+
     val trayState = rememberTrayState()
     val desktopSettings by engine.settings.collectAsState()
+    val osReduceMotion by DesktopOsReduceMotion.preferences.collectAsState(initial = false)
     val nav = rememberFlashNavigationState()
 
     // UI-058 H9: `--hub-route=hub/person/<id>` on the command line opens that Hub page once the app is ready.
@@ -319,7 +341,8 @@ public fun main(args: Array<String> = emptyArray()) {
             systemDark = isSystemInDarkTheme(),
         )
         val effectivePerformanceMode = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
-        val reduceMotionResolved = effectivePerformanceMode.reduceMotion
+        // OPT-O24-08: Honor OS-level accessibility reduce-motion settings alongside app performance mode
+        val reduceMotionResolved = effectivePerformanceMode.reduceMotion || osReduceMotion
 
         val baseDensity = androidx.compose.ui.platform.LocalDensity.current
         val effectiveDensity = remember(baseDensity, desktopSettings.uiScale) {
@@ -365,6 +388,7 @@ public fun main(args: Array<String> = emptyArray()) {
                                     externalShareFiles = pendingFilesToShare,
                                     onClearExternalShareFiles = { pendingFilesToShare = emptyList() },
                                     pendingHubRoute = pendingHubRoute,
+                                    radioGatewayController = radioGatewayController,
                                 )
                                 FlashLaunchSplashOverlay(
                                     gate = launchSplash,
@@ -383,8 +407,34 @@ public fun main(args: Array<String> = emptyArray()) {
     run {
         val toastReady by engine.ready.collectAsState()
         val toastRepo = if (toastReady) engine.transfers else null
-        val noTransfers = remember { kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.transfer.flash.core.transfer.model.FlashTransfer>()) }
-        val toastTransfers by (toastRepo?.activeTransfers ?: noTransfers).collectAsState()
+        // OPT-O19-02: Observe a distinct, filtered flow of candidate transfers (Offered inbound or Failed retryable outbound)
+        // instead of the raw activeTransfers StateFlow. This eliminates 10-100 Hz EDT recompositions during active transfers.
+        val toastTransfersFlow = remember(toastRepo) {
+            val flow = toastRepo?.activeTransfers ?: flowOf(emptyList())
+            flow.map { list ->
+                list.filter {
+                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Offered &&
+                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Receiving) ||
+                    (it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Failed &&
+                        it.direction == com.transfer.flash.core.transfer.model.FlashTransferDirection.Sending &&
+                        it.canRetry)
+                }
+            }.distinctUntilChanged { old, new ->
+                if (old.size != new.size) return@distinctUntilChanged false
+                old.indices.all { i ->
+                    val o = old[i]
+                    val n = new[i]
+                    o.id == n.id &&
+                        o.state == n.state &&
+                        o.fileName == n.fileName &&
+                        o.peerName == n.peerName &&
+                        o.direction == n.direction &&
+                        o.errorMessage == n.errorMessage &&
+                        o.canRetry == n.canRetry
+                }
+            }
+        }
+        val toastTransfers by toastTransfersFlow.collectAsState(initial = emptyList())
         val toastDark = FlashSettingsMath.resolveDarkTheme(mode = desktopSettings.themeMode, systemDark = isSystemInDarkTheme())
         val toastPerformance = desktopSettings.performanceMode ?: FlashPerformanceMode.HIGH
         FlashMaterialTheme(darkTheme = toastDark, dynamicColor = desktopSettings.dynamicAccent) {
@@ -393,7 +443,7 @@ public fun main(args: Array<String> = emptyArray()) {
                 dynamicAccent = desktopSettings.dynamicAccent,
                 hapticsEnabled = false,
                 minimalChrome = toastPerformance.minimalChrome,
-                motion = rememberFlashMotion(toastPerformance.reduceMotion),
+                motion = rememberFlashMotion(toastPerformance.reduceMotion || osReduceMotion),
             ) {
                 DesktopTransferToastWindow(
                     transfers = toastTransfers,
@@ -499,13 +549,14 @@ private fun installNativeWebRtcLogging() {
 }
 
 /**
- * Tees `FlashLog` to **and** `<stateDir>/desktop.log` (default `~/.flash/desktop.log`).
+ * Tees `FlashLog` to stderr and `<stateDir>/desktop.log` (default `~/.flash/desktop.log`).
  *
  * The file exists because the console is not a reliable record. `:desktop:run` is a Gradle
  * `JavaExec` under a progress renderer that rewrites lines, and stderr from the forked JVM
  * interleaves with Gradle's own output — so a diagnosis has twice now been argued from the
  * *absence* of a line in a pasted console, which is not evidence anyone should have to rely on.
- * The log file is complete, ordered, and identical on every run.
+ * The worker preserves admitted record order; overflow and unwritable output are counted/best-effort,
+ * so the file must not be described as complete or guaranteed durable.
  *
  * Truncated per run (`append = false`) rather than appended: what a hardware run needs is one
  * run's timeline, and an append-only file quietly grows on a machine where the app is relaunched
@@ -515,34 +566,22 @@ private fun installNativeWebRtcLogging() {
  * Deliberately not routed through the engine: `DesktopEngine` is also constructed by tests, which
  * must not write to a user's home directory.
  */
-private val LOG_TIME: java.time.format.DateTimeFormatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
-
 private fun installDesktopLogSink() {
     val file = try {
-        DesktopPaths.stateDir().apply { mkdirs() }
-            .resolve("desktop.log")
+        DesktopPaths.stateDir().apply { mkdirs() }.resolve("desktop.log")
     } catch (_: Throwable) {
         return
     }
-    val writer = try {
-        PrintWriter(FileWriter(file, false), true)
+    val output = try {
+        BufferedWriter(FileWriter(file, false), 16_384)
     } catch (_: Throwable) {
         // Unwritable home directory: keep the default sink rather than fail the launch.
         return
     }
-    FlashLog.installSink(
-        FlashLogSink { level: FlashLogLevel, tag: String, message: String, throwable: Throwable? ->
-            // A logging failure must never reach a caller — same contract as the platform sink.
-            try {
-                System.err.println("${level.name.first()}/$tag: $message")
-                throwable?.printStackTrace(System.err)
-                // The file carries wall-clock time (ms) so a call's lines can be lined up with
-                // the phones' logcat; the console keeps the old format.
-                writer.println("${LOG_TIME.format(java.time.LocalTime.now())} ${level.name.first()}/$tag: $message")
-                throwable?.printStackTrace(writer)
-            } catch (_: Throwable) {
-                // ignore
-            }
-        },
-    )
+    val sink = DesktopFileLogSink(output)
+    Runtime.getRuntime().addShutdownHook(Thread({
+        // The worker alone drains and closes. Never race it with a second shutdown writer.
+        sink.closeAndAwait()
+    }, "FlashDesktopLogFlusher"))
+    FlashLog.installSink(sink)
 }

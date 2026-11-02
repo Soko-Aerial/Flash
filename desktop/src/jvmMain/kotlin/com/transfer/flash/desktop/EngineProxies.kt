@@ -158,8 +158,14 @@ internal class SwitchingNetwork : FlashNetwork {
 /** [FlashDiscovery] that forwards to the installed discovery, [EmptyFlashDiscovery] before. */
 internal class SwitchingDiscovery : FlashDiscovery {
     private val target = Switchable<FlashDiscovery>(EmptyFlashDiscovery)
+    @Volatile
+    private var screenActive: Boolean = true
 
-    fun install(real: FlashDiscovery?) = target.install(real ?: EmptyFlashDiscovery)
+    fun install(real: FlashDiscovery?) {
+        val next = real ?: EmptyFlashDiscovery
+        next.setScreenActive(screenActive)
+        target.install(next)
+    }
 
     override val state: StateFlow<FlashDiscoveryState> = target.flow { it.state }
     override val discoveredEndpoints: StateFlow<List<FlashDiscoveredEndpoint>> = target.flow { it.discoveredEndpoints }
@@ -169,6 +175,10 @@ internal class SwitchingDiscovery : FlashDiscovery {
     override suspend fun startAdvertising(listenPort: Int): FlashResult<Unit> = target.current.startAdvertising(listenPort)
     override suspend fun stopAdvertising(): FlashResult<Unit> = target.current.stopAdvertising()
     override suspend fun stopAll(): FlashResult<Unit> = target.current.stopAll()
+    override fun setScreenActive(active: Boolean) {
+        screenActive = active
+        target.current.setScreenActive(active)
+    }
 }
 
 /**

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -75,10 +76,25 @@ public fun rememberFlashDesktopWindowWidthDp(window: java.awt.Window? = null): F
     return widthPx / density.density
 }
 
+// OPT-O19-03: Wrap window size class evaluation in derivedStateOf to prevent reading containerSize.width
+// directly in composition scopes like DesktopShell. DesktopShell only recomposes when FlashWindowSizeClass
+// transitions between Compact, Medium, and Expanded, eliminating full-shell recomposition thrash on resize.
 @Composable
 public fun rememberFlashDesktopWindowSize(window: java.awt.Window? = null): FlashWindowSizeClass {
-    val widthDp = rememberFlashDesktopWindowWidthDp(window)
-    return FlashAdaptiveMath.windowSizeForWidth(widthDp)
+    val windowInfo = LocalWindowInfo.current
+    val density = LocalDensity.current
+    return remember(windowInfo, density, window) {
+        derivedStateOf {
+            val containerWidth = windowInfo.containerSize.width
+            val widthPx = if (containerWidth > 0) {
+                containerWidth.toFloat()
+            } else {
+                val awtWidth = window?.width?.toFloat()
+                if (awtWidth != null && awtWidth > 0f) awtWidth else (1200f * density.density)
+            }
+            FlashAdaptiveMath.windowSizeForWidth(widthPx / density.density)
+        }
+    }.value
 }
 
 /** Width of the icon rail left of the panes (`DesktopSideBar`), which the two panes do not share. */

@@ -8,24 +8,29 @@ import org.junit.Test
 class DesktopTaskbarBadgeManagerTest {
 
     @Test
-    fun baseIconsGeneratedForAllTargetResolutions() {
+    fun baseIconsGeneratedForCommonTargetResolutions() {
         val baseIcons = DesktopTaskbarBadgeManager.getBaseIcons()
-        val expectedSizes = listOf(16, 24, 32, 48, 64, 96, 128, 256)
-        assertEquals(expectedSizes.size, baseIcons.size)
+        val expectedCommonSizes = listOf(16, 24, 32, 48, 64)
+        assertEquals(expectedCommonSizes.size, baseIcons.size)
 
         baseIcons.forEachIndexed { index, image ->
-            val expected = expectedSizes[index]
+            val expected = expectedCommonSizes[index]
             assertEquals(expected, image.width)
             assertEquals(expected, image.height)
             // Verify image has non-zero pixels (ARGB)
             val centerRgb = image.getRGB(expected / 2, expected / 2)
             assertTrue("Center pixel should not be completely transparent", (centerRgb ushr 24) != 0)
         }
+
+        // Lazy-loaded all base icons include 96, 128, 256
+        val allIcons = DesktopTaskbarBadgeManager.getAllBaseIcons()
+        val expectedAllSizes = listOf(16, 24, 32, 48, 64, 96, 128, 256)
+        assertEquals(expectedAllSizes.size, allIcons.size)
     }
 
     @Test
     fun badgedIconsGeneratedWithNotificationCounters() {
-        val expectedSize = 8
+        val expectedSize = 5
         val singleBadged = DesktopTaskbarBadgeManager.getBadgedIcons(1)
         assertEquals(expectedSize, singleBadged.size)
 
