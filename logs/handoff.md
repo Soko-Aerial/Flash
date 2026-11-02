@@ -1,13 +1,26 @@
 # Current Handoff
 
-> **2026-11-02 — Desktop E is MERGED; both expanded gates are running on `c5d825f9`.** Reviewed tip `b2b61b92` merged
+> **2026-11-02 — Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running, NOTHING
+> PUSHED.** On merged **`c5d825f9`** (E + K) gate 1 came back `BUILD FAILED in 8m 36s` (259/259 tasks) with two cases
+> that were green on `bec221d2` an hour earlier: `RelayDeliveryContractTest` never saw the `ERR_EXPIRED` frame after the
+> session *was* cut off (ERROR-959), and `DesktopEnginePttTest` moved **0 of 8** audio frames inside a 10 s window
+> (ERROR-960). Both pass alone on the unchanged tree (2m 30s / 59s, exit 0). E is not indicated for either: its new
+> `evaluateDiscoveryActiveState` is behind `if (!isWindowActive)` and the PTT test never calls `setWindowActive`, and E
+> touched no `core/` or `server/` code. Nothing was weakened. A complete forced gate-1 rerun is running
+> (`logs/wave4-ek-gate1-rerun-2026-11-02.log`); gate 2 follows it.
+> **Push status:** `origin` already has `dev` (`2d3920bd`); local `dev` is **162 ahead, 0 behind**, so the push is a
+> plain fast-forward with no force — but it waits until both merged-tree gates are green.
+> Environment for the failing run: 8 logical CPUs, ~2.4 GB free RAM, other builds active (§36's saturation case).
+> Exact evidence and the correction are in the top `logs/progress.md` entry; older banners below are historical.
+
+> **2026-11-02 — Desktop E is MERGED; both expanded gates were started on `c5d825f9` (superseded by the banner above).**
+> Reviewed tip `b2b61b92` merged
 > into `dev` with `--no-ff` as **`c5d825f9`** (clean, 23 files, 1 984 insertions / 352 deletions) once both expanded
 > kernel gates were green on `bec221d2`. Recorded as `2e4ab027` first. Kernel-only gate numbers (gate 1 3 597 tests /
 > 0 failures / 2 documented POSIX skips; gate 2 2 110 tests / 0 failures / 0 skips) belong to `bec221d2` and **must not
-> be quoted for the merged tree**. Gate 1 of the merged tree is running (`logs/wave4-ek-gate1-2026-11-02.log`), gate 2
-> follows. **Next: record both merged-tree gate results; a new failure belongs to E's merge and needs its own ERROR
-> before anything else merges.** No push, deploy, device session, presence or Wave 5 work. Exact evidence: the top
-> `logs/progress.md` entry. Older banners below are historical.
+> be quoted for the merged tree**. **Next: record both merged-tree gate results; a new failure belongs to E's merge and
+> needs its own ERROR before anything else merges.** No push, deploy, device session, presence or Wave 5 work. Exact
+> evidence: the top `logs/progress.md` entry. Older banners below are historical.
 
 > **2026-11-02 — BOTH expanded K gates were green on `bec221d2` (superseded by the banner above).** Gate 1 (15 JVM
 > suites + three

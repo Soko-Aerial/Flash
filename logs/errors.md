@@ -15974,3 +15974,68 @@ still an asynchronous race and can fail again. A repeat needs client/server fram
 ### Related files / status
 `E2eRelayContractTest.kt`, `logs/wave4-k-gate1-2026-11-01.log`, `logs/wave4-k-gate1-rerun-2026-11-02.log`.
 **OPEN — isolated rerun PASS and full-gate rerun PASS; root cause unknown, intermittent, timeout unchanged.**
+
+## ERROR-959 — A cut-off relay session's `ERR_EXPIRED` frame was never seen by the client
+
+### Date / area / environment
+2026-11-02; `:server:test`, merged desktop tree **`c5d825f9`** (E merged; `:server` itself unchanged by E), Windows/JBR
+host under the expanded parallel gate. Environment during the run: 8 logical CPUs, ~2.4 GB free of 20 GB, other Java and
+node processes active.
+
+### Symptoms / evidence
+`RelayDeliveryContractTest.anExpiredSessionThatKeepsTalkingIsCutOffAtItsNextFrame` failed at line 452 —
+`assertTrue(dave.all<RelayFrame.Error>().any { it.code == HubErrorCodes.ERR_EXPIRED })`, reported as
+`java.lang.AssertionError: Expected value to be true` — after line 451 had already proved the session was really cut off
+(`!hub.engine.connectionPool.isConnected("dave")`). So the server did expire and disconnect the session; the client just
+never observed the `ERR_EXPIRED` frame. Suite: 664 tests, 1 failure. Passing alone on the same unchanged tree
+(`:server:test --tests RelayDeliveryContractTest`, `BUILD SUCCESSFUL in 59s`, 24/24 tasks, exit 0).
+
+### Diagnosis / why it is a race
+The test asserts an ordering the wire does not guarantee: the server writes the `ERR_EXPIRED` error and then closes the
+socket, and the test polls the client's recorded frames after it has already seen the disconnect. Under load the close
+can win, leaving the error frame unread or unwritten, so the assertion sees an empty error list. This is test-side
+observation of a close/send race, not evidence of a relay defect — the disconnection itself happened.
+
+### Failed attempts / working fix
+No source or test change has been made. Do not widen the timeout, because the wait is not what expired: the assertion
+runs after the successful disconnect wait. A fix would need either a server that flushes the error before closing (with
+evidence that it does), or a test that accepts "disconnected with or without the error frame observed" — both are
+decisions, not patches, and neither is in this integration's scope.
+
+### Related files / status
+`server/src/test/kotlin/com/transfer/flash/server/relay/RelayDeliveryContractTest.kt` (line 452),
+`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-isolated-server-relay.log`.
+**OPEN — isolated rerun PASS; intermittent under gate load; assertion unchanged.**
+
+## ERROR-960 — Desktop PTT frames reached the playout zero times under gate load
+
+### Date / area / environment
+2026-11-02; `:desktop:jvmTest`, merged desktop tree **`c5d825f9`** (E merged), Windows/JBR host under the expanded
+parallel gate, same saturated-machine conditions as ERROR-959.
+
+### Symptoms / evidence
+`DesktopEnginePttTest.a talk session travels between two paired desktops and ends on release` failed at line 101 —
+`only 0 of 8 audio frames reached beta's playout` — after the earlier assertions had passed: both engines booted, a
+session existed, pairing completed and persisted trust on both sides, `onPttButton()` returned `ACCEPTED`, beta's playout
+started at 16 000 Hz / 20 ms packets, beta reported the alpha floor holder, and alpha's capture reached
+`packetsEnabled = true`. Then eight 640-byte frames emitted from alpha's capture did not arrive within `PTT_TIMEOUT_MS`
+(10 000 ms); the case ran 18.5 s. Passing alone on the same tree
+(`:desktop:jvmTest --tests DesktopEnginePttTest`, `BUILD SUCCESSFUL in 2m 30s`, 70/70 tasks, exit 0).
+
+### Why E is not indicated
+E's only new code on that path is `evaluateDiscoveryActiveState`, called from three `ptt`/`calls`/transfer collectors
+**guarded by `if (!isWindowActive)`**. `DesktopEnginePttTest` never calls `setWindowActive`, so `isWindowActive` stays at
+its `true` default and the new discovery re-evaluation cannot run in this test at all. E also changed no code under
+`core/` or `server/`, and this test exercises the WS session and the PTT codec, not the desktop UI paths E touched.
+
+### Failed attempts / working fix
+No source or test change. The timeout was not enlarged and the frame count was not lowered. A real fix needs evidence of
+where the frames stopped: alpha's capture queue drain, the WS writer, the session collector, or beta's playout queue —
+each is instrumented enough to distinguish once a reproducing run is captured with PTT probes on.
+
+### Related files / status
+`desktop/src/jvmTest/kotlin/com/transfer/flash/desktop/DesktopEnginePttTest.kt` (line 101),
+`desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopEngine.kt` (`evaluateDiscoveryActiveState`),
+`desktop/src/jvmMain/kotlin/com/transfer/flash/desktop/DesktopDiscoveryActivity.kt`,
+`logs/wave4-ek-gate1-2026-11-02.log`, `logs/wave4-ek-isolated-desktop-ptt.log`.
+**OPEN — isolated rerun PASS; intermittent under gate load; assertion unchanged.**
