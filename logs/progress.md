@@ -48,8 +48,14 @@ review checked the result: no BOM at the start of any changed file and no `Â§`
   `:ui:chat:jvmTest` **730/0**, `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` green,
   `BUILD SUCCESSFUL in 7m 37s`, 134/134 tasks.
 - `SwarmInteropTest` (the known rare flake) **passed**, 12.4 s; it also passed in a separate run.
-- Expanded gate 1 (with `:core:engine:jvmTest` added because S touched `core/engine`) and gate 2 are running on the merged
-  tree: `logs/wave4-s-gate1-2026-11-02.log`.
+- **Expanded gate 1 (with `:core:engine:jvmTest` added, because S touched `core/engine`): PASS on the first run** —
+  `BUILD SUCCESSFUL in 10m 58s`, 263/263 tasks executed, exit 0, **4 101 tests, 0 failures, 2 documented POSIX-only skips**
+  (summed from JUnit XML: swarm 191, engine 175, radio 273, chat 730, server 664, desktop 259, messaging 382, network 339,
+  enterprise 276, common 19, security 174, persistence 85, transfer 141, discovery 106, theme 58, callui 103,
+  hub-protocol 126). No relay flake this time.
+- **Expanded gate 2: PASS** — `BUILD SUCCESSFUL in 9m 15s`, 218/218 tasks executed, exit 0, **2 110 tests, 0 failures,
+  0 skips** (common 144, security 265, messaging 688, persistence 53, enterprise 165, chat 705, app 90), unchanged from the
+  R run because S adds no suite to gate 2.
 
 ### Remaining / next AI
 Record both merged-tree gate results and push. **Nothing swarm-side is device-verified**: throughput, fairness rotation cost,
