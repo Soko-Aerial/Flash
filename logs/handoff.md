@@ -1,6 +1,16 @@
 # Current Handoff
 
-> **2026-11-02 — BOTH expanded K gates are green on `bec221d2`; desktop E is next.** Gate 1 (15 JVM suites + three
+> **2026-11-02 — Desktop E is MERGED; both expanded gates are running on `c5d825f9`.** Reviewed tip `b2b61b92` merged
+> into `dev` with `--no-ff` as **`c5d825f9`** (clean, 23 files, 1 984 insertions / 352 deletions) once both expanded
+> kernel gates were green on `bec221d2`. Recorded as `2e4ab027` first. Kernel-only gate numbers (gate 1 3 597 tests /
+> 0 failures / 2 documented POSIX skips; gate 2 2 110 tests / 0 failures / 0 skips) belong to `bec221d2` and **must not
+> be quoted for the merged tree**. Gate 1 of the merged tree is running (`logs/wave4-ek-gate1-2026-11-02.log`), gate 2
+> follows. **Next: record both merged-tree gate results; a new failure belongs to E's merge and needs its own ERROR
+> before anything else merges.** No push, deploy, device session, presence or Wave 5 work. Exact evidence: the top
+> `logs/progress.md` entry. Older banners below are historical.
+
+> **2026-11-02 — BOTH expanded K gates were green on `bec221d2` (superseded by the banner above).** Gate 1 (15 JVM
+> suites + three
 > compile tasks) `BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks, exit 0, **3 597 tests, 0 failures, 2 documented POSIX
 > skips**. Gate 2 (six `testAndroidHostTest` suites + `:app:testDebugUnitTest`) `BUILD SUCCESSFUL in 10m 47s`,
 > 218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** (`:core:messaging` 688, `:core:security` 265,

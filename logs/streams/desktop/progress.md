@@ -1,5 +1,13 @@
 # Stream E (Desktop) — Progress Log
 
+## 2026-11-02 — Merged into `dev` as `c5d825f9`
+
+Repaired tip `b2b61b92` merged with `--no-ff` after both expanded kernel gates passed on `bec221d2`; the merge was
+clean and touched 23 files (1 984 insertions, 352 deletions) with no conflicts. Both expanded plan section 6.3 gates
+are being run forced on the merged tree; their results are recorded in the top-level `logs/progress.md` and
+`logs/handoff.md`, not here. `PERF-E01..E08` remain TODO, every performance headline is NOT MEASURED, and no
+physical/Windows visual-toggle check has been performed. No push, deployment, phone access, presence or Wave 5 work.
+
 ## 2026-11-01 — Integration review and repaired desktop verification
 
 ### Worked on / changed

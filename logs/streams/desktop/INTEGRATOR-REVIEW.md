@@ -1,8 +1,10 @@
 # Integrator review — Desktop (E)
 
 Reviewed 2026-11-01 against actual base `baf77753`, delivered tip `00a7a51f`, code, callers and tests. Independent read-only
-review completed; caller inspection and repairs completed in integration session. Targeted-tested, not yet committed/
-merged at this entry. No measured performance or physical-device claim.
+review completed; caller inspection and repairs completed in integration session. Repairs were committed as `b2b61b92`
+and **merged into `dev` on 2026-11-02 as `c5d825f9`** (`--no-ff`, no conflicts) once both expanded kernel gates passed.
+Both expanded section 6.3 gates are re-run on the merged tree; their numbers live in the top-level `logs/progress.md`.
+No measured performance or physical-device claim.
 
 ## Dispositions
 

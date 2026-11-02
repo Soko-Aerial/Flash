@@ -1,5 +1,13 @@
 # Stream E (Desktop) — Handoff Document
 
+## Integration status — 2026-11-02
+- **Merged:** repaired tip `b2b61b92` merged into `dev` with `--no-ff` as **`c5d825f9`**, after both expanded kernel
+  gates passed on `bec221d2`. Clean merge, no conflicts.
+- **Gate status:** both expanded plan section 6.3 gates are being run forced on `c5d825f9`; their results go to the
+  top-level `logs/progress.md` / `logs/handoff.md`. Nothing here overrides those numbers.
+- **Limits unchanged:** PERF-E01..E08 remain TODO, no measured performance or physical-device claim, desktop ECO
+  consumers partial, hub presence poll ungated.
+
 ## Integration stopping point — 2026-11-01
 - **Branch/worktree:** `agent/opt-desktop`, `E:/FlashWork/opt-desktop`; actual merge-base `baf77753`, delivered tip `00a7a51f`.
 - **Phase:** review complete; repaired code targeted-tested, repairs and corrected fragments still uncommitted/unmerged.
