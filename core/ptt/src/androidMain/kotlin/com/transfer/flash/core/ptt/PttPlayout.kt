@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -27,7 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class PttPlayout(
     private val sampleRateHz: Int,
     private val packetMs: Int,
-    targetDepthMs: Long = PttPlayoutCore.DEFAULT_TARGET_DEPTH_MS,
+    targetDepthMs: Long = PttJitterDepth.targetDepthMs(),
     private val onAmplitude: (Float) -> Unit = {},
     private val onPlayoutLost: () -> Unit = {},
 ) : PttPlayoutDevice {
