@@ -16190,6 +16190,42 @@ readers — none of which the current evidence distinguishes.
 **OPEN — 2 red / 1 green under the full gate on `c5d825f9`; PASS module-only on the same commit; PASS under the full gate
 on pre-E `bec221d2`. Frame count (8) and timeout (10 000 ms) unchanged; no product line reverted.**
 
+## ERROR-975 — `PttSessionEngineSessionTest`'s real-time 5 s wait failed once under the full gate and passes alone
+
+### Date / area / environment
+2026-11-02; `:core:ptt:jvmTest`, merged tree after stream C (`5e3a1822`), third expanded gate-1 attempt. Windows/JBR, 8 logical
+CPUs, the machine running the gate's own suites back to back.
+
+### Symptoms
+`PttSessionEngineSessionTest[jvm] > a press never sends the microphone to this device itself or to an untrusted peer[jvm]`
+failed with `java.lang.AssertionError: timed out waiting for: audio sent` (148 tests, 1 failed). The timed-out wait is the
+**positive** half of the test — that a press reaches a trusted peer — not the privacy assertions, and those were never
+reached.
+
+### Root cause (evidence, not certainty)
+The helper under test is real-time by construction:
+
+```kotlin
+withContext(Dispatchers.Default) { withTimeout(TIMEOUT_MS) { while (!condition()) delay(POLL_MS) } }
+```
+
+with `TIMEOUT_MS = 5_000` and `POLL_MS = 5`. It polls engine state from a real dispatcher while the engine's sender and
+capture loops run on their own dispatchers, so a GC pause or CPU starvation of a few seconds is enough. The same test passed
+in stream C's own branch gate (494 tests) and in **2 of 2** `:core:ptt:jvmTest` runs alone on the same merged tree
+(`BUILD SUCCESSFUL 36s` and `22s`). Two different outcomes on identical code with only machine load differing is what makes
+this load sensitivity rather than a defect.
+
+**Deliberately not "fixed" here:** raising `TIMEOUT_MS` or polling harder would hide the same fragility elsewhere, and the
+assertion itself (a press must reach a trusted peer) is exactly right. If this repeats, the honest fix is to drive the
+engine's own virtual clock in this test (as `runTest` already does for its other cases) instead of polling a real
+dispatcher — a testability change, not a timeout bump.
+
+### Related files / status
+`core/ptt/src/commonTest/kotlin/com/transfer/flash/core/ptt/PttSessionEngineSessionTest.kt` (`awaitUntil`, line ~92;
+the case at line 230), `logs/wave4-c-gate1-run3-2026-11-02.log`, `logs/wave4-c-ptt-repeat1.log`,
+`logs/wave4-c-ptt-repeat2.log`.
+**OPEN — 1 red under the full gate, 2 of 2 green alone on the same tree; nothing changed.**
+
 ## ERROR-974 — The router test fixture registered a session as *caught up* before starting its drain
 
 ### Date / area / environment
