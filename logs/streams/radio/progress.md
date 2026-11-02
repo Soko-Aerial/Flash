@@ -74,10 +74,14 @@ cmd /c "tools\flash-gradle.cmd :core:radio:jvmTest --rerun-tasks --no-build-cach
 
 cmd /c "tools\flash-gradle.cmd :core:radio:compileAndroidMain --console=plain"
   BUILD SUCCESSFUL (exit 0)
+
+cmd /c "tools\flash-gradle.cmd :core:radio:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain"
+  BUILD SUCCESSFUL in 4m 52s   (132 actionable tasks: 60 executed, 16 from cache, 56 up-to-date, exit 0)
+  35 suites, 273 tests, 0 failures, 0 errors, 0 skipped
 ```
 
-Test count went 259 -> 271 (12 new tests: 4 cadence, 5 table, 3 occupancy; plus 4 measurement tests that also assert
-behaviour). The `:core:radio` suite is what the integrator's gate 1 gains when this merges.
+Test count went 259 -> 273 (14 new tests: 4 cadence, 5 table, 3 occupancy, 4 measurement, 1 engine bound case;
+one existing test file gained a case). The `:core:radio` suite is what the integrator's gate 1 gains when this merges.
 
 ### Problems
 
