@@ -71,7 +71,7 @@ internal class FakePttAudio : PttAudioPlatform {
         packetMs: Int,
         onAmplitude: (Float) -> Unit,
         onPlayoutLost: () -> Unit,
-    ): PttPlayoutDevice = FakePlayout(sampleRateHz, packetMs, onPlayoutLost, playoutStarts, events)
+    ): PttPlayoutDevice = FakePlayout(sampleRateHz, packetMs, onPlayoutLost, playoutStarts, events, onAmplitude)
         .also { playouts.add(it) }
 }
 
@@ -122,8 +122,18 @@ internal class FakePlayout(
     private val onPlayoutLost: () -> Unit,
     private val startResult: Boolean,
     private val events: Recorder<String>,
+    private val onAmplitude: (Float) -> Unit = {},
 ) : PttPlayoutDevice {
     class Offered(val seq: Long, val captureTsMs: Long, val pcm: ByteArray)
+
+    /** Amplitude callbacks this device delivered, i.e. what the real playout does once per packet. */
+    @Volatile
+    var amplitudeCallbacks: Int = 0
+        private set
+
+    /** What the last callback carried — the real [PttPlayoutCore] would report the same from [snapshot]. */
+    @Volatile
+    private var lastAmplitude: Float = 0f
 
     @Volatile
     var started: Boolean = false
@@ -139,7 +149,7 @@ internal class FakePlayout(
     }
 
     override fun snapshot(): PttPlayoutSnapshot =
-        PttPlayoutSnapshot(readyTotal = 0L, concealedTotal = 0L, depthPackets = 0, amplitude01 = 0f)
+        PttPlayoutSnapshot(readyTotal = 0L, concealedTotal = 0L, depthPackets = 0, amplitude01 = lastAmplitude)
 
     override fun start(): Boolean {
         started = startResult
@@ -153,4 +163,11 @@ internal class FakePlayout(
     }
 
     fun lose() = onPlayoutLost()
+
+    /** Simulates the playout thread finishing one packet write. */
+    fun tick(amplitude: Float = 0.2f) {
+        amplitudeCallbacks++
+        lastAmplitude = amplitude
+        onAmplitude(amplitude)
+    }
 }
