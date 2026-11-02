@@ -941,7 +941,11 @@ flakiness** — the unmodified tree passes (2 red / 1 green on a byte-identical 
 `server/`/`core/` code, and the single candidate product fix (reverting E's `limitedParallelism(8)`) was tested, passed its
 gate, and was **still discarded** because the unmodified tree passed too. Nothing reverted, nothing weakened.
 `origin` already carries `dev` (`2d3920bd`) and local `dev` is 162 ahead/0 behind, so the push is a plain fast-forward.
-**Next: push `dev`, then start streams S (swarm) and R (radio) from the pushed tip.**
+**PUSHED 2026-11-02: `2d3920bd..7adcf4f5 dev -> dev`, upstream set, verified at 0 ahead / 0 behind after a fresh fetch.**
+**Streams S (swarm) and R (radio) are RUNNING** in `E:\FlashWork\opt-swarm` (`agent/opt-swarm`) and
+`E:\FlashWork\opt-radio` (`agent/opt-radio`), both based on the pushed `7adcf4f5`, using the §11.S / §11.R blocks. They
+commit only to their own branches and never merge or push; the integrator reviews and merges each, then reruns the
+expanded gates (gate 1 gains `:core:radio:jvmTest` when R merges, `:core:calling:jvmTest`/`:core:ptt:jvmTest` when C does).
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.

@@ -1,17 +1,27 @@
 # Current Handoff
 
-> **2026-11-02 — WAVE 4 IS INTEGRATED: both expanded gates are GREEN on the merged tree `c5d825f9`; the push of `dev` is
-> the next action.** Gate 1 passed on the third run (`BUILD SUCCESSFUL in 7m 3s`, 259/259 tasks, exit 0); gate 2 passed
-> (`BUILD SUCCESSFUL in 8m 53s`, 218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** —
+> **2026-11-02 — WAVE 4 IS PUSHED; STREAMS S (swarm) AND R (radio) ARE RUNNING.** `dev` = **`7adcf4f5`**, pushed to
+> `origin/dev` (`2d3920bd..7adcf4f5`, plain fast-forward, upstream now set), verified after a fresh fetch at `0 ahead /
+> 0 behind` with both refs resolving to `7adcf4f5212f5ad40a9a77bf4ba332784ab886b8`.
+> Both expanded §6.3 gates are **GREEN on the merged tree**: gate 1 on the third run (`BUILD SUCCESSFUL in 7m 3s`,
+> 259/259 tasks, exit 0) and gate 2 (`BUILD SUCCESSFUL in 8m 53s`, 218/218 tasks, **2 110 tests, 0 failures, 0 skips** —
 > messaging 688, chat 705, security 265, enterprise 165, common 144, app 90, persistence 53, summed from JUnit XML).
 > The two earlier gate-1 failures (ERROR-959 relay `ERR_EXPIRED` frame, ERROR-960 desktop PTT 0-of-8 frames) were
-> investigated with seven measured runs, not rerun until green: the **unmodified** tree passes, E changed no build input
-> and no `server/`/`core/` code, and the one candidate product change (reverting E's `limitedParallelism(8)`) was tested,
-> passed its gate, **and was still discarded** because the unmodified tree passed too. No product line was reverted,
-> nothing was weakened, and both ERRORs stay OPEN as gate flakiness with 2 red / 1 green on a byte-identical tree.
-> **Push status:** `origin` already carries `dev` (`2d3920bd`); local `dev` is 162 commits ahead / 0 behind, so the push is
-> a plain fast-forward with no force. **Next: push, then start streams S and R from the pushed tip.**
-> Exact evidence: top `logs/progress.md` entry, ERROR-959/960 in `logs/errors.md`. Older banners below are historical.
+> investigated across seven measured runs, not rerun until green: the **unmodified** tree passes, E changed no build input
+> and no `server/`/`core/` code, and the one candidate product change was tested, passed its gate, **and was still
+> discarded** because the unmodified tree also passed. Nothing reverted, nothing weakened; both ERRORs stay OPEN as gate
+> flakiness (2 red / 1 green on a byte-identical tree).
+> **Active now:** `E:\FlashWork\opt-swarm` (`agent/opt-swarm`) and `E:\FlashWork\opt-radio` (`agent/opt-radio`), both based
+> on the pushed `7adcf4f5`, running the plan's §11.S / §11.R blocks in parallel. Neither merges or pushes; the integrator
+> reviews and merges each, then reruns the expanded gates (gate 1 gains `:core:radio:jvmTest` when R merges).
+> Nothing here is device-verified. Exact evidence: top `logs/progress.md` entries, ERROR-959/960 in `logs/errors.md`.
+
+> **2026-11-02 — WAVE 4 IS INTEGRATED: both expanded gates are GREEN on the merged tree `c5d825f9` (superseded by the
+> banner above, which pushes it).** Gate 1 passed on the third run (`BUILD SUCCESSFUL in 7m 3s`, 259/259 tasks, exit 0);
+> gate 2 passed (`BUILD SUCCESSFUL in 8m 53s`, 218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** —
+> messaging 688, chat 705, security 265, enterprise 165, common 144, app 90, persistence 53, summed from JUnit XML).
+> **Push status then:** `origin` already carried `dev` (`2d3920bd`); local `dev` was 162 commits ahead / 0 behind, so the
+> push was a plain fast-forward with no force.
 
 > **2026-11-02 — Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running, NOTHING
 > PUSHED (superseded by the banner above).** On merged **`c5d825f9`** (E + K) gate 1 came back `BUILD FAILED in 8m 36s`
