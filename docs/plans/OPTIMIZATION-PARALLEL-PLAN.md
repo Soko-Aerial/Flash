@@ -190,11 +190,11 @@ commands below preserve the coverage added by Waves 2 and 3 and add desktop test
 actuals (K). Force every verification run; record the command, tested commit, XML counts/skips and exit status.
 
 ```text
-powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:network:jvmTest :core:discovery:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :core:enterprise:jvmTest :core:hub-protocol:jvmTest :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
+powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:jvmTest :core:security:jvmTest :core:persistence:jvmTest :core:messaging:jvmTest :core:transfer:jvmTest :core:swarm:jvmTest :core:engine:jvmTest :core:network:jvmTest :core:discovery:jvmTest :core:radio:jvmTest :core:calling:jvmTest :core:ptt:jvmTest :ui:chat:jvmTest :ui:theme:jvmTest :ui:callui:jvmTest :core:enterprise:jvmTest :core:hub-protocol:jvmTest :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
 ```
 
 ```text
-powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest :ui:chat:testAndroidHostTest :core:enterprise:testAndroidHostTest :app:testDebugUnitTest --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
+powershell.exe -NoProfile -File tools/flash-gradle.ps1 :core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:messaging:testAndroidHostTest :core:persistence:testAndroidHostTest :core:calling:testAndroidHostTest :ui:chat:testAndroidHostTest :core:enterprise:testAndroidHostTest :app:testDebugUnitTest --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain
 ```
 
 The second command exists because a `jvmTest`-only gate **never runs the data stream's main safety net**:
@@ -211,6 +211,30 @@ H's `:server:test`/`:core:enterprise:jvmTest`, N's `:core:discovery:jvmTest`/`:c
 not implemented by this integration. After a Room or server-migration merge, run `FlashMigrationsChainTest` +
 `FlashJvmMigrationsTest` (+ the server `MigratorTest`) **again on the merged result**: two individually green
 migrations can still collide. E and K change no schema.
+
+#### 6.3.2 Splitting command 1 on a loaded machine — allowed 2026-11-02, recorded at the owner's decision
+
+Command 1 may be run as **two forced invocations** instead of one when the machine cannot carry the monolithic run. The
+split is by task, never by coverage:
+
+```text
+A  :core:common :core:security :core:persistence :core:messaging :core:transfer :core:swarm :core:engine :core:network
+   :core:discovery :core:radio :core:calling :core:ptt :ui:chat :ui:theme :ui:callui :core:enterprise :core:hub-protocol
+   (all :jvmTest)                                              --continue --rerun-tasks --no-build-cache
+B  :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+                                                               --continue --rerun-tasks --no-build-cache
+```
+
+**Why:** finishing stream C, the monolithic command failed **four times in a row**, each time on a *different* real-time
+test in a *different* suite — the relay fixture race (ERROR-974, a genuine test-side race, since fixed), a PTT 5 s
+real-time wait (ERROR-975), the radio harness's own timing budget (`acked=1 lost=3 wallMs=5110`), a messaging mutation
+test and a swarm `concurrent finalizes` case. Every suite passed alone on the same tree. The failures were the first
+suites in the run, so the machine's state *within* one 13-minute invocation was the variable, not the code.
+
+**What this does not change:** every suite still runs, with `--rerun-tasks --no-build-cache`, and every task in the lists
+above is still executed. No assertion, timeout, skip or suite is touched. The only difference is that daemon/OS state is
+released between the two invocations. Both exit codes and both XML count sets must be recorded, exactly as for the single
+command, and both must be green before a push. If either red, the merge waits.
 
 #### 6.3.1 Baseline — measured 2026-10-30 on `dev` at `54ff4737`
 
