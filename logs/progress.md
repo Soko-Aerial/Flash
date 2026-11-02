@@ -1,5 +1,42 @@
 # Progress Log
 
+## 2026-11-02 - Wave 4 pushed to `origin/dev`; streams S (swarm) and R (radio) started in parallel
+
+### Worked on
+Pushed the integrated Wave 4 tree and opened the next two streams.
+
+### Changed
+- `git push -u origin dev`: **`2d3920bd..7adcf4f5 dev -> dev`**, upstream now set. Verified after a fresh fetch:
+  `git rev-list --left-right --count origin/dev...dev` = `0 0`, and both `git rev-parse` values equal `7adcf4f5`
+  (`7adcf4f5212f5ad40a9a77bf4ba332784ab886b8`). This was a plain fast-forward of an existing remote branch — no force, no
+  new branch, `origin/dev` was 162 commits behind.
+- Created both stream worktrees from the **pushed** tip, so neither can be based on an unpushed commit:
+  `E:\FlashWork\opt-swarm` on `agent/opt-swarm` and `E:\FlashWork\opt-radio` on `agent/opt-radio`, both at `7adcf4f5`.
+  `local.properties` copied into each; `keystore.properties` deliberately **not** copied (verified absent in both).
+- Started both streams as background agents using the plan's §11.S / §11.R kickoff blocks, with step 0 already performed by
+  the integrator and the base commit stated, so they do not create a second worktree or start from the wrong tree.
+- Plan §9 status table updated: E's row records the merged-tree gates, and S/R are marked **RUNNING 2026-11-02** with their
+  starting commit. The §6.3 reminder is repeated on R's row: `:core:radio:jvmTest` joins gate 1 when R merges.
+
+### Options given to both streams (so they do not repeat the integrator's mistakes)
+Each was told: build only through `tools\flash-gradle.cmd` from its own worktree root, exit 75 means wait (never bypass); the
+machine is saturated, so a load-looking failure gets a class-alone rerun recorded rather than a timeout bump; numeric claims
+need a forced run with the command line in the log, else **NOT MEASURED**; write only to `logs/streams/<stream>/` and never
+to the canonical logs, `docs/decisions.md` or `docs/testing/TEST-BACKLOG.md`; commit only to their own branch, never merge
+into `dev`, never push. Reservations: S = ADR 320-329 / ERROR 961-970 / EXP 125-129 / PERF-S*; R = ADR 330-339 /
+ERROR 971-980 / EXP 130-134 / PERF-R*.
+
+### Verification
+- Push verified against the remote (above), not assumed from the command's exit code — PowerShell reports git's stderr as
+  `NativeCommandError` and exits 1 on a *successful* push, which is why the independent `rev-list` / `rev-parse` check was
+  run.
+- Worktrees verified in `git worktree list` and by `git log --oneline -1` (both `7adcf4f5`).
+
+### Remaining / next AI
+S and R run independently; the integrator reviews and merges each with its own `--no-ff` merge, then reruns the expanded
+gates on the merged tree (adding `:core:radio:jvmTest` for R). Every PERF check stays TODO; no deploy, no device session,
+no presence work, no Wave 5. Nothing is device-verified by this session.
+
 ## 2026-11-02 - Merged-tree gate 1 GREEN on the third run; the two failures are gate flakiness, not E's merge
 
 ### Worked on
