@@ -4,6 +4,8 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -19,7 +21,11 @@ internal class BlockingStreamReader(
     private val input: InputStream,
     private val threadName: String = "rfcomm-rx",
 ) {
-    private val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+    // OPT-O26-03 / ADR-331: bounded. The old Channel.UNLIMITED let a quiet consumer and a busy radio grow the
+    // queue without limit (one 1 KiB chunk per pump read). A full channel now blocks the pump thread, which is
+    // what makes RFCOMM flow control push back on the radio; no byte is dropped, because a dropped byte would
+    // corrupt a frame.
+    private val chunks = Channel<ByteArray>(CHUNK_CAPACITY)
     private val started = AtomicBoolean(false)
     private var leftover: ByteArray? = null
     private var leftoverOffset = 0
@@ -64,16 +70,25 @@ internal class BlockingStreamReader(
                 while (true) {
                     val n = input.read(scratch)
                     if (n < 0) break
-                    if (n > 0) chunks.trySend(scratch.copyOf(n))
+                    // Hand the chunk over without dropping it: `runBlocking` parks this pump thread until the
+                    // consumer has room, which is exactly the backpressure a bounded queue is for.
+                    if (n > 0) runBlocking { chunks.send(scratch.copyOf(n)) }
                 }
                 chunks.close()
+            } catch (_: ClosedSendChannelException) {
+                // The reader was abandoned (link closed); the pump is done.
             } catch (e: IOException) {
                 chunks.close(e)
+            } catch (_: InterruptedException) {
+                chunks.close()
             }
         }, threadName).apply { isDaemon = true }.start()
     }
 
     private companion object {
         const val PUMP_BUFFER_BYTES = 1024
+
+        /** Chunks the pump may run ahead of the consumer: 32 x 1 KiB, i.e. up to 32 reads of the driver's buffer. */
+        const val CHUNK_CAPACITY = 32
     }
 }
