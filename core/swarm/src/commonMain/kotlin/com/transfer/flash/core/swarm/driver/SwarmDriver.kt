@@ -485,16 +485,24 @@ public class SwarmDriver(
                 scope.launch(workerDispatcher) {
                     val record = contentRecords[cmd.groupId to cmd.root]
                     val bytes = readPieceBytes(record, cmd.groupId, cmd.root, cmd.index)
-                    val expectedHash = cachedManifests[cmd.root]?.pieceHashes?.getOrNull(cmd.index)
-                    val valid = bytes != null && (expectedHash == null || Sha256.digest(bytes).contentEquals(expectedHash))
-                    val status = if (valid) PieceReadStatus.OK else PieceReadStatus.GONE
+                    // OPT-O08-02: the piece was hash-verified when it arrived and is marked verified in the content's
+                    // bitfield (the engine only asks for a piece it holds). Re-hashing every outgoing piece meant
+                    // hashing 12 GB of a 4 GB file served to three members. What is still checked is the whole-file
+                    // identity, rate-limited: a source that was truncated or replaced stops serving, which is what
+                    // ERROR-109's signed LOST statement needs. A same-size edit of the origin's file is now caught by
+                    // the *receiving* peer's per-piece hash instead of here.
+                    val status = if (bytes != null && sourceStillMatches(record, cmd.groupId, cmd.root)) {
+                        PieceReadStatus.OK
+                    } else {
+                        PieceReadStatus.GONE
+                    }
                     eventChannel.send(
                         SwarmEvent.PieceRead(
                             peerId = cmd.forPeerId,
                             groupId = cmd.groupId,
                             root = cmd.root,
                             index = cmd.index,
-                            bytes = if (valid) bytes else null,
+                            bytes = if (status == PieceReadStatus.OK) bytes else null,
                             status = status,
                             nowMs = now(),
                         )
@@ -653,8 +661,7 @@ public class SwarmDriver(
         groupId: String,
         root: ContentRoot,
         index: Int,
-    ): ByteArray? {
-        val pieceSize = record?.pieceSize ?: PieceMath.MIN_PIECE_SIZE
+    ): ByteArray? {        val pieceSize = record?.pieceSize ?: PieceMath.MIN_PIECE_SIZE
         val totalSize = record?.totalSize ?: (pieceSize.toLong() * (index + 1))
         val offset = PieceMath.pieceOffset(index, pieceSize)
         val len = PieceMath.pieceLength(index, totalSize, pieceSize)
@@ -701,6 +708,36 @@ public class SwarmDriver(
         }
 
         return null
+    }
+
+    /** When the served file's whole-file identity was last compared with the announced size (OPT-O08-02). */
+    private val lastSourceCheckMs = SyncMap<String, Long>()
+
+    /**
+     * Cheap stand-in for the per-piece hash the serve path used to compute (OPT-O08-02): the file we serve from must
+     * still have the size that was announced. A deleted or truncated source already fails the read; this catches a
+     * replaced one for the price of one `stat` every [SOURCE_CHECK_INTERVAL_MS] instead of a SHA-256 over every piece.
+     * An unknown identity (a provider that reports no size) never fails a serve.
+     */
+    private suspend fun sourceStillMatches(
+        record: SwarmContentRecord?,
+        groupId: String,
+        root: ContentRoot,
+    ): Boolean {
+        if (record == null) return true
+        val uri = when {
+            record.role == SwarmRole.ORIGIN && record.sourceUri != null -> record.sourceUri
+            record.finalPath != null -> record.finalPath
+            // Partial storage is ours: its length was set by us and pieces are only written after a hash check.
+            else -> return true
+        }
+        val key = "$groupId:${root.hex}"
+        val nowMs = now()
+        lastSourceCheckMs[key]?.let { if (nowMs - it < SOURCE_CHECK_INTERVAL_MS) return true }
+        lastSourceCheckMs[key] = nowMs
+        val handle = openSourceHandles[uri] ?: getOrCreateSourceHandle(uri) ?: return false
+        val identity = runCatching { handle.identity() }.getOrNull() ?: return true
+        return identity.sizeBytes == record.totalSize
     }
 
     private fun updateTransferRow(cmd: SwarmCommand.PublishRow) {
@@ -983,3 +1020,6 @@ public class SwarmDriver(
 }
 
 private const val SPEED_SAMPLE_MIN_MS = 700L
+
+/** How often a serve compares the source file's size with the announced size (OPT-O08-02). */
+private const val SOURCE_CHECK_INTERVAL_MS = 2_000L
