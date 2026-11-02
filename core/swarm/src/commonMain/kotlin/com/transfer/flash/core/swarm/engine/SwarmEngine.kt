@@ -456,6 +456,7 @@ public class SwarmEngine(
             is SwarmEvent.Tick -> {
                 transferScheduler.checkTimeouts(contents.values, peers, event.nowMs)
                 transferScheduler.flushPendingHaves(contents.values, peers, ::isPeerAllowed, event.nowMs, commands)
+                pruneTombstones(event.nowMs)
 
                 for (content in contents.values) {
                     if (content.state != SwarmLifecycleState.ACTIVE) {
@@ -714,6 +715,21 @@ public class SwarmEngine(
         return tombstones.values.any { it.groupId == groupId && it.root == root }
     }
 
+    /**
+     * Drops tombstones that are past their retention (OPT-O08-08, OPT-O02-05). The map is loaded from storage at start
+     * and was never pruned while the process ran, so every Summary carried the whole history — 64 of them make a Summary
+     * too large to encode at all. The window matches the persisted row's (37 days from the cancellation); the database
+     * rows are purged by the host's startup sweep, which this does not replace.
+     */
+    private fun pruneTombstones(nowMs: Long) {
+        if (tombstones.isEmpty()) return
+        val iterator = tombstones.entries.iterator()
+        while (iterator.hasNext()) {
+            val tb = iterator.next().value
+            if (tb.cancelledAtMs > 0L && nowMs - tb.cancelledAtMs > TOMBSTONE_RETENTION_MS) iterator.remove()
+        }
+    }
+
     private fun recheckAllContents(nowMs: Long, commands: MutableList<SwarmCommand>) {
         for (content in contents.values) {
             if (content.state == SwarmLifecycleState.ACTIVE) {
@@ -875,3 +891,6 @@ public class SwarmEngine(
 
 private const val RECIPIENT_RATE_STALE_MS = 4_000L
 private const val RECIPIENT_REPUBLISH_MS = 1_000L
+
+/** How long a tombstone is kept in memory — the same 37-day window `RoomSwarmStateStore` persists (O08-08). */
+private const val TOMBSTONE_RETENTION_MS = 37L * 24 * 60 * 60 * 1000L

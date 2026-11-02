@@ -391,6 +391,11 @@ public class SwarmDriver(
                     return
                 }
                 val validTombstones = frame.tombstones.filter { tb ->
+                    // OPT-O08-08: a tombstone this device already accepted is not verified again — the Ed25519 check
+                    // cost 0.5 ms each and every reconnect re-sent the whole history. The key is only claimed after a
+                    // successful signature check, so a forged one cannot shadow the real cancellation.
+                    val key = tb.groupId + "/" + tb.messageId
+                    if (verifiedTombstoneKeys.contains(key)) return@filter false
                     val authorKey = groupContext.authorKey(tb.groupId, tb.originId)
                     val stmt = SwarmStatement.cancel(
                         groupId = tb.groupId,
@@ -400,8 +405,11 @@ public class SwarmDriver(
                         reason = tb.reason.name,
                         cancelledAtMs = tb.cancelledAtMs,
                     )
-                    authorKey != null && groupContext.verifyStatement(authorKey, stmt, tb.signature)
+                    val ok = authorKey != null && groupContext.verifyStatement(authorKey, stmt, tb.signature)
+                    if (ok) verifiedTombstoneKeys.add(key)
+                    ok
                 }
+                pruneVerifiedTombstoneKeys()
                 eventChannel.send(SwarmEvent.SummaryArrived(peerId, frame.copy(tombstones = validTombstones), now()))
             }
             is SwarmFrame.ManifestGet -> {
@@ -776,6 +784,15 @@ public class SwarmDriver(
         else -> cmd::class.simpleName ?: "command"
     }
 
+    /** Tombstones this device already verified, keyed `groupId/messageId`; bounded, memory only (OPT-O08-08). */
+    private val verifiedTombstoneKeys = SyncSet<String>()
+
+    private fun pruneVerifiedTombstoneKeys() {
+        if (verifiedTombstoneKeys.toList().size <= VERIFIED_TOMBSTONE_CAP) return
+        // Coarse on purpose: the worst case of forgetting is one redundant signature check.
+        verifiedTombstoneKeys.clear()
+    }
+
     /** When the served file's whole-file identity was last compared with the announced size (OPT-O08-02). */
     private val lastSourceCheckMs = SyncMap<String, Long>()
     /**
@@ -1107,6 +1124,9 @@ private const val SOURCE_CHECK_INTERVAL_MS = 2_000L
 
 /** Most persistence commands one batch may take off the queue before it writes (OPT-O08-04). */
 private const val PERSIST_BATCH_MAX = 256
+
+/** How many verified tombstone keys are remembered before the set is dropped wholesale (OPT-O08-08). */
+private const val VERIFIED_TOMBSTONE_CAP = 1024
 
 /** Tick period while at least one transfer is live (OPT-O08-05). */
 internal const val TICK_ACTIVE_MS = 250L
