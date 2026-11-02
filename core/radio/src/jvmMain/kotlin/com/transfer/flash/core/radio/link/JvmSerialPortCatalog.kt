@@ -73,7 +73,10 @@ private class JvmSerialLink(private val port: SerialPort, override val descripti
             if (closed) throw LinkException("link closed")
             var off = 0
             while (off < data.size) {
-                val n = port.writeBytes(data.copyOfRange(off, data.size), data.size - off)
+                // OPT-O26-04: jSerialComm's writeBytes(buffer, bytesToWrite, offset) takes an offset, so the old
+                // `data.copyOfRange(off, data.size)` (a full duplicate of the outgoing frame on every iteration) is
+                // gone. Callers keep ownership of `data`.
+                val n = port.writeBytes(data, data.size - off, off)
                 if (n < 0) throw LinkException("write failed on $description (error code ${port.lastErrorCode})")
                 if (n == 0) throw LinkException("write timed out on $description")
                 off += n

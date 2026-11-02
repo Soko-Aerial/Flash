@@ -775,4 +775,32 @@ class RadioChatEngineTest {
 
         FlashLog.installSink(FlashLogSink { _, _, _, _ -> })
     }
+
+    @Test
+    fun perfRO26_03_unacknowledgedSendsKeepTheAckTableBounded() = runTest {
+        // OPT-O26-03 / ADR-331: every ACK is lost (lossRate = 1.0), which is the field case the audit described, so
+        // nothing is ever removed by an acknowledgement. 300 sends must still leave a bounded table, and every send
+        // must still have been transmitted (the bound must not turn into a refusal).
+        val airChannel = FakeAirChannel(lossRate = 1.0)
+        air = airChannel
+
+        val a = buildStation("station-a", backgroundScope, airChannel)
+        rigA = a
+        a.pairingAdapter.registerPeer(a.session, "station-b")
+        a.driver.start()
+        withTimeout(3000) {
+            while (!a.engine.isConnected) delay(20)
+        }
+
+        repeat(300) { n ->
+            val outcome = a.engine.sendText("station-b", "msg-$n", "text number $n", sentAtMs = n.toLong())
+            assertIs<RadioChatSendOutcome.SentWaitingAck>(outcome, "send $n must still be transmitted")
+        }
+
+        assertEquals(
+            PendingAckTable.MAX_ENTRIES,
+            a.engine.pendingAckCount,
+            "300 unacknowledged sends must be capped, not accumulated",
+        )
+    }
 }

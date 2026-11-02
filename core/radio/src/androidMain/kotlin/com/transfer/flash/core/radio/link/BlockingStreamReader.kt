@@ -4,6 +4,8 @@ import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedSendChannelException
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -19,8 +21,16 @@ internal class BlockingStreamReader(
     private val input: InputStream,
     private val threadName: String = "rfcomm-rx",
 ) {
-    private val chunks = Channel<ByteArray>(Channel.UNLIMITED)
+    // OPT-O26-03 / ADR-331: bounded. The old Channel.UNLIMITED let a quiet consumer and a busy radio grow the
+    // queue without limit (one 1 KiB chunk per pump read). A full channel now blocks the pump thread, which is
+    // what makes RFCOMM flow control push back on the radio; no byte is dropped, because a dropped byte would
+    // corrupt a frame.
+    private val chunks = Channel<ByteArray>(CHUNK_CAPACITY)
     private val started = AtomicBoolean(false)
+
+    /** The pump thread, so [close] can interrupt it (integrator review repair 2026-11-02, ERROR-973). */
+    @Volatile
+    private var pump: Thread? = null
     private var leftover: ByteArray? = null
     private var leftoverOffset = 0
 
@@ -44,6 +54,24 @@ internal class BlockingStreamReader(
         return drain(chunk, buffer)
     }
 
+    /**
+     * Ends the reader: a pending [read] returns -1 and a pump parked on a full chunk queue is released.
+     *
+     * Needed because the bounded channel is what can park the pump (OPT-O26-03): closing the *socket* wakes a pump
+     * blocked in `InputStream.read`, but not one blocked handing a chunk over, so without this a link that is closed
+     * while the consumer has stopped would leave its pump thread waiting for ever. Idempotent.
+     *
+     * Integrator review repair 2026-11-02: closing the channel alone was not enough in the full host suite (the pump
+     * stayed inside `runBlocking`'s event loop past a 5 s deadline, 3 of 3 runs; ERROR-973). Interrupting the pump as
+     * well makes the release deterministic, and the pump already handles [InterruptedException] below. A thread blocked
+     * in `InputStream.read` also gets `InterruptedIOException`, which the `IOException` handler already closes the
+     * channel with; `RfcommLink.read` still answers -1 first because it checks its own `closed` flag.
+     */
+    fun close() {
+        chunks.close()
+        pump?.interrupt()
+    }
+
     private fun drain(source: ByteArray, buffer: ByteArray): Int {
         val n = minOf(source.size - leftoverOffset, buffer.size)
         System.arraycopy(source, leftoverOffset, buffer, 0, n)
@@ -58,22 +86,33 @@ internal class BlockingStreamReader(
     }
 
     private fun startPump() {
-        Thread({
+        val thread = Thread({
             val scratch = ByteArray(PUMP_BUFFER_BYTES)
             try {
                 while (true) {
                     val n = input.read(scratch)
                     if (n < 0) break
-                    if (n > 0) chunks.trySend(scratch.copyOf(n))
+                    // Hand the chunk over without dropping it: `runBlocking` parks this pump thread until the
+                    // consumer has room, which is exactly the backpressure a bounded queue is for.
+                    if (n > 0) runBlocking { chunks.send(scratch.copyOf(n)) }
                 }
                 chunks.close()
+            } catch (_: ClosedSendChannelException) {
+                // The reader was abandoned (link closed); the pump is done.
             } catch (e: IOException) {
                 chunks.close(e)
+            } catch (_: InterruptedException) {
+                chunks.close()
             }
-        }, threadName).apply { isDaemon = true }.start()
+        }, threadName).apply { isDaemon = true }
+        pump = thread
+        thread.start()
     }
 
     private companion object {
         const val PUMP_BUFFER_BYTES = 1024
+
+        /** Chunks the pump may run ahead of the consumer: 32 x 1 KiB, i.e. up to 32 reads of the driver's buffer. */
+        const val CHUNK_CAPACITY = 32
     }
 }
