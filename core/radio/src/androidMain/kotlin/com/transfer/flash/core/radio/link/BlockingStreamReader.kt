@@ -27,6 +27,10 @@ internal class BlockingStreamReader(
     // corrupt a frame.
     private val chunks = Channel<ByteArray>(CHUNK_CAPACITY)
     private val started = AtomicBoolean(false)
+
+    /** The pump thread, so [close] can interrupt it (integrator review repair 2026-11-02, ERROR-973). */
+    @Volatile
+    private var pump: Thread? = null
     private var leftover: ByteArray? = null
     private var leftoverOffset = 0
 
@@ -56,9 +60,16 @@ internal class BlockingStreamReader(
      * Needed because the bounded channel is what can park the pump (OPT-O26-03): closing the *socket* wakes a pump
      * blocked in `InputStream.read`, but not one blocked handing a chunk over, so without this a link that is closed
      * while the consumer has stopped would leave its pump thread waiting for ever. Idempotent.
+     *
+     * Integrator review repair 2026-11-02: closing the channel alone was not enough in the full host suite (the pump
+     * stayed inside `runBlocking`'s event loop past a 5 s deadline, 3 of 3 runs; ERROR-973). Interrupting the pump as
+     * well makes the release deterministic, and the pump already handles [InterruptedException] below. A thread blocked
+     * in `InputStream.read` also gets `InterruptedIOException`, which the `IOException` handler already closes the
+     * channel with; `RfcommLink.read` still answers -1 first because it checks its own `closed` flag.
      */
     fun close() {
         chunks.close()
+        pump?.interrupt()
     }
 
     private fun drain(source: ByteArray, buffer: ByteArray): Int {
@@ -75,7 +86,7 @@ internal class BlockingStreamReader(
     }
 
     private fun startPump() {
-        Thread({
+        val thread = Thread({
             val scratch = ByteArray(PUMP_BUFFER_BYTES)
             try {
                 while (true) {
@@ -93,7 +104,9 @@ internal class BlockingStreamReader(
             } catch (_: InterruptedException) {
                 chunks.close()
             }
-        }, threadName).apply { isDaemon = true }.start()
+        }, threadName).apply { isDaemon = true }
+        pump = thread
+        thread.start()
     }
 
     private companion object {
