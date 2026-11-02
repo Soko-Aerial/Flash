@@ -209,3 +209,31 @@ person's "do not serve" survives a CRITICAL-then-NONE cycle.
 ### Measured
 No synthetic temperature was run and no CPU was measured: the states are asserted, the *device* effect is
 **NOT MEASURED** (PERF-S01 needs a phone under load).
+## 2026-11-02 — OPT-O08-08 / OPT-O02-05: tombstones are bounded, and a known one is not re-verified
+
+### Worked on
+Three defects in one map. (1) `SwarmEngine.tombstones` is loaded from storage at start and was **never pruned** while the
+process ran (OPT-O02-05). (2) Every `Summary` carried the group's whole cancellation history, and
+`SwarmFrameCodec` refuses a Summary with more than **64** tombstones — the audit said 256, the code says 64, so a group
+that cancelled 65 files could not send a Summary at all and members stopped learning who holds what. (3) Every received
+Summary re-verified each tombstone with Ed25519 (~0.5 ms) even when this device had already accepted and persisted it.
+
+### Changed
+- `SwarmEngine.pruneTombstones` runs on the tick and drops tombstones older than **37 days** from the cancellation —
+  the same window `RoomSwarmStateStore` persists. The database rows are still purged by the host's startup sweep.
+- `PeerHandler.sendSummary` caps the tombstones it carries at `SwarmFrameCodec.MAX_SUMMARY_TOMBSTONES` and keeps the
+  **newest** ones, so the frame can always be encoded.
+- `SwarmDriver` remembers the `groupId/messageId` keys it has verified (bounded at 1,024, memory only) and skips the
+  signature check for a repeat; the key is claimed only **after** a successful verification, so a forged frame cannot
+  shadow the real cancellation.
+
+### Verification
+`SwarmTombstoneRetentionTest`: 192 restored tombstones produce a Summary of exactly 64 that still encodes and keeps
+`m0` (the newest); a tick drops 40-day-old ones and keeps yesterday's; a two-day-old cancellation survives a tick.
+`SwarmDriverTombstoneVerifyTest`: the same Summary twice verifies 3 then **0** signatures; a frame with one new
+tombstone verifies exactly 1 more.
+`:core:swarm:jvmTest` 178 tests, 0 failures.
+
+### Measured
+Deterministic: Ed25519 verifications per repeated Summary of N known tombstones: N -> 0 (test counter). Memory: the map is
+now bounded by the retention window instead of the process lifetime. CPU on a device: **NOT MEASURED**.
