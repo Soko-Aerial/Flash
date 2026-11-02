@@ -237,3 +237,33 @@ tombstone verifies exactly 1 more.
 ### Measured
 Deterministic: Ed25519 verifications per repeated Summary of N known tombstones: N -> 0 (test counter). Memory: the map is
 now bounded by the retention window instead of the process lifetime. CPU on a device: **NOT MEASURED**.
+## 2026-11-02 — OPT-O02-04: the unbounded swarm queues
+
+### Worked on
+`SwarmDriver` used `Channel.UNLIMITED` in three places. The worst is one ordered **outbound queue per peer**: a
+`Piece` frame carries up to a megabyte, and the engine releases a peer's in-flight bytes when the *read* completes, not
+when the socket accepts the bytes, so a stalled link could hold an unbounded number of megabyte frames per peer with
+none of the transfer's own limits applying.
+
+### Changed
+- New `driver/SwarmSendQueue.kt` — a per-peer queue bounded at 16 frames with an explicit drop rule: a **piece** frame
+  may be dropped (the requester's 5 s timeout and strike book re-ask for it, possibly from another member), a **control**
+  frame (HAVE, REQUEST, UNREQUEST, REJECT, CANCEL, CANCEL_ACK, SOURCE_STATUS, SUMMARY, MANIFEST_*) never is — it waits
+  for room in a background coroutine. A lost CANCEL is a cancelled file that keeps downloading, so that path is not
+  weakened for speed. Counters `droppedPieces`/`deferredControls`.
+- `eventChannel` bound to **32** events (twice the engine's in-flight request count at 1 MiB pieces, so normal
+  operation never waits); the host's per-peer inbox workers already suspend on `send` and their own buffer drops
+  frames. Environment setters go through `post()`: trySend, and on a full queue a coroutine delivers it instead of
+  losing a state change.
+- `persistChannel` bound to **64**; the actor now *suspends* (`persistChannel.send`) instead of silently dropping a
+  durability write — `executeCommand` became `suspend`.
+
+### Verification
+`SwarmSendQueueTest`: with capacity 2 and a socket that blocks, three piece frames collapse to two queued + **one
+dropped**, while a CANCEL and a REQUEST offered into the full queue are both delivered (`droppedPieces=1`,
+`deferredControls=2`); a second test proves FIFO order across 12 frames.
+`:core:swarm:jvmTest` 180 tests, 0 failures.
+
+### Measured
+Bound, not a measurement: outbound memory per peer is capped at 16 frames (≈16 MiB of 1 MiB pieces) instead of
+unbounded. Heap on a device under a stalled peer: **NOT MEASURED**.
