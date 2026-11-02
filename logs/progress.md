@@ -44,13 +44,29 @@ before that. The stream was right not to bump the version silently.
 - One unguarded edge noted, not patched: `onSetEnabled(true)` after `onStop()` would start a disposed source — the Android
   implementation has the same edge, so the fork mirrors the platform; unreachable through the app's call path.
 
+### The gate was blocked by a genuine race — in the test fixture (ERROR-974)
+The merged-tree gate failed **three times** `:server:test`, always with a live message overtaking older mailbox rows
+(`expected:<QUEUED> but was:<DELIVERED>`, then `[m0002, m0000, m0001, …]`, then `[m0008, m0000…m0007, …]`). The server was
+untouched (`git diff … -- server core/common` empty), and the failure survived a class-alone rerun, so it was not a CI
+flake.
+
+**Root cause:** production marks a connecting session `draining = true` **before** `register(...)`
+(`RelayFrameRouter.kt`), so nothing live can overtake an unreplayed mailbox. `RelayFrameRouterTest.Rig.connect` registered
+first and called `requestDrain` afterwards, leaving exactly that window open for the test's concurrent sender. The fix is
+test-only: set `draining = true` before `register` when starting with a drain. **No assertion, timeout or case was changed.**
+Result: **3 of 3 green, 41 tests, 0 failures**, after 3 of 3 red before it.
+
+This also retires a long-standing note: the hub-files P1 record called
+`messagesSentWhileTheRecipientConnectsAreAllDeliveredInOrderExactlyOnce` "one documented load flake … green when rerun
+alone". It was never a product flake and never load-specific — the fixture had a window that a busy machine widened.
+
 ### Verification
 - Branch tip `38a81158`, forced: `:core:calling:jvmTest` + `:core:ptt:jvmTest` + `:ui:callui:jvmTest` = **494 tests,
   0 failures**; `:core:calling:testAndroidHostTest` **396/0**; `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`
   green (`BUILD SUCCESSFUL in 9m 1s`, 138/138 tasks).
-- Expanded gates are running on the merged tree with **`:core:calling:jvmTest` and `:core:ptt:jvmTest` added to gate 1**
-  (plan §6.3) and **`:core:calling:testAndroidHostTest` added to gate 2**, because C touched `core/calling/commonMain`:
-  `logs/wave4-c-gate1-2026-11-02.log`.
+- Expanded gate 1 with **`:core:calling:jvmTest` and `:core:ptt:jvmTest` added** (plan §6.3) and gate 2 with
+  **`:core:calling:testAndroidHostTest` added**, because C touched `core/calling/commonMain`. Gate 1 is running for the third
+  time after ERROR-974's fix (`logs/wave4-c-gate1-run3-2026-11-02.log`).
 
 ### Remaining / next AI
 Record both merged-tree gate results and push. **Nothing call-side is device-verified.** `PERF-C01` (nine steps: camera LED
