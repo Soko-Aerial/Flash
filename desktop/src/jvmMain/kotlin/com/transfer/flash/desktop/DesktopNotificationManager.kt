@@ -15,6 +15,7 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 /**
@@ -74,12 +75,28 @@ public class DesktopNotificationManager(
         engine.onGroupOfferRefused = { _, groupName, message -> handleGroupOfferRefused(groupName, message) }
 
         // Observe transfers when ready
+        // OPT-O19-02: Filter activeTransfers emissions with distinctUntilChanged on lifecycle/notification fields.
+        // During active transfers (10-100Hz progress updates), bytesDone, speed, and eta churn continuously
+        // without affecting notification state.
         transferJob = scope.launch {
             engine.ready.collectLatest { ready ->
                 if (ready) {
-                    engine.transfers?.activeTransfers?.collect { transfers ->
-                        handleTransfersUpdate(transfers)
-                    }
+                    engine.transfers?.activeTransfers
+                        ?.distinctUntilChanged { old, new ->
+                            if (old.size != new.size) return@distinctUntilChanged false
+                            val oldMap = old.associateBy { it.id }
+                            new.all { n ->
+                                val o = oldMap[n.id] ?: return@distinctUntilChanged false
+                                o.state == n.state &&
+                                    o.fileName == n.fileName &&
+                                    o.peerName == n.peerName &&
+                                    o.direction == n.direction &&
+                                    o.errorMessage == n.errorMessage
+                            }
+                        }
+                        ?.collect { transfers ->
+                            handleTransfersUpdate(transfers)
+                        }
                 }
             }
         }

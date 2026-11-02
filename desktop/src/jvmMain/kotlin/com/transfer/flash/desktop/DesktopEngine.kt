@@ -38,6 +38,7 @@ import com.transfer.flash.core.messaging.protocol.DirectChatFamily
 import com.transfer.flash.core.messaging.protocol.DirectMessageActionCodec
 import com.transfer.flash.core.messaging.protocol.GroupFrameCodec
 import com.transfer.flash.core.messaging.protocol.MessageWireFrame
+import com.transfer.flash.core.ptt.floor.PttFloorState
 import com.transfer.flash.core.ptt.protocol.PttAudioFrame
 import com.transfer.flash.core.ptt.protocol.PttFrameCodec
 import com.transfer.flash.core.ptt.protocol.PttSessionCodec
@@ -199,7 +200,9 @@ public class DesktopEngine(
      */
     private val autoAcceptIncoming: Boolean = false,
 ) : FlashEngine, FlashReadiness {
-    public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // OPT-O14-06: Bound engine background scope concurrency via Dispatchers.IO.limitedParallelism(8).
+    // Prevents idle thread fragmentation across independent engine subsystems and coroutines.
+    public val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(8))
 
     private val _ready = MutableStateFlow(false)
 
@@ -235,6 +238,46 @@ public class DesktopEngine(
     public val settings: StateFlow<DesktopSettings> = _settings.asStateFlow()
     private val _discoveryMode = MutableStateFlow(_settings.value.discoveryMode)
     public val discoveryMode: StateFlow<FlashDiscoveryMode> = _discoveryMode.asStateFlow()
+
+    @Volatile
+    private var isWindowActive: Boolean = true
+
+    public fun isWindowActive(): Boolean = isWindowActive
+
+    /**
+     * Updates active window state (OPT-O19-07).
+     * An idle, hidden window asks CompositeDiscovery for its ECO preset, except in GHOST:
+     * hiding the window must never turn a browse-only desktop into an advertised device.
+     * The desktop transports/planner do not yet consume every ECO knob; this is not a
+     * claim of reduced browsing, session count or power usage.
+     */
+    public fun setWindowActive(active: Boolean) {
+        if (isWindowActive == active) return
+        isWindowActive = active
+        evaluateDiscoveryActiveState()
+    }
+
+    /**
+     * Re-evaluates discovery active mode based on window state and active workloads (OPT-O19-07).
+     * Guarded: does not downscale to ECO if an active transfer, call, or PTT session is in flight.
+     */
+    public fun evaluateDiscoveryActiveState() {
+        val hasActiveTransfer = transfers.activeTransfers.value.any {
+            it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+        }
+        val hasActiveCall = calls?.activeCall?.value?.let { it.state != FlashCallState.ENDED } == true
+        val hasActivePtt = ptt?.state?.value?.let { it !is PttFloorState.Idle } == true
+
+        val screenActive = desktopDiscoveryScreenActive(
+            windowActive = isWindowActive,
+            preferredMode = _discoveryMode.value,
+            hasActiveTransfer = hasActiveTransfer,
+            hasActiveCall = hasActiveCall,
+            hasActivePtt = hasActivePtt,
+        )
+        discovery.setScreenActive(screenActive)
+    }
 
     public fun updateSettings(transform: (DesktopSettings) -> DesktopSettings) {
         val updated = transform(_settings.value)
@@ -306,10 +349,16 @@ public class DesktopEngine(
      * 26-3 work. Falls back LOUDLY to an in-memory identity if the vault is unreadable — see
      * [PersistedFlashCrypto]'s degradation contract.
      */
-    public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto =
+    // OPT-O19-06 / OPT-O01-05: Make crypto, ephemeralKeyPair, and pairing lazy so DesktopEngine
+    // constructor on the main/EDT thread does not perform synchronous DPAPI unwraps, EC key generation,
+    // or SHA-256 fingerprinting before the first Compose window frame renders.
+    public val crypto: com.transfer.flash.core.security.crypto.FlashCrypto by lazy {
         com.transfer.flash.core.security.crypto.PersistedFlashCrypto(stateDir, identityVault)
+    }
 
-    private val ephemeralKeyPair = crypto.generateEphemeralEcdhKeyPair()
+    private val ephemeralKeyPair by lazy {
+        crypto.generateEphemeralEcdhKeyPair()
+    }
 
     /**
      * Desktop pairing (Phase 26-3, ADR-035): the SAME `DefaultFlashPairingProtocol` and
@@ -320,42 +369,49 @@ public class DesktopEngine(
      * `sendToPeer` mirrors the app host's contract: non-blocking, returns false when there is no
      * live session (the coordinator uses that for its "couldn't reach" feedback).
      */
-    override val pairing: FlashPairingCoordinator = FlashPairingCoordinator(
-        localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
-            com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
-        ),
-        localDeviceId = identity.deviceId.value,
-        localName = effectiveFriendlyName(),
-        localModel = "desktop",
-        // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
-        ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
-        trustStore = trustStoreImpl,
-        observedPeerPin = observedPeerPins::get,
-        scope = scope,
-        sendToPeer = { peerId, text ->
-            val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
-            if (session != null) {
-                session.connection.sendTextAsync(text)
-                true
-            } else {
-                // Logged on BOTH branches, like the app host, because this boolean IS the
-                // user-visible "Couldn't reach …" — and the interesting half is the set of ids we do
-                // hold sessions for. A session registered under the peer's WS-hello id cannot be
-                // found by an endpoint id that differs, and a miss that prints only the id it looked
-                // for is indistinguishable from "we never connected at all" (2026-09-14: the
-                // desktop's discovery found the phone and Pair still said it could not reach it).
-                FlashLog.w(
-                    TAG_WS,
-                    "Pairing sendToPeer id=$peerId has NO session; " +
-                        "active sessions=${networkImpl?.activeSessions?.value?.keys?.map { it.value } ?: "none"}",
-                    null,
-                )
-                false
-            }
-        },
-        crypto = crypto,
-        ephemeralKeyPair = ephemeralKeyPair,
-    )
+    override val pairing: FlashPairingCoordinator by lazy {
+        FlashPairingCoordinator(
+            localFingerprintHex = com.transfer.flash.core.security.crypto.FlashFingerprint.formatHexGroups(
+                com.transfer.flash.core.security.crypto.FlashFingerprint.fingerprint(crypto.identityPublicKeyEncoded),
+            ),
+            localDeviceId = identity.deviceId.value,
+            localName = effectiveFriendlyName(),
+            localModel = "desktop",
+            // One ephemeral ECDH key for the engine's lifetime, used to derive AES-256 session keys.
+            ephemeralPublicKey = ephemeralKeyPair.publicKeyEncoded,
+            trustStore = trustStoreImpl,
+            observedPeerPin = observedPeerPins::get,
+            scope = scope,
+            sendToPeer = { peerId, text ->
+                val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
+                if (session != null) {
+                    session.connection.sendTextAsync(text)
+                    true
+                } else {
+                    // Logged on BOTH branches, like the app host, because this boolean IS the
+                    // user-visible "Couldn't reach …" — and the interesting half is the set of ids we do
+                    // hold sessions for. A session registered under the peer's WS-hello id cannot be
+                    // found by an endpoint id that differs, and a miss that prints only the id it looked
+                    // for is indistinguishable from "we never connected at all" (2026-09-14: the
+                    // desktop's discovery found the phone and Pair still said it could not reach it).
+                    FlashLog.w(
+                        TAG_WS,
+                        "Pairing sendToPeer id=$peerId has NO session; " +
+                            "active sessions=${networkImpl?.activeSessions?.value?.keys?.map { it.value } ?: "none"}",
+                        null,
+                    )
+                    false
+                }
+            },
+            crypto = crypto,
+            ephemeralKeyPair = ephemeralKeyPair,
+        )
+    }
+
+    // Before readiness this view neither initializes the lazy nor waits for its monitor.
+    // assemble() warms pairing before publishing ready; UI consumers use this view.
+    internal val readyPairing: FlashPairingCoordinator?
+        get() = if (_ready.value) pairing else null
 
     // --- Subsystems; non-null once [ready] flips true ---
     //
@@ -593,6 +649,7 @@ public class DesktopEngine(
         updateSettings { it.copy(discoveryMode = mode) }
         scope.launch {
             discoveryImpl?.setMode(mode)
+            evaluateDiscoveryActiveState()
         }
     }
 
@@ -1070,6 +1127,40 @@ public class DesktopEngine(
                         _startError.value = null
                         _ready.value = true
                         networkWatcher.start()
+
+                        // Re-check on workload START and FINISH: a start must restore an already-idle window.
+                        scope.launch {
+                            transfers.activeTransfers.map { list ->
+                                list.any {
+                                    it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Transferring ||
+                                        it.state == com.transfer.flash.core.transfer.model.FlashTransferState.Verifying
+                                }
+                            }.distinctUntilChanged().collect {
+                                if (!isWindowActive) {
+                                    evaluateDiscoveryActiveState()
+                                }
+                            }
+                        }
+                        callsImpl?.let { calling ->
+                            scope.launch {
+                                calling.activeCall.map { it != null && it.state != FlashCallState.ENDED }
+                                    .distinctUntilChanged().collect {
+                                        if (!isWindowActive) {
+                                            evaluateDiscoveryActiveState()
+                                        }
+                                    }
+                            }
+                        }
+                        pttImpl?.let { pttEngine ->
+                            scope.launch {
+                                pttEngine.state.map { it !is PttFloorState.Idle }
+                                    .distinctUntilChanged().collect {
+                                        if (!isWindowActive) {
+                                            evaluateDiscoveryActiveState()
+                                        }
+                                    }
+                            }
+                        }
                     }
                     true
                 }
@@ -1215,6 +1306,13 @@ public class DesktopEngine(
             ensureOpen()
         }
         boot("assemble entered")
+
+        // OPT-O19-06 / OPT-O01-05: Warm crypto, ephemeral keypair, and pairing on background thread (Dispatchers.IO)
+        // so DPAPI unwrap, EC key generation, and SHA-256 fingerprinting do not block main UI thread.
+        val warmedCrypto = crypto
+        val warmedEphemeralKey = ephemeralKeyPair
+        val warmedPairing = pairing
+        boot("crypto and pairing warmed")
 
         // Audit S3: TLS is mandatory. A failure lands in [startError] (the shell shows it with a
         // retry); there is no plaintext fallback.
