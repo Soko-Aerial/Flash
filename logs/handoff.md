@@ -1,17 +1,26 @@
 # Current Handoff
 
+> **2026-11-02 — WAVE 4 IS INTEGRATED: both expanded gates are GREEN on the merged tree `c5d825f9`; the push of `dev` is
+> the next action.** Gate 1 passed on the third run (`BUILD SUCCESSFUL in 7m 3s`, 259/259 tasks, exit 0); gate 2 passed
+> (`BUILD SUCCESSFUL in 8m 53s`, 218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** —
+> messaging 688, chat 705, security 265, enterprise 165, common 144, app 90, persistence 53, summed from JUnit XML).
+> The two earlier gate-1 failures (ERROR-959 relay `ERR_EXPIRED` frame, ERROR-960 desktop PTT 0-of-8 frames) were
+> investigated with seven measured runs, not rerun until green: the **unmodified** tree passes, E changed no build input
+> and no `server/`/`core/` code, and the one candidate product change (reverting E's `limitedParallelism(8)`) was tested,
+> passed its gate, **and was still discarded** because the unmodified tree passed too. No product line was reverted,
+> nothing was weakened, and both ERRORs stay OPEN as gate flakiness with 2 red / 1 green on a byte-identical tree.
+> **Push status:** `origin` already carries `dev` (`2d3920bd`); local `dev` is 162 commits ahead / 0 behind, so the push is
+> a plain fast-forward with no force. **Next: push, then start streams S and R from the pushed tip.**
+> Exact evidence: top `logs/progress.md` entry, ERROR-959/960 in `logs/errors.md`. Older banners below are historical.
+
 > **2026-11-02 — Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running, NOTHING
-> PUSHED.** On merged **`c5d825f9`** (E + K) gate 1 came back `BUILD FAILED in 8m 36s` (259/259 tasks) with two cases
-> that were green on `bec221d2` an hour earlier: `RelayDeliveryContractTest` never saw the `ERR_EXPIRED` frame after the
-> session *was* cut off (ERROR-959), and `DesktopEnginePttTest` moved **0 of 8** audio frames inside a 10 s window
-> (ERROR-960). Both pass alone on the unchanged tree (2m 30s / 59s, exit 0). E is not indicated for either: its new
-> `evaluateDiscoveryActiveState` is behind `if (!isWindowActive)` and the PTT test never calls `setWindowActive`, and E
-> touched no `core/` or `server/` code. Nothing was weakened. A complete forced gate-1 rerun is running
-> (`logs/wave4-ek-gate1-rerun-2026-11-02.log`); gate 2 follows it.
-> **Push status:** `origin` already has `dev` (`2d3920bd`); local `dev` is **162 ahead, 0 behind**, so the push is a
-> plain fast-forward with no force — but it waits until both merged-tree gates are green.
+> PUSHED (superseded by the banner above).** On merged **`c5d825f9`** (E + K) gate 1 came back `BUILD FAILED in 8m 36s`
+> (259/259 tasks) with two cases that were green on `bec221d2` an hour earlier: `RelayDeliveryContractTest` never saw the
+> `ERR_EXPIRED` frame after the session *was* cut off (ERROR-959), and `DesktopEnginePttTest` moved **0 of 8** audio frames
+> inside a 10 s window (ERROR-960). Both pass alone on the unchanged tree (2m 30s / 59s, exit 0). E is not indicated for
+> either: its new `evaluateDiscoveryActiveState` is behind `if (!isWindowActive)` and the PTT test never calls
+> `setWindowActive`, and E touched no `core/` or `server/` code. Nothing was weakened.
 > Environment for the failing run: 8 logical CPUs, ~2.4 GB free RAM, other builds active (§36's saturation case).
-> Exact evidence and the correction are in the top `logs/progress.md` entry; older banners below are historical.
 
 > **2026-11-02 — Desktop E is MERGED; both expanded gates were started on `c5d825f9` (superseded by the banner above).**
 > Reviewed tip `b2b61b92` merged
