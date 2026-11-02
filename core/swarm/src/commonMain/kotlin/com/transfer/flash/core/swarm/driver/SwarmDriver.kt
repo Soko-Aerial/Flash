@@ -1,4 +1,4 @@
-﻿package com.transfer.flash.core.swarm.driver
+package com.transfer.flash.core.swarm.driver
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
@@ -56,7 +56,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * Single-coroutine actor driver orchestrating [SwarmEngine] with platform I/O ports (Â§5.2, SW-8).
+ * Single-coroutine actor driver orchestrating [SwarmEngine] with platform I/O ports (§5.2, SW-8).
  */
 @OptIn(FlashInternalApi::class)
 public class SwarmDriver(
@@ -374,7 +374,7 @@ public class SwarmDriver(
     }
 
     /**
-     * Ingests a raw inbound FSW1 binary frame from the host's magic router (Â§5.2, SW-8).
+     * Ingests a raw inbound FSW1 binary frame from the host's magic router (§5.2, SW-8).
      */
     public suspend fun onInboundFrame(peerId: String, frameBytes: ByteArray) {
         restored.await()
@@ -406,7 +406,7 @@ public class SwarmDriver(
                     return
                 }
                 val validTombstones = frame.tombstones.filter { tb ->
-                    // OPT-O08-08: a tombstone this device already accepted is not verified again â€” the Ed25519 check
+                    // OPT-O08-08: a tombstone this device already accepted is not verified again — the Ed25519 check
                     // cost 0.5 ms each and every reconnect re-sent the whole history. The key is only claimed after a
                     // successful signature check, so a forged one cannot shadow the real cancellation.
                     val key = tb.groupId + "/" + tb.messageId
@@ -1082,7 +1082,7 @@ public class SwarmDriver(
     }
 
     /**
-     * Announces a new content piece as origin or receiver (Â§5.2, SW-8).
+     * Announces a new content piece as origin or receiver (§5.2, SW-8).
      */
     public suspend fun announceContent(event: SwarmEvent.Announced) {
         restored.await()

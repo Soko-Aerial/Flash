@@ -1,4 +1,4 @@
-﻿package com.transfer.flash.core.swarm.engine
+package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.ManifestCodec
 import com.transfer.flash.core.swarm.codec.SwarmFrame
@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
  * in an endgame race were thrown away without a byte count.
  *
  * The engine reports these to a [SwarmTelemetry] callback (it stays sans-IO: the host forwards to `FlashProbe` and a
- * test collects a list). Every probe is on a rare event or rate-limited â€” never one per piece.
+ * test collects a list). Every probe is on a rare event or rate-limited — never one per piece.
  */
 class SwarmTelemetryTest {
 

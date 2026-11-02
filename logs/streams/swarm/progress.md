@@ -1,4 +1,4 @@
-﻿# Progress — SWARM (S) stream
+# Progress — SWARM (S) stream
 
 ## 2026-11-02 — OPT-O08-01: the O(P·N·W) scheduler scan -> bitset rarity index
 
@@ -390,3 +390,4 @@ floor of two slots holds under LOW.
 ### Measured
 Group completion time and fair-share distribution across real devices: **NOT MEASURED** — this is exactly what
 **PERF-S01** (three-device swarm run) owes. The starvation/rotation property itself is deterministic and asserted.
+

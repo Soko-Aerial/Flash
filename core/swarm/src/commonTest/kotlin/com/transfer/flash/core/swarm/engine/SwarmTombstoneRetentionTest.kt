@@ -1,4 +1,4 @@
-﻿package com.transfer.flash.core.swarm.engine
+package com.transfer.flash.core.swarm.engine
 
 import com.transfer.flash.core.swarm.codec.ManifestCodec
 
@@ -16,7 +16,7 @@ import kotlin.test.assertTrue
 /**
  * OPT-O08-08 / OPT-O02-05: the engine loaded every persisted tombstone into a `LinkedHashMap` and never pruned it, and
  * every `Summary` carried the whole per-group history. `SwarmFrameCodec` refuses a Summary with more than
- * [SwarmFrameCodec.MAX_SUMMARY_TOMBSTONES] tombstones, so a group that cancelled 65 files could not send a Summary at all â€” after which
+ * [SwarmFrameCodec.MAX_SUMMARY_TOMBSTONES] tombstones, so a group that cancelled 65 files could not send a Summary at all — after which
  * no peer learns who holds what.
  */
 class SwarmTombstoneRetentionTest {
