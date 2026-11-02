@@ -47,8 +47,18 @@ pre-existing `InterruptedException` handler expected. **The test was not modifie
 - `:core:radio:jvmTest` **273 tests / 0 failures / 0 skipped** (35 suites; was 259 — the 14 new ones are this work), golden
   frame and `RadioSession` anti-replay green.
 - `:core:radio:testAndroidHostTest` **192 / 0 / 0**, twice, after the repair.
-- Expanded gate 1 with `:core:radio:jvmTest` added (plan §6.3) and gate 2 are running on the merged tree:
-  `logs/wave4-r-gate1-2026-11-02.log`, gate 2 to follow.
+- **Expanded gate 1 (with `:core:radio:jvmTest` added, plan §6.3): PASS on the second run** — `BUILD SUCCESSFUL in 8m 7s`,
+  261/261 tasks executed, exit 0. The **first** merged-tree run failed `:server:test` (`664 tests, 2 failed`, both
+  `RelayDeliveryContractTest`: shutdown-kick and delivered-only-on-ack); the class passes alone (`BUILD SUCCESSFUL in
+  1m 1s`, exit 0), and `git diff c092c88d..1fa3a2d1 -- server core/common` is **empty**, so R cannot be the cause. That is
+  ERROR-959's fourth and fifth flaky case in that class and is recorded there; nothing was weakened or excluded.
+- **Expanded gate 2: PASS** — `BUILD SUCCESSFUL in 8m 55s`, 218/218 tasks executed, exit 0, **2 110 tests, 0 failures,
+  0 skips** (common 144, security 265, messaging 688, persistence 53, enterprise 165, chat 705, app 90 — summed from JUnit
+  XML). R adds no suite to gate 2, so the total is unchanged from the Wave-4 run, which is itself a check that nothing was
+  dropped.
+- `:core:radio:testAndroidHostTest` (not in gate 2) re-run on the **merged** tree so no number is quoted from stale XML:
+  **192 tests, 0 failures, 0 skipped**, `BUILD SUCCESSFUL in 21s`. (The previous XML in that directory was pre-merge and read
+  177 — a reminder that a build directory is not evidence until the suite has actually run on the tree in question.)
 
 ### Remaining / next AI
 Record both merged-tree gate results; merge stream S when it reports. Nothing radio-side is **device-verified**: a 1200-baud
