@@ -267,3 +267,32 @@ dropped**, while a CANCEL and a REQUEST offered into the full queue are both del
 ### Measured
 Bound, not a measurement: outbound memory per peer is capped at 16 frames (≈16 MiB of 1 MiB pieces) instead of
 unbounded. Heap on a device under a stalled peer: **NOT MEASURED**.
+## 2026-11-02 — OPT-O23-07: REJECTED on measurement (the heap-wrapped buffer is not the slower path)
+
+### What the finding claims
+`AndroidPieceStorage`/`JvmPieceStorage` wrap heap `ByteArray`s in `ByteBuffer.wrap(...)` for
+`FileChannel.read/write(buf, position)`, and the JDK/ART copy through a temporary direct buffer, so a pooled direct
+buffer (or `RandomAccessFile`) would remove a 1 MiB copy per piece and "reduce CPU during swarm serving by 15-20%".
+
+### What was measured (EXP-128, forced, desktop JVM 17, temp file on `E:`, 64 x 1 MiB per variant)
+`cmd /c "tools\\flash-gradle.cmd :core:swarm:jvmTest --tests *SwarmPieceIoBench* --rerun-tasks --no-build-cache"`
+- read: heap-wrapped NIO **319.3 us**, `RandomAccessFile.seek+read` **668.9 us**, reused direct buffer + copy-out
+  **310.8 us**
+- write: heap-wrapped NIO **371.7 us**, `RandomAccessFile.seek+write` **781.4 us**
+
+### Disposition: REJECTED, nothing changed in the piece storages
+- The proposed `RandomAccessFile` replacement is **2.1x slower** for reads and writes on the JVM. `RandomAccessFile`
+  read/write also goes through `IOUtil` (which allocates a temporary direct buffer for large transfers) *and* mutates
+  the shared file pointer, so it is neither copy-free nor thread-safe: the positional `FileChannel` read is used
+  concurrently by the serve path, and adding a lock would serialize per-handle I/O to save less than the lock costs.
+- A reused direct buffer (the audit's other suggestion) measured **within noise** of the current code (310.8 vs 319.3 us,
+  ~3%), and it cannot be shared between concurrent reads without the same lock.
+- The bench is kept (`SwarmPieceIoBench`) so the integrator can rerun it; it also asserts both paths move identical
+  bytes.
+- Android was **NOT MEASURED** here. ART's `IoBridge` does make `RandomAccessFile.read(byte[])` a single copy, so the
+  Android answer may differ — but an unmeasured change to the receive/serve hot path is not a fix, so this stays rejected
+  until a phone produces the number. Recorded as the open question PERF-S02 below.
+
+### Owed
+- `PERF-S02` (device, only if someone wants to reopen this): on a phone, transfer a 2 GB swarm file and compare piece-I/O
+  CPU of the heap-wrapped path against the `RandomAccessFile` path with `simpleperf`.
