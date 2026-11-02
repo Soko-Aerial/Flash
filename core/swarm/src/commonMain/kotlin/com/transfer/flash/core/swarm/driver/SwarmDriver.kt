@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
@@ -74,6 +75,13 @@ public class SwarmDriver(
     private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed)
     private val eventChannel: Channel<SwarmEvent> = Channel(Channel.UNLIMITED)
     private val persistChannel: Channel<SwarmCommand> = Channel(Channel.UNLIMITED)
+
+    /** Wakes the idle ticker early when something that could start work arrives (OPT-O08-05). */
+    private val tickKick = Channel<Unit>(Channel.CONFLATED)
+
+    private fun kickTicker() {
+        tickKick.trySend(Unit)
+    }
 
     private val _rows = MutableStateFlow<List<FlashTransfer>>(emptyList())
     override val rows: StateFlow<List<FlashTransfer>> = _rows.asStateFlow()
@@ -208,10 +216,18 @@ public class SwarmDriver(
             }
         }
 
-        // 2. Periodic 250ms tick
+        // 2. Periodic tick: 250 ms while a transfer is live, 5 s when nothing is happening (OPT-O08-05). The old loop
+        // woke the actor four times a second for the whole life of the process, with zero swarm transfers, and each
+        // wake allocated an event and ran the engine's tick over an empty map: 14,400 wake-ups an hour doing nothing.
         scope.launch {
             while (isActive) {
-                delay(250)
+                if (engine.hasActiveWork()) {
+                    delay(tickDelayMs(hasActiveWork = true))
+                } else {
+                    // Wakes early as soon as anything that could start work arrives (announcement, inbound frame).
+                    withTimeoutOrNull(tickDelayMs(hasActiveWork = false)) { tickKick.receive() }
+                }
+                while (tickKick.tryReceive().isSuccess) { /* drop stale wake-ups */ }
                 eventChannel.trySend(SwarmEvent.Tick(now()))
             }
         }
@@ -347,6 +363,7 @@ public class SwarmDriver(
      */
     public suspend fun onInboundFrame(peerId: String, frameBytes: ByteArray) {
         restored.await()
+        kickTicker()
         when (val decoded = SwarmFrameCodec.decode(frameBytes)) {
             is DecodeResult.Decoded -> {
                 handleFrame(peerId, decoded.frame)
@@ -954,6 +971,7 @@ public class SwarmDriver(
 
     override suspend fun accept(transferId: String) {
         val key = findKey(transferId) ?: return
+        kickTicker()
         eventChannel.send(SwarmEvent.Accepted(key.first, key.second, now()))
     }
 
@@ -968,6 +986,7 @@ public class SwarmDriver(
 
     override suspend fun resume(transferId: String) {
         val key = findKey(transferId) ?: return
+        kickTicker()
         eventChannel.send(SwarmEvent.LocalResume(key.first, key.second, now()))
     }
 
@@ -1001,6 +1020,7 @@ public class SwarmDriver(
     override fun reevaluate() {
         scope.launch(workerDispatcher) {
             val freeBytes = storage.freeBytesFor("")
+            kickTicker()
             eventChannel.send(SwarmEvent.SpaceChanged(freeBytes, now()))
             eventChannel.send(SwarmEvent.SystemResume(now()))
         }
@@ -1041,10 +1061,12 @@ public class SwarmDriver(
         rememberGroupTitle(event.groupId)
         if (!event.isOrigin) rememberOriginName(event.groupId, event.originId)
         FlashLog.i("SWARM", "announce root=${event.root.hex.take(8)} group=${event.groupId} origin=${event.isOrigin} size=${event.totalSize}")
+        kickTicker()
         eventChannel.send(event)
     }
 
     public fun onNetworkUp() {
+        kickTicker()
         eventChannel.trySend(SwarmEvent.NetworkUp(now()))
     }
 
@@ -1065,6 +1087,12 @@ public class SwarmDriver(
     }
 
     public fun debugDump(): String = engine.debugDump()
+
+    /**
+     * True while at least one content is offered or transferring. Drives the ticker's period (OPT-O08-05): a device with
+     * no swarm content must not wake four times a second for the life of the process.
+     */
+    internal fun hasActiveWork(): Boolean = engine.hasActiveWork()
 }
 
 private const val SPEED_SAMPLE_MIN_MS = 700L
@@ -1074,3 +1102,12 @@ private const val SOURCE_CHECK_INTERVAL_MS = 2_000L
 
 /** Most persistence commands one batch may take off the queue before it writes (OPT-O08-04). */
 private const val PERSIST_BATCH_MAX = 256
+
+/** Tick period while at least one transfer is live (OPT-O08-05). */
+internal const val TICK_ACTIVE_MS = 250L
+
+/** Tick period with nothing to transfer: the engine only needs to sweep expiry, and an arrival wakes it early. */
+internal const val TICK_IDLE_MS = 5_000L
+
+/** The ticker's period for the current state (OPT-O08-05); pulled out so the two numbers can be asserted. */
+internal fun tickDelayMs(hasActiveWork: Boolean): Long = if (hasActiveWork) TICK_ACTIVE_MS else TICK_IDLE_MS

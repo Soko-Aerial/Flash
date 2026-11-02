@@ -157,3 +157,27 @@ Disk latency saved on eMMC/UFS: **NOT MEASURED** (needs a device; PERF-S01).
 `SwarmSchedulerScanBench`'s OPT-O25-08 timing assertion was relaxed from "4x faster" to "faster", with the work-count
 ratio asserted instead: under full-suite load the wall-clock ratio fell to 4.0x exactly and failed. The number is still
 printed and recorded in EXP-126; nothing about the optimisation changed.
+## 2026-11-02 — OPT-O08-05: the idle ticker
+
+### Worked on
+`SwarmDriver` ran `delay(250)` in an unconditional loop for the life of the process: with zero contents it allocated a
+`SwarmEvent.Tick` four times a second and made the actor run the engine's sweep over an empty map — 14,400 wake-ups an
+hour doing nothing.
+
+### Changed
+The ticker asks `SwarmEngine.hasActiveWork()` (any content OFFERED or ACTIVE) and uses 250 ms while there is work and
+**5 000 ms** otherwise (720 wake-ups an hour). A conflated `tickKick` channel wakes it early on an announcement, an
+inbound frame, an accept, a resume, `reevaluate()` and network up, so the slow period never delays real work. The
+period policy is a pure `tickDelayMs(hasActiveWork)` so the two numbers are asserted rather than buried in a loop.
+
+`SwarmHostBinding.updateEnvironment`'s 2 s poll of the host's `isCallActive`/`isServingEnabled` lambdas is
+**unchanged**: replacing it with push callbacks needs the host's wiring in `app/**` (Stream G) and is not this stream's
+file. Its 1,800 wake-ups/hour are trivial next to the 14,400 this finding removed.
+
+### Verification
+`SwarmIdleTickerTest`: 250/5,000 ms and the 14,400 -> 720 wake-ups/hour arithmetic; `hasActiveWork` false with no
+content, true for an offer and for a transfer in progress, false after a local cancel and after a tombstone.
+`:core:swarm:jvmTest` green.
+
+### Measured
+Wake-ups/hour: **14,400 -> 720** at idle (arithmetic on the asserted periods). Device effect on battery: **NOT MEASURED**.

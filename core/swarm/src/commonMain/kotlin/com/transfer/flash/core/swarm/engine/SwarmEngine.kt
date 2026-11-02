@@ -554,6 +554,17 @@ public class SwarmEngine(
         return sb.toString()
     }
 
+    /**
+     * True while at least one content is offered or transferring: the only states whose tick can produce work.
+     * With no such content the driver ticks slowly and wakes early on an announcement or an inbound frame (OPT-O08-05).
+     */
+    internal fun hasActiveWork(): Boolean {
+        for (content in contents.values) {
+            if (content.state == SwarmLifecycleState.ACTIVE || content.state == SwarmLifecycleState.OFFERED) return true
+        }
+        return false
+    }
+
     private fun cancelInFlight(content: ContentState) {
         for ((key, _) in content.inFlightRequests) {
             val pLen = content.pieceLength(key.second).toLong()
