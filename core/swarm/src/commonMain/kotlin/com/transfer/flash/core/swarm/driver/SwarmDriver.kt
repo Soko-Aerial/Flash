@@ -1,4 +1,4 @@
-package com.transfer.flash.core.swarm.driver
+﻿package com.transfer.flash.core.swarm.driver
 
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.concurrent.SyncMap
@@ -56,7 +56,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
 /**
- * Single-coroutine actor driver orchestrating [SwarmEngine] with platform I/O ports (§5.2, SW-8).
+ * Single-coroutine actor driver orchestrating [SwarmEngine] with platform I/O ports (Â§5.2, SW-8).
  */
 @OptIn(FlashInternalApi::class)
 public class SwarmDriver(
@@ -73,8 +73,17 @@ public class SwarmDriver(
 ) : FlashSwarm {
 
     private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed)
-    private val eventChannel: Channel<SwarmEvent> = Channel(Channel.UNLIMITED)
-    private val persistChannel: Channel<SwarmCommand> = Channel(Channel.UNLIMITED)
+
+    /**
+     * Inbound engine events (OPT-O02-04). Bounded: a decoded `PieceArrived` carries up to a megabyte, and with an
+     * unbounded channel every stalled worker could add to it. 32 slots is twice the engine's own in-flight request count
+     * for a 1 MiB-piece profile, so ordinary operation never waits; a flood suspends the per-peer inbox workers, whose
+     * own buffer drops frames, and the protocol re-asks.
+     */
+    private val eventChannel: Channel<SwarmEvent> = Channel(EVENT_CHANNEL_CAPACITY)
+
+    /** Persistence commands; the actor suspends when this is full, which is the intended backpressure (OPT-O02-04). */
+    private val persistChannel: Channel<SwarmCommand> = Channel(PERSIST_CHANNEL_CAPACITY)
 
     /** Wakes the idle ticker early when something that could start work arrives (OPT-O08-05). */
     private val tickKick = Channel<Unit>(Channel.CONFLATED)
@@ -141,7 +150,7 @@ public class SwarmDriver(
     private val knownGroups = SyncSet<String>()
 
     /** One ordered outbound queue per peer: frames to a peer must leave in the order the engine produced them. */
-    private val sendQueues = SyncMap<String, Channel<SwarmFrame>>()
+    private val sendQueues = SyncMap<String, SwarmSendQueue>()
 
     /** Completes once persisted state has been fed to the engine; inbound frames and announcements wait for it. */
     private val restored = CompletableDeferred<Unit>()
@@ -341,25 +350,15 @@ public class SwarmDriver(
 
     private fun enqueueSend(peerId: String, frame: SwarmFrame) {
         val queue = sendQueues.getOrPut(peerId) {
-            val channel = Channel<SwarmFrame>(Channel.UNLIMITED)
-            scope.launch(workerDispatcher) {
-                for (f in channel) {
-                    try {
-                        transport.send(peerId, SwarmFrameCodec.encode(f))
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (t: Throwable) {
-                        FlashLog.w("SWARM", "send failed peer=$peerId frame=${f::class.simpleName}: ${t.message}")
-                    }
-                }
+            SwarmSendQueue(peerId, scope, workerDispatcher) { f ->
+                transport.send(peerId, SwarmFrameCodec.encode(f))
             }
-            channel
         }
-        queue.trySend(frame)
+        queue.offer(frame)
     }
 
     /**
-     * Ingests a raw inbound FSW1 binary frame from the host's magic router (§5.2, SW-8).
+     * Ingests a raw inbound FSW1 binary frame from the host's magic router (Â§5.2, SW-8).
      */
     public suspend fun onInboundFrame(peerId: String, frameBytes: ByteArray) {
         restored.await()
@@ -391,7 +390,7 @@ public class SwarmDriver(
                     return
                 }
                 val validTombstones = frame.tombstones.filter { tb ->
-                    // OPT-O08-08: a tombstone this device already accepted is not verified again — the Ed25519 check
+                    // OPT-O08-08: a tombstone this device already accepted is not verified again â€” the Ed25519 check
                     // cost 0.5 ms each and every reconnect re-sent the whole history. The key is only claimed after a
                     // successful signature check, so a forged one cannot shadow the real cancellation.
                     val key = tb.groupId + "/" + tb.messageId
@@ -496,7 +495,7 @@ public class SwarmDriver(
         }
     }
 
-    private fun executeCommand(cmd: SwarmCommand) {
+    private suspend fun executeCommand(cmd: SwarmCommand) {
         when (cmd) {
             is SwarmCommand.Send -> enqueueSend(cmd.peerId, cmd.frame)
             is SwarmCommand.RequestSession -> {
@@ -553,7 +552,7 @@ public class SwarmDriver(
                 }
             }
             is SwarmCommand.SyncAndPersistBits -> {
-                persistChannel.trySend(cmd)
+                persistChannel.send(cmd)
             }
             is SwarmCommand.Finalize -> {
                 scope.launch(workerDispatcher) {
@@ -609,7 +608,7 @@ public class SwarmDriver(
             }
             is SwarmCommand.PersistRecord -> {
                 val record = rememberRecord(cmd.record)
-                persistChannel.trySend(SwarmCommand.PersistRecord(record))
+                persistChannel.send(SwarmCommand.PersistRecord(record))
             }
             is SwarmCommand.SignTombstone -> {
                 scope.launch(workerDispatcher) {
@@ -1067,7 +1066,7 @@ public class SwarmDriver(
     }
 
     /**
-     * Announces a new content piece as origin or receiver (§5.2, SW-8).
+     * Announces a new content piece as origin or receiver (Â§5.2, SW-8).
      */
     public suspend fun announceContent(event: SwarmEvent.Announced) {
         restored.await()
@@ -1084,28 +1083,38 @@ public class SwarmDriver(
 
     public fun onNetworkUp() {
         kickTicker()
-        eventChannel.trySend(SwarmEvent.NetworkUp(now()))
+        post(SwarmEvent.NetworkUp(now()))
     }
 
     public fun onNetworkDown() {
-        eventChannel.trySend(SwarmEvent.NetworkDown(now()))
+        post(SwarmEvent.NetworkDown(now()))
     }
 
     public fun onServingEnabled(enabled: Boolean) {
-        eventChannel.trySend(SwarmEvent.ServingEnabled(enabled, now()))
+        post(SwarmEvent.ServingEnabled(enabled, now()))
     }
 
     public fun onCallActive(active: Boolean) {
-        eventChannel.trySend(SwarmEvent.CallActive(active, now()))
+        post(SwarmEvent.CallActive(active, now()))
     }
 
     /** The host's thermal governor changed state (OPT-O08-06); the engine steps its serve profile down or restores it. */
     public fun onThermalStatus(status: com.transfer.flash.core.common.perf.FlashThermalStatus) {
-        eventChannel.trySend(SwarmEvent.ThermalChanged(status, now()))
+        post(SwarmEvent.ThermalChanged(status, now()))
     }
 
     public fun onSpaceChanged(freeBytes: Long) {
-        eventChannel.trySend(SwarmEvent.SpaceChanged(freeBytes, now()))
+        post(SwarmEvent.SpaceChanged(freeBytes, now()))
+    }
+
+    /**
+     * Posts an environment event (OPT-O02-04). The queue is bounded now, so a state change that finds it full is handed
+     * to a coroutine instead of being lost; these events arrive at most a few times a second (the binding's 0.5 Hz
+     * environment poll, the network collector), so this is the rare case, and each one carries a complete new value.
+     */
+    private fun post(event: SwarmEvent) {
+        if (eventChannel.trySend(event).isSuccess) return
+        scope.launch(workerDispatcher) { eventChannel.send(event) }
     }
 
     public fun debugDump(): String = engine.debugDump()
@@ -1127,6 +1136,12 @@ private const val PERSIST_BATCH_MAX = 256
 
 /** How many verified tombstone keys are remembered before the set is dropped wholesale (OPT-O08-08). */
 private const val VERIFIED_TOMBSTONE_CAP = 1024
+
+/** Inbound engine events buffered before the per-peer inbox workers wait for the actor (OPT-O02-04). */
+private const val EVENT_CHANNEL_CAPACITY = 32
+
+/** Persistence commands buffered before the actor waits for the writer (OPT-O02-04). */
+private const val PERSIST_CHANNEL_CAPACITY = 64
 
 /** Tick period while at least one transfer is live (OPT-O08-05). */
 internal const val TICK_ACTIVE_MS = 250L
