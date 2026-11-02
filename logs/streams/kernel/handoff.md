@@ -1,5 +1,23 @@
 # Current Handoff — Kernel Stream (K)
 
+## Current verification — 2026-11-02
+- First expanded gate 1 on `bec221d2`: FAIL (259/259 tasks, 10m15s), ERROR-957 messaging and ERROR-958 server.
+- **Complete forced gate 1 rerun on the same commit: PASS** - `BUILD SUCCESSFUL in 12m 40s`, 259/259 tasks, exit 0,
+  **3 597 tests, 0 failures, 0 errors, 2 documented POSIX-only Windows skips**. Neither flake repeated under the same
+  load; no assertion, timeout or suite was changed, so ERROR-957/958 stay OPEN as intermittent.
+- Gate 2 (Android-host + `:app:testDebugUnitTest`) on `bec221d2`: **PASS** - `BUILD SUCCESSFUL in 10m 47s`,
+  218/218 tasks, exit 0, **2 110 tests, 0 failures, 0 skips** (`:core:messaging` 688, `:core:security` 265,
+  `:core:enterprise` 165, `:core:common` 144, `:app` 90, `:core:persistence` 53, `:ui:chat` 705). Both expanded gates are
+  now green on the same commit.
+- Next: merge desktop E `b2b61b92` `--no-ff`, then rerun both gates on the merged tree.
+
+## Merged-tree integration — 2026-11-01
+- **Merged:** repaired tip `22a53994` into main `dev` with `--no-ff`, merge `bec221d2`; canonical records committed in `f9b1fba0`.
+- **Verification:** expanded forced JVM/compile gate running on `bec221d2`; no outcome yet. Expanded Android-host gate follows.
+- **Next:** resolve any gate failure before merging desktop E; retain every suite in plan §6.3. Remove this clean worktree only after green integration; keep the branch.
+- **Limits:** PERF-K01..K05 TODO; no device/provider or performance result, push, deployment, presence or Wave 5 implementation.
+- The review/delivery entries below preserve earlier stopping points; they are not the current Git state.
+
 ## Integration stopping point — 2026-11-01
 - **Branch/worktree:** `agent/opt-kernel`, `E:/FlashWork/opt-kernel`; actual merge-base `baf77753`, delivered tip `6d9c9227`.
 - **Phase:** review complete; repaired code targeted-tested, repairs and corrected fragments still uncommitted/unmerged.

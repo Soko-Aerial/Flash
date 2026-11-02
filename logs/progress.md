@@ -1,5 +1,115 @@
 # Progress Log
 
+## 2026-11-02 - K gate 2 PASSES; both expanded K gates green on `bec221d2`, E may merge
+
+### Worked on
+Ran the second plan section 6.3 gate (Android-host suites plus the app unit tests) forced on merged kernel
+**`bec221d2`**. No source or test change; the point was to complete the coverage contract after gate 1's green rerun.
+
+### Verification
+- Command: the exact section 6.3 gate-2 line through `tools/flash-gradle.ps1` -
+  `:core:common:testAndroidHostTest :core:security:testAndroidHostTest :core:messaging:testAndroidHostTest
+  :core:persistence:testAndroidHostTest :ui:chat:testAndroidHostTest :core:enterprise:testAndroidHostTest
+  :app:testDebugUnitTest --continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain`.
+- Result: **BUILD SUCCESSFUL in 10m 47s**, 218 of 218 tasks executed, **exit 0**. Raw output (ignored):
+  `logs/wave4-k-gate2-2026-11-02.log`.
+- XML totals for files written by this run: **2 110 tests, 0 failures, 0 errors, 0 skips** -
+  `:core:messaging` 688, `:core:security` 265, `:core:enterprise` 165, `:core:common` 144, `:app:testDebugUnitTest` 90,
+  `:core:persistence` 53, `:ui:chat` 705.
+- `:core:common:testAndroidHostTest` ran and rewrote its results at 09:23, so the stale 2026-10-23
+  `FlashPerformanceClassifierTest.belfone_is_low` failure is gone from the tree, not merely excluded from a count.
+- `:app:testDebugUnitTest` is 90 green, including the two `TransfersUiMapperTest` rows that were the historical expected
+  failures (ERROR-935, fixed by open item C-07); a future failure there is new, per section 6.3.1.
+- Both expanded K gates are now green on the same commit: gate 1 3 597 tests / 0 failures / 2 documented POSIX skips,
+  gate 2 2 110 tests / 0 failures / 0 skips.
+
+### Remaining / next AI
+Merge desktop E **`b2b61b92`** into `dev` with **`--no-ff`** (plan section 6.2 allows either order; K landed first as
+recorded), then run both expanded section 6.3 gates again on the merged tree and record tested hash, commands, XML
+counts/skips and exit status. Do not push, deploy, open a device session, start presence work or begin Wave 5. Every
+PERF-E01..E08 / PERF-K01..K05 check stays TODO and every performance headline stays NOT MEASURED. Stop the Gradle
+daemons through the lock at session end.
+
+## 2026-11-02 - K gate 1 PASSES on a complete forced rerun; gate 2 running
+
+### Worked on
+Re-ran the whole expanded gate 1 (plan section 6.3 first command, unchanged) on merged kernel **`bec221d2`** after the
+first attempt failed two load-sensitive cases (ERROR-957/958). No production code, test, assertion, timeout or suite
+list was touched; the point was to reproduce the same coverage under the same load.
+
+### Verification
+- Command: the exact section 6.3 gate-1 line through `tools/flash-gradle.ps1` - 15 test tasks
+  (`:core:common`, `:core:security`, `:core:persistence`, `:core:messaging`, `:core:transfer`, `:core:swarm`,
+  `:core:network`, `:core:discovery`, `:ui:chat`, `:ui:theme`, `:ui:callui`, `:core:enterprise`,
+  `:core:hub-protocol` jvmTest, `:server:test`, `:desktop:jvmTest`) plus `:desktop:compileKotlinJvm`,
+  `:app:compileDebugKotlin`, `:app:compileDebugAndroidTestKotlin`, all with
+  `--continue --rerun-tasks --no-build-cache --no-configuration-cache --console=plain`.
+- Result: **BUILD SUCCESSFUL in 12m 40s**, 259 of 259 tasks executed, **exit 0**. Raw output (ignored):
+  `logs/wave4-k-gate1-rerun-2026-11-02.log`.
+- XML totals for files written by this run: **3 597 tests, 0 failures, 0 errors, 2 skips**.
+- Per task: `:core:common` 19, `:core:security` 174 (+2 POSIX-only skips), `:core:persistence` 85,
+  `:core:messaging` 382, `:core:transfer` 141, `:core:swarm` 151, `:core:network` 339, `:core:discovery` 106,
+  `:core:enterprise` 276, `:core:hub-protocol` 126, `:ui:chat` 730, `:ui:theme` 58, `:ui:callui` 103,
+  `:server:test` 664, `:desktop:jvmTest` 243.
+- Both skips are the documented Windows ones and were read back by name:
+  `FileHubSealingKeyStoreTest.theKeyFileIsOwnerOnlyWhereTheFileSystemHasPosixModes` and
+  `KeyFileVaultTest.master key file is owner-only on a POSIX file system and holds 32 bytes`.
+- Both first-attempt failures passed under the same load: `HUBFILE-P4-U51` inside the 382-test messaging suite and
+  `E2eRelayContractTest.aPingIsAnsweredWithAPongAndKeepsTheSessionAlive` inside the 664-test server suite. Nothing was
+  weakened to get there; ERROR-957/958 stay **OPEN** because an intermittent pass is frequency evidence, not a root
+  cause.
+- A stale `:core:common` `testAndroidHostTest` XML dated 2026-10-23 (one `FlashPerformanceClassifierTest.belfone_is_low`
+  failure) sits in `core/common/build/test-results/`; it is **not** part of gate 1 and must not be quoted as a gate
+  failure. Gate 2 reruns that task and overwrites it (ERROR-951 already recorded the source-side correction).
+
+### Remaining / next AI
+Gate 2 (the section 6.3 second command: six `testAndroidHostTest` tasks plus `:app:testDebugUnitTest`, forced) is
+running on `bec221d2`; raw output `logs/wave4-k-gate2-2026-11-02.log`. Record its XML counts, skips and exit status.
+**Do not merge desktop E (`b2b61b92`) until both expanded K gates pass**, then merge with `--no-ff` and repeat both
+gates on the merged tree. No suite may be dropped. Every PERF-E/PERF-K headline remains NOT MEASURED. No push,
+deploy, device session, presence work or Wave 5 implementation.
+
+## 2026-11-02 — First expanded K gate failed two load-sensitive tests; isolated reruns pass, full gate rerunning
+
+### Worked on
+Inspected the completed first gate rather than treating its earlier "running" handoff as current. Kernel remains merged at
+`bec221d2`; desktop E remains unmerged. No production or test source was changed.
+
+### Verification
+- First expanded JVM/compile gate on `bec221d2`: **FAIL**, `BUILD FAILED in 10m 15s`, 259/259 tasks executed. Two of the
+  covered suites had one failure each: `:core:messaging:jvmTest` 382 tests with `HUBFILE-P4-U51` failing at the Bob
+  notification assertion (`expected:<1> but was:<0>`, ERROR-957), and `:server:test` 664 tests with the relay ping/pong
+  end-to-end case failing (ERROR-958). All other gate-1 tasks completed; this is not a green gate.
+- Both failed cases pass independently on the unchanged tree: messaging `BUILD SUCCESSFUL in 55s`, server
+  `BUILD SUCCESSFUL in 24s`, both exit 0. This establishes load/timing sensitivity, not a root cause or permission to
+  skip either case.
+- A second complete forced gate 1 is running on the same `bec221d2` with the full §6.3 task list. Raw output:
+  `logs/wave4-k-gate1-rerun-2026-11-02.log` (ignored). No result yet.
+
+### Remaining / next AI
+Record the full rerun result and XML counts/skips. Do not merge E until both expanded K gates pass. If either failure
+repeats, diagnose with evidence instead of weakening assertions or dropping suites. ERROR-957/958 remain OPEN. All
+PERF-E/K checks remain TODO; no push, deployment, device session, presence or Wave 5 work.
+
+## 2026-11-01 — Wave 4 merged-tree verification (in progress)
+
+### Changed / why
+Kernel repair tip `22a53994` merged into main `dev` with `--no-ff` as **`bec221d2`** after canonical review records
+were committed in `f9b1fba0`. Merge completed without conflicts. Desktop E remains unmerged until both expanded K
+gates pass; the K-first classifier prerequisite and all review dispositions are unchanged.
+
+### Verification
+Expanded forced JVM/compile gate launched through `tools/flash-gradle.ps1` on `bec221d2`, with the exact plan §6.3
+command (15 test tasks and three compile tasks, `--continue --rerun-tasks --no-build-cache --no-configuration-cache`).
+Raw output: `logs/wave4-k-gate1-2026-11-01.log` (ignored). **Running; no gate outcome or XML count recorded yet.**
+Only documentation updates accompany the running gate; no source edit after the merge.
+
+### Remaining / next AI
+Finish K gate 1, run K gate 2, record tested hash/commands/XML counts/skips/exit, then merge E and repeat both gates.
+No suite may be dropped. All PERF-E/K checks remain TODO; every performance headline remains NOT MEASURED.
+No push/deploy/device/presence/Wave 5 work. Stop daemons through the lock at session end, then remove only clean,
+green-integrated E/K worktrees and keep the branches. Earlier entries below describe their stopping points.
+
 ## 2026-11-01 — Wave 4 review committed; desktop/kernel integration prepared
 
 ### Worked on
