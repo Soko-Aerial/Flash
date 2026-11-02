@@ -2716,3 +2716,53 @@ the client's ack pattern is not (ADR-296).
 `ioTransaction` calls on the server for (a) today's per-delivery ack, (b) a batched drain.
 
 **Conclusion.** Server-side batching exists and is tested. The advertised saving does not happen yet.
+
+---
+
+# Stream R (radio) — 2026-11-02
+
+Machine for all four: Windows 11, 8 logical cores shared with another agent (the build lock serialises Gradle, not the CPU),
+JBR 21, Gradle 9.5.0. Every figure below comes from a **forced** run (`--rerun-tasks --no-build-cache`) with the command
+line in `logs/streams/radio/experiments.md`. None of them is an on-air or battery measurement.
+
+## EXP-130 — Idle read-loop wake-ups: 14 401 → 61 per hour — MEASURED (cadence), device wake-ups NOT MEASURED
+
+`KissTncDriver`'s loop calls `ByteLink.read(buf, readTimeoutMs)` while quiet. Counted on coroutine virtual time with a link
+that returns 0, advancing one hour, both configurations measured in the same test binary:
+
+| Configuration | `read` calls per simulated hour |
+|---|---|
+| `readTimeoutMs = 250` (old default) | **14 401** |
+| `KissTncConfig()` (60 s heartbeat, ADR-330) | **61** |
+
+240× fewer. This is loop cadence, **not** an Android wake-up or battery figure — that is `PERF-R01`, NOT MEASURED.
+
+## EXP-131 — Framing and serial-buffer churn — MEASURED (JVM allocation counters)
+
+From `ThreadMXBean.getCurrentThreadAllocatedBytes()`, warm-up before each window, no assertion depends on the numbers:
+
+| Measurement | Before | After |
+|---|---|---|
+| AAD bytes allocated per `authenticatedBytes()` call | 96.5 B | **48.0 B** |
+| 1 MiB of unsynchronised noise through `KissStreamDecoder` | 4 194 368 B | **0 B** |
+| 8 KiB message fed in 1-byte chunks | 34 529 592 B | **630 848 B** |
+
+The decoder figure is the O(n²) → O(n) change; the zero is the mutable-counter change (one snapshot object per byte
+before). Native serial buffers are invisible to these counters.
+
+## EXP-132 — JCA provider lookup and SPKI parsing — MEASURED (in-process microbenchmark)
+
+| Primitive | Before | After |
+|---|---|---|
+| `Cipher.getInstance("AES/GCM/NoPadding")` | 7.1 µs | **1.2–2.3 µs** |
+| `Signature.getInstance("SHA256withECDSA")` | 1.4–2.2 µs | **0.6–0.9 µs** |
+| `KeyFactory.getInstance("EC")` | 1.2–1.6 µs | **0.3–0.7 µs** |
+| `Mac.getInstance` / `MessageDigest.getInstance` | — | **no change** |
+
+`Cipher` is the one that matters per frame. SPKI parsing costs 6.5 µs/frame, so the audit's claim of a **2× verify
+throughput** gain is **NOT supported** — only the lookup share moved. Sentence kept because the stream said so itself.
+
+## EXP-133 — 1200-baud channel occupancy — MEASURED (real encoder + AX.25 + pacing arithmetic)
+
+236-byte frames, 2 080 ms airtime each, 3.33 s of channel per message segment: **56.5 B/s**, 1 KB = **20.0 s**,
+3 008 B = **53.3 s**. On-air timing with two real radios remains NOT MEASURED (`PERF-R02`/`PERF-R05`).

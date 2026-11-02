@@ -7254,3 +7254,28 @@ Full delivered/superseded procedures remain in `logs/streams/{desktop,kernel}/ba
   no cross-date audit comparison/>95% promise. 512 entries is not total-String-byte bound.
 - **Source:** ADR-313, EXP-120; SearchFoldingTest, SearchFoldingConcurrencyTest.
 - **Status:** TODO (Unicode/locale/concurrency host checks pass; physical/performance not run).
+
+### PERF-R01..R05 — radio stream (stream R, merged 2026-11-02, ADR-330/331, EXP-130..133)
+
+Not one of these has been run: no radio or phone was in the session. They are the only way to turn the stream's host-level
+numbers into device facts.
+
+- **PERF-R01 — idle-hour wake-ups and battery.** *Setup:* one Android phone paired to a handheld radio, app open, no traffic
+  for one hour; `adb shell dumpsys batterystats` before and after, plus `dumpsys alarm`. *Steps:* connect, leave idle, then
+  send/receive one text after the hour. *Pass:* the text still arrives, no reconnect storm, and the wake-up count is in the
+  order of the heartbeat (tens per hour) rather than thousands. *Source:* ADR-330, EXP-130. *Status:* TODO.
+- **PERF-R02 — delivery latency on air.** *Setup:* two stations on one channel. *Steps:* send texts of 1, 200 and 1000
+  characters, five times each, measuring send→ACK. *Pass:* latency scales with segment count (EXP-133 predicts ~3.3 s per
+  segment) and the acknowledgements arrive. *Source:* EXP-133. *Status:* TODO.
+- **PERF-R03 — UI and I/O stay free during a failed probe.** *Setup:* phone, radio switched off, open the radio screen.
+  *Steps:* start a connect attempt and use the app (scroll a chat, open settings). *Pass:* no ANR, no frozen frames, the
+  attempt fails with the documented sentence. *Source:* `OPT-O26-05`. *Status:* TODO.
+- **PERF-R04 — 300 texts on a lossy channel.** *Setup:* two stations, marginal link (loss injected by distance or a
+  simulator). *Steps:* send 300 texts while receiving; watch `radio.tx.ack`, `radio.rx.retransmit`, memory. *Pass:* all 300
+  arrive, the ACK table stays ≤ 256, no OOM, no permanent stall of the receive path. *Source:* ADR-331. *Status:* TODO.
+- **PERF-R05 — the suite and the golden frame after merge, on hardware paths.** *Setup:* desktop with a real USB serial
+  radio and an Android phone over RFCOMM. *Steps:* re-run `:core:radio:jvmTest` and the radio golden-frame check, then send
+  one text over each transport. *Pass:* 273/0 and byte-identical golden frames; both texts delivered. Also the first
+  runtime exercise of the jSerialComm write path (ERROR-971). *Source:* ERROR-971, merge record. *Status:* TODO.
+- **RADCHAT-DEV03..07 re-run** (no routing changed, but the transport paths did): same steps as recorded in the radio
+  sections above; *Pass:* unchanged behaviour plus the PERF-R01 numbers. *Status:* TODO.
