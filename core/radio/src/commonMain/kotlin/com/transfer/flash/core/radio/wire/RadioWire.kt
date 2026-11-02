@@ -122,10 +122,27 @@ public class RadioHeader(
         return h
     }
 
-    /** The bytes the AEAD or signature authenticates: the header without TTL, plus a domain label. */
+    /**
+     * The bytes the AEAD or signature authenticates: the header without TTL, plus a domain label.
+     *
+     * The result is `"flash-radio-v1" || header[0..2] || header[4..11]` (25 bytes). It used to be built with
+     * `+` and `copyOfRange`, which allocated five arrays per call; OPT-O26-04 writes the same bytes into one
+     * array. This is on every seal and every ingest (once per frame), so it is not a hot loop - it is a hot
+     * packet.
+     */
     public fun authenticatedBytes(): ByteArray {
-        val h = encode()
-        return AAD_LABEL + byteArrayOf(h[0], h[1], h[2]) + h.copyOfRange(4, 12)
+        val out = ByteArray(AAD_LABEL.size + 3 + 8)
+        AAD_LABEL.copyInto(out, 0)
+        out[AAD_LABEL.size] = RadioWire.MAGIC.toByte()
+        out[AAD_LABEL.size + 1] = ((RadioWire.VERSION shl 4) or kind.code).toByte()
+        out[AAD_LABEL.size + 2] = flags.toByte()
+        tag.copyInto(out, AAD_LABEL.size + 3)
+        val at = AAD_LABEL.size + 7
+        out[at] = (counter ushr 24).toByte()
+        out[at + 1] = (counter ushr 16).toByte()
+        out[at + 2] = (counter ushr 8).toByte()
+        out[at + 3] = counter.toByte()
+        return out
     }
 
     /** Why a header was refused. */

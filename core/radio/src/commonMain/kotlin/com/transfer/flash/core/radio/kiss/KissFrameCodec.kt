@@ -164,14 +164,31 @@ public class KissStreamDecoder(private val maxFrameBytes: Int = DEFAULT_MAX_FRAM
     private var escaped = false
     private var poisonBadEscape = false
     private var poisonOversize = false
-    private var stats = KissDecoderStats()
+
+    // OPT-O26-04: mutable counters. `stats = stats.copy(...)` allocated one KissDecoderStats per event, which on an
+    // unsynchronised (floating or noisy) serial line meant one object per received byte. The public snapshot is built
+    // on demand instead; it is read at link-down and by diagnostics, not per frame.
+    private var framesOk = 0L
+    private var garbageBytes = 0L
+    private var emptyFrames = 0L
+    private var badEscapes = 0L
+    private var oversize = 0L
+    private var bytesIn = 0L
 
     init {
         require(maxFrameBytes >= 2) { "maxFrameBytes must be at least 2" }
     }
 
     /** Snapshot of the counters. */
-    public val statistics: KissDecoderStats get() = stats
+    public val statistics: KissDecoderStats
+        get() = KissDecoderStats(
+            framesOk = framesOk,
+            garbageBytes = garbageBytes,
+            emptyFrames = emptyFrames,
+            badEscapes = badEscapes,
+            oversize = oversize,
+            bytesIn = bytesIn,
+        )
 
     /** Forget partial state (call after a reconnect so half a frame from the old link cannot join the new one). */
     public fun reset() {
@@ -189,7 +206,7 @@ public class KissStreamDecoder(private val maxFrameBytes: Int = DEFAULT_MAX_FRAM
         // overflow because length is non-negative and data.size is at most MAX_VALUE.
         require(offset >= 0 && length >= 0 && offset <= data.size - length) { "bad slice" }
         var out: MutableList<KissFrame>? = null
-        stats = stats.copy(bytesIn = stats.bytesIn + length)
+        bytesIn += length
         for (k in offset until offset + length) {
             val b = data[k].toInt() and 0xFF
             if (b == Kiss.FEND) {
@@ -206,7 +223,7 @@ public class KissStreamDecoder(private val maxFrameBytes: Int = DEFAULT_MAX_FRAM
                 continue
             }
             if (!synced) {
-                stats = stats.copy(garbageBytes = stats.garbageBytes + 1)
+                garbageBytes++
                 continue
             }
             if (poisonBadEscape || poisonOversize) continue
@@ -239,20 +256,20 @@ public class KissStreamDecoder(private val maxFrameBytes: Int = DEFAULT_MAX_FRAM
         if (!synced) return null
         if (escaped) poisonBadEscape = true // FESC directly followed by FEND
         if (poisonBadEscape) {
-            stats = stats.copy(badEscapes = stats.badEscapes + 1)
+            badEscapes++
             return null
         }
         if (poisonOversize) {
-            stats = stats.copy(oversize = stats.oversize + 1)
+            oversize++
             return null
         }
         if (len == 0) {
-            stats = stats.copy(emptyFrames = stats.emptyFrames + 1)
+            emptyFrames++
             return null
         }
         val cmd = buf[0].toInt() and 0xFF
         val frame = KissFrame(port = cmd ushr 4, command = cmd and 0x0F, data = buf.copyOfRange(1, len))
-        stats = stats.copy(framesOk = stats.framesOk + 1)
+        framesOk++
         return frame
     }
 
