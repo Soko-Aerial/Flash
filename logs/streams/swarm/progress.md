@@ -391,3 +391,28 @@ floor of two slots holds under LOW.
 Group completion time and fair-share distribution across real devices: **NOT MEASURED** — this is exactly what
 **PERF-S01** (three-device swarm run) owes. The starvation/rotation property itself is deterministic and asserted.
 
+## 2026-11-02 — Gate
+
+Stream gate, forced, from the worktree root:
+
+```
+cmd /c "tools\flash-gradle.cmd :core:swarm:jvmTest :core:engine:jvmTest :ui:chat:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin --console=plain --rerun-tasks --no-build-cache"
+BUILD SUCCESSFUL in 4m 51s
+138 actionable tasks: 138 executed
+[flash-gradle] finished with exit code 0 after 292s of running
+```
+
+Test totals from the JUnit XML of that run:
+
+| Suite | Tests | Failures | Skipped |
+|---|---|---|---|
+| `:core:swarm:jvmTest` | **191** (was 151 on `7adcf4f5`) | 0 | 0 |
+| `:core:engine:jvmTest` | 175 | 0 | 0 |
+| `:ui:chat:jvmTest` | 730 | 0 | 0 |
+
+`SwarmInteropTest[jvm]` (the known rare flake) **passed**: 1 test, 0 failures, 12.4 s. It also passed in the earlier
+targeted run (12.1 s). No failure to record.
+
+After the last commit the bytecode is unchanged (the final commit repaired only comments/BOM), and a second forced
+`:core:swarm:jvmTest --rerun-tasks --no-build-cache` re-ran all 8 tasks: **BUILD SUCCESSFUL in 43s**, 191 tests,
+0 failures.
