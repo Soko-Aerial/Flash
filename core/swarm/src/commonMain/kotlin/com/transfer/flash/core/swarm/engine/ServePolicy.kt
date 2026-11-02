@@ -12,6 +12,11 @@ public sealed interface ServeEvaluation {
     public data class Accepted(
         public val piecesToServe: List<Int>,
         public val rejectedPieces: List<RejectedPart> = emptyList(),
+        /**
+         * An active requester that must give up its serve slot to let [peerId] in (OPT-O08-03). Its in-flight reads are
+         * not cancelled — only its admission to *new* work.
+         */
+        public val yieldPeerId: String? = null,
     ) : ServeEvaluation {
         public data class RejectedPart(
             public val reason: SwarmRejectReason,
@@ -70,6 +75,9 @@ public class ServePolicy(
         copiesCount: (Int) -> Int,
         pendingCount: (Int) -> Int,
         hasBackedOffElsewhere: (Int) -> Boolean = { false },
+        servedInTenure: Map<String, Long> = emptyMap(),
+        refusedSinceMs: Map<String, Long> = emptyMap(),
+        nowMs: Long = 0L,
     ): ServeEvaluation {
         // 1. Membership gate check (ADR-075)
         if (!isAllowed) {
@@ -114,13 +122,29 @@ public class ServePolicy(
         // 5. Slot capacity check
         val maxSlots = calculateMaxSlots(profile, isOrigin, isCallActive)
         val isExistingRequester = peerId in activeRequesters
+        var yieldPeerId: String? = null
         if (!isExistingRequester && activeRequesters.size >= maxSlots) {
-            return ServeEvaluation.Rejected(
-                reason = SwarmRejectReason.BUSY,
-                retryAfterMs = 1_000L,
-                scopeAll = false,
-                pieces = requestedPieces,
-            )
+            // OPT-O08-03: a fast member that keeps its outstanding bytes above zero keeps its slot for ever (its next
+            // request arrives before the queue drains to zero), so with two slots the other members of a 20-node group
+            // sat in "Waiting for peers" for the whole transfer. Deficit round robin: a requester that has had more than
+            // its share of a tenure yields, and only to a peer that has already been waiting (age weighting), so nobody
+            // is preempted on their first attempt.
+            val waitedSince = refusedSinceMs[peerId]
+            val waitedMs = if (waitedSince == null) -1L else nowMs - waitedSince
+            val victim = if (waitedMs >= ARRIVAL_MIN_WAIT_MS) {
+                yieldCandidate(peerId, activeRequesters, servedInTenure, pieceSize)
+            } else {
+                null
+            }
+            if (victim == null) {
+                return ServeEvaluation.Rejected(
+                    reason = SwarmRejectReason.BUSY,
+                    retryAfterMs = 1_000L,
+                    scopeAll = false,
+                    pieces = requestedPieces,
+                )
+            }
+            yieldPeerId = victim
         }
 
         // 6. Filter pieces held locally
@@ -215,6 +239,7 @@ public class ServePolicy(
             return ServeEvaluation.Accepted(
                 piecesToServe = toServe,
                 rejectedPieces = rejectedParts,
+                yieldPeerId = yieldPeerId,
             )
         }
 
@@ -238,6 +263,45 @@ public class ServePolicy(
             } else {
                 listOf(ServeEvaluation.Accepted.RejectedPart(reason = SwarmRejectReason.BUSY, retryAfterMs = 1_000L, pieces = overBudget))
             },
+            yieldPeerId = yieldPeerId,
         )
+    }
+
+    /**
+     * Deficit round robin over the serve slots (OPT-O08-03): returns the active requester that must give its slot to
+     * [arrivingPeerId], or null when nobody has had more than a fair share of its tenure.
+     *
+     * A peer that has served at least [YIELD_AFTER_PIECES] pieces since it was admitted has had its turn; the one with
+     * the most served bytes goes first, ties broken by the larger id so the choice is deterministic. Only one slot is
+     * yielded per admission, so the slot count never grows.
+     */
+    public fun yieldCandidate(
+        arrivingPeerId: String,
+        activeRequesters: Set<String>,
+        servedInTenure: Map<String, Long>,
+        pieceSize: Int,
+    ): String? {
+        if (activeRequesters.isEmpty() || pieceSize <= 0) return null
+        val floor = pieceSize.toLong() * YIELD_AFTER_PIECES
+        var victim: String? = null
+        var victimServed = floor
+        for (peer in activeRequesters) {
+            if (peer == arrivingPeerId) continue
+            val served = servedInTenure[peer] ?: 0L
+            if (served < floor) continue
+            if (victim == null || served > victimServed || (served == victimServed && peer > victim)) {
+                victim = peer
+                victimServed = served
+            }
+        }
+        return victim
+    }
+
+    public companion object {
+        /** Pieces a peer may be served in one tenure before another waiting member may take its slot. */
+        public const val YIELD_AFTER_PIECES: Int = 2
+
+        /** How long a peer must have been refused before it may take a slot from somebody else. */
+        public const val ARRIVAL_MIN_WAIT_MS: Long = 1_000L
     }
 }

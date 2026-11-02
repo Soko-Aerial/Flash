@@ -356,3 +356,37 @@ path); probe overhead on a device: **NOT MEASURED**.
 ### Ow ed (probe registration)
 The new names (`swarm.piece.timeout`, `swarm.sched.stall`, `swarm.recv.wasted`, `swarm.send.dropped`) must be
 added to `docs/testing/PROBES.md` by the integrator — this stream may not edit the canonical docs.
+## 2026-11-02 — OPT-O08-03: age-weighted / deficit round robin serve slots (ADR-232 approved)
+
+### What changed about who wins a slot, and why
+Before: `activeRequesters` kept a peer's slot until **all** of its outstanding serve bytes had been read, and an
+existing requester was always admitted. A fast member sends its next request before that happens, so the first two
+members to arrive held both slots for the whole transfer while the rest of a 5-20 node group sat in "Waiting for peers"
+with a 1 s BUSY backoff that also halved their congestion window. Effectively: *whoever asked first and kept asking won
+every slot for the whole transfer.*
+
+Now: a member that has been served **2 pieces** in its current tenure may be displaced by a member that has already
+been refused for at least **1 s**; the peer with the most served bytes in its tenure yields first (ties broken by id, so
+the outcome is deterministic). The displaced peer's reads still complete — only its admission to *new* work stops — and
+it goes back into the waiting queue, so the slots rotate. No wire change: the displaced peer simply receives the same
+BUSY a newcomer used to receive. Afterwards every member gets a turn at every slot instead of two members taking the
+whole transfer.
+
+### Changed
+- `ContentState.servedInTenure` (bytes served since admission) and `ContentState.refusedSinceMs` (first BUSY refusal,
+  cleared on admission).
+- `ServePolicy.yieldCandidate` (pure) + `ServeEvaluation.Accepted.yieldPeerId`; `evaluateRequest` gained
+  `servedInTenure`/`refusedSinceMs`/`nowMs` with defaults, so every existing caller and test is unchanged.
+- `ServeHandler` removes the victim's slot before admitting the arrival (so the slot count never grows), records the
+  refusal time, and clears the tenure when a slot is released.
+
+### Verification
+`SwarmServeFairnessTest`: in the pipelining model (reads never completed, which is the starving case) all five members
+are served inside 12 rounds, where before only the first two ever were; a member that has not waited is still refused and
+nothing is yielded; a waited member is accepted **with the victim named**; a displaced member waits its turn; the origin
+floor of two slots holds under LOW.
+`:core:swarm:jvmTest` 191 tests, 0 failures. The tombstone/cancel paths are untouched.
+
+### Measured
+Group completion time and fair-share distribution across real devices: **NOT MEASURED** — this is exactly what
+**PERF-S01** (three-device swarm run) owes. The starvation/rotation property itself is deterministic and asserted.

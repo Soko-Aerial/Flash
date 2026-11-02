@@ -81,6 +81,16 @@ internal class ContentState(
     // Peers currently occupying active serve slots for this content
     val activeRequesters = LinkedHashSet<String>()
 
+    /**
+     * Bytes this device has served to a peer since that peer was admitted to a serve slot (OPT-O08-03). A peer that has
+     * had its share yields its slot to a member that has been waiting, which is what stops two fast members from
+     * occupying every slot for the whole transfer.
+     */
+    val servedInTenure = LinkedHashMap<String, Long>()
+
+    /** When a peer was first refused a serve slot with BUSY; cleared when it is admitted (OPT-O08-03, age weighting). */
+    val refusedSinceMs = LinkedHashMap<String, Long>()
+
     // peerId -> outstanding serve bytes
     val outstandingServeBytes = LinkedHashMap<String, Long>()
 
