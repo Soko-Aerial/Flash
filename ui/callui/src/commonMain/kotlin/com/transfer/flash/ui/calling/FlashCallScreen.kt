@@ -550,6 +550,10 @@ private fun FlashCallVideoSurfaces(
     // main tile.
     val remoteShown = !state.dataSaver && !state.peerCameraOff
     val swapped = pipIsLocal && remoteShown
+    // OPT-O11-06: while the placeholder covers the main tile the surface must not be bound to the remote track at all —
+    // the desktop sink otherwise keeps converting and rasterising every decoded frame underneath it (and Android keeps
+    // uploading it to the SurfaceView). The composable stays composed; only the sink binding goes away.
+    val mainTrack = mainVideoTrack(remoteShown = remoteShown, swapped = swapped, localTrack = localTrack, remoteTrack = remoteTrack)
     // ADR-102: the other device is presenting, so the main picture is a screen (letterboxed, never cropped).
     val presenting = state.presenterId != null && remoteShown
     // A tap swaps the pictures, except when there is no remote picture to swap with.
@@ -566,7 +570,7 @@ private fun FlashCallVideoSurfaces(
         // rebuild the renderer underneath. It is the tap-to-swap target exactly as before: the gesture overlay only
         // consumes once a pinch or drag passes touch slop, so a plain tap still reaches this modifier.
         FlashZoomableVideoSurface(
-            track = if (swapped) localTrack else remoteTrack,
+            track = mainTrack,
             fit = if (swapped) CallVideoFit.Balanced else videoFitFor(presenting),
             mirror = swapped && mirrorSelf,
             zoom = if (presenting && !swapped) presentationZoom else null,

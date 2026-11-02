@@ -1,5 +1,7 @@
 package com.transfer.flash.core.ptt
 
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -8,6 +10,10 @@ import kotlin.test.assertTrue
 
 /** The jitter / concealment half of playout, shared by the Android and the desktop device. */
 class PttPlayoutCoreTest {
+    /** The start depth is learnt across bursts (OPT-O12-04); each test starts from the shipped value. */
+    @BeforeTest
+    fun resetLearntDepth() = PttJitterDepth.reset()
+
     // 16 kHz, 20 ms: 640 bytes per packet; the 120 ms target depth needs 6 queued packets to start.
     private fun newCore() = PttPlayoutCore(sampleRateHz = 16_000, packetMs = 20)
 

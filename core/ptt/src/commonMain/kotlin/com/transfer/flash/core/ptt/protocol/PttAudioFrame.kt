@@ -70,21 +70,32 @@ public data class PttAudioFrame(
         }
 
         public fun encode(frame: PttAudioFrame): ByteArray {
-            val sessionBytes = frame.sessionId.encodeToByteArray()
             require(frame.sessionId.isNotBlank()) { "sessionId must not be blank" }
+            return encode(frame.sessionId.encodeToByteArray(), frame.seq, frame.captureTsMs, frame.pcm)
+        }
+
+        /**
+         * [encode] for the hot path (OPT-O12-02): the caller passes the session id it already encoded once for the
+         * whole session instead of turning the string into bytes again on every packet. A 20 ms PTT packet goes out
+         * 50 times a second, and the session id never changes inside a session.
+         *
+         * Byte-for-byte identical to `encode(PttAudioFrame(...))` with the same values.
+         */
+        public fun encode(sessionBytes: ByteArray, seq: Long, captureTsMs: Long, pcm: ByteArray): ByteArray {
+            require(sessionBytes.isNotEmpty()) { "sessionId must not be blank" }
             require(sessionBytes.size <= MAX_SESSION_ID_BYTES) { "sessionId too long" }
-            require(frame.pcm.isNotEmpty() && frame.pcm.size % 2 == 0) { "pcm must be non-empty PCM16" }
-            require(frame.pcm.size <= MAX_PCM_BYTES) { "pcm too large" }
-            require(frame.seq >= 0) { "seq must be non-negative" }
-            val out = ByteArray(MAGIC.size + 1 + 2 + sessionBytes.size + 4 + 8 + frame.pcm.size)
+            require(pcm.isNotEmpty() && pcm.size % 2 == 0) { "pcm must be non-empty PCM16" }
+            require(pcm.size <= MAX_PCM_BYTES) { "pcm too large" }
+            require(seq >= 0) { "seq must be non-negative" }
+            val out = ByteArray(MAGIC.size + 1 + 2 + sessionBytes.size + 4 + 8 + pcm.size)
             var pos = 0
             MAGIC.copyInto(out, pos); pos += MAGIC.size
             out[pos++] = VERSION.toByte()
             putU16Le(out, pos, sessionBytes.size); pos += 2
             sessionBytes.copyInto(out, pos); pos += sessionBytes.size
-            putU32Le(out, pos, frame.seq); pos += 4
-            putU64Le(out, pos, frame.captureTsMs); pos += 8
-            frame.pcm.copyInto(out, pos)
+            putU32Le(out, pos, seq); pos += 4
+            putU64Le(out, pos, captureTsMs); pos += 8
+            pcm.copyInto(out, pos)
             return out
         }
 
@@ -93,6 +104,41 @@ public data class PttAudioFrame(
             if (expectedPcmBytes <= 0 || expectedPcmBytes > MAX_PCM_BYTES) return null
             val frame = decode(data) ?: return null
             return frame.takeIf { it.pcm.size == expectedPcmBytes }
+        }
+
+        /**
+         * Decoding for the receiving hot path (OPT-O12-02): the listener already knows which session it is listening
+         * to, so the wire session id is compared **as bytes** against [expectedSessionBytes] and the frame is built
+         * with the [expectedSession] string it already holds. That removes the `decodeToString` allocation — a fresh
+         * `String` per packet, 50 a second — and rejects another session before the String exists at all.
+         *
+         * Returns null exactly when [decodeExpectedSize] would: foreign session, bad magic/version, truncation, or a
+         * PCM payload that is not [expectedPcmBytes] long.
+         */
+        public fun decodeExpected(
+            data: ByteArray,
+            expectedSession: String,
+            expectedSessionBytes: ByteArray,
+            expectedPcmBytes: Int,
+        ): PttAudioFrame? {
+            if (expectedPcmBytes <= 0 || expectedPcmBytes > MAX_PCM_BYTES) return null
+            if (expectedSessionBytes.isEmpty()) return null
+            if (!isPttAudio(data)) return null
+            var pos = MAGIC.size
+            if (data[pos++].toInt() != VERSION) return null
+            if (data.size < pos + 2) return null
+            val sessionLen = getU16Le(data, pos); pos += 2
+            if (sessionLen != expectedSessionBytes.size) return null
+            if (data.size < pos + sessionLen + 4 + 8) return null
+            for (i in 0 until sessionLen) {
+                if (data[pos + i] != expectedSessionBytes[i]) return null
+            }
+            pos += sessionLen
+            val seq = getU32Le(data, pos); pos += 4
+            val captureTs = getU64Le(data, pos); pos += 8
+            val pcmLength = data.size - pos
+            if (pcmLength != expectedPcmBytes || pcmLength <= 0 || pcmLength % 2 != 0) return null
+            return PttAudioFrame(expectedSession, seq, captureTs, data.copyOfRange(pos, data.size))
         }
 
         /** Returns null for wrong magic/version, truncation, or out-of-range lengths. */

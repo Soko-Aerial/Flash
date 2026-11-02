@@ -14,8 +14,15 @@ internal class LocalVideoStreamTrack(
     private val captureConstraints: MediaTrackConstraints = MediaTrackConstraints(),
 ) : RenderedVideoStreamTrack(native), VideoStreamTrack {
 
+    /**
+     * Flash (OPT-O11-02): whether [videoSource] is currently capturing. The source is stopped while
+     * the track is disabled, so switching camera in that state must not bring the sensor back.
+     */
+    private var sourceRunning: Boolean = true
+
     init {
         videoSource.start()
+        sourceRunning = true
     }
 
     override suspend fun switchCamera(deviceId: String?) {
@@ -44,7 +51,10 @@ internal class LocalVideoStreamTrack(
                 videoSource.stop()
                 videoSource.setVideoCaptureDevice(targetDevice)
                 videoSource.setVideoCaptureCapability(capability)
-                videoSource.start()
+                // Flash (OPT-O11-02): a switched camera stays off while the track is disabled.
+                if (sourceRunning) {
+                    videoSource.start()
+                }
                 currentDevice = targetDevice
             }
         }
@@ -52,9 +62,22 @@ internal class LocalVideoStreamTrack(
 
     override fun onSetEnabled(enabled: Boolean) {
         native.isEnabled = enabled
+        // Flash (OPT-O11-02): `isEnabled = false` only silences the RTP sender — the webcam sensor
+        // keeps capturing at 30 fps, the driver keeps converting and the OS keeps the camera in use
+        // (LED lit). Android's onSetEnabled stops the capturer, so desktop must too.
+        if (enabled) {
+            if (!sourceRunning) {
+                videoSource.start()
+                sourceRunning = true
+            }
+        } else if (sourceRunning) {
+            videoSource.stop()
+            sourceRunning = false
+        }
     }
 
     override fun onStop() {
+        sourceRunning = false
         videoSource.stop()
         videoSource.dispose()
     }

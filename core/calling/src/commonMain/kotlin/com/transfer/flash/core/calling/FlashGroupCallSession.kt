@@ -13,6 +13,7 @@ import com.shepeliev.webrtckmp.OfferAnswerOptions
 import com.shepeliev.webrtckmp.PeerConnection
 import com.shepeliev.webrtckmp.PeerConnectionState
 import com.shepeliev.webrtckmp.RtcConfiguration
+import com.shepeliev.webrtckmp.RtcStats
 import com.shepeliev.webrtckmp.RtcpMuxPolicy
 import com.shepeliev.webrtckmp.RtpSender
 import com.shepeliev.webrtckmp.SessionDescription
@@ -298,6 +299,12 @@ public class FlashGroupCallSession(
     private var connectDeadlineJob: Job? = null
     private var statsJob: Job? = null
     private var presenceJob: Job? = null
+
+    // OPT-O11-04: buffers for the mesh stats tick, reused instead of allocated per leg per second.
+    // `sampleMeshStats` is the only reader and it runs on one coroutine, so no locking is needed.
+    private val scanPairs = ArrayList<RtcStats>(8)
+    private val scanRtts = ArrayList<Int>(8)
+    private val scanQuality = ArrayList<Pair<GroupLeg, CallQualitySample>>(8)
 
     /** ERROR-105: reports the local camera's track ending; replaced on a camera restart, cancelled with the media. */
     private var cameraWatchJob: Job? = null
@@ -1750,7 +1757,7 @@ public class FlashGroupCallSession(
 
         var totalBytesIn = 0L
         var totalBytesOut = 0L
-        val rtts = mutableListOf<Int>()
+        scanRtts.clear()
         var totalLost = 0L
         var totalReceived = 0L
 
@@ -1758,7 +1765,7 @@ public class FlashGroupCallSession(
         var localAudioLevel: Double? = null
         // G6: legs whose arriving video is decoded in software.
         var softwareDecodedLegs = 0
-        val qualitySamples = mutableListOf<Pair<GroupLeg, CallQualitySample>>()
+        scanQuality.clear()
         // ADR-102: any connection whose video encoder reports it is limited by the CPU.
         var encoderCpuLimited = false
         for (leg in activeLegs) {
@@ -1776,15 +1783,63 @@ public class FlashGroupCallSession(
                 )
             }
 
-            val all = report.stats.values
-            val selectedId = all.firstOrNull { it.type == "transport" }
-                ?.members?.get("selectedCandidatePairId") as? String
-            val pairs = all.filter { it.type == "candidate-pair" }
-            val pair = pairs.firstOrNull { it.id == selectedId }
-                ?: pairs.firstOrNull {
+            // OPT-O11-04: ONE pass over the report's stats, into session-scoped buffers. The tick used
+            // to build five filtered lists per leg (`candidate-pair`, `inbound-rtp`, `outbound-rtp`,
+            // a `track` scan and a `media-source` scan) — in an 8-party call that is ~7 legs x 4 list
+            // wrappers every second, on top of the ~60 RtcStats the report itself maps. Nothing here
+            // allocates a list any more; `scanPairs` is cleared and refilled.
+            scanPairs.clear()
+            var audioInStat: RtcStats? = null
+            var audioLevelStat: RtcStats? = null
+            var videoInStat: RtcStats? = null
+            var videoOutCpuLimited = false
+            var legBytesIn = 0L
+            var legBytesOut = 0L
+            var legLost = 0L
+            var legReceived = 0L
+            var selectedPairId: String? = null
+            var trackAudioLevel: Double? = null
+            var sourceAudioLevel: Double? = null
+            for (stat in report.stats.values) {
+                val members = stat.members
+                when (stat.type) {
+                    "transport" ->
+                        if (selectedPairId == null) selectedPairId = members.str("selectedCandidatePairId")
+                    "candidate-pair" -> scanPairs.add(stat)
+                    "inbound-rtp" -> {
+                        legBytesIn += members.num("bytesReceived")?.toLong() ?: 0L
+                        legLost += members.num("packetsLost")?.toLong() ?: 0L
+                        legReceived += members.num("packetsReceived")?.toLong() ?: 0L
+                        val kind = members.str("kind") ?: members.str("mediaType")
+                        if (kind == "audio" && audioInStat == null) audioInStat = stat
+                        if (kind == "video" && videoInStat == null) videoInStat = stat
+                        if (audioLevelStat == null && (kind == "audio" || members.num("audioLevel") != null)) {
+                            audioLevelStat = stat
+                        }
+                    }
+                    "outbound-rtp" -> {
+                        legBytesOut += members.num("bytesSent")?.toLong() ?: 0L
+                        if (members.str("kind") == "video" && members.str("qualityLimitationReason") == "cpu") {
+                            videoOutCpuLimited = true
+                        }
+                    }
+                    "track" -> if (trackAudioLevel == null && members.str("kind") == "audio") {
+                        trackAudioLevel = members.num("audioLevel")
+                    }
+                    "media-source" -> if (sourceAudioLevel == null && members.str("kind") == "audio") {
+                        sourceAudioLevel = members.num("audioLevel")
+                    }
+                }
+            }
+            if (videoOutCpuLimited) encoderCpuLimited = true
+
+            val pair = scanPairs.firstWhere { it.id == selectedPairId }
+                ?: scanPairs.firstWhere {
                     it.members.bool("nominated") == true && it.members.str("state") == "succeeded"
                 }
-                ?: pairs.firstOrNull { it.members.num("currentRoundTripTime") != null || it.members.num("roundTripTime") != null }
+                ?: scanPairs.firstWhere {
+                    it.members.num("currentRoundTripTime") != null || it.members.num("roundTripTime") != null
+                }
 
             val rttSec = pair?.members?.num("currentRoundTripTime")
                 ?: pair?.members?.num("roundTripTime")
@@ -1794,18 +1849,11 @@ public class FlashGroupCallSession(
                     if (totalRtt != null && resp != null && resp > 0) totalRtt / resp else null
                 }
             if (rttSec != null) {
-                rtts.add((rttSec * 1000).roundToInt())
+                scanRtts.add((rttSec * 1000).roundToInt())
             }
 
-            val inbound = all.filter { it.type == "inbound-rtp" }
-            val outbound = all.filter { it.type == "outbound-rtp" }
-            if (outbound.any { it.members.str("kind") == "video" && it.members.str("qualityLimitationReason") == "cpu" }) {
-                encoderCpuLimited = true
-            }
-            totalBytesIn += inbound.sumOf { it.members.num("bytesReceived")?.toLong() ?: 0L }
-            totalBytesOut += outbound.sumOf { it.members.num("bytesSent")?.toLong() ?: 0L }
-            val legLost = inbound.sumOf { it.members.num("packetsLost")?.toLong() ?: 0L }
-            val legReceived = inbound.sumOf { it.members.num("packetsReceived")?.toLong() ?: 0L }
+            totalBytesIn += legBytesIn
+            totalBytesOut += legBytesOut
             totalLost += legLost
             totalReceived += legReceived
             // D8 for groups: this leg's own link quality over the last interval only (a cumulative loss could never recover).
@@ -1813,27 +1861,21 @@ public class FlashGroupCallSession(
             val receivedDelta = (legReceived - leg.lastReceived).coerceAtLeast(0L)
             leg.lastLost = legLost
             leg.lastReceived = legReceived
-            qualitySamples += leg to CallQualitySample(
+            scanQuality += leg to CallQualitySample(
                 rttMs = rttSec?.let { (it * 1000).roundToInt() },
-                audioJitterMs = inbound.firstOrNull { it.members.str("kind") == "audio" }?.members?.num("jitter")
-                    ?.let { (it * 1000).roundToInt() },
+                audioJitterMs = audioInStat?.members?.num("jitter")?.let { (it * 1000).roundToInt() },
                 lossFraction = (lostDelta + receivedDelta).takeIf { it > 0L }?.let { lostDelta.toDouble() / it },
             )
 
-            val decoder = inbound.firstOrNull { it.members.str("kind") == "video" }?.members?.str("decoderImplementation")
+            val decoder = videoInStat?.members?.str("decoderImplementation")
             if (videoStates[leg.peerId]?.hasPicture() == true && CallHealthMonitor.isSoftwareDecoder(decoder)) {
                 softwareDecodedLegs++
             }
 
-            val audioLevel = inbound.firstOrNull { it.members.str("kind") == "audio" || it.members.num("audioLevel") != null }
-                ?.members?.num("audioLevel")
-                ?: all.firstOrNull { it.type == "track" && it.members.str("kind") == "audio" }
-                    ?.members?.num("audioLevel")
+            val audioLevel = audioLevelStat?.members?.num("audioLevel") ?: trackAudioLevel
             // This device's own microphone level (the send side's media-source), for G3's
             // talker-first rule. Best effort: a backend that does not report it reads as silent.
-            all.firstOrNull { it.type == "media-source" && it.members.str("kind") == "audio" }
-                ?.members?.num("audioLevel")
-                ?.let { level -> localAudioLevel = maxOf(localAudioLevel ?: 0.0, level) }
+            sourceAudioLevel?.let { level -> localAudioLevel = maxOf(localAudioLevel ?: 0.0, level) }
 
             if (audioLevel != null) {
                 val speaking = audioLevel > 0.01
@@ -1850,7 +1892,7 @@ public class FlashGroupCallSession(
         if (shareRun.machine.sharing) {
             onShareStatsSample(strained = encoderCpuLimited || healthNow.struggling)
         }
-        applyVoicePriority(qualitySamples)
+        applyVoicePriority(scanQuality)
         val speakers = activeLegs.filter { it.isSpeaking }.map { it.peerId }.toSet()
         val sampledAt = SystemTimeSource.nowMs()
         val cpuPercent = sampleCpuPercent(sampledAt)
@@ -1890,7 +1932,7 @@ public class FlashGroupCallSession(
         lastBytesReceived = totalBytesIn
         lastBytesSent = totalBytesOut
 
-        val avgRtt = if (rtts.isNotEmpty()) rtts.average().roundToInt() else null
+        val avgRtt = if (scanRtts.isNotEmpty()) scanRtts.average().roundToInt() else null
         val lossFraction = if (totalReceived + totalLost > 0L) {
             totalLost.toDouble() / (totalReceived + totalLost).toDouble()
         } else null
@@ -1912,6 +1954,18 @@ public class FlashGroupCallSession(
 
     private fun Map<String, Any>.bool(key: String): Boolean? =
         (this[key] as? Boolean) ?: (this[key] as? String)?.toBooleanStrictOrNull()
+
+    /**
+     * OPT-O11-04: `firstOrNull { }` over an `Iterable` allocates an iterator; this walks indices and inlines the
+     * predicate, so the three candidate-pair lookups per leg per second allocate nothing.
+     */
+    private inline fun <T> List<T>.firstWhere(predicate: (T) -> Boolean): T? {
+        for (index in indices) {
+            val element = this[index]
+            if (predicate(element)) return element
+        }
+        return null
+    }
 
     public fun onSignalingLost(peerId: String) {
         val leg = legs[peerId] ?: return

@@ -15,10 +15,14 @@ import kotlin.math.roundToInt
  * CALL_DIAG leg=<peer> CONNECTED rtt=4ms bwe=2400kbps path=host/host
  *   | vin 640x360 24.0fps dec=libvpx 2.1ms dropped=0 freezes=0 lost=0 jitter=3ms 780kbps
  *   | vout 960x540 30.0fps enc=libvpx 6.8ms limit=none 900kbps | cam 1280x720 30.0fps
- *   | ain 31kbps lost=0 | aout 29kbps
+ *   | ain 31kbps lost=0 jitter=4ms concealed=0 jb=42ms plc=0.4% avDrift=8ms | aout 29kbps
  * ```
  * Rates (`fps`, `kbps`, decode and encode milliseconds) are over the interval since the
  * previous line for that connection; `lost`, `dropped` and `freezes` are call totals.
+ *
+ * `jb`, `plc` and `avDrift` are OPT-O28-03: the average time a played sample waited in this endpoint's jitter buffer,
+ * the share of played samples the decoder had to conceal, and the audio/video playout skew (lip-sync error). They are
+ * computed from counter deltas by [CallQualityMath] and left out when the backend does not report their ingredients.
  *
  * Not thread-safe: each session calls it from its one stats loop.
  */
@@ -61,7 +65,16 @@ internal class CallDiagnostics(private val periodMs: Long = PERIOD_MS) {
             now["vout.frames"] = vout.sumOf { it.members.num("framesEncoded") ?: 0.0 }
             now["vout.encode"] = vout.sumOf { it.members.num("totalEncodeTime") ?: 0.0 }
         }
-        ain?.members?.let { now["ain.bytes"] = it.num("bytesReceived") ?: 0.0 }
+        ain?.members?.let { m ->
+            now["ain.bytes"] = m.num("bytesReceived") ?: 0.0
+            // OPT-O28-03: the quality counters are cumulative, so they go through the same delta machinery the rates do.
+            m.num("jitterBufferDelay")?.let { now["ain.jbDelay"] = it }
+            m.num("jitterBufferEmittedCount")?.let { now["ain.jbEmitted"] = it }
+            m.num("concealedSamples")?.let { now["ain.concealed"] = it }
+            m.num("totalSamplesReceived")?.let { now["ain.samples"] = it }
+            m.num("estimatedPlayoutTimestamp")?.let { now["ain.playoutTs"] = it }
+        }
+        vin?.members?.num("estimatedPlayoutTimestamp")?.let { now["vin.playoutTs"] = it }
         aout?.members?.let { now["aout.bytes"] = it.num("bytesSent") ?: 0.0 }
 
         val before = previous[label]
@@ -120,12 +133,28 @@ internal class CallDiagnostics(private val periodMs: Long = PERIOD_MS) {
             parts += listOfNotNull("cam", size(m), m.num("framesPerSecond")?.let { "${it.r1()}fps" }).joinToString(" ")
         }
         ain?.members?.let { m ->
+            // OPT-O28-03: the numbers that say whether the voice is healthy, not just how many bytes arrived.
+            val jbDelayMs = CallQualityMath.jitterBufferDelayMs(
+                delaySecondsDelta = delta("ain.jbDelay"),
+                emittedDelta = delta("ain.jbEmitted"),
+            )
+            val concealment = CallQualityMath.concealmentPercent(
+                concealedSamples = delta("ain.concealed") ?: m.num("concealedSamples"),
+                totalSamplesReceived = delta("ain.samples") ?: m.num("totalSamplesReceived"),
+            )
+            val avDriftMs = CallQualityMath.avDriftMs(
+                audioPlayoutSeconds = m.num("estimatedPlayoutTimestamp"),
+                videoPlayoutSeconds = vin?.members?.num("estimatedPlayoutTimestamp"),
+            )
             parts += listOfNotNull(
                 "ain",
                 kbps("ain.bytes"),
                 m.num("packetsLost")?.let { "lost=${it.toLong()}" },
                 m.num("jitter")?.let { "jitter=${(it * 1000).roundToInt()}ms" },
                 m.num("concealedSamples")?.let { "concealed=${it.toLong()}" },
+                jbDelayMs?.let { "jb=${it}ms" },
+                concealment?.let { "plc=$it%" },
+                avDriftMs?.let { "avDrift=${it}ms" },
             ).joinToString(" ")
         }
         aout?.members?.let { parts += listOfNotNull("aout", kbps("aout.bytes")).joinToString(" ") }

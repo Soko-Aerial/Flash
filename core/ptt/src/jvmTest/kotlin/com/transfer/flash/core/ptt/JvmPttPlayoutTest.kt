@@ -1,14 +1,20 @@
 package com.transfer.flash.core.ptt
 
+import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import com.transfer.flash.core.ptt.floor.PttJitterDepth
 
 class JvmPttPlayoutTest {
     private val lost = Recorder<Unit>()
+
+    /** The start depth is learnt across bursts (OPT-O12-04); each test starts from the shipped value. */
+    @BeforeTest
+    fun resetLearntDepth() = PttJitterDepth.reset()
 
     private fun playout(lines: PttPcmLines) = JvmPttPlayout(
         lines = lines,
