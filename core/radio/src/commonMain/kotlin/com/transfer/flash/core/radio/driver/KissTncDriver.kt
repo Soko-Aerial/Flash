@@ -58,8 +58,17 @@ public class KissTncConfig(
     public val txTailMs: Int? = null,
     /** Full duplex flag. */
     public val fullDuplex: Boolean? = null,
-    /** How long a single read waits before the loop checks for cancellation. */
-    public val readTimeoutMs: Long = 250,
+    /**
+     * How long a single read waits before returning 0 ("nothing yet").
+     *
+     * OPT-O26-01 / ADR-330: this used to be 250 ms, which made [KissTncDriver]'s read loop spin four times a
+     * second for the whole time a radio was connected (14 401 `read` calls per idle hour, EXP-130). Cancellation
+     * does not depend on it: `serve()` runs a closer job that calls [ByteLink.close], and closing is what wakes a
+     * blocked read. The value is therefore only a liveness *bound*: it guarantees that a link implementation which
+     * neither delivers bytes nor honours `close()` cannot hold the read loop for the rest of the process. 60 s is
+     * 240x fewer wakes than 250 ms and still bounds that case.
+     */
+    public val readTimeoutMs: Long = DEFAULT_READ_HEARTBEAT_MS,
     /** Size of the read buffer. */
     public val readBufferBytes: Int = 512,
     /** Largest KISS frame accepted from the TNC. */
@@ -76,6 +85,15 @@ public class KissTncConfig(
 ) {
     init {
         require(port in 0..15 && readTimeoutMs > 0 && readBufferBytes >= 16)
+    }
+
+    /** Named defaults. */
+    public companion object {
+        /**
+         * How often a quiet link's read is allowed to return 0 so the loop can look at its own liveness, in
+         * milliseconds. One wake a minute rather than four a second: see [readTimeoutMs] and ADR-330.
+         */
+        public const val DEFAULT_READ_HEARTBEAT_MS: Long = 60_000L
     }
 }
 
@@ -317,6 +335,9 @@ public class KissTncDriver(
 
     private suspend fun readLoop(link: ByteLink): String {
         val buf = ByteArray(config.readBufferBytes)
+        // OPT-O26-01 / ADR-330: a 0 here means the heartbeat interval elapsed with no byte on the wire, not "the link
+        // is dead". Nothing else has to happen on that tick (no probe, no state change): the loop keeps waiting, and
+        // `serve()`'s closer is what ends the read when the link or the scope goes away.
         while (coroutineContext.isActive) {
             val n = try {
                 link.read(buf, config.readTimeoutMs)
