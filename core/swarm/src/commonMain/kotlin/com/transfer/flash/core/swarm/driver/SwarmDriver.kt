@@ -697,7 +697,8 @@ public class SwarmDriver(
         groupId: String,
         root: ContentRoot,
         index: Int,
-    ): ByteArray? {        val pieceSize = record?.pieceSize ?: PieceMath.MIN_PIECE_SIZE
+    ): ByteArray? {
+        val pieceSize = record?.pieceSize ?: PieceMath.MIN_PIECE_SIZE
         val totalSize = record?.totalSize ?: (pieceSize.toLong() * (index + 1))
         val offset = PieceMath.pieceOffset(index, pieceSize)
         val len = PieceMath.pieceLength(index, totalSize, pieceSize)
