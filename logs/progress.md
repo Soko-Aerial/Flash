@@ -1,5 +1,62 @@
 # Progress Log
 
+## 2026-11-02 - Stream S (swarm) reviewed and merged as `6eff1714`; expanded gates running
+
+### Worked on
+Reviewed stream S against the code, merged it `--no-ff`, and started the expanded gates on the merged tree. Stream C (calls)
+was started in parallel from the same tree.
+
+### Changed
+- Merged `agent/opt-swarm` (14 stream commits + 1 integrator style commit) as **`6eff1714`**. Scope check:
+  `git diff --name-only 7adcf4f5..agent/opt-swarm` filtered against the owned paths returns **nothing** — only
+  `core/swarm/**`, four swarm files under `core/engine`, `FlashSwarmPieceMap.kt` and `logs/streams/swarm/**`.
+- Records integrated: **ADR-320..324**, **ERROR-961..964** (965 was reserved and unused), **EXP-125..128**, the four new
+  probes registered in `docs/testing/PROBES.md` (`swarm.piece.timeout`, `swarm.sched.stall`, `swarm.recv.wasted`,
+  `swarm.send.dropped`), and **PERF-S01/S02** in the test backlog. Review: `logs/streams/swarm/INTEGRATOR-REVIEW.md`.
+
+### Outcome
+**13 of 14 findings delivered; `OPT-O23-07` REJECTED on measurement** — `RandomAccessFile.seek` measured **2.1× slower** than
+the existing heap-wrapped buffer (read 669 vs 319 µs/MiB, write 781 vs 372), and the reused direct buffer was within noise.
+Nothing changed for it; EXP-128 records the recipe for a phone. That is the correct way to close a finding.
+
+### What the review verified rather than accepted
+- **`O08-02` (no more per-piece re-hash before serving) is safe:** the *receiving* peer still hashes every piece against the
+  manifest before storing it, so a corrupted serve is rejected and re-requested; the sender still checks the whole-file size
+  (rate-limited to one `identity()` per 2 s), which is what ERROR-109's signed `LOST` needs. The deliberate gap — a
+  same-size edit of an origin's file is caught by the receiver, not the sender — is recorded in ADR-324.
+- **`O02-04`'s drop rule is the right asymmetry:** piece frames drop (the requester re-asks after its timeout), control frames
+  never do (a lost `CANCEL` is a cancelled file that keeps downloading).
+- **`O08-03`'s yield is only a slot:** the victim leaves `activeRequesters` and loses its tenure counter, but its in-flight
+  reads still complete, and the slot count never grows.
+- **`O08-08`'s cap uses the codec's real limit** (64, not the audit's 256), keeping the newest, so a group that cancelled 65+
+  files can still exchange Summaries.
+
+### Defects the stream caught in its own work
+ERROR-961 (the first fast scan lost pieces with a null gate and double-decremented holders — caught by the 250-topology
+equivalence test against the original picker), ERROR-963 (the 64-vs-256 tombstone cap above), ERROR-964 (its own benchmark
+asserted a 4× wall-clock ratio and failed at exactly 4.0× under load; replaced by a work-count assertion with the timing
+printed). These are recorded as they wrote them.
+
+### Tooling damage — verified, not trusted
+The stream's editor introduced a BOM and double-encoded punctuation in `SwarmDriver.kt` and repaired it in `79f39848`. This
+review checked the result: no BOM at the start of any changed file and no `Â§`/`â€`/`Ã` sequences in `core/swarm`,
+`core/engine` or `ui/chat`. Two line-joining artifacts survived and were fixed (`): ByteArray? {        val pieceSize`,
+`toPieceRanges(...) {        if (...)`), plus one `Ã—` in the copied EXP-126 heading; behaviour unchanged.
+
+### Verification
+- Branch tip `73431508`, forced: `:core:swarm:jvmTest` **191/0** (was 151), `:core:engine:jvmTest` **175/0**,
+  `:ui:chat:jvmTest` **730/0**, `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin` green,
+  `BUILD SUCCESSFUL in 7m 37s`, 134/134 tasks.
+- `SwarmInteropTest` (the known rare flake) **passed**, 12.4 s; it also passed in a separate run.
+- Expanded gate 1 (with `:core:engine:jvmTest` added because S touched `core/engine`) and gate 2 are running on the merged
+  tree: `logs/wave4-s-gate1-2026-11-02.log`.
+
+### Remaining / next AI
+Record both merged-tree gate results and push. **Nothing swarm-side is device-verified**: throughput, fairness rotation cost,
+thermal step-down under real heat, idle wake-ups, resume after a kill, the 65-cancellation case and piece I/O on ART are
+`PERF-S01`/`PERF-S02`. Stream C (calls) is running in `E:\FlashWork\opt-calls` from `53caa6b6` and will `git merge dev` when
+it reaches its gate. No deploy, no device session, no presence work, no Wave 5.
+
 ## 2026-11-02 - Stream R (radio) reviewed and merged as `1fa3a2d1`; expanded gates running on the merged tree
 
 ### Worked on
