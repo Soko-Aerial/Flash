@@ -122,6 +122,10 @@ public class PttSessionEngine(
     private val _stats = MutableStateFlow<PttSessionStats?>(null)
     override public val stats: StateFlow<PttSessionStats?> = _stats.asStateFlow()
 
+    /** OPT-O12-01: when the stats snapshot last went out; 0 = never. Written from the playout thread. */
+    @Volatile
+    private var lastStatsAtMs: Long = 0L
+
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 16)
     override public val notices: SharedFlow<String> = _notices.asSharedFlow()
 
@@ -661,7 +665,11 @@ public class PttSessionEngine(
         val instance = audio.createPlayout(
             sampleRateHz = sessionRateHz,
             packetMs = sessionPacketMs,
-            onAmplitude = { refreshPttSessionStats() },
+            // OPT-O12-01: the playout loop calls this once per 20 ms packet (50 Hz). It used to build a
+            // `PttPlayoutSnapshot` + `PttSessionStats` and emit a StateFlow value per packet, waking every
+            // Compose collector 50 times a second to move an amplitude bar; at most 10 Hz is what the bar can
+            // show, so the refresh is rate-limited and the allocations drop with it.
+            onAmplitude = { refreshPttSessionStatsIfDue() },
             onPlayoutLost = {
                 scope.launch {
                     if (playout === slot[0]) {
@@ -791,6 +799,19 @@ public class PttSessionEngine(
         }
     }
 
+    /**
+     * OPT-O12-01: [refreshPttSessionStats] at most once per [STATS_MIN_INTERVAL_MS], however fast the audio
+     * callback that drives it. The playout thread's amplitude callback is the only 50 Hz caller; every other
+     * caller (a member leaving, a state change) publishes immediately.
+     */
+    private fun refreshPttSessionStatsIfDue() {
+        val now = nowMs()
+        val previous = lastStatsAtMs
+        if (previous != 0L && now - previous < STATS_MIN_INTERVAL_MS) return
+        lastStatsAtMs = now
+        refreshPttSessionStats()
+    }
+
     private fun refreshPttSessionStats() {
         val now = nowMs()
         _stats.value = when (val current = floor) {
@@ -866,6 +887,13 @@ public class PttSessionEngine(
         private const val TAG = "PTT_SESS"
         private const val TICK_MS = 500L
         private const val HEARTBEAT_MS = 1000L
+
+        /**
+         * OPT-O12-01: minimum gap between two stats snapshots driven by the playout amplitude callback. The
+         * callback fires once per 20 ms audio packet; 100 ms is ten updates a second, which is what an
+         * amplitude bar can show.
+         */
+        private const val STATS_MIN_INTERVAL_MS = 100L
         private const val MAX_TRACKED_HB = 120
 
         /**
