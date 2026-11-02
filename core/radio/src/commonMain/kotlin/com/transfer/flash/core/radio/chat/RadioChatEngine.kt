@@ -143,8 +143,11 @@ public class RadioChatEngine(
         val onCompleted: (TxResult) -> Unit,
     )
 
-    // Four priority queues (Plan R §7 rule 3e). Bounded (OPT-O26-03): a full lane suspends its producer rather than
-    // growing the heap, and the producer is already a suspending send path that waits for the transmit result.
+    // Four priority queues (Plan R §7 rule 3e). Bounded (OPT-O26-03): a full lane never grows the heap.
+    // EMERGENCY, TEXT and LOCATION are fed by suspending send paths that already await the transmit result. ACK is
+    // different: its producer is the RX collector, so a full ACK lane pauses *reception* for about one lane of
+    // transmissions (~32 frames). That pause is bounded and covered by the driver's 128-frame receive buffer, and
+    // ADR-331 records why it is preferred over dropping an ACK, which would cost the peer a whole-message retransmission.
     private val laneEmergency = Channel<PriorityTask>(LANE_CAPACITY)
     private val laneText = Channel<PriorityTask>(LANE_CAPACITY)
     private val laneAck = Channel<PriorityTask>(LANE_CAPACITY)
@@ -582,6 +585,8 @@ public class RadioChatEngine(
                     }
                 },
             )
+            // Suspending on purpose (ADR-331): a full lane pauses the RX collector for about one lane of airtime,
+            // which is bounded and cheaper than dropping the ACK and making the peer resend a whole message.
             laneAck.send(task)
         }
     }
