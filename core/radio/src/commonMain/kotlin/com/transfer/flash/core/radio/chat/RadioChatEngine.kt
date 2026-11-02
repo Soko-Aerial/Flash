@@ -101,14 +101,18 @@ public class RadioChatEngine(
         }
     }.stateIn(scope, SharingStarted.Eagerly, RadioChatStatus.DISCONNECTED)
 
-    private class PendingOutbound(
-        val messageId: String,
-        val recipientId: String,
-        val sentAtMs: Long,
-    )
-
-    private val pendingAcks = HashMap<Long, PendingOutbound>()
+    /**
+     * Outbound texts waiting for their cryptographic ACK, bounded by size and age (OPT-O26-03 / ADR-331).
+     *
+     * Was an unbounded HashMap: on a lossy channel a lost ACK left its entry in the heap for the life of the
+     * process. An evicted entry costs one retransmission (the outbox re-sends the identical frame, the receiver
+     * re-ACKs a duplicate), never a lost message - see the table's own note.
+     */
+    private val pendingAcks = PendingAckTable()
     private val pendingMutex = Mutex()
+
+    /** How many texts are waiting for an ACK. Tests and diagnostics only. */
+    internal val pendingAckCount: Int get() = pendingAcks.size
 
     /**
      * One transmit's encoded frames, kept so a retry puts the SAME counters back on the air.
@@ -139,11 +143,12 @@ public class RadioChatEngine(
         val onCompleted: (TxResult) -> Unit,
     )
 
-    // Four priority queues (Plan R §7 rule 3e)
-    private val laneEmergency = Channel<PriorityTask>(Channel.UNLIMITED)
-    private val laneText = Channel<PriorityTask>(Channel.UNLIMITED)
-    private val laneAck = Channel<PriorityTask>(Channel.UNLIMITED)
-    private val laneLocation = Channel<PriorityTask>(Channel.UNLIMITED)
+    // Four priority queues (Plan R §7 rule 3e). Bounded (OPT-O26-03): a full lane suspends its producer rather than
+    // growing the heap, and the producer is already a suspending send path that waits for the transmit result.
+    private val laneEmergency = Channel<PriorityTask>(LANE_CAPACITY)
+    private val laneText = Channel<PriorityTask>(LANE_CAPACITY)
+    private val laneAck = Channel<PriorityTask>(LANE_CAPACITY)
+    private val laneLocation = Channel<PriorityTask>(LANE_CAPACITY)
 
     private var pumpJob: Job? = null
     private var rxCollectorJob: Job? = null
@@ -327,7 +332,7 @@ public class RadioChatEngine(
         return when (txOutcome) {
             is TxResult.Sent -> {
                 pendingMutex.withLock {
-                    pendingAcks[firstCounter] = PendingOutbound(messageId, recipientId, sentAtMs)
+                    pendingAcks.put(firstCounter, messageId, recipientId, sentAtMs, nowMs)
                     lastSentFrames[messageId] = SentFrames(ax25Frames, firstCounter, textBytes.size, nowMs)
                     while (lastSentFrames.size > MAX_REMEMBERED_FRAMES) {
                         val oldest = lastSentFrames.keys.firstOrNull() ?: break
@@ -493,7 +498,7 @@ public class RadioChatEngine(
                                 (b[3].toLong() and 0xFF)
 
                             val pending = pendingMutex.withLock {
-                                pendingAcks.remove(ackedCounter)
+                                pendingAcks.remove(ackedCounter, nowMs)
                             }
                             if (pending != null) {
                                 FlashProbe.emit(
@@ -603,5 +608,11 @@ public class RadioChatEngine(
 
         /** Bounded: only the most recent sends keep their frames for a retry. */
         const val MAX_REMEMBERED_FRAMES: Int = 64
+
+        /**
+         * Tasks one priority lane may hold (OPT-O26-03). A `PriorityTask` keeps at most one 16-segment message, so a
+         * lane is bounded at roughly 32 x 16 x 236 bytes; a full lane suspends its producer instead of growing.
+         */
+        const val LANE_CAPACITY: Int = 32
     }
 }
