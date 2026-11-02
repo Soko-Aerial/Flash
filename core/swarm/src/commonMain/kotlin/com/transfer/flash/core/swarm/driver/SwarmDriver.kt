@@ -1082,6 +1082,11 @@ public class SwarmDriver(
         eventChannel.trySend(SwarmEvent.CallActive(active, now()))
     }
 
+    /** The host's thermal governor changed state (OPT-O08-06); the engine steps its serve profile down or restores it. */
+    public fun onThermalStatus(status: com.transfer.flash.core.common.perf.FlashThermalStatus) {
+        eventChannel.trySend(SwarmEvent.ThermalChanged(status, now()))
+    }
+
     public fun onSpaceChanged(freeBytes: Long) {
         eventChannel.trySend(SwarmEvent.SpaceChanged(freeBytes, now()))
     }

@@ -181,3 +181,31 @@ content, true for an offer and for a transfer in progress, false after a local c
 
 ### Measured
 Wake-ups/hour: **14,400 -> 720** at idle (arithmetic on the asserted periods). Device effect on battery: **NOT MEASURED**.
+## 2026-11-02 — OPT-O08-06: the swarm listens to the thermal governor
+
+### Worked on
+`AndroidThermalGovernor` (core/common, a process-wide singleton with a no-op default) was wired into the 1:1
+`MultiStreamDispatcher` and into nothing in the swarm: at `THERMAL_STATUS_SEVERE` a device kept serving with the full
+profile — 4 upload slots and a 32 MiB window — and kept hashing pieces for its members.
+
+### Changed
+- `SwarmEvent.ThermalChanged(status)` + `SwarmEngine.applyThermalStatus`: `NONE`/`LIGHT` keep the configured
+  profile, `MODERATE` steps it down one notch, `SEVERE`/`CRITICAL`/`EMERGENCY` drop to `SwarmProfile.LOW` **and**
+  stop serving; recovery restores the configured profile.
+- `RequestWindow.setBudgetBytes` + `currentBudgetBytes`: the in-flight budget follows the effective profile without
+  disturbing in-flight accounting.
+- `ServeHandler.handleRequestArrived` takes the effective profile and a thermal-serving flag; the user's own
+  "do not serve" choice is a separate flag and is never overwritten by cooling.
+- `SwarmHostBinding.updateEnvironment()` samples `ThermalGovernor.get().status` (a no-op default on hosts with no
+  sensor) and forwards changes. `app/**` (Stream G) needs no change: the governor is already installed there and is a
+  singleton.
+
+### Verification
+`SwarmThermalStepDownTest`: HIGH 32 MiB -> MODERATE 16 MiB (MEDIUM) -> SEVERE 8 MiB (LOW) **and** a request answered
+`BUSY` -> NONE restores 32 MiB and the same request is served again; a call still takes priority under `LIGHT`; a
+person's "do not serve" survives a CRITICAL-then-NONE cycle.
+`:core:swarm:jvmTest` green; `:core:engine:compileKotlinJvm` green.
+
+### Measured
+No synthetic temperature was run and no CPU was measured: the states are asserted, the *device* effect is
+**NOT MEASURED** (PERF-S01 needs a phone under load).
