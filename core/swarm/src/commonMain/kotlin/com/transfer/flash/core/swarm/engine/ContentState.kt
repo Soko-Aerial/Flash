@@ -56,6 +56,13 @@ internal class ContentState(
     var storageUnavailable: Boolean = false
     var verifyFailures: Int = 0
 
+    /** Bytes of duplicate/unsolicited pieces thrown away, and when that was last reported (OPT-O28-04). */
+    var wastedBytes: Long = 0L
+    var lastWastedProbeMs: Long = 0L
+
+    /** When this content last reported that its request window was full while pieces were missing (OPT-O28-04). */
+    var lastStallProbeMs: Long = 0L
+
     var finalPath: String? = null
     var identitySize: Long? = null
     var identityModifiedMs: Long? = null

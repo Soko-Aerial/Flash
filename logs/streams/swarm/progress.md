@@ -324,3 +324,35 @@ radius, colours, legend and semantics).
 Frame-time or allocation-rate on a device: **NOT MEASURED** (needs a device profile; the finding's own 2 MB/min figure was
 also an estimate). The number of objects built per frame drops from 2 `PieceGrid` + up to 64 `Stroke` to **0** while
 nothing changes; that is a count, not a measurement.
+## 2026-11-02 — OPT-O28-04: scheduler telemetry
+
+### Worked on
+The swarm scheduler was a black box: a piece that timed out vanished from the in-flight map with nothing logged, a
+receiver whose window was full while pieces were missing looked identical in the logs to one with nothing to do, the
+duplicate pieces thrown away in an endgame race were never counted, and a piece frame dropped by a saturated peer queue
+(O02-04) was invisible.
+
+### Changed
+- New `engine/SwarmTelemetry.kt` (a `fun interface`): the engine stays sans-IO and reports rare events to a callback;
+  the driver forwards them to `FlashProbe`, a test collects a list.
+- `swarm.piece.timeout transfer= peer= piece= elapsedMs= speedBps=` on every timed-out request (`checkTimeouts`).
+- `swarm.sched.stall transfer= reason=window_full inFlightBytes= budgetBytes= piecesDone= totalPieces= peers=` when a
+  receiver with connected holders cannot ask for anything, rate-limited to once per 2 s per content and never per tick.
+- `swarm.recv.wasted transfer= peer= piece= wastedBytes= receivedBytes=` for a duplicate/unsolicited piece, cumulative
+  per content, rate-limited to once per 5 s.
+- `swarm.send.dropped peer= type=piece dropped= deferred=` from the bounded send queue (first drop, then every 50th).
+- Every probe is on a rare event or rate-limited; the healthy path emits nothing (asserted).
+
+### Verification
+`SwarmTelemetryTest`: a timed-out request reports peer/elapsedMs/piece; a full window reports `window_full` with the
+16 MiB budget, not again within the interval and again after it; an unsolicited piece reports `wastedBytes=1048576`; a
+healthy 2-piece transfer emits **no** probe.
+`:core:swarm:jvmTest` 185 tests, 0 failures.
+
+### Measured
+This is the measurement capability, not a measurement. Its own cost is asserted structurally (no probe on the healthy
+path); probe overhead on a device: **NOT MEASURED**.
+
+### Ow ed (probe registration)
+The new names (`swarm.piece.timeout`, `swarm.sched.stall`, `swarm.recv.wasted`, `swarm.send.dropped`) must be
+added to `docs/testing/PROBES.md` by the integrator — this stream may not edit the canonical docs.

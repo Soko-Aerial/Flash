@@ -72,7 +72,11 @@ public class SwarmDriver(
     seed: Long = 42L,
 ) : FlashSwarm {
 
-    private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed)
+    private val engineTelemetry = com.transfer.flash.core.swarm.engine.SwarmTelemetry { name, fields ->
+        FlashProbe.emit(name, *fields.toTypedArray())
+    }
+
+    private val engine: SwarmEngine = SwarmEngine(config.toEngineConfig(), localDeviceId, seed, telemetry = engineTelemetry)
 
     /**
      * Inbound engine events (OPT-O02-04). Bounded: a decoded `PieceArrived` carries up to a megabyte, and with an
@@ -350,8 +354,20 @@ public class SwarmDriver(
 
     private fun enqueueSend(peerId: String, frame: SwarmFrame) {
         val queue = sendQueues.getOrPut(peerId) {
-            SwarmSendQueue(peerId, scope, workerDispatcher) { f ->
+            SwarmSendQueue(peerId, scope, workerDispatcher, send = { f ->
                 transport.send(peerId, SwarmFrameCodec.encode(f))
+            }) { dropped, deferred ->
+                // OPT-O28-04: a piece frame the peer's full queue made us throw away. The requester's timeout recovers
+                // it, so this is a delay, but it is the one signal that says the link is saturated.
+                if (dropped == 1L || dropped % 50L == 0L) {
+                    FlashProbe.emit(
+                        "swarm.send.dropped",
+                        "peer", peerId.take(8),
+                        "type", "piece",
+                        "dropped", dropped,
+                        "deferred", deferred,
+                    )
+                }
             }
         }
         queue.offer(frame)
