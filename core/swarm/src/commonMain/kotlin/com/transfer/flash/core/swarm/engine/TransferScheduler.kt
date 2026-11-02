@@ -394,7 +394,8 @@ internal class TransferScheduler(
         }
     }
 
-    private fun toPieceRanges(pieces: Set<Int>): List<PieceRange> {        if (pieces.isEmpty()) return emptyList()
+    private fun toPieceRanges(pieces: Set<Int>): List<PieceRange> {
+        if (pieces.isEmpty()) return emptyList()
         val sorted = pieces.sorted()
         val ranges = ArrayList<PieceRange>()
         var start = sorted[0]

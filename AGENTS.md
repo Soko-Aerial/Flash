@@ -955,7 +955,16 @@ gate 1 on the second run (`BUILD SUCCESSFUL 8m 7s`, 261/261 tasks, exit 0; the f
 `RelayDeliveryContractTest` cases on a tree whose `server/`+`core/common` diff is empty — ERROR-959's flaky class, recorded)
 and gate 2 (`BUILD SUCCESSFUL 8m 55s`, 218/218 tasks, 2 110 tests, 0 failures, 0 skips). Radio host re-run on the merged
 tree: 192/0/0.
-**Stream S (swarm) is still running** in `E:\FlashWork\opt-swarm`; do not disturb its worktree or build.
+**S is now MERGED**: reviewed tip `73431508`, merged `--no-ff` as **`6eff1714`**. **13 of 14 findings delivered; `OPT-O23-07`
+REJECTED on measurement** (`RandomAccessFile.seek` 2.1× slower, EXP-128 — nothing changed). Review verified that the receiving
+peer still hashes every piece (so `O08-02`'s trust-the-bitfield cannot propagate corruption), that control frames are never
+dropped by the bounded queue, that a fairness yield gives up only a slot, and that the tombstone cap is the codec's real 64
+(ERROR-963: a group that cancelled 65 files could not send a Summary at all). Stream-caught defects: ERROR-961 (fast scan),
+ERROR-964 (load-sensitive timing assertion replaced by a work-count one). Branch gate: swarm 191/0, engine 175/0, chat 730/0,
+desktop + app compile. Records: ADR-320..324, ERROR-961..964, EXP-125..128, PERF-S01/S02 owed (**nothing swarm-side is
+device-verified**), four probes registered in `docs/testing/PROBES.md`. Expanded gates are running on the merged tree.
+**Stream C (calls) is now RUNNING** in `E:\FlashWork\opt-calls` (`agent/opt-calls`) from `53caa6b6`; it must `git merge dev`
+before its final gate. Do not disturb its worktree or build.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
