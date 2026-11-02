@@ -355,6 +355,9 @@ internal class RfcommLink(private val socket: BluetoothSocket, override val desc
     override fun close() {
         if (closed) return
         closed = true
+        // OPT-O26-03: release a pump that is parked on the bounded chunk queue before the socket goes away; closing
+        // the socket alone only wakes a pump blocked in InputStream.read.
+        reader.close()
         runCatching { socket.close() }
     }
 }

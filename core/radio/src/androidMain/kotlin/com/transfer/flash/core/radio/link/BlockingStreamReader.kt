@@ -50,6 +50,17 @@ internal class BlockingStreamReader(
         return drain(chunk, buffer)
     }
 
+    /**
+     * Ends the reader: a pending [read] returns -1 and a pump parked on a full chunk queue is released.
+     *
+     * Needed because the bounded channel is what can park the pump (OPT-O26-03): closing the *socket* wakes a pump
+     * blocked in `InputStream.read`, but not one blocked handing a chunk over, so without this a link that is closed
+     * while the consumer has stopped would leave its pump thread waiting for ever. Idempotent.
+     */
+    fun close() {
+        chunks.close()
+    }
+
     private fun drain(source: ByteArray, buffer: ByteArray): Int {
         val n = minOf(source.size - leftoverOffset, buffer.size)
         System.arraycopy(source, leftoverOffset, buffer, 0, n)

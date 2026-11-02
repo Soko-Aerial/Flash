@@ -92,6 +92,10 @@ one existing test file gained a case). The `:core:radio` suite is what the integ
 - One self-inflicted test failure, kept in the record: the new `ByteQueue` initially mixed absolute `head` with a relative
   `tail`, so `size` was wrong; **the pre-existing `StreamFramerTest` (chunk=3) caught it on the first run**, which is why
   that test was not touched. Fixed; it passes.
+- One defect found in this stream's own O26-03 work before it was reported: bounding the reader's chunk channel parks the
+  pump thread when the consumer stops, and closing the *socket* does not wake a thread parked in the hand-over. So
+  `BlockingStreamReader.close()` now closes the channel and `RfcommLink.close()` calls it first; a new host test
+  ("closing the reader releases a pump parked on a full chunk queue") guards it and was run three times, green.
 
 ### Remaining / next
 
