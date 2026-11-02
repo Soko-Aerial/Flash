@@ -1,5 +1,41 @@
 # Progress Log
 
+## 2026-11-02 - Merged-tree gate 1 failed on two timing cases; both pass isolated, complete rerun running
+
+### Worked on
+Ran the expanded plan section 6.3 gate-1 command forced on the merged tree **`c5d825f9`** (E + K). It failed, so no push
+was made and no gate-2 run started on that tree.
+
+### Verification
+- Merged-tree gate 1 attempt 1: **FAIL**, `BUILD FAILED in 8m 36s`, 259/259 tasks executed.
+  `:server:test` 664 tests with `RelayDeliveryContractTest.anExpiredSessionThatKeepsTalkingIsCutOffAtItsNextFrame`
+  failing at line 452 (the session **was** cut off at line 451, but the client never observed the `ERR_EXPIRED` frame) —
+  ERROR-959. `:desktop:jvmTest` with `DesktopEnginePttTest.a talk session travels between two paired desktops and ends on
+  release` failing at line 101 (`only 0 of 8 audio frames reached beta's playout`, 10 s window, case ran 18.5 s) —
+  ERROR-960. Every other gate-1 task completed.
+- Both pass alone on the same unchanged tree: desktop PTT class `BUILD SUCCESSFUL in 2m 30s` (70/70 tasks, exit 0),
+  server relay class `BUILD SUCCESSFUL in 59s` (24/24 tasks, exit 0). Raw logs:
+  `logs/wave4-ek-isolated-desktop-ptt.log`, `logs/wave4-ek-isolated-server-relay.log` (both ignored).
+- E is not indicated for ERROR-960: its only new code on that path (`evaluateDiscoveryActiveState`) sits behind
+  `if (!isWindowActive)` in three collectors, and `DesktopEnginePttTest` never calls `setWindowActive`, so the new
+  discovery re-evaluation is inert there. E changed nothing under `core/` or `server/`, which rule out ERROR-959 as E's
+  by construction.
+- Environment during the failing run: **8 logical CPUs, ~2.4 GB free of 20 GB**, other Java and node processes active —
+  the saturation §36 warns about. Nothing was weakened: no assertion, timeout or suite changed.
+- A complete forced gate 1 rerun is running on `c5d825f9`:
+  `logs/wave4-ek-gate1-rerun-2026-11-02.log` (ignored). No result yet.
+
+### Correction to an earlier statement
+`origin` **does** carry `dev` (`2d3920bd`). Local `dev` is **162 commits ahead, 0 behind**, so the eventual push is a
+plain fast-forward of an existing branch, not the creation of one, and needs no force. Nothing has been pushed; the push
+waits for a green pair of merged-tree gates.
+
+### Remaining / next AI
+Record the rerun result, then run merged-tree gate 2. Push `dev` only when both merged-tree gates are green; a repeat
+failure on either case needs frame/queue evidence before any code or test change. ERROR-957..960 are all OPEN as
+intermittent with no established root cause. No deploy, device session, presence work or Wave 5; every PERF-E/PERF-K
+check stays TODO.
+
 ## 2026-11-02 - Desktop E merged --no-ff as `c5d825f9`; both expanded gates running on the merged tree
 
 ### Worked on / changed

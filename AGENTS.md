@@ -932,8 +932,11 @@ Targeted repaired verification PASS: desktop 259 tests, kernel 602, zero failure
 Cipher/Mac ThreadLocals in favor of Provider selection/fresh operations. No algorithm/key-size/nonce/AAD/pin/wire downgrade
 or zeroization guarantee. All numeric headlines withdrawn/NOT MEASURED; gzip/flat/lambda APIs are not broad production
 integration. Canonical reviewed records: ADR-300..314/350, ERROR-941..948/951..956, EXP-115..124.
-Owed PERF-E01..E08/PERF-K01..K05. **Next: both expanded gates on the merged `c5d825f9` tree must pass; a new failure
-there belongs to E's merge and needs its own ERROR before anything else lands.**
+Owed PERF-E01..E08/PERF-K01..K05. **Next: the merged-tree gates must pass before anything is pushed.** First merged-tree
+gate 1 on `c5d825f9` FAILED on two timing cases (ERROR-959 relay `ERR_EXPIRED` frame after a successful cut-off, ERROR-960
+desktop PTT 0-of-8 frames); both pass alone, E is not indicated, nothing was weakened, and a complete forced rerun is in
+progress. `origin` already has `dev` (`2d3920bd`) and local `dev` is 162 ahead/0 behind, so the push is a plain
+fast-forward once both gates are green.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.
 No push/deploy/device session/presence/Wave 5 implementation. Current authority: `logs/handoff.md`, `logs/progress.md`,
 `logs/streams/{desktop,kernel}/INTEGRATOR-REVIEW.md`. Older phase entries below are historical.
