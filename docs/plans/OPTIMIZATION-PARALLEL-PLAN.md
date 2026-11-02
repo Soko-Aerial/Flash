@@ -212,30 +212,6 @@ not implemented by this integration. After a Room or server-migration merge, run
 `FlashJvmMigrationsTest` (+ the server `MigratorTest`) **again on the merged result**: two individually green
 migrations can still collide. E and K change no schema.
 
-#### 6.3.2 Splitting command 1 on a loaded machine — allowed 2026-11-02, recorded at the owner's decision
-
-Command 1 may be run as **two forced invocations** instead of one when the machine cannot carry the monolithic run. The
-split is by task, never by coverage:
-
-```text
-A  :core:common :core:security :core:persistence :core:messaging :core:transfer :core:swarm :core:engine :core:network
-   :core:discovery :core:radio :core:calling :core:ptt :ui:chat :ui:theme :ui:callui :core:enterprise :core:hub-protocol
-   (all :jvmTest)                                              --continue --rerun-tasks --no-build-cache
-B  :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
-                                                               --continue --rerun-tasks --no-build-cache
-```
-
-**Why:** finishing stream C, the monolithic command failed **four times in a row**, each time on a *different* real-time
-test in a *different* suite — the relay fixture race (ERROR-974, a genuine test-side race, since fixed), a PTT 5 s
-real-time wait (ERROR-975), the radio harness's own timing budget (`acked=1 lost=3 wallMs=5110`), a messaging mutation
-test and a swarm `concurrent finalizes` case. Every suite passed alone on the same tree. The failures were the first
-suites in the run, so the machine's state *within* one 13-minute invocation was the variable, not the code.
-
-**What this does not change:** every suite still runs, with `--rerun-tasks --no-build-cache`, and every task in the lists
-above is still executed. No assertion, timeout, skip or suite is touched. The only difference is that daemon/OS state is
-released between the two invocations. Both exit codes and both XML count sets must be recorded, exactly as for the single
-command, and both must be green before a push. If either red, the merge waits.
-
 #### 6.3.1 Baseline — measured 2026-10-30 on `dev` at `54ff4737`
 
 Both commands were run forced (`--rerun-tasks`), on Windows, after this plan's commit, before any stream started.
@@ -315,6 +291,30 @@ larger win needs per-task forks, which wait for `PERF-A07` (the two sleep-based 
 Stream A's outcome: 21 of 25 findings merged; `O22-01` (ABI splits), `O22-04` (jlink pruning), `O22-06` (WebRTC keep rules)
 and `O22-07` (`:ui:chat` dependencies) reverted, `O19-05` (AppCDS) reverted as not delivered, and the fork/daemon/profile
 settings corrected. Authority: **ADR-231**, the per-finding table in `logs/streams/build/INTEGRATOR-REVIEW.md`.
+
+#### 6.3.3 Splitting command 1 on a loaded machine — allowed 2026-11-02, recorded at the owner's decision
+
+Command 1 may be run as **two forced invocations** instead of one when the machine cannot carry the monolithic run. The
+split is by task, never by coverage:
+
+```text
+A  :core:common :core:security :core:persistence :core:messaging :core:transfer :core:swarm :core:engine :core:network
+   :core:discovery :core:radio :core:calling :core:ptt :ui:chat :ui:theme :ui:callui :core:enterprise :core:hub-protocol
+   (all :jvmTest)                                              --continue --rerun-tasks --no-build-cache
+B  :server:test :desktop:jvmTest :desktop:compileKotlinJvm :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
+                                                               --continue --rerun-tasks --no-build-cache
+```
+
+**Why:** finishing stream C, the monolithic command failed **four times in a row**, each time on a *different* real-time
+test in a *different* suite — the relay fixture race (ERROR-974, a genuine test-side race, since fixed), a PTT 5 s
+real-time wait (ERROR-975), the radio harness's own timing budget (`acked=1 lost=3 wallMs=5110`), a messaging mutation test
+and a swarm `concurrent finalizes` case. Every suite passed alone on the same tree. The failures were the first suites in
+the run, so the machine's state *within* one 13-minute invocation was the variable, not the code.
+
+**What this does not change:** every suite still runs, with `--rerun-tasks --no-build-cache`, and every task in the lists
+above is still executed. No assertion, timeout, skip or suite is touched. The only difference is that daemon/OS state is
+released between the two invocations. Both exit codes and both XML count sets must be recorded, exactly as for the single
+command, and both must be green before a push. If either red, the merge waits.
 
 ---
 
