@@ -962,7 +962,9 @@ dropped by the bounded queue, that a fairness yield gives up only a slot, and th
 (ERROR-963: a group that cancelled 65 files could not send a Summary at all). Stream-caught defects: ERROR-961 (fast scan),
 ERROR-964 (load-sensitive timing assertion replaced by a work-count one). Branch gate: swarm 191/0, engine 175/0, chat 730/0,
 desktop + app compile. Records: ADR-320..324, ERROR-961..964, EXP-125..128, PERF-S01/S02 owed (**nothing swarm-side is
-device-verified**), four probes registered in `docs/testing/PROBES.md`. Expanded gates are running on the merged tree.
+device-verified**), four probes registered in `docs/testing/PROBES.md`. **Both expanded gates are GREEN on the merged tree:**
+gate 1 `BUILD SUCCESSFUL 10m 58s`, 263/263 tasks, 4 101 tests, 0 failures, 2 documented POSIX-only skips (with
+`:core:engine:jvmTest` added); gate 2 `BUILD SUCCESSFUL 9m 15s`, 218/218 tasks, 2 110 tests, 0 failures, 0 skips.
 **Stream C (calls) is now RUNNING** in `E:\FlashWork\opt-calls` (`agent/opt-calls`) from `53caa6b6`; it must `git merge dev`
 before its final gate. Do not disturb its worktree or build.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.

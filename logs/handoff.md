@@ -14,7 +14,9 @@
 > plus a stale `Ã—` in the copied EXP-126 heading were fixed; behaviour unchanged.
 > **Branch gate:** swarm 191/0, engine 175/0, chat 730/0, desktop + app compile (`BUILD SUCCESSFUL 7m 37s`, 134 tasks);
 > `SwarmInteropTest` passed. **Nothing swarm-side is device-verified** — `PERF-S01`/`S02` are owed.
-> **Now:** expanded gate 1 (with `:core:engine:jvmTest` added for S) and gate 2 on the merged tree, then push.
+> **Now:** **both expanded gates are GREEN on the merged tree** — gate 1 `BUILD SUCCESSFUL 10m 58s`, 263/263 tasks,
+> **4 101 tests, 0 failures, 2 documented POSIX-only skips** (with `:core:engine:jvmTest` added for S); gate 2
+> `BUILD SUCCESSFUL 9m 15s`, 218/218 tasks, **2 110 tests, 0 failures, 0 skips**. Next: push.
 > **Stream C (calls)** was started in `E:\FlashWork\opt-calls` (`agent/opt-calls`) from `53caa6b6`; it must `git merge dev`
 > before its final gate to pick up S.
 
