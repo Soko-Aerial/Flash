@@ -1,7 +1,6 @@
 package com.transfer.flash.core.calling
 
 import com.transfer.flash.core.common.perf.FlashPerformanceMode
-import com.transfer.flash.core.common.perf.FlashVideoProfile
 import com.transfer.flash.core.common.perf.FlashVoiceProfile
 
 /**
@@ -15,10 +14,15 @@ import com.transfer.flash.core.common.perf.FlashVoiceProfile
  *    half-duplex 2.4 GHz link the packet rate is what costs latency — see [FlashVoiceProfile] for
  *    the arithmetic. Which direction is the win depends on the device and the radio, which is why
  *    this is a tier knob now and not a constant.
- * 2. **Encoder bitrate window** (`x-google-{start,min,max}-bitrate`). A cold VP8 encoder starts
- *    near 300 kbps and lets bandwidth estimation walk it up, so the opening second of a call is a
- *    smear; the ceiling matters because libwebrtc's internal codec table otherwise caps the stream
- *    wherever it pleases.
+ * 2. **Encoder bitrate window** (`x-google-{start,min,max}-bitrate`) for the video section.
+ *    **This half is gone (OPT-O11-05).** [enforceVp8Only] strips *every* `a=fmtp:` line in the
+ *    video section — it has to, because libwebrtc's `VideoDecoderFactoryTemplate` compares a
+ *    supported VP8 format's (empty) parameters against the offered one, and any fmtp line makes the
+ *    decoder lookup fail into `NullVideoDecoder` (black video, ERROR-078's neighbourhood). The
+ *    hints were therefore formatted and thrown away one call deeper: the sender's real bitrate
+ *    envelope is set on `RTPRtpSender.setParameters` (`RtpSenderTuning`), which is the only place
+ *    the stack honours it. Keeping dead formatting here also taught the wrong thing — that the video
+ *    bitrate was bounded by the SDP — so the video section is now passed through untouched.
  *
  * ## Direction matters, and that is the whole tiering design
  *
@@ -177,12 +181,6 @@ internal object CallSdp {
         Param("maxaveragebitrate", voice.maxBitrateBps.toString(), Envelope.MIN),
     )
 
-    private fun videoParams(video: FlashVideoProfile): List<Param> = listOf(
-        Param("x-google-start-bitrate", video.startBitrateKbps.toString(), Envelope.MIN),
-        Param("x-google-min-bitrate", video.minBitrateKbps.toString(), Envelope.MIN),
-        Param("x-google-max-bitrate", video.maxBitrateKbps.toString(), Envelope.MIN),
-    )
-
     /**
      * Returns [sdp] with its audio and video sections retuned, or [sdp] unchanged when there is
      * nothing to do. Never throws: a body this does not recognise is passed through.
@@ -198,7 +196,9 @@ internal object CallSdp {
         fun flushSection() {
             out += when (kind) {
                 "audio" -> tuneAudio(section, mode.voice, force)
-                "video" -> tuneVideo(section, mode.video, force)
+                // OPT-O11-05: the video section is passed through. Its fmtp hints only ever existed
+                // to be stripped again by [enforceVp8Only] (see the type KDoc); the sender's real
+                // bitrate envelope is `RtpSenderTuning`'s `setParameters`.
                 else -> section
             }
             section = ArrayList()
@@ -221,12 +221,6 @@ internal object CallSdp {
         force: Boolean,
     ): List<String> =
         withPtime(mergeFmtp(lines, OPUS_CODECS, opusParams(voice), force), voice.ptimeMs, force)
-
-    private fun tuneVideo(
-        lines: List<String>,
-        video: FlashVideoProfile,
-        force: Boolean,
-    ): List<String> = mergeFmtp(lines, VIDEO_CODECS, videoParams(video), force)
 
     /**
      * The effective value of one parameter. [force] ignores [theirs] entirely; otherwise a peer
@@ -366,8 +360,6 @@ internal object CallSdp {
     }
 
     private val OPUS_CODECS = setOf("OPUS")
-
-    private val VIDEO_CODECS = setOf("VP8", "VP9", "H264", "H265", "AV1", "AV1X")
 
     private const val RTPMAP_PREFIX = "a=rtpmap:"
     private const val FMTP_PREFIX = "a=fmtp:"
