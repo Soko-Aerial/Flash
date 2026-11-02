@@ -26,9 +26,12 @@ public object StreamFramer {
 /**
  * Streaming decoder for [StreamFramer] frames: feed it whatever the link delivered (any fragmentation), get whole payloads.
  * After a protocol error ([failed]) the stream cannot be resynchronised (there is no marker), so the owner must close the link.
+ *
+ * OPT-O26-04: the partial frame lives in a [ByteQueue], so a byte-at-a-time link costs O(n) copying instead of
+ * re-copying the partial buffer on every byte.
  */
 public class StreamFrameDecoder {
-    private var buf = ByteArray(0)
+    private val buf = ByteQueue()
 
     /** True after a header announced a payload above [StreamFramer.MAX_PAYLOAD]; further input is ignored. */
     public var failed: Boolean = false
@@ -43,21 +46,19 @@ public class StreamFrameDecoder {
         // passed and the failure surfaced from copyOfRange instead of here.
         require(offset >= 0 && length >= 0 && offset <= data.size - length) { "bad slice" }
         if (failed) return emptyList()
-        buf += data.copyOfRange(offset, offset + length)
+        buf.append(data, offset, length)
         val out = ArrayList<ByteArray>(2)
-        var at = 0
-        while (buf.size - at >= 2) {
-            val n = ((buf[at].toInt() and 0xFF) shl 8) or (buf[at + 1].toInt() and 0xFF)
+        while (buf.size >= 2) {
+            val n = ((buf[0].toInt() and 0xFF) shl 8) or (buf[1].toInt() and 0xFF)
             if (n > StreamFramer.MAX_PAYLOAD) {
                 failed = true
-                buf = ByteArray(0)
+                buf.clear()
                 return out
             }
-            if (buf.size - at - 2 < n) break
-            out += buf.copyOfRange(at + 2, at + 2 + n)
-            at += 2 + n
+            if (buf.size - 2 < n) break
+            out += buf.copyOut(2, 2 + n)
+            buf.discard(2 + n)
         }
-        buf = if (at == 0) buf else buf.copyOfRange(at, buf.size)
         return out
     }
 }
