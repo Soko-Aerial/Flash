@@ -11,6 +11,7 @@ import android.os.Build
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.logging.FlashProbe
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.util.UUID
@@ -165,16 +166,22 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
      * 4. insecure fixed channels 1..12,
      * 5. secure fixed channel 1.
      *
-     * Each failed attempt closes its socket and pauses briefly so the radio can reset its RFCOMM state. Blocking (the
-     * Android docs say `connect()` blocks), so call it from `Dispatchers.IO`. Probing is capped at
-     * [RADIO_CONNECT_BUDGET_MS]: a radio that never answers would otherwise hold the driver's `Connecting` state for
-     * minutes, because the platform's own connect timeout is far longer than a radio needs.
+     * Each failed attempt closes its socket and pauses briefly so the radio can reset its RFCOMM state. The pause is a
+     * coroutine `delay`, not `Thread.sleep` (OPT-O26-05): the old synchronous sleep held a `Dispatchers.IO` thread for up
+     * to 4 s per probe (16 strategies x 250 ms), and up to 20 s across the driver's five reconnect attempts, starving
+     * every other I/O caller on the phone while a switched-off radio was probed. Probe order, pause length and the
+     * [RADIO_CONNECT_BUDGET_MS] cap are unchanged. Probing is capped at [RADIO_CONNECT_BUDGET_MS]: a radio that never
+     * answers would otherwise hold the driver's `Connecting` state for minutes, because the platform's own connect
+     * timeout is far longer than a radio needs.
+     *
+     * Suspend function with a blocking `BluetoothSocket.connect()` inside (the Android API offers no other): call it
+     * from `Dispatchers.IO`, as `AndroidRadioDiscovery.openLink` does.
      *
      * @throws LinkException with a plain-language reason when every strategy fails.
      */
     @OptIn(FlashInternalApi::class)
     @SuppressLint("MissingPermission") // checked at the top through missingPermissions()
-    public fun openRadioLink(
+    public suspend fun openRadioLink(
         address: String,
         uuid: String = SPP_UUID_TEXT,
         probeFixedChannels: Boolean = true,
@@ -205,7 +212,7 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
         var lastError: Exception? = null
         var ranOutOfTime = false
 
-        fun attempt(strategy: String, open: () -> BluetoothSocket): BluetoothSocket? {
+        suspend fun attempt(strategy: String, open: () -> BluetoothSocket): BluetoothSocket? {
             if (System.currentTimeMillis() > deadline) {
                 ranOutOfTime = true
                 return null
@@ -229,7 +236,8 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
                     "error" to (e.message ?: e.javaClass.simpleName),
                 )
                 // Let the radio reset its RFCOMM state before the next attempt (as the reference implementation does).
-                Thread.sleep(ATTEMPT_PAUSE_MS)
+                // The wait itself must be the same 250 ms; only the blocked thread goes away (OPT-O26-05).
+                delay(ATTEMPT_PAUSE_MS)
                 null
             }
         }
@@ -293,7 +301,7 @@ public class AndroidBluetoothCatalog(private val context: Context) : SerialPortC
      * The radio's audio channel (HTCommander's "BS AOC"): the vendor service, found by SDP only. Fixed-channel probing is
      * off because channel 1 is the serial control channel and would be opened by mistake. See `docs/network/RADIO-AUDIO.md`.
      */
-    public fun openRadioAudioLink(address: String): ByteLink =
+    public suspend fun openRadioAudioLink(address: String): ByteLink =
         openRadioLink(address, RadioServiceIdentity.VENDOR_SERVICE_UUID, probeFixedChannels = false)
 
     private companion object {
