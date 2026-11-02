@@ -13,8 +13,15 @@
 > learned jitter depth is test-isolated and changes only the start gate (60–160 ms), and `O28-03` did not invent a probe
 > namespace — `call.quality` is recorded as **proposed, not registered**.
 > **Branch gate:** calling+ptt+callui 494/0, calling androidHost 396/0, desktop + app compile (`BUILD SUCCESSFUL 9m 1s`).
-> **Now:** gate 1 (with `:core:calling:jvmTest` and `:core:ptt:jvmTest` added) and gate 2 (with
-> `:core:calling:testAndroidHostTest` added) on the merged tree, then push. **Nothing call-side is device-verified.**
+> **Now:** **both gates are GREEN on the merged tree.** Gate 1 ran as the two forced invocations §6.3.3 now allows (owner's
+> decision): 1A `BUILD SUCCESSFUL 3m 52s`, 3 569 tests / 0 failures / 2 documented POSIX skips; 1B
+> `BUILD SUCCESSFUL 7m 35s`, server 664/0 + desktop 259/0. Gate 1 total **4 492 tests, 0 failures**. Gate 2
+> `BUILD SUCCESSFUL 9m 9s`, **2 506 tests, 0 failures, 0 skips** with `:core:calling:testAndroidHostTest` added.
+> The split exists because four monolithic attempts each died on a *different* real-time test in a *different* suite
+> (relay fixture race — ERROR-974, genuinely fixed; PTT 5 s wait — ERROR-975; radio harness timing; messaging mutation;
+> swarm concurrency), every one of them green alone on the same tree. No suite, assertion or timeout was touched.
+> **Nothing call-side is device-verified.** `PERF-C01`, `PERF-C02` and `PERF-C03` (fork republish) are owed. This was the
+> last of the programme's streams.
 
 > **2026-11-02 — STREAM S (swarm) IS MERGED AS `6eff1714` (superseded by the banner above for S).** S came in as 14
 > commits off `7adcf4f5`; **13 of 14 findings delivered and `OPT-O23-07` REJECTED on measurement** (`RandomAccessFile.seek`

@@ -972,7 +972,13 @@ camera fix is INERT** until the webrtc fork is republished (`PERF-C03`): the app
 was deliberately not bumped, so the shipped desktop keeps the old behaviour. Review verified that `O12-02` keeps the PTT
 packet byte-identical, `O11-05` changes no wire output, the learned jitter depth is test-isolated and only moves the start
 gate, and `O28-03` did **not** invent a probe namespace (`call.quality` is recorded as proposed, not registered). Branch gate:
-calling+ptt+callui 494/0, calling androidHost 396/0. Expanded gates are running on the merged tree. **Nothing call-side is
+calling+ptt+callui 494/0, calling androidHost 396/0. **Both expanded gates are GREEN on the merged tree:** gate 1 as the two
+forced invocations §6.3.3 allows — 1A `BUILD SUCCESSFUL 3m 52s` (3 569 tests, 0 failures, 2 documented POSIX-only skips),
+1B `BUILD SUCCESSFUL 7m 35s` (server 664/0, desktop 259/0) — total 4 492 tests, 0 failures; gate 2 `BUILD SUCCESSFUL 9m 9s`
+(2 506 tests, 0 failures, 0 skips, with `:core:calling:testAndroidHostTest` added). The split was the owner's decision after
+four monolithic attempts each failed a *different* real-time test in a *different* suite, every one green alone; ERROR-974
+(a genuine race in the router test fixture) was found and fixed on the way, ERROR-975 (PTT 5 s real-time wait) stays OPEN.
+**Nothing call-side is
 device-verified**: `PERF-C01` (nine device steps), `PERF-C02` (`CALL_DIAG` on a degrading link) and `PERF-C03` (fork
 republish) are owed. This was the last of the programme's streams.
 K's existing classifier correction is needed by newly included common Android-host coverage; no suite may be dropped.

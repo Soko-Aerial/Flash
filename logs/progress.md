@@ -64,9 +64,17 @@ alone". It was never a product flake and never load-specific — the fixture had
 - Branch tip `38a81158`, forced: `:core:calling:jvmTest` + `:core:ptt:jvmTest` + `:ui:callui:jvmTest` = **494 tests,
   0 failures**; `:core:calling:testAndroidHostTest` **396/0**; `:desktop:compileKotlinJvm` and `:app:compileDebugKotlin`
   green (`BUILD SUCCESSFUL in 9m 1s`, 138/138 tasks).
-- Expanded gate 1 with **`:core:calling:jvmTest` and `:core:ptt:jvmTest` added** (plan §6.3) and gate 2 with
-  **`:core:calling:testAndroidHostTest` added**, because C touched `core/calling/commonMain`. Gate 1 is running for the third
-  time after ERROR-974's fix (`logs/wave4-c-gate1-run3-2026-11-02.log`).
+- **Expanded gate 1: PASS**, run as the two forced invocations §6.3.3 now allows (owner's decision, recorded there) after
+  four monolithic attempts each failed on a *different* real-time test in a *different* suite:
+  - **1A (all 17 JVM suites): `BUILD SUCCESSFUL in 3m 52s`, 100/100 tasks, exit 0 — 3 569 tests, 0 failures, 2 documented
+    POSIX-only skips** (calling 239 and ptt 148 are new here).
+  - **1B (`:server:test`, `:desktop:jvmTest`, three compile tasks): `BUILD SUCCESSFUL in 7m 35s`, 226/226 tasks, exit 0 —
+    server 664/0, desktop 259/0.**
+  - **Gate 1 total: 4 492 tests, 0 failures, 2 skips.** Every suite still forced (`--rerun-tasks --no-build-cache`); the
+    split changes daemon/OS state between invocations, not coverage.
+- **Gate 2: PASS** with `:core:calling:testAndroidHostTest` added (C touched `core/calling/commonMain`):
+  `BUILD SUCCESSFUL in 9m 9s`, 221/221 tasks, exit 0, **2 506 tests, 0 failures, 0 skips** (common 144, security 265,
+  messaging 688, persistence 53, calling 396, chat 705, enterprise 165, app 90 — summed from JUnit XML).
 
 ### Remaining / next AI
 Record both merged-tree gate results and push. **Nothing call-side is device-verified.** `PERF-C01` (nine steps: camera LED
