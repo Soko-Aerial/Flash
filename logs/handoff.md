@@ -1,5 +1,13 @@
 # Current Handoff
 
+> **2026-11-03 — WAVE 1 SAFETY IS ON A BRANCH, NOT MERGED.** `fix/wave1-safety` has four of the five Wave 1 fixes:
+> TLS session eviction (`c75862b4`), framing/blank-id (`8780e40`), pairing throttle (`5ab9c9f7`), protocol banners
+> (`25b6b762`). Gate: security + common tests, both network targets, app + desktop compile -> **BUILD SUCCESSFUL 1m 17s**,
+> exit 0. **Resume identity is NOT implemented** (it needs Room v22 -> v23); the four `W1-*` device checks in
+> `docs/testing/TEST-BACKLOG.md` are owed. Baseline is `EXP-140` (Infinix X6882B, cold 3.0-4.0 s, warm 219-427 ms,
+> PSS ~238 MB; battery NOT measured because the phone was on AC). Next: `W1-TLS-01`, then resume identity as its own
+> change, then merge. Full record: `logs/progress.md` 2026-11-03.
+>
 > **2026-11-02 — STREAM C (calls) IS MERGED AS `5e3a1822`; gates running. All four streams (E, K, R, S, C) are now in
 > `dev`.** C came in as 13 commits + a merge of `dev`. **9 findings delivered, 1 no longer reproduces (`O11-07` — the ladder
 > already caps four watchers), 4 honestly BLOCKED (`O11-01`/`O11-03` need a live camera and two phones, `O11-03` also an ADR;

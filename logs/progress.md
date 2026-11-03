@@ -1,5 +1,51 @@
 # Progress Log
 
+## 2026-11-03 - Wave 1 safety/correctness (TLS eviction, framing, pairing throttle)
+
+### Worked on
+The first wave of the NectarLink comparative review (`docs/audit/2026-11-03-nectarlink-comparative-review.md`): four
+correctness/security fixes on branch `fix/wave1-safety`, plus the Android baseline (`EXP-140`). The owner authorised a
+device session; no app data was cleared and no build was installed over the daily app.
+
+### Changed
+- **TLS session eviction** (`c75862b4`): new `TrustChangeHub` in `:core:security`; the Android and desktop trust stores
+  publish on `revokeTrust`, `savePin`, `applyVouch` and `revokeVouch`; both `FlashTlsContextFactory` copies subscribe and
+  clear their `SSLContext` cache. A resumed TLS 1.3 session can no longer outlive "Forget" for up to 24 h. Tests:
+  `FlashTrustStoreTest` (9) and `FlashTlsContextFactoryTrustChangeTest` (2).
+- **Framing** (`8780e40`): `FlashTextFraming.escape` percent-encodes C0/DEL, `parseFields` rejects embedded controls, and
+  both WS networks reject a HELLO with a blank/`"unknown"` device id instead of registering `"unknown"`. Tests:
+  `FlashTextFramingTest` (10).
+- **Pairing throttle** (`5ab9c9f7`): `PairingAttemptLimiter` (5 failures / 10 min -> 5 min lockout, success clears) wired
+  into `DefaultFlashPairingProtocol`; both coordinators show "Too many pairing attempts. Wait five minutes, then try again."
+  Tests: `PairingAttemptLimiterTest` (3).
+- **Protocol banners** (`25b6b762`): swarm and group membership are no longer marked "not implemented"; the device checks
+  they still owe are named.
+
+### Verification
+`tools\flash-gradle.ps1 :core:security:testAndroidHostTest :core:common:testAndroidHostTest
+:core:network:compileAndroidMain :core:network:compileKotlinJvm :app:compileDebugKotlin :desktop:compileKotlinJvm
+--continue` -> **BUILD SUCCESSFUL in 1m 17s**, exit 0; new tests 10/3/9/2 all green. No device verification yet.
+
+Baseline (`EXP-140`, Infinix X6882B, Android 14, installed 2.1.0): cold start 3.0-4.0 s (first frame 2.13 s + splash),
+warm 219-427 ms, PSS ~238 MB (graphics 100 MB), Settings jank 4.27 % (legacy 14.1 %, p99 53 ms), no Flash wake lock while
+idle. Battery NOT MEASURED (phone on AC); transfer benchmark not run.
+
+### Problems
+- **Resume identity is NOT implemented.** `TransferEntity` still has no source size/mtime/prefix hash, and the resume path
+  still skips the digest when `initialIndex > 0`. This is the one Wave 1 item left; it needs a Room v22 -> v23 migration,
+  a source-identity provider (SAF `lastModified` + first/last 64 KiB digest) and a restart-from-zero path.
+- Battery measurement is invalid while charging; the transfer benchmark needs one manual peer/file selection (no deep link).
+
+### Remaining
+- Implement resume identity as its own change, with `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` and a
+  "file changed between sessions restarts from zero" test.
+- Run the four `W1-*` device checks in `docs/testing/TEST-BACKLOG.md`; then merge `fix/wave1-safety` into `dev`.
+- The desktop/app were compiled but not run; the TLS eviction has no two-device check yet.
+
+### Next AI
+Read this entry and the review. Do not merge Wave 1 until `W1-TLS-01` passes: Forget a peer **without restarting the app**,
+then have the peer reconnect; it must fail. Then do resume identity as its own change (schema 23), not as a drive-by.
+
 ## 2026-11-02 - Stream C (calls) reviewed and merged as `5e3a1822`; expanded gates running
 
 ### Worked on

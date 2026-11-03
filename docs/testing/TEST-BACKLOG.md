@@ -7322,3 +7322,32 @@ even be written without one.
   camera LED goes off on mute with the published artifact, not just the source tree. *Source:* ADR-103,
   `third_party/webrtc-kmp/MODIFICATIONS.md`, `OPT-O11-02`. *Status:* TODO — until this is done the camera fix ships
   **inert**.
+
+## 5.W1. Wave 1 safety fixes (2026-11-03; device checks owed)
+
+Four fixes are on branch `fix/wave1-safety` (commits `c75862b4`, `8780e40`, `5ab9c9f7`, `25b6b762`); unit tests are green.
+These are the two-device checks that still gate a merge.
+
+### W1-TLS-01 — Forget a peer without restarting the app
+- **Setup:** two phones, paired, both apps open and connected; a live session.
+- **Steps:** (1) on A, Forget/Unpair B; (2) **without restarting A**, have B dial A or send a message; (3) repeat after restarting A.
+- **Pass:** A refuses B both times: no chat, file or call frame is accepted and the session closes or times out. The log shows a fresh TLS handshake or an unpaired/identity rejection, never a resumed session accepted. Before the fix, a resumed TLS 1.3 session could skip the trust manager for up to 24 h.
+- **Source:** `c75862b4`, `docs/security.md` section 7. **Status:** TODO
+
+### W1-FRAME-01 — Malformed HELLO
+- **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.
+- **Steps:** send a HELLO with a blank `deviceId`, then one whose `name` contains a raw CR/LF, then a well-formed HELLO.
+- **Pass:** both malformed frames close the connection; no `unknown` peer appears in the session registry or UI; the log names "HELLO without a deviceId" or a framing rejection; the well-formed HELLO still connects.
+- **Source:** `8780e40`. **Status:** TODO (needs the harness)
+
+### W1-PAIR-01 — Five failed pairings lock the peer out
+- **Setup:** two phones; a harness or test build that can force a wrong comparison code (a bad `PAIR_CONFIRM`).
+- **Steps:** five failed attempts from B to A inside ten minutes, then a sixth request; wait five minutes and try again; complete a successful pairing and repeat four failures.
+- **Pass:** A shows "Too many pairing attempts. Wait five minutes, then try again."; the sixth request shows no consent card; after the lockout a request works; a success clears the count so four later failures do not lock.
+- **Source:** `5ab9c9f7`. **Status:** TODO (needs the harness; the limiter itself is unit-tested)
+
+### W1-RESUME-01 — A source file changed between sessions
+- **Status:** POSTPONED, not implemented. The plan is Room v22 -> v23 with source size, mtime and a first/last 64 KiB digest; resume must verify them and restart from zero on a mismatch.
+- **Steps when it lands:** start a 1 GiB send, pause or stop it, change the source file (same size and different content is the important case), resume. Repeat with an unchanged file.
+- **Pass:** the changed file restarts from zero, the old done chunks are cleared, the row says why, and no corrupt file is assembled; the unchanged file still resumes.
+- **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3. **Status:** POSTPONED
