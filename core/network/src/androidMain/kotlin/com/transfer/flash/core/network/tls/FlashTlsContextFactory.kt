@@ -1,5 +1,6 @@
 package com.transfer.flash.core.network.tls
 
+import com.transfer.flash.core.security.trust.TrustChangeHub
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import javax.net.ssl.KeyManager
@@ -35,6 +36,14 @@ internal object FlashTlsContextFactory {
 
     private val clientCache = ConcurrentHashMap<ClientKey, SSLContext>()
     private val serverCache = ConcurrentHashMap<ServerKey, SSLContext>()
+
+    init {
+        // A resumed TLS 1.3 session never re-runs the trust manager, so a cached SSLContext outlives
+        // "Forget", a pin replacement or a withdrawn vouch until its session cache expires. Drop every
+        // cached context on any trust change; revocation is rare, a full handshake is cheap next to a
+        // connection that still authenticates a peer the user removed.
+        TrustChangeHub.addListener { clearCache() }
+    }
 
     /**
      * Identity-keyed wrapper around this host's [KeyManager] array — the local TLS identity.
