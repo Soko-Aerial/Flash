@@ -11,6 +11,7 @@ import com.transfer.flash.core.security.identity.FlashIdentity
 import com.transfer.flash.core.security.identity.FlashIdentityStore
 import com.transfer.flash.core.security.identity.IdentityKeyVault
 import com.transfer.flash.core.security.trust.FlashTrustStore
+import com.transfer.flash.core.security.trust.TrustChangeHub
 import com.transfer.flash.core.security.trust.VouchRules
 import com.transfer.flash.core.security.trust.VouchVerdict
 import java.io.File
@@ -241,6 +242,7 @@ internal class DesktopTrustStore(
             pins[deviceId] = fingerprintHex.uppercase()
             runCatching { persist() }
         }
+        TrustChangeHub.publish(deviceId.value)
         return FlashResult.Success(Unit)
     }
 
@@ -267,6 +269,7 @@ internal class DesktopTrustStore(
             if (vouches[deviceId].isNullOrEmpty()) pins.remove(deviceId)
             runCatching { persist() }
         }
+        TrustChangeHub.publish(deviceId.value)
         return FlashResult.Success(Unit)
     }
 
@@ -284,6 +287,7 @@ internal class DesktopTrustStore(
             pins[deviceId] = fingerprint
             vouches[deviceId] = kept + groupId
             runCatching { persist() }
+            TrustChangeHub.publish(deviceId.value)
             return verdict
         }
     }
@@ -298,6 +302,7 @@ internal class DesktopTrustStore(
                 vouches[deviceId] = remaining
             }
             runCatching { persist() }
+            TrustChangeHub.publish(deviceId.value)
         }
     }
 

@@ -5,6 +5,7 @@ import com.transfer.flash.core.common.result.FlashResult
 import com.transfer.flash.core.security.testutil.FakeSharedPreferences
 import com.transfer.flash.core.security.testutil.SoftwareSecretSealer
 import com.transfer.flash.core.security.trust.AndroidPreferencesTrustStore
+import com.transfer.flash.core.security.trust.TrustChangeHub
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -42,6 +43,23 @@ class FlashTrustStoreTest {
         assertTrue(revokeResult is FlashResult.Success)
         assertFalse(store.isTrusted(peerId))
         assertFalse(prefs.contains("paired_peer-device-uuid-999"))
+    }
+
+    @Test
+    fun revokeAndSavePinPublishTrustChange() {
+        val store = AndroidPreferencesTrustStore(FakeSharedPreferences())
+        val peerId = FlashDeviceId("peer-trust-change-publish")
+        val seen = mutableListOf<String>()
+        val listener: (String) -> Unit = { seen += it }
+
+        TrustChangeHub.addListener(listener)
+        try {
+            store.revokeTrust(peerId)
+            store.savePin(peerId, "AABB")
+            assertEquals(2, seen.count { it == peerId.value })
+        } finally {
+            TrustChangeHub.removeListener(listener)
+        }
     }
 
     @Test
