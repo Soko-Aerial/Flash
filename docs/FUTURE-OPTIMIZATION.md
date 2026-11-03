@@ -44,6 +44,11 @@ postponed*. Nothing here is forgotten and nothing here is cancelled; it is simpl
 | FO-27 | Group message encryption (a per-group message key, end to end, also on the hub relay path); announcements and hub groups could then be sealed | 2026-10-14 | IDEA (owner asked to record it; needs an ADR and a design before any code) |
 | FO-29 | Refuse plaintext binary frames once the session holds a key (SEC-D07-05; `FlashTransfer.isEncrypted` is set but not enforced) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
 | FO-30 | Linux key vault: passphrase-derived master key instead of the fallback `vault.key` file next to the encrypted data (SEC-D01-01) | 2026-10-23 | POSTPONED (owner decision, ADR-226 addendum) |
+| FO-31 | Clipboard parity: text and image clipboard between phone and PC, optional encrypted history, sensitive-content exclusion | 2026-11-03 | POSTPONED (owner decision; companion track after the current optimization programme) |
+| FO-32 | Notification mirroring: phone notifications on the PC, inline replies, actions, dismiss-on-one-side, per-app filters, OTP handling | 2026-11-03 | POSTPONED (owner decision; companion track) |
+| FO-33 | Message companion: SMS/MMS read and reply on the PC; chat-app replies through notification RemoteInput, no history import | 2026-11-03 | POSTPONED (owner decision; the default-SMS-app question is unresolved) |
+| FO-34 | Call companion: incoming-call alert, caller identity, answer/decline/hang up, call log, dial from the PC | 2026-11-03 | POSTPONED (owner decision; full control needs the default-dialer role, which is a product decision) |
+| FO-35 | Continuity extras: link/map/video handoff, now-playing control, phone as webcam/speaker, photo browser, phone storage in Explorer, PC Deck | 2026-11-03 | PARKED behind FO-31..FO-34 (each is a separate product surface) |
 
 ---
 
@@ -467,4 +472,154 @@ path, a change/recover story and a decision on what happens when the vault is op
 **Revisit when:** a radio offers digital voice over Bluetooth SPP/BLE (DMR or P25 style packets), or exposes channel-busy / carrier-sense telemetry over its serial or Bluetooth API.
 
 **Where to start if revisited:** ADR-211 (module seam, floor arbitration, unencrypted-badge rule, status NOT USED), ADR-212 (Windows Core Audio and Android SCO routing), the debug-only probes from R-audio (`:desktop:radioAudioProbe`, `RadioAudioActivity`), `logs/streams/R-audio/runbook-BT-R10.md` and the owed RADAUD-01..04 tests.
+
+---
+
+# Companion cluster (FO-31..FO-35) — clipboard, notifications, messages, calls
+
+**Why parked (owner, 2026-11-03).** The current work is the optimization programme and the measurement
+baseline. Clipboard parity and the NectarLink-style companion surface (notifications, messages, calls)
+are a **second product surface**: each needs a platform gate, a per-device consent model, a desktop UI
+and new tests. They are recorded here so they are not lost, not cancelled.
+
+**The structural difference from NectarLink.** NectarLink reaches the privileged versions of these
+features through its optional **Elevated** tier: its own code runs as the `shell` user via on-device
+wireless-debugging pairing, which grants `MANAGE_ONGOING_CALLS` and background clipboard access.
+Flash has **no ADB/Elevated tier by owner decision** (wireless-first, no cable). Therefore:
+
+- Some features are fully reachable without privileges: notification listening and replies, call-state
+  observation, SMS read/reply with runtime permissions.
+- Some are reachable only in a reduced form: clipboard capture while Flash is in the foreground; call
+  alerts rather than answer/decline.
+- Some need a user-chosen system role (default SMS app, default dialer). That changes what Flash is as
+  a product and must be an explicit owner decision, not a side effect of a feature.
+
+**Shared prerequisites before any of them start.**
+
+1. **A companion capability gate** in the existing `PeerTrustPolicy` style: one switch per feature per
+   paired device, default **off**, nothing offered until both ends advertise it. Reuse the capability
+   registry proposed in the 2026-11-03 review (`docs/audit/2026-11-03-nectarlink-comparative-review.md`);
+   do not add a fifth ad-hoc HELLO token.
+2. **A service decision**: reuse the existing `connectedDevice` foreground service where possible. Do
+   not add a second always-on service for a feature that can ride the current session.
+3. **One probe namespace** (`companion.*`) and one redaction rule: notification text, SMS bodies, phone
+   numbers and clipboard content are **never** written to logs. Log counts, package names (hashed where
+   practical) and timings only.
+4. **Retention per feature**: clipboard history and notification history are off by default; when on,
+   encrypted at rest, capped, and clearable from Settings.
+5. **Hub path is text/sealed payload only.** Never send clipboard images, call audio or media through
+   the hub.
+
+## FO-31 — Clipboard parity
+
+**What.** Copy on the phone, paste on the PC, and the reverse; text and images; an optional encrypted
+recent-items history; a sensitive path that excludes password-manager and one-time-code content.
+
+**Platform ceiling without an Elevated tier.** Android 10 (API 29) and higher: *"Unless your app is the
+default input method editor (IME) or is the app that currently has focus, your app cannot access
+clipboard data."* (verified 2026-11-03,
+`https://developer.android.com/about/versions/10/privacy/changes#clipboard-data`). Flash is neither an
+IME nor focused while in the background. Consequences:
+
+- **Phone → PC automatic capture** is only possible while a Flash activity is in the foreground, or
+  through a user-initiated action (share sheet, Quick Settings tile, widget, notification action).
+  Background parity needs an IME/default-assistant role or a privileged helper; both are out of scope
+  unless the owner chooses them.
+- **PC → phone** is the easier direction: writing the clipboard is not under the same read restriction,
+  but OEM background-write policy varies; measure on the target phones.
+- A custom Flash keyboard (IME) would unlock background capture and is a much larger product decision;
+  do not treat it as a clipboard detail.
+
+**Design notes.** Set `ClipDescription.EXTRA_IS_SENSITIVE` on Android 13+ (and the legacy
+`android.content.extra.IS_SENSITIVE` below 33) so sensitive clips never appear in the system preview;
+skip clips whose description is sensitive; cap image bytes (for example 16 MiB) and downscale;
+deduplicate by hash; never sync a clip that matches a password-manager package or an OTP pattern.
+History is opt-in and encrypted; the pairwise TLS session carries the payload, so the hub is not
+involved.
+
+**Revisit when:** the owner wants the companion track and accepts either foreground-only automatic
+capture or an explicit manual "send clipboard" action. Start with manual send; automatic capture only
+after a device test proves the foreground rule on the target Android versions.
+
+## FO-32 — Notification mirroring
+
+**What.** Phone notifications on the PC: app, title, text, time, icon, conversation grouping; inline
+reply and notification actions; dismiss on one side clears the other; per-app allow/block; a "Copy
+code" affordance for one-time codes; a per-app quiet rule.
+
+**Platform path.** `NotificationListenerService` with the user-granted "Notification access" setting;
+no runtime permission. Replies use the notification's own `RemoteInput` and `PendingIntent`
+(`Notification.Action`), so Flash can only reply where the source app offered a reply action.
+Ongoing, media and foreground-service notifications are filtered by default. Sensitive/OTP content
+depends on the OS version, the source app's flags and the installer; test on Android 12–16 and do not
+promise OTP parity until measured.
+
+**Security.** This is the most sensitive surface in the cluster. Per-app filters, no content in logs,
+no hub relay, no history by default, and a visible "what the PC can see" screen. A notification the
+system marks sensitive stays on the phone.
+
+**Revisit when:** the companion track is greenlit and FO-31's consent/gate work exists. This is the
+best first companion feature because it needs no system role and no default-app change.
+
+## FO-33 — Message companion
+
+**What.** SMS/MMS conversations on the PC; read, reply, send a picture; plus replies to chat apps
+(WhatsApp, Telegram, Signal, RCS) **through their notifications**, not a unified history.
+
+**Platform ceiling.** Reading SMS needs `READ_SMS`; sending needs `SEND_SMS` (both dangerous and
+restricted; sideload grants are possible, but the Play policy is not the only constraint). Full
+conversation sync and writing the SMS provider require the **default SMS app** role
+(`Telephony.Sms.Intents.ACTION_CHANGE_DEFAULT`; verified 2026-11-03,
+`https://developer.android.com/guide/topics/permissions/default-handlers`). MMS adds carrier/APN and
+size limits. Chat apps expose no public history API: only the notification-derived thread and
+`RemoteInput` replies, no attachments and no history import. Do not promise RCS/WhatsApp "parity";
+NectarLink's own inbox is notification-derived for those apps.
+
+**Split the work.** M1: SMS read/reply with `READ_SMS` + `SEND_SMS`, no default role, send only through
+the system SMS API. M2: full SMS app (default role) — a product decision, a new role, and a privacy
+policy; do not start it as a feature. Chat-app replies are M1.5 and depend on FO-32.
+
+**Revisit when:** the owner answers "may Flash become the default SMS app, or only a companion that
+reads and replies with permissions?" Record the answer as an ADR before any code.
+
+## FO-34 — Call companion
+
+**What.** See an incoming call on the PC with caller identity; answer, decline or hang up; browse
+recent calls; dial a number or contact from the PC.
+
+**Platform ceiling (verified 2026-11-03).** `TelecomManager.acceptRingingCall()` and `endCall()` are
+**deprecated since API 29**; the official reference says companion apps (wearables) should use
+`InCallService` instead (`https://developer.android.com/reference/android/telecom/TelecomManager`).
+Full in-call control requires the **default dialer** role (`RoleManager.ROLE_DIALER`) or a
+privileged/companion path. Without ADB/Elevated, the realistic Flash scope is:
+
+- observe call state (`READ_PHONE_STATE` / `TelephonyCallback`) and show an incoming-call alert with
+  the number/contact;
+- open the system dialer (`ACTION_DIAL`) or place a call the user confirms (`ACTION_CALL`);
+- silence the ringer (`TelecomManager.silenceRinger()`);
+- the call log needs `READ_CALL_LOG` (restricted).
+
+Answering/declining from the PC is **not reliable** without the dialer role; do not design the UI
+around it until a device test proves a supported path on the target Android versions.
+
+**Security.** Caller ID and call metadata are sensitive; no call recording; no auto-answer; no hub
+relay. If only alerts ship, the UI should say "Flash is not your dialer".
+
+**Revisit when:** the owner decides between (a) alert-only companion, (b) default-dialer Flash, or
+(c) no call feature. Option (b) is a product-level change and needs its own ADR, not a line in this
+list.
+
+## FO-35 — Continuity extras
+
+**What.** Link/map/video handoff at the same timestamp; now-playing metadata and transport; phone as
+webcam/speaker; photo browser; phone storage in Explorer; PC Deck from the phone.
+
+**Why parked behind the four above.** Each is its own surface with its own platform gate
+(CameraX/MediaCodec plus a Windows virtual-camera driver for webcam; MediaProjection for mirroring;
+MediaSession for now-playing; SAF/MediaStore for photos and storage). NectarLink ships them, but on a
+Windows-only Qt app and with an optional privileged tier. Adding them before the companion gate and
+the measurement baseline exists would multiply untested surface area.
+
+**Revisit when:** FO-31..FO-34 are decided and at least the first two are device-verified; then pick
+one, not the set.
 
