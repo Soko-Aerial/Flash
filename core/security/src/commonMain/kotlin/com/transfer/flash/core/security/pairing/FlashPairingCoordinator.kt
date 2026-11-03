@@ -289,6 +289,8 @@ public class FlashPairingCoordinator(
         "identity-mismatch", "commit-mismatch", "paired-material-mismatch", "code-hash-mismatch" ->
             "Pairing stopped: the security check failed. If this keeps happening, something may be " +
                 "interfering with the connection."
+        PairingAttemptLimiter.REASON_TOO_MANY_ATTEMPTS ->
+            "Too many pairing attempts. Wait five minutes, then try again."
         else -> null
     }
 

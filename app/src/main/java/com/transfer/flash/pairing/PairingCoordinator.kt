@@ -14,6 +14,7 @@ import com.transfer.flash.core.security.crypto.FlashEcKeyPair
 import com.transfer.flash.core.security.pairing.DefaultFlashPairingProtocol
 import com.transfer.flash.core.security.pairing.FlashPairingEvent
 import com.transfer.flash.core.security.pairing.FlashPairingFrame
+import com.transfer.flash.core.security.pairing.PairingAttemptLimiter
 import com.transfer.flash.core.security.pairing.PairingPhase
 import com.transfer.flash.core.security.pairing.PairingSessionState
 import com.transfer.flash.core.security.pairing.PairingWireCodec
@@ -445,6 +446,8 @@ class PairingCoordinator(
         "identity-mismatch", "commit-mismatch", "paired-material-mismatch", "code-hash-mismatch" ->
             "Pairing stopped: the security check failed. If this keeps happening, something may be " +
                 "interfering with the connection."
+        PairingAttemptLimiter.REASON_TOO_MANY_ATTEMPTS ->
+            "Too many pairing attempts. Wait five minutes, then try again."
         else -> null
     }
 
