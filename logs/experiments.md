@@ -2946,3 +2946,57 @@ deliberately left at 8 packets: halving it to earn the fast path trades an under
 mesh `getStats()` tick cannot be driven from a unit test. The change removes 4 list allocations and 3 iterator
 allocations per leg per tick by construction (5 passes → 1 pass, reused buffers); the confirmation is a live 4-party
 call in `PERF-C01`.
+
+## EXP-140 — Android baseline on the Infinix X6882B (Flash 2.1.0, 2026-11-03)
+
+**MEASURED**, but not on the repository HEAD. Device: Infinix X6882B, Android 14 (SDK 34), arm64-v8a, 1080×2460 @ 480 dpi.
+Build: Flash **2.1.0**, versionCode **4**, installed 2026-11-02 21:37 (release APK). Conditions: 38 % battery, **AC powered**,
+battery 41.9 °C, 11 GB free, device awake, screen on. Tool: `adb`, `am start -W`, `dumpsys meminfo`, `dumpsys gfxinfo`, `top`,
+`logcat`. No code was changed for this run.
+
+### Startup
+
+| Run | TotalTime | WaitTime |
+|---|---|---|
+| cold ×5 | 3 358 / 3 035 / 3 603 / 3 966 / 3 899 ms | 3 434 / 3 096 / 3 688 / 4 004 / 3 917 ms |
+| warm ×5 | 311 / 219 / 219 / 241 / 427 ms | 349 / 260 / 285 / 279 / 704 ms |
+
+One cold-start logcat: process start `22:40:38.480`, `Choreographer: Skipped 80 frames` `22:40:40.201`,
+`Displayed … +2s127ms` `22:40:40.579`. So **first frame is 2 127 ms**; the remaining 1–2 s to `TotalTime` is the intentional
+ink splash (ADR-080, ~3.45 s). Cold start is therefore **perceived startup = splash + first frame**, not one number.
+Warm start (219–427 ms) is the honest UI cost and the number to compare with other apps.
+
+### Memory
+
+Chats tab open: **TOTAL PSS 243 837 KB (≈238 MB)**, RSS 359 188 KB, Java heap 19 128 KB, native heap 28 284 KB,
+code 60 508 KB, **graphics 102 116 KB**, 8 views (Compose). After five Settings swipes: PSS 245 298 KB, RSS 362 644 KB
+(+1.4 MB PSS). No leak conclusion from a short run; the absolute number and the 100 MB graphics share are the concern.
+
+### Scroll jank
+
+Settings tab, `gfxinfo reset`, five full-screen swipes (540 px x, 1900→500 px y, 300 ms): **234 frames, 10 janky (4.27 %)**,
+legacy janky 33 (14.10 %), p50/p90/p95/p99 = 15/24/32/53 ms, 0 missed Vsync, 0 slow UI thread, 0 slow bitmap uploads.
+The Chats tab has five rows and is not scrollable (a first attempt produced 0 frames and is not reported).
+
+### Idle CPU and wake locks
+
+App in background on the home screen, screen on: `top -n 1 -b -o PID,%CPU,ARGS` reported **3.3 % of one core** at both ends
+of a 60 s window (≈0.4 % of total on 8 cores). This is a coarse `top` snapshot, not `batterystats`. `dumpsys power` showed
+**no Flash wake lock**; the four held locks were audioserver `AudioIn`, Snapchat, WhatsApp and `RILJ_ACK_WL`.
+
+### Battery
+
+**NOT MEASURED.** The phone was on AC power (`dumpsys battery`: `AC powered: true`), so a drain run is invalid. Owed as a
+1 h screen-off, unplugged/wireless-adb run with one paired peer and no transfers.
+
+### Conclusion
+
+- Cold start is splash-dominated; first frame (2.1 s, 80 skipped frames) and T2I (3.0–4.0 s) need separate budgets.
+- Warm start is 219–427 ms; that is where UI work can be compared with other apps.
+- PSS ≈238 MB at a five-row chat list with 100 MB graphics needs a fixture (post-scroll, post-image-load) before it is called
+  a leak.
+- Settings scroll is under the 5 % jank budget but legacy jank is 14.1 % and p99 is 53 ms; 41.9 °C is warm, so re-run cool.
+- No Flash wake lock while idle is a good sign; the 3.3 % `top` figure needs `dumpsys cpuinfo`/`batterystats` cross-check.
+
+**Next:** re-run on the repository HEAD build and a cool device; add the battery run and the 1 GiB/4 GiB transfer benchmark.
+The full raw run notes live in the ignored `docs/testing/measurements/2026-11-03-android-baseline.md` on the measuring PC.
