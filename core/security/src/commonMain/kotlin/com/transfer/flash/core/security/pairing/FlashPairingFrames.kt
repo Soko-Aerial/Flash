@@ -110,6 +110,15 @@ public sealed interface FlashPairingFrame {
         val codeHashHex: String,
     ) : FlashPairingFrame
 
+    /**
+     * ADR-351: the sender has forgotten this device. Carries no identity field on purpose - the
+     * receiver uses the authenticated session's peer id, never a value inside the frame. It is
+     * idempotent and best-effort; a late duplicate is a no-op.
+     */
+    public data class PairRevoke(
+        override val requestId: String = "",
+    ) : FlashPairingFrame
+
     /** Completion frame; carries the sender's pinned identity material. */
     public data class Paired(
         override val requestId: String,

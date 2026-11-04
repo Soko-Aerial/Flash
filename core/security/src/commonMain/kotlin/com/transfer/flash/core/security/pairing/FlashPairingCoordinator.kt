@@ -118,6 +118,10 @@ public class FlashPairingCoordinator(
     private val ephemeralKeyPair: FlashEcKeyPair? = null,
     /** The key an unpinned inbound connection presented (see [ObservedPeerPins]); consulted when there is no pin. */
     private val observedPeerPin: (peerId: String) -> String? = { null },
+    /** Feature tokens advertised by [peerId]'s current session, used to gate `pr1` (ADR-351). */
+    private val peerFeatures: (peerId: String) -> Set<String> = { emptySet() },
+    /** Host hook after a revoke; close the session and stop queued sends for [peerId]. */
+    private val onPeerRevoked: (peerId: String) -> Unit = {},
 ) : FlashPairing {
 
     /** UI snapshot for a pairing pane; null when no pairing is in flight. */
@@ -200,7 +204,14 @@ public class FlashPairingCoordinator(
                     scope.launch { beginIfPeerSupportsV2(peerId, pendingName, inbound.fingerprintHex) }
                 }
             }
-            is PairingWireCodec.Inbound.Frame -> scope.launch { protocol.onFrame(inbound.frame) }
+            is PairingWireCodec.Inbound.Frame -> {
+                val frame = inbound.frame
+                if (frame is FlashPairingFrame.PairRevoke) {
+                    handlePeerRevoked(peerId)
+                } else {
+                    scope.launch { protocol.onFrame(frame) }
+                }
+            }
             null -> Unit
         }
     }
@@ -274,10 +285,32 @@ public class FlashPairingCoordinator(
         return true
     }
 
-    /** Forget a trusted peer (persisted via the trust store). */
+    /** Forget a trusted peer, tell it when it speaks `pr1`, then drop the session (ADR-351). */
     override fun revoke(peerId: String) {
+        if (PairingWireCodec.FEATURE_PAIR_REVOKE in peerFeatures(peerId)) {
+            sendToPeer(peerId, PairingWireCodec.encode(FlashPairingFrame.PairRevoke()))
+        }
         trustStore.revokeTrust(FlashDeviceId(peerId))
         _trustedPeers.value = loadTrusted()
+        if (protocol.session.value.peerDeviceId == peerId) resetProtocol()
+        // Give the notice a moment to leave the writer before the host closes the socket; the local
+        // forget has already happened, so a failed send costs nothing.
+        scope.launch {
+            delay(PAIR_REVOKE_FLUSH_MS)
+            onPeerRevoked(peerId)
+        }
+    }
+
+    /** A peer told us it forgot us: remove its trust, close the session and say so (ADR-351). */
+    private fun handlePeerRevoked(peerId: String) {
+        val name = trustStore.getTrustedPeers()[FlashDeviceId(peerId)]
+        trustStore.revokeTrust(FlashDeviceId(peerId))
+        _trustedPeers.value = loadTrusted()
+        if (protocol.session.value.peerDeviceId == peerId) resetProtocol()
+        _messages.tryEmit(
+            "${name ?: "The other device"} no longer trusts you. Pair again to reconnect.",
+        )
+        onPeerRevoked(peerId)
     }
 
     /** Retrieve the cached peer identity fingerprint (hex) if known. */
@@ -428,6 +461,8 @@ public class FlashPairingCoordinator(
         const val HELLO_RESEND_MS = 400L
         const val PAIRED_LINGER_MS = 1800L
         const val TERMINAL_LINGER_MS = 2500L
+        /** Time for a best-effort `PAIR_REVOKE` to leave the writer before the host closes the socket. */
+        const val PAIR_REVOKE_FLUSH_MS = 250L
         const val SHORT_ID = 8
         const val MESSAGE_BUFFER = 8
     }

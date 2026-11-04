@@ -364,6 +364,10 @@ public class DefaultFlashPairingProtocol(
                     emitIfNewlyFailed(before, after)
                 }
             }
+
+            // ADR-351: the coordinator handles revocation before it reaches the protocol; if one
+            // arrives here anyway it is not a pairing event.
+            is FlashPairingFrame.PairRevoke -> Unit
         }
     }
 

@@ -76,6 +76,11 @@ fun FlashChatHeader(
      */
     encryptionState: FlashEncryptionBadgeState = FlashEncryptionBadgeState.None,
     onEncryptionClick: () -> Unit = {},
+    /**
+     * False for a peer whose pairing was revoked (ADR-351). The transport may still be up because
+     * Flash admits unpaired sessions for pairing, so presence alone must not say "Connected".
+     */
+    isPeerTrusted: Boolean = true,
     /** Anchored menu slot placed directly under the More button on the top right. */
     menuContent: @Composable () -> Unit = {},
 ) {
@@ -182,6 +187,7 @@ fun FlashChatHeader(
                     state = state,
                     encryptionState = encryptionState,
                     onEncryptionClick = onEncryptionClick,
+                    isPeerTrusted = isPeerTrusted,
                 )
             }
 
@@ -210,15 +216,16 @@ private fun FlashChatHeaderStatusLine(
     state: FlashChatHeaderUiState,
     encryptionState: FlashEncryptionBadgeState = FlashEncryptionBadgeState.None,
     onEncryptionClick: () -> Unit = {},
+    isPeerTrusted: Boolean = true,
 ) {
     val colors = FlashTheme.colors
     val typography = FlashTheme.typography
     val statusKey = remember(
         state.presence, state.memberSummary, state.transport, state.isEncrypted,
-        state.memberCount, state.onlineCount, state.typingMemberNames, encryptionState,
+        state.memberCount, state.onlineCount, state.typingMemberNames, encryptionState, isPeerTrusted,
     ) {
         "${state.presence}:${state.memberSummary}:${state.transport}:${state.isEncrypted}:" +
-            "${state.memberCount}:${state.onlineCount}:${state.typingMemberNames}:$encryptionState"
+            "${state.memberCount}:${state.onlineCount}:${state.typingMemberNames}:$encryptionState:$isPeerTrusted"
     }
 
     val motion = FlashTheme.motion
@@ -260,11 +267,11 @@ private fun FlashChatHeaderStatusLine(
                 }
 
                 else -> {
-                    if (!state.isGroup) {
+                    if (isPeerTrusted && !state.isGroup) {
                         // UI-030b: solid = Connected, ring = Online (seen, no session).
                         FlashPresenceDot(presence = state.presence, size = 8.dp)
                     }
-                    val label = headerStatusLabel(state)
+                    val label = headerStatusLabel(state, isPeerTrusted)
                         ?: FlashGroupHeaderMath.groupSubtitle(state.memberSummary, state.memberCount, state.onlineCount)
                         ?: ""
                     FlashText(
@@ -297,10 +304,15 @@ private fun FlashChatHeaderStatusLine(
 }
 
 /** Non-null unless both group subtitle sources are unavailable and presence has no copy. */
-private fun headerStatusLabel(state: FlashChatHeaderUiState): String? {
+internal fun headerStatusLabel(
+    state: FlashChatHeaderUiState,
+    isPeerTrusted: Boolean = true,
+): String? {
     if (state.isGroup) {
         return null // groups use the computed/explicit group subtitle path
     }
+    // ADR-351: an unpaired session is still a session; it must not read "Connected".
+    if (!isPeerTrusted) return "Not paired"
     return when (state.presence) {
         // UI-030b / owner decision P3: a live session reads "Connected"; seen without one, "Online".
         FlashPeerPresence.Online -> "Connected"

@@ -20,6 +20,9 @@ public object PairingWireCodec {
 
     public const val PREFIX: String = "FLASH_PAIR"
 
+    /** ADR-351: this build understands `PAIR_REVOKE`; advertised in the HELLO `caps` field. */
+    public const val FEATURE_PAIR_REVOKE: String = "pr1"
+
     private const val KEY_TYPE = "t"
     private const val KEY_REQUEST_ID = "rid"
     private const val KEY_DEVICE_ID = "did"
@@ -41,6 +44,7 @@ public object PairingWireCodec {
     private const val TYPE_ACCEPT = "acc"
     private const val TYPE_CONFIRM = "con"
     private const val TYPE_PAIRED = "paired"
+    private const val TYPE_REVOKE = "revoke"
 
     /** The protocol version this build speaks and advertises in its hello. */
     public const val PROTOCOL_VERSION: Int = PairingV2.PROTOCOL_VERSION
@@ -118,6 +122,10 @@ public object PairingWireCodec {
                 KEY_EPHEMERAL_KEY to Base64.encode(frame.peerEphemeralPublicKey),
             ),
         )
+        is FlashPairingFrame.PairRevoke -> FlashTextFraming.encodeFields(
+            PREFIX,
+            listOf(KEY_TYPE to TYPE_REVOKE),
+        )
     }
 
     /** Parses a `FLASH_PAIR` line; null when the prefix, type or a required field is missing or malformed. */
@@ -170,6 +178,7 @@ public object PairingWireCodec {
                     peerEphemeralPublicKey = bytes(KEY_EPHEMERAL_KEY) ?: return null,
                 ),
             )
+            TYPE_REVOKE -> Inbound.Frame(FlashPairingFrame.PairRevoke(fields[KEY_REQUEST_ID] ?: ""))
             else -> null
         }
     }
