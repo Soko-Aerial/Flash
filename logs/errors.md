@@ -16557,3 +16557,54 @@ Unit-level: the compile of `:webrtc-kmp:webrtc-kmp` and every consumer. **Device
 
 ### Status
 RESOLVED IN CODE, NOT DEVICE-VERIFIED (see `PERF-C01`).
+
+## ERROR-982 - A revoked peer keeps "Connected" and its message looks sent while every frame is dropped
+
+### Date
+2026-11-04
+
+### Area
+Pairing/revocation, transport acknowledgement, chat outbox.
+
+### Symptoms
+After A revokes B (Nearby -> Revoke, no app restart), B still shows "Connected" and a newly sent message appears in the chat with no failure. A's chat never receives it. A's log repeats `Received FLASH_SEC frame ... with no stored session key; dropping` every 2-16 s. B never learns it was revoked.
+
+### Environment
+- A: Infinix X6882B, Android 14 (SDK 34), Flash debug build from `fix/wave1-safety`, installed over the debug 2.1.0 build (data preserved).
+- B: TECNO SPARK 40 (KM5), Android 15 (SDK 35), same debug APK, fresh install.
+- Network: Infinix hotspot (`ap0` 10.246.114.2); B on `wlan0` 10.246.114.89; laptop on the same hotspot.
+- Pairing code 261 811. Pre-revoke message `w1session` delivered.
+
+### Error
+```text
+05:21:02 I/WS    Session up peer=Flash Gecko id=cfc5089d-... - sending pairing hello
+05:21:02 W/CHAT  Received FLASH_SEC frame from cfc5089d-... with no stored session key; dropping
+05:21:03 W/CHAT  Received FLASH_SEC frame ... dropping
+... every 2-16 s ...
+```
+A's prefs after revoke contain **no** `paired_cfc5089d`, `pin_cfc5089d` or `session_key_cfc5089d`; B's prefs still contain A's pin, session key and pairing.
+
+### Root cause
+1. `revokeTrust` removes the local pin/pairing/session key and (with the Wave 1 fix) clears the TLS context cache, but it does not close the live session or tell the peer.
+2. A deliberately accepts an **unpaired** transport session so a new device can pair; B's reconnect is therefore admitted at the transport layer.
+3. B's app still trusts A and sends sealed frames; A's app layer drops them because the session key is gone.
+4. The transport ACK still covers the frame, so B's outbox has no negative result; the UI shows the message as sent/Connected and retries.
+5. There is no `PAIR_REVOKE` (the review's item 8) and no typed app-level refusal for frames from an untrusted peer.
+
+### Failed attempts
+None tried in this run; the test was diagnostic only.
+
+### Working fix
+Not implemented. Design options: an authenticated, idempotent `PAIR_REVOKE` that the receiver applies and acknowledges (the proper fix), and/or a typed `FLASH_ERR`/negative ack when a frame is dropped for a missing session key, so the sender's outbox fails with a sentence instead of retrying. Closing the local session on revoke is a useful partial step but does not tell the peer. The wire change should travel with the version-range/capability work (review item 4).
+
+### Verification
+Device test on 2026-11-04: pair, send, revoke on A, toggle B Wi-Fi, send from B, wait 2 min. Security half passes (no pin/pairing/session key on A; all FLASH_SEC dropped; A's chat never got `afterrevoke`). UX half fails (B Connected/sent, retry loop). See `W1-TLS-01` and `W1-REVOKE-02` in `docs/testing/TEST-BACKLOG.md`.
+
+### Related files
+- `core/security/src/androidMain/kotlin/com/transfer/flash/core/security/trust/AndroidPreferencesTrustStore.kt`
+- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
+- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
+- `docs/protocol.md`
+
+### Status
+OPEN - security property holds; sender notification/acknowledgement missing.
