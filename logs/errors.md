@@ -16595,16 +16595,30 @@ A's prefs after revoke contain **no** `paired_cfc5089d`, `pin_cfc5089d` or `sess
 None tried in this run; the test was diagnostic only.
 
 ### Working fix
-Not implemented. Design options: an authenticated, idempotent `PAIR_REVOKE` that the receiver applies and acknowledges (the proper fix), and/or a typed `FLASH_ERR`/negative ack when a frame is dropped for a missing session key, so the sender's outbox fails with a sentence instead of retrying. Closing the local session on revoke is a useful partial step but does not tell the peer. The wire change should travel with the version-range/capability work (review item 4).
+Implemented as **ADR-351** (`PAIR_REVOKE`, capability `pr1`):
+- The sender sends one best-effort `FLASH_PAIR t=revoke` on the live session before removing its local trust, then closes the session (250 ms flush window).
+- The receiver authenticates it by the session peer id, removes the sender's pairing/session key (and the pin at that moment), closes the session, emits `"<name> no longer trusts you. Pair again to reconnect."`, and the chat header reads **Not paired** while an unpaired transport session is up.
+- The frame is ignored by older peers because unknown `FLASH_PAIR` types decode to null; `pr1` is advertised in HELLO.
+
+Still owed:
+- The **outbox budget** is unchanged: a message queued after the revoke retries until the existing wall-clock budget, because the notice is not a delivery receipt. A negative ack is the next step.
+- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
+- The header fix (`FlashChatHeaderLabelTest`) is unit-tested, **not device-verified**.
 
 ### Verification
-Device test on 2026-11-04: pair, send, revoke on A, toggle B Wi-Fi, send from B, wait 2 min. Security half passes (no pin/pairing/session key on A; all FLASH_SEC dropped; A's chat never got `afterrevoke`). UX half fails (B Connected/sent, retry loop). See `W1-TLS-01` and `W1-REVOKE-02` in `docs/testing/TEST-BACKLOG.md`.
+First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
+
+Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G986U1 / Android 13, same debug build): paired (417 319), sent and delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2. The header fix was not installed before the phones were disconnected.
 
 ### Related files
-- `core/security/src/androidMain/kotlin/com/transfer/flash/core/security/trust/AndroidPreferencesTrustStore.kt`
-- `core/network/src/androidMain/kotlin/com/transfer/flash/core/network/ws/WsFlashNetwork.kt`
-- `core/messaging/src/commonMain/kotlin/com/transfer/flash/core/messaging/RealFlashChatRepository.kt`
-- `docs/protocol.md`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingFrames.kt`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/PairingWireCodec.kt`
+- `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingCoordinator.kt`
+- `app/src/main/java/com/transfer/flash/pairing/PairingCoordinator.kt`
+- `ui/chat/src/commonMain/kotlin/com/transfer/flash/ui/chat/FlashChatHeader.kt`
+- `docs/decisions.md` ADR-351
+- `docs/protocol.md` "Pairing revocation"
+- `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
 
 ### Status
-OPEN - security property holds; sender notification/acknowledgement missing.
+FIXED FOR THE NOTICE (device-verified) AND THE HEADER LABEL (unit-tested, not device-verified); **PARTIAL**: outbox budget and TOFU re-pin remain.
