@@ -1,5 +1,14 @@
 # Current Handoff
 
+> **2026-11-04 — WAVE 1 IS DEVICE-TESTED: SECURITY PASS, SENDER UX FAIL.** Installed the branch APK on an
+> Infinix X6882B (Android 14) and a TECNO SPARK 40 (Android 15), paired them over the Infinix hotspot
+> (code 261 811), delivered a message, then revoked on the Infinix without restarting it. A's prefs lost
+> the peer's pin/pairing/session key and every post-revoke `FLASH_SEC` frame was dropped. **B still showed
+> Connected and the message as sent, and retried every 2-16 s** — `ERROR-982`; the missing `PAIR_REVOKE`.
+> `W1-TLS-01` is PARTIAL (security pass, sender notification missing); `W1-REVOKE-02` added. Resume identity
+> (Room v22 -> v23) is still unimplemented. Do not merge as "revoked peers cannot connect"; the correct
+> claim is "revoked peers cannot deliver trusted content".
+>
 > **2026-11-03 — WAVE 1 SAFETY IS ON A BRANCH, NOT MERGED.** `fix/wave1-safety` has four of the five Wave 1 fixes:
 > TLS session eviction (`c75862b4`), framing/blank-id (`8780e40`), pairing throttle (`5ab9c9f7`), protocol banners
 > (`25b6b762`). Gate: security + common tests, both network targets, app + desktop compile -> **BUILD SUCCESSFUL 1m 17s**,

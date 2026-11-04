@@ -1,5 +1,44 @@
 # Progress Log
 
+## 2026-11-04 - Wave 1 device test: pairing + revoke on Infinix/TECNO (PARTIAL)
+
+### Worked on
+Ran the two-device `W1-TLS-01` check on the Wave 1 branch. Devices: Infinix X6882B (Android 14, A) and
+TECNO SPARK 40 / KM5 (Android 15, B). Both now run the same `fix/wave1-safety` debug APK; the Infinix was
+updated in place (debug key, data preserved) and the TECNO got a fresh install. Network: the Infinix's
+hotspot (`ap0` 10.246.114.2), TECNO client `wlan0` 10.246.114.89, laptop on the same hotspot.
+
+### Changed / found
+- Paired successfully: code **261 811**; both sides showed the peer under TRUSTED PEERS.
+- Sent `w1session` from B; A received it and the chat showed it.
+- Revoked B on A (Nearby -> Revoke) **without restarting A**. A's prefs then contained **no**
+  `paired_cfc5089d`, `pin_cfc5089d` or `session_key_cfc5089d`.
+- Toggled B's Wi-Fi off/on to kill the socket while keeping B's app process and TLS ticket. A accepted an
+  **unpaired** transport session (by design, for pairing) and then dropped every `FLASH_SEC` frame with
+  `no stored session key`; A's chat never received `afterrevoke`.
+- **Security half passes**: no pin/pairing/session key on A; no sealed content accepted.
+- **UX half fails (ERROR-982)**: B still showed **Connected** and `afterrevoke` as sent, and re-sent the
+  frame every 2-16 s. There is no `PAIR_REVOKE`; the transport ACK does not mean app delivery.
+- The original `W1-TLS-01` pass condition ("reconnect must fail") was wrong because Flash deliberately
+  admits unpaired sessions for pairing. Corrected in the backlog; `W1-REVOKE-02` added.
+- The TLS cache eviction itself is unit-proven; this device test could not isolate resumption because the
+  unpaired session is allowed at the transport layer. Do not claim "revoked peers cannot connect" - claim
+  "revoked peers cannot deliver trusted content".
+
+### Verification
+`tools\flash-gradle.ps1 :app:assembleDebug` -> BUILD SUCCESSFUL (1m 7s). Both APKs installed successfully.
+Device evidence: `ERROR-982`; `docs/testing/TEST-BACKLOG.md` `W1-TLS-01` result and `W1-REVOKE-02`.
+
+### Remaining
+- Design the revoke notification / negative acknowledgement (`PAIR_REVOKE` + typed refusal). This is a wire
+  change and belongs with the version-range/capability work; a local session close is only a partial step.
+- Resume identity (Room v22 -> v23) is still the one unimplemented Wave 1 item.
+- Do not merge Wave 1 as "device-verified"; the security property is verified, the sender UX is not.
+
+### Next AI
+Read `ERROR-982` and the updated `W1-*` entries. If the owner wants the revoke UX fixed first, write the
+`PAIR_REVOKE`/negative-ack design before code. Otherwise finish resume identity as its own change.
+
 ## 2026-11-03 - Wave 1 safety/correctness (TLS eviction, framing, pairing throttle)
 
 ### Worked on

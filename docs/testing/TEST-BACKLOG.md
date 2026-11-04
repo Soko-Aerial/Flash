@@ -7329,10 +7329,17 @@ Four fixes are on branch `fix/wave1-safety` (commits `c75862b4`, `8780e40`, `5ab
 These are the two-device checks that still gate a merge.
 
 ### W1-TLS-01 — Forget a peer without restarting the app
-- **Setup:** two phones, paired, both apps open and connected; a live session.
+- **Setup:** two phones, paired, both apps open and connected; a live session. (Run 2026-11-04: Infinix X6882B / Android 14 + TECNO SPARK 40 / Android 15, both on the Infinix hotspot, same `fix/wave1-safety` debug APK.)
 - **Steps:** (1) on A, Forget/Unpair B; (2) **without restarting A**, have B dial A or send a message; (3) repeat after restarting A.
-- **Pass:** A refuses B both times: no chat, file or call frame is accepted and the session closes or times out. The log shows a fresh TLS handshake or an unpaired/identity rejection, never a resumed session accepted. Before the fix, a resumed TLS 1.3 session could skip the trust manager for up to 24 h.
-- **Source:** `c75862b4`, `docs/security.md` section 7. **Status:** TODO
+- **Pass (corrected after the run):** A may accept an **unpaired** transport session so a new device can pair, but it must not accept sealed chat, file or call content, and the pin/pairing/session key must be gone. The sender must not be told the message was delivered. Before the fix, a resumed TLS 1.3 session could skip the trust manager for up to 24 h.
+- **Result 2026-11-04:** **PARTIAL - security half passes, UX half fails.** Pairing with code 261 811 succeeded; `w1session` was delivered. Revoke on A (no restart) removed `paired_cfc5089d`, `pin_cfc5089d` and `session_key_cfc5089d` from A's prefs. B's Wi-Fi toggle forced a reconnect; A accepted an unpaired session and then dropped every `FLASH_SEC` frame with `no stored session key`; A's chat never received `afterrevoke`. B still showed "Connected" and `afterrevoke` as sent and re-sent every 2-16 s. See `ERROR-982` and `W1-REVOKE-02`.
+- **Source:** `c75862b4`, `docs/security.md` section 7, `ERROR-982`. **Status:** PARTIAL (security pass; sender notification missing)
+
+### W1-REVOKE-02 - The revoked sender must learn, not retry silently
+- **Setup:** as `W1-TLS-01`, after A revokes B.
+- **Steps:** toggle B's Wi-Fi, send from B, watch both UIs and logs for two minutes.
+- **Pass:** B stops showing "Connected" and either marks the message failed with a reason or removes the peer from trusted; the outbox stops retrying; A closes the session or refuses it with a typed reason; no `FLASH_SEC` retry loop remains.
+- **Source:** `ERROR-982`. **Status:** TODO (needs a design; likely `PAIR_REVOKE` plus a typed refusal)
 
 ### W1-FRAME-01 — Malformed HELLO
 - **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.
