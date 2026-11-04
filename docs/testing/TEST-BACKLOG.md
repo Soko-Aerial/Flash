@@ -7333,13 +7333,15 @@ These are the two-device checks that still gate a merge.
 - **Steps:** (1) on A, Forget/Unpair B; (2) **without restarting A**, have B dial A or send a message; (3) repeat after restarting A.
 - **Pass (corrected after the run):** A may accept an **unpaired** transport session so a new device can pair, but it must not accept sealed chat, file or call content, and the pin/pairing/session key must be gone. The sender must not be told the message was delivered. Before the fix, a resumed TLS 1.3 session could skip the trust manager for up to 24 h.
 - **Result 2026-11-04:** **PARTIAL - security half passes, UX half fails.** Pairing with code 261 811 succeeded; `w1session` was delivered. Revoke on A (no restart) removed `paired_cfc5089d`, `pin_cfc5089d` and `session_key_cfc5089d` from A's prefs. B's Wi-Fi toggle forced a reconnect; A accepted an unpaired session and then dropped every `FLASH_SEC` frame with `no stored session key`; A's chat never received `afterrevoke`. B still showed "Connected" and `afterrevoke` as sent and re-sent every 2-16 s. See `ERROR-982` and `W1-REVOKE-02`.
-- **Source:** `c75862b4`, `docs/security.md` section 7, `ERROR-982`. **Status:** PARTIAL (security pass; sender notification missing)
+- **Second run after ADR-351 (2026-11-04):** Infinix X6882B + Samsung SM-G986U1, paired with code 417 319, delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair. The header fix ("Not paired") is unit-tested but **not device-verified**. The Samsung auto-redial re-added a TOFU **pin** for the unpaired peer (it cannot deliver trusted content). The outbox budget is unchanged.
+- **Source:** `c75862b4`, `docs/security.md` section 7, `ERROR-982`, ADR-351. **Status:** PARTIAL (security pass; notice pass; header unit-tested; outbox/tombstone owed)
 
 ### W1-REVOKE-02 - The revoked sender must learn, not retry silently
 - **Setup:** as `W1-TLS-01`, after A revokes B.
 - **Steps:** toggle B's Wi-Fi, send from B, watch both UIs and logs for two minutes.
 - **Pass:** B stops showing "Connected" and either marks the message failed with a reason or removes the peer from trusted; the outbox stops retrying; A closes the session or refuses it with a typed reason; no `FLASH_SEC` retry loop remains.
-- **Source:** `ERROR-982`. **Status:** TODO (needs a design; likely `PAIR_REVOKE` plus a typed refusal)
+- **Result 2026-11-04 (ADR-351):** the notice passes: the Samsung logged the sentence, removed the peer from TRUSTED PEERS, and the Infinix showed it as DISCOVERED. The header label fix is unit-tested, not device-verified. **Partial:** the outbox still follows the wall-clock budget (the notice is not a receipt), and an outbound first-use dial can re-add a TOFU pin for the now-unpaired peer.
+- **Source:** `ERROR-982`, ADR-351. **Status:** PARTIAL (notice pass; header unit-tested; outbox/tombstone owed)
 
 ### W1-FRAME-01 — Malformed HELLO
 - **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.

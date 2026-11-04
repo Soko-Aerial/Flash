@@ -1,5 +1,15 @@
 # Current Handoff
 
+> **2026-11-04 (later) — ADR-351 `PAIR_REVOKE` IS IMPLEMENTED (`1ce825d2`); THE NOTICE IS DEVICE-VERIFIED; THE HEADER
+> FIX IS UNIT-TESTED, NOT DEVICE-VERIFIED.** On local Forget the sender now emits `FLASH_PAIR t=revoke` (cap `pr1`) before
+> removing trust and closing the session; the receiver removes the pairing/session key, closes, and shows
+> "<name> no longer trusts you. Pair again to reconnect." The chat header reads **Not paired** for an untrusted peer.
+> Device run: Infinix X6882B + Samsung SM-G986U1, paired 417 319, message delivered, revoke -> Samsung logged the sentence,
+> both stores dropped `paired_`/`session_key_`, Infinix moved the peer to DISCOVERED. **Still owed:** header device check
+> (phones disconnected before install), outbox negative ack (the budget still applies), revocation tombstone (auto-redial
+> re-added a TOFU pin for the unpaired peer), and resume identity. Unit tests: codec 5, coordinator 11, header 2; app +
+> desktop compile. Records: ADR-351, `ERROR-982`, `W1-REVOKE-02`.
+>
 > **2026-11-04 — WAVE 1 IS DEVICE-TESTED: SECURITY PASS, SENDER UX FAIL.** Installed the branch APK on an
 > Infinix X6882B (Android 14) and a TECNO SPARK 40 (Android 15), paired them over the Infinix hotspot
 > (code 261 811), delivered a message, then revoked on the Infinix without restarting it. A's prefs lost

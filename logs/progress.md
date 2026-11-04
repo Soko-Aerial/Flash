@@ -1,5 +1,45 @@
 # Progress Log
 
+## 2026-11-04 - ADR-351 `PAIR_REVOKE` implemented; notice device-verified, header unit-tested
+
+### Worked on
+Implemented the revoke notice designed in ADR-351 after the first device run (`ERROR-982`). The TECNO was replaced by a
+Samsung SM-G986U1 (Android 13) for the second run; both phones ran the same `fix/wave1-safety` debug APK.
+
+### Changed (commit `1ce825d2`)
+- `FLASH_PAIR t=revoke` (`FlashPairingFrame.PairRevoke`) in the shared pairing codec; capability `pr1` advertised in HELLO
+  by Android, desktop and the engine.
+- `FlashPairingCoordinator` and the app `PairingCoordinator`: on local Forget, send the notice **before** removing trust,
+  then close the session after a 250 ms flush window; on receive, remove the sender's trust/session key, close, emit
+  `"<name> no longer trusts you. Pair again to reconnect."`, and reset an active pairing with that peer.
+- Host wiring (`Flash.kt`, `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`) supplies `peerFeatures` and closes the session.
+- Chat header (`FlashChatHeader.kt`, `FlashConversationScreen.kt`): an untrusted peer reads **Not paired** even while an
+  unpaired transport session is up; the presence dot is hidden for it.
+- ADR-351 in `docs/decisions.md`; protocol section and `pr1` in `docs/protocol.md`.
+
+### Verification
+- Unit: `PairingWireCodecTest` 5/5; `FlashPairingCoordinatorTest` 11/11 (including
+  `aRevokeNoticeRemovesThePeerOnTheOtherSide`); `FlashChatHeaderLabelTest` 2/2. `:app:compileDebugKotlin` and
+  `:desktop:compileKotlinJvm` green.
+- Device, second run: Infinix X6882B + Samsung SM-G986U1, paired with code 417 319, delivered `before-revoke`, revoked on
+  the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped the
+  `paired_` and `session_key_` entries; the Infinix moved the peer from TRUSTED PEERS to DISCOVERED with Pair.
+
+### Problems
+- The Samsung auto-redial re-added a TOFU **pin** for the now-unpaired peer. It cannot deliver trusted content; refusing it
+  needs a revocation tombstone (future).
+- The outbox still follows the existing wall-clock budget: the notice is not a delivery receipt.
+- The header fix was **not installed before the phones were disconnected**, so it is unit-tested only.
+
+### Remaining
+- Device-verify the header "Not paired" on two phones.
+- Negative ack for dropped frames / stop the outbox; revocation tombstone; then resume identity (Room v22 -> v23).
+- Do not merge Wave 1 as fully device-verified; the notice is, the header is not.
+
+### Next AI
+Read ADR-351, `ERROR-982`, and `W1-REVOKE-02`. The next smallest honest step is either the outbox negative ack or
+`resume identity`; both are separate changes. Do not reopen the notice design.
+
 ## 2026-11-04 - Wave 1 device test: pairing + revoke on Infinix/TECNO (PARTIAL)
 
 ### Worked on
