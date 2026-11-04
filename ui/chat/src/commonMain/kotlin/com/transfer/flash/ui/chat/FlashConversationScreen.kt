@@ -798,6 +798,7 @@ fun FlashConversationScreen(
                         Column {
                             FlashChatHeader(
                                 state = state.header,
+                                isPeerTrusted = isPeerTrusted,
                                 onBack = leaveConversation,
                                 showVideoCallAction = showVideoCallAction,
                                 onAvatarClick = {

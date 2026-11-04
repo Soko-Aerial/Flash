@@ -350,6 +350,7 @@ FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> [gv=<level>] [caps=
   - `sw1`: Group swarm wire v1 support (`FSW1` binary frames).
   - `gs1`: Group secret / invite membership support.
   - `cv1`: can take a camera added to a 1:1 call mid-call (`Status` `vu`, an offer that adds an `m=video` section) (ADR-078).
+  - `pr1`: pairing revocation notice (`FLASH_PAIR t=revoke`, ADR-351); older peers ignore the frame.
 - **Session lifetime:** Features apply to new sessions. Connected sessions retain the features negotiated during handshake until reconnected. Unknown tokens are ignored.
 
 ## Groups (Phase 1, 2026-09-08)
@@ -782,6 +783,26 @@ FLASH_LINK v=1 t=keep       # "I want it; don't ask for 10 minutes"
 - **Old clients** drop the unknown prefix and never answer, so the session stays. A device never closes a session the
   other side dialed, and never refuses an incoming one.
 - **Versioning**: a frame with `v` other than 1 or an unknown `t` is consumed and ignored.
+
+### Pairing revocation: `PAIR_REVOKE` (ADR-351, `pr1`)
+
+A device that forgets a paired peer sends one best-effort line on the live session **before** removing its local trust:
+
+```text
+FLASH_PAIR t=revoke
+```
+
+- Sent only when the peer's HELLO advertised `pr1`. No retry: it is a notice, not a reliable transaction; the local
+  Forget still happens when the send fails.
+- The receiver authenticates the sender by the **session**, never by a field in the frame. It then removes the
+  sender's `pin_`, `paired_` and `session_key_` entries, closes the session, drops the sender from trusted/online, and
+  shows "<name> no longer trusts you. Pair again to reconnect." It must not send a revoke back.
+- Idempotent: a repeated or late revoke from the same peer is a no-op after the first.
+- A peer can only revoke **itself**; the frame carries no third-party id. A malicious peer therefore cannot make the
+  receiver forget anyone but the malicious peer.
+- Unknown `t` values, including `revoke` on a build that predates it, are consumed and ignored by the pairing codec.
+  Those peers keep the old behaviour: local Forget removes the pin and closes the session, but the peer is not told.
+  This is why the frame is safe to send before every peer supports it.
 
 ## Intended Full Protocol
 
