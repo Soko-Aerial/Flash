@@ -925,7 +925,9 @@ sender's chunks and sends cancel; the v22 -> v23 upgrade was device-verified on 
 changed-source two-phone run is `W1-RESUME-01` (owed). Affected gate: 1,176 tests / 0 failures / 0 errors.
 **ADR-353 (revocation tombstone + stable direct-chat title) is merged as `c2acce9c` and pushed; it also fixed
 ERROR-983 (a W1 control-escape interaction in the hub file codec).** Affected gate for ADR-353: 2,613 tests / 0 failures /
-0 errors; device checks `W1-REVOKE-03` and `W1-TITLE-01` are owed. Remaining partials: old-peer outbox budget. Authority:
+0 errors; device checks `W1-REVOKE-03` and `W1-TITLE-01` are owed. **Wave 2 host baseline `EXP-141` (200 MB loopback):
+64 KiB 72.2 MB/s vs 256 KiB 64.5 MB/s, 253 MB vs 515 MB allocation; no chunk-size change is justified. Device
+`W2-XFER-01`/`W2-AND-01` and desktop `W2-DESK-01` are owed.** Remaining partials: old-peer outbox budget. Authority:
 `logs/handoff.md`, `logs/progress.md`, ADR-351, ADR-352 and ADR-353.
 
 **Optimization programme Wave 4 merged and being gate-verified (2026-11-02):** both streams are now ON `dev` - desktop E

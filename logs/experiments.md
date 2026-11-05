@@ -3000,3 +3000,36 @@ of a 60 s window (≈0.4 % of total on 8 cores). This is a coarse `top` snapshot
 
 **Next:** re-run on the repository HEAD build and a cool device; add the battery run and the 1 GiB/4 GiB transfer benchmark.
 The full raw run notes live in the ignored `docs/testing/measurements/2026-11-03-android-baseline.md` on the measuring PC.
+
+## EXP-141 - Transfer loopback 200 MB: 64 KiB vs 256 KiB on the host (2026-11-05)
+
+### Environment
+- Windows 11, 8 logical processors, OpenJDK 25.0.3 (Launcher 21.0.10).
+- Commit `663516a4` (`dev`); the transfer pipeline is unchanged by ADR-353.
+- Method: `core/transfer/src/jvmTest/.../TransferLoopbackBenchmarkTest.benchmark200MbTransfer` - deterministic 200 MB
+  synthetic source -> `SendPipeline` -> in-memory channel -> `ReceivePipeline` -> `MemorySink`, with per-chunk SHA-256
+  verification. Median of 3 per chunk size; no disk, no network, no TLS.
+
+### Results (200 MB, 200 MiB = 209,715,200 bytes)
+| Chunk | Runs (MB/s) | Median (MB/s) | Wall (ms) | CPU (ms) | Thread heap alloc |
+|---|---|---|---|---|---|
+| 64 KiB | 73.4, 65.5, 72.2 | **72.2** | 2,769.6 | 2,671.9 | **253 MB** |
+| 256 KiB | 61.9, 66.6, 64.5 | **64.5** | 3,102.0 | 2,953.1 | **515 MB** |
+
+### SHA-256 microbenchmark (200 MB, 3,200 x 64 KiB blocks)
+- Current `Sha256.digest` (Okio HashingSink path): 562.6 ms, **355.5 MB/s**, 0.2 MB allocated.
+- Reusable in-place `MessageDigest`: 552.5 ms, **362.0 MB/s**, 0.0 MB.
+- Gap: **1.02x** and 0.2 MB; not worth a code change on this evidence.
+
+### Conclusion
+On this host loopback, **64 KiB is about 12% faster than 256 KiB and allocates half as much heap**. This does not justify
+changing the default or the adaptive ceiling to 256 KiB. It also **supersedes** the older audit's "256 KB is 48.7 vs
+33.8 MB/s" for this host: that measurement predates the transfer batch 1-3 optimizations, and the current pipeline has a
+different allocation profile.
+
+This is **not** a device or network result. `MemorySink` means no receive-to-disk write, no verifier second read, and no
+TLS/AES-GCM. The review's Wave 2 target remains owed: a **4 GiB transfer on 5 GHz and hotspot**, 64 vs 256 KiB, with wall
+time, sender/receiver CPU, peak RSS and disk read bytes.
+
+### Status
+Host baseline recorded; device/battery/desktop measurements TODO (`W2-XFER-01`, `W2-AND-01`, `W2-DESK-01`).

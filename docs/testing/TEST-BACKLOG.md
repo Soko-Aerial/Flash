@@ -7362,6 +7362,38 @@ green. These are the two-device checks that still gate confidence.
 - **Pass:** the list row and header keep the last known name (e.g. "Flash Olive") before and after the revoke/restart; the raw UUID is never shown. A never-named peer reads **Unknown device**, not its device id. The name is presentation only; the header still says **Not paired**.
 - **Source:** ADR-353, `RealFlashChatRepository.directChatTitle`/`directTitleCache`, `RealFlashChatRepositoryTest` title tests. **Status:** TODO (unit tests pass; device run owed).
 
+## 5.W2. Wave 2 performance measurements (2026-11-05; host baseline only)
+
+`EXP-141` records the host loopback 200 MB result: 64 KiB was 72.2 MB/s vs 256 KiB 64.5 MB/s, with 253 MB vs 515 MB
+thread allocation. That is a pipeline CPU/framing measurement with a `MemorySink`; it does not justify changing the
+default chunk size. These are the measurements still owed by the review's Wave 2.
+
+### W2-XFER-01 — 4 GiB transfer, 64 vs 256 KiB, 5 GHz and hotspot
+- **Setup:** two phones on 5 GHz LAN, then the same pair on a hotspot; a 4 GiB file on the sender's storage.
+- **Steps:** transfer with 64 KiB chunks (current default), record; repeat with the 256 KiB profile; repeat with two
+  pauses. On both, record sender and receiver wall time, CPU time, peak RSS and (if available) disk read bytes.
+- **Pass:** a completed transfer on each path with no OOM/thermal stop; the numbers are recorded with phone models,
+  Android versions, band, channel width, router/hotspot, chunk size and file hash; the default is changed only if the
+  256 KiB result is better by a margin that survives the run-to-run spread.
+- **Source:** NectarLink review Wave 2, `EXP-141` host baseline, `EXP-001`/`EXP-075` older cells. **Status:** TODO.
+
+### W2-AND-01 — Android 1 h screen-off baseline with one paired peer
+- **Setup:** Infinix X6882B (Android 14), screen off, one paired peer visible, no transfer; Wi-Fi on.
+- **Steps:** `dumpsys batterystats --reset`, wait 1 h, read the app's wakelock/alarm/network lines and `dumpsys meminfo`;
+  repeat cold/warm `am start -W` and a 5x `dumpsys gfxinfo` scroll on the same build.
+- **Pass:** a recorded 1 h battery percentage and wakelock count, cold/warm start, PSS and jank; compared with `EXP-140`
+  and with the same measurements in airplane mode to separate radio cost. No claim of "background supported" from this.
+- **Source:** NectarLink review Wave 2 / D1/D2/D6, `EXP-140`. **Status:** PARTIAL (`EXP-140` cold/warm/PSS/gfxinfo done;
+  1 h battery TODO).
+
+### W2-DESK-01 — Desktop JFR and tray memory
+- **Setup:** Windows desktop release build, one peer online, no transfer; then a 1 GB transfer.
+- **Steps:** start JFR before the transfer, record 60 s idle and the transfer; `Get-Process` working set with the window
+  open and after tray-hide; idle CPU 60 s; record MSI/EXE installed size.
+- **Pass:** JFR shows no unexplained full-GC/compilation storm; tray-hide working set and idle CPU are recorded; the
+  numbers are compared with the pre-change baseline and any change is justified by them.
+- **Source:** NectarLink review Wave 2 / E1/E2/E3/E7. **Status:** TODO.
+
 ### W1-FRAME-01 — Malformed HELLO
 - **Setup:** a test harness (desktop CLI or a small client) that can send a raw `FLASH_WS_HELLO` to the phone.
 - **Steps:** send a HELLO with a blank `deviceId`, then one whose `name` contains a raw CR/LF, then a well-formed HELLO.
