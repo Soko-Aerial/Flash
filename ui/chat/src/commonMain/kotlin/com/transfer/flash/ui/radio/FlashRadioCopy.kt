@@ -105,10 +105,10 @@ public object FlashRadioCopy {
     // --- Hardware Readiness Checklist --------------------------------------------------------------------
     public const val CHECKLIST_TITLE: String = "Is your radio ready?"
     public const val CHECKLIST_SUBTITLE: String = "Complete these three steps before connecting:"
-    public const val CHECKLIST_STEP_1: String = "1. Turn the radio on and verify battery is charged (> 50%)"
+    public const val CHECKLIST_STEP_1: String = "Turn the radio on and check the battery is charged (over 50%)."
     public const val CHECKLIST_STEP_2: String =
-        "2. In the radio menu: Menu -> General Settings -> KISS TNC -> Enable"
-    public const val CHECKLIST_STEP_3: String = "3. Ensure Bluetooth is enabled on this phone or PC"
+        "In the radio menu: General Settings ? KISS TNC ? Enable."
+    public const val CHECKLIST_STEP_3: String = "Bluetooth is on for this device, and the radio is discoverable."
 
     // --- Candidate Confirmation ---------------------------------------------------------------------------
     public const val CANDIDATE_TITLE: String = "Paired radio found"
@@ -255,6 +255,12 @@ public object FlashRadioCopy {
 
     public const val BADGE_ACTIVE: String = "Active"
     public const val BADGE_COMING_LATER: String = "Coming later"
+
+    // Short mode names for fact rows and summaries (redesign v3); the title keeps the mode number.
+    public const val MODE_1_SHORT: String = "Field Companion"
+    public const val MODE_2_SHORT: String = "Base Station Relay"
+    public const val MODE_4_SHORT: String = "Tactical Radar"
+    public const val MODE_5_SHORT: String = "All-in-One Dual Mode"
 
     // --- Diagnostic Test Message (Plan R §6, Rule 4) ------------------------------------------------------
     public const val DIAGNOSTICS_SECTION_TITLE: String = "Radio diagnostics"

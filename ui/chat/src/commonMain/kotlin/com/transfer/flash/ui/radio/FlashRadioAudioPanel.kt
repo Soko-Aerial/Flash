@@ -111,6 +111,8 @@ public fun FlashRadioAudioPanel(
     onAllowMicrophone: () -> Unit,
     modifier: Modifier = Modifier,
     dense: Boolean = false,
+    /** True in the phone dock: the state line and the talk control stack instead of sharing a row. */
+    stacked: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val listening = voice.phase != RadioVoicePhase.OFF && voice.phase != RadioVoicePhase.FAILED
@@ -138,16 +140,10 @@ public fun FlashRadioAudioPanel(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
         ) {
-            FlashIcon(
-                icon = FlashIcons.Speaker,
-                contentDescription = null,
-                tint = colors.textSecondary,
-                size = 20.dp,
-            )
             FlashText(
                 text = FlashRadioCopy.SECTION_RADIO,
                 modifier = Modifier.weight(1f),
-                style = FlashTheme.typography.bodyEmphasis,
+                style = FlashTheme.typography.bodyEmphasis.copy(fontSize = 14.sp, lineHeight = 20.sp),
                 color = colors.textPrimary,
             )
             Box(
@@ -173,49 +169,44 @@ public fun FlashRadioAudioPanel(
             )
         } else {
             Spacer(modifier = Modifier.height(if (dense) FlashSpacing.space4 else FlashSpacing.space8))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
-            ) {
-                FlashText(
-                    text = when {
-                        talking -> FlashRadioCopy.VALUE_TALKING
-                        !linkLive -> FlashRadioCopy.AUDIO_NO_LINK
-                        voice.phase == RadioVoicePhase.RECEIVING -> FlashRadioCopy.VALUE_RECEIVING
-                        else -> FlashRadioCopy.AUDIO_LISTENING
-                    },
-                    style = FlashTheme.typography.metadataDefault,
-                    color = when {
-                        talking -> colors.accentSecondary
-                        !linkLive -> colors.textError
-                        else -> colors.textSecondary
-                    },
-                )
-                RadioLevelBars(level = if (linkLive) level else 0f, active = listening && linkLive)
-                if (talking) {
-                    FlashHubChip(text = FlashRadioCopy.CHIP_ON_AIR)
+            if (stacked) {
+                // Phone dock: the state line, then a full-width hold-to-talk under the thumb.
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    RadioAudioStateRow(voice = voice, linkLive = linkLive, level = level, listening = listening)
+                    Spacer(modifier = Modifier.height(FlashSpacing.space8))
+                    RadioPushToTalk(
+                        enabled = canTalk,
+                        talking = talking,
+                        needsLink = !linkLive,
+                        onDown = onTalkDown,
+                        onUp = onTalkUp,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
-                Spacer(modifier = Modifier.weight(1f))
-            }
-
-            Spacer(modifier = Modifier.height(FlashSpacing.space8))
-            Box(
-                modifier = Modifier.fillMaxWidth(),
-                contentAlignment = if (dense) Alignment.Center else Alignment.CenterEnd,
-            ) {
-                RadioPushToTalk(
-                    enabled = canTalk,
-                    talking = talking,
-                    needsLink = !linkLive,
-                    onDown = onTalkDown,
-                    onUp = onTalkUp,
-                    modifier = if (dense) {
-                        Modifier.fillMaxWidth()
-                    } else {
-                        Modifier.widthIn(max = 420.dp).fillMaxWidth()
-                    },
-                )
+            } else {
+                // Wide window: the same row the design shows - state on the left, the talk control on the right.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+                ) {
+                    RadioAudioStateRow(
+                        voice = voice,
+                        linkLive = linkLive,
+                        level = level,
+                        listening = listening,
+                        modifier = Modifier.weight(1f),
+                    )
+                    RadioPushToTalk(
+                        enabled = canTalk,
+                        talking = talking,
+                        needsLink = !linkLive,
+                        onDown = onTalkDown,
+                        onUp = onTalkUp,
+                        modifier = Modifier.widthIn(max = 420.dp).fillMaxWidth(),
+                        tall = true,
+                    )
+                }
             }
         }
 
@@ -260,6 +251,47 @@ public fun FlashRadioAudioPanel(
 }
 
 /**
+ * The state line of the audio panel: what the radio is doing, the level, and the on-air chip. Shared by the
+ * dock (its own line) and the wide layout (left half of the row).
+ */
+@Composable
+private fun RadioAudioStateRow(
+    voice: RadioVoiceUiState,
+    linkLive: Boolean,
+    level: Float,
+    listening: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val colors = FlashTheme.colors
+    val talking = voice.phase == RadioVoicePhase.TRANSMITTING
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(FlashSpacing.space12),
+    ) {
+        FlashText(
+            text = when {
+                talking -> FlashRadioCopy.VALUE_TALKING
+                !linkLive -> FlashRadioCopy.AUDIO_NO_LINK
+                voice.phase == RadioVoicePhase.RECEIVING -> FlashRadioCopy.VALUE_RECEIVING
+                else -> FlashRadioCopy.AUDIO_LISTENING
+            },
+            style = FlashTheme.typography.metadataDefault,
+            color = when {
+                talking -> colors.accentSecondary
+                !linkLive -> colors.textError
+                else -> colors.textSecondary
+            },
+        )
+        RadioLevelBars(level = if (linkLive) level else 0f, active = listening && linkLive)
+        if (talking) {
+            FlashHubChip(text = FlashRadioCopy.CHIP_ON_AIR)
+        }
+        Spacer(modifier = Modifier.weight(1f))
+    }
+}
+
+/**
  * The push-to-talk control. Resting it is an outline, holding it fills with the accent, and a live transmission
  * turns it warm with the word "Talking…" — the one control on the page whose appearance changes *while* it is
  * being used, because "did I key the transmitter?" must be answerable at a glance.
@@ -272,6 +304,7 @@ private fun RadioPushToTalk(
     onDown: () -> Unit,
     onUp: () -> Unit,
     modifier: Modifier = Modifier,
+    tall: Boolean = false,
 ) {
     val colors = FlashTheme.colors
     val motion = FlashTheme.motion
@@ -298,7 +331,7 @@ private fun RadioPushToTalk(
     Row(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .heightIn(min = 56.dp)
+            .heightIn(min = if (tall) 64.dp else 56.dp)
             .clip(HubShapes.control)
             .background(background)
             .onKeyEvent { event ->
