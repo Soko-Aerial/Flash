@@ -131,6 +131,64 @@ class RealFlashTransferRepositoryTest {
     }
 
     @Test
+    fun `a changed source is refused on resume and its confirmed chunks are cleared`() = runBlocking {
+        val stored = SourceIdentity(sizeBytes = 4L, lastModifiedMs = 1_000L, prefixSha256Hex = "aa")
+        val current = SourceIdentity(sizeBytes = 4L, lastModifiedMs = 9_000L, prefixSha256Hex = "bb")
+        val store = object : TransferStore {
+            var cleared = false
+            var status: String? = null
+            var bytesDone: Long? = null
+
+            override suspend fun insertTransfer(transferId: String, totalBytes: Long, status: String) = Unit
+            override suspend fun setBytesDone(transferId: String, bytesDone: Long) {
+                this.bytesDone = bytesDone
+            }
+            override suspend fun setStatus(transferId: String, status: String) {
+                this.status = status
+            }
+            override suspend fun doneChunks(transferId: String): List<Int> = listOf(0)
+            override suspend fun markChunksDone(transferId: String, indexes: List<Int>) = Unit
+            override suspend fun allDoneChunks(): List<TransferStore.ChunkRef> = emptyList()
+            override suspend fun clearDoneChunks(transferId: String) {
+                cleared = true
+            }
+            override suspend fun sourceIdentity(transferId: String): SourceIdentity = stored
+            override suspend fun saveSourceIdentity(transferId: String, identity: SourceIdentity) = Unit
+        }
+        val repo = RealFlashTransferRepository(
+            streamChannelFactory = { _, _ -> null },
+            fileSourceOpener = { Buffer().write(ByteArray(4)) },
+            sourceIdentityProvider = object : SourceIdentityProvider {
+                override suspend fun identity(fileUri: String): SourceIdentity = current
+            },
+            store = store,
+            repositoryScope = newScope(),
+            workerDispatcher = testDispatcher,
+            defaultStreams = 1,
+        )
+
+        val result = repo.sendFile(
+            targetDevice = peer,
+            fileUri = "content://media/changed.bin",
+            displayName = "changed.bin",
+            fileSize = 4L,
+            transferId = "changed-source-transfer",
+            wireFileId = "changed-source-wire",
+        )
+
+        assertTrue(result is FlashResult.Success)
+        awaitUntil(describe = { "changed source was not refused" }) {
+            repo.snapshot(FlashTransferId("changed-source-transfer")).state == FlashTransferState.Failed
+        }
+        val row = repo.snapshot(FlashTransferId("changed-source-transfer"))
+        assertEquals(TransferFailureText.FILE_CHANGED, row.errorMessage)
+        assertEquals(0L, row.bytesDone)
+        assertTrue(store.cleared)
+        assertEquals(FlashTransferState.Failed.name, store.status)
+        assertEquals(0L, store.bytesDone)
+    }
+
+    @Test
     fun `explicit identity is emitted unchanged in FILE_START`() = runBlocking {
         val payload = ByteArray(16 * 1024) { (it % 251).toByte() }
         val starts = java.util.Collections.synchronizedList(mutableListOf<ChunkFrame.FileStart>())

@@ -476,8 +476,23 @@ internal object FlashSchemaSteps {
         ),
     )
 
+    /**
+     * v22 -> v23: the source identity a send needs to prove that a resume is reading the same bytes (ADR-352).
+     * Nullable: rows written before this version were never verified, and the repository treats them as unverifiable
+     * rather than guessing.
+     */
+    val STEP_22_23: FlashSchemaStep = FlashSchemaStep(
+        from = 22,
+        to = 23,
+        statements = listOf(
+            "ALTER TABLE `transfers` ADD COLUMN `sourceSizeBytes` INTEGER",
+            "ALTER TABLE `transfers` ADD COLUMN `sourceLastModifiedMs` INTEGER",
+            "ALTER TABLE `transfers` ADD COLUMN `sourcePrefixSha256` TEXT",
+        ),
+    )
+
     /** Every step, in order, from version 1 to `FlashDatabase.DATABASE_VERSION`. */
     val ALL: List<FlashSchemaStep> = listOf(
-        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20, STEP_20_21, STEP_21_22
+        STEP_1_2, STEP_2_3, STEP_3_4, STEP_4_5, STEP_5_6, STEP_6_7, STEP_7_8, STEP_8_9, STEP_9_10, STEP_10_11, STEP_11_12, STEP_12_13, STEP_13_14, STEP_14_15, STEP_15_16, STEP_16_17, STEP_17_18, STEP_18_19, STEP_19_20, STEP_20_21, STEP_21_22, STEP_22_23
     )
 }

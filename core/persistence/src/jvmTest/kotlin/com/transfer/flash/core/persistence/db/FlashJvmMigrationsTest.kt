@@ -528,6 +528,29 @@ class FlashJvmMigrationsTest {
     }
 
     @Test
+    fun `migration from 22 to 23 adds nullable source identity columns and keeps transfer rows`() {
+        helper.createDatabase(22).use { v22 ->
+            v22.execSQL(
+                "INSERT INTO transfers (transferId, totalBytes, bytesDone, status) " +
+                    "VALUES ('t-22', 10, 4, 'PAUSED')",
+            )
+        }
+
+        helper.runMigrationsAndValidate(FlashDatabase.DATABASE_VERSION, FlashJvmMigrations.ALL.toList()).use { upgraded ->
+            upgraded.prepare(
+                "SELECT transferId, sourceSizeBytes, sourceLastModifiedMs, sourcePrefixSha256 " +
+                    "FROM transfers WHERE transferId = 't-22'",
+            ).use { row ->
+                assertTrue(row.step(), "transfer row must survive migration 22->23")
+                assertEquals("t-22", row.getText(0))
+                assertTrue(row.isNull(1), "sourceSizeBytes must be null for a row written before schema 23")
+                assertTrue(row.isNull(2), "sourceLastModifiedMs must be null for a row written before schema 23")
+                assertTrue(row.isNull(3), "sourcePrefixSha256 must be null for a row written before schema 23")
+            }
+        }
+    }
+
+    @Test
     fun `the public desktop opener upgrades an older file instead of failing`() = runBlocking {
         helper.createDatabase(3).use { v3 -> insertMessage(v3, version = 3) }
 
