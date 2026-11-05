@@ -167,7 +167,9 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 
 .facts span { white-space: nowrap; }
 
-.plate-actions { display: flex; gap: 8px; }
+.plate-actions { display: flex; gap: 8px; margin-top: 4px; }
+
+.plate-actions .primary { width: 100%; }
 
 .reconnect {
   height: 40px;
@@ -432,6 +434,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 }
 
 .ptt:active, .ptt.is-talking { transform: scale(.985); filter: brightness(1.08); }
+
+.ptt.is-off { background: var(--subtle); color: var(--faint); cursor: default; }
+.ptt.is-off:active { transform: none; filter: none; }
+
+.audio-state .is-bad { color: var(--error); }
 
 .audio-foot { font-size: 12px; line-height: 16px; color: var(--faint); }
 

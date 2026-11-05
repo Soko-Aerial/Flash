@@ -72,6 +72,8 @@ const COPY = {
   forgetSub: 'Flash stops using VR-N76. You can pair it again at any time.',
   audio: 'Radio audio',
   audioOff: 'Turn on listening to hear the radio and talk.',
+  audioNoLink: 'No link',
+  audioNeedsLink: 'Reconnect the radio to talk.',
   listening: 'Listening',
   holdToTalk: 'Hold to talk',
   talking: 'Talking…',
@@ -157,6 +159,7 @@ function stationPlate() {
     </div>
     ${next ? `<p class="plate-next">${next}</p>` : ''}
     ${facts ? `<p class="facts">${facts}</p>` : ''}
+    ${!state.enabled ? `<div class="plate-actions"><button class="primary" id="turn-on">${icon.bluetooth}Turn on</button></div>` : ''}
     ${lost ? `<div class="plate-actions"><button class="reconnect">${icon.retry}${COPY.reconnect}</button></div>` : ''}
   </section>`;
 }
@@ -275,7 +278,12 @@ function audioPanel() {
   }
 
   const talking = state.voice === 'talking';
-  const bars = [1, 2, 3, 4, 5].map((i) => `<i class="${i <= (talking ? 5 : 2) ? 'on' : ''}"></i>`).join('');
+  const linkLive = state.view !== 'lost';
+  const canTalk = linkLive;
+  const stateText = talking ? COPY.talking : linkLive ? COPY.listening : COPY.audioNoLink;
+  const bars = [1, 2, 3, 4, 5]
+    .map((i) => `<i class="${linkLive && i <= (talking ? 5 : 2) ? 'on' : ''}"></i>`)
+    .join('');
 
   return `
   <section class="audio" aria-label="Radio audio">
@@ -285,10 +293,10 @@ function audioPanel() {
     </div>
     <div class="audio-row">
       <div class="audio-state">
-        <span>${talking ? COPY.talking : COPY.listening}</span>
+        <span class="${linkLive ? '' : 'is-bad'}">${stateText}</span>
         <span class="meter" aria-hidden="true">${bars}</span>
       </div>
-      <button class="ptt" id="ptt" aria-label="Hold to talk through the radio">${icon.mic}${talking ? COPY.talking : COPY.holdToTalk}</button>
+      <button class="ptt ${canTalk ? '' : 'is-off'}" id="ptt" ${canTalk ? '' : 'aria-disabled="true"'} aria-label="Hold to talk through the radio">${icon.mic}${talking ? COPY.talking : linkLive ? COPY.holdToTalk : COPY.audioNeedsLink}</button>
     </div>
     <div class="audio-foot">${COPY.stationNote}</div>
   </section>`;
@@ -446,6 +454,8 @@ function render() {
   document.getElementById('back').onclick = () => history.back();
   const pairNew = document.getElementById('pair-new');
   if (pairNew) pairNew.onclick = () => { state.sheet = 'scan'; render(); };
+  const turnOn = document.getElementById('turn-on');
+  if (turnOn) turnOn.onclick = () => { state.enabled = true; state.view = 'empty'; render(); };
   const close = document.getElementById('sheet-close');
   if (close) close.onclick = () => { state.sheet = null; render(); };
   document.getElementById('scrim').onclick = () => { state.sheet = null; render(); };
