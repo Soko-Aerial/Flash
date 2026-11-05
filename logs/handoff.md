@@ -10,8 +10,8 @@
 > **Verification:** dual-agent Impeccable critique (A 26/40, one P0 fixed - Delegation/Trust overflow; select deep-link
 > bug, separator contrast, tiny-text and honesty gaps fixed); `inspect.mjs --app` Overview -> 0 FAIL / 1 WARN (12 px app
 > metadata defended); 54-page sweep -> 0 overflow, 0 unnamed controls, 0 console errors, 0 computed text-contrast
-> failures; reduced-motion verified. No Gradle/server/shipped asset changed. **No commit yet; commit the review build and
-> docs together.**
+> failures; reduced-motion verified. No Gradle/server/shipped asset changed. **Committed as `d3fb6c33` on
+> `agent/console-redesign`; the worktree is `E:/FlashWork/D-console`.**
 > **Next:** owner reviews the screenshots and chooses port / port-Overview-first / keep. The port plan is
 > `design/server-console/README.md` section 7; do not touch `server/src/main/resources/admin-ui/` before that choice.
 > The app handoff below still applies to `dev`; this banner is the isolated design branch.
