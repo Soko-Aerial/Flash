@@ -16783,3 +16783,37 @@ transmitter finishes; `radio.rx.ack` reports `rttMs` from that point and `ageMs`
 
 ### Status
 FIXED (host-tested).
+
+## ERROR-988 - The desktop transmitted radio frames but the phone logged no receive at all
+
+### Date
+2026-11-05
+
+### Area
+Radio / RF link
+
+### Symptoms
+Desktop `13:24-13:26`: `radio.tx.text peer=adb2d87d ... retry=false/true`, `radio.path ... result=sent policy=AUTO pairKey=true gateway=true connected=true`, `chat.path ... path=radio`, but **no `radio.rx.ack`** and the messages stayed pending. Phone export `.../flash-log-1793885189795.txt`, same window: `radio.link.up` at `13:21:06`, `radio.link.attempt ... result=ok` again at `13:21:44` with **no `link.up`**, and **zero `radio.rx.text`** / **zero `radio.rx.dropped`**. The phone's two outgoing texts show `radio.path ... result=not_reachable policy=NEVER pairKey=true gateway=true connected=true`.
+
+### Root cause
+UNPROVEN. The app's ACK layer is below this symptom: the phone did not decode any frame, not even a frame it would drop as signed/unknown. The phone's `NEVER` policy is outbound-only and does not block receive. Candidates, in order:
+1. The two radios are not on the same RF channel/mode (KISS TNC/frequency), or the desktop's radio is keyed/stuck (red LED), so nothing reaches the phone's receiver.
+2. The second RFCOMM open at `13:21:44` (a known P2-4 shape: `radio.link.attempt result=ok` with no `link.up`) stole/closed the working link and left the phone's driver in a bad state.
+3. Hardware/firmware state after the Profile A experiment. Profile A is not the cause of the missing receive: the phone would have logged `radio.rx.dropped reason=SIGNED_NOT_ENABLED` for a signed frame, and it logged nothing.
+
+### What was done
+- Profile A is now visibly unavailable (see the 2026-11-05 profile-A progress entry) so it cannot be mistaken for a working mode.
+- `radio.path` now names `policy=NEVER`; the phone's non-sending side is confirmed and needs the per-chat setting changed to Automatic.
+- No speculative code change was made for the missing RX; the RF/channel/PTT and duplicate-open causes need a fresh log after a clean power-cycle/reconnect.
+
+### Next
+Power-cycle both radios; confirm both are on the same channel, KISS TNC mode, and not showing a red/keyed LED; reconnect the radio on both apps; set the phone chat's **Radio fallback** to **Automatic**; send one text from each side. Capture both logs. If the phone still logs no `radio.rx.text`/`radio.rx.dropped`, the fault is below the app's protocol.
+
+### Related files
+- `core/radio/src/commonMain/.../driver/KissTncDriver.kt`
+- `core/radio/src/androidMain/.../link/AndroidRadioDiscovery.kt`
+- `core/messaging/src/commonMain/.../RealFlashChatRepository.kt` (`radio.path`)
+- `logs/progress.md` 2026-11-05 entries; phone log `flash-log-1793885189795.txt`
+
+### Status
+OPEN (not reproducible without the radios; no code change claimed).
