@@ -8425,3 +8425,73 @@ audio works" bug class. `bind(null)` already unbinds cleanly and clears the disp
 ### Verification
 `DesktopVideoSinkBindingTest`: a stand-in track forwards frames to whatever sinks are bound; a shown tile starts one
 scale conversion per frame, a covered one starts none, and re-binding still works. Device check `PERF-C01` step 3.
+
+---
+
+## ADR-351 - Pairing revocation is a capability-gated `PAIR_REVOKE` notice, not a silent local forget
+
+### Date
+2026-11-04
+
+### Decision
+When a device forgets a paired peer, it sends one authenticated, best-effort `FLASH_PAIR t=revoke` line on the live
+session **before** removing its local trust. A receiver that understands it does four things:
+1. removes the sender's pin, pairing and stored session key (the same local operation as Forget);
+2. closes the live session;
+3. stops treating the sender as trusted/online in the UI;
+4. shows "<name> no longer trusts you. Pair again to reconnect." (or the generic sentence when the name is unknown).
+
+The frame is idempotent: a repeated or late `revoke` from the same peer is a no-op after the first. It carries no
+request id and no payload beyond the type. It is advertised as the `pr1` capability in the `caps` HELLO field; a sender
+sends it only to a peer that advertised `pr1`. A peer that does not advertise it is handled exactly as before: the local
+trust is removed and the session is closed, but the old peer cannot be told.
+
+### Context
+`ERROR-982` (device test 2026-11-04): after A forgot B, B kept showing "Connected" and its message looked sent; A
+dropped every sealed frame with "no stored session key"; B retried every 2-16 s. The transport ACK covers the frame, not
+app delivery, and there is no revocation statement in the pairing protocol. The review's item 8 identified the missing
+revoke frame; the device test made it a user-visible data-loss illusion.
+
+### Alternatives considered
+- **A typed `FLASH_ERR` on every dropped frame.** It would stop one retry loop but would not remove the stale
+  pin/pairing/session key on the peer, and it turns a trust event into an error path. Rejected as the primary
+  mechanism; a future negative ack may still complement it.
+- **Bump the protocol version and require a new handshake.** It would strand every older install for a small notice, and
+  the project already has a version-range item (review item 4). Rejected.
+- **Hub revocation list.** Wrong scope: the hub is for organisation trust, not a one-to-one Forget on the LAN.
+- **Do nothing and rely on the absent session key.** That is today's behaviour: the peer sees Connected and retries; it
+  is the defect.
+
+### Consequences
+- A revoked peer learns immediately; its UI stops claiming "Connected" and reads "Not paired" while an unpaired
+  transport session is up. Unsent messages still follow the existing outbox budget until a negative acknowledgement
+  exists: the notice is **not** a delivery receipt.
+- Old peers see no change (unknown `FLASH_PAIR` types are ignored by the codec); they still need a re-pair and still
+  retry until their own session/retry policy gives up. This is no worse than today and does not block the change.
+- The frame is a statement about the sender's own trust. A malicious peer can only make the receiver forget the
+  malicious peer (a self-denial), never a third party. The receiver must apply it only for the session's authenticated
+  peer id, never for an id carried inside the frame.
+- Closing the session on the receiving side is safe: the pairing path admits unpaired peers for a new request, so a
+  re-pair still works.
+- **Removing the pin is local to the revoke.** A later outbound first-use dial can re-add a TOFU pin for the same id
+  (the engine may auto-dial a remembered route). The peer is still **unpaired**, is listed as DISCOVERED with a Pair
+  button, and cannot deliver trusted content. Refusing that would need a revocation tombstone and is a separate change.
+
+### Verification
+- Unit: `PairingWireCodecTest` (5) round-trips `revoke` and still ignores unknown `t`; `FlashPairingCoordinatorTest` (11)
+  proves a received `revoke` removes the peer, emits the sentence, and calls the close callback; the sender emits one
+  frame when `pr1` is advertised. `FlashChatHeaderLabelTest` (2) proves the header reads "Not paired" for an untrusted
+  peer even while presence is Online.
+- Device, 2026-11-04 (Infinix X6882B / Android 14 and Samsung SM-G986U1 / Android 13, both this debug build): paired,
+  sent and delivered a message, then revoked on the Infinix. The Samsung logged
+  `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped the `paired_` and `session_key_`
+  entries; the Infinix moved the peer from TRUSTED PEERS to DISCOVERED. The Samsung auto-redial re-added a **pin** for
+  the unpaired peer (see the last consequence). The header fix was verified on 2026-11-05 on both phones: after the
+  revoke the Samsung header read **Not paired** while an unpaired session was up; the chat title still falls back to the
+  raw device id (cosmetic). `W1-REVOKE-02`.
+- Old-peer check: a build without `pr1` still connects; A's local Forget removes the pin and closes the session; the
+  old peer cannot deliver content (the pre-ADR behaviour).
+
+### Revisit
+When the version-range/capability registry lands (review item 4), move `pr1` into the registry and consider a `reason`
+field. If a future protocol carries delivery receipts, the negative ack can replace the retry-loop half.

@@ -3,6 +3,7 @@ package com.transfer.flash.core.common
 import com.transfer.flash.core.common.annotation.FlashInternalApi
 import com.transfer.flash.core.common.protocol.FlashTextFraming
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -67,5 +68,46 @@ class FlashTextFramingTest {
         // SEC-D04-04
         assertNull(FlashTextFraming.parseFields("FLASH_X a=1 b=2 a=3", "FLASH_X"))
         assertEquals(mapOf("a" to "1", "b" to "2"), FlashTextFraming.parseFields("FLASH_X a=1 b=2", "FLASH_X"))
+    }
+
+    @Test
+    fun escapeNeutralizesLineBreaksAndOtherControls() {
+        assertEquals(
+            "a%0Ab%0Dc%09d%7Fe",
+            FlashTextFraming.escape("a\nb\rc\td\u007Fe")
+        )
+    }
+
+    @Test
+    fun encodedFieldsNeverContainARawLineBreak() {
+        val line = FlashTextFraming.encodeFields(
+            "FLASH_HELLO",
+            "deviceId" to "device-1",
+            "name" to "Alice\nPhone"
+        )
+        assertFalse(line.contains('\n'))
+        assertFalse(line.contains('\r'))
+        assertEquals("Alice%0APhone", FlashTextFraming.parseFields(line, "FLASH_HELLO")?.get("name"))
+    }
+
+    @Test
+    fun unescapeDoesNotReintroduceControlCharacters() {
+        // The escape is kept literal: a peer cannot smuggle a line break back into a display name.
+        assertEquals("a%0Ab", FlashTextFraming.unescape("a%0Ab"))
+        assertEquals("100%", FlashTextFraming.unescape("100%25"))
+    }
+
+    @Test
+    fun parseFieldsRejectsAnEmbeddedControlCharacter() {
+        assertNull(FlashTextFraming.parseFields("FLASH_X name=a\nb", "FLASH_X"))
+        assertNull(FlashTextFraming.parseFields("FLASH_X name=a\u0001b", "FLASH_X"))
+    }
+
+    @Test
+    fun parseFieldsAcceptsATrailingLineEnding() {
+        assertEquals(
+            mapOf("a" to "1"),
+            FlashTextFraming.parseFields("FLASH_X a=1\r\n", "FLASH_X")
+        )
     }
 }

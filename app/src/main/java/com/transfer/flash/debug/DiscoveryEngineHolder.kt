@@ -926,7 +926,13 @@ object DiscoveryEngineHolder {
             // pinning a tier or switching the mode must reach the next connection and the next
             // redial without restarting the engine; live sessions are re-timed by modeController.
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE) },
+            localFeatures = {
+            if (swarmBinding != null) {
+                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+            } else {
+                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+            }
+        },
         )
         binderJob = DiscoveryRouteBinder.observe(appScope, engine.discoveredEndpoints, networkImpl)
 
@@ -1679,6 +1685,12 @@ object DiscoveryEngineHolder {
             },
             crypto = crypto,
             ephemeralKeyPair = ephemeralKeyPair,
+            peerFeatures = { peerId ->
+                networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
+            },
+            onPeerRevoked = { peerId ->
+                appScope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
+            },
         )
 
         // ---- calling (C7 / ADR-025 / UI-050): WebRTC voice/video, signaling over the same WS

@@ -382,6 +382,12 @@ public class DesktopEngine(
             trustStore = trustStoreImpl,
             observedPeerPin = observedPeerPins::get,
             scope = scope,
+            peerFeatures = { peerId ->
+                networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId))?.peer?.features.orEmpty()
+            },
+            onPeerRevoked = { peerId ->
+                scope.launch { networkImpl?.disconnect(FlashDeviceId(peerId)) }
+            },
             sendToPeer = { peerId, text ->
                 val session = networkImpl?.activeSessions?.value?.get(FlashDeviceId(peerId)) as? WsSession
                 if (session != null) {
@@ -1341,7 +1347,13 @@ public class DesktopEngine(
             tlsOptions = tlsOptions,
             // PC5 (ADR-048): the tier's pacing, adjusted by the connection mode (ECO / BOOST).
             transportProfile = { connectionPolicy().transport },
-            localFeatures = { if (swarmBinding != null) setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE) else setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE) },
+            localFeatures = {
+            if (swarmBinding != null) {
+                setOf("sw1", "gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+            } else {
+                setOf("gs1", "hrs1", FEATURE_VIDEO_UPGRADE, "pr1")
+            }
+        },
         )
         networkImpl = network
 

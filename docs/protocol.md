@@ -350,6 +350,7 @@ FLASH_WS_HELLO version=2 deviceId=<id> name=<name> ping=<ms> [gv=<level>] [caps=
   - `sw1`: Group swarm wire v1 support (`FSW1` binary frames).
   - `gs1`: Group secret / invite membership support.
   - `cv1`: can take a camera added to a 1:1 call mid-call (`Status` `vu`, an offer that adds an `m=video` section) (ADR-078).
+  - `pr1`: pairing revocation notice (`FLASH_PAIR t=revoke`, ADR-351); older peers ignore the frame.
 - **Session lifetime:** Features apply to new sessions. Connected sessions retain the features negotiated during handshake until reconnected. Unknown tokens are ignored.
 
 ## Groups (Phase 1, 2026-09-08)
@@ -783,6 +784,26 @@ FLASH_LINK v=1 t=keep       # "I want it; don't ask for 10 minutes"
   other side dialed, and never refuses an incoming one.
 - **Versioning**: a frame with `v` other than 1 or an unknown `t` is consumed and ignored.
 
+### Pairing revocation: `PAIR_REVOKE` (ADR-351, `pr1`)
+
+A device that forgets a paired peer sends one best-effort line on the live session **before** removing its local trust:
+
+```text
+FLASH_PAIR t=revoke
+```
+
+- Sent only when the peer's HELLO advertised `pr1`. No retry: it is a notice, not a reliable transaction; the local
+  Forget still happens when the send fails.
+- The receiver authenticates the sender by the **session**, never by a field in the frame. It then removes the
+  sender's `pin_`, `paired_` and `session_key_` entries, closes the session, drops the sender from trusted/online, and
+  shows "<name> no longer trusts you. Pair again to reconnect." It must not send a revoke back.
+- Idempotent: a repeated or late revoke from the same peer is a no-op after the first.
+- A peer can only revoke **itself**; the frame carries no third-party id. A malicious peer therefore cannot make the
+  receiver forget anyone but the malicious peer.
+- Unknown `t` values, including `revoke` on a build that predates it, are consumed and ignored by the pairing codec.
+  Those peers keep the old behaviour: local Forget removes the pin and closes the session, but the peer is not told.
+  This is why the frame is safe to send before every peer supports it.
+
 ## Intended Full Protocol
 
 
@@ -820,10 +841,12 @@ Chunk frames (`FLSH` framing v2) are documented in the KDoc of `core/transfer/..
 - Compatibility: an older receiver never sends `verified=false`, so a new sender behaves as before with it; an older sender ignores the flag
   (it completes), so a damaged file between a new receiver and an old sender fails on the receiver only.
 
-## Group swarm wire FSW1 v1 (ADR-071, PROPOSED 2026-10-04, not implemented)
+## Group swarm wire FSW1 v1 (ADR-071, implemented; device checks owed)
 
-**Status:** module `:core:swarm` and wire codec implemented in SW-3. Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md`
-5.3; behaviour rules in ADR-072.
+**Status (2026-11-03):** implemented, not a proposal. `:core:swarm`, the FSW1 codec and the host binding
+are built (SW-0..SW-11); the Android/desktop device checks (SW-12 and `SWM-*`) are still owed. The
+master switch is ON by default since 2026-10-19 (owner O-8), and an explicit opt-out is stored and
+wins. Plan: `docs/transfer/GROUP-SWARM-IMPLEMENTATION-PLAN.md` 5.3; behaviour rules in ADR-072.
 
 ### Golden vectors (SW-3)
 
@@ -964,9 +987,13 @@ FLASH_GMEDIA groupId=… msgId=… transferId=… wireFileId=… from=… name=�
   before and ignores `root`, `pieceSize`, `swarm` and `rootSig`. It would then park the frame and wait for a FILE_START that the swarm never
   sends; that is why the fields go only to `sw1` peers.
 
-## Group membership v1 (ADR-073, ADR-074, ADR-075; PROPOSED 2026-10-04, not implemented)
+## Group membership v1 (ADR-073, ADR-074, ADR-075; implemented; device checks owed)
 
-**Status:** GM-1 and GM-2 invite format implemented (2026-10-05): key derivation, commitment, mutual proof primitives, and invite codec in `:core:security`. Golden vectors below. Plan: `GROUP-SWARM-IMPLEMENTATION-PLAN.md` track GM (7B) and 5.7.
+**Status (2026-11-03):** implemented, not a proposal. GM-1..GM-10 are built (secret, invite, proof,
+join/approval, rotation/removal, discovery fallback, signed settings, membership UI); GM-11 is next.
+The device checks (`GMB-*`, `GSET-*`) are still owed. Key derivation, commitment, mutual proof
+primitives and the invite codec live in `:core:security`; golden vectors below. Plan:
+`GROUP-SWARM-IMPLEMENTATION-PLAN.md` track GM (7B) and 5.7.
 
 ### Byte conventions
 

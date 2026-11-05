@@ -1,5 +1,168 @@
 # Progress Log
 
+## 2026-11-05 - ADR-351 device-verified end to end; affected-module gate green
+
+### Worked on
+The phones came back (Infinix X6882B / Android 14 and Samsung SM-G986U1 / Android 13). Rebuilt `:app:assembleDebug`
+with the header fix (`1m 20s`), installed on both in place (same debug key; data preserved), and finished the device
+verification that the earlier run could not do.
+
+### Changed / observed
+- The existing **unpaired** chats on both phones read **Not paired** in the header (the fix), not "Connected".
+- Re-paired from the Samsung; the final pair was accepted on both (the earlier code 231 289 expired before the Infinix
+  accepted while it was in a chat; pairing works from Nearby).
+- Sent and delivered `final-check`; the Samsung header read **Connected**.
+- Revoked on the Infinix. The Samsung logged
+  `Flash Hippo no longer trusts you. Pair again to reconnect.` and its header flipped to **Not paired** (plus a
+  "Connecting…" banner for the unpaired session). The Infinix moved the peer from TRUSTED PEERS to DISCOVERED.
+- The Samsung chat title still falls back to the raw device id after the trust entry is gone (cosmetic).
+
+### Verification
+- Affected-module gate: `:core:security:(jvmTest|testAndroidHostTest)`, `:core:network:(jvmTest|testAndroidHostTest)`,
+  `:core:common:(jvmTest|testAndroidHostTest)`, `:ui:chat:(jvmTest|testAndroidHostTest)`,
+  `:app:testDebugUnitTest`, `:desktop:jvmTest` -> **BUILD SUCCESSFUL in 5m 19s**, exit 0; **3,166 tests, 0 failures,
+  0 errors** (summed from 398 JUnit XML suites).
+- Device: notice, header, trusted-list removal and DISCOVERED state all verified on the final build.
+
+### Problems / remaining
+- Outbox budget unchanged: the notice is not a delivery receipt, so a message queued after the revoke still retries
+  until the wall-clock budget. A negative ack is the next step.
+- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It cannot deliver trusted content; refusing it
+  needs a revocation tombstone.
+- The raw-id chat title after revoke is cosmetic; the app should keep the conversation's stored name.
+- Resume identity (Room v22 -> v23) is still the one unimplemented Wave 1 item.
+- Branch `fix/wave1-safety` is not merged or pushed.
+
+### Next AI
+Read ADR-351, `ERROR-982`, `W1-REVOKE-02`, and this entry. Do not call the notice unfinished: it and the header are
+device-verified. The honest remaining halves are the outbox negative ack, the revocation tombstone, the raw-id title,
+and resume identity. Pick one as its own change.
+
+## 2026-11-04 - ADR-351 `PAIR_REVOKE` implemented; notice device-verified, header unit-tested
+
+### Worked on
+Implemented the revoke notice designed in ADR-351 after the first device run (`ERROR-982`). The TECNO was replaced by a
+Samsung SM-G986U1 (Android 13) for the second run; both phones ran the same `fix/wave1-safety` debug APK.
+
+### Changed (commit `1ce825d2`)
+- `FLASH_PAIR t=revoke` (`FlashPairingFrame.PairRevoke`) in the shared pairing codec; capability `pr1` advertised in HELLO
+  by Android, desktop and the engine.
+- `FlashPairingCoordinator` and the app `PairingCoordinator`: on local Forget, send the notice **before** removing trust,
+  then close the session after a 250 ms flush window; on receive, remove the sender's trust/session key, close, emit
+  `"<name> no longer trusts you. Pair again to reconnect."`, and reset an active pairing with that peer.
+- Host wiring (`Flash.kt`, `DesktopEngine.kt`, `DiscoveryEngineHolder.kt`) supplies `peerFeatures` and closes the session.
+- Chat header (`FlashChatHeader.kt`, `FlashConversationScreen.kt`): an untrusted peer reads **Not paired** even while an
+  unpaired transport session is up; the presence dot is hidden for it.
+- ADR-351 in `docs/decisions.md`; protocol section and `pr1` in `docs/protocol.md`.
+
+### Verification
+- Unit: `PairingWireCodecTest` 5/5; `FlashPairingCoordinatorTest` 11/11 (including
+  `aRevokeNoticeRemovesThePeerOnTheOtherSide`); `FlashChatHeaderLabelTest` 2/2. `:app:compileDebugKotlin` and
+  `:desktop:compileKotlinJvm` green.
+- Device, second run: Infinix X6882B + Samsung SM-G986U1, paired with code 417 319, delivered `before-revoke`, revoked on
+  the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped the
+  `paired_` and `session_key_` entries; the Infinix moved the peer from TRUSTED PEERS to DISCOVERED with Pair.
+
+### Problems
+- The Samsung auto-redial re-added a TOFU **pin** for the now-unpaired peer. It cannot deliver trusted content; refusing it
+  needs a revocation tombstone (future).
+- The outbox still follows the existing wall-clock budget: the notice is not a delivery receipt.
+- The header fix was **not installed before the phones were disconnected**, so it is unit-tested only.
+
+### Remaining
+- Device-verify the header "Not paired" on two phones.
+- Negative ack for dropped frames / stop the outbox; revocation tombstone; then resume identity (Room v22 -> v23).
+- Do not merge Wave 1 as fully device-verified; the notice is, the header is not.
+
+### Next AI
+Read ADR-351, `ERROR-982`, and `W1-REVOKE-02`. The next smallest honest step is either the outbox negative ack or
+`resume identity`; both are separate changes. Do not reopen the notice design.
+
+## 2026-11-04 - Wave 1 device test: pairing + revoke on Infinix/TECNO (PARTIAL)
+
+### Worked on
+Ran the two-device `W1-TLS-01` check on the Wave 1 branch. Devices: Infinix X6882B (Android 14, A) and
+TECNO SPARK 40 / KM5 (Android 15, B). Both now run the same `fix/wave1-safety` debug APK; the Infinix was
+updated in place (debug key, data preserved) and the TECNO got a fresh install. Network: the Infinix's
+hotspot (`ap0` 10.246.114.2), TECNO client `wlan0` 10.246.114.89, laptop on the same hotspot.
+
+### Changed / found
+- Paired successfully: code **261 811**; both sides showed the peer under TRUSTED PEERS.
+- Sent `w1session` from B; A received it and the chat showed it.
+- Revoked B on A (Nearby -> Revoke) **without restarting A**. A's prefs then contained **no**
+  `paired_cfc5089d`, `pin_cfc5089d` or `session_key_cfc5089d`.
+- Toggled B's Wi-Fi off/on to kill the socket while keeping B's app process and TLS ticket. A accepted an
+  **unpaired** transport session (by design, for pairing) and then dropped every `FLASH_SEC` frame with
+  `no stored session key`; A's chat never received `afterrevoke`.
+- **Security half passes**: no pin/pairing/session key on A; no sealed content accepted.
+- **UX half fails (ERROR-982)**: B still showed **Connected** and `afterrevoke` as sent, and re-sent the
+  frame every 2-16 s. There is no `PAIR_REVOKE`; the transport ACK does not mean app delivery.
+- The original `W1-TLS-01` pass condition ("reconnect must fail") was wrong because Flash deliberately
+  admits unpaired sessions for pairing. Corrected in the backlog; `W1-REVOKE-02` added.
+- The TLS cache eviction itself is unit-proven; this device test could not isolate resumption because the
+  unpaired session is allowed at the transport layer. Do not claim "revoked peers cannot connect" - claim
+  "revoked peers cannot deliver trusted content".
+
+### Verification
+`tools\flash-gradle.ps1 :app:assembleDebug` -> BUILD SUCCESSFUL (1m 7s). Both APKs installed successfully.
+Device evidence: `ERROR-982`; `docs/testing/TEST-BACKLOG.md` `W1-TLS-01` result and `W1-REVOKE-02`.
+
+### Remaining
+- Design the revoke notification / negative acknowledgement (`PAIR_REVOKE` + typed refusal). This is a wire
+  change and belongs with the version-range/capability work; a local session close is only a partial step.
+- Resume identity (Room v22 -> v23) is still the one unimplemented Wave 1 item.
+- Do not merge Wave 1 as "device-verified"; the security property is verified, the sender UX is not.
+
+### Next AI
+Read `ERROR-982` and the updated `W1-*` entries. If the owner wants the revoke UX fixed first, write the
+`PAIR_REVOKE`/negative-ack design before code. Otherwise finish resume identity as its own change.
+
+## 2026-11-03 - Wave 1 safety/correctness (TLS eviction, framing, pairing throttle)
+
+### Worked on
+The first wave of the NectarLink comparative review (`docs/audit/2026-11-03-nectarlink-comparative-review.md`): four
+correctness/security fixes on branch `fix/wave1-safety`, plus the Android baseline (`EXP-140`). The owner authorised a
+device session; no app data was cleared and no build was installed over the daily app.
+
+### Changed
+- **TLS session eviction** (`c75862b4`): new `TrustChangeHub` in `:core:security`; the Android and desktop trust stores
+  publish on `revokeTrust`, `savePin`, `applyVouch` and `revokeVouch`; both `FlashTlsContextFactory` copies subscribe and
+  clear their `SSLContext` cache. A resumed TLS 1.3 session can no longer outlive "Forget" for up to 24 h. Tests:
+  `FlashTrustStoreTest` (9) and `FlashTlsContextFactoryTrustChangeTest` (2).
+- **Framing** (`8780e40`): `FlashTextFraming.escape` percent-encodes C0/DEL, `parseFields` rejects embedded controls, and
+  both WS networks reject a HELLO with a blank/`"unknown"` device id instead of registering `"unknown"`. Tests:
+  `FlashTextFramingTest` (10).
+- **Pairing throttle** (`5ab9c9f7`): `PairingAttemptLimiter` (5 failures / 10 min -> 5 min lockout, success clears) wired
+  into `DefaultFlashPairingProtocol`; both coordinators show "Too many pairing attempts. Wait five minutes, then try again."
+  Tests: `PairingAttemptLimiterTest` (3).
+- **Protocol banners** (`25b6b762`): swarm and group membership are no longer marked "not implemented"; the device checks
+  they still owe are named.
+
+### Verification
+`tools\flash-gradle.ps1 :core:security:testAndroidHostTest :core:common:testAndroidHostTest
+:core:network:compileAndroidMain :core:network:compileKotlinJvm :app:compileDebugKotlin :desktop:compileKotlinJvm
+--continue` -> **BUILD SUCCESSFUL in 1m 17s**, exit 0; new tests 10/3/9/2 all green. No device verification yet.
+
+Baseline (`EXP-140`, Infinix X6882B, Android 14, installed 2.1.0): cold start 3.0-4.0 s (first frame 2.13 s + splash),
+warm 219-427 ms, PSS ~238 MB (graphics 100 MB), Settings jank 4.27 % (legacy 14.1 %, p99 53 ms), no Flash wake lock while
+idle. Battery NOT MEASURED (phone on AC); transfer benchmark not run.
+
+### Problems
+- **Resume identity is NOT implemented.** `TransferEntity` still has no source size/mtime/prefix hash, and the resume path
+  still skips the digest when `initialIndex > 0`. This is the one Wave 1 item left; it needs a Room v22 -> v23 migration,
+  a source-identity provider (SAF `lastModified` + first/last 64 KiB digest) and a restart-from-zero path.
+- Battery measurement is invalid while charging; the transfer benchmark needs one manual peer/file selection (no deep link).
+
+### Remaining
+- Implement resume identity as its own change, with `FlashMigrationsChainTest` + `FlashJvmMigrationsTest` and a
+  "file changed between sessions restarts from zero" test.
+- Run the four `W1-*` device checks in `docs/testing/TEST-BACKLOG.md`; then merge `fix/wave1-safety` into `dev`.
+- The desktop/app were compiled but not run; the TLS eviction has no two-device check yet.
+
+### Next AI
+Read this entry and the review. Do not merge Wave 1 until `W1-TLS-01` passes: Forget a peer **without restarting the app**,
+then have the peer reconnect; it must fail. Then do resume identity as its own change (schema 23), not as a drive-by.
+
 ## 2026-11-02 - Stream C (calls) reviewed and merged as `5e3a1822`; expanded gates running
 
 ### Worked on
