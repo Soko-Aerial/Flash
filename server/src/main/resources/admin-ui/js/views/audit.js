@@ -57,7 +57,7 @@ export function mountAudit(container, ctx) {
   const moreWrap = h('div', { class: 'form-actions center', hidden: true }, more);
 
   const live = switchInput({ label: t('audit.live'), checked: false, on: { change: (ev) => setTail(ev.target.checked) } });
-  const verifyBtn = button({ label: t('audit.verify'), icon: 'check', on: { click: () => verify() } });
+  const verifyBtn = button({ label: t('audit.verify'), icon: 'check', variant: 'primary', on: { click: () => verify() } });
   const exportBtn = button({ label: t('audit.export'), icon: 'download', on: { click: () => exportCsv() } });
   const refreshBtn = button({ label: t('common.refresh'), icon: 'refresh', on: { click: () => reload() } });
 
@@ -76,6 +76,7 @@ export function mountAudit(container, ctx) {
   });
 
   mount(container, pageHeader({ title: t('audit.title'), subtitle: t('audit.sub'), actions: [refreshBtn, verifyBtn, exportBtn] }), verifyHost, filters, h('div', { class: 'toolbar-row' }, resultLine, live), tableHost, moreWrap);
+  mount(verifyHost, banner({ tone: 'info', title: t('audit.chain.title'), text: t('audit.chain.unchecked') }));
   setActiveTable(table);
 
   function query(extra) {

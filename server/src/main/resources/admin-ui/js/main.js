@@ -28,6 +28,7 @@ const VIEWS = {
   overview: mountOverview,
   devices: mountDevices,
   invites: mountInvites,
+  requests: (container, ctx) => mountOrganization(container, { ...ctx, focusRequests: true }),
   organization: mountOrganization,
   announcements: mountAnnouncements,
   audit: mountAudit,
@@ -113,7 +114,7 @@ function applyOverview(o) {
   if (!shell) return;
   hubNameValue = o.hubName || hubNameValue;
   shell.setHub(hubNameValue);
-  shell.setBadge('organization', o.pendingJoinRequests || 0);
+  shell.setBadge('requests', o.pendingJoinRequests || 0);
   setTitle(router.current.route);
 }
 
@@ -172,7 +173,7 @@ function showApp() {
   teardownApp();
   closeOverlays();
   shell = createShell({ onLogout: () => logout(), onHelp: () => openHelp() });
-  shell.setUser(session.user, session.role);
+  shell.setUser(session.displayName || session.user, session.role);
   mount(app, shell.el);
   unsubscribe = subscribe(() => session.user && shell && shell.setUser(session.user, session.role));
   stopWatch = watchSession({ onTick: (ms, tone) => shell && shell.setCountdown(ms, tone) });
@@ -234,6 +235,10 @@ function route(parsed) {
     router.replace(['overview'], {});
     return route(router.current);
   }
+  if (name === 'organization' && parsed.query.tab === 'requests') {
+    router.replace(['requests'], {});
+    return route(router.current);
+  }
   setTitle(name);
   if (mounted && mounted.route === name) {
     if (mounted.onRoute) mounted.onRoute({ ...snapshot() });
@@ -241,6 +246,7 @@ function route(parsed) {
   }
   teardownView();
   shell.setActive(VIEWS[name] ? name : '');
+  if (name === 'organization' && parsed.query.tab === 'requests') shell.setActive('requests');
   const container = h('div', { class: 'page', 'data-page': name });
   mount(shell.main, container);
   if (!VIEWS[name]) {

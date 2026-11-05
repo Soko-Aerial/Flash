@@ -47,25 +47,31 @@ export function mountOrganization(container, ctx) {
   let requests = [];
   let names = new Map();
   let ready = false;
-  let current = ['departments', 'groups', 'requests'].includes(ctx.query.tab) ? ctx.query.tab : 'departments';
+  const focusRequests = !!ctx.focusRequests;
+  let current = focusRequests ? 'requests' : ctx.query.tab === 'groups' ? 'groups' : 'departments';
 
   const tabBar = tabs({
     label: t('org.tabs'),
     selected: current,
-    items: [
-      { id: 'departments', label: t('org.tab.departments') },
-      { id: 'groups', label: t('org.tab.groups') },
-      { id: 'requests', label: t('org.tab.requests') },
-    ],
+    items: focusRequests
+      ? [{ id: 'requests', label: t('org.tab.requests') }]
+      : [
+          { id: 'departments', label: t('org.tab.departments') },
+          { id: 'groups', label: t('org.tab.groups') },
+        ],
     onSelect: (id) => {
       current = id;
-      if (!ready) return;
+      if (!ready || focusRequests) return;
       ctx.replaceQuery({ tab: id === 'departments' ? '' : id });
       renderTab();
     },
   });
   const panel = tabBar.panel;
-  mount(container, pageHeader({ title: t('org.title'), subtitle: t('org.sub') }), tabBar.el, panel);
+  const pageSub = h('p', { class: 'page-sub', text: focusRequests ? t('org.req.count', { n: 0 }) : t('org.sub') });
+  const head = pageHeader({ title: focusRequests ? t('org.tab.requests') : t('org.title') });
+  head.querySelector('.page-titles').appendChild(pageSub);
+  if (focusRequests) tabBar.el.hidden = true;
+  mount(container, head, tabBar.el, panel);
 
   function renderTab() {
     setActiveTable(null);
@@ -78,7 +84,8 @@ export function mountOrganization(container, ctx) {
       [departments, groups, requests, names] = await Promise.all([api.get('/departments'), api.get('/groups'), api.get('/join-requests'), loadDeviceNames().catch(() => new Map())]);
       if (stopped) return;
       tabBar.setBadge('requests', requests.length);
-      ctx.setBadge('organization', requests.length);
+      ctx.setBadge('requests', requests.length);
+      pageSub.textContent = focusRequests ? t('org.req.count', { n: requests.length }) : t('org.lede.counts', { departments: departments.length, groups: groups.length, requests: requests.length });
       ready = true;
       renderTab();
     } catch (e) {
@@ -491,21 +498,34 @@ export function mountOrganization(container, ctx) {
       return;
     }
     const groupName = (id) => (groups.find((g) => g.id === id) || {}).name || shortId(id);
+    const countLine = focusRequests ? null : h('p', { class: 'muted', role: 'status', text: t('org.req.count', { n: requests.length }) });
     mount(
       panel,
-      h('p', { class: 'muted', role: 'status', text: t('org.req.count', { n: requests.length }) }),
+      countLine,
       h(
         'ul',
         { class: 'request-list' },
         requests.map((r) => {
-          const approve = button({ label: t('org.req.approve'), icon: 'check', variant: 'primary', size: 'sm', ariaLabel: t('org.req.approve.for', { name: r.displayName }) });
-          const decline = button({ label: t('org.req.decline'), icon: 'close', variant: 'secondary', size: 'sm', ariaLabel: t('org.req.decline.for', { name: r.displayName }) });
+          const approve = button({ label: t('org.req.approve'), icon: 'check', variant: 'secondary', size: 'sm', ariaLabel: t('org.req.approve.for', { name: r.displayName }) });
+          const decline = button({ label: t('org.req.decline'), icon: 'close', variant: 'ghost', size: 'sm', ariaLabel: t('org.req.decline.for', { name: r.displayName }) });
           approve.addEventListener('click', () => decide(r, true, approve));
           decline.addEventListener('click', () => decide(r, false, decline));
-          return h('li', { class: 'request' }, h('div', { class: 'request-main' }, h('div', { class: 'request-name', text: r.displayName || shortId(r.deviceId) }), h('div', { class: 'muted small' }, t('org.req.wants', { group: groupName(r.groupId) }), ' · ', timeEl(r.requestedAt)), r.message ? h('p', { class: 'request-message', text: r.message }) : null), h('div', { class: 'request-actions' }, decline, approve));
+          const avatar = h('span', { class: 'fx-avatar', text: initials(r.displayName) });
+          return h(
+            'li',
+            { class: 'request' },
+            avatar,
+            h('div', { class: 'request-main' }, h('div', { class: 'request-name', text: r.displayName || shortId(r.deviceId) }), h('div', { class: 'muted small' }, t('org.req.wants', { group: groupName(r.groupId) }), ' · ', timeEl(r.requestedAt)), r.message ? h('p', { class: 'request-message', text: r.message }) : null),
+            h('div', { class: 'request-actions' }, decline, approve),
+          );
         }),
       ),
     );
+  }
+
+  function initials(name) {
+    const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+    return ((parts[0] || '?')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
   }
 
   async function decide(r, approve, btn) {
@@ -544,7 +564,8 @@ export function mountOrganization(container, ctx) {
     try {
       [requests, groups] = await Promise.all([api.get('/join-requests'), api.get('/groups')]);
       tabBar.setBadge('requests', requests.length);
-      ctx.setBadge('organization', requests.length);
+      ctx.setBadge('requests', requests.length);
+      pageSub.textContent = focusRequests ? t('org.req.count', { n: requests.length }) : t('org.lede.counts', { departments: departments.length, groups: groups.length, requests: requests.length });
       renderTab();
     } catch (e) {
       toastError(e);
@@ -559,7 +580,9 @@ export function mountOrganization(container, ctx) {
     },
     onRoute(next) {
       ctx = { ...ctx, ...next };
-      const wanted = ['departments', 'groups', 'requests'].includes(next.query.tab) ? next.query.tab : 'departments';
+      if (focusRequests) return;
+      if (next.query.tab === 'requests') return;
+      const wanted = next.query.tab === 'groups' ? 'groups' : 'departments';
       if (wanted !== current) tabBar.select(wanted);
     },
   };

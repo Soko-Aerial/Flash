@@ -1,5 +1,57 @@
 # Progress Log
 
+## 2026-11-05 (port) - approved server dashboard design ported into the shipped console; merge pending
+
+### Worked on
+The owner approved the alternative hub console design (`d3fb6c33`) and asked for it to replace the shipped console with
+every feature wired. The port keeps the real console's API, CSP-safe DOM, i18n, step-up, error boundaries, print rules
+and all existing tables/forms/drawers; only the visual/shell/Overview/auth layer was replaced.
+
+### Changed
+- `server/src/main/resources/admin-ui/css/redesign.css` (new, loaded after the functional CSS): approved tokens, type,
+  shapes, shell, Overview, auth and component treatment. The real feature CSS remains underneath for feature classes.
+- `js/ui/shell.js`: open-plane 248 px sidebar with Hub/People/Trust groups, real hub name, session countdown, user row,
+  theme/help, five-cell phone bar and More sheet. API preserved (`setActive`, `setBadge`, `setHub`, `setUser`,
+  `setCountdown`, `refreshTheme`).
+- `js/main.js`: `#/requests` route, request badge/active state, display name, redirect `#/organization?tab=requests` ->
+  `#/requests`.
+- `js/views/overview.js`: real `/overview` + `/metrics` + `/devices` + `/invites` + `/audit` composition. Health/
+  waiting/ledger are partial-safe; the relay strip is browser-sampled and says the hub keeps no history. Department
+  admins get the device quota instead of org-only uptime/metrics.
+- `js/views/login.js` `authFrame`: approved brand/hub-line/card; the real sign-in/recovery/lockout/expiry/sign-out
+  behaviour untouched.
+- `js/views/organization.js`: Organization now only Departments/Groups; the real join-request queue is `#/requests`.
+- `js/ui/widgets.js` tabs: labelled select fallback when more than three tabs do not fit on phone (Security).
+- `js/views/devices.js`: dynamic active/online/revoked/enrolled lede and the phone department/last-seen subline.
+- `js/views/audit.js`: chain-status strip and primary Verify action.
+- `js/views/announcements.js`: plaintext banner, no ADR reference in user copy.
+- `js/views/fonts`/`strings`: role short labels, requests/group labels, new Overview/audit copy.
+- No fictional org/environment: the shell uses the hub name from `/overview`. The review world remains only in
+  `design/server-console/`.
+- Docs: old console record marked SUPERSEDED; design record updated to approved/ported; review README updated;
+  `CONSOLE-D01` PASS and a Results-log entry; handoff banner updated.
+
+### Verification
+- `server/admin-ui-tests/*.test.mjs`: **83/83 pass**.
+- `:server:test --tests "*AdminConsole*"`: `AdminConsoleWebTest` **15/15**, `AdminConsoleApiTest` **10/10**.
+- Browser review harness (real assets + mock API): every route rendered at 1440, 768 and 390 with no page errors or
+  document overflow; sign-out -> login and sign-in -> Overview exercised. Device, security, tab-select, request queue,
+  Audit chain strip and auth pages inspected.
+- `:server:compileKotlin` green; no Kotlin/Android code changed.
+- **Committed as `adb26723`** on `agent/console-redesign` (design commit `d3fb6c33`).
+
+### Remaining
+- Merge `agent/console-redesign` into `dev` (the main worktree has another agent's uncommitted edits; merge only if it
+  does not overlap, and do not push unless asked).
+- Owner browser checks `CONSOLE-D02..D07` (desktop/tablet/phone, dialogs, sign-in/out, contrast/touch).
+- The relay strip fills only while a console is open; if the owner wants a full last-hour chart on first load, add a
+  server-side relay history as a separate, tested feature (the hub currently keeps none by design).
+
+### Next AI
+Read `docs/ui/hub-admin-console-redesign.md` and the top handoff banner. The shipped console is the implementation; the
+`design/server-console/` folder is the visual reference and must not be deployed as the product. Do not reintroduce a
+fictional hub name/environment; use `/overview.hubName`. Preserve the real step-up/i18n/API and the console tests.
+
 ## 2026-11-05 (later) - Wave 2 host baseline: 200 MB, 64 vs 256 KiB; no device measurements
 
 ### Worked on
@@ -76,6 +128,52 @@ Merged `feature/tofu-tombstone-title` (tip `f9b0d5b2`) into `dev` with `--no-ff`
 Start Wave 2 with a code-only item that needs no device. Hash-on-receive is the natural next one: remove the second
 full read after a receive without weakening the whole-file check, with tests; the measurement items remain owed. Read the
 `ReceivePipeline`/`WholeFileDigestProvider` path and design the incremental option before changing it.
+## 2026-11-05 (later) - server dashboard alternative designed and verified; proposal only, shipped console untouched
+
+### Worked on
+The owner was not satisfied with the shipped hub admin console: it did not conform to the rest of the Flash app and did not
+feel professional. He asked for a complete alternative **design**, built in its own worktree because another agent was using
+the current branch, with the shipped implementation left untouched. Approval is the gate; no product code was changed.
+
+### Changed
+- New worktree `E:/FlashWork/D-console`, branch `agent/console-redesign`, based on `dev` `a7ff5636`.
+- New standalone review build in `design/server-console/`: no build step, no dependencies, no CDN, no web fonts, no external
+  images; `node scripts/serve.mjs` -> `http://localhost:5182/`. Ten routes plus dialogs, drawer and a mobile More sheet.
+- Direction: `draw.mjs --app --kind devtools --theme light --style achromatic-ledger`, seed `1682487600`, with
+  `--keep palette,type`. Pulse/graphite palette, FlashTypography system face, Flash 16/12/8 shapes. The one hue is the live
+  relay data; the primary action is ink. Full direction and data in `design/server-console/DESIGN-NOTES.md`.
+- New design record `docs/ui/hub-admin-console-redesign.md`; a proposal banner links it from `docs/ui/hub-admin-console.md`.
+- Manual review checks `CONSOLE-D01..D07` added to `docs/testing/TEST-BACKLOG.md`.
+
+### Verification
+- Phase 2 was a dual-agent Impeccable critique: Assessment A design review (26/40, Good) and Assessment B detector +
+  browser evidence. The critique found one P0 (Security -> Delegation/Trust root fingerprint overflowed the page at
+  1440/768/390), a mobile select that displayed the wrong active view on deep links, a 1.34:1 separator, 5 tiny-text
+  nodes, and a set of honesty/action gaps. All P0 and design-level findings were fixed; the functional simulation limits
+  are stated in the README.
+- Phase 3: feedback-only motion, 120-200 ms ease-out; dialog/drawer enter 200 ms and exit 140 ms; toasts enter/exit;
+  transform/opacity only; reduced-motion verified in Chrome (~0.01 ms, dialog closes immediately).
+- Phase 4: `inspect.mjs --app` on Overview -> **0 FAIL, 1 WARN** (`tiny-text`; defended: app-screen rules allow 12 px
+  metadata / 11 px ticks, primary content is 14 px). Every other inspected route -> 0 FAIL. A 54-page sweep
+  (18 routes x 1440/768/390) found **0 document overflows, 0 unnamed controls, 0 console/page errors, 0 computed
+  text-contrast failures**. Final screenshots are in `design/server-console/shots/final/`; the test/design evidence is in
+  `shots/impeccable/`.
+- No Gradle build, server change or shipped asset was touched. Playwright was used only by review scripts.
+
+### Remaining
+- Owner review and an explicit choice: port it, port the Overview first, or keep the shipped console. The port plan is
+  `design/server-console/README.md` section 7.
+- The prototype's writes are in-memory, the step-up code is illustrative, and there is no real API/WebCrypto/QR/print/
+  persistence or lockout state. Do not treat the prototype as a release candidate.
+
+### Committed
+`d3fb6c33` on `agent/console-redesign` (worktree `E:/FlashWork/D-console`): the review build, design docs, screenshots,
+progress/handoff and the `CONSOLE-*` checks. No shipped console file was touched.
+
+### Next AI
+Read `design/server-console/README.md` and `docs/ui/hub-admin-console-redesign.md` before touching the console. If the owner
+approves a port, keep the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules; do not copy
+`data.js` or Playwright scripts into product code. If the owner does not approve, leave the shipped console alone.
 
 ## 2026-11-05 (later) - resume identity (ADR-352, Room v23); unit/migration green, device migration verified
 
