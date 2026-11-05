@@ -22,9 +22,10 @@ export function WallpaperSheet({ wallpaper, custom, onPick, onCustom, onClose, o
   const name = active?.name ?? 'Your colour'
   const sheet = useRef<HTMLDivElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
+  const dialog = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    closeButton.current?.focus()
+    dialog.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); onClose() }
       if (e.key !== 'Tab' || !sheet.current) return
@@ -44,7 +45,7 @@ export function WallpaperSheet({ wallpaper, custom, onPick, onCustom, onClose, o
   return (
     <>
       <div className="c-sheet-scrim" onClick={onClose} aria-hidden="true" />
-      <div className="c-sheet" role="dialog" aria-modal="true" aria-labelledby="wallpaper-title" ref={sheet}>
+      <div className="c-sheet" role="dialog" aria-modal="true" aria-labelledby="wallpaper-title" tabIndex={-1} ref={dialog}>
         <div className="c-sheet-grab" aria-hidden="true" />
         <div className="c-sheet-head">
           <h3 className="c-sheet-title" id="wallpaper-title">Chat wallpaper</h3>
@@ -124,12 +125,13 @@ export function WallpaperSheet({ wallpaper, custom, onPick, onCustom, onClose, o
 
 /* --------------------------------------------------------------- appearance */
 
-export function AppearanceScreen({ wallpaper, custom, theme, onTheme, onOpenWallpaper, onReset }: {
+export function AppearanceScreen({ wallpaper, custom, theme, onTheme, onOpenWallpaper, onBack, onReset }: {
   wallpaper: WallpaperId
   custom: string
   theme: 'light' | 'dark'
   onTheme: (t: 'light' | 'dark') => void
   onOpenWallpaper: () => void
+  onBack: () => void
   onReset: () => void
 }) {
   const name = WALLPAPERS.find(w => w.id === wallpaper)?.name ?? 'Your colour'
@@ -137,7 +139,7 @@ export function AppearanceScreen({ wallpaper, custom, theme, onTheme, onOpenWall
   return (
     <div className="c-page">
       <div className="c-page-head">
-        <button type="button" className="c-icon-btn" aria-label="Back to chat">
+        <button type="button" className="c-icon-btn" aria-label="Back to chat" onClick={onBack}>
           <Icon name="back" size={22} />
         </button>
         <h2 className="c-page-title">Chat appearance</h2>

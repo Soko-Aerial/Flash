@@ -7478,3 +7478,47 @@ not the app.
 - **Pass:** the composer keeps its 820dp measure centred in a wide window; no horizontal scrollbar; the sheet fits
   inside the conversation pane; the header keeps three actions with the name readable.
 - **Status:** TODO
+
+### CHATUI-08 - Overflow menu on both platforms (after the port)
+- **Setup:** a 1:1 chat and a v2 group, Android and Windows.
+- **Steps:** open the kebab; on the phone check every item; on desktop press Escape and click outside; choose View
+  profile, Group info, Group settings, Invite link, Chat appearance; then Mark as unread and Leave group.
+- **Pass:** the item list matches `FlashConversationMenuMath` (destructive last, separated); the popover opens under
+  the button with 44dp rows; Escape/outside closes; each navigating item opens its surface; the destructive items
+  ask for confirmation before doing anything.
+- **Status:** TODO
+
+### CHATUI-09 - Peer profile and unpair (after the port)
+- **Setup:** two paired phones, one chat open.
+- **Steps:** open the profile from the avatar and from the menu; check each row against the real session; tap Shared
+  Media & Files; press Unpair this device.
+- **Pass:** Connection/Security/Trust/Radio fallback show the live values; shared content opens; unpair asks for
+  confirmation, then the peer shows **Not paired** and can no longer deliver (ADR-351).
+- **Status:** TODO
+
+### CHATUI-10 - Group info and join requests (after the port)
+- **Setup:** a v2 group with 6 members, one unpaired applicant and one paired applicant.
+- **Steps:** open Group info; expand a vouched member; Verify, Make Admin and Remove; approve one request and
+  decline the other; open Invite people.
+- **Pass:** the roster matches the signed roster; a vouched member shows "Added by <name> - not verified" and can be
+  verified; removing asks for confirmation and rotates the group code; approve/decline updates the request list and
+  the member count; the unpaired applicant is marked "Not paired".
+- **Status:** TODO
+
+### CHATUI-11 - Group settings, signed vs device (after the port)
+- **Setup:** a v2 group; two devices in it; one admin and one member account.
+- **Steps:** as the admin, toggle each rule and change the max size; as the member, open the same page; toggle the
+  device switches on both; change the group code.
+- **Pass:** rules are read-only for the member with the admin-only sentence; rule changes reach the other device and
+  survive a restart (signed); device switches never change the other device; changing the code invalidates old
+  invite links and keeps current members.
+- **Status:** TODO
+
+### CHATUI-12 - Swarm piece map and delivery lines (after the port)
+- **Setup:** a group of three or more devices with group swarm on; a 100 MB+ file; one member offline.
+- **Steps:** send the file; watch the sender's map and lines; pause one receiver; bring a holder back; delete the
+  source file on the sender and retry sharing.
+- **Pass:** the map's verified count matches the progress; the sender reads "Delivered to N of M" and then "You can
+  go offline now"; the receiver reads "Getting it from K devices"; an offline holder shows "Offline - n%"; a lost
+  source shows "Your file is no longer available. Pick it again to keep sharing"; no piece numbers or peer ids appear.
+- **Status:** TODO

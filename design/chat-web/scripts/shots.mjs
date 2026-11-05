@@ -1,7 +1,6 @@
 ﻿/**
  * Screenshot harness. `npm run dev` (or preview) must be serving :5174 / :4174.
- * URL params pin a state:
- *   ?theme=dark&wallpaper=pulse&view=desk&sheet=1&motion=reduced
+ * URL params pin a state: ?theme=dark&wallpaper=pulse&view=desk&motion=reduced
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -9,15 +8,19 @@ import { mkdirSync } from 'node:fs'
 const BASE = process.env.BASE ?? 'http://localhost:5174'
 mkdirSync('shots', { recursive: true })
 
-const SHOTS = [
-  { name: 'page-light', url: '/?view=all', width: 1440, height: 1000 },
-  { name: 'page-dark', url: '/?theme=dark&view=all', width: 1440, height: 1000 },
-  { name: 'page-desktop', url: '/?view=desk', width: 1440, height: 1000, scroll: 1500 },
-  { name: 'page-tablet', url: '/?view=all', width: 768, height: 1100 },
-  { name: 'page-phone', url: '/?view=phone', width: 390, height: 844 },
-  { name: 'phone-dark-pulse', url: '/?theme=dark&wallpaper=pulse&view=phone', width: 390, height: 844 },
-  { name: 'phone-sheet', url: '/?wallpaper=signal&view=phone&sheet=1', width: 390, height: 844 },
-  { name: 'phone-draft', url: '/?wallpaper=draft&view=phone', width: 390, height: 844 },
+const PAGES = [
+  { name: 'page-light', url: '/', width: 1440, height: 1000 },
+  { name: 'page-dark', url: '/?theme=dark&wallpaper=pulse', width: 1440, height: 1000 },
+  { name: 'page-tablet', url: '/', width: 768, height: 1100 },
+  { name: 'page-phone', url: '/', width: 390, height: 844 },
+  { name: 'page-desktop', url: '/?view=desk', width: 1440, height: 1000 },
+  { name: 'page-draft', url: '/?wallpaper=draft', width: 1440, height: 1000 },
+]
+
+const PHONES = [
+  'conversation', 'menu', 'profile',
+  'group', 'group-info', 'group-settings',
+  'invite', 'group-sent',
 ]
 
 const browser = await chromium.launch()
@@ -26,30 +29,37 @@ const errors = []
 page.on('pageerror', e => errors.push('pageerror: ' + e.message))
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()) })
 
-for (const s of SHOTS) {
+for (const s of PAGES) {
   await page.setViewportSize({ width: s.width, height: s.height })
   await page.goto(BASE + s.url, { waitUntil: 'networkidle' })
   await page.waitForTimeout(400)
-  if (s.scroll) await page.evaluate(y => window.scrollTo(0, y), s.scroll)
-  await page.waitForTimeout(250)
-  await page.screenshot({ path: `shots/${s.name}.png`, fullPage: !s.scroll ? false : false })
+  await page.screenshot({ path: `shots/${s.name}.png` })
 }
 
-// close-ups of the app surfaces, without review chrome
 await page.setViewportSize({ width: 1440, height: 1000 })
-await page.goto(BASE + '/?view=all', { waitUntil: 'networkidle' })
+await page.goto(BASE + '/', { waitUntil: 'networkidle' })
+await page.waitForTimeout(400)
+const phones = page.locator('.shot .f-phone')
+for (let i = 0; i < PHONES.length; i++) {
+  await phones.nth(i).scrollIntoViewIfNeeded()
+  await page.waitForTimeout(150)
+  await phones.nth(i).screenshot({ path: `shots/only-${PHONES[i]}.png` })
+}
+await page.locator('.sw-board').screenshot({ path: 'shots/only-swarm-board.png' })
+
+// chat appearance, reached the way a person reaches it: menu -> Chat appearance
+await page.goto(BASE + '/', { waitUntil: 'networkidle' })
 await page.waitForTimeout(300)
-const frames = page.locator('.f-phone')
-await frames.nth(0).screenshot({ path: 'shots/only-conversation.png' })
-await frames.nth(1).screenshot({ path: 'shots/only-appearance.png' })
-await page.goto(BASE + '/?view=all&sheet=1', { waitUntil: 'networkidle' })
-await page.waitForTimeout(300)
-await page.locator('.f-phone').nth(0).screenshot({ path: 'shots/only-sheet.png' })
+await phones.nth(0).locator('button[aria-label="Conversation menu"]').click()
+await page.getByRole('menuitem', { name: 'Chat appearance' }).first().click()
+await page.waitForTimeout(250)
+await phones.nth(0).screenshot({ path: 'shots/only-appearance.png' })
+
 await page.goto(BASE + '/?view=desk', { waitUntil: 'networkidle' })
 await page.waitForTimeout(300)
 await page.locator('.f-window').screenshot({ path: 'shots/only-desktop.png' })
 
-console.log('done â†’ shots/')
+console.log('done -> shots/')
 if (errors.length) {
   console.log('ERRORS:')
   for (const e of errors) console.log('  ' + e)

@@ -783,3 +783,9 @@ code {
   background: var(--ink-3);
   opacity: 0.5;
 }
+
+/* mobile: a figure never keeps the desktop phone width and overflow the margin */
+@media (max-width: 900px) {
+  .shot, .shot figcaption { width: 100%; max-width: 100%; }
+  .review-frames, .swarm-row { width: 100%; }
+}

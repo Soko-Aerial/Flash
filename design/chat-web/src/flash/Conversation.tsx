@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { Icon } from './icons'
 import { Composer, type ReplyRef } from './Composer'
+import { PieceMap } from './Swarm'
+import { GroupAvatar } from './Group'
 import photo from '../assets/east-arcade.jpg'
 import {
-  THREAD, UNREAD_AT, type Message, type WallpaperId,
+  GROUP, GROUP_THREAD, THREAD, type Message, type WallpaperId,
 } from './data'
 
 /* --------------------------------------------------------------- wallpapers */
@@ -19,25 +21,40 @@ export function wallpaperStyle(id: WallpaperId, custom: string): React.CSSProper
 
 /* ------------------------------------------------------------------- header */
 
-function Head({ onMenu }: { onMenu?: () => void }) {
+function Head({ chat, onMenu, onOpenInfo, onOpenProfile }: {
+  chat: 'direct' | 'group'
+  onMenu: () => void
+  onOpenInfo: () => void
+  onOpenProfile: () => void
+}) {
   return (
     <header className="c-head">
       <button type="button" className="c-head-back" aria-label="Back to chats">
         <Icon name="back" size={22} />
       </button>
-      <button type="button" className="c-head-who" aria-label="Open conversation details">
-        <span className="c-avatar">
-          AB
-          <span className="c-avatar-dot" role="img" aria-label="Online" />
-        </span>
+      <button type="button" className="c-head-who"
+        aria-label={chat === 'group' ? 'Open group info' : 'Open profile'}
+        onClick={chat === 'group' ? onOpenInfo : onOpenProfile}>
+        {chat === 'group' ? (
+          <GroupAvatar size={34} />
+        ) : (
+          <span className="c-avatar">
+            AB
+            <span className="c-avatar-dot" role="img" aria-label="Online" />
+          </span>
+        )}
         <span style={{ minWidth: 0 }}>
           <span className="c-head-name">
-            <span className="c-head-name-text">Ama Boateng</span>
-            <span className="c-head-lock" title="End-to-end encrypted" aria-label="End-to-end encrypted">
-              <Icon name="lock" size={13} />
-            </span>
+            <span className="c-head-name-text">{chat === 'group' ? GROUP.name : 'Ama Boateng'}</span>
+            {chat === 'direct' && (
+              <span className="c-head-lock" title="End-to-end encrypted" aria-label="End-to-end encrypted">
+                <Icon name="lock" size={13} />
+              </span>
+            )}
           </span>
-          <span className="c-head-sub">Online · direct over LAN</span>
+          <span className="c-head-sub">
+            {chat === 'group' ? GROUP.subtitle : 'Online · direct over LAN'}
+          </span>
         </span>
       </button>
       <div className="c-head-actions">
@@ -67,7 +84,7 @@ function Meta({ time, status }: { time: string; status?: 'sent' | 'read' }) {
   )
 }
 
-export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
+export function MessageView({ m, isNew, showSender }: { m: Message; isNew?: boolean; showSender?: boolean }) {
   const cls = 'c-bubble' + (isNew ? ' is-new' : '')
 
   if (m.k === 'photo') {
@@ -87,6 +104,7 @@ export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
   if (m.k === 'file') {
     return (
       <div className={cls + ' c-file'}>
+        {showSender && m.sender && <div className="c-bubble-sender">{m.sender}</div>}
         <div className="c-file-card">
           <span className="c-file-glyph"><Icon name="file" size={19} /></span>
           <span style={{ minWidth: 0 }}>
@@ -94,6 +112,7 @@ export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
             <span className="c-file-sub">{m.meta}</span>
           </span>
         </div>
+        {m.map && <PieceMap blocks={m.map} peers={m.peers ?? 0} compact />}
         {m.progress < 1 ? (
           <div className="c-file-progress">
             <span className="c-track"><i style={{ width: `${Math.round(m.progress * 100)}%` }} /></span>
@@ -111,6 +130,7 @@ export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
             <Meta time={m.time} />
           </div>
         )}
+        {m.swarmLine && <div className="c-swarm-line">{m.swarmLine}</div>}
       </div>
     )
   }
@@ -119,6 +139,7 @@ export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
     const played = Math.round(m.amplitudes.length * 0.38)
     return (
       <div className={cls} style={{ paddingRight: 10 }}>
+        {showSender && m.sender && <div className="c-bubble-sender">{m.sender}</div>}
         <div className="c-voice">
           <span className="c-voice-play"><Icon name="play" size={15} /></span>
           <span className="c-wave" aria-hidden="true">
@@ -138,6 +159,7 @@ export function MessageView({ m, isNew }: { m: Message; isNew?: boolean }) {
 
   return (
     <div className={cls}>
+      {showSender && m.sender && <div className="c-bubble-sender">{m.sender}</div>}
       {m.reply && (
         <div className="c-quote">
           <span className="c-quote-icon"><Icon name="reply" size={13} /></span>
@@ -157,45 +179,50 @@ function runOf(messages: Message[]): Message[][] {
   const runs: Message[][] = []
   for (const m of messages) {
     const last = runs[runs.length - 1]
-    if (last && last[0].from === m.from) last.push(m)
+    const sameSender = last && last[0].from === m.from &&
+      (m.from === 'out' || (last[0].sender ?? '') === (m.sender ?? ''))
+    if (sameSender) last.push(m)
     else runs.push([m])
   }
   return runs
 }
-
-/* ------------------------------------------------------------------- thread */
 
 function Runs({ messages, fresh }: { messages: Message[]; fresh: string[] }) {
   return (
     <>
       {runOf(messages).map(run => (
         <div key={run[0].id} className={'c-run ' + run[0].from}>
-          {run.map(m => <MessageView key={m.id} m={m} isNew={fresh.includes(m.id)} />)}
+          {run.map((m, i) => (
+            <MessageView key={m.id} m={m} isNew={fresh.includes(m.id)}
+              showSender={run[0].from === 'in' && i === 0 && !!m.sender} />
+          ))}
         </div>
       ))}
     </>
   )
 }
 
-function Thread({ extra, typing, endRef }: {
-  extra: Message[]
+/* ------------------------------------------------------------------- thread */
+
+function Thread({ messages, unreadAt, typing, endRef }: {
+  messages: Message[]
+  unreadAt: number
   typing: boolean
   endRef: React.RefObject<HTMLDivElement | null>
 }) {
-  const all = [...THREAD, ...extra]
-  const fresh = extra.map(m => m.id)
-  const split = Math.min(UNREAD_AT, all.length)
+  const fresh: string[] = []
+  const split = unreadAt > 0 ? Math.min(unreadAt, messages.length) : messages.length
 
   return (
     <div className="c-thread" ref={endRef}
-      role="log" aria-label="Messages with Ama Boateng">
+      role="log" aria-label="Messages">
       <div className="c-day">Today</div>
-      <Runs messages={all.slice(0, split)} fresh={fresh} />
-      {all.length > split && <div className="c-unread"><span>Unread</span></div>}
-      <Runs messages={all.slice(split)} fresh={fresh} />
+      <Runs messages={messages.slice(0, split)} fresh={fresh} />
+      {unreadAt > 0 && messages.length > split && <div className="c-unread"><span>Unread</span></div>}
+      <Runs messages={messages.slice(split)} fresh={fresh} />
       {typing && (
         <div className="c-run in" style={{ marginTop: 12 }}>
-          <div className="c-typing" aria-label="Ama is typing">
+          <div className="c-typing" aria-label="Someone is typing">
             <i /><i /><i />
           </div>
         </div>
@@ -206,17 +233,23 @@ function Thread({ extra, typing, endRef }: {
 
 /* --------------------------------------------------------------- conversation */
 
-export function Conversation({ wallpaper, custom, layout = 'phone', typing = true, autoFocus = false, onOpenAppearance }: {
+export function Conversation({ chat, wallpaper, custom, layout = 'phone', typing = false, autoFocus = false, append = [], onMenu, onOpenInfo, onOpenProfile }: {
+  chat: 'direct' | 'group'
   wallpaper: WallpaperId
   custom: string
   layout?: 'phone' | 'desk'
   typing?: boolean
   autoFocus?: boolean
-  onOpenAppearance?: () => void
+  append?: Message[]
+  onMenu: () => void
+  onOpenInfo: () => void
+  onOpenProfile: () => void
 }) {
   const [extra, setExtra] = useState<Message[]>([])
   const [reply, setReply] = useState<ReplyRef | null>(null)
   const end = useRef<HTMLDivElement | null>(null)
+  const base = chat === 'group' ? GROUP_THREAD : THREAD
+  const messages = [...base, ...append, ...extra]
 
   useEffect(() => {
     const el = end.current
@@ -232,8 +265,8 @@ export function Conversation({ wallpaper, custom, layout = 'phone', typing = tru
   return (
     <div className={'c-chat ' + wallpaperClass(wallpaper) + (layout === 'desk' ? ' is-desk' : '')}
       style={wallpaperStyle(wallpaper, custom)}>
-      <Head onMenu={onOpenAppearance} />
-      <Thread extra={extra} typing={typing} endRef={end} />
+      <Head chat={chat} onMenu={onMenu} onOpenInfo={onOpenInfo} onOpenProfile={onOpenProfile} />
+      <Thread messages={messages} unreadAt={chat === 'group' ? 0 : 7} typing={typing} endRef={end} />
       <Composer
         autoFocus={autoFocus}
         reply={reply}

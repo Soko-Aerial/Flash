@@ -35,20 +35,25 @@ which frames are visible, and the motion switch. URL params pin a state for revi
 
 ## What to look at
 
-1. **The conversation** (phone). Type in the composer: the mic becomes the send key in place. Open
-   the kebab (⋯) to reach the wallpaper sheet. The tail on the last bubble of a run is the shipped
-   scoop.
-2. **Chat appearance.** Wallpaper (opens the sheet), a working light/dark theme control, and a live
-   preview of the chosen field.
-3. **The message parts.** Photo, transfer in flight, verified file, voice note and reply at real
+1. **The conversation** (phone). Type in the composer: the mic becomes the send key in place. The
+   kebab opens the menu. The tail on the last bubble of a run is the shipped scoop.
+2. **The overflow menu and profile.** The menu is the shipped item list, with the destructive items
+   below a rule; View profile opens the peer details sheet.
+3. **Chat appearance.** Reachable from the menu: wallpaper (opens the sheet), a working light/dark
+   control, a live preview, reset.
+4. **The group.** A group conversation with the swarm map on the file, the 2×2 collage, sender names
+   once per run; group info with roles, admin actions and join requests; group settings with signed
+   rules above the device switches.
+5. **Invites and the swarm.** The invite sheet, a sent group file ("Delivered to 4 of 6 · You can go
+   offline now"), and the board with the piece map, the holders and the four engine sentences.
+6. **The message parts.** Photo, transfer in flight, verified file, voice note and reply at real
    size, plus the day chip and unread rule.
-4. **The composer** — attach, pill, one trailing control; the measurements beside it, and the
+7. **The composer** — attach, pill, one trailing control; the measurements beside it, and the
    recording row underneath.
-5. **Wallpaper** — five presets and a colour of your own; picks apply at once, with Undo in the
-   sheet footer.
-6. **The icon set** — fifteen redrawn glyphs with the detail that distinguishes each.
-7. **Motion** — press Replay, then turn Motion off and press it again.
-8. **Desktop** — the same conversation in the 68dp rail / 320dp list shell; the list search filters.
+8. **Wallpaper** — five presets and a colour of your own; picks apply at once, with Undo.
+9. **The icon set** — twenty-two redrawn glyphs with the detail that distinguishes each.
+10. **Motion** — press Replay, then turn Motion off and press it again.
+11. **Desktop** — the same conversation in the 68dp rail / 320dp list shell; the list search filters.
 
 At 390px wide the phone frame disappears and the chat renders at full width, which is how it should
 be judged on a handset.

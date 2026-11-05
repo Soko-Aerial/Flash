@@ -1,11 +1,15 @@
 /**
- * One believable conversation and the chat list around it.
+ * The conversation, the group around it, and the chat list.
  *
- * The thread is a real job, not filler: Ama is surveying a tiled arcade on her
- * phone and sending the 4K pass to Kwame's desktop over the office LAN, which is
- * the exact thing Flash exists for. File sizes, percentages and the checksum line
- * agree with each other: 1.2 of 1.8 GB is 68%, and 0.6 GB left at 12.4 MB/s is 48s.
+ * The direct thread is a real job, not filler: Ama is surveying a tiled arcade on
+ * her phone and sending the 4K pass to Kwame's desktop over the office LAN, which
+ * is the exact thing Flash exists for. File sizes, percentages and the checksum
+ * line agree: 1.2 of 1.8 GB is 68%, and 0.6 GB at 12.4 MB/s is 48 s.
+ *
+ * The group thread exercises the swarm: the map counts agree with the progress
+ * (12 of 24 blocks = 50%), and the holder lines use FlashSwarmUiMath's wording.
  */
+import type { IconName } from './icons'
 
 export type WallpaperId = 'graphite' | 'signal' | 'blueprint' | 'draft' | 'pulse' | 'custom'
 
@@ -17,7 +21,7 @@ export interface Wallpaper {
 
 export const WALLPAPERS: Wallpaper[] = [
   { id: 'graphite', name: 'Graphite', note: 'Flat. The shipped surface.' },
-  { id: 'signal', name: 'Signal', note: 'Dot grid, one pulse in the corner.' },
+  { id: 'signal', name: 'Signal', note: 'The device mesh, as a dot grid.' },
   { id: 'blueprint', name: 'Blueprint', note: 'Surveyor’s hatching.' },
   { id: 'draft', name: 'Draft', note: 'Graph paper for long reads.' },
   { id: 'pulse', name: 'Pulse', note: 'Rings from the corner.' },
@@ -33,28 +37,37 @@ export const CUSTOM_COLOURS: Array<{ hex: string; name: string }> = [
   { hex: '#dee9f2', name: 'Sky' },
 ]
 
-export interface Reaction { glyph: string; count: number; mine?: boolean }
+/* ----------------------------------------------------------------- messages */
+
+export type Piece = 0 | 1 | 2 | 3 // missing · from a peer · downloading · verified
+
+export interface Holder {
+  name: string
+  initials: string
+  line: string
+  online: boolean
+}
 
 export type Message =
   | {
-    k: 'text'; id: string; from: 'in' | 'out'; time: string; text: string
+    k: 'text'; id: string; from: 'in' | 'out'; time: string; text: string; sender?: string
     reply?: { name: string; text: string }
     status?: 'sent' | 'read'
-    reactions?: Reaction[]
   }
   | {
-    k: 'photo'; id: string; from: 'in' | 'out'; time: string
+    k: 'photo'; id: string; from: 'in' | 'out'; time: string; sender?: string
     caption: string; alt: string; src: string; size: string
   }
   | {
-    k: 'file'; id: string; from: 'in' | 'out'; time: string
+    k: 'file'; id: string; from: 'in' | 'out'; time: string; sender?: string
     name: string; meta: string; progress: number; detail: string
     verified?: boolean; status?: 'sent' | 'read'
+    map?: Piece[]; peers?: number; holders?: Holder[]
+    swarmLine?: string
   }
   | {
-    k: 'voice'; id: string; from: 'in' | 'out'; time: string
-    duration: string; amplitudes: number[]; played?: number
-    reactions?: Reaction[]
+    k: 'voice'; id: string; from: 'in' | 'out'; time: string; sender?: string
+    duration: string; amplitudes: number[]
   }
 
 /** A tile-able amplitude strip: real speech is symmetric around a quiet floor. */
@@ -110,7 +123,149 @@ export const THREAD: Message[] = [
 
 export const UNREAD_AT = 7
 
-/* ------------------------------------------------------------------ chat list */
+/* --------------------------------------------------------------- the group */
+
+export const GROUP = {
+  name: 'Arcade survey',
+  initials: 'AS',
+  members: 6,
+  online: 3,
+  subtitle: '6 members · 3 online',
+  invite: 'flash://g/1/7Kd2mQ9vT3xR8pLwZaN4hJcY6sUeB1fG0oXiV5rP2nMaQ',
+}
+
+export interface Member {
+  id: string
+  name: string
+  initials: string
+  role: 'Admin' | 'Member'
+  online: boolean
+  tone: number
+  transport?: 'LAN' | 'Wi-Fi Direct' | 'Relay' | 'Radio'
+  introducedBy?: string
+  you?: boolean
+}
+
+export const MEMBERS: Member[] = [
+  { id: 'ama', name: 'Ama Boateng', initials: 'AB', role: 'Admin', online: true, tone: 0, transport: 'LAN' },
+  { id: 'you', name: 'Kofi Boateng', initials: 'KB', role: 'Member', online: true, tone: 1, transport: 'LAN', you: true },
+  { id: 'kwame', name: 'Kwame Mensah', initials: 'KM', role: 'Member', online: true, tone: 2, transport: 'Wi-Fi Direct' },
+  { id: 'kai', name: 'Kai Moreno', initials: 'KO', role: 'Member', online: false, tone: 3, transport: 'Relay', introducedBy: 'Ama Boateng' },
+  { id: 'lina', name: 'Lina Farid', initials: 'LF', role: 'Member', online: false, tone: 0 },
+  { id: 'nia', name: 'Nia Owusu', initials: 'NO', role: 'Member', online: false, tone: 1 },
+]
+
+export const JOIN_REQUESTS = [
+  { id: 'dana', name: 'Dana Wolfe', initials: 'DW', paired: true },
+  { id: 'tessa', name: 'Tessa Adeyemi', initials: 'TA', paired: false },
+]
+
+/** 12 verified of 24 blocks, 2 downloading, 4 from peers, 6 missing -> 50%. */
+export const RECEIVED_MAP: Piece[] = [
+  3, 3, 3, 1, 3, 0, 3, 2, 0, 3, 3, 1, 0, 3, 2, 3, 1, 0, 3, 3, 0, 1, 3, 0,
+]
+const SENT_MAP: Piece[] = Array.from({ length: 24 }, () => 3 as Piece)
+
+export const GROUP_THREAD: Message[] = [
+  {
+    k: 'text', id: 'g1', from: 'in', sender: 'Ama Boateng', time: '10:02',
+    text: 'East elevation is on its way to the group. 1.4 GB, 4K.',
+  },
+  {
+    k: 'file', id: 'g2', from: 'in', sender: 'Ama Boateng', time: '10:03',
+    name: 'Ceremony-east-elevation.mp4', meta: 'MP4 · 1.4 GB',
+    progress: 0.5, detail: 'Getting it from 3 devices · 4.8 MB/s',
+    map: RECEIVED_MAP, peers: 3,
+  },
+  {
+    k: 'text', id: 'g3', from: 'out', time: '10:04', status: 'read',
+    text: 'I will keep seeding while I cut the rough assembly.',
+  },
+  {
+    k: 'text', id: 'g4', from: 'in', sender: 'Kwame Mensah', time: '10:04',
+    text: 'Got it from two devices at once.',
+  },
+  {
+    k: 'text', id: 'g5', from: 'in', sender: 'Ama Boateng', time: '10:05',
+    text: 'That is the point of the group.',
+    reply: { name: 'Kwame Mensah', text: 'Got it from two devices at once.' },
+  },
+  {
+    k: 'text', id: 'g6', from: 'in', sender: 'Kai Moreno', time: '10:07',
+    text: 'Wide shot is next, from the site phone.',
+  },
+]
+
+/** The sender's own file in the group: every block verified, 4 of 6 delivered. */
+export const SENT_FILE: Extract<Message, { k: 'file' }> = {
+  k: 'file', id: 's1', from: 'out', time: '10:09',
+  name: 'Ceremony-west-arcade.mp4', meta: 'MP4 · 1.1 GB',
+  progress: 1, detail: 'Sent to the group',
+  map: SENT_MAP, peers: 4,
+  swarmLine: 'Delivered to 4 of 6 · You can go offline now',
+  holders: [
+    { name: 'Ama Boateng', initials: 'AB', line: 'Has the file', online: true },
+    { name: 'Kwame Mensah', initials: 'KM', line: '62% · 4.1 MB/s', online: true },
+    { name: 'Lina Farid', initials: 'LF', line: 'Offline · 40%', online: false },
+    { name: 'Kai Moreno', initials: 'KO', line: 'Waiting to start', online: false },
+  ],
+}
+
+/* ------------------------------------------------------------------- menus */
+
+export interface MenuItem {
+  id: string
+  label: string
+  icon: IconName
+  destructive?: boolean
+  goes?: 'profile' | 'appearance' | 'groupInfo' | 'groupSettings' | 'invite' | 'addMembers'
+}
+
+/** FlashConversationMenuMath.directItems + the proposed Chat appearance entry. */
+export const DIRECT_MENU: MenuItem[] = [
+  { id: 'profile', label: 'View profile', icon: 'device', goes: 'profile' },
+  { id: 'search', label: 'Search in conversation', icon: 'search' },
+  { id: 'appearance', label: 'Chat appearance', icon: 'gallery', goes: 'appearance' },
+  { id: 'unread', label: 'Mark as unread', icon: 'read' },
+  { id: 'clear', label: 'Clear conversation', icon: 'delete', destructive: true },
+  { id: 'revoke', label: 'Revoke trust', icon: 'close', destructive: true },
+]
+
+/** FlashConversationMenuMath.groupItems for an admin member of a v2 group. */
+export const GROUP_MENU: MenuItem[] = [
+  { id: 'info', label: 'Group info', icon: 'group', goes: 'groupInfo' },
+  { id: 'settings', label: 'Group settings', icon: 'settings', goes: 'groupSettings' },
+  { id: 'invite', label: 'Invite link', icon: 'share', goes: 'invite' },
+  { id: 'add', label: 'Add members', icon: 'plus', goes: 'addMembers' },
+  { id: 'search', label: 'Search in conversation', icon: 'search' },
+  { id: 'appearance', label: 'Chat appearance', icon: 'gallery', goes: 'appearance' },
+  { id: 'unread', label: 'Mark as unread', icon: 'read' },
+  { id: 'leave', label: 'Leave group', icon: 'close', destructive: true },
+]
+
+/* --------------------------------------------------------------- settings */
+
+export interface Toggle {
+  id: string
+  title: string
+  subtitle: string
+  on: boolean
+  disabled?: boolean
+}
+
+export const GROUP_RULES: Toggle[] = [
+  { id: 'approval', title: 'Require approval to join', subtitle: 'New members need an admin’s approval to join.', on: true },
+  { id: 'invites', title: 'Admins only share invites', subtitle: 'Any active member can share an invite link.', on: false },
+  { id: 'add', title: 'Allow members to add others', subtitle: 'Active members can directly add other people.', on: true },
+  { id: 'swarm', title: 'Group file swarming', subtitle: 'Group members cooperatively share downloaded file pieces.', on: true },
+]
+
+export const DEVICE_PREFS: Toggle[] = [
+  { id: 'seed', title: 'Help share group files', subtitle: 'This device seeds pieces it already has.', on: true },
+  { id: 'wifi', title: 'Share over Wi-Fi only', subtitle: 'Never use mobile data to seed.', on: true },
+]
+
+/* ------------------------------------------------------------------- chat list */
 
 export interface ChatRow {
   id: string
@@ -132,7 +287,7 @@ export const CHATS: ChatRow[] = [
   },
   {
     id: 'survey', name: 'Arcade survey', initials: 'AS',
-    preview: '3 clips · 1.8 GB · 68%', time: '10:04', unread: 4, group: true,
+    preview: 'Kai: Wide shot is next, from the site phone.', time: '10:07', unread: 3, group: true,
   },
   {
     id: 'kwame', name: 'Kwame Mensah', initials: 'KM',

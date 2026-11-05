@@ -129,3 +129,21 @@
 /* fills that carry text or a glyph: pulse600 with white (5.3:1) / pulse400 with pulse900 (5.85:1) */
 :root { --accent-fill: #0a7a70; --accent-fill-strong: #075c55; --on-fill: #ffffff; }
 [data-theme="dark"] { --accent-fill: #1fb8a6; --accent-fill-strong: #4eccbe; --on-fill: #042f2b; }
+
+/* group collage tiles: the avatar palette, per theme */
+:root {
+  --av1: #9fe0d6; --av1-ink: #042f2b;
+  --av2: #a8e8ef; --av2-ink: #002124;
+  --av3: #ffe0a8; --av3-ink: #4a3000;
+  --av4: #a8e8c0; --av4-ink: #002213;
+}
+[data-theme="dark"] {
+  --av1: #085f58; --av1-ink: #c8f0ea;
+  --av2: #006970; --av2-ink: #d4f5f8;
+  --av3: #9a6200; --av3-ink: #fff0d6;
+  --av4: #0f6b38; --av4-ink: #d4f5e0;
+}
+
+/* destructive text: error500 is 4.38:1 on white, so text uses a darker step */
+:root { --danger-ink: #b32626; }
+[data-theme="dark"] { --danger-ink: #f87171; }
