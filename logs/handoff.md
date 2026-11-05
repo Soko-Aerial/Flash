@@ -13,8 +13,10 @@
 >   restyle; 44dp controls, 22dp pill on `graphite50`, one trailing slot cross-fading mic/send; 60dp header, 34dp
 >   avatar, three actions (search moved to the menu). New tokens `accentFill`/`onAccentFill`, `space10/14/44`,
 >   `composerInput` 22dp, `composerInputBackground` graphite50/surface0.
-> - **Icons**: all **67** `flash_ic_*.xml` rewritten at 24dp/1.75dp/round by a subagent (28 byte-identical to the
->   approved mock, 39 redrawn). An optical-size normalisation pass is running; contact sheet reviewed in Chromium.
+> - **Icons**: all **67** `flash_ic_*.xml` rewritten at 24dp/1.75dp/round (28 byte-identical to the approved mock, 39
+>   redrawn), then fitted to an 18.0dp optical size. `settings` is a cog with eight flat teeth, `hangup` is the call
+>   handset struck perpendicular, `tray` is an inbox tray (it was the brand bolt). Record and images:
+>   `docs/ui/chat-icon-set.md`; AAPT + compile green; no device render yet (`CHATUI-16`).
 > **Verified:** `:app:compileDebugKotlin` + `:desktop:compileKotlinJvm` **BUILD SUCCESSFUL**; `:ui:chat:jvmTest`,
 > `:ui:theme:jvmTest`, `:app:testDebugUnitTest` **green**; new wallpaper settings tests green on both hosts.
 > **Not device-verified; no phone was attached.** **Known deviations** (ADR-354 "Implementation"): compact bottom-right
