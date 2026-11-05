@@ -44,6 +44,24 @@ public interface TransferDao {
     @Query("UPDATE transfers SET status = :status WHERE transferId = :transferId")
     public suspend fun setStatus(transferId: String, status: String)
 
+    /** The source identity stored for a resume check (ADR-352), or null for a row written before schema 23. */
+    @Query(
+        "SELECT sourceSizeBytes AS sizeBytes, sourceLastModifiedMs AS lastModifiedMs, " +
+            "sourcePrefixSha256 AS prefixSha256Hex FROM transfers WHERE transferId = :transferId",
+    )
+    public suspend fun sourceIdentity(transferId: String): TransferSourceIdentity?
+
+    @Query(
+        "UPDATE transfers SET sourceSizeBytes = :sizeBytes, sourceLastModifiedMs = :lastModifiedMs, " +
+            "sourcePrefixSha256 = :prefixSha256Hex WHERE transferId = :transferId",
+    )
+    public suspend fun setSourceIdentity(
+        transferId: String,
+        sizeBytes: Long?,
+        lastModifiedMs: Long?,
+        prefixSha256Hex: String?,
+    ): Int
+
     /** Writes the identity of an existing row (C-09). Returns 0 when the row does not exist yet. */
     @Query(
         "UPDATE transfers SET totalBytes = :totalBytes, bytesDone = :bytesDone, status = :status, peerDeviceId = :peerDeviceId, " +
@@ -82,3 +100,10 @@ public interface TransferDao {
     @Query("UPDATE transfers SET totalBytes = :totalBytes, bytesDone = 0, status = :status WHERE transferId = :transferId")
     public suspend fun resetProgress(transferId: String, totalBytes: Long, status: String): Int
 }
+
+/** Projection for [TransferDao.sourceIdentity]; the aliases match the adapter's [com.transfer.flash.core.transfer.SourceIdentity]. */
+public data class TransferSourceIdentity(
+    public val sizeBytes: Long?,
+    public val lastModifiedMs: Long?,
+    public val prefixSha256Hex: String?,
+)

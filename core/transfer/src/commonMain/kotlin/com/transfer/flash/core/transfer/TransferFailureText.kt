@@ -26,6 +26,10 @@ public object TransferFailureText {
 
     public const val FILE_CHANGED: String = "The file changed while it was being sent. Try sending it again."
 
+    /** A resume whose stored source identity is missing (a row written before schema 23, ADR-352). */
+    public const val SOURCE_UNVERIFIABLE: String =
+        "Flash could not verify that this file is unchanged since the transfer started. Send it again."
+
     public const val CONNECTION_LOST: String =
         "The connection to the other device was lost. Check that both devices are still connected and try again."
 

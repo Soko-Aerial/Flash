@@ -1,5 +1,46 @@
 # Progress Log
 
+## 2026-11-05 (later) - resume identity (ADR-352, Room v23); unit/migration green, device migration verified
+
+### Worked on
+The last Wave 1 item: a send must not skip confirmed chunks for a source that is no longer the same bytes. The audit's
+NectarLink comparison item 3 found that `executeSend` loaded `doneChunks` and trusted them without checking the source.
+
+### Changed
+- New `SourceIdentity` (`sizeBytes`, `lastModifiedMs`, `prefixSha256Hex`), `SourceIdentityProvider` port and
+  `checkSourceIdentity` (size, prefix and mtime; any observed difference refuses; a row with only a size is unverifiable).
+- Room schema 23: nullable `sourceSizeBytes`, `sourceLastModifiedMs`, `sourcePrefixSha256` on `transfers`; migration
+  22 -> 23; `TransferStore`/`TransferDao`/`RoomTransferStore` read/write the identity; schema `23.json`.
+- `RealFlashTransferRepository.executeSend` verifies the source before using the done set. A changed file fails with
+  `FILE_CHANGED` and clears the sender's chunks; a pre-v23 row with confirmed chunks fails with `SOURCE_UNVERIFIABLE`.
+  A resume refusal sends a `cancel` control frame so the receiver stops.
+- The same check runs on a live paused sender in `resumeTransfer`: the worker is cancelled before the row is reset.
+- Android provider: SAF `OpenableColumns.SIZE` and `DocumentsContract.Document.COLUMN_LAST_MODIFIED` (best effort,
+  separately queried) plus the first-64-KiB SHA-256; a provider's 0 for a non-empty source is corrected to unknown.
+  Desktop provider: `File.length()`, `lastModified()` and the same prefix digest.
+- ADR-352, the Android platform note (SAF metadata, official docs fetched 2026-11-05), `W1-RESUME-01` updated.
+
+### Verification
+- `:core:transfer:testAndroidHostTest`: **242 tests, 0 failures**; `:core:transfer:jvmTest`: **141 tests, 0 failures**
+  (includes `SourceIdentityTest` 7 and `a changed source is refused on resume...`).
+- `:core:persistence:testAndroidHostTest` -> `FlashMigrationsChainTest` **2/2**;
+  `:core:persistence:jvmTest` -> `FlashJvmMigrationsTest` **21/21**, including the new 22 -> 23 column test.
+- Device migration: the v23 APK installed over the Infinix X6882B's v22 data (`Success`), the app started, and the chat
+  list still showed `Flash Olive`/`final-check` and `Flash Gecko`/`w1session`; no fatal/Room/SQLite migration error.
+- Affected-module gate: **BUILD SUCCESSFUL in 3m 20s**, 274 tasks; **1,176 tests, 0 failures, 0 errors** across
+  transfer 242 + 141, persistence 53 + 86, engine 129 + 176, app 90 and desktop 259. A final transfer rerun after the
+  provider was moved onto `workerDispatcher` re-confirmed 242 + 141 (see below).
+
+### Remaining
+- The changed-source resume **device** run (`W1-RESUME-01`) needs two phones; the Samsung was not on USB for this build.
+- Merge `feature/resume-identity` into `dev` and push after the gate.
+- A same-size edit beyond the first 64 KiB that preserves mtime is not detected before sending; the receiver's whole-file
+  hash is the backstop (ADR-352 "Known residual").
+
+### Next AI
+Do not claim a per-byte resume proof: the check is size + first 64 KiB + mtime. Run `W1-RESUME-01` with two phones, then
+pick the next review item (outbox/TOFU tombstone/raw-id title are still partial).
+
 ## 2026-11-05 (later) - ADR-351 negative ack; unit-tested, device run blocked
 
 ### Worked on

@@ -1,5 +1,7 @@
 package com.transfer.flash.core.transfer.store
 
+import com.transfer.flash.core.transfer.SourceIdentity
+
 /**
  * Storage port **owned by the transfer module** (Phase 4 dependency inversion, ADR-024).
  *
@@ -63,6 +65,15 @@ public interface TransferStore {
      * keeps the old behaviour (a killed process forgets the list).
      */
     public suspend fun saveIdentity(row: StoredTransfer) {}
+
+    /**
+     * The source identity recorded when this transfer last started or resumed (ADR-352). Null for a row written before
+     * schema 23, or when the adapter does not persist it. Defaults to null so an older adapter still compiles.
+     */
+    public suspend fun sourceIdentity(transferId: String): SourceIdentity? = null
+
+    /** Records the source identity before a send/resume, so a later attempt can verify the same bytes. */
+    public suspend fun saveSourceIdentity(transferId: String, identity: SourceIdentity) {}
 
     /** Rows to list again after a restart: identity known, not dismissed, touched at or after [sinceMs]. */
     public suspend fun restorableTransfers(sinceMs: Long): List<StoredTransfer> = emptyList()

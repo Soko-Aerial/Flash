@@ -35,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -97,6 +98,12 @@ public class RealFlashTransferRepository(
      * bound the row would never say so.
      */
     private val retryReceiveWaitMs: Long = RETRY_RECEIVE_WAIT_MS,
+    /**
+     * ADR-352: reports the current size, modification time and first-64-KiB SHA-256 of a send source. Null (the
+     * default for tests and platforms without metadata) keeps the pre-ADR behaviour: resume chunks are trusted without
+     * a source check. Production Android and desktop wiring pass a provider.
+     */
+    private val sourceIdentityProvider: SourceIdentityProvider? = null,
 ) : FlashTransferRepository, AutoCloseable {
 
     override fun close() {
@@ -525,6 +532,33 @@ public class RealFlashTransferRepository(
         }
     }
 
+    /**
+     * ADR-352: the source is not the file the confirmed chunks belong to. Drop those chunks (a retry must never skip
+     * them again), reset the byte counter and leave a Failed row with a sentence a person can act on.
+     */
+    private suspend fun refuseResume(
+        transferId: String,
+        peerDeviceId: String?,
+        message: String,
+        detail: String,
+    ) {
+        // Tell the peer to stop its side too; the row is ours to fail, but a paused receiver would otherwise wait.
+        emitOutgoing(transferId, peerDeviceId, ACTION_CANCEL)
+        runCatching { store?.clearDoneChunks(transferId) }
+        runCatching { store?.setBytesDone(transferId, 0L) }
+        runCatching { store?.setStatus(transferId, FlashTransferState.Failed.name) }
+        updateTransferState(transferId) {
+            it.copy(
+                bytesDone = 0L,
+                state = FlashTransferState.Failed,
+                errorMessage = message,
+                speedBytesPerSec = 0L,
+                etaSeconds = 0L,
+            )
+        }
+        runCatching { FlashLog.w("TRANSFER", "resume refused transferId=$transferId: $detail") }
+    }
+
     private suspend fun executeSend(
         transferId: String,
         fileId: String,
@@ -542,7 +576,61 @@ public class RealFlashTransferRepository(
             totalBytes = fileSize,
         )
 
+        // ADR-352: persisted chunk indexes belong to the source as it was when they were confirmed. Verify that the
+        // source is still the same bytes before skipping any of them. A sender-only restart cannot be made safe here:
+        // the receiver's session is keyed on (transferId, fileId) and an identical re-offer keeps its accumulated
+        // chunks, so a changed file must fail with a sentence and be sent again as a new transfer.
         val doneIndexes = store?.doneChunks(transferId) ?: emptyList()
+        val currentIdentity = sourceIdentityProvider?.let { provider ->
+            runCatching { withContext(workerDispatcher) { provider.identity(fileUri) } }.getOrNull()
+        }
+        if (currentIdentity != null) {
+            val storedIdentity = runCatching { store?.sourceIdentity(transferId) }.getOrNull()
+            val check = checkSourceIdentity(storedIdentity, currentIdentity)
+            // A brand-new send has no stored identity and no confirmed chunks; the picker/measured total is the
+            // authority there, and some providers report 0 for a size they do not know. Only a real resume can be
+            // contradicted by the provider's metadata.
+            val isResume = doneIndexes.isNotEmpty() || storedIdentity != null
+            val sizeDisagrees = isResume &&
+                currentIdentity.sizeBytes != null &&
+                fileSize > 0L &&
+                currentIdentity.sizeBytes != fileSize
+            when {
+                sizeDisagrees -> {
+                    refuseResume(
+                        transferId,
+                        peerDeviceId,
+                        TransferFailureText.FILE_CHANGED,
+                        "source size ${currentIdentity.sizeBytes} != transfer total $fileSize",
+                    )
+                    return
+                }
+                check == SourceIdentityCheck.Changed -> {
+                    refuseResume(
+                        transferId,
+                        peerDeviceId,
+                        TransferFailureText.FILE_CHANGED,
+                        "stored=$storedIdentity current=$currentIdentity",
+                    )
+                    return
+                }
+                doneIndexes.isNotEmpty() && check == SourceIdentityCheck.Unverifiable -> {
+                    refuseResume(
+                        transferId,
+                        peerDeviceId,
+                        TransferFailureText.SOURCE_UNVERIFIABLE,
+                        "no usable stored identity for ${doneIndexes.size} confirmed chunk(s)",
+                    )
+                    return
+                }
+            }
+            runCatching { store?.saveSourceIdentity(transferId, currentIdentity) }
+        } else {
+            runCatching {
+                FlashLog.w("TRANSFER", "source identity unavailable transferId=$transferId; resume is unverified")
+            }
+        }
+
         val source = ChunkSource { fileSourceOpener.open(fileUri) }
 
         val transferProfile = performanceMode().transfer
@@ -834,6 +922,40 @@ public class RealFlashTransferRepository(
         // stays outside [registryLock]; only the intent probe is guarded.
         val wirePaused = liveSender &&
             (dispatcher!!.isPaused || registryLock.withLock { transferId.value in pauseIntents })
+
+        // ADR-352: a live paused sender is also a resume. Check the source before unpausing; a changed file must not
+        // keep skipping its confirmed chunks. Cancel the live worker before resetting the row so a late progress tick
+        // cannot overwrite the reset.
+        if (transfer.direction == FlashTransferDirection.Sending && liveSender) {
+            val sourceUri = transfer.sourceUri
+            val currentIdentity = sourceUri?.let { uri ->
+                sourceIdentityProvider?.let { provider ->
+                    runCatching { withContext(workerDispatcher) { provider.identity(uri) } }.getOrNull()
+                }
+            }
+            if (currentIdentity != null) {
+                val storedIdentity = runCatching { store?.sourceIdentity(transferId.value) }.getOrNull()
+                val check = checkSourceIdentity(storedIdentity, currentIdentity)
+                val confirmed = runCatching { store?.doneChunks(transferId.value) }.getOrNull().orEmpty()
+                val refuse = check == SourceIdentityCheck.Changed ||
+                    (check == SourceIdentityCheck.Unverifiable && confirmed.isNotEmpty())
+                if (refuse) {
+                    val job = registryLock.withLock { runningJobs.remove(transferId.value) }
+                    job?.cancelAndJoin()
+                    refuseResume(
+                        transferId = transferId.value,
+                        peerDeviceId = transfer.peerDeviceId,
+                        message = if (storedIdentity == null) {
+                            TransferFailureText.SOURCE_UNVERIFIABLE
+                        } else {
+                            TransferFailureText.FILE_CHANGED
+                        },
+                        detail = "live resume source check=$check",
+                    )
+                    return FlashResult.Success(Unit)
+                }
+            }
+        }
 
         // Outbound with no live worker — a Failed or stalled transfer being retried, or a resume
         // issued after executeSend already retired its registrations. Relaunch a fresh send job!

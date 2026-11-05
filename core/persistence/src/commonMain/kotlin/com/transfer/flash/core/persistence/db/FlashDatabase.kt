@@ -204,6 +204,6 @@ public abstract class FlashDatabase : RoomDatabase() {
         // v21: conversation radioPolicy for direct-chat radio fallback consent.
         // v22: indexes on outbox(nextAttemptAt), hub_file(createdAtMs), conversations(pinned, sortOrder),
         //      transfers(updatedAtMs), swarm_content(createdAtMs) (OPT-O06-05).
-        public const val DATABASE_VERSION: Int = 22
+        public const val DATABASE_VERSION: Int = 23
     }
 }

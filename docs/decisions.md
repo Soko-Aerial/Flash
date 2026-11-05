@@ -8501,3 +8501,61 @@ revoke frame; the device test made it a user-visible data-loss illusion.
 ### Revisit
 When the version-range/capability registry lands (review item 4), move `pr1` into the registry and consider a `reason`
 field. If a future protocol carries delivery receipts, the negative ack can replace the retry-loop half.
+
+## ADR-352 - A resume verifies the source identity; a changed file is refused, not restarted in place
+
+### Decision
+Every send records a source identity in its transfer row (Room schema 23): size, last-modified time and the SHA-256 of the
+first 64 KiB. Before skipping any confirmed chunk on a resume, `RealFlashTransferRepository` recomputes the identity and
+compares it:
+
+- size differs -> change;
+- both prefix digests present and different -> change (the prefix is the content signal);
+- modification time differs when both have it -> change (a touch is refused conservatively rather than risking an edit
+  beyond the prefix);
+- only a size -> unverifiable.
+
+A change fails the row with **"The file changed while it was being sent. Try sending it again."**, clears the sender's
+confirmed chunks and resets `bytesDone` to 0. A row written before schema 23 that still has confirmed chunks is
+**unverifiable** and fails with **"Flash could not verify that this file is unchanged since the transfer started. Send it
+again."** An unchanged source resumes exactly as before. The same check runs when a live paused sender is unpaused: the
+worker is cancelled, the row fails, and a `cancel` control frame tells the receiver to stop waiting.
+
+The sender does **not** restart from zero inside the same transfer. That would be unsafe for the receiver: it keys its
+session on `(transferId, fileId)` and an identical re-offer keeps its accumulated chunks. A new whole-file digest under the
+same id is either rejected as `SESSION_CONFLICT` (live session) or, after a receiver restart, mixed with its persisted old
+chunks and caught only by the final whole-file check. A correct in-place restart needs a receiver reset frame, which is a
+protocol change and not part of this ADR. "Send it again" creates a new transfer id and a clean receiver session.
+
+### Context
+The NectarLink comparison (2026-11-03 review, item 3) found that `executeSend` loaded `store.doneChunks(transferId)` and
+skipped them without checking that the source URI still pointed at the same bytes. A file edited between sessions could
+therefore send old and new chunks in one transfer; only the receiver's final hash stopped delivery, after the whole cost.
+
+### Alternatives considered
+- **Whole-file SHA-256 at resume.** Decisive, but reads the entire file (potentially many GiB) before every resume. The
+  chunker already computes the whole-file digest for `FILE_START`, and a resume with `initialIndex > 0` deliberately does
+  not re-verify it. Rejected for the resume gate; the receiver's final check remains the backstop.
+- **Size and modification time only.** Cheaper, but a copy/restore can preserve mtime across a content change. The prefix
+  digest is the content signal; mtime is the fallback.
+- **Sender-side zero restart.** Unsafe for the receiver reasons above; would ship a known corrupt-mix path.
+- **Receiver reset frame.** The complete solution for in-place restarts, but changes the wire contract and needs a
+  version/capability; deferred.
+
+### Consequences
+- Android: `transfers` gains nullable `sourceSizeBytes`, `sourceLastModifiedMs`, `sourcePrefixSha256` (migration 22 -> 23);
+  `RoomTransferStore` reads/writes them. SAF metadata is best effort: `OpenableColumns.SIZE` and
+  `DocumentsContract.Document.COLUMN_LAST_MODIFIED` are optional, and the first-64-KiB digest is always attempted.
+- Desktop: the file provider reports real metadata, but the desktop transfer store is still `null`, so there is no
+  persisted resume there yet; the check is a no-op until a store exists.
+- A changed file becomes a Failed row; the person sends it again. No corrupt file is assembled.
+- **Known residual:** a same-size edit beyond the first 64 KiB that also preserves the modification time is not detected
+  before sending; the receiver's whole-file SHA-256 is the backstop, so it fails the transfer rather than delivering a
+  mixed file. A last-64-KiB digest (the original audit suggested first/last) is the follow-up if this matters.
+- Every start/resume reads 64 KiB of the source for the prefix; it is not on the chunk hot path.
+- Tests: `SourceIdentityTest`, the repository changed-source test, the migration chain and the JVM migration suite.
+  Device check: `W1-RESUME-01` (the audit plan's "restart from zero" wording is superseded by this ADR).
+
+### Revisit
+Add a receiver reset control frame if in-place restarts are wanted, and move the check to a capability (`si1`) so an old
+peer can be told why. A desktop transfer store would make the same check apply there.
