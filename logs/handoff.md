@@ -1,5 +1,14 @@
 # Current Handoff
 
+> **2026-11-05 — ADR-351 IS DEVICE-VERIFIED END TO END AND THE AFFECTED GATE IS GREEN.** Rebuilt and installed the
+> header-fix APK on the Infinix X6882B (Android 14) and Samsung SM-G986U1 (Android 13). Existing unpaired chats read
+> **Not paired**; re-paired, delivered `final-check`, revoked on the Infinix. The Samsung logged
+> `Flash Hippo no longer trusts you. Pair again to reconnect.`, its header flipped from **Connected** to **Not paired**,
+> and the Infinix moved the peer to DISCOVERED. Gate: security/network/common/chat (JVM + Android host), app unit tests
+> and desktop JVM -> **BUILD SUCCESSFUL 5m 19s**, exit 0, **3,166 tests / 0 failures / 0 errors** (398 suites).
+> **Still partial:** outbox wall-clock budget (no negative ack), TOFU pin re-added by auto-redial (no tombstone), the
+> chat title falls back to the raw device id, and resume identity is unimplemented. Branch not merged/pushed.
+>
 > **2026-11-04 (later) — ADR-351 `PAIR_REVOKE` IS IMPLEMENTED (`1ce825d2`); THE NOTICE IS DEVICE-VERIFIED; THE HEADER
 > FIX IS UNIT-TESTED, NOT DEVICE-VERIFIED.** On local Forget the sender now emits `FLASH_PAIR t=revoke` (cap `pr1`) before
 > removing trust and closing the session; the receiver removes the pairing/session key, closes, and shows

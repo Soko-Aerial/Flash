@@ -16603,12 +16603,15 @@ Implemented as **ADR-351** (`PAIR_REVOKE`, capability `pr1`):
 Still owed:
 - The **outbox budget** is unchanged: a message queued after the revoke retries until the existing wall-clock budget, because the notice is not a delivery receipt. A negative ack is the next step.
 - A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
-- The header fix (`FlashChatHeaderLabelTest`) is unit-tested, **not device-verified**.
+- The header fix was verified on 2026-11-05 on both phones: the Samsung header read **Not paired** after the revoke
+  while an unpaired session was up. The chat title still falls back to the raw device id (cosmetic).
 
 ### Verification
 First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
 
-Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G986U1 / Android 13, same debug build): paired (417 319), sent and delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2. The header fix was not installed before the phones were disconnected.
+Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G986U1 / Android 13, same debug build): paired (417 319), sent and delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair.
+
+Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-paired, sent and delivered `final-check`, revoked on the Infinix. The Samsung logged the same sentence and its chat header flipped from **Connected** to **Not paired**; the Infinix showed the peer under DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2. Affected-module gate: **3,166 tests, 0 failures, 0 errors** (5m 19s).
 
 ### Related files
 - `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingFrames.kt`
@@ -16621,4 +16624,4 @@ Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G
 - `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
 
 ### Status
-FIXED FOR THE NOTICE (device-verified) AND THE HEADER LABEL (unit-tested, not device-verified); **PARTIAL**: outbox budget and TOFU re-pin remain.
+FIXED FOR THE NOTICE AND THE HEADER LABEL (both device-verified); **PARTIAL**: outbox budget and TOFU re-pin remain.
