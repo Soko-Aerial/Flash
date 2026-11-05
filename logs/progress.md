@@ -6,7 +6,7 @@
 The owner's brief: turning the radio gateway on should show the radios already paired and offer to pair a new one; the
 pair action opens a dialog that starts scanning; the security profile and the operational mode belong in settings; and
 hold-to-talk needs a place that makes sense. Design-only round as asked: no controller method, state field or decision
-changed. Built in the worktree `E:\FlashWork\radio-ui-v3` on branch `design/radio-gateway-v3` (the main tree's `dev` is
+changed. Built in the worktree `E:\FlashWork\radio-ui-v3` on branch `design/radio-gateway-v3`; commit `ead3480a` (the main tree's `dev` is
 being used by another agent).
 
 ### Changed

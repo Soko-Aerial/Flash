@@ -1,7 +1,7 @@
 # Current Handoff
 
 > **2026-11-05 (latest) - RADIO GATEWAY REDESIGN v3: DESIGNED, BUILT ON A BRANCH, NOT DEVICE-VERIFIED, NOT MERGED.**
-> Branch `design/radio-gateway-v3` in the worktree `E:\FlashWork\radio-ui-v3` (the main tree's `dev` was in use by
+> Branch `design/radio-gateway-v3` in the worktree `E:\FlashWork\radio-ui-v3`, implementation commit `ead3480a` (the main tree's `dev` was in use by
 > another agent). The owner's brief - turning the gateway on shows the paired radios and offers pairing, the pair
 > action opens a sheet that scans, security profile and operational mode move into settings, and hold-to-talk gets a
 > sensible home - is implemented as: station plate (with a full-width **Turn on** while off) -> **Your radios** with one
