@@ -1,0 +1,173 @@
+/* Flash Hub console — design tokens.
+   Palette and type are mapped from the Flash app (FlashColors.kt / FlashTypography.kt).
+   The art direction is an achromatic instrument panel: the chrome is graphite and ink,
+   Pulse teal is used only on the live relay data and its live mark. */
+
+:root {
+  color-scheme: dark;
+
+  --ground: #101218;            /* Flash surface0 — page and sidebar share it */
+  --surface: #181c26;           /* Flash surface1 — cards, tables, inputs */
+  --surface-sub: #0c0e13;       /* one step below the page, for code wells */
+  --surface-raised: #222836;    /* Flash surface2 — nested panels, hover fills */
+  --line: #222836;              /* structural rule */
+  --line-strong: #2c3244;       /* table header rule, divider */
+  --control: #6e778a;           /* interactive outline — 3:1 on surface1 */
+  --text: #f5f6f8;              /* graphite50 */
+  --text-secondary: #a8b0c0;    /* graphite300 */
+  --text-tertiary: #8b94a6;     /* lifted graphite500 for 4.5:1 on surface */
+  --accent: #1fb8a6;            /* pulse400 — the one data hue */
+  --accent-ink: #4eccbe;        /* pulse300 — accent text */
+  --accent-soft: rgba(31, 184, 166, 0.12);
+  --primary: #f5f6f8;           /* inverted ink button */
+  --primary-hover: #d8dce4;
+  --on-primary: #101218;
+  --ok: #4ade80;
+  --ok-soft: #16301e;
+  --ok-ink: #4ade80;
+  --warn: #f0b04b;
+  --warn-soft: #33280f;
+  --warn-ink: #f0b04b;
+  --bad: #ff8c84;
+  --bad-soft: #3b1716;
+  --bad-ink: #ff8c84;
+  --focus: #4eccbe;
+  --scrim: rgba(0, 0, 0, 0.62);
+  --hover: rgba(245, 246, 248, 0.05);
+  --press: rgba(245, 246, 248, 0.09);
+  --row-hover: #1d2230;
+  --row-selected: #222836;
+  --chart-grid: #2c3244;
+  --chart-track: #222836;
+  --shadow-dialog: 0 24px 64px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.34);
+
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --fs-title: 24px;
+  --lh-title: 32px;
+  --fs-figure-lg: 30px;
+  --lh-figure-lg: 34px;
+  --fs-figure: 22px;
+  --lh-figure: 28px;
+  --fs-section: 16px;
+  --lh-section: 22px;
+  --fs-body: 14px;
+  --lh-body: 20px;
+  --fs-meta: 12px;
+  --lh-meta: 16px;
+  --fs-tick: 11px;
+  --lh-tick: 14px;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s7: 32px;
+  --s8: 40px;
+  --s9: 48px;
+  --s10: 64px;
+
+  --r-card: 16px;
+  --r-control: 12px;
+  --r-chip: 8px;
+  --r-pill: 999px;
+
+  --sidebar: 248px;
+  --gutter: 32px;
+  --canvas-max: 1520px;
+  --gap: 20px;
+  --card-pad: 20px;
+  --row-h: 48px;
+  --control-h: 32px;
+  --control-h-form: 40px;
+  --topbar-h: 56px;
+  --bottom-h: 62px;
+
+  --t-fast: 120ms;
+  --t-base: 160ms;
+  --t-panel: 200ms;
+  --ease-out: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ground: #ebedf2;            /* Flash graphite100 */
+  --surface: #ffffff;
+  --surface-sub: #f5f6f8;       /* graphite50 */
+  --surface-raised: #f5f6f8;
+  --line: #e3e6ec;
+  --line-strong: #d8dce4;       /* graphite150 */
+  --control: #8b94a6;           /* interactive outline — 3:1 on white */
+  --text: #171a22;              /* graphite900 */
+  --text-secondary: #454c5c;    /* graphite700 */
+  --text-tertiary: #5f6876;     /* readable grey, 5.0:1 on white */
+  --accent: #0d9488;            /* pulse500 */
+  --accent-ink: #0a7a70;        /* pulse600 */
+  --accent-soft: #e8faf7;
+  --primary: #171a22;
+  --primary-hover: #2a2f3c;
+  --on-primary: #ffffff;
+  --ok: #167a43;
+  --ok-soft: #dcf6e5;
+  --ok-ink: #0f6b38;
+  --warn: #7a4d00;
+  --warn-soft: #fff4d6;
+  --warn-ink: #7a4d00;
+  --bad: #b42318;
+  --bad-soft: #fbe9e7;
+  --bad-ink: #912018;
+  --focus: #0a7a70;
+  --scrim: rgba(17, 20, 26, 0.4);
+  --hover: rgba(23, 26, 34, 0.04);
+  --press: rgba(23, 26, 34, 0.08);
+  --row-hover: #f7f8fa;
+  --row-selected: #eef0f4;
+  --chart-grid: #e8ebf0;
+  --chart-track: #eef0f4;
+  --shadow-dialog: 0 24px 64px rgba(23, 26, 34, 0.18);
+  --shadow-pop: 0 8px 24px rgba(23, 26, 34, 0.12);
+}
+
+@media (max-width: 599px) {
+  :root { --gutter: 20px; }
+}
+@media (min-width: 600px) {
+  :root { --gutter: 24px; }
+}
+@media (min-width: 1100px) {
+  :root { --gutter: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --t-fast: 0.01ms;
+    --t-base: 0.01ms;
+    --t-panel: 0.01ms;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --line: #3a4050;
+    --line-strong: #4a5264;
+    --control: #6e778a;
+    --text-secondary: #c8cedb;
+    --text-tertiary: #b4bccc;
+  }
+  :root[data-theme="light"] {
+    --line: #b4bccc;
+    --line-strong: #8b94a6;
+    --control: #454c5c;
+    --text-secondary: #171a22;
+    --text-tertiary: #2a303c;
+  }
+}

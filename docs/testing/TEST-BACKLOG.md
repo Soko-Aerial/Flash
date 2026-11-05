@@ -7372,3 +7372,65 @@ green. These are the two-device checks that still gate confidence.
 - **Result 2026-11-05 (migration part):** the v23 debug APK installed over the Infinix X6882B's existing v22 data (`adb install -r` -> Success), the app started, and the chat list still showed `Flash Olive`/`final-check` and `Flash Gecko`/`w1session`. No `FATAL EXCEPTION`, `IllegalStateException`, `SQLiteException` or Room migration error appeared in the app's logcat; the migration is device-verified.
 - **Still owed:** the changed-source resume run (needs two phones; the Samsung left USB before this build) and the unchanged-file resume.
 - **Source:** `docs/audit/2026-11-03-nectarlink-comparative-review.md` item 3, ADR-352, `SourceIdentityTest`, `RealFlashTransferRepositoryTest` ("a changed source is refused..."), `FlashMigrationsChainTest`, `FlashJvmMigrationsTest`. **Status:** PARTIAL (migration device-verified; changed-file resume device run owed)
+
+---
+
+## 5zzz Design review ? alternative hub admin console (2026-11-05)
+
+These are review checks for the standalone design proposal in `design/server-console/`; they are not product device
+tests and do not change the shipped console. Source: `docs/ui/hub-admin-console-redesign.md`,
+`design/server-console/README.md`.
+
+### CONSOLE-D01 — Owner reviews the direction
+- **Setup:** `cd design/server-console; node scripts/serve.mjs`, open `http://localhost:5182/#/overview` at 1440.
+- **Steps:** read the Overview in dark and light; open Devices, Security -> Delegation, Settings, Login; open
+  `design/server-console/shots/final/`.
+- **Pass:** the owner can say whether the direction is approved, needs changes, or is rejected; no shipped console file
+  was changed while reviewing.
+- **Source:** `docs/ui/hub-admin-console-redesign.md` sections 2-4. **Status:** TODO
+
+### CONSOLE-D02 — Desktop composition at 1440
+- **Steps:** at 1440x900 inspect Overview, Devices, Invites, Join requests, Organization, Announcements, Audit,
+  Security (all tabs), Settings (all tabs), Login.
+- **Pass:** the Overview answers its question in the lede; the filled primary is Review 5 requests; all blocks share
+  the 1128 px canvas; no card ends short or is stretched over a blank band; Delegation/Trust do not scroll horizontally.
+- **Source:** `design/server-console/README.md` section 5. **Status:** TODO
+
+### CONSOLE-D03 — Tablet and phone
+- **Setup:** 768x1024 and 390x844, dark and light.
+- **Steps:** navigate every route; open the mobile More sheet; deep-link `#/security?tab=delegation` and
+  `#/settings?tab=files`; use the Devices status select; scroll the Devices and Audit tables.
+- **Pass:** the select shows the active view on a deep link; Production is visible in the mobile brand; the bottom nav
+  marks the current page or More; no page-level horizontal scroll; key fields remain on the row subline or in the
+  drawer; toasts clear the bottom nav.
+- **Source:** `design/server-console/README.md` section 5. **Status:** TODO
+
+### CONSOLE-D04 — Overlays, keyboard and focus
+- **Steps:** open the device drawer, approve dialog, invite-created dialog and More sheet; press `g` then
+  `o/d/i/r/a/s/t`, `/`, `?`, `j/k`, Enter on a row, Esc on a dialog; check reduced motion in the OS.
+- **Pass:** focus is visible and trapped in dialogs; Esc closes; the shortcuts do what the help says; one Tab enters a
+  table and j/k moves between rows; with reduced motion the dialog closes immediately and no transition runs.
+- **Source:** `design/server-console/README.md` sections 3 and 5. **Status:** TODO
+
+### CONSOLE-D05 — Contrast, type and touch
+- **Steps:** inspect text and controls in dark and light; use a 200% browser zoom; measure the smallest supporting text
+  and the phone targets.
+- **Pass:** normal text is >=4.5:1, large text >=3:1, control outlines >=3:1; no body copy under 12 px; phone actions
+  are 40 px (row micro-actions may be 32 px); no truncation at 200%.
+- **Source:** `design/server-console/README.md` section 5; Impeccable critique. **Status:** TODO
+
+### CONSOLE-D06 — Prototype actions are honest
+- **Steps:** approve a request; check the phone-code box; verify the audit chain; revoke a pending invite; pin/unpin an
+  announcement; sign out a session; revoke a device; return to Overview and Audit.
+- **Pass:** the approve primary is disabled until the phone-code box is checked; the request disappears; the audit gains
+  a matching row and the total increases; a pending invite can be revoked and disappears from Waiting; pin/unpin moves
+  the update; the Sessions tab count drops after sign-out; the Overview totals follow the revocation.
+- **Source:** `design/server-console/README.md` section 3; `docs/ui/hub-admin-console-redesign.md` section 7.
+  **Status:** TODO
+
+### CONSOLE-D07 — Port regression (only after approval)
+- **Steps:** port per `design/server-console/README.md` section 7 in an isolated branch; run the existing
+  `:server:test` and console Node tests; repeat the existing `HUBU-*` checks that apply.
+- **Pass:** the shipped router, CSP-safe DOM, i18n, step-up, error boundaries and print rules still pass; no regression
+  in the console web tests; the redesigned screens are browser-checked before merge.
+- **Source:** `docs/ui/hub-admin-console-redesign.md` section 10. **Status:** TODO (blocked on owner approval)
