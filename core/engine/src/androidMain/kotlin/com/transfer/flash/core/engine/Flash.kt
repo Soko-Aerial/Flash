@@ -48,6 +48,7 @@ import com.transfer.flash.core.network.tls.TransportSecurityUnavailableException
 import com.transfer.flash.core.network.tls.requireTransportSecurity
 import com.transfer.flash.core.security.crypto.KeystoreFlashCrypto
 import com.transfer.flash.core.security.pairing.FlashPairingCoordinator
+import com.transfer.flash.core.security.pairing.FlashPairingFrame
 import com.transfer.flash.core.security.pairing.PairingWireCodec
 import com.transfer.flash.core.security.crypto.SecureBinaryFrameCodec
 import com.transfer.flash.core.security.identity.AndroidPreferencesIdentityStore
@@ -659,6 +660,10 @@ private class Wiring(
                 networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
             },
             onPeerRevoked = { peerId ->
+                chatImpl.failPendingToPeer(
+                    peerId,
+                    "The other device no longer trusts you. Pair again to reconnect.",
+                )
                 scope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
             },
         )
@@ -782,7 +787,17 @@ private class Wiring(
                                         transferImpl,
                                         session.peerDeviceId.value,
                                         text,
-                                    )
+                                    ) { peerId ->
+                                        val target =
+                                            networkImpl.activeSessions.value[FlashDeviceId(peerId)] as? WsSession
+                                        if (target != null &&
+                                            PairingWireCodec.FEATURE_PAIR_REVOKE in target.peer.features
+                                        ) {
+                                            target.connection.sendTextAsync(
+                                                PairingWireCodec.encode(FlashPairingFrame.PairRevoke()),
+                                            )
+                                        }
+                                    }
                                 }
                             }
                             launch {
@@ -961,6 +976,7 @@ private class Wiring(
         transferImpl: RealFlashTransferRepository,
         peerDeviceId: String,
         text: String,
+        onUnreadableSecuredFrame: (String) -> Unit,
     ) {
         FlashInboundRouter.routeInboundText(
             peerDeviceId = peerDeviceId,
@@ -974,6 +990,7 @@ private class Wiring(
             chatRepository = chatImpl,
             transferRepository = transferImpl,
             incomingOwners = incomingOwners,
+            onUnreadableSecuredFrame = onUnreadableSecuredFrame,
         )
     }
 

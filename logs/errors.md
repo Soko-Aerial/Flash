@@ -16600,18 +16600,22 @@ Implemented as **ADR-351** (`PAIR_REVOKE`, capability `pr1`):
 - The receiver authenticates it by the session peer id, removes the sender's pairing/session key (and the pin at that moment), closes the session, emits `"<name> no longer trusts you. Pair again to reconnect."`, and the chat header reads **Not paired** while an unpaired transport session is up.
 - The frame is ignored by older peers because unknown `FLASH_PAIR` types decode to null; `pr1` is advertised in HELLO.
 
-Still owed:
-- The **outbox budget** is unchanged: a message queued after the revoke retries until the existing wall-clock budget, because the notice is not a delivery receipt. A negative ack is the next step.
-- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
+Negative ack:
+- A receiver that drops a `FLASH_SEC` with no session key resends `PAIR_REVOKE` at most once per 10 s (`FlashInboundRouter`); the revoked side fails its queued messages to that peer (`RealFlashChatRepository.failPendingToPeer`), so the outbox stops in seconds instead of waiting for the budget.
+- The resend is capability-gated on `pr1`; peers without it keep the old budget path.
 - The header fix was verified on 2026-11-05 on both phones: the Samsung header read **Not paired** after the revoke
   while an unpaired session was up. The chat title still falls back to the raw device id (cosmetic).
+
+Still owed:
+- Old peers without `pr1` still use the outbox budget.
+- A Samsung auto-redial re-added a TOFU **pin** for the unpaired peer. It did not restore the pairing and cannot deliver trusted content; refusing it needs a revocation tombstone.
 
 ### Verification
 First device run (2026-11-04, Infinix X6882B + TECNO SPARK 40): security half passed (no pin/pairing/session key on A; all `FLASH_SEC` dropped; A's chat never got `afterrevoke`); UX half failed (B Connected/sent, retry loop) — this is the report.
 
 Second run after ADR-351 (2026-11-04, Infinix X6882B / Android 14 + Samsung SM-G986U1 / Android 13, same debug build): paired (417 319), sent and delivered `before-revoke`, revoked on the Infinix. The Samsung logged `Flash Hippo no longer trusts you. Pair again to reconnect.`; both stores dropped `paired_`/`session_key_`; the Infinix moved the peer to DISCOVERED with Pair.
 
-Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-paired, sent and delivered `final-check`, revoked on the Infinix. The Samsung logged the same sentence and its chat header flipped from **Connected** to **Not paired**; the Infinix showed the peer under DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2. Affected-module gate: **3,166 tests, 0 failures, 0 errors** (5m 19s).
+Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-paired, sent and delivered `final-check`, revoked on the Infinix. The Samsung logged the same sentence and its chat header flipped from **Connected** to **Not paired**; the Infinix showed the peer under DISCOVERED with Pair. Unit tests: `PairingWireCodecTest` 5/5, `FlashPairingCoordinatorTest` 11/11 (including `aRevokeNoticeRemovesThePeerOnTheOtherSide`), `FlashChatHeaderLabelTest` 2/2, `FlashInboundRouterTest` 55/55 (including the no-key resend), `RealFlashChatRepositoryTest` negative-ack test 1/1. Affected-module gate: **3,166 tests, 0 failures, 0 errors** (5m 19s). The negative-ack device run (queue while unreachable, then revoke) is still owed.
 
 ### Related files
 - `core/security/src/commonMain/kotlin/com/transfer/flash/core/security/pairing/FlashPairingFrames.kt`
@@ -16624,4 +16628,4 @@ Final run 2026-11-05 (both phones reconnected; header-fix APK installed): re-pai
 - `docs/testing/TEST-BACKLOG.md` `W1-REVOKE-02`
 
 ### Status
-FIXED FOR THE NOTICE AND THE HEADER LABEL (both device-verified); **PARTIAL**: outbox budget and TOFU re-pin remain.
+FIXED FOR THE NOTICE, THE HEADER LABEL AND THE NEGATIVE ACK (device run for the ack still owed); **PARTIAL**: old-peer budget and TOFU re-pin remain.

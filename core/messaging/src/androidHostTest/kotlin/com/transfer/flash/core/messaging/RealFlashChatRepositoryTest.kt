@@ -34,6 +34,7 @@ import com.transfer.flash.core.persistence.db.entity.RecentSearchEntity
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -4038,6 +4040,49 @@ class RealFlashChatRepositoryTest {
         onInboundTextMessageWithGroupTitle = onInboundTextMessageWithGroupTitle,
         onInboundAttachmentWithGroupTitle = onInboundAttachmentWithGroupTitle,
     )
+
+    @Test
+    fun `a negative ack fails the queued message and removes it from the outbox`() = runBlocking {
+        val messageDao = FakeMessageDao()
+        val outboxDao = FakeOutboxDao()
+        val repository = RealFlashChatRepository(
+            localDeviceId = "my-device-id",
+            localDisplayName = "Kali",
+            messageDao = messageDao,
+            conversationDao = FakeConversationDao(),
+            outboxDao = outboxDao,
+            receiptDao = FakeReceiptDao(),
+            draftDao = FakeDraftDao(),
+            recentSearchDao = FakeRecentSearchDao(),
+            reactionDao = FakeReactionDao(),
+            transportSink = null,
+            ioDispatcher = testDispatcher,
+        )
+        val peer = "peer-nack"
+        messageDao.insert(
+            msg("m-nack", peer, "hello").copy(senderId = "my-device-id", status = "PENDING"),
+        )
+        outboxDao.enqueue(
+            OutboxEntity(
+                localId = "m-nack",
+                nextAttemptAt = Long.MAX_VALUE,
+                payloadJson = "{}",
+                createdAt = 0L,
+            ),
+        )
+
+        repository.failPendingToPeer(peer, "no longer trusts you")
+
+        withTimeout(5_000) {
+            while (messageDao.messages["m-nack"]?.status != "FAILED" ||
+                outboxDao.queue.containsKey("m-nack")
+            ) {
+                delay(20)
+            }
+        }
+        assertEquals("FAILED", messageDao.messages["m-nack"]?.status)
+        assertFalse(outboxDao.queue.containsKey("m-nack"))
+    }
 
     private fun msg(localId: String, conversationId: String, text: String) = MessageEntity(
         localId = localId,

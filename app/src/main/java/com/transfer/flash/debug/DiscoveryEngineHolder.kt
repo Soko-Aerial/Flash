@@ -1689,6 +1689,10 @@ object DiscoveryEngineHolder {
                 networkImpl.activeSessions.value[FlashDeviceId(peerId)]?.peer?.features.orEmpty()
             },
             onPeerRevoked = { peerId ->
+                chatImpl.failPendingToPeer(
+                    peerId,
+                    "The other device no longer trusts you. Pair again to reconnect.",
+                )
                 appScope.launch { networkImpl.disconnect(FlashDeviceId(peerId)) }
             },
         )
